@@ -97,14 +97,19 @@ function createAuth(
     session: {
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
-      // No session renewal: a session ends `expiresIn` after sign-in, whatever
-      // the activity. Renewal (`updateAge`) answers an ordinary request with a
-      // fresh `session_token` cookie for the session that request was sent
-      // under. If that response lands after another account signed in, in
-      // another tab, it puts the earlier account's token back, and every tab of
-      // the browser is that account again. With renewal off, reading a session
-      // sets no cookie at all, so a late response cannot change who is signed
-      // in (src/auth/session-identity.integration.test.ts).
+      // No session renewal: ordinary requests no longer extend the session;
+      // when the expiresAt already stored in the database is reached, the user
+      // signs in again. (Explicit operations that create a new session — sign
+      // in, or a password change that revokes the other sessions — give that
+      // new session its own expiresAt; `updateUser` and `updateSession` re-set
+      // the cookie but leave the stored expiry alone.) Renewal (`updateAge`)
+      // answered an ordinary request with a fresh `session_token` cookie for
+      // the session that request was sent under. If that response lands after
+      // another account signed in, in another tab, it puts the earlier
+      // account's token back, and every tab of the browser is that account
+      // again. With renewal off, reading a session sets no cookie at all, so a
+      // late response to it cannot change who is signed in
+      // (src/auth/session-identity.integration.test.ts).
       disableSessionRefresh: true,
       additionalFields: {
         city: {

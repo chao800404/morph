@@ -41,6 +41,14 @@ import { AUTH_COOKIE_PREFIX } from "@/lib/auth/platform-cookies";
  * - (c) a response produced for A and delivered after B signed in sets no
  *   session cookie — also when A's session is due for renewal — so the
  *   browser's next request is still B.
+ * - (d) the same for each account operation Morph can reach: A's operation
+ *   may complete as A, but its late response does not sign the browser back
+ *   in as A. `updateProfile` needed `withoutSessionCookieRewrite` for that:
+ *   Better Auth's `updateUser` re-sets the session cookie on success
+ *   (dist/api/routes/update-user.mjs:69).
+ *
+ * Renewal being off means ordinary requests no longer extend a session; the
+ * user signs in again when the expiresAt stored in the database is reached.
  *
  * A's `session_data` is minted by Better Auth itself under the configuration
  * this repository shipped before the change (cache on, compact, 300 s), which
@@ -676,14 +684,17 @@ describe("(d) an account operation for A whose response arrives after B signed i
       form.set("name", name);
       form.set("language", "en");
 
-      const { jar, result } = await lateOperation(processed, (sentAsA) =>
-        serveInEvent(sentAsA, () =>
-          (updateProfile as unknown as ServerFnCall)({ data: form }),
-        ),
+      const { jar, headers, result } = await lateOperation(
+        processed,
+        (sentAsA) =>
+          serveInEvent(sentAsA, () =>
+            (updateProfile as unknown as ServerFnCall)({ data: form }),
+          ),
       );
 
       // Who the browser is next: the property.
       expect(await whoAmI(jar)).toBe("b");
+      expect(setCookieNames(headers)).not.toContain(TOKEN_COOKIE);
       // A's own authorised update still happened, as A.
       expect(result).toMatchObject({ success: true });
       expect(await nameOf(accounts.a.id)).toBe(name);
