@@ -448,6 +448,28 @@ export function queryLocalD1<Row>(sql: string): Row[] {
   }
 }
 
+/**
+ * Writes to the run's own database the way `queryLocalD1` reads it: on its
+ * SQLite file with the same busy timeout, never a default path. The SQL may
+ * hold several statements; they run in one transaction, as
+ * `wrangler d1 execute` runs them in one batch.
+ */
+export function execLocalD1(sql: string): void {
+  const stateDir = process.env.MORPH_E2E_STATE_DIR;
+  const sqlitePath = stateDir ? findLocalD1Sqlite(stateDir) : null;
+  if (!sqlitePath) {
+    throw new Error(
+      `execLocalD1 could not find D1 SQLite in MORPH_E2E_STATE_DIR: ${stateDir}`,
+    );
+  }
+  const db = new Database(sqlitePath, { timeout: 10_000 });
+  try {
+    db.transaction(() => db.exec(sql))();
+  } finally {
+    db.close();
+  }
+}
+
 /** The run's own database, as `scripts/seed-e2e.mjs` reaches it. */
 export function runSql(command: string) {
   const stateDir = process.env.MORPH_E2E_STATE_DIR;
