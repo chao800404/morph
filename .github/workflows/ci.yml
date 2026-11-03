@@ -66,7 +66,11 @@ jobs:
   validate-test:
     name: Validation tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The whole job's budget, not a test's: per-test timeouts, retries and
+    # skips live in the Vitest config and are unchanged. The suite alone took
+    # 1166.78 s on main (run 41525655307), so 20 minutes left no room for
+    # install and setup; that run was cancelled 0.26 s after its summary.
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
