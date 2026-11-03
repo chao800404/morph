@@ -180,7 +180,7 @@ Morph 希望同時具備：
     - 版本不符、超出範圍，或標籤對不上時，什麼都不開，並說明原因。
     - 建置不會跑這一步。
     - 尚未以 E2E 點擊真實的 Astro 畫布：Astro 的 E2E 只在本機容器跑，CI 的分片不收它們。
-  - 【已完成】D101 交付鏈（#354 → PR-A → PR-B → PR-I），一次一個，各自在 main push CI 通過後才開始下一個：
+  - 【已完成】Astro 解析／分析／身分前置鏈（D101：#354 → PR-A → PR-B → PR-I），一次一個，各自在 main push CI 通過後才開始下一個。這是 M2 的前置，不等於 M2 完成：
     - `.astro` 解析 Worker（#354）：已合併，未部署。
     - 解析契約 v2（#370，PR-A）：`mode=template`；binding 錯誤分為 binding-missing、binding-failed、invalid-response。E2E 以 `MORPH_E2E_ASTRO_PARSER=1` 選用解析 Worker，預設不變。
     - B1 分析用的 `.astro` 模板投影（#373，PR-B）。文字掃描是分析完整性守衛，不是第二套 Astro 語法判斷；被擋下的合法寫法是能力限制。
@@ -386,16 +386,19 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     - 純 SSR、沒有 client 檔案的建置可以發布，發布失敗時說明原因（#369）。只在本機容器驗收；Cloudflare 是否接受空的 asset manifest 未驗證。
     - sidecar 的 `keepAliveTimeout = 0`（#371）：移除已重現的 idle-close 競態。CI 41455194479 的失敗可能是這個原因，未證實。
     - CI「Validation tests」job 上限 20 → 30 分鐘（#378）。單一測試的 timeout、斷言、重試與 skip 不變。
-  - 【進行中】auth 關卡：cookie cache 修正第一階段（#379）。已合併（19c85e6），**尚未驗證**：
+  - 【已完成】auth 關卡：cookie cache 修正第一階段（#379，合併於 19c85e6）。由 #380 之後的 main push CI 41627772884（eea0de1，17/17）驗證結案：
     - 範圍：關閉 cookie cache；關閉被動續期（一般請求不再延長 session，到 DB 既有的 expiresAt 要重新登入）；`updateProfile` 與 HTTP `/update-user` 的晚到回應不再把瀏覽器切回前一個帳號；以 `disabledPaths` 關閉 45 個 Morph 不提供的 HTTP 端點。
     - 不宣稱「帳號切換競態已完全解決」。storefront host 的端到端驗收沒有跑。正式環境是否受影響，要以實際部署的版本與設定核對。
-    - main push CI 41602308391 失敗：本機 E2E 的 local D1 `SQLITE_BUSY`，很可能是測試 harness 的存取衝突（接近證實，未完全證實）。窄修進行中（`fix/e2e-d1-busy-timeout`，尚未合併）。之後包含 #379 的新 main 完整通過，auth 關卡才關閉。
+    - #379 合併後的 main push CI 41602308391 失敗，保留為失敗紀錄：
+      - 已觀察：full Start 分片 1/3 中，`code-controlled-field.spec.ts` 用 `wrangler d1 execute --local` 寫入時得到 `SQLITE_BUSY`；每次 wrangler 呼叫都會另起一個程序，開啟 dev server 正在用的同一個本機 SQLite 檔。
+      - 未確認：當時是哪一個 dev server 語句持有鎖、持有多久（本機 D1 查詢沒有記錄）。
+    - #380（e2e 窄修，eea0de1）：這兩支 spec 改為直接開啟本機 SQLite，並設 10 秒 busy timeout。它的 PR CI 41622587202 與之後的 main push CI 41627772884 都沒有出現 `SQLITE_BUSY`。只降低已知衝突，不是消除；各一次的 CI 不是穩定性證據；其餘約 21 處 wrangler 呼叫點未改。
   - 進行中：Build Preview 的空回應窄修（範圍待具體案例）。
   - 未完成：#214 的每次請求授權與撤銷（P1 之後；#363～#366 是 Draft）；瀏覽器導航在預覽與公開網站兩邊的完整驗收（#308 Draft）；Starter 升級與相容性在固定版本上的整體驗收；在同一個固定版本上從作者程式到發布、重新載入、回滾的整體驗收。
   - 距離目標的狀態以 1.2 的五個面向（讀取與保留、自動綁定、正確寫入、發布閉環、跨框架）記錄，不另外估百分比。
-  - 接下來的順序：e2e D1 窄修 → auth 關卡結案 → 預覽存取 #363 → #364 → #365 → #366 → A7 → Start M1 其餘：#356 → #362；#351；#360 → #361（之後關閉 #308，保留分支）；Stage 3 CI 接線 → 在凍結的 main 上整體驗收 → 另外授權的雲端驗收。合併所有 PR 不等於 M1 完成。
+  - 接下來的順序：預覽存取 #363 → #364 → #365 → #366 → A7 → Start M1 其餘：#356 → #362；#351；#360 → #361（之後關閉 #308，保留分支）；Stage 3 CI 接線 → 在凍結的 main 上整體驗收 → 另外授權的雲端驗收。合併所有 PR 不等於 M1 完成。
 - **B1：#295 第一輪 Start 案例已合併。** 已完成第一輪驗收能力：逐欄傳值（`<Hero title={title} desc={desc} />`）、別名、spread 與字面值的先後覆蓋順序、兩個實例，並於完整 Start 預覽下通過 3 個分片驗收。這只涵蓋已驗收的第一輪能力，不宣稱所有合法寫法或其他框架均已支援；C4b 提案（以其他區塊欄位覆蓋 spread）、多層傳遞、複雜表達式與其他框架留待 M4、M6。
-- **M2：D101 交付鏈已完成**（#354 → #370 → #373 → #375），見 1.2「Astro 案例」。解析 Worker 未部署；M2 正式案例尚未驗收。
+- **M2：Astro 解析／分析／身分前置鏈完成**（#354 → #370 → #373 → #375），見 1.2「Astro 案例」。這不等於 M2 完成：解析 Worker 未部署，M2 正式案例尚未驗收。
 - **M3：方向 B 已決定，仍是設計草稿。**
   - Draft #372（P0a 提示）、#374（P1）、#376（P2）、#377（P3+P4）保留，不合併，暫停。
   - v1 的保守限制（同一區塊多處使用、CMS 頁面拒絕新的隱藏）只是能力限制，不是最終產品規則。
