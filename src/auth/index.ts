@@ -97,6 +97,15 @@ function createAuth(
     session: {
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
+      // No session renewal: a session ends `expiresIn` after sign-in, whatever
+      // the activity. Renewal (`updateAge`) answers an ordinary request with a
+      // fresh `session_token` cookie for the session that request was sent
+      // under. If that response lands after another account signed in, in
+      // another tab, it puts the earlier account's token back, and every tab of
+      // the browser is that account again. With renewal off, reading a session
+      // sets no cookie at all, so a late response cannot change who is signed
+      // in (src/auth/session-identity.integration.test.ts).
+      disableSessionRefresh: true,
       additionalFields: {
         city: {
           type: "string",
@@ -109,10 +118,15 @@ function createAuth(
           input: false,
         },
       },
+      // Off: every session read goes to the database by its `session_token`.
+      // The cache (`session_data`) is not tied to that token in this Better
+      // Auth version, so a browser holding one account's token and another
+      // account's cache cookie was answered as the cached account — a write
+      // from a browser signed in as B ran as A. With the cache off Better Auth
+      // ignores a `session_data` cookie a browser still holds and writes no
+      // new one (src/auth/session-identity.integration.test.ts).
       cookieCache: {
-        enabled: true,
-        maxAge: 5 * 60,
-        strategy: "compact",
+        enabled: false,
       },
     },
     rateLimit: {
