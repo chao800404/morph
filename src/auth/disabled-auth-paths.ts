@@ -29,9 +29,12 @@
  *
  * Not closable here: `/callback/:id` and `/reset-password/:token`. The list
  * is compared with the request's literal path, so a parameterised route
- * never matches. Neither is configured to do anything (no social provider,
- * no reset-link sender) and neither sets a session cookie for an existing
- * session.
+ * never matches. Both stay routed, and their success paths are unavailable
+ * only because of configuration: no social or OAuth provider is configured
+ * (the callback can sign a user in and set the session cookie by design),
+ * and no reset-link sender (`emailAndPassword.sendResetPassword`) issues the
+ * token the reset route checks. Tests pin both preconditions
+ * (src/auth/session-identity.integration.test.ts, "(h)").
  */
 export const DISABLED_AUTH_PATHS: readonly string[] = [
   // Core

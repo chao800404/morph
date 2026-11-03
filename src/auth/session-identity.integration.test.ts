@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
+import type { BetterAuthOptions } from "better-auth";
 import { betterAuth } from "better-auth/minimal";
 import { admin } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
@@ -65,6 +66,23 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("cloudflare:workers", () => ({ env: state.env }));
+// The mailer, the one outside system: the codes src/auth/index.ts would send
+// are kept here for the success paths in "(g)".
+const mail = vi.hoisted(() => ({
+  sent: [] as Array<{ type: string; email: string; otp: string }>,
+}));
+vi.mock("@/lib/email", () => ({
+  sendAuthVerificationEmail: async (input: {
+    email: string;
+    otp: string;
+    type: string;
+  }) => {
+    mail.sent.push(input);
+  },
+  sendPasswordResetEmail: async (input: { email: string; otp: string }) => {
+    mail.sent.push({ ...input, type: "forget-password" });
+  },
+}));
 // The real module, so a call can run inside a real Start request event (see
 // `serveInEvent`); `state.request` stands in for one where a test has none.
 vi.mock("@tanstack/react-start/server", async (importOriginal) => {
@@ -857,10 +875,11 @@ describe("(e) the /api/auth route, called as A, answered after B signed in", () 
  *
  * - served: Morph's dashboard or a storefront calls it over HTTP.
  * - disabled: closed with `disabledPaths` (src/auth/disabled-auth-paths.ts).
- * - unclosable: parameterised, so `disabledPaths` (a literal path match)
- *   cannot name it.
+ * - unavailable: parameterised, so `disabledPaths` (a literal path match)
+ *   cannot name it; still routed, and its success path needs configuration
+ *   Morph does not have, pinned in "(h)".
  */
-const HTTP_ENDPOINTS: Record<string, "served" | "disabled" | "unclosable"> = {
+const HTTP_ENDPOINTS: Record<string, "served" | "disabled" | "unavailable"> = {
   "/get-session": "served",
   "/sign-in/email": "served",
   "/sign-up/email": "served",
@@ -870,8 +889,8 @@ const HTTP_ENDPOINTS: Record<string, "served" | "disabled" | "unclosable"> = {
   "/email-otp/verify-email": "served",
   "/email-otp/check-verification-otp": "served",
   "/email-otp/reset-password": "served",
-  "/callback/:id": "unclosable",
-  "/reset-password/:token": "unclosable",
+  "/callback/:id": "unavailable",
+  "/reset-password/:token": "unavailable",
   "/sign-in/social": "disabled",
   "/reset-password": "disabled",
   "/verify-password": "disabled",
@@ -1080,8 +1099,147 @@ describe("(f) what the /api/auth route answers", () => {
     expect(setCookieNames(reset.headers)).toEqual([]);
     expect(await whoAmI(jar)).toBe("a");
   });
+});
 
-  it("the parameterised endpoints set no session cookie for a signed-in browser", async () => {
+/** The code the mailer was last asked to send to `email` for `type`. */
+function lastCode(email: string, type: string): string {
+  const sent = mail.sent.filter((m) => m.email === email && m.type === type);
+  expect(sent.length).toBeGreaterThan(0);
+  return sent.at(-1)!.otp;
+}
+
+describe("(g) the served flows still succeed over the /api/auth route", () => {
+  it("forgot password: send the code, check it, reset, and the new password signs in", async () => {
+    const email = accounts.c.email;
+    const NEW_PASSWORD = "a different horse battery staple";
+
+    const sent = await viaAuthRoute(
+      "POST",
+      "/email-otp/send-verification-otp",
+      "",
+      {
+        email,
+        type: "forget-password",
+      },
+    );
+    expect(sent.status).toBe(200);
+    const otp = lastCode(email, "forget-password");
+
+    const checked = await viaAuthRoute(
+      "POST",
+      "/email-otp/check-verification-otp",
+      "",
+      {
+        email,
+        type: "forget-password",
+        otp,
+      },
+    );
+    expect(checked.status).toBe(200);
+
+    const reset = await viaAuthRoute("POST", "/email-otp/reset-password", "", {
+      email,
+      otp,
+      password: NEW_PASSWORD,
+    });
+    expect(reset.status).toBe(200);
+    expect(setCookieNames(reset.headers)).toEqual([]);
+
+    const withNew = await viaAuthRoute("POST", "/sign-in/email", "", {
+      email,
+      password: NEW_PASSWORD,
+    });
+    expect(withNew.status).toBe(200);
+    expect(setCookieNames(withNew.headers)).toContain(TOKEN_COOKIE);
+    const withOld = await viaAuthRoute("POST", "/sign-in/email", "", {
+      email,
+      password: PASSWORD,
+    });
+    expect(withOld.status).toBe(401);
+
+    // Put it back for the other cases.
+    await viaAuthRoute("POST", "/email-otp/send-verification-otp", "", {
+      email,
+      type: "forget-password",
+    });
+    const back = await viaAuthRoute("POST", "/email-otp/reset-password", "", {
+      email,
+      otp: lastCode(email, "forget-password"),
+      password: PASSWORD,
+    });
+    expect(back.status).toBe(200);
+  });
+
+  it("customer sign-up, then email verification: verified, and verification sets no session cookie", async () => {
+    const email = "new-customer@identity.invalid";
+    const signedUp = await viaAuthRoute("POST", "/sign-up/email", "", {
+      name: "New customer",
+      email,
+      password: PASSWORD,
+    });
+    expect(signedUp.status).toBe(200);
+    // Signing up signs the new account in: that is an account change.
+    expect(setCookieNames(signedUp.headers)).toContain(TOKEN_COOKIE);
+    const jar = new Jar();
+    jar.apply(signedUp.headers);
+
+    const sent = await viaAuthRoute(
+      "POST",
+      "/email-otp/send-verification-otp",
+      jar.header(),
+      { email, type: "email-verification" },
+    );
+    expect(sent.status).toBe(200);
+    const verified = await viaAuthRoute(
+      "POST",
+      "/email-otp/verify-email",
+      jar.header(),
+      {
+        email,
+        otp: lastCode(email, "email-verification"),
+      },
+    );
+    expect(verified.status).toBe(200);
+    // No autoSignInAfterVerification: verifying does not touch the session
+    // cookie (dist/plugins/email-otp/routes.mjs:323-345).
+    expect(setCookieNames(verified.headers)).toEqual([]);
+
+    const row = await d1
+      .prepare("SELECT email_verified AS v, role FROM users WHERE email = ?")
+      .bind(email)
+      .first<{ v: number; role: string }>();
+    expect(row).toEqual({ v: 1, role: "guest" });
+  });
+});
+
+describe("(h) the routed parameterised endpoints are unavailable by configuration", () => {
+  /*
+   * `/callback/:id` and `/reset-password/:token` cannot be named in
+   * `disabledPaths` and stay routed. Their success paths need configuration
+   * Morph does not have:
+   * - the OAuth callback looks the provider up in `context.socialProviders`
+   *   (dist/api/routes/callback.mjs:61), built from `options.socialProviders`
+   *   (dist/context/create-context.mjs:97-133); with a provider configured it
+   *   signs a user in and sets the session cookie, by design;
+   * - a reset token for `/reset-password/:token` is issued only by
+   *   `requestPasswordReset`, which refuses without
+   *   `emailAndPassword.sendResetPassword` (dist/api/routes/password.mjs:42).
+   * If either is ever configured these fail, and the two routes need review.
+   */
+  it("no social or OAuth provider is configured", async () => {
+    expect((auth.options as BetterAuthOptions).socialProviders ?? {}).toEqual(
+      {},
+    );
+    expect((await auth.$context).socialProviders).toEqual([]);
+  });
+
+  it("no reset-link sender is configured", () => {
+    expect(
+      (auth.options as BetterAuthOptions).emailAndPassword?.sendResetPassword,
+    ).toBeUndefined();
+  });
+
+  it("invalid inputs to them set no session cookie", async () => {
     const jar = new Jar();
     await signIn(jar, accounts.a.email);
     for (const [method, path] of [
