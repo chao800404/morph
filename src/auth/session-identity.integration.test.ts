@@ -28,7 +28,7 @@ import { AUTH_COOKIE_PREFIX } from "@/lib/auth/platform-cookies";
  * real Better Auth configuration (`createAuth`), the real auth middlewares and
  * server functions, on a real local D1 (Miniflare) with every migration.
  *
- * The defect this guards (handoff/2026-11-03/pr372-e2e-diag/DIAGNOSIS.md): a
+ * The defect this guards (found in CI run 41496671159 of #372): a
  * browser held account B's `session_token` and account A's `session_data`
  * cookie cache. Better Auth 1.6.23 answers from a valid cache without
  * comparing it with the token (dist/api/routes/session.mjs:85-175), so the
