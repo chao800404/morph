@@ -6,6 +6,7 @@ import {
   type PublicOriginEnv,
 } from "@/server/public-origin";
 import { buildAuthTrustedOrigins } from "./auth-trusted-origins";
+import { DISABLED_AUTH_PATHS } from "./disabled-auth-paths";
 import { resolveStorefrontTrustedOrigin } from "./storefront-origin";
 import { AUTH_COOKIE_PREFIX } from "@/lib/auth/platform-cookies";
 import { localization } from "@/lib/config/localization";
@@ -79,6 +80,8 @@ function createAuth(
       cmsDevTrustedOrigins,
       additionalTrustedOrigins,
     }),
+    // Closed over HTTP; server code still calls them through `auth.api`.
+    disabledPaths: [...DISABLED_AUTH_PATHS],
     emailAndPassword: {
       enabled: true,
     },

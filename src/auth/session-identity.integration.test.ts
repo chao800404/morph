@@ -847,3 +847,251 @@ describe("(e) the /api/auth route, called as A, answered after B signed in", () 
     });
   }
 });
+
+/**
+ * Every endpoint `auth.handler` routes with this configuration and its
+ * plugins, and what Morph does with it. Read from the instance, not from
+ * documentation: an endpoint is routed unless it is SERVER_ONLY
+ * (better-call dist/router.mjs:21-26). A new plugin or a Better Auth upgrade
+ * that adds one fails the first test below until it is reviewed here.
+ *
+ * - served: Morph's dashboard or a storefront calls it over HTTP.
+ * - disabled: closed with `disabledPaths` (src/auth/disabled-auth-paths.ts).
+ * - unclosable: parameterised, so `disabledPaths` (a literal path match)
+ *   cannot name it.
+ */
+const HTTP_ENDPOINTS: Record<string, "served" | "disabled" | "unclosable"> = {
+  "/get-session": "served",
+  "/sign-in/email": "served",
+  "/sign-up/email": "served",
+  "/sign-out": "served",
+  "/revoke-other-sessions": "served",
+  "/email-otp/send-verification-otp": "served",
+  "/email-otp/verify-email": "served",
+  "/email-otp/check-verification-otp": "served",
+  "/email-otp/reset-password": "served",
+  "/callback/:id": "unclosable",
+  "/reset-password/:token": "unclosable",
+  "/sign-in/social": "disabled",
+  "/reset-password": "disabled",
+  "/verify-password": "disabled",
+  "/verify-email": "disabled",
+  "/send-verification-email": "disabled",
+  "/change-email": "disabled",
+  "/change-password": "disabled",
+  "/update-session": "disabled",
+  "/update-user": "disabled",
+  "/delete-user": "disabled",
+  "/request-password-reset": "disabled",
+  "/list-sessions": "disabled",
+  "/revoke-session": "disabled",
+  "/revoke-sessions": "disabled",
+  "/link-social": "disabled",
+  "/list-accounts": "disabled",
+  "/delete-user/callback": "disabled",
+  "/unlink-account": "disabled",
+  "/refresh-token": "disabled",
+  "/get-access-token": "disabled",
+  "/account-info": "disabled",
+  "/ok": "disabled",
+  "/error": "disabled",
+  "/sign-in/anonymous": "disabled",
+  "/delete-anonymous-user": "disabled",
+  "/admin/set-role": "disabled",
+  "/admin/get-user": "disabled",
+  "/admin/create-user": "disabled",
+  "/admin/update-user": "disabled",
+  "/admin/list-users": "disabled",
+  "/admin/list-user-sessions": "disabled",
+  "/admin/unban-user": "disabled",
+  "/admin/ban-user": "disabled",
+  "/admin/impersonate-user": "disabled",
+  "/admin/stop-impersonating": "disabled",
+  "/admin/revoke-user-session": "disabled",
+  "/admin/revoke-user-sessions": "disabled",
+  "/admin/remove-user": "disabled",
+  "/admin/set-user-password": "disabled",
+  "/admin/has-permission": "disabled",
+  "/sign-in/email-otp": "disabled",
+  "/email-otp/request-password-reset": "disabled",
+  "/forget-password/email-otp": "disabled",
+  "/email-otp/request-email-change": "disabled",
+  "/email-otp/change-email": "disabled",
+};
+
+/** Path and methods of every endpoint the instance routes over HTTP. */
+function routedEndpoints() {
+  type Endpoint = {
+    path?: string;
+    options?: {
+      method?: string | string[];
+      metadata?: { SERVER_ONLY?: boolean };
+    };
+  };
+  return Object.values(auth.api as unknown as Record<string, Endpoint>)
+    .filter(
+      (endpoint) => endpoint.path && !endpoint.options?.metadata?.SERVER_ONLY,
+    )
+    .map((endpoint) => ({
+      path: endpoint.path!,
+      methods: [endpoint.options?.method ?? "GET"].flat() as Array<
+        "GET" | "POST"
+      >,
+    }));
+}
+
+describe("(f) what the /api/auth route answers", () => {
+  it("every routed endpoint has been reviewed", () => {
+    expect(
+      routedEndpoints()
+        .map(({ path }) => path)
+        .sort(),
+    ).toEqual(Object.keys(HTTP_ENDPOINTS).sort());
+  });
+
+  it("every disabled endpoint answers 404 and sets no cookie, whatever the method", async () => {
+    const jar = new Jar();
+    await signIn(jar, accounts.a.email);
+    const refused: string[] = [];
+    for (const { path, methods } of routedEndpoints()) {
+      if (HTTP_ENDPOINTS[path] !== "disabled") continue;
+      for (const method of methods) {
+        const response = await viaAuthRoute(method, path, jar.header());
+        if (
+          response.status !== 404 ||
+          setCookieNames(response.headers).length > 0
+        )
+          refused.push(`${method} ${path}: ${response.status}`);
+      }
+    }
+    expect(refused).toEqual([]);
+    // Spelled differently, still closed.
+    for (const variant of ["/update-user/", "/update-user?x=1"]) {
+      expect((await viaAuthRoute("POST", variant, jar.header())).status).toBe(
+        404,
+      );
+    }
+    expect(
+      (await viaAuthRoute("POST", "/Update-User", jar.header())).status,
+    ).toBe(404);
+  });
+
+  it("a disabled /update-user over HTTP changes nothing, while updateProfile still updates", async () => {
+    const jar = new Jar();
+    await signIn(jar, accounts.a.email);
+    const before = (await d1
+      .prepare("SELECT name FROM users WHERE id = ?")
+      .bind(accounts.a.id)
+      .first<{ name: string }>())!.name;
+    const response = await viaAuthRoute("POST", "/update-user", jar.header(), {
+      name: "Over HTTP",
+    });
+    expect(response.status).toBe(404);
+    expect(
+      (await d1
+        .prepare("SELECT name FROM users WHERE id = ?")
+        .bind(accounts.a.id)
+        .first<{ name: string }>())!.name,
+    ).toBe(before);
+
+    const { updateProfile } =
+      await import("@/server/auth/update-profile.serverFn");
+    const form = new FormData();
+    form.set("name", "Through updateProfile");
+    form.set("language", "en");
+    const { result } = await serveInEvent(jar.header(), () =>
+      (updateProfile as unknown as ServerFnCall)({ data: form }),
+    );
+    expect(result).toMatchObject({ success: true });
+    expect(
+      (await d1
+        .prepare("SELECT name FROM users WHERE id = ?")
+        .bind(accounts.a.id)
+        .first<{ name: string }>())!.name,
+    ).toBe("Through updateProfile");
+  });
+
+  it("sign-in still sets the session cookie and sign-out still clears it", async () => {
+    const signedIn = await viaAuthRoute("POST", "/sign-in/email", "", {
+      email: accounts.b.email,
+      password: PASSWORD,
+    });
+    expect(signedIn.status).toBe(200);
+    const jar = new Jar();
+    jar.apply(signedIn.headers);
+    expect(await whoAmI(jar)).toBe("b");
+
+    const signedOut = await viaAuthRoute("POST", "/sign-out", jar.header());
+    expect(signedOut.status).toBe(200);
+    expect(setCookieNames(signedOut.headers)).toContain(TOKEN_COOKIE);
+    jar.apply(signedOut.headers);
+    expect(jar.get(TOKEN_COOKIE)).toBeUndefined();
+    expect(await whoAmI(jar)).toBeNull();
+  });
+
+  it("the served email-OTP endpoints that succeed for a signed-in browser set no session cookie", async () => {
+    const jar = new Jar();
+    await signIn(jar, accounts.a.email);
+    const otpFor = (type: "email-verification" | "forget-password") =>
+      (
+        auth.api as unknown as {
+          createVerificationOTP: (args: {
+            body: { email: string; type: string };
+          }) => Promise<string>;
+        }
+      ).createVerificationOTP({ body: { email: accounts.a.email, type } });
+
+    const verified = await viaAuthRoute(
+      "POST",
+      "/email-otp/verify-email",
+      jar.header(),
+      {
+        email: accounts.a.email,
+        otp: await otpFor("email-verification"),
+      },
+    );
+    expect(verified.status).toBe(200);
+    expect(setCookieNames(verified.headers)).toEqual([]);
+
+    const checked = await viaAuthRoute(
+      "POST",
+      "/email-otp/check-verification-otp",
+      jar.header(),
+      {
+        email: accounts.a.email,
+        type: "forget-password",
+        otp: await otpFor("forget-password"),
+      },
+    );
+    expect(checked.status).toBe(200);
+    expect(setCookieNames(checked.headers)).toEqual([]);
+
+    const reset = await viaAuthRoute(
+      "POST",
+      "/email-otp/reset-password",
+      jar.header(),
+      {
+        email: accounts.a.email,
+        otp: await otpFor("forget-password"),
+        password: PASSWORD,
+      },
+    );
+    expect(reset.status).toBe(200);
+    expect(setCookieNames(reset.headers)).toEqual([]);
+    expect(await whoAmI(jar)).toBe("a");
+  });
+
+  it("the parameterised endpoints set no session cookie for a signed-in browser", async () => {
+    const jar = new Jar();
+    await signIn(jar, accounts.a.email);
+    for (const [method, path] of [
+      ["GET", "/callback/none"],
+      ["POST", "/callback/none"],
+      ["GET", "/reset-password/not-a-token"],
+    ] as const) {
+      const response = await viaAuthRoute(method, path, jar.header());
+      expect(setCookieNames(response.headers)).not.toContain(TOKEN_COOKIE);
+      expect(response.status).not.toBe(200);
+    }
+  });
+});
