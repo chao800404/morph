@@ -49,18 +49,23 @@ import { AUTH_COOKIE_PREFIX } from "@/lib/auth/platform-cookies";
  * `cloudflare:workers` env, which here carries the real local D1.
  */
 
+type StartServer = typeof import("@tanstack/react-start/server");
+
 const state = vi.hoisted(() => ({
   env: {} as Record<string, unknown>,
   request: null as Request | null,
 }));
 
 vi.mock("cloudflare:workers", () => ({ env: state.env }));
-vi.mock("@tanstack/react-start/server", () => ({
-  getRequest: () => {
-    if (!state.request) throw new Error("no request in this test");
-    return state.request;
-  },
-}));
+// The real module, so a call can run inside a real Start request event (see
+// `serveInEvent`); `state.request` stands in for one where a test has none.
+vi.mock("@tanstack/react-start/server", async (importOriginal) => {
+  const actual = await importOriginal<StartServer>();
+  return {
+    ...actual,
+    getRequest: () => state.request ?? actual.getRequest(),
+  };
+});
 // Runs the validator, each middleware the function declares, then the
 // handler — as storefront-theme-preview-server-access.serverFn.test.ts does —
 // starting from the context the client middleware would send.
@@ -599,4 +604,180 @@ describe("(c) a response for A that arrives after B signed in", () => {
       });
     }
   }
+});
+
+/**
+ * Runs `run` inside a real TanStack Start request event, as a server function
+ * call does in the Worker, and returns the response the browser would get.
+ * `tanstackStartCookies` puts every Set-Cookie of a Better Auth call made
+ * during the event onto that response — which is what this observes.
+ */
+async function serveInEvent(cookie: string, run: () => Promise<unknown>) {
+  const { requestHandler } = await import("@tanstack/react-start/server");
+  state.request = null;
+  let result: unknown;
+  const response = await requestHandler(async () => {
+    result = await run();
+    return new Response("served");
+  })(
+    new Request(`${ORIGIN}/_serverFn/test`, {
+      method: "POST",
+      headers: { cookie, origin: ORIGIN },
+    }),
+    {} as never,
+  );
+  return { headers: response.headers, result };
+}
+
+describe("(d) an account operation for A whose response arrives after B signed in", () => {
+  it("control: the event harness sees Set-Cookie a Better Auth call makes", async () => {
+    const { headers } = await serveInEvent("", () =>
+      auth.api.signInEmail({
+        body: { email: accounts.a.email, password: PASSWORD },
+      }),
+    );
+    expect(setCookieNames(headers)).toContain(TOKEN_COOKIE);
+  });
+
+  /**
+   * A's operation, sent while the browser was A, served `processed` relative
+   * to B's sign-in, its response applied to the jar after B's sign-in.
+   */
+  async function lateOperation(
+    processed: "before-sign-in" | "after-sign-in",
+    operation: (
+      sentAsA: string,
+    ) => Promise<{ headers: Headers; result: unknown }>,
+  ) {
+    const jar = new Jar();
+    await signIn(jar, accounts.a.email);
+    const sentAsA = jar.header();
+    let served: { headers: Headers; result: unknown } | null = null;
+    if (processed === "before-sign-in") served = await operation(sentAsA);
+    await signIn(jar, accounts.b.email);
+    if (processed === "after-sign-in") served = await operation(sentAsA);
+    jar.apply(served!.headers);
+    return { jar, ...served! };
+  }
+
+  const nameOf = async (id: string) =>
+    (await d1
+      .prepare("SELECT name FROM users WHERE id = ?")
+      .bind(id)
+      .first<{ name: string }>())!.name;
+
+  for (const processed of ["before-sign-in", "after-sign-in"] as const) {
+    it(`updateProfile, processed ${processed}: A's update lands, the browser stays B`, async () => {
+      const { updateProfile } =
+        await import("@/server/auth/update-profile.serverFn");
+      const name =
+        processed === "before-sign-in" ? "A renamed early" : "A renamed late";
+      const form = new FormData();
+      form.set("name", name);
+      form.set("language", "en");
+
+      const { jar, result } = await lateOperation(processed, (sentAsA) =>
+        serveInEvent(sentAsA, () =>
+          (updateProfile as unknown as ServerFnCall)({ data: form }),
+        ),
+      );
+
+      // Who the browser is next: the property.
+      expect(await whoAmI(jar)).toBe("b");
+      // A's own authorised update still happened, as A.
+      expect(result).toMatchObject({ success: true });
+      expect(await nameOf(accounts.a.id)).toBe(name);
+    });
+  }
+
+  it("listSessions: the browser stays B", async () => {
+    const { listSessions } =
+      await import("@/server/auth/list-sessions.serverFn");
+    const { jar, result } = await lateOperation("before-sign-in", (sentAsA) =>
+      serveInEvent(sentAsA, () =>
+        (listSessions as unknown as ServerFnCall)({ data: undefined }),
+      ),
+    );
+    expect(await whoAmI(jar)).toBe("b");
+    expect(result).toMatchObject({ sessions: expect.any(Array) });
+  });
+
+  it("revokeSession (another of A's sessions): the browser stays B", async () => {
+    const other = new Jar();
+    await signIn(other, accounts.a.email);
+    const otherToken = decodeURIComponent(other.get(TOKEN_COOKIE)!).split(
+      ".",
+    )[0]!;
+    const otherId = (await d1
+      .prepare("SELECT id FROM sessions WHERE token = ?")
+      .bind(otherToken)
+      .first<{ id: string }>())!.id;
+    const { revokeSession } =
+      await import("@/server/auth/revoke-session.serverFn");
+
+    const { jar, result } = await lateOperation("before-sign-in", (sentAsA) =>
+      serveInEvent(sentAsA, () =>
+        (revokeSession as unknown as ServerFnCall)({ data: { id: otherId } }),
+      ),
+    );
+
+    expect(await whoAmI(jar)).toBe("b");
+    expect(result).toMatchObject({ success: true });
+    expect(await whoAmI(other)).toBeNull();
+  });
+
+  it("updateDashboardUser (A as admin): the browser stays B", async () => {
+    const { updateDashboardUser } =
+      await import("@/server/auth/dashboard-users.serverFn");
+    const { jar, result } = await lateOperation("before-sign-in", (sentAsA) =>
+      serveInEvent(sentAsA, () =>
+        (updateDashboardUser as unknown as ServerFnCall)({
+          data: { id: accounts.c.id, firstName: "C", lastName: "Renamed" },
+        }),
+      ),
+    );
+    expect(await whoAmI(jar)).toBe("b");
+    expect(result).toMatchObject({ success: true });
+    expect(await nameOf(accounts.c.id)).toBe("C Renamed");
+  });
+
+  it("revoke-other-sessions (browser call): the browser stays B", async () => {
+    const { jar } = await lateOperation("before-sign-in", async (sentAsA) => {
+      const response = await auth.handler(
+        new Request(`${ORIGIN}/api/auth/revoke-other-sessions`, {
+          method: "POST",
+          headers: {
+            cookie: sentAsA,
+            origin: ORIGIN,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        }),
+      );
+      expect(response.status).toBe(200);
+      return { headers: response.headers, result: null };
+    });
+    expect(await whoAmI(jar)).toBe("b");
+  });
+
+  it("sign-out (browser call): the browser is signed out, never A", async () => {
+    const { jar } = await lateOperation("before-sign-in", async (sentAsA) => {
+      const response = await auth.handler(
+        new Request(`${ORIGIN}/api/auth/sign-out`, {
+          method: "POST",
+          headers: {
+            cookie: sentAsA,
+            origin: ORIGIN,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        }),
+      );
+      expect(response.status).toBe(200);
+      return { headers: response.headers, result: null };
+    });
+    // A's sign-out clears the session cookie it answers with, so the late
+    // response signs this browser out. It does not make it A.
+    expect(await whoAmI(jar)).toBeNull();
+  });
 });
