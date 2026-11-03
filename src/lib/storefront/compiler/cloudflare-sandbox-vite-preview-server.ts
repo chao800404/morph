@@ -787,6 +787,11 @@ export class CloudflareSandboxVitePreviewServer {
     // A framework's own dev server (`astro dev`), when its adapter names one;
     // otherwise Vite with the generated `vite.config.ts`.
     const devServer = framework.preview.devServer;
+    // A Worker that names the content snapshot it reads on the address probe
+    // serves this preview (Start's own, or a framework's dev server), so a
+    // content sync can be written and confirmed here (docs/astro-theme-plan.md
+    // 6.5, 6.6), as the local transport does.
+    const confirmsContent = input.previewRuntime === "start" || Boolean(devServer);
     // A preview has no build record; it uses the registry's toolchain for its
     // framework, checked against the container's manifest before it starts.
     const toolchain = themeToolchainForFramework(framework.id);
@@ -1092,9 +1097,10 @@ export class CloudflareSandboxVitePreviewServer {
             expected: existingWorkspaceFingerprint,
           },
           commit: startCommit,
-          // Content syncs reach a framework's own dev server only (6.5), so
-          // only there is a newer snapshot kept and the server stamped.
-          ...(devServer
+          // Content syncs reach a preview whose Worker reads the snapshot
+          // (6.5), so only there is a newer snapshot kept and the server
+          // stamped.
+          ...(confirmsContent
             ? {
                 content: {
                   path: THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
@@ -1314,8 +1320,9 @@ export class CloudflareSandboxVitePreviewServer {
       // Stamped before the server starts, so its Worker names this server
       // and no earlier one on the address probe (docs/astro-theme-plan.md
       // 6.6); kept in /tmp, which a restarted container does not keep. Only
-      // a framework's own dev server takes content syncs to confirm.
-      if (devServer) {
+      // a preview whose Worker reads the snapshot takes content syncs to
+      // confirm.
+      if (confirmsContent) {
         await runPreviewContentRequestInSandbox(
           session as unknown as FenceSandbox,
           {

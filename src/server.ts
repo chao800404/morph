@@ -70,8 +70,20 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
     ],
   );
 
-  const { storefrontContentPublicationDal } =
-    await import("@/lib/storefront/dal/storefront-content-publication.dal");
+  const [{ storefrontContentPublicationDal }, { resolveThemePreviewSecret }] =
+    await Promise.all([
+      import("@/lib/storefront/dal/storefront-content-publication.dal"),
+      import("@/lib/storefront/service/theme-build-preview-token"),
+    ]);
+  // No secret means no render context is issued, and a content read naming
+  // one is refused: an unsigned pin would be any visitor's choice of release.
+  const renderContextSecret = (bindings: unknown): string | undefined => {
+    try {
+      return resolveThemePreviewSecret(undefined, bindings);
+    } catch {
+      return undefined;
+    }
+  };
 
   const service = new StorefrontProductionService({
     runtime: routing.createThemeRuntime(
@@ -198,6 +210,9 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
       listPublishedAssetKeys: (publicationId) =>
         storefrontContentPublicationDal.listPublishedAssetKeys(publicationId),
     },
+    // Keeps one page render's content reads on its own release (G3). The
+    // signature is domain-separated from every other use of this secret.
+    renderContextSecret: renderContextSecret(env),
   });
   return service.handleRequest(request);
 }
@@ -331,6 +346,19 @@ export default {
       if (restored) {
         request = restored;
         args[0] = restored;
+      }
+      // Test-only, and only where the parser binding exists (the local
+      // preview E2E environment); see astro-parser-binding-check.ts.
+      if (new URL(request.url).pathname.startsWith("/_morph/e2e/")) {
+        const [{ serveAstroParserBindingCheck }, { env }] = await Promise.all([
+          import("@/server/dev/astro-parser-binding-check"),
+          import("cloudflare:workers"),
+        ]);
+        const checked = await serveAstroParserBindingCheck(
+          request,
+          env as unknown as Record<string, unknown>,
+        );
+        if (checked) return checked;
       }
     }
     const url = new URL(request.url);
