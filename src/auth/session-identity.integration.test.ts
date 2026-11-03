@@ -792,3 +792,58 @@ describe("(d) an account operation for A whose response arrives after B signed i
     expect(await whoAmI(jar)).toBeNull();
   });
 });
+
+/**
+ * A request to the platform's own `/api/auth/*` route, through the route's
+ * real handler (src/routes/_backend/api/auth/$.ts), which builds the auth
+ * instance from the request and hands it to `auth.handler`.
+ */
+async function viaAuthRoute(
+  method: "GET" | "POST",
+  path: string,
+  cookie: string,
+  body: unknown = {},
+): Promise<Response> {
+  const { Route } = await import("@/routes/_backend/api/auth/$");
+  const handlers = (
+    Route.options as unknown as {
+      server: {
+        handlers: Record<
+          "GET" | "POST",
+          (args: { request: Request }) => Promise<Response>
+        >;
+      };
+    }
+  ).server.handlers;
+  const request = new Request(`${ORIGIN}/api/auth${path}`, {
+    method,
+    headers: {
+      cookie,
+      origin: ORIGIN,
+      ...(method === "POST" ? { "content-type": "application/json" } : {}),
+    },
+    ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
+  });
+  return handlers[method]({ request });
+}
+
+describe("(e) the /api/auth route, called as A, answered after B signed in", () => {
+  for (const processed of ["before-sign-in", "after-sign-in"] as const) {
+    it(`POST /update-user, processed ${processed}: the browser stays B`, async () => {
+      const jar = new Jar();
+      await signIn(jar, accounts.a.email);
+      const sentAsA = jar.header();
+      const call = () =>
+        viaAuthRoute("POST", "/update-user", sentAsA, {
+          name: `A over HTTP ${processed === "before-sign-in" ? "early" : "late"}`,
+        });
+      let response: Response | null = null;
+      if (processed === "before-sign-in") response = await call();
+      await signIn(jar, accounts.b.email);
+      if (processed === "after-sign-in") response = await call();
+      jar.apply(response!.headers);
+
+      expect(await whoAmI(jar)).toBe("b");
+    });
+  }
+});
