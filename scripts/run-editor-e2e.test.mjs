@@ -58,7 +58,7 @@ const RUNNER = fileURLToPath(new URL("./run-editor-e2e.mjs", import.meta.url));
 
 const FAKE_NPX = `#!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import http from "node:http";
 
 const [tool, ...rest] = process.argv.slice(2);
@@ -66,7 +66,21 @@ if (process.env.FAKE_PID_DIR && (tool === "vite" || tool === "playwright")) {
   writeFileSync(process.env.FAKE_PID_DIR + "/" + process.pid, tool);
 }
 
-if (tool === "wrangler") process.exit(0);
+// The .astro parser under \`wrangler dev\`: registers itself in the registry it
+// was given, as the real one does, and serves until stopped.
+if (tool === "wrangler" && rest[0] === "dev" && rest.includes("packages/astro-parser-worker/wrangler.jsonc")) {
+  if (process.env.FAKE_PID_DIR) writeFileSync(process.env.FAKE_PID_DIR + "/" + process.pid, "astro parser");
+  console.log("[fake-parser] starting");
+  if (process.env.FAKE_PARSER_MODE === "exit") process.exit(3);
+  if (process.env.FAKE_PARSER_FILE) {
+    writeFileSync(process.env.FAKE_PARSER_FILE, JSON.stringify({ args: rest, registry: process.env.WRANGLER_REGISTRY_PATH ?? null }));
+  }
+  const port = Number(rest[rest.indexOf("--port") + 1]);
+  http.createServer((request, response) => response.end("{}")).listen(port, "127.0.0.1", () => {
+    writeFileSync(process.env.WRANGLER_REGISTRY_PATH + "/morph-astro-parser", "{}");
+    console.log("[fake-parser] ready");
+  });
+} else if (tool === "wrangler") process.exit(0);
 
 if (tool === "vite") {
   // What the real dev server does when it builds the Sandbox image: a child
@@ -81,8 +95,25 @@ if (tool === "vite") {
   const port = Number(rest[rest.indexOf("--port") + 1]);
   const line = "x".repeat(200);
   let emittedLateOptimize = false;
+  const registry = process.env.WRANGLER_REGISTRY_PATH ?? null;
+  if (process.env.FAKE_VITE_ENV_FILE) {
+    writeFileSync(process.env.FAKE_VITE_ENV_FILE, JSON.stringify({ registry, stateDir: process.env.MORPH_E2E_STATE_DIR }));
+  }
   http
     .createServer((request, response) => {
+      if (request.url === "/_morph/e2e/astro-parser-binding-check") {
+        // Core's hook: confirmed only when the parser is in this server's
+        // registry, as the real binding resolves it.
+        const reached = registry !== null && existsSync(registry + "/morph-astro-parser");
+        const outcome = process.env.FAKE_CORE_PARSER_OUTCOME
+          ? JSON.parse(process.env.FAKE_CORE_PARSER_OUTCOME)
+          : reached
+            ? { status: "confirmed", result: { compiler: "0.5.1" } }
+            : { status: "refused", code: "binding-failed", reason: "parser-binding-failed", detail: "no session" };
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ outcome }));
+        return;
+      }
       if (request.url === "/log") {
         if (process.env.FAKE_VITE_REOPTIMIZE && !emittedLateOptimize) {
           emittedLateOptimize = true;
@@ -143,7 +174,7 @@ if (tool === "vite") {
     await flushed();
     process.exit(mode === "fail" ? 1 : 0);
   }
-} else {
+} else if (tool !== "wrangler") {
   console.error("fake npx: unexpected " + process.argv.slice(2).join(" "));
   process.exit(2);
 }
@@ -622,6 +653,155 @@ describe("the e2e runner's sidecar workspaces", () => {
       } finally {
         await rm(sidecarEnv, { force: true });
       }
+    },
+  );
+});
+
+describe("the e2e runner's .astro parser", () => {
+  const sidecarEnv = () => path.join(scratch, ".dev.vars.local_preview_e2e");
+  before(async () => {
+    await writeFile(
+      sidecarEnv(),
+      "MORPH_LOCAL_THEME_PREVIEW_ORIGIN=http://127.0.0.1:5199\nMORPH_LOCAL_THEME_PREVIEW_TOKEN=runner-test-token-unused\n",
+    );
+  });
+  after(async () => {
+    await rm(sidecarEnv(), { force: true });
+  });
+
+  async function parserPorts() {
+    return {
+      MORPH_E2E_ASTRO_PARSER_PORT: String(await freePort()),
+      MORPH_E2E_ASTRO_PARSER_INSPECTOR_PORT: String(await freePort()),
+    };
+  }
+
+  it("refuses the parser with the container transport, before starting services", async () => {
+    const result = await runRunner({ MORPH_E2E_ASTRO_PARSER: "1" });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /ASTRO_PARSER_NEEDS_LOCAL_PREVIEW/);
+    assert.ok(!result.stdout.includes("applying migrations"));
+    assert.deepEqual(result.leftBehind, []);
+  });
+
+  it("refuses a setting it does not know, before starting services", async () => {
+    const result = await runRunner({
+      MORPH_E2E_TRANSPORT: "local-sidecar",
+      MORPH_E2E_ASTRO_PARSER: "yes",
+    });
+    assert.equal(result.code, 1);
+    assert.match(
+      result.stderr,
+      /MORPH_E2E_ASTRO_PARSER must be "1", "0" or unset, not "yes"/,
+    );
+    assert.ok(!result.stdout.includes("applying migrations"));
+    assert.deepEqual(result.leftBehind, []);
+  });
+
+  it(
+    "starts the parser before the dev server in a registry of the run's own, confirms Core reaches it, keeps its log and stops it",
+    { timeout: 90_000 },
+    async () => {
+      const dir = path.join(scratch, "astro-parser-run");
+      await mkdir(dir, { recursive: true });
+      const report = path.join(dir, "playwright.json");
+      const parserFile = path.join(dir, "parser.json");
+      const viteFile = path.join(dir, "vite.json");
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        MORPH_E2E_ASTRO_PARSER: "1",
+        ...(await parserPorts()),
+        MORPH_E2E_REPORT_PATH: report,
+        FAKE_PARSER_FILE: parserFile,
+        FAKE_VITE_ENV_FILE: viteFile,
+      });
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-2000));
+      const out = result.stdout;
+      const ready = out.indexOf("[e2e] .astro parser ready");
+      const devServer = out.indexOf("[e2e] starting the dev server");
+      const confirmed = out.indexOf(
+        "[e2e] Core confirmed a parse through ASTRO_PARSER (compiler 0.5.1)",
+      );
+      const suite = out.indexOf("[e2e] running playwright");
+      assert.ok(ready >= 0 && ready < devServer, out.slice(-2000));
+      assert.ok(devServer < confirmed && confirmed < suite, out.slice(-2000));
+      assert.match(out, /\[e2e\] stopped astro parser/);
+      const parser = JSON.parse(await readFile(parserFile, "utf8"));
+      const vite = JSON.parse(await readFile(viteFile, "utf8"));
+      // One registry, the run's own, inside its state directory.
+      assert.equal(parser.registry, vite.registry);
+      assert.equal(parser.registry, path.join(vite.stateDir, "dev-registry"));
+      assert.ok(parser.args.includes("--inspector-port"));
+      assert.match(
+        await readFile(`${report}.astro-parser.log`, "utf8"),
+        /\[stdout\] \[fake-parser\] ready/,
+      );
+      assert.equal(
+        JSON.parse(await readFile(`${report}.astro-parser-check.json`, "utf8"))
+          .outcome.status,
+        "confirmed",
+      );
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "fails before the dev server when the parser exits before it is ready",
+    { timeout: 90_000 },
+    async () => {
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        MORPH_E2E_ASTRO_PARSER: "1",
+        ...(await parserPorts()),
+        FAKE_PARSER_MODE: "exit",
+      });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /ASTRO_PARSER_EXITED: .*code 3/);
+      assert.ok(!result.stdout.includes("starting the dev server"));
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "fails before the suite when Core does not confirm a parse, and stops both",
+    { timeout: 90_000 },
+    async () => {
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        MORPH_E2E_ASTRO_PARSER: "1",
+        ...(await parserPorts()),
+        FAKE_CORE_PARSER_OUTCOME: JSON.stringify({
+          status: "refused",
+          code: "version-mismatch",
+          reason: "parser-version-mismatch",
+          detail: "compiler 0.6.0",
+        }),
+      });
+      assert.equal(result.code, 1);
+      assert.match(
+        result.stderr,
+        /ASTRO_PARSER_UNREACHABLE: .*refused version-mismatch/,
+      );
+      assert.ok(!result.stdout.includes("running playwright"));
+      assert.match(result.stdout, /\[e2e\] stopped astro parser/);
+      assert.match(result.stdout, /\[e2e\] stopped dev server/);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "starts no parser and leaves the registry alone for a run that does not ask",
+    { timeout: 90_000 },
+    async () => {
+      const viteFile = path.join(scratch, `vite-no-parser-${Date.now()}.json`);
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        FAKE_VITE_ENV_FILE: viteFile,
+      });
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-2000));
+      assert.doesNotMatch(result.stdout, /astro parser|ASTRO_PARSER/);
+      assert.equal(JSON.parse(await readFile(viteFile, "utf8")).registry, null);
+      assert.deepEqual(result.leftBehind, []);
     },
   );
 });

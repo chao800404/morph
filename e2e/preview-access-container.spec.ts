@@ -7,7 +7,15 @@ import {
   type Page,
 } from "@playwright/test";
 
-import { openEditor, signedInPage } from "./native-acceptance";
+import { randomUUID } from "node:crypto";
+
+import {
+  editHero,
+  openEditor,
+  savedField,
+  signedInPage,
+} from "./native-acceptance";
+import { themeScopeFromEditorPath } from "./native-compat";
 
 /**
  * #214 P2: a Live Preview's address is not a credential
@@ -23,7 +31,12 @@ import { openEditor, signedInPage } from "./native-acceptance";
  * - (d) once a session signs out, its frame's next request is refused, with
  *   no draft bytes;
  * - (e) the same author's other session keeps working throughout;
- * - (g) the Sandbox SDK's own host shape is refused from outside.
+ * - (g) the Sandbox SDK's own host shape is refused from outside;
+ * - P3: a tab opened from the editor gets its own grant and no opener, and
+ *   shows this run's saved draft marker; before that tab grant exists, a
+ *   pasted address or a pasted begin page in the same browser gets no
+ *   draft. Once granted, reloading or reopening the address in that
+ *   browser keeps working until revocation or expiry.
  *
  * (c), a stolen code redeemed elsewhere, is proven at the function and HTTP
  * layers (preview-access.test.ts): it needs the binder cookie no other
@@ -218,5 +231,89 @@ test.describe("Live Preview private access on the pv- host", () => {
     } finally {
       await second.context().close();
     }
+  });
+
+  // #214 P3 (design §4b, §11 P3): a tab gets its own grant, from the editor
+  // that opened it; a pasted address gets nothing until such a grant exists.
+  test("opens in its own tab from the editor with this run's draft; before that tab grant, a pasted address gets no draft", async ({
+    page,
+  }) => {
+    const scope = themeScopeFromEditorPath(EDITOR_PATH!);
+    await openEditor(page);
+    const frame = await previewDocument(page);
+    await expect(frame.locator(HERO)).toBeVisible({ timeout: 90_000 });
+    // This run's own draft, saved before the tab opens, so the tab is shown
+    // to read the expected draft rather than any page with a hero.
+    const marker = `P3 tab draft ${randomUUID().slice(0, 8)}`;
+    await editHero(page, marker);
+    await savedField(page, scope, marker);
+    const framedUrl = new URL(frame.url());
+
+    // No tab grant yet. The frame's grant is partitioned under the editor's
+    // site, so the same browser's top-level tab does not have it.
+    const pasted = await page.context().newPage();
+    try {
+      const response = await pasted.goto(framedUrl.toString());
+      expect(response?.status(), "a pasted address before any tab grant").toBe(
+        401,
+      );
+      expect(await pasted.content()).not.toContain(marker);
+
+      const begin = new URL("/__morph/preview-auth/begin", framedUrl.origin);
+      begin.searchParams.set("flow", "0".repeat(32));
+      begin.searchParams.set("return", framedUrl.pathname + framedUrl.search);
+      begin.searchParams.set("editorOrigin", new URL(page.url()).origin);
+      begin.searchParams.set("mode", "tab");
+      await pasted.goto(begin.toString());
+      await expect(pasted.locator("body")).toHaveText(
+        "Open this preview from the editor.",
+      );
+      const again = await pasted.goto(framedUrl.toString());
+      expect(again?.status(), "a pasted begin grants nothing").toBe(401);
+    } finally {
+      await pasted.close();
+    }
+
+    const [tab] = await Promise.all([
+      page.context().waitForEvent("page"),
+      page.getByRole("button", { name: "Open preview in new tab" }).click(),
+    ]);
+    await tab.waitForURL(
+      (url) =>
+        url.hostname === framedUrl.hostname &&
+        !url.pathname.startsWith("/__morph/preview-auth/"),
+      { timeout: 90_000 },
+    );
+    await expect(
+      tab.getByText(marker, { exact: false }).first(),
+      "the tab shows this run's saved draft",
+    ).toBeVisible({ timeout: 90_000 });
+    expect(
+      await tab.evaluate(() => window.opener === null),
+      "the Theme in the tab cannot reach the editor",
+    ).toBe(true);
+
+    // Granted: the same browser keeps the tab's access on reload and when
+    // it opens the address again; only revocation or expiry ends it.
+    await tab.reload();
+    await expect(tab.getByText(marker, { exact: false }).first()).toBeVisible({
+      timeout: 90_000,
+    });
+    const reopened = await page.context().newPage();
+    try {
+      const response = await reopened.goto(tab.url());
+      expect(response?.status(), "the address reopened after the grant").toBe(
+        200,
+      );
+      await expect(
+        reopened.getByText(marker, { exact: false }).first(),
+      ).toBeVisible({ timeout: 90_000 });
+    } finally {
+      await reopened.close();
+    }
+
+    // The editor's own frame is untouched by the tab's flow.
+    await expect(frame.locator(HERO)).toBeVisible();
+    await tab.close();
   });
 });

@@ -313,11 +313,20 @@ function sourceSelectionSectionId(location: string | undefined): string | null {
     : null;
 }
 
-const PREVIEW_BOUNDARY_MARKER =
-  /^(\/?)morph:s ([0-9a-f]{16}):([0-9a-f]{8}):(\d{1,6})$/;
+/**
+ * Boundary marker v2 (M2 PR-I): `morph:s2 <nonce>:<rule>:<route sha256>:
+ * <start>:<end>`, the plugin's `ASTRO_PREVIEW_BOUNDARY_MARKER` (tested
+ * equal; this module cannot import it). The v1 `morph:s ` format is no longer
+ * read: an element inside only v1 markers is `outside`.
+ */
+export const PREVIEW_BOUNDARY_MARKER =
+  /^(\/?)morph:s2 ([0-9a-f]{16}):(\d{1,3}):([0-9a-f]{64}):(\d{1,6}):(\d{1,6})$/;
 
 export type PreviewBoundaryReport = Readonly<{
-  /** `<nonce>:<source hash>:<n>`, or null outside every boundary. */
+  /**
+   * `<nonce>:<rule>:<route sha256>:<start>:<end>`, or null outside every
+   * boundary. An identity hint for Core to verify, never one to trust.
+   */
   marker: string | null;
   /** Whether the range is one the canvas may select. Never a binding. */
   selectable: boolean;
@@ -342,7 +351,10 @@ export function previewSourceBoundaryOf(
     if (node.nodeType !== 8) return null;
     const match = PREVIEW_BOUNDARY_MARKER.exec((node as Comment).data);
     if (!match || match[2] !== mode.nonce) return null;
-    return { close: match[1] === "/", id: `${match[2]}:${match[3]}:${match[4]}` };
+    return {
+      close: match[1] === "/",
+      id: `${match[2]}:${match[3]}:${match[4]}:${match[5]}:${match[6]}`,
+    };
   };
   // A level passed on the way up that holds a marker without its partner had
   // a range split by the browser (a block inside `<p>`, a row moved into a
@@ -417,6 +429,39 @@ function judgeBoundary(
   if (opens !== 1) return refuse("duplicate");
   if (elements === 0) return refuse("empty");
   return { marker: id, selectable: true, reason: null };
+}
+
+const SOURCE_DIGEST = /^[0-9a-f]{64}$/;
+
+/**
+ * The identity part of a selection report (M2 PR-I, P1/P3/P6).
+ *
+ * `astroIdentityV2` is whether the editor announced `astro-identity-v2` for
+ * this document. It selects the format only, never trust:
+ *
+ * - announced: the v2 boundary id and, when the element carries a
+ *   well-formed `data-morph-loc-s`, its file's sha256 as `sourceDigest`;
+ * - not announced (an editor older than v2): the boundary with `marker: null`
+ *   and no `sourceDigest`, which is what that editor's limits accept. Its
+ *   L1.5a fields (`sourceLocation`, `sourceVersion`) are sent apart from this
+ *   and are the same either way.
+ *
+ * Outside the source-selection preview (every Start page) this is
+ * `{ previewBoundary: null }`, as before.
+ */
+export function previewSourceIdentityReport(
+  element: HTMLElement,
+  astroIdentityV2: boolean,
+): { previewBoundary: PreviewBoundaryReport | null; sourceDigest?: string } {
+  const boundary = previewSourceBoundaryOf(element);
+  if (!boundary) return { previewBoundary: null };
+  if (!astroIdentityV2) {
+    return { previewBoundary: { ...boundary, marker: null } };
+  }
+  const digest = element.dataset.morphLocS;
+  return digest && SOURCE_DIGEST.test(digest)
+    ? { previewBoundary: boundary, sourceDigest: digest }
+    : { previewBoundary: boundary };
 }
 
 export function previewSectionIdOf(element: HTMLElement): string | undefined {

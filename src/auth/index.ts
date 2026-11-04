@@ -6,6 +6,7 @@ import {
   type PublicOriginEnv,
 } from "@/server/public-origin";
 import { buildAuthTrustedOrigins } from "./auth-trusted-origins";
+import { DISABLED_AUTH_PATHS } from "./disabled-auth-paths";
 import { resolveStorefrontTrustedOrigin } from "./storefront-origin";
 import { AUTH_COOKIE_PREFIX } from "@/lib/auth/platform-cookies";
 import { localization } from "@/lib/config/localization";
@@ -79,6 +80,8 @@ function createAuth(
       cmsDevTrustedOrigins,
       additionalTrustedOrigins,
     }),
+    // Closed over HTTP; server code still calls them through `auth.api`.
+    disabledPaths: [...DISABLED_AUTH_PATHS],
     emailAndPassword: {
       enabled: true,
     },
@@ -97,6 +100,20 @@ function createAuth(
     session: {
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
+      // No session renewal: ordinary requests no longer extend the session;
+      // when the expiresAt already stored in the database is reached, the user
+      // signs in again. (Explicit operations that create a new session — sign
+      // in, or a password change that revokes the other sessions — give that
+      // new session its own expiresAt; `updateUser` and `updateSession` re-set
+      // the cookie but leave the stored expiry alone.) Renewal (`updateAge`)
+      // answered an ordinary request with a fresh `session_token` cookie for
+      // the session that request was sent under. If that response lands after
+      // another account signed in, in another tab, it puts the earlier
+      // account's token back, and every tab of the browser is that account
+      // again. With renewal off, reading a session sets no cookie at all, so a
+      // late response to it cannot change who is signed in
+      // (src/auth/session-identity.integration.test.ts).
+      disableSessionRefresh: true,
       additionalFields: {
         city: {
           type: "string",
@@ -109,10 +126,15 @@ function createAuth(
           input: false,
         },
       },
+      // Off: every session read goes to the database by its `session_token`.
+      // The cache (`session_data`) is not tied to that token in this Better
+      // Auth version, so a browser holding one account's token and another
+      // account's cache cookie was answered as the cached account — a write
+      // from a browser signed in as B ran as A. With the cache off Better Auth
+      // ignores a `session_data` cookie a browser still holds and writes no
+      // new one (src/auth/session-identity.integration.test.ts).
       cookieCache: {
-        enabled: true,
-        maxAge: 5 * 60,
-        strategy: "compact",
+        enabled: false,
       },
     },
     rateLimit: {
