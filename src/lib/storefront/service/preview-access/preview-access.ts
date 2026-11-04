@@ -1,6 +1,7 @@
 import type { StorefrontPreviewAccessKind } from "@/db/storefront.schema";
 import type {
   PreviewAccessAuthorityRecord,
+  PreviewAccessGrantRecord,
   StorefrontPreviewAccessDAL,
 } from "../../dal/storefront-preview-access.dal";
 import { mayPreview } from "../build-preview/build-preview-capability";
@@ -47,6 +48,7 @@ export type PreviewAccessRefusal =
   | "THEME_NOT_LIVE"
   | "SESSION_ENDED"
   | "GRANT_NOT_CREATED"
+  | "GRANT_NOT_RECORDED"
   | "GRANT_UNKNOWN"
   | "GRANT_REVOKED"
   | "GRANT_EXPIRED"
@@ -172,8 +174,22 @@ export async function redeemPreviewAccessExchange(input: {
   previewHost: string;
   kind: StorefrontPreviewAccessKind;
   now?: Date;
+  /**
+   * Grants the redeeming browser already holds on this host (addendum A4.1,
+   * user decision 2026-11-01: reuse first). After the code is consumed, one
+   * of them is reused, and no grant or cookie is created, if it belongs to
+   * the very session, user, storefront, Theme, preview, host and kind the
+   * code was issued for, is activated, holds every check now, and has at
+   * least `minRemainingMs` left. The partition is never itself a reason.
+   */
+  reuse?: Readonly<{ tokens: readonly string[]; minRemainingMs: number }>;
 }): Promise<
-  | Readonly<{ ok: true; token: string; grant: VerifiedPreviewAccessGrant }>
+  | Readonly<{
+      ok: true;
+      /** The new grant's token; absent when an existing grant was reused. */
+      token?: string;
+      grant: VerifiedPreviewAccessGrant;
+    }>
   | Readonly<{ ok: false; reason: PreviewAccessRefusal }>
 > {
   if (
@@ -197,6 +213,16 @@ export async function redeemPreviewAccessExchange(input: {
   const authority = await input.dal.readAuthority(exchange);
   const refusal = authorityRefusal(authority, exchange.userId, now.getTime());
   if (refusal) return { ok: false, reason: refusal };
+
+  const reusable = await reusableGrant(input, exchange, now);
+  if (reusable) {
+    // The exchange says which grant it ended in; without that record it is
+    // not reported as a success.
+    if (!(await recordResolution(input.dal, exchange.id, reusable.id, now))) {
+      return { ok: false, reason: "GRANT_NOT_RECORDED" };
+    }
+    return { ok: true, grant: verifiedGrant(reusable) };
+  }
 
   const token = createPreviewAccessSecret();
   const expiresAt = new Date(
@@ -226,7 +252,76 @@ export async function redeemPreviewAccessExchange(input: {
   } catch {
     return { ok: false, reason: "GRANT_NOT_CREATED" };
   }
+  // A grant whose exchange does not record it is never handed out: its
+  // cookie is not set, so it dies unused at its activation deadline.
+  if (!(await recordResolution(input.dal, exchange.id, grant.id, now))) {
+    return { ok: false, reason: "GRANT_NOT_RECORDED" };
+  }
   return { ok: true, token, grant };
+}
+
+async function recordResolution(
+  dal: StorefrontPreviewAccessDAL,
+  exchangeId: string,
+  grantId: string,
+  now: Date,
+): Promise<boolean> {
+  try {
+    return await dal.recordResolvedGrant({
+      exchangeId,
+      grantId,
+      now: now.toISOString(),
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The grant a redeem may reuse instead of creating one, read fresh in this
+ * redeem's own query; null when none qualifies.
+ */
+async function reusableGrant(
+  input: Readonly<{
+    dal: StorefrontPreviewAccessDAL;
+    previewHost: string;
+    reuse?: Readonly<{ tokens: readonly string[]; minRemainingMs: number }>;
+  }>,
+  exchange: Readonly<{
+    sessionId: string;
+    userId: string;
+    storefrontId: string;
+    themeId: string;
+    previewId: string;
+    previewHost: string;
+    kind: StorefrontPreviewAccessKind;
+  }>,
+  now: Date,
+): Promise<PreviewAccessGrantRecord | null> {
+  const tokens = [...new Set(input.reuse?.tokens ?? [])]
+    .filter((token) => SECRET_PATTERN.test(token))
+    .slice(0, 8);
+  if (!input.reuse || tokens.length === 0) return null;
+  const nowMs = now.getTime();
+  const records = await input.dal.findGrantsByTokenHashes(
+    await Promise.all(tokens.map(hashPreviewAccessSecret)),
+  );
+  const qualifying = records
+    .filter(
+      (record) =>
+        record.sessionId === exchange.sessionId &&
+        record.userId === exchange.userId &&
+        record.storefrontId === exchange.storefrontId &&
+        record.themeId === exchange.themeId &&
+        record.previewId === exchange.previewId &&
+        record.previewHost === exchange.previewHost &&
+        record.kind === exchange.kind &&
+        record.activatedAt !== null &&
+        Date.parse(record.expiresAt) - nowMs >= input.reuse!.minRemainingMs &&
+        grantRefusal(record, input.previewHost, nowMs) === null,
+    )
+    .sort((a, b) => compareCandidates(a, b));
+  return qualifying[0] ?? null;
 }
 
 /**
@@ -259,45 +354,132 @@ export async function verifyPreviewAccessGrant(input: {
     await hashPreviewAccessSecret(input.token),
   );
   if (!record) return { ok: false, reason: "GRANT_UNKNOWN" };
-  if (record.revokedAt) return { ok: false, reason: "GRANT_REVOKED" };
-  const nowMs = clock().getTime();
-  if (!(nowMs < Date.parse(record.expiresAt))) {
-    return { ok: false, reason: "GRANT_EXPIRED" };
-  }
-  if (record.previewHost !== input.previewHost) {
-    return { ok: false, reason: "HOST_MISMATCH" };
-  }
-  const refusal = authorityRefusal(record, record.userId, nowMs);
+  const refusal = grantRefusal(record, input.previewHost, clock().getTime());
   if (refusal) return { ok: false, reason: refusal };
-  if (!record.activatedAt) {
-    const activationMs = clock().getTime();
-    const activatableAfter = new Date(
-      activationMs - PREVIEW_ACCESS_ACTIVATION_WINDOW_MS,
-    ).toISOString();
-    // Past the window, expired or revoked since the read above: the
-    // statement matches nothing and the request is refused.
-    const activated = await input.dal.activateGrant({
-      id: record.id,
-      activatableAfter,
-      now: new Date(activationMs).toISOString(),
-    });
-    if (!activated) return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
+  if (!(await activate(input.dal, record, clock))) {
+    return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
   }
+  return { ok: true, grant: verifiedGrant(record) };
+}
+
+/** Why a stored grant does not authorise a request on this host now, or null. */
+function grantRefusal(
+  record: PreviewAccessGrantRecord,
+  previewHost: string,
+  nowMs: number,
+): PreviewAccessRefusal | null {
+  if (record.revokedAt) return "GRANT_REVOKED";
+  if (!(nowMs < Date.parse(record.expiresAt))) return "GRANT_EXPIRED";
+  if (record.previewHost !== previewHost) return "HOST_MISMATCH";
+  return authorityRefusal(record, record.userId, nowMs);
+}
+
+/**
+ * Activates a grant on its first verified request, inside its window. An
+ * already activated grant needs nothing; past the window, expired or revoked
+ * since the read, the statement matches nothing and this says no.
+ */
+async function activate(
+  dal: StorefrontPreviewAccessDAL,
+  record: PreviewAccessGrantRecord,
+  clock: () => Date,
+): Promise<boolean> {
+  if (record.activatedAt) return true;
+  const activationMs = clock().getTime();
+  return dal.activateGrant({
+    id: record.id,
+    activatableAfter: new Date(
+      activationMs - PREVIEW_ACCESS_ACTIVATION_WINDOW_MS,
+    ).toISOString(),
+    now: new Date(activationMs).toISOString(),
+  });
+}
+
+function verifiedGrant(
+  record: PreviewAccessGrantRecord,
+): VerifiedPreviewAccessGrant {
   return {
-    ok: true,
-    grant: {
-      id: record.id,
-      flowId: record.flowId,
-      kind: record.kind,
-      sessionId: record.sessionId,
-      userId: record.userId,
-      storefrontId: record.storefrontId,
-      themeId: record.themeId,
-      previewId: record.previewId,
-      previewHost: record.previewHost,
-      expiresAt: record.expiresAt,
-    },
+    id: record.id,
+    flowId: record.flowId,
+    kind: record.kind,
+    sessionId: record.sessionId,
+    userId: record.userId,
+    storefrontId: record.storefrontId,
+    themeId: record.themeId,
+    previewId: record.previewId,
+    previewHost: record.previewHost,
+    expiresAt: record.expiresAt,
   };
+}
+
+/**
+ * Checks every grant a preview request carries (at most 8, bounded by
+ * preview-access-cookies.ts) in one read, and authorises the request with
+ * one that holds.
+ *
+ * Each candidate is a full credential for this host on its own, so any one
+ * that passes every check is enough. Which one is decided here, never by the
+ * order the browser sent them: activated before not yet activated, then the
+ * later expiry, then the later creation, then the id. A grant not yet
+ * activated is activated only if it is the one chosen; if its activation
+ * fails, the next is tried.
+ */
+export async function verifyPreviewAccessCandidates(input: {
+  dal: StorefrontPreviewAccessDAL;
+  tokens: readonly string[];
+  previewHost: string;
+  now?: Date;
+  clock?: () => Date;
+}): Promise<
+  | Readonly<{ ok: true; grant: VerifiedPreviewAccessGrant }>
+  | Readonly<{ ok: false; reason: PreviewAccessRefusal }>
+> {
+  const clock = input.clock ?? (() => input.now ?? new Date());
+  const wellFormed = [...new Set(input.tokens)].filter((token) =>
+    SECRET_PATTERN.test(token),
+  );
+  if (wellFormed.length === 0) return { ok: false, reason: "GRANT_UNKNOWN" };
+  const records = await input.dal.findGrantsByTokenHashes(
+    await Promise.all(wellFormed.map(hashPreviewAccessSecret)),
+  );
+  if (records.length === 0) return { ok: false, reason: "GRANT_UNKNOWN" };
+
+  const nowMs = clock().getTime();
+  const judged = records.map((record) => ({
+    record,
+    refusal: grantRefusal(record, input.previewHost, nowMs),
+  }));
+  const usable = judged
+    .filter((entry) => entry.refusal === null)
+    .map((entry) => entry.record)
+    .sort(compareCandidates);
+  for (const record of usable) {
+    if (await activate(input.dal, record, clock)) {
+      return { ok: true, grant: verifiedGrant(record) };
+    }
+  }
+  if (usable.length > 0) return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
+  // Every candidate is refused. Report the newest one's reason: it is the
+  // credential the browser most likely meant.
+  const newest = [...judged].sort((a, b) =>
+    compareCandidates(a.record, b.record, { activatedFirst: false }),
+  )[0]!;
+  return { ok: false, reason: newest.refusal! };
+}
+
+function compareCandidates(
+  a: PreviewAccessGrantRecord,
+  b: PreviewAccessGrantRecord,
+  options: { activatedFirst?: boolean } = {},
+): number {
+  if (options.activatedFirst !== false) {
+    const activated =
+      Number(Boolean(b.activatedAt)) - Number(Boolean(a.activatedAt));
+    if (activated !== 0) return activated;
+  }
+  if (a.expiresAt !== b.expiresAt) return a.expiresAt < b.expiresAt ? 1 : -1;
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
 }
 
 /** Ends one session's grants; says which previews they were for. */

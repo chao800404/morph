@@ -21,6 +21,7 @@ const spies = vi.hoisted(() => ({
   env: {} as Record<string, unknown>,
   buildPreview: vi.fn(),
   sandboxProxy: vi.fn(),
+  previewAccess: vi.fn(),
   storefront: vi.fn(),
   core: vi.fn(),
   platformAsset: vi.fn(),
@@ -42,6 +43,9 @@ vi.mock("@cloudflare/sandbox", () => ({
 }));
 vi.mock("@/server/dev-preview-passthrough", () => ({
   restoreDevPreviewRequest: () => null,
+}));
+vi.mock("@/server/preview-access-request", () => ({
+  servePreviewAccessRequest: spies.previewAccess,
 }));
 vi.mock("@/server/build-preview-request", () => ({
   serveBuildPreviewRequest: spies.buildPreview,
@@ -101,6 +105,9 @@ beforeEach(() => {
       : null,
   );
   spies.sandboxProxy.mockImplementation(async () => new Response("sandbox"));
+  spies.previewAccess.mockImplementation(
+    async () => new Response("preview-access"),
+  );
   spies.storefront.mockImplementation(async () => new Response("storefront"));
   spies.core.mockImplementation(async () => new Response("core"));
   spies.platformAsset.mockImplementation(async () => null);
@@ -113,7 +120,9 @@ async function route(host: string, path = "/") {
     >),
   );
   return {
+    status: response.status,
     body: await response.text(),
+    previewAccess: spies.previewAccess.mock.calls.length,
     answered: {
       buildPreview: (
         await Promise.all(spies.buildPreview.mock.results.map((r) => r.value))
@@ -151,15 +160,35 @@ describe("the Worker entry's host routing", () => {
     });
   });
 
-  it("hands a Live Preview (sandbox label) host to the sandbox proxy, and to nothing else", async () => {
-    const { body, answered } = await route(
+  it("refuses the Sandbox SDK's own preview host from outside, and hands it to nothing (#214 P2)", async () => {
+    const { status, body, previewAccess, answered } = await route(
       `5173-sandbox-abc.${PREVIEW_HOSTNAME}`,
       "/_morph/content?path=/",
     );
-    expect(body).toBe("sandbox");
+    expect(status).toBe(404);
+    expect(body).toBe("Not found.");
+    expect(previewAccess).toBe(0);
     expect(answered).toEqual({
       buildPreview: 0,
-      sandbox: 1,
+      sandbox: 0,
+      storefront: 0,
+      core: 0,
+    });
+  });
+
+  it("hands a pv- Live Preview host to the access check alone (#214 P2)", async () => {
+    const host = `pv-${"0".repeat(32)}.${PREVIEW_HOSTNAME}`;
+    const { body, previewAccess, answered } = await route(
+      host,
+      "/_morph/content?path=/",
+    );
+    expect(body).toBe("preview-access");
+    expect(previewAccess).toBe(1);
+    // The access check forwards a verified request itself; the entry hands
+    // the host to no other plane.
+    expect(answered).toEqual({
+      buildPreview: 0,
+      sandbox: 0,
       storefront: 0,
       core: 0,
     });
@@ -198,15 +227,9 @@ describe("the Worker entry's host routing", () => {
     });
   });
 
-  // KNOWN GAP, #214 (not built): the sandbox proxy above checks only the
-  // host's shape and strips platform credentials. It asks for no session or
-  // capability, so whoever holds a Live Preview address reads the draft
-  // snapshot that preview holds, until the preview stops. Recorded as a todo
-  // so it is reported as not done rather than counted as a pass; #214's
-  // implementation replaces it with a real test.
-  it.todo(
-    "#214: refuses a Live Preview request that carries no per-request capability for that preview, and one whose capability was revoked",
-  );
+  // #214 P2 closed the gap recorded here: the SDK host is refused above and a
+  // pv- host reaches only the access check, whose per-request credential and
+  // revocation rules are tested in preview-access.test.ts.
 
   it("leaves a platform host to Morph Core (control)", async () => {
     const { body, answered } = await route("cms.morph.example");

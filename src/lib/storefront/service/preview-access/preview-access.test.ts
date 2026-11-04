@@ -16,8 +16,16 @@ import {
   redeemPreviewAccessExchange,
   revokePreviewAccessForSession,
   revokePreviewAccessForUser,
+  verifyPreviewAccessCandidates,
   verifyPreviewAccessGrant,
 } from "./preview-access";
+import { PREVIEW_ACCESS_GRANT_COOKIE_PREFIX } from "./preview-access-cookies";
+import {
+  handlePreviewAccessRequest,
+  parsePreviewAccessHost,
+  previewAccessHostname,
+  type PreviewAccessRequestDeps,
+} from "./preview-access-request";
 
 vi.mock("cloudflare:workers", () => ({ env: {} }));
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
@@ -51,11 +59,16 @@ beforeEach(() => {
     INSERT INTO storefronts VALUES ('store-a');
     INSERT INTO storefront_themes VALUES ('theme-a', 'store-a', NULL);
   `);
-  sqlite.exec(
-    readFileSync(resolve("drizzle/0081_preview_access_grants.sql"), "utf8")
-      .split("--> statement-breakpoint")
-      .join("\n"),
-  );
+  for (const migration of [
+    "drizzle/0081_preview_access_grants.sql",
+    "drizzle/0082_preview_access_resolved_grant.sql",
+  ]) {
+    sqlite.exec(
+      readFileSync(resolve(migration), "utf8")
+        .split("--> statement-breakpoint")
+        .join("\n"),
+    );
+  }
   vi.mocked(getDb).mockResolvedValue(drizzle(sqlite, { schema }) as never);
 });
 
@@ -116,7 +129,7 @@ async function grantToken(overrides: Parameters<typeof issue>[0] = {}) {
     kind: overrides.kind ?? "iframe",
   });
   if (!redeemed.ok) throw new Error(redeemed.reason);
-  return redeemed.token;
+  return redeemed.token!;
 }
 
 const verify = (token: string, now = later(2000), previewHost = HOST) =>
@@ -132,7 +145,7 @@ describe("preview access exchange", () => {
     const redeemed = await redeem(issued);
     expect(redeemed.ok).toBe(true);
     if (!redeemed.ok) return;
-    const verified = await verify(redeemed.token);
+    const verified = await verify(redeemed.token!);
     expect(verified).toMatchObject({
       ok: true,
       grant: {
@@ -276,7 +289,7 @@ describe("preview access exchange", () => {
       sqlite.prepare("SELECT * FROM storefront_preview_access_exchanges").all(),
       sqlite.prepare("SELECT * FROM storefront_preview_access_grants").all(),
     ]);
-    for (const secret of [issued.code, BINDER, redeemed.token]) {
+    for (const secret of [issued.code, BINDER, redeemed.token!]) {
       expect(dump).not.toContain(secret);
     }
   });
@@ -367,8 +380,8 @@ describe("preview access flows", () => {
     expect(redeemedA.grant.flowId).toBe(a.flowId);
     expect(redeemedB.grant.flowId).toBe(b.flowId);
     expect(redeemedA.grant.id).not.toBe(redeemedB.grant.id);
-    expect((await verify(redeemedA.token)).ok).toBe(true);
-    expect((await verify(redeemedB.token)).ok).toBe(true);
+    expect((await verify(redeemedA.token!)).ok).toBe(true);
+    expect((await verify(redeemedB.token!)).ok).toBe(true);
   });
 
   it("stores at most one grant per flow", async () => {
@@ -428,7 +441,9 @@ describe("preview access grant activation", () => {
     const issued = await issue(overrides);
     const result = await redeem(issued);
     if (!result.ok) throw new Error(result.reason);
-    return result;
+    // Nothing is reused here: every redeem creates its grant and token.
+    if (!result.token) throw new Error("expected a new grant");
+    return { ...result, token: result.token };
   }
 
   const row = (id: string) =>
@@ -469,19 +484,19 @@ describe("preview access grant activation", () => {
     const inside = await redeemed();
     const atEdge = await redeemed();
 
-    expect((await verify(inside.token, later(CREATED + WINDOW - 1))).ok).toBe(
+    expect((await verify(inside.token!, later(CREATED + WINDOW - 1))).ok).toBe(
       true,
     );
-    expect(await verify(atEdge.token, later(CREATED + WINDOW))).toEqual({
+    expect(await verify(atEdge.token!, later(CREATED + WINDOW))).toEqual({
       ok: false,
       reason: "GRANT_NOT_ACTIVATED",
     });
-    expect(await verify(atEdge.token, later(CREATED + 2 * WINDOW))).toEqual({
+    expect(await verify(atEdge.token!, later(CREATED + 2 * WINDOW))).toEqual({
       ok: false,
       reason: "GRANT_NOT_ACTIVATED",
     });
     expect(row(atEdge.grant.id).activated_at).toBeNull();
-    expect((await verify(inside.token, later(CREATED + 2 * WINDOW))).ok).toBe(
+    expect((await verify(inside.token!, later(CREATED + 2 * WINDOW))).ok).toBe(
       true,
     );
   });
@@ -585,7 +600,7 @@ describe("preview access grant activation", () => {
 
   it("leaves a tab's grant in use alone while another tab's lost grant lapses and that tab recovers", async () => {
     const working = await redeemed();
-    await verify(working.token, later(2000));
+    await verify(working.token!, later(2000));
     const before = row(working.grant.id);
 
     // Another tab's 303 is lost: its grant is never used.
@@ -596,12 +611,12 @@ describe("preview access grant activation", () => {
     if (!lost.ok) throw new Error(lost.reason);
     // That tab starts one new flow, and its new grant is used.
     const recovered = await redeemed();
-    expect((await verify(recovered.token, later(3000))).ok).toBe(true);
+    expect((await verify(recovered.token!, later(3000))).ok).toBe(true);
 
     const after = later(CREATED + 2 * WINDOW);
-    expect((await verify(working.token, after)).ok).toBe(true);
-    expect((await verify(recovered.token, after)).ok).toBe(true);
-    expect(await verify(lost.token, after)).toEqual({
+    expect((await verify(working.token!, after)).ok).toBe(true);
+    expect((await verify(recovered.token!, after)).ok).toBe(true);
+    expect(await verify(lost.token!, after)).toEqual({
       ok: false,
       reason: "GRANT_NOT_ACTIVATED",
     });
@@ -741,5 +756,942 @@ describe("preview access grant", () => {
       reason: "GRANT_REVOKED",
     });
     expect((await verify(other, later(6000))).ok).toBe(true);
+  });
+});
+
+/**
+ * A request on the preview host may carry several grant cookies, one per flow
+ * (addendum A3, A4): two tabs, a frame and a retry. Each is a full credential
+ * for this host on its own; the server, not the browser's order, decides which
+ * one serves the request (A4.1 rule 7, user decision 2026-11-01: reuse first,
+ * overflow refused explicitly).
+ */
+describe("preview access request with several grants", () => {
+  const candidates = (tokens: readonly string[], now = later(2000)) =>
+    verifyPreviewAccessCandidates({ dal, tokens, previewHost: HOST, now });
+
+  /** Fixed reorderings, so a failure names the order that broke. */
+  function orders<T>(items: readonly T[]): T[][] {
+    const reversed = [...items].reverse();
+    const rotated = [...items.slice(1), items[0]!];
+    const interleaved = [
+      ...items.filter((_, i) => i % 2 === 1),
+      ...items.filter((_, i) => i % 2 === 0),
+    ];
+    return [[...items], reversed, rotated, interleaved];
+  }
+
+  it("is served by the one valid grant among unknown, revoked, expired and never activated ones, in every order", async () => {
+    const valid = await grantToken();
+    expect((await verify(valid)).ok).toBe(true); // activated
+    const revoked = await grantToken({ sessionId: "session-b" });
+    await revokePreviewAccessForSession({
+      dal,
+      sessionId: "session-b",
+      now: later(1500),
+    });
+    const expired = await grantToken({ sessionId: "session-short" });
+    const unactivated = await grantToken();
+    const unknown = createPreviewAccessSecret();
+    const tokens = [unknown, revoked, valid, expired, unactivated];
+    // Past session-short's expiry and unactivated's window; valid still holds.
+    const at = later(2 * 60 * 60_000);
+
+    for (const order of orders(tokens)) {
+      const result = await candidates(order, at);
+      expect(result, order.join(",")).toMatchObject({ ok: true });
+      if (!result.ok) continue;
+      const expected = await verify(valid, at);
+      expect(expected.ok && result.grant.id).toBe(
+        expected.ok && expected.grant.id,
+      );
+    }
+  });
+
+  it("always chooses the same grant of two valid ones, whatever order they arrive in", async () => {
+    const first = await grantToken();
+    const second = await grantToken({ sessionId: "session-b" });
+    await verify(first);
+    await verify(second);
+
+    const chosen = new Set<string>();
+    for (const order of orders([first, second])) {
+      const result = await candidates(order);
+      expect(result.ok).toBe(true);
+      if (result.ok) chosen.add(result.grant.id);
+    }
+    expect(chosen.size).toBe(1);
+  });
+
+  it("prefers a grant already in use over one never used, and activates nothing it does not choose", async () => {
+    const used = await grantToken();
+    await verify(used);
+    const fresh = await grantToken({ sessionId: "session-b" });
+
+    const result = await candidates([fresh, used]);
+
+    expect(result.ok).toBe(true);
+    const freshRow = sqlite
+      .prepare(
+        "SELECT activated_at FROM storefront_preview_access_grants WHERE session_id = 'session-b'",
+      )
+      .get() as { activated_at: string | null };
+    expect(freshRow.activated_at).toBeNull();
+  });
+
+  it("activates a never used grant when it is the only one that holds", async () => {
+    const fresh = await grantToken();
+
+    const result = await candidates([createPreviewAccessSecret(), fresh]);
+
+    expect(result.ok).toBe(true);
+    const row = sqlite
+      .prepare("SELECT activated_at FROM storefront_preview_access_grants")
+      .get() as { activated_at: string | null };
+    expect(row.activated_at).not.toBeNull();
+  });
+
+  it("is refused when no candidate holds, with the newest one's reason", async () => {
+    const token = await grantToken();
+    await verify(token);
+    await revokePreviewAccessForSession({
+      dal,
+      sessionId: "session-a",
+      now: later(3000),
+    });
+
+    expect(
+      await candidates([token, createPreviewAccessSecret()], later(4000)),
+    ).toEqual({
+      ok: false,
+      reason: "GRANT_REVOKED",
+    });
+    expect(await candidates([])).toEqual({
+      ok: false,
+      reason: "GRANT_UNKNOWN",
+    });
+    expect(await candidates(["not-a-token"])).toEqual({
+      ok: false,
+      reason: "GRANT_UNKNOWN",
+    });
+  });
+
+  it("is refused on another preview host even when every grant holds on its own", async () => {
+    const token = await grantToken();
+
+    expect(
+      await verifyPreviewAccessCandidates({
+        dal,
+        tokens: [token],
+        previewHost: "pv-preview-b.preview.example.test",
+        now: later(2000),
+      }),
+    ).toEqual({ ok: false, reason: "HOST_MISMATCH" });
+  });
+
+  it("reads every candidate in one query, and checks a duplicated token once", async () => {
+    const token = await grantToken();
+    const lookups = vi.spyOn(dal, "findGrantsByTokenHashes");
+    const others = Array.from({ length: 6 }, () => createPreviewAccessSecret());
+
+    const result = await candidates([token, token, ...others]);
+
+    expect(result.ok).toBe(true);
+    expect(lookups).toHaveBeenCalledOnce();
+    expect(lookups.mock.calls[0]![0]).toHaveLength(7);
+    lookups.mockRestore();
+  });
+
+  it("refuses to look up more than 8 tokens at once rather than splitting them", async () => {
+    await expect(
+      dal.findGrantsByTokenHashes(
+        Array.from({ length: 9 }, () => "a".repeat(64)),
+      ),
+    ).rejects.toThrow("PREVIEW_ACCESS_LOOKUP_TOO_LARGE");
+  });
+});
+
+/**
+ * #214 P2: the `pv-` preview host verifies every request against D1 before a
+ * byte of the preview is sent, and fails closed.
+ */
+describe("a request on the pv- preview host", () => {
+  const PARENT = "preview.example.test";
+  const PREVIEW_ID = "0123456789abcdef0123456789abcdef";
+  const PV_HOST = previewAccessHostname(PREVIEW_ID, PARENT);
+  const DRAFT = "DRAFT-MARKER-7f3a";
+  const APP_ORIGIN = "https://app.example.test";
+
+  function deps(overrides: Partial<PreviewAccessRequestDeps> = {}) {
+    const forwarded: Request[] = [];
+    const value: PreviewAccessRequestDeps = {
+      previewParentHostname: PARENT,
+      dal,
+      now: () => later(2000),
+      isAppOrigin: (origin) => origin === APP_ORIGIN,
+      stripCredentials: (request) => {
+        const headers = new Headers(request.headers);
+        headers.delete("cookie");
+        return new Request(request, { headers });
+      },
+      forward: async (previewId, request) => {
+        forwarded.push(request);
+        return new Response(`<p>${DRAFT} ${previewId}</p>`, {
+          headers: {
+            "content-type": "text/html",
+            "cache-control": "max-age=600",
+          },
+        });
+      },
+      ...overrides,
+    };
+    return { value, forwarded };
+  }
+
+  async function pvGrant(overrides: Parameters<typeof issue>[0] = {}) {
+    const issued = await issue({
+      previewHost: PV_HOST,
+      previewId: PREVIEW_ID,
+      ...overrides,
+    });
+    const redeemed = await redeem(issued, { previewHost: PV_HOST });
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+    return { token: redeemed.token!, flowId: issued.flowId };
+  }
+
+  const cookie = (...grants: Array<{ token: string; flowId: string }>) =>
+    grants
+      .map((g) => `${PREVIEW_ACCESS_GRANT_COOKIE_PREFIX}${g.flowId}=${g.token}`)
+      .join("; ");
+
+  const get = (path: string, headers: Record<string, string> = {}) =>
+    new Request(`https://${PV_HOST}${path}`, { headers });
+
+  it("names exactly one preview, under the configured preview host only", () => {
+    expect(parsePreviewAccessHost(PV_HOST, PARENT)).toBe(PREVIEW_ID);
+    expect(parsePreviewAccessHost(PV_HOST.toUpperCase() + ".", PARENT)).toBe(
+      PREVIEW_ID,
+    );
+    expect(
+      parsePreviewAccessHost(`pv-${PREVIEW_ID}.other.test`, PARENT),
+    ).toBeNull();
+    expect(parsePreviewAccessHost(`pv-short.${PARENT}`, PARENT)).toBeNull();
+    expect(
+      parsePreviewAccessHost(`5173-sandbox-token.${PARENT}`, PARENT),
+    ).toBeNull();
+    expect(
+      parsePreviewAccessHost(`x.pv-${PREVIEW_ID}.${PARENT}`, PARENT),
+    ).toBeNull();
+    expect(parsePreviewAccessHost(PV_HOST, null)).toBeNull();
+  });
+
+  it("leaves a request for any other host to the rest of the Worker", async () => {
+    const { value, forwarded } = deps();
+    expect(
+      await handlePreviewAccessRequest(
+        new Request(`https://${PARENT}/`),
+        value,
+      ),
+    ).toBeNull();
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it("serves a request carrying a grant that verifies, without its credentials, and never caches the answer", async () => {
+    const grant = await pvGrant();
+    const { value, forwarded } = deps();
+
+    const res = await handlePreviewAccessRequest(
+      get("/", { cookie: `${cookie(grant)}; theme_cart=1` }),
+      value,
+    );
+
+    expect(res!.status).toBe(200);
+    expect(await res!.text()).toContain(DRAFT);
+    expect(res!.headers.get("cache-control")).toBe("private, no-store");
+    expect(res!.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]!.headers.get("cookie")).toBeNull();
+  });
+
+  it("gives a copied address alone nothing: no cookie, no draft", async () => {
+    const { value, forwarded } = deps();
+
+    const res = await handlePreviewAccessRequest(get("/"), value);
+
+    expect(res!.status).toBe(401);
+    expect(await res!.text()).not.toContain(DRAFT);
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it("refuses the next request once the grant's session signs out, while the same user's other session keeps working", async () => {
+    const mine = await pvGrant();
+    const other = await pvGrant({ sessionId: "session-b" });
+    const { value, forwarded } = deps({ now: () => later(5000) });
+    sqlite.exec("DELETE FROM sessions WHERE id = 'session-a'");
+
+    const refused = await handlePreviewAccessRequest(
+      get("/", { cookie: cookie(mine) }),
+      value,
+    );
+    const served = await handlePreviewAccessRequest(
+      get("/", { cookie: cookie(other) }),
+      value,
+    );
+
+    expect(refused!.status).toBe(403);
+    expect(await refused!.text()).not.toContain(DRAFT);
+    expect(served!.status).toBe(200);
+    expect(forwarded).toHaveLength(1);
+  });
+
+  it("refuses a grant after a ban or a role change", async () => {
+    const grant = await pvGrant();
+    const { value } = deps({ now: () => later(5000) });
+    sqlite.exec("UPDATE users SET role = 'guest' WHERE id = 'admin-1'");
+
+    const res = await handlePreviewAccessRequest(
+      get("/", { cookie: cookie(grant) }),
+      value,
+    );
+
+    expect(res!.status).toBe(403);
+    expect(await res!.text()).not.toContain(DRAFT);
+  });
+
+  it("refuses a grant issued for another preview host", async () => {
+    const elsewhere = previewAccessHostname("f".repeat(32), PARENT);
+    const issued = await issue({
+      previewHost: elsewhere,
+      previewId: "f".repeat(32),
+    });
+    const redeemed = await redeem(issued, { previewHost: elsewhere });
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+    const { value, forwarded } = deps();
+
+    const res = await handlePreviewAccessRequest(
+      get("/", {
+        cookie: cookie({ token: redeemed.token!, flowId: issued.flowId }),
+      }),
+      value,
+    );
+
+    expect(res!.status).toBe(403);
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it("refuses an over-full cookie set explicitly rather than serving from part of it", async () => {
+    const grant = await pvGrant();
+    const forged = Array.from({ length: 8 }, () => ({
+      token: createPreviewAccessSecret(),
+      flowId: newFlowId(),
+    }));
+    const { value, forwarded } = deps();
+
+    const res = await handlePreviewAccessRequest(
+      get("/", { cookie: cookie(grant, ...forged) }),
+      value,
+    );
+
+    expect(res!.status).toBe(431);
+    expect(await res!.text()).toContain("Too many preview sign-ins");
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it("fails closed when D1 cannot be read: 503, nothing forwarded", async () => {
+    const grant = await pvGrant();
+    const failing = {
+      ...dal,
+      findGrantsByTokenHashes: async () => {
+        throw new Error("D1_ERROR");
+      },
+    } as typeof dal;
+    const { value, forwarded } = deps({ dal: failing });
+
+    const res = await handlePreviewAccessRequest(
+      get("/", { cookie: cookie(grant) }),
+      value,
+    );
+
+    expect(res!.status).toBe(503);
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it("answers a preview that is not running with 503, not with another handler", async () => {
+    const grant = await pvGrant();
+    const { value } = deps({ forward: async () => null });
+
+    const res = await handlePreviewAccessRequest(
+      get("/", { cookie: cookie(grant) }),
+      value,
+    );
+
+    expect(res!.status).toBe(503);
+  });
+
+  it("keeps the authorization flow's path away from the Theme", async () => {
+    const grant = await pvGrant();
+    const { value, forwarded } = deps();
+
+    const res = await handlePreviewAccessRequest(
+      get("/__morph/preview-auth/elsewhere", { cookie: cookie(grant) }),
+      value,
+    );
+
+    expect(res!.status).toBe(404);
+    expect(forwarded).toHaveLength(0);
+  });
+});
+
+/**
+ * #214 P2: the authorization flow on the pv- host, end to end against the
+ * real tables: begin sets the binder and reports only its hash; the editor is
+ * issued a code for that hash; redeem consumes it with the binder the browser
+ * presents and sets the grant; the next request is served by it.
+ */
+describe("the pv- authorization flow", () => {
+  const PARENT = "preview.example.test";
+  const PREVIEW_ID = "fedcba9876543210fedcba9876543210";
+  const PV_HOST = previewAccessHostname(PREVIEW_ID, PARENT);
+  const PV_ORIGIN = `https://${PV_HOST}`;
+  const APP_ORIGIN = "https://app.example.test";
+  const RETURN =
+    "/?editorOrigin=https%3A%2F%2Fapp.example.test&previewSession=s1";
+
+  const deps = (overrides: Partial<PreviewAccessRequestDeps> = {}) => ({
+    previewParentHostname: PARENT,
+    dal,
+    now: () => later(1000),
+    isAppOrigin: (origin: string) => origin === APP_ORIGIN,
+    stripCredentials: (request: Request) => {
+      const headers = new Headers(request.headers);
+      headers.delete("cookie");
+      return new Request(request, { headers });
+    },
+    forward: async () => new Response("<p>DRAFT</p>"),
+    ...overrides,
+  });
+
+  const beginUrl = (flowId: string, extra: Record<string, string> = {}) => {
+    const url = new URL("/__morph/preview-auth/begin", PV_ORIGIN);
+    url.searchParams.set("flow", flowId);
+    url.searchParams.set("return", RETURN);
+    url.searchParams.set("editorOrigin", APP_ORIGIN);
+    for (const [k, v] of Object.entries(extra)) url.searchParams.set(k, v);
+    return url;
+  };
+
+  /** What a browser keeps from Set-Cookie: name → value, Max-Age 0 removes. */
+  function jarFrom(response: Response, jar = new Map<string, string>()) {
+    for (const line of response.headers.getSetCookie()) {
+      const [pair, ...attrs] = line.split("; ");
+      const [name, value] = [
+        pair!.slice(0, pair!.indexOf("=")),
+        pair!.slice(pair!.indexOf("=") + 1),
+      ];
+      if (attrs.includes("Max-Age=0")) jar.delete(name);
+      else jar.set(name, value);
+    }
+    return jar;
+  }
+  const cookieHeader = (jar: Map<string, string>) =>
+    [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+
+  async function begin(flowId: string, jar = new Map<string, string>()) {
+    const res = await handlePreviewAccessRequest(
+      new Request(beginUrl(flowId)),
+      deps(),
+    );
+    expect(res!.status).toBe(200);
+    const html = await res!.text();
+    const binderHashValue = /"binderHash":"([0-9a-f]{64})"/.exec(html)![1]!;
+    return {
+      res: res!,
+      html,
+      binderHash: binderHashValue,
+      jar: jarFrom(res!, jar),
+    };
+  }
+
+  async function issueFor(
+    flowId: string,
+    binderHashValue: string,
+    sessionId = "session-a",
+  ) {
+    const issued = await issuePreviewAccessExchange({
+      dal,
+      kind: "iframe",
+      sessionId,
+      userId: "admin-1",
+      storefrontId: "store-a",
+      themeId: "theme-a",
+      previewId: PREVIEW_ID,
+      previewHost: PV_HOST,
+      flowId,
+      binderHash: binderHashValue,
+      now: NOW,
+    });
+    if (!issued.ok) throw new Error(issued.reason);
+    return issued.code;
+  }
+
+  const redeemRequest = (
+    fields: Record<string, string>,
+    jar: Map<string, string>,
+    origin = PV_ORIGIN,
+  ) =>
+    new Request(new URL("/__morph/preview-auth/redeem", PV_ORIGIN), {
+      method: "POST",
+      headers: {
+        origin,
+        cookie: cookieHeader(jar),
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(fields).toString(),
+    });
+
+  const grantCount = () =>
+    (
+      sqlite
+        .prepare("SELECT count(*) AS n FROM storefront_preview_access_grants")
+        .get() as { n: number }
+    ).n;
+
+  it("begins with a binder cookie the page never reveals, and tells only the editor its hash", async () => {
+    const flowId = newFlowId();
+    const { res, html, binderHash: reported, jar } = await begin(flowId);
+
+    const binder = jar.get(`__Host-morph-pvb-${flowId}`)!;
+    expect(binder).toMatch(/^[0-9a-f]{64}$/);
+    expect(html).not.toContain(binder);
+    expect(reported).toBe(await hashPreviewAccessSecret(binder));
+    const setCookie = res.headers.getSetCookie()[0]!;
+    for (const attribute of [
+      "Secure",
+      "HttpOnly",
+      "SameSite=None",
+      "Partitioned",
+      "Path=/",
+      "Max-Age=120",
+    ]) {
+      expect(setCookie).toContain(attribute);
+    }
+    expect(res.headers.get("content-security-policy")).toContain(
+      `frame-ancestors ${APP_ORIGIN}`,
+    );
+    expect(res.headers.get("content-security-policy")).toContain(
+      "connect-src 'self'",
+    );
+    // The editor frames previews without allow-forms, which blocks every
+    // form submission; begin redeems with a same-origin fetch instead.
+    expect(html).not.toContain("<form");
+    expect(html).toContain('"redeem":"/__morph/preview-auth/redeem"');
+    expect(html).toContain("location.replace");
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it.each([
+    ["a malformed flow", { flow: "nope" }],
+    ["another origin to return to", { return: "//evil.test/" }],
+    ["an absolute return", { return: "https://evil.test/" }],
+    [
+      "an editor origin Morph does not own",
+      { editorOrigin: "https://evil.test" },
+    ],
+  ])("refuses to begin with %s", async (_name, extra) => {
+    const res = await handlePreviewAccessRequest(
+      new Request(beginUrl(newFlowId(), extra)),
+      deps(),
+    );
+    expect(res!.status).toBe(400);
+    expect(res!.headers.getSetCookie()).toEqual([]);
+  });
+
+  it("redeems the editor's code with the browser's binder, sets the grant, and the next request is served", async () => {
+    const flowId = newFlowId();
+    const { binderHash: reported, jar } = await begin(flowId);
+    const code = await issueFor(flowId, reported);
+
+    const redeemed = await handlePreviewAccessRequest(
+      redeemRequest(
+        { flow: flowId, return: RETURN, editorOrigin: APP_ORIGIN, code },
+        jar,
+      ),
+      deps(),
+    );
+
+    expect(redeemed!.status).toBe(200);
+    expect(await redeemed!.json()).toEqual({ ok: true });
+    jarFrom(redeemed!, jar);
+    expect(jar.has(`__Host-morph-pvb-${flowId}`)).toBe(false);
+    expect(jar.get(`__Host-morph-pv-${flowId}`)).toMatch(/^[0-9a-f]{64}$/);
+
+    const page = await handlePreviewAccessRequest(
+      new Request(new URL(RETURN, PV_ORIGIN), {
+        headers: { cookie: cookieHeader(jar) },
+      }),
+      deps({ now: () => later(1500) }),
+    );
+    expect(page!.status).toBe(200);
+    expect(await page!.text()).toContain("DRAFT");
+  });
+
+  it("refuses a code redeemed without this browser's binder, and leaves it for the browser that has it", async () => {
+    const flowId = newFlowId();
+    const { binderHash: reported, jar } = await begin(flowId);
+    const code = await issueFor(flowId, reported);
+
+    const stolen = await handlePreviewAccessRequest(
+      redeemRequest(
+        { flow: flowId, return: RETURN, editorOrigin: APP_ORIGIN, code },
+        new Map(),
+      ),
+      deps(),
+    );
+    expect(stolen!.status).toBe(403);
+    expect(await stolen!.json()).toEqual({
+      ok: false,
+      reason: "EXCHANGE_INVALID",
+    });
+    expect(
+      stolen!.headers
+        .getSetCookie()
+        .some((c) => c.startsWith("__Host-morph-pv-")),
+    ).toBe(false);
+
+    const owner = await handlePreviewAccessRequest(
+      redeemRequest(
+        { flow: flowId, return: RETURN, editorOrigin: APP_ORIGIN, code },
+        jar,
+      ),
+      deps(),
+    );
+    expect(owner!.status).toBe(200);
+  });
+
+  it("refuses a redeem posted from another origin", async () => {
+    const flowId = newFlowId();
+    const { binderHash: reported, jar } = await begin(flowId);
+    const code = await issueFor(flowId, reported);
+
+    const res = await handlePreviewAccessRequest(
+      redeemRequest(
+        { flow: flowId, return: RETURN, editorOrigin: APP_ORIGIN, code },
+        jar,
+        "https://evil.test",
+      ),
+      deps(),
+    );
+
+    expect(res!.status).toBe(403);
+    expect(grantCount()).toBe(0);
+  });
+
+  it("reuses the grant this browser already holds for the same session, creating no grant and no cookie", async () => {
+    const first = newFlowId();
+    const one = await begin(first);
+    const firstRedeem = await handlePreviewAccessRequest(
+      redeemRequest(
+        {
+          flow: first,
+          return: RETURN,
+          editorOrigin: APP_ORIGIN,
+          code: await issueFor(first, one.binderHash),
+        },
+        one.jar,
+      ),
+      deps(),
+    );
+    jarFrom(firstRedeem!, one.jar);
+    // Used once, so activated.
+    await handlePreviewAccessRequest(
+      new Request(new URL("/", PV_ORIGIN), {
+        headers: { cookie: cookieHeader(one.jar) },
+      }),
+      deps({ now: () => later(1500) }),
+    );
+    expect(grantCount()).toBe(1);
+
+    const second = newFlowId();
+    const two = await begin(second, one.jar);
+    const res = await handlePreviewAccessRequest(
+      redeemRequest(
+        {
+          flow: second,
+          return: RETURN,
+          editorOrigin: APP_ORIGIN,
+          code: await issueFor(second, two.binderHash),
+        },
+        two.jar,
+      ),
+      deps({ now: () => later(2000) }),
+    );
+
+    expect(res!.status).toBe(200);
+    expect(grantCount()).toBe(1);
+    expect(
+      res!.headers
+        .getSetCookie()
+        .some(
+          (c) =>
+            c.startsWith(`__Host-morph-pv-${second}=`) &&
+            !c.includes("Max-Age=0"),
+        ),
+    ).toBe(false);
+  });
+
+  it("does not reuse another session's grant", async () => {
+    const first = newFlowId();
+    const one = await begin(first);
+    jarFrom(
+      (await handlePreviewAccessRequest(
+        redeemRequest(
+          {
+            flow: first,
+            return: RETURN,
+            editorOrigin: APP_ORIGIN,
+            code: await issueFor(first, one.binderHash, "session-b"),
+          },
+          one.jar,
+        ),
+        deps(),
+      ))!,
+      one.jar,
+    );
+    await handlePreviewAccessRequest(
+      new Request(new URL("/", PV_ORIGIN), {
+        headers: { cookie: cookieHeader(one.jar) },
+      }),
+      deps({ now: () => later(1500) }),
+    );
+
+    const second = newFlowId();
+    const two = await begin(second, one.jar);
+    const res = await handlePreviewAccessRequest(
+      redeemRequest(
+        {
+          flow: second,
+          return: RETURN,
+          editorOrigin: APP_ORIGIN,
+          code: await issueFor(second, two.binderHash, "session-a"),
+        },
+        two.jar,
+      ),
+      deps({ now: () => later(2000) }),
+    );
+
+    expect(res!.status).toBe(200);
+    expect(grantCount()).toBe(2);
+  });
+});
+
+describe("the pv- host's refusals and edges (#214 P2, review fixes)", () => {
+  const PARENT = "preview.example.test";
+  const PREVIEW_ID = "00112233445566778899aabbccddeeff";
+  const PV_HOST = previewAccessHostname(PREVIEW_ID, PARENT);
+  const deps = (): PreviewAccessRequestDeps => ({
+    previewParentHostname: PARENT,
+    dal,
+    now: () => later(2000),
+    isAppOrigin: () => true,
+    stripCredentials: (request) => request,
+    forward: async () => new Response("<p>DRAFT</p>"),
+  });
+
+  async function pvCookie() {
+    const issued = await issue({ previewHost: PV_HOST, previewId: PREVIEW_ID });
+    const redeemed = await redeem(issued, { previewHost: PV_HOST });
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+    return `${PREVIEW_ACCESS_GRANT_COOKIE_PREFIX}${issued.flowId}=${redeemed.token!}`;
+  }
+
+  it("answers a pv- label that names no preview itself, never by the rest of the Worker", async () => {
+    const res = await handlePreviewAccessRequest(
+      new Request(`https://pv-not-an-id.${PARENT}/`),
+      deps(),
+    );
+    expect(res!.status).toBe(404);
+  });
+
+  it("refuses a WebSocket opened from any origin but the preview's own", async () => {
+    const cookie = await pvCookie();
+    const upgrade = (origin: string) =>
+      new Request(`https://${PV_HOST}/socket`, {
+        headers: { upgrade: "websocket", origin, cookie },
+      });
+    const forwarded: Request[] = [];
+    const value = {
+      ...deps(),
+      forward: async (_id: string, r: Request) => (
+        forwarded.push(r),
+        new Response("ok")
+      ),
+    };
+
+    const foreign = await handlePreviewAccessRequest(
+      upgrade(`https://pv-${"f".repeat(32)}.${PARENT}`),
+      value,
+    );
+    const own = await handlePreviewAccessRequest(
+      upgrade(`https://${PV_HOST}`),
+      value,
+    );
+
+    expect(foreign!.status).toBe(403);
+    expect(own!.status).toBe(200);
+    expect(forwarded).toHaveLength(1);
+  });
+
+  it("tells the editor when a framed document is refused, with no draft", async () => {
+    const res = await handlePreviewAccessRequest(
+      new Request(`https://${PV_HOST}/`, {
+        headers: { "sec-fetch-dest": "iframe" },
+      }),
+      deps(),
+    );
+    const html = await res!.text();
+    expect(res!.status).toBe(401);
+    expect(html).toContain("morph:preview-access-ended");
+    expect(html).not.toContain("DRAFT");
+    expect(res!.headers.get("content-security-policy")).toContain(
+      "script-src 'nonce-",
+    );
+  });
+
+  it("answers a refused sub-resource in plain text", async () => {
+    const res = await handlePreviewAccessRequest(
+      new Request(`https://${PV_HOST}/@vite/client`, {
+        headers: { "sec-fetch-dest": "script" },
+      }),
+      deps(),
+    );
+    expect(res!.status).toBe(401);
+    expect(res!.headers.get("content-type")).toContain("text/plain");
+  });
+
+  it("is not pushed over its bound by another site's or a Theme's large cookies", async () => {
+    const cookie = await pvCookie();
+    const big = Array.from(
+      { length: 6 },
+      (_, i) => `theme_${i}=${"x".repeat(4000)}`,
+    ).join("; ");
+
+    const res = await handlePreviewAccessRequest(
+      new Request(`https://${PV_HOST}/`, {
+        headers: { cookie: `${big}; ${cookie}` },
+      }),
+      deps(),
+    );
+
+    expect(res!.status).toBe(200);
+  });
+
+  it("issues and parses the host under one normalisation of the preview parent", () => {
+    const host = previewAccessHostname(PREVIEW_ID, "Preview.Example.Test.");
+    expect(host).toBe(PV_HOST);
+    expect(parsePreviewAccessHost(host, "Preview.Example.Test.")).toBe(
+      PREVIEW_ID,
+    );
+  });
+});
+
+describe("which grant an exchange ended in (addendum A4.1, user decision 2026-11-01)", () => {
+  const resolved = (flowId: string) =>
+    (
+      sqlite
+        .prepare(
+          "SELECT resolved_grant_id FROM storefront_preview_access_exchanges WHERE flow_id = ?",
+        )
+        .get(flowId) as { resolved_grant_id: string | null }
+    ).resolved_grant_id;
+
+  it("records the grant redeem created", async () => {
+    const issued = await issue();
+    const redeemed = await redeem(issued);
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+
+    expect(resolved(issued.flowId)).toBe(redeemed.grant.id);
+  });
+
+  it("records the grant a redeem reused, and creates none", async () => {
+    const first = await issue();
+    const firstRedeemed = await redeem(first);
+    if (!firstRedeemed.ok) throw new Error(firstRedeemed.reason);
+    await verify(firstRedeemed.token!);
+
+    const second = await issue();
+    const reused = await redeem(second, {
+      reuse: { tokens: [firstRedeemed.token!], minRemainingMs: 10 * 60_000 },
+      now: later(3000),
+    });
+
+    expect(reused).toMatchObject({
+      ok: true,
+      grant: { id: firstRedeemed.grant.id },
+    });
+    expect(reused.ok && reused.token).toBeUndefined();
+    expect(resolved(second.flowId)).toBe(firstRedeemed.grant.id);
+  });
+
+  it("does not report a success it could not record, for a new grant or a reused one", async () => {
+    const failing = {
+      ...dal,
+      recordResolvedGrant: async () => false,
+    } as typeof dal;
+
+    const fresh = await redeemPreviewAccessExchange({
+      dal: failing,
+      ...(await (async () => {
+        const issued = await issue();
+        return { code: issued.code, flowId: issued.flowId };
+      })()),
+      binder: BINDER,
+      previewHost: HOST,
+      kind: "iframe",
+      now: later(1000),
+    });
+    expect(fresh).toEqual({ ok: false, reason: "GRANT_NOT_RECORDED" });
+
+    const first = await issue();
+    const firstRedeemed = await redeem(first);
+    if (!firstRedeemed.ok) throw new Error(firstRedeemed.reason);
+    await verify(firstRedeemed.token!);
+    const second = await issue();
+    const throwing = {
+      ...dal,
+      recordResolvedGrant: async () => {
+        throw new Error("D1_ERROR");
+      },
+    } as typeof dal;
+    const reused = await redeemPreviewAccessExchange({
+      dal: throwing,
+      code: second.code,
+      flowId: second.flowId,
+      binder: BINDER,
+      previewHost: HOST,
+      kind: "iframe",
+      now: later(3000),
+      reuse: { tokens: [firstRedeemed.token!], minRemainingMs: 10 * 60_000 },
+    });
+    expect(reused).toEqual({ ok: false, reason: "GRANT_NOT_RECORDED" });
+  });
+
+  it("records once: a resolved exchange is never re-pointed", async () => {
+    const issued = await issue();
+    const redeemed = await redeem(issued);
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+    const exchange = sqlite
+      .prepare(
+        "SELECT id FROM storefront_preview_access_exchanges WHERE flow_id = ?",
+      )
+      .get(issued.flowId) as { id: string };
+
+    expect(
+      await dal.recordResolvedGrant({
+        exchangeId: exchange.id,
+        grantId: "another-grant",
+        now: later(5000).toISOString(),
+      }),
+    ).toBe(false);
+    expect(resolved(issued.flowId)).toBe(redeemed.grant.id);
   });
 });
