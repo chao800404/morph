@@ -1695,3 +1695,339 @@ describe("which grant an exchange ended in (addendum A4.1, user decision 2026-11
     expect(resolved(issued.flowId)).toBe(redeemed.grant.id);
   });
 });
+
+describe("a separate preview tab (#214 P3, design §4b)", () => {
+  const PARENT = "preview.example.test";
+  const PREVIEW_ID = "0123456789abcdef0123456789abcdef";
+  const PV_HOST = previewAccessHostname(PREVIEW_ID, PARENT);
+  const PV_ORIGIN = `https://${PV_HOST}`;
+  const APP_ORIGIN = "https://app.example.test";
+  const RETURN = "/products/shirt?previewSession=s1";
+
+  const deps = (overrides: Partial<PreviewAccessRequestDeps> = {}) => ({
+    previewParentHostname: PARENT,
+    dal,
+    now: () => later(1000),
+    isAppOrigin: (origin: string) => origin === APP_ORIGIN,
+    stripCredentials: (request: Request) => {
+      const headers = new Headers(request.headers);
+      headers.delete("cookie");
+      return new Request(request, { headers });
+    },
+    forward: async () =>
+      new Response("<p>DRAFT</p>", {
+        headers: { "cross-origin-opener-policy": "unsafe-none" },
+      }),
+    ...overrides,
+  });
+
+  const beginRequest = (flowId: string, mode: string | null = "tab") => {
+    const url = new URL("/__morph/preview-auth/begin", PV_ORIGIN);
+    url.searchParams.set("flow", flowId);
+    url.searchParams.set("return", RETURN);
+    url.searchParams.set("editorOrigin", APP_ORIGIN);
+    if (mode !== null) url.searchParams.set("mode", mode);
+    return new Request(url);
+  };
+
+  function binderFrom(response: Response, flowId: string): string {
+    const line = response.headers
+      .getSetCookie()
+      .find((c) => c.startsWith(`__Host-morph-pvb-${flowId}=`))!;
+    return line.slice(line.indexOf("=") + 1, line.indexOf(";"));
+  }
+
+  async function issueKind(
+    flowId: string,
+    binder: string,
+    kind: "iframe" | "tab",
+  ) {
+    const issued = await issuePreviewAccessExchange({
+      dal,
+      kind,
+      sessionId: "session-a",
+      userId: "admin-1",
+      storefrontId: "store-a",
+      themeId: "theme-a",
+      previewId: PREVIEW_ID,
+      previewHost: PV_HOST,
+      flowId,
+      binderHash: await hashPreviewAccessSecret(binder),
+      now: NOW,
+    });
+    if (!issued.ok) throw new Error(issued.reason);
+    return issued.code;
+  }
+
+  const redeemRequest = (
+    flowId: string,
+    binder: string,
+    code: string,
+    mode?: string,
+  ) =>
+    new Request(new URL("/__morph/preview-auth/redeem", PV_ORIGIN), {
+      method: "POST",
+      headers: {
+        origin: PV_ORIGIN,
+        cookie: `__Host-morph-pvb-${flowId}=${binder}`,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        flow: flowId,
+        return: RETURN,
+        editorOrigin: APP_ORIGIN,
+        code,
+        ...(mode === undefined ? {} : { mode }),
+      }).toString(),
+    });
+
+  /**
+   * Runs a begin page's script against stand-in globals: the window, its
+   * parent and opener, the page body, fetch and location.
+   */
+  function runBegin(
+    html: string,
+    env: { opener?: object | null; framed?: boolean; fetchOk?: boolean },
+  ) {
+    const script = /<script nonce="[^"]+">([\s\S]*)<\/script>/.exec(html)![1]!;
+    const win: { opener: unknown } = { opener: env.opener ?? null };
+    // A top-level page is its own parent.
+    const parentFrame = { postMessage: vi.fn() };
+    const parentWindow = env.framed ? parentFrame : win;
+    const body = { textContent: "Opening the preview…" };
+    const location = { replaced: null as string | null };
+    const listeners: Array<(event: unknown) => void> = [];
+    const fetchCalls: Array<{ url: string; body: string }> = [];
+    const fakeFetch = async (url: string, init: { body: string }) => {
+      fetchCalls.push({ url, body: init.body });
+      return new Response(
+        JSON.stringify(
+          env.fetchOk === false
+            ? { ok: false, reason: "EXCHANGE_INVALID" }
+            : { ok: true },
+        ),
+        { status: env.fetchOk === false ? 403 : 200 },
+      );
+    };
+    new Function(
+      "window",
+      "parent",
+      "document",
+      "addEventListener",
+      "fetch",
+      "location",
+      script,
+    )(
+      win,
+      parentWindow,
+      { body },
+      (_type: string, listener: (event: unknown) => void) =>
+        listeners.push(listener),
+      fakeFetch,
+      { replace: (to: string) => (location.replaced = to) },
+    );
+    return {
+      win,
+      parentFrame,
+      body,
+      location,
+      fetchCalls,
+      dispatch: (event: unknown) => listeners.forEach((l) => l(event)),
+    };
+  }
+
+  it("begins a tab top-level only, with its own binder", async () => {
+    const flowId = newFlowId();
+    const res = (await handlePreviewAccessRequest(
+      beginRequest(flowId),
+      deps(),
+    ))!;
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toContain(
+      "frame-ancestors 'none'",
+    );
+    expect(binderFrom(res, flowId)).toMatch(/^[0-9a-f]{64}$/);
+    // The editor's own frame keeps being framable by the editor only.
+    const framed = (await handlePreviewAccessRequest(
+      beginRequest(newFlowId(), null),
+      deps(),
+    ))!;
+    expect(framed.headers.get("content-security-policy")).toContain(
+      `frame-ancestors ${APP_ORIGIN}`,
+    );
+  });
+
+  it("refuses a mode it does not know", async () => {
+    const res = (await handlePreviewAccessRequest(
+      beginRequest(newFlowId(), "popup"),
+      deps(),
+    ))!;
+    expect(res.status).toBe(400);
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  it("opened without an opener, says to open it from the editor and posts nothing", async () => {
+    const res = (await handlePreviewAccessRequest(
+      beginRequest(newFlowId()),
+      deps(),
+    ))!;
+    const page = runBegin(await res.text(), { opener: null });
+    expect(page.body.textContent).toBe("Open this preview from the editor.");
+    expect(page.fetchCalls).toEqual([]);
+  });
+
+  it("reports to its opener only, redeems as a tab, and lets go of the opener before leaving", async () => {
+    const flowId = newFlowId();
+    const res = (await handlePreviewAccessRequest(
+      beginRequest(flowId),
+      deps(),
+    ))!;
+    const opener = { postMessage: vi.fn() };
+    const page = runBegin(await res.text(), { opener });
+    expect(opener.postMessage).toHaveBeenCalledWith(
+      {
+        type: "morph:preview-auth-begin",
+        flowId,
+        binderHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+      APP_ORIGIN,
+    );
+    const code = "d".repeat(64);
+    // Another window, or the opener's origin spoofed by nobody: ignored.
+    page.dispatch({
+      source: {},
+      origin: APP_ORIGIN,
+      data: { type: "morph:preview-auth-code", flowId, code },
+    });
+    page.dispatch({
+      source: opener,
+      origin: "https://evil.test",
+      data: { type: "morph:preview-auth-code", flowId, code },
+    });
+    expect(page.fetchCalls).toEqual([]);
+
+    page.dispatch({
+      source: opener,
+      origin: APP_ORIGIN,
+      data: { type: "morph:preview-auth-code", flowId, code },
+    });
+    await vi.waitFor(() => expect(page.location.replaced).toBe(RETURN));
+    expect(new URLSearchParams(page.fetchCalls[0]!.body).get("mode")).toBe(
+      "tab",
+    );
+    expect(page.win.opener).toBeNull();
+  });
+
+  it("tells its opener and the author when redeem fails", async () => {
+    const flowId = newFlowId();
+    const res = (await handlePreviewAccessRequest(
+      beginRequest(flowId),
+      deps(),
+    ))!;
+    const opener = { postMessage: vi.fn() };
+    const page = runBegin(await res.text(), { opener, fetchOk: false });
+    page.dispatch({
+      source: opener,
+      origin: APP_ORIGIN,
+      data: { type: "morph:preview-auth-code", flowId, code: "d".repeat(64) },
+    });
+    await vi.waitFor(() =>
+      expect(page.body.textContent).toBe(
+        "Preview sign-in expired. Open the preview again from the editor.",
+      ),
+    );
+    expect(opener.postMessage).toHaveBeenLastCalledWith(
+      { type: "morph:preview-auth-failed", flowId, reason: "EXCHANGE_INVALID" },
+      APP_ORIGIN,
+    );
+    expect(page.location.replaced).toBeNull();
+    expect(page.win.opener).toBe(opener);
+  });
+
+  it("a framed begin still reports to its parent, never to an opener", async () => {
+    const flowId = newFlowId();
+    const res = (await handlePreviewAccessRequest(
+      beginRequest(flowId, null),
+      deps(),
+    ))!;
+    const opener = { postMessage: vi.fn() };
+    const page = runBegin(await res.text(), { opener, framed: true });
+    expect(page.parentFrame.postMessage).toHaveBeenCalledTimes(1);
+    expect(opener.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("redeems a tab's code as a tab grant, and the tab is served cut off from its opener", async () => {
+    const flowId = newFlowId();
+    const res = (await handlePreviewAccessRequest(
+      beginRequest(flowId),
+      deps(),
+    ))!;
+    const binder = binderFrom(res, flowId);
+    const code = await issueKind(flowId, binder, "tab");
+
+    const redeemed = (await handlePreviewAccessRequest(
+      redeemRequest(flowId, binder, code, "tab"),
+      deps(),
+    ))!;
+    expect(await redeemed.json()).toEqual({ ok: true });
+    const grant = sqlite
+      .prepare("SELECT kind FROM storefront_preview_access_grants")
+      .get() as { kind: string };
+    expect(grant.kind).toBe("tab");
+
+    const cookie = redeemed.headers
+      .getSetCookie()
+      .find((c) => c.startsWith(`__Host-morph-pv-${flowId}=`))!;
+    const page = (await handlePreviewAccessRequest(
+      new Request(new URL(RETURN, PV_ORIGIN), {
+        headers: { cookie: cookie.slice(0, cookie.indexOf(";")) },
+      }),
+      deps({ now: () => later(1500) }),
+    ))!;
+    expect(page.status).toBe(200);
+    expect(page.headers.get("cross-origin-opener-policy")).toBe("same-origin");
+  });
+
+  it.each([
+    ["a tab's code redeemed as a frame", "tab", undefined],
+    ["a frame's code redeemed as a tab", "iframe", "tab"],
+  ] as const)(
+    "refuses %s, and leaves the code unconsumed",
+    async (_name, issuedAs, redeemedAs) => {
+      const flowId = newFlowId();
+      const binder = "e".repeat(64);
+      const code = await issueKind(flowId, binder, issuedAs);
+      const wrong = (await handlePreviewAccessRequest(
+        redeemRequest(flowId, binder, code, redeemedAs),
+        deps(),
+      ))!;
+      expect(wrong.status).toBe(403);
+      expect(await wrong.json()).toEqual({
+        ok: false,
+        reason: "EXCHANGE_INVALID",
+      });
+
+      const right = (await handlePreviewAccessRequest(
+        redeemRequest(
+          flowId,
+          binder,
+          code,
+          issuedAs === "tab" ? "tab" : undefined,
+        ),
+        deps(),
+      ))!;
+      expect(right.status).toBe(200);
+    },
+  );
+
+  it("refuses a redeem in a mode it does not know", async () => {
+    const flowId = newFlowId();
+    const binder = "e".repeat(64);
+    const code = await issueKind(flowId, binder, "tab");
+    const res = (await handlePreviewAccessRequest(
+      redeemRequest(flowId, binder, code, "popup"),
+      deps(),
+    ))!;
+    expect(res.status).toBe(400);
+  });
+});

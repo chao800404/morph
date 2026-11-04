@@ -164,11 +164,17 @@ function plainResponse(
   });
 }
 
-/** A credentialed answer may never be stored, or leak its address onward. */
+/**
+ * A credentialed answer may never be stored, or leak its address onward.
+ * Its document is also cut off from any opener (#214 P3): a preview tab the
+ * editor opened lands here, and the Theme it runs must never reach the
+ * editor's window. A framed document ignores the header.
+ */
 function credentialedResponse(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "private, no-store");
   headers.set("Referrer-Policy", "no-referrer");
+  headers.set("Cross-Origin-Opener-Policy", "same-origin");
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

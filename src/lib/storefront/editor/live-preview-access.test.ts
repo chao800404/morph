@@ -33,6 +33,22 @@ const begin = (flowId: string, overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("the editor's side of the preview authorization flow", () => {
+  it("asks for a tab's own flow in tab mode, and a frame's without a mode", () => {
+    const args = {
+      framedUrl: `${PREVIEW_ORIGIN}/products/shirt?previewSession=s1`,
+      flowId: "f".repeat(32),
+      editorOrigin: "https://app.example.test",
+    };
+    const tab = new URL(livePreviewAccessBeginUrl({ ...args, mode: "tab" }));
+    expect(tab.searchParams.get("mode")).toBe("tab");
+    expect(tab.searchParams.get("return")).toBe(
+      "/products/shirt?previewSession=s1",
+    );
+    expect(
+      new URL(livePreviewAccessBeginUrl(args)).searchParams.has("mode"),
+    ).toBe(false);
+  });
+
   it("frames the begin page on the preview's origin, returning to the preview's path and query", () => {
     const url = new URL(
       livePreviewAccessBeginUrl({
