@@ -362,6 +362,32 @@ export async function verifyPreviewAccessGrant(input: {
   return { ok: true, grant: verifiedGrant(record) };
 }
 
+/**
+ * Checks, again, the grant a relayed preview socket was opened with (#214 P4,
+ * addendum A5): the same refusals as a request, for the same host, now. The
+ * grant must already be activated, since its socket's handshake was a
+ * served request. A read that throws is the caller's "unavailable".
+ */
+export async function reverifyPreviewAccessGrant(input: {
+  dal: Pick<StorefrontPreviewAccessDAL, "findGrantById">;
+  grantId: string;
+  previewHost: string;
+  now?: Date;
+}): Promise<
+  Readonly<{ ok: true }> | Readonly<{ ok: false; reason: PreviewAccessRefusal }>
+> {
+  const record = await input.dal.findGrantById(input.grantId);
+  if (!record) return { ok: false, reason: "GRANT_UNKNOWN" };
+  const refusal = grantRefusal(
+    record,
+    input.previewHost,
+    (input.now ?? new Date()).getTime(),
+  );
+  if (refusal) return { ok: false, reason: refusal };
+  if (!record.activatedAt) return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
+  return { ok: true };
+}
+
 /** Why a stored grant does not authorise a request on this host now, or null. */
 function grantRefusal(
   record: PreviewAccessGrantRecord,
