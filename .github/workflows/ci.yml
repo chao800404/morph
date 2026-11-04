@@ -811,7 +811,10 @@ jobs:
       #
       # The interface monitor is the evidence for the check after the run, so
       # no container may exist before it is shown to be receiving: a probe
-      # link it must report.
+      # link it must report. Its record lives under RUNNER_TEMP, as the
+      # container diagnostics' does: Playwright empties test-results/ when the
+      # run starts (run 41771990207 lost the record that way), and the check
+      # copies it there for the upload.
       - name: Give new container interfaces no IPv6 link-local address
         run: |
           sudo sysctl -w net.ipv6.conf.default.addr_gen_mode=1
@@ -819,7 +822,7 @@ jobs:
             echo "::error::net.ipv6.conf.default.addr_gen_mode did not take."
             exit 1
           fi
-          dir=test-results/container-network
+          dir="$RUNNER_TEMP/container-network"
           mkdir -p "$dir"
           ip -o addr show > "$dir/addresses-before.txt"
           nohup ip -ts -o monitor link address > "$dir/ip-monitor.log" 2>&1 &
@@ -869,8 +872,19 @@ jobs:
       - name: Require the run's container veths to have had no IPv6 link-local address
         if: always()
         run: |
-          dir=test-results/container-network
+          dir="$RUNNER_TEMP/container-network"
           log="$dir/ip-monitor.log"
+          # Kept with the results whatever this step decides. A failed copy
+          # fails a passing check, and never replaces a failing one's error.
+          keep_record() {
+            status=$?
+            if ! { mkdir -p test-results/container-network && cp -R "$dir"/. test-results/container-network/; }; then
+              echo "::error::The container interface record could not be kept with the results."
+              [ "$status" -ne 0 ] || status=1
+            fi
+            exit "$status"
+          }
+          trap keep_record EXIT
           incomplete() {
             echo "::error::Container interface evidence is incomplete: $1"
             exit 1
@@ -887,7 +901,13 @@ jobs:
             fi
             sleep 0.1
           done
+          # Stopped and gone before the record is read and kept, so the copy
+          # is the whole of it.
           kill "$pid"
+          for i in $(seq 1 50); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+          done
           [ "$reported" = yes ] || incomplete "the monitor stopped reporting before the run ended."
           if grep -iE 'receive error|no buffer space' "$log"; then
             incomplete "the monitor reported a receive error."

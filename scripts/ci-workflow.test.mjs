@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -250,12 +251,18 @@ test("only the native-Docker container job gives new interfaces no IPv6 link-loc
  */
 function runStep(
   script,
-  { log = "", monitor = "running", reporting = true, sysctlValue = "1" } = {},
+  {
+    log = "",
+    monitor = "running",
+    reporting = true,
+    sysctlValue = "1",
+    uploadBlocked = false,
+  } = {},
 ) {
   const results = [];
   for (const flags of [["-e"], ["-e", "-o", "pipefail"]]) {
     const dir = mkdtempSync(join(tmpdir(), "link-local-step-"));
-    const network = join(dir, "test-results/container-network");
+    const network = join(dir, "container-network");
     mkdirSync(network, { recursive: true });
     writeFileSync(join(network, "ip-monitor.log"), log);
     mkdirSync(join(dir, "bin"));
@@ -269,13 +276,15 @@ function runStep(
       [
         'case "$*" in',
         "  *monitor*) exec sleep 60 ;;",
-        `  "link del morphprobe"*) [ -f "${dir}/reporting" ] && echo "[2026-11-04T00:00:00.000000] Deleted 9: $3@NONE: <BROADCAST,MULTICAST> mtu 1500" >> test-results/container-network/ip-monitor.log ;;`,
+        `  "link del morphprobe"*) [ -f "${dir}/reporting" ] && echo "[2026-11-04T00:00:00.000000] Deleted 9: $3@NONE: <BROADCAST,MULTICAST> mtu 1500" >> "$RUNNER_TEMP/container-network/ip-monitor.log" ;;`,
         "esac",
         "exit 0",
       ].join("\n"),
     );
     stub("sysctl", `[ "$1" = -n ] && echo ${sysctlValue}\nexit 0`);
     if (reporting) writeFileSync(join(dir, "reporting"), "");
+    // A file where the upload directory should go: the copy cannot be made.
+    if (uploadBlocked) writeFileSync(join(dir, "test-results"), "");
     let running = null;
     if (monitor === "running") {
       running = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
@@ -306,7 +315,16 @@ function runStep(
       } catch {}
     }
     assert.ifError(result.error);
-    results.push({ shell: `bash ${flags.join(" ")}`, ...result });
+    const uploaded = join(dir, "test-results/container-network/ip-monitor.log");
+    results.push({
+      shell: `bash ${flags.join(" ")}`,
+      ...result,
+      recorded: readFileSync(join(network, "ip-monitor.log"), "utf8"),
+      uploaded:
+        !uploadBlocked && existsSync(uploaded)
+          ? readFileSync(uploaded, "utf8")
+          : null,
+    });
   }
   return results;
 }
@@ -399,6 +417,48 @@ test("the link-local check fails a veth that got an address, a run that saw no v
     ],
   ];
   for (const [name, setup, passes, reason] of cases) {
-    assertOutcome(runStep(script, setup), name, passes, reason);
+    const results = runStep(script, setup);
+    assertOutcome(results, name, passes, reason);
+    for (const result of results) {
+      // The monitor stopped before the copy: byte for byte what it wrote.
+      assert.equal(
+        result.uploaded,
+        result.recorded,
+        `${name} (${result.shell}): the record must be copied for the upload`,
+      );
+    }
+  }
+});
+
+test("a record that cannot be kept fails a passing check, and leaves a failing check's error as it was", () => {
+  const block = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  const { script } = stepScript(block, LINK_LOCAL_CHECK);
+  const NOT_KEPT = /::error::The container interface record could not be kept/;
+  for (const result of runStep(script, { log: VETH_UP, uploadBlocked: true })) {
+    const said = `${result.shell}: ${result.stdout}${result.stderr}`;
+    assert.equal(result.status, 1, said);
+    assert.match(result.stdout, NOT_KEPT, said);
+  }
+  for (const result of runStep(script, {
+    log: VETH_UP + VETH_LINK_LOCAL,
+    uploadBlocked: true,
+  })) {
+    const said = `${result.shell}: ${result.stdout}${result.stderr}`;
+    assert.equal(result.status, 1, said);
+    assert.match(
+      result.stdout,
+      /::error::A container veth got an IPv6 link-local address/,
+      said,
+    );
+    assert.match(result.stdout, NOT_KEPT, said);
+  }
+});
+
+test("the interface record lives outside test-results/, which Playwright empties when the run starts", () => {
+  const block = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  for (const name of [LINK_LOCAL_STEP, LINK_LOCAL_CHECK]) {
+    const { script } = stepScript(block, name);
+    assert.match(script, /^dir="\$RUNNER_TEMP\/container-network"$/m, name);
+    assert.doesNotMatch(script, /^dir=test-results/m, name);
   }
 });
