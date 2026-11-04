@@ -1,7 +1,5 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import {
   EDITOR_PATH,
   clickExposedElement,
@@ -18,7 +16,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
-import { queryLocalD1 } from "./helpers/editor-writes-paused";
+import { execLocalD1, queryLocalD1 } from "./helpers/editor-writes-paused";
 import {
   recordedPreviewRuntimeSql,
   verifyRecordedThemePreviewRuntime,
@@ -124,18 +122,7 @@ export default function LoaderHero({ title = "${DEFAULT_TITLE}" }: LoaderHeroPro
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
   const now = new Date().toISOString();
-  await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--command",
+  execLocalD1(
     // Records the run's preview runtime, if it names one (unset in CI:
     // none, so the deployment's runtime applies as before).
     `INSERT INTO storefront_themes
@@ -143,7 +130,7 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     VALUES ('${created.themeId}', '${created.storefrontId}',
       'loader-data-binding-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
-  ]);
+  );
   verifyRecordedThemePreviewRuntime(created);
   return created;
 }

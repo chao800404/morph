@@ -179,6 +179,71 @@ describe("@morph/sdk/start: the platform names each request's source", () => {
   });
 });
 
+describe("@morph/sdk/start: a render's reads stay on its release (G3)", () => {
+  /** Records the render context each content read was sent with. */
+  function recordingFetch() {
+    const sent: (string | null)[] = [];
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push(new Headers(init?.headers).get("x-morph-render-context"));
+      return page("ok");
+    });
+    return { fetch, sent };
+  }
+
+  it("sends the platform's render context back on every page read of that request", async () => {
+    const { fetch, sent } = recordingFetch();
+    vi.stubGlobal("fetch", fetch);
+
+    await serve(
+      {
+        "x-morph-content-origin": "https://published.example",
+        "x-morph-render-context": "v1.pinned.sig",
+      },
+      async () => {
+        await morph.pages.get("/");
+        await morph.pages.get("/about");
+      },
+    );
+
+    expect(sent).toEqual(["v1.pinned.sig", "v1.pinned.sig"]);
+  });
+
+  it("sends none when the request carries none", async () => {
+    const { fetch, sent } = recordingFetch();
+    vi.stubGlobal("fetch", fetch);
+
+    await serve({ "x-morph-content-origin": "https://published.example" }, () =>
+      morph.pages.get("/"),
+    );
+
+    expect(sent).toEqual([null]);
+  });
+
+  it("two requests served at once each send their own", async () => {
+    const { fetch, sent } = recordingFetch();
+    vi.stubGlobal("fetch", fetch);
+
+    await Promise.all([
+      serve(
+        {
+          "x-morph-content-origin": "https://published.example",
+          "x-morph-render-context": "v1.a.sig",
+        },
+        () => morph.pages.get("/"),
+      ),
+      serve(
+        {
+          "x-morph-content-origin": "https://published.example",
+          "x-morph-render-context": "v1.b.sig",
+        },
+        () => morph.pages.get("/"),
+      ),
+    ]);
+
+    expect([...sent].sort()).toEqual(["v1.a.sig", "v1.b.sig"]);
+  });
+});
+
 describe("@morph/sdk/start: media URLs stay as Morph sent them", () => {
   const MEDIA = "/_storefront-media/abc?version=assets%2Fx.png";
   const ASSET = "/api/store/assets/11111111-1111-1111-1111-111111111111";
