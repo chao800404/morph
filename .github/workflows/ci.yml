@@ -799,6 +799,41 @@ jobs:
           MORPH_PREVIEW_REQUEST_TRACE=1
           EOF
 
+      # Handoff 2026-11-04: on this runner Docker removes a container's host
+      # veth in the network namespace the browser uses. In a model of that
+      # (a network namespace and this repo's Chromium), removing a veth that
+      # held an IPv6 link-local address failed every request in flight with
+      # net::ERR_NETWORK_CHANGED, localhost included, and a veth with no
+      # link-local address failed nothing. #363's run 41679163919 showed the
+      # same signature. From here on new interfaces get no link-local address.
+      # This is the `default` entry only: eth0, lo and docker0 keep theirs,
+      # and IPv6 stays enabled.
+      #
+      # The interface monitor is the evidence for the check after the run, so
+      # no container may exist before it is shown to be receiving: a probe
+      # link it must report.
+      - name: Give new container interfaces no IPv6 link-local address
+        run: |
+          sudo sysctl -w net.ipv6.conf.default.addr_gen_mode=1
+          if [ "$(sysctl -n net.ipv6.conf.default.addr_gen_mode)" != 1 ]; then
+            echo "::error::net.ipv6.conf.default.addr_gen_mode did not take."
+            exit 1
+          fi
+          dir=test-results/container-network
+          mkdir -p "$dir"
+          ip -o addr show > "$dir/addresses-before.txt"
+          nohup ip -ts -o monitor link address > "$dir/ip-monitor.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/ip-monitor.pid"
+          sleep 0.2
+          sudo ip link add morphprobe0 type veth peer name morphprobe1
+          sudo ip link del morphprobe0
+          for i in $(seq 1 50); do
+            grep -q 'Deleted [0-9]*: morphprobe0' "$dir/ip-monitor.log" && exit 0
+            sleep 0.1
+          done
+          echo "::error::The interface monitor did not report a probe link, so container interfaces would go unrecorded."
+          exit 1
+
       # Diagnostics only (handoff 2026-10-30, closed container-port
       # connections): Docker's container and network events, and the preview
       # containers' own request record that MORPH_PREVIEW_REQUEST_TRACE above
@@ -825,6 +860,49 @@ jobs:
       - name: Stop container diagnostics
         if: always()
         run: node scripts/container-diagnostics.mjs stop "$RUNNER_TEMP/container-diagnostics" test-results/container-diagnostics
+
+      # Whether the setting held for the containers this run really made.
+      # First, whether the record is whole: the monitor still running, still
+      # reporting (a second probe link), and no receive error. An incomplete
+      # record fails as such, whatever it contains. Then: at least one
+      # container veth was seen, and none got a link-local address.
+      - name: Require the run's container veths to have had no IPv6 link-local address
+        if: always()
+        run: |
+          dir=test-results/container-network
+          log="$dir/ip-monitor.log"
+          incomplete() {
+            echo "::error::Container interface evidence is incomplete: $1"
+            exit 1
+          }
+          pid=$(cat "$RUNNER_TEMP/ip-monitor.pid" 2>/dev/null) || incomplete "the monitor was never started."
+          kill -0 "$pid" 2>/dev/null || incomplete "the monitor exited before the run ended."
+          sudo ip link add morphprobe2 type veth peer name morphprobe3
+          sudo ip link del morphprobe2
+          reported=no
+          for i in $(seq 1 50); do
+            if grep -q 'Deleted [0-9]*: morphprobe2' "$log"; then
+              reported=yes
+              break
+            fi
+            sleep 0.1
+          done
+          kill "$pid"
+          [ "$reported" = yes ] || incomplete "the monitor stopped reporting before the run ended."
+          if grep -iE 'receive error|no buffer space' "$log"; then
+            incomplete "the monitor reported a receive error."
+          fi
+          ip -o addr show > "$dir/addresses-after.txt"
+          veths=$({ grep -oE 'veth[0-9a-f]+' "$log" || true; } | sort -u | wc -l)
+          echo "container veths seen: $veths"
+          if grep -E 'veth[0-9a-f]+.*inet6 fe80:' "$log"; then
+            echo "::error::A container veth got an IPv6 link-local address: the setting did not hold."
+            exit 1
+          fi
+          if [ "$veths" -eq 0 ]; then
+            echo "::error::No container veth was recorded, so the setting was not checked."
+            exit 1
+          fi
 
       - name: Require M1 container acceptance test to have passed with zero skip and zero retry
         run: node scripts/check-container-acceptance.mjs test-results/container-acceptance.json
