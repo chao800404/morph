@@ -63,7 +63,7 @@
     "check:migrations": "node --test scripts/pending-migrations.test.mjs && node scripts/check-pending-migrations.mjs --files-only",
     "check:generated-writes": "node --test scripts/write-if-changed.test.mjs",
     "check:preview-message-posters": "node --test scripts/preview-message-poster-scan.test.mjs && node scripts/check-preview-message-posters.mjs",
-    "check:e2e-runner": "node --test scripts/run-editor-e2e.test.mjs scripts/e2e-preview-runtime-guard.test.mjs scripts/e2e-machine-lock.test.mjs scripts/check-ci-apt-timeout.test.mjs scripts/check-container-acceptance.test.mjs scripts/container-diagnostics.test.mjs",
+    "check:e2e-runner": "node --test scripts/run-editor-e2e.test.mjs scripts/e2e-preview-runtime-guard.test.mjs scripts/e2e-machine-lock.test.mjs scripts/check-ci-apt-timeout.test.mjs scripts/check-container-acceptance.test.mjs scripts/ci-rules.test.mjs scripts/container-diagnostics.test.mjs",
     "check:theme-runtime-wiring": "node --test scripts/theme-runtime-wiring-scan.test.mjs && node scripts/check-theme-runtime-wiring.mjs",
     "check:sdk-package": "node --test scripts/sdk-package-check.test.mjs && node scripts/check-sdk-package.mjs",
     "ship": "node scripts/ship.mjs"
@@ -75,6 +75,7 @@
     "@cloudflare/vite-plugin": "^1.62.4",
     "@dnd-kit/react": "^0.2.1",
     "@monaco-editor/react": "^4.7.0",
+    "@morph/astro-parser-worker": "workspace:*",
     "@radix-ui/react-alert-dialog": "^1.1.23",
     "@radix-ui/react-avatar": "^1.2.6",
     "@radix-ui/react-checkbox": "^1.3.11",

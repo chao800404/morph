@@ -19,4 +19,26 @@ describe("what each built-in preview page advertises", () => {
     expect(source).toContain("documentPreviewIdentity()");
     expect(source).toContain("selectionForEditor(");
   });
+
+  it("the client-only preview does not claim the Astro identity either", () => {
+    expect(CLIENT_ONLY_PREVIEW_CAPABILITIES).not.toContain("astro-identity-v2");
+  });
+
+  it("the Theme bridge sends the v2 identity only after its editor names the token, per document", () => {
+    const source = themePreviewBridgeEntrySource();
+    expect(source).toContain('"astro-identity-v2"');
+    expect(source).toContain(
+      'editorSupportsAstroIdentity = accepted.includes("astro-identity-v2");',
+    );
+    expect(source).toContain(
+      "previewSourceIdentityReport(item.element, editorSupportsAstroIdentity)",
+    );
+    // A new ready forgets it, like code-default-selection.
+    const ready = source.slice(source.indexOf("function reportReady()"));
+    expect(
+      ready.slice(0, ready.indexOf("postPreviewToEditorMessage(")),
+    ).toContain("editorSupportsAstroIdentity = false;");
+    // The boundary is reported through that one helper, nowhere else.
+    expect(source).not.toContain("previewBoundary: previewSourceBoundaryOf(");
+  });
 });

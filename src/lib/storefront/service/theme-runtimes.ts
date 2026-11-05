@@ -1,5 +1,6 @@
 import { previewRequestFor } from "./preview-proxy-credentials";
 import type { ResolvedStorefrontHost } from "./storefront-host-resolver";
+import { STOREFRONT_RENDER_CONTEXT_HEADER } from "./storefront-render-context";
 import {
   themeWorkerScriptName,
   type ThemeRuntime,
@@ -62,6 +63,8 @@ function applyStorefrontContext(
    * call itself and silently render defaults.
    */
   contentOrigin: string,
+  /** The invocation's signed render context, when Core issued one. */
+  renderContext: string | undefined,
 ): Request {
   const forwarded = previewRequestFor(request);
   forwarded.headers.set("x-morph-storefront-host", resolved.hostname);
@@ -80,6 +83,11 @@ function applyStorefrontContext(
     );
   } else {
     forwarded.headers.delete("x-morph-content-publication-id");
+  }
+  // The Theme's content reads send this back, so they stay on the release
+  // resolved above even if a publish or rollback lands mid-render (G3).
+  if (renderContext) {
+    forwarded.headers.set(STOREFRONT_RENDER_CONTEXT_HEADER, renderContext);
   }
   return forwarded;
 }
@@ -125,6 +133,7 @@ export class ServiceBindingThemeRuntime implements ThemeRuntime {
           invocation.request,
           invocation.resolved,
           new URL(invocation.request.url).origin,
+          invocation.renderContext,
         ),
       );
       return { success: true, response };
@@ -203,6 +212,7 @@ export class DispatchNamespaceThemeRuntime implements ThemeRuntime {
           invocation.request,
           invocation.resolved,
           new URL(invocation.request.url).origin,
+          invocation.renderContext,
         ),
       );
       return { success: true, response };
@@ -277,6 +287,7 @@ export class LocalDirectThemeRuntime implements ThemeRuntime {
       new Request(target, invocation.request),
       invocation.resolved,
       incomingOrigin,
+      invocation.renderContext,
     );
     // This hop is local HTTP, not a production service binding. Wrangler's
     // automatic gzip can withhold a small SSR shell until its deferred stream

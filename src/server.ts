@@ -70,8 +70,20 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
     ],
   );
 
-  const { storefrontContentPublicationDal } =
-    await import("@/lib/storefront/dal/storefront-content-publication.dal");
+  const [{ storefrontContentPublicationDal }, { resolveThemePreviewSecret }] =
+    await Promise.all([
+      import("@/lib/storefront/dal/storefront-content-publication.dal"),
+      import("@/lib/storefront/service/theme-build-preview-token"),
+    ]);
+  // No secret means no render context is issued, and a content read naming
+  // one is refused: an unsigned pin would be any visitor's choice of release.
+  const renderContextSecret = (bindings: unknown): string | undefined => {
+    try {
+      return resolveThemePreviewSecret(undefined, bindings);
+    } catch {
+      return undefined;
+    }
+  };
 
   const service = new StorefrontProductionService({
     runtime: routing.createThemeRuntime(
@@ -198,6 +210,9 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
       listPublishedAssetKeys: (publicationId) =>
         storefrontContentPublicationDal.listPublishedAssetKeys(publicationId),
     },
+    // Keeps one page render's content reads on its own release (G3). The
+    // signature is domain-separated from every other use of this secret.
+    renderContextSecret: renderContextSecret(env),
   });
   return service.handleRequest(request);
 }
@@ -213,6 +228,9 @@ const loadPreviewCredentials = keepImport(
   () => import("@/lib/storefront/service/preview-proxy-credentials"),
 );
 const loadSandboxSdk = keepImport(() => import("@cloudflare/sandbox"));
+const loadPreviewAccessRequest = keepImport(
+  () => import("@/server/preview-access-request"),
+);
 const loadPreviewSandboxBinding = keepImport(
   () => import("@/lib/storefront/service/preview-sandbox-binding"),
 );
@@ -239,25 +257,37 @@ async function isStorefrontHost(request: Request): Promise<boolean> {
 }
 
 /**
- * Carries a Live Preview request into the container serving it.
- *
- * Loaded on demand, and tolerant of not being available: a deployment with no
- * Sandbox binding has no preview servers either, and ordinary traffic must
- * not fail because of a subsystem it never uses.
+ * Whether a request is addressed to the Sandbox SDK's own preview host
+ * (`<port>-<sandboxId>-<token>.…`). That address carries the port token and
+ * stays inside this Worker (#214 P2, design §6): from outside it is refused,
+ * so a preview is reached only through its `pv-` host, which verifies every
+ * request's credential.
  */
-async function proxyPreviewRequest(request: Request): Promise<Response | null> {
+async function isSandboxPreviewHostRequest(request: Request): Promise<boolean> {
+  try {
+    const [{ isSandboxPreviewRequest }, { env }] = await Promise.all([
+      loadPreviewCredentials(),
+      loadWorkersRuntime(),
+    ]);
+    return isSandboxPreviewRequest(
+      new URL(request.url),
+      env as unknown as Record<string, unknown>,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Carries a verified Live Preview request, already addressed to the SDK host
+ * and stripped of platform credentials, into the container serving it, and
+ * records how it went.
+ */
+async function forwardToPreviewSandbox(
+  request: Request,
+): Promise<Response | null> {
   try {
     const { env, waitUntil } = await loadWorkersRuntime();
-    const { isSandboxPreviewRequest, previewRequestFor } =
-      await loadPreviewCredentials();
-    if (
-      !isSandboxPreviewRequest(
-        new URL(request.url),
-        env as unknown as Record<string, unknown>,
-      )
-    ) {
-      return null;
-    }
     const { proxyToSandbox, getSandbox } = await loadSandboxSdk();
     const { previewProxyEnv, previewSandboxBinding } =
       await loadPreviewSandboxBinding();
@@ -268,7 +298,7 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
     const { proxyPreviewModuleRequest, finishPreviewResponse } =
       await loadPreviewResponse();
     const response = await proxyPreviewModuleRequest(
-      previewRequestFor(request),
+      request,
       (moduleRequest) =>
         proxyToSandbox(moduleRequest, previewProxyEnv(bindings) as never),
     );
@@ -317,6 +347,19 @@ export default {
         request = restored;
         args[0] = restored;
       }
+      // Test-only, and only where the parser binding exists (the local
+      // preview E2E environment); see astro-parser-binding-check.ts.
+      if (new URL(request.url).pathname.startsWith("/_morph/e2e/")) {
+        const [{ serveAstroParserBindingCheck }, { env }] = await Promise.all([
+          import("@/server/dev/astro-parser-binding-check"),
+          import("cloudflare:workers"),
+        ]);
+        const checked = await serveAstroParserBindingCheck(
+          request,
+          env as unknown as Record<string, unknown>,
+        );
+        if (checked) return checked;
+      }
     }
     const url = new URL(request.url);
 
@@ -328,12 +371,38 @@ export default {
       if (buildPreviewResponse) return buildPreviewResponse;
     }
 
-    // Store APIs are Morph-owned and bypass the Vite container. Preview
-    // content is different: the container receives an authenticated,
-    // render-only draft snapshot when it starts and owns that endpoint.
-    if (!url.pathname.startsWith("/api/store/")) {
-      const previewResponse = await proxyPreviewRequest(request);
-      if (previewResponse) return previewResponse;
+    // A `pv-` Live Preview host asks for its credential on every request and
+    // answers it there, refusal included; nothing for it falls through to the
+    // handlers below, so an error is a 503 rather than Morph's own app.
+    // Store APIs are the exception they always were on a preview host:
+    // Morph-owned public catalog reads that bypass the container.
+    if (url.hostname.startsWith("pv-") && !url.pathname.startsWith("/api/store/")) {
+      try {
+        const { servePreviewAccessRequest } = await loadPreviewAccessRequest();
+        const previewAccessResponse = await servePreviewAccessRequest(
+          request,
+          forwardToPreviewSandbox,
+        );
+        if (previewAccessResponse) return previewAccessResponse;
+      } catch {
+        return new Response("Preview access cannot be checked right now.", {
+          status: 503,
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "private, no-store",
+          },
+        });
+      }
+    }
+
+    if (await isSandboxPreviewHostRequest(request)) {
+      return new Response("Not found.", {
+        status: 404,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
     }
 
     if (await isStorefrontHost(request)) {

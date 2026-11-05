@@ -35,6 +35,7 @@ import {
   deployReleaseArtifact,
   deployWithRecovery,
 } from "@/lib/storefront/service/storefront-release-reconciler";
+import { describeReleaseDeploymentFailure } from "@/lib/storefront/service/release-deployment-failure";
 import { withDeploymentLease } from "@/lib/storefront/service/deployment-lease";
 import { assertPublishPublicFiles } from "@/lib/storefront/service/publish-public-files-check";
 import {
@@ -173,6 +174,11 @@ export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
       if (!result) {
         return fail("Storefront theme not found", { error: "NOT_FOUND" });
       }
+      if (result.unavailable) {
+        return fail(result.unavailable, {
+          error: "THEME_FRAMEWORK_UNAVAILABLE",
+        });
+      }
       const { review, catalog, ...status } = result;
       return ok("Starter upgrade reviewed", {
         ...status,
@@ -181,6 +187,17 @@ export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
           digest: review.digest,
           changes: review.changes,
           kept: review.kept,
+          // The Starter's new pages, added only if the author selects them:
+          // the review with them selected, under its own digest.
+          optional: review.optional
+            ? {
+                paths: review.optional.paths,
+                pages: review.optional.pages,
+                digest: review.optional.digest,
+                changes: review.optional.changes,
+                kept: review.optional.kept,
+              }
+            : null,
         },
         catalog: {
           applies: catalog.applies,
@@ -217,6 +234,9 @@ export const applyStorefrontStarterUpgrade = createServerFn({ method: "POST" })
         ...data,
         createdBy: authContext.user.id,
       });
+      if (result.status === "framework-unavailable") {
+        return fail(result.reason, { error: "THEME_FRAMEWORK_UNAVAILABLE" });
+      }
       if (result.status === "stale") {
         return fail(
           "The Theme changed since this upgrade was reviewed, so nothing was applied. Review it again.",
@@ -703,17 +723,19 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
                 }),
             });
             if (!deployed.success) {
-              return fail(
-                "deploymentDrift" in deployed && deployed.deploymentDrift
-                  ? "Deployment failed and the previous activation could not be restored. The storefront requires reconciliation."
-                  : "Deployment failed. The previous activation was restored; reload and retry publishing.",
-                {
-                  error:
-                    "deploymentDrift" in deployed && deployed.deploymentDrift
-                      ? "RELEASE_DEPLOYMENT_DRIFT"
-                      : "RELEASE_DEPLOYMENT_FAILED",
-                },
+              // The specific reason (a plan rule or the deployer's) travels
+              // with the failure, so the editor can say why rather than
+              // "retry", and it is logged: the response used to be the only
+              // trace, and it carried no reason.
+              const described = describeReleaseDeploymentFailure(deployed);
+              console.error(
+                `Publish deployment failed: ${described.error}/${described.reason}:`,
+                deployed.message,
               );
+              return fail(described.message, {
+                error: described.error,
+                reason: described.reason,
+              });
             }
 
             // Recorded only now, so a failed deploy above leaves no trace that

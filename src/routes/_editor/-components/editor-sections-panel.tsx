@@ -46,7 +46,10 @@ import {
   SidebarProvider,
 } from "@/components/ui/sidebar";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
-import type { ThemeRouteRecord } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  isThemeEndpointRoute,
+  type ThemeRouteRecord,
+} from "@/lib/storefront/compiler/theme-route-registry";
 import {
   EditorAddPageDialog,
   type AddPageResult,
@@ -203,6 +206,12 @@ export type EditorSectionsPanelProps = {
    * page or section structure control is offered, whatever is passed.
    */
   sectionsUnavailableForFramework?: boolean;
+  /**
+   * The preview opens a page by its address (a document-navigating preview,
+   * D3). A dynamic route is a pattern with no address of its own, so it is
+   * listed but not opened; its source still opens.
+   */
+  dynamicRoutesNotOpenable?: boolean;
   onAddPage?: (routePath: string) => Promise<AddPageResult>;
   onDeletePage?: (route: ThemeRouteRecord) => Promise<AddPageResult>;
   sectionOptions?: readonly ThemeRouteSectionOption[];
@@ -855,6 +864,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onOpenThemeRoute,
   onOpenThemeRouteCode,
   sectionsUnavailableForFramework = false,
+  dynamicRoutesNotOpenable = false,
   onAddPage: onAddPageProp,
   onDeletePage: onDeletePageProp,
   sectionOptions = [],
@@ -876,12 +886,21 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
     ? NO_UNBOUND
     : unboundSectionCandidatesProp;
   const pageRoutes = useMemo(
-    () => themeRoutes.filter((route) => !route.isServerOnly),
+    () => themeRoutes.filter((route) => !isThemeEndpointRoute(route)),
     [themeRoutes],
   );
   const endpointRoutes = useMemo(
-    () => themeRoutes.filter((route) => route.isServerOnly),
+    () => themeRoutes.filter(isThemeEndpointRoute),
     [themeRoutes],
+  );
+  const routeOpenable = (route: ThemeRouteRecord) =>
+    !(dynamicRoutesNotOpenable && route.dynamic);
+  const openablePageRoutes = useMemo(
+    () =>
+      dynamicRoutesNotOpenable
+        ? pageRoutes.filter((route) => !route.dynamic)
+        : pageRoutes,
+    [dynamicRoutesNotOpenable, pageRoutes],
   );
   const activeTemplate = resolveEditorTemplate(context, search);
   const previewEditableNodes = editableNodes ?? NO_EDITABLE_NODES;
@@ -1394,7 +1413,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
 
           {themeRoutes.length > 0 ? (
             <EditorPagesSearch
-              routes={pageRoutes}
+              routes={openablePageRoutes}
               onPrefetchRoute={onPrefetchThemeRoute}
               onOpenRoute={onOpenThemeRoute}
             />
@@ -1448,21 +1467,38 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                         key={`${route.sourcePath}:${route.path}`}
                         className="group/page"
                       >
-                        <SidebarMenuButton
-                          type="button"
-                          size="sm"
-                          className="cursor-pointer"
-                          isActive={(search.routePath ?? "/") === route.path}
-                          onMouseEnter={() => onPrefetchThemeRoute?.(route)}
-                          onFocus={() => onPrefetchThemeRoute?.(route)}
-                          onClick={() => onOpenThemeRoute?.(route)}
-                          title={`Preview ${route.path}`}
-                        >
-                          <FileCode2 aria-hidden="true" />
-                          <span>
-                            {route.path === "/" ? "Home /" : route.path}
-                          </span>
-                        </SidebarMenuButton>
+                        {routeOpenable(route) ? (
+                          <SidebarMenuButton
+                            type="button"
+                            size="sm"
+                            className="cursor-pointer"
+                            isActive={(search.routePath ?? "/") === route.path}
+                            onMouseEnter={() => onPrefetchThemeRoute?.(route)}
+                            onFocus={() => onPrefetchThemeRoute?.(route)}
+                            onClick={() => onOpenThemeRoute?.(route)}
+                            title={`Preview ${route.path}`}
+                          >
+                            <FileCode2 aria-hidden="true" />
+                            <span>
+                              {route.path === "/" ? "Home /" : route.path}
+                            </span>
+                          </SidebarMenuButton>
+                        ) : (
+                          // A pattern, listed for what it is: no address to
+                          // preview, and its source one click away.
+                          <SidebarMenuButton
+                            type="button"
+                            size="sm"
+                            disabled
+                            title={`${route.path} needs a concrete address to preview. Open its source instead.`}
+                          >
+                            <FileCode2 aria-hidden="true" />
+                            <span>{route.path}</span>
+                            <span className="ml-auto shrink-0 text-[10px]">
+                              Pattern
+                            </span>
+                          </SidebarMenuButton>
+                        )}
                         {/* Opening the source is a deliberate act, not what every
                             click on a page happens to do. */}
                         <SidebarMenuAction

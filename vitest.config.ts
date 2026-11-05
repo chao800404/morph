@@ -91,6 +91,20 @@ const THEME_BUILD_TESTS = [
   "src/lib/storefront/compiler/local-vite-preview-server.public-isolation.test.ts",
 ];
 
+/**
+ * The parser Worker's tests, in a phase of their own and last.
+ *
+ * `worker.test.ts` starts workerd three times (about 20s) and holds the
+ * parser's one admission slot open for seconds at a time to prove how the line
+ * behaves, so its assertions are about elapsed time. Run beside the jsdom
+ * files, a stalled event loop is exactly what moves those numbers. In its own
+ * group, after the unit group has finished, nothing else in the run competes
+ * with it. Like the theme builds this is contention, not a resource conflict:
+ * the file takes no fixed port and shares nothing, so nothing else belongs in
+ * this project.
+ */
+const PARSER_WORKER_TESTS = ["packages/astro-parser-worker/src/worker.test.ts"];
+
 /** What every project shares; stated once so the two cannot drift apart. */
 const SHARED_TEST_OPTIONS = {
   setupFiles: ["./vitest.setup.ts"],
@@ -151,6 +165,16 @@ export default defineConfig({
         extends: true,
         test: {
           ...SHARED_TEST_OPTIONS,
+          name: "parser-worker",
+          environment: "node",
+          include: PARSER_WORKER_TESTS,
+          sequence: { groupOrder: 3 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          ...SHARED_TEST_OPTIONS,
           name: "unit",
           environment: "jsdom",
           // `packages/` holds code that ships apart from the app (the SDK) and
@@ -165,7 +189,11 @@ export default defineConfig({
           // Vitest's own defaults are spread back in: setting `exclude`
           // replaces them, and dropping `node_modules` would collect the
           // world.
-          exclude: [...configDefaults.exclude, ...THEME_BUILD_TESTS],
+          exclude: [
+            ...configDefaults.exclude,
+            ...THEME_BUILD_TESTS,
+            ...PARSER_WORKER_TESTS,
+          ],
           sequence: { groupOrder: 2 },
         },
       },

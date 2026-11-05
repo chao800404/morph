@@ -7,11 +7,9 @@ import {
   type Request,
   type Route,
 } from "@playwright/test";
-import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import ts from "typescript";
 import {
   EDITOR_CAPABILITIES,
@@ -24,6 +22,7 @@ import {
   openContentTab,
   previewFrame,
 } from "./helpers";
+import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -304,24 +303,11 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     themeId: randomUUID(),
   };
   const now = new Date().toISOString();
-  await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--command",
-    `INSERT INTO storefront_themes
+  execLocalD1(`INSERT INTO storefront_themes
     (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
     VALUES ('${created.themeId}', '${created.storefrontId}',
       'old-bridge-${created.themeId}', '{"starterTemplateVersion":1}',
-      'client', '${now}', '${now}');`,
-  ]);
+      'client', '${now}', '${now}');`);
   return created;
 }
 

@@ -315,10 +315,13 @@ file` 失敗。這個狀態被當成環境問題略過，實際上蓋住了 4 �
   還沒跑時正是如此。要離開某一頁時用 `page.waitForURL(predicate)` —— 它會輪詢，而且把
   「這裡在等」寫在程式碼上。（實例：登入點擊後那行等待一度被當成冗餘刪掉，結果 `goto`
   插進尚未完成的登入流程，setup 直接壞掉。）
-- **重用的 session 不可只靠 cookie 判斷。** better-auth 的 `cookieCache` 讓 cookie 在
-  5 分鐘內不查資料庫就通過，所以對著全新資料庫，剛產生的 cookie 會「驗證成功」而資料庫裡
-  一個 session 都沒有 —— 接著在套件跑到一半過期。每次新建資料庫的 runner 應直接刪掉
-  storage state：新資料庫的 rate limit 也是新的，重用沒有任何收益。
+- **重用的 session 不可只靠 cookie 判斷。** 每次新建資料庫的 runner 應直接刪掉
+  storage state：舊 cookie 指向的 session 不在新資料庫裡，新資料庫的 rate limit 也是新的，
+  重用沒有任何收益。過去 better-auth 的 `cookieCache`（5 分鐘）讓這種 cookie 不查資料庫就
+  「驗證成功」，接著在套件跑到一半過期；2026-11-03 起 cache 已關閉（它不綁定
+  `session_token`，曾讓一個瀏覽器以另一個帳號的身分寫入），每個請求都以 token 查資料庫，
+  舊 cookie 會直接被判為未登入。關掉 cache 不改變這條：新資料庫照樣不可盲目沿用舊的
+  storage state。
 - **重用的 session 要驗證，不可假設。** E2E 每次建立新資料庫，上一輪的 cookie 是一個
   格式正確但完全無效的檔案。驗證失敗要退回重新登入，而不是當成前置條件直接失敗。
 - **全套執行要對「實際跑了幾支」設下限。** 每支測試在缺設定時都會自己 skip，所以一次設定

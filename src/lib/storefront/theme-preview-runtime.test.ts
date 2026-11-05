@@ -57,13 +57,17 @@ describe("the Live Preview runtime a Theme is served with", () => {
 });
 
 describe("what a new Theme records", () => {
-  it("records nothing from Starter 29, the current one", () => {
+  it("records nothing from Starter 29", () => {
     expect(defaultPreviewRuntimeForNewTheme(29)).toBeNull();
   });
 
-  it("records start from Starter 30 on", () => {
-    expect(FIRST_STARTER_VERSION_RECORDING_START_PREVIEW).toBe(30);
-    expect(defaultPreviewRuntimeForNewTheme(30)).toBe("start");
+  it("records nothing from Starter 30, the current one, as from 29", () => {
+    expect(defaultPreviewRuntimeForNewTheme(30)).toBeNull();
+  });
+
+  it("records start from Starter 31 on", () => {
+    expect(FIRST_STARTER_VERSION_RECORDING_START_PREVIEW).toBe(31);
     expect(defaultPreviewRuntimeForNewTheme(31)).toBe("start");
+    expect(defaultPreviewRuntimeForNewTheme(32)).toBe("start");
   });
 });
