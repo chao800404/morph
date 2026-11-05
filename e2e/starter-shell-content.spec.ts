@@ -43,7 +43,7 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
   const now = new Date().toISOString();
   // On the run's own SQLite file with a busy timeout, not through a second
   // workerd started by `wrangler d1 execute`, which failed with SQLITE_BUSY
-  // while the dev server held the lock (PR #366 CI run 41970612315).
+  // in PR #366 CI run 41970612315. The lock holder was not identified.
   execLocalD1(
     `INSERT INTO storefront_themes
     (id, storefront_id, name, metadata, created_at, updated_at)
