@@ -1,8 +1,7 @@
 import { expect, test } from "@playwright/test";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import { EDITOR_PATH, openEditor, previewFrame } from "./helpers";
+import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
 
 test.skip(
@@ -29,25 +28,11 @@ for (const sourceOnly of [false, true]) {
     // read provisions its starter source and documents through the existing
     // upgrade path. Never reset revisions authored by preceding tests.
     const now = new Date().toISOString();
-    await promisify(execFile)("npx", [
-      "wrangler",
-      "d1",
-      "execute",
-      "DATABASE",
-      "--local",
-      ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") ===
-      "local-sidecar"
-        ? ["--env", "local_preview_e2e"]
-        : []),
-      "--persist-to",
-      process.env.MORPH_E2E_STATE_DIR!,
-      "--command",
-      `INSERT INTO storefront_themes
+    execLocalD1(`INSERT INTO storefront_themes
       (id, storefront_id, name, metadata, created_at, updated_at)
       VALUES ('${scope.themeId}', '${scope.storefrontId}',
         'initial-publish-${scope.themeId}', '{"starterTemplateVersion":1}',
-        '${now}', '${now}');`,
-    ]);
+        '${now}', '${now}');`);
     const readContext = () =>
       page.evaluate(async (scope) => {
         const module = "/src/server/storefront/storefront-themes.serverFn.ts";
