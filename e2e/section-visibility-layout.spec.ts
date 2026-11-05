@@ -1,8 +1,7 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import { EDITOR_PATH, previewFrame } from "./helpers";
+import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, publishShowingRelease, serverFn } from "./native-acceptance";
 import { themeScopeFromEditorPath, themeSourceGeneration, type ThemeScope } from "./native-compat";
 
@@ -59,24 +58,11 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     themeId: randomUUID(),
   };
   const now = new Date().toISOString();
-  await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--command",
-    `INSERT INTO storefront_themes
+  execLocalD1(`INSERT INTO storefront_themes
     (id, storefront_id, name, metadata, created_at, updated_at)
     VALUES ('${created.themeId}', '${created.storefrontId}',
       'section-visibility-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`,
-  ]);
+      '${now}', '${now}');`);
   return created;
 }
 

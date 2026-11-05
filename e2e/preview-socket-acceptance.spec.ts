@@ -1,0 +1,847 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import Database from "better-sqlite3";
+import {
+  expect,
+  test,
+  type Browser,
+  type Frame,
+  type Page,
+} from "@playwright/test";
+
+import { openEditor, serverFn } from "./native-acceptance";
+import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
+
+/**
+ * #214 A7 acceptance on the P2/P3/P4 candidate: a real Theme WebSocket on the
+ * container transport, relayed under its preview grant.
+ *
+ * A Theme-owned server entry (`src/server.js`, test-only) answers one path
+ * with a WebSocketPair that echoes every frame and records, with the
+ * container's clock, each frame it receives and when its side closed. The
+ * record is read from inside this run's own container, so it is available
+ * after the pv- host has stopped answering.
+ *
+ * 1. Order and content: mixed text and binary frames of several sizes, sent
+ *    back to back, arrive at the container and back at the browser in the
+ *    order sent, byte for byte, none lost.
+ * 2. Revocation, four cases, each on its own signed-in session:
+ *    frame | tab  x  pushed (sign-out, P2d) | notice lost (the grant revoked
+ *    in D1 only, so no push reaches the Durable Object and only the lease
+ *    can end the socket).
+ *    Each opens its socket on a preview that has finished loading: the
+ *    frame's document ready as the editor received it, the tab's own bridge
+ *    ready event. Revocation while a page is still loading is a different
+ *    case and is not this one.
+ *    Recorded separately for each: the window R lies in (the commit is not
+ *    observed as one instant: for a push, sign-out sent to answered; for a
+ *    lost notice, just before the UPDATE to its return), when the container
+ *    and the browser each received the last data frame (the relay's own
+ *    forwarding moment is not observed; it is no later than these), and when
+ *    each side saw the socket close.
+ *
+ * Judged conservatively. With R somewhere in [a, b] and an event at T, the
+ * delay T - R lies in [T - b, T - a], so against a limit D:
+ *   pass       T - a <= D  (even the longest possible delay is within D);
+ *   exceeded   T - b >  D  (even the shortest possible delay is over D);
+ *   uncertain  otherwise.
+ * Only "pass" passes. A slower sign-out answer widens the window and can only
+ * move a result toward "uncertain", never toward "pass".
+ *
+ * Limits: data received at either end within L + eps (A5: the lease ends
+ * forwarding at most L after R); the close within L + one lease tick + eps
+ * (an idle socket is closed by the next tick); close code 4401. eps = 2 s is
+ * this acceptance's tolerance, not a proven bound on cloud clock error or
+ * delivery. "Within 30 s" is reported with the same three verdicts, not
+ * asserted: it remains a target to verify.
+ */
+
+const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
+const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
+const OUT = process.env.P4_ACCEPTANCE_OUT;
+
+test.skip(
+  !EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR,
+  "Run through scripts/run-editor-e2e.mjs.",
+);
+test.skip(
+  TRANSPORT !== "cloudflare-sandbox",
+  "The pv- relay fronts the Sandbox container: MORPH_E2E_TRANSPORT=cloudflare-sandbox.",
+);
+
+const PREVIEW =
+  "/src/server/storefront/storefront-theme-preview-server.serverFn.ts";
+const HERO = '[data-storefront-section-id="starter-hero"]';
+const ECHO = "__morph-p4-echo";
+const LOG = "__morph-p4-log";
+const DEV_PORT = 5173;
+const DEV_BASE = "/__morph-theme-preview__/";
+// preview-socket-lease.ts / preview-socket-relay.ts
+const LEASE_MS = 30_000;
+const TICK_MS = 5_000;
+// This acceptance's tolerance (eps); not a proven cloud error bound.
+const SLACK_MS = 2_000;
+const TARGET_MS = 30_000;
+
+type Verdict = "pass" | "uncertain" | "exceeded";
+
+/** The delay from R in [a, b] to T, judged against limit D (see above). */
+function judge(
+  t: number,
+  window: { from: number; to: number },
+  limitMs: number,
+): {
+  verdict: Verdict;
+  longestMs: number;
+  shortestMs: number;
+  limitMs: number;
+} {
+  const longestMs = t - window.from;
+  const shortestMs = t - window.to;
+  const verdict: Verdict =
+    longestMs <= limitMs
+      ? "pass"
+      : shortestMs > limitMs
+        ? "exceeded"
+        : "uncertain";
+  return { verdict, longestMs, shortestMs, limitMs };
+}
+
+const FIXTURE = `import startEntry from "@tanstack/react-start/server-entry";
+
+// Test-only fixture (#214 A7 acceptance). One path answers with a socket that
+// echoes every frame and records, by the container's clock, what it received
+// and when it closed; another returns that record.
+const ECHO = ${JSON.stringify(`/${ECHO}`)};
+const LOG = ${JSON.stringify(`/${LOG}`)};
+const records = new Map();
+
+function describe(data) {
+  if (typeof data === "string") {
+    return { kind: "text", len: data.length, head: data.slice(0, 32) };
+  }
+  const bytes = new Uint8Array(data);
+  let sum = 0;
+  for (const b of bytes) sum = (sum + b) >>> 0;
+  return {
+    kind: "binary",
+    len: bytes.length,
+    sum,
+    seq: bytes.length >= 4 ? new DataView(data).getUint32(0) : null,
+  };
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname.endsWith(LOG)) {
+      const record = records.get(url.searchParams.get("sock") || "") ?? null;
+      return new Response(JSON.stringify(record), {
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
+    if (!url.pathname.endsWith(ECHO)) return startEntry.fetch(request, env, ctx);
+    if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
+      return new Response("p4-echo: upgrade required", {
+        status: 426,
+        headers: { "cache-control": "no-store" },
+      });
+    }
+    const record = {
+      sock: url.searchParams.get("sock") || "anon",
+      openedAt: Date.now(),
+      received: [],
+      closedAt: null,
+      closeCode: null,
+    };
+    records.set(record.sock, record);
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    // Bytes, not Blobs: reading a Blob is asynchronous and would let a later
+    // text frame overtake it inside the fixture itself.
+    server.binaryType = "arraybuffer";
+    server.accept();
+    server.addEventListener("message", (event) => {
+      record.received.push({ t: Date.now(), ...describe(event.data) });
+      try {
+        server.send(event.data);
+      } catch {}
+    });
+    server.addEventListener("close", (event) => {
+      record.closedAt = Date.now();
+      record.closeCode = event.code;
+    });
+    return new Response(null, { status: 101, webSocket: client });
+  },
+};
+`;
+
+type Received = {
+  t: number;
+  kind: "text" | "binary";
+  len: number;
+  head?: string;
+  sum?: number;
+  seq?: number | null;
+};
+type FixtureRecord = {
+  sock: string;
+  openedAt: number;
+  received: Received[];
+  closedAt: number | null;
+  closeCode: number | null;
+};
+
+const record: Record<string, unknown> = {
+  startedAt: new Date().toISOString(),
+  leaseMs: LEASE_MS,
+  tickMs: TICK_MS,
+};
+function save() {
+  if (OUT) writeFileSync(OUT, JSON.stringify(record, null, 2));
+}
+
+/** One statement against this run's own D1 (as binding-acceptance-helpers). */
+function d1(sql: string, ...params: unknown[]) {
+  const dir = join(
+    process.env.MORPH_E2E_STATE_DIR!,
+    "v3/d1/miniflare-D1DatabaseObject",
+  );
+  const file = existsSync(dir)
+    ? readdirSync(dir).find(
+        (name) => name.endsWith(".sqlite") && name !== "metadata.sqlite",
+      )
+    : undefined;
+  if (!file) throw new Error("this run's local D1 file was not found");
+  const db = new Database(join(dir, file), { timeout: 10_000 });
+  try {
+    const statement = db.prepare(sql);
+    return /^\s*SELECT\b/i.test(sql)
+      ? (statement.all(...params) as Array<Record<string, unknown>>)
+      : statement.run(...params).changes;
+  } finally {
+    db.close();
+  }
+}
+
+/** This run's own preview container (never a developer's `workerd-morph-…`). */
+function ownPreviewContainer(): string {
+  const listed = spawnSync(
+    "bash",
+    [
+      "-c",
+      'docker ps --filter "name=^workerd-morph-e2e-" --format "{{.ID}} {{.Names}}" 3>&-',
+    ],
+    { encoding: "utf8" },
+  );
+  const own = (listed.stdout ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(
+      (row) => row.includes("-PreviewSandbox-") && !row.endsWith("-proxy"),
+    );
+  expect(own, "exactly one preview container of this run").toHaveLength(1);
+  return own[0]!.split(" ")[0]!;
+}
+
+/** The fixture's record for one socket, read inside the container. */
+function fixtureRecord(sock: string): FixtureRecord | null {
+  const url = `http://127.0.0.1:${DEV_PORT}${DEV_BASE}${LOG}?sock=${sock}`;
+  const script =
+    "fetch(process.argv[1],{cache:'no-store'}).then(r=>r.text()).then(t=>console.log('P4LOG '+t),e=>console.log('P4LOG null'))";
+  const ran = spawnSync(
+    "bash",
+    [
+      "-c",
+      'docker exec "$0" node -e "$1" "$2" 3>&-',
+      ownPreviewContainer(),
+      script,
+      url,
+    ],
+    { encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 },
+  );
+  const line = (ran.stdout ?? "")
+    .split("\n")
+    .find((l) => l.startsWith("P4LOG "));
+  return line ? (JSON.parse(line.slice(6)) as FixtureRecord | null) : null;
+}
+
+async function previewFrame(page: Page): Promise<Frame> {
+  let found: Frame | undefined;
+  await expect
+    .poll(
+      () => {
+        found = page
+          .frames()
+          .find(
+            (frame) =>
+              new URL(frame.url() || "about:blank").hostname.startsWith(
+                "pv-",
+              ) &&
+              !new URL(frame.url()).pathname.startsWith(
+                "/__morph/preview-auth/",
+              ),
+          );
+        return Boolean(found);
+      },
+      { timeout: 90_000, message: "the preview frame lands on its pv- host" },
+    )
+    .toBe(true);
+  return found!;
+}
+
+/** A new context signed in as the E2E user with a session of its own. */
+async function ownSessionPage(browser: Browser): Promise<Page> {
+  const { baseURL } = test.info().project.use;
+  const context = await browser.newContext({ baseURL });
+  const signedIn = await context.request.post("/api/auth/sign-in/email", {
+    headers: { origin: new URL(baseURL!).origin },
+    data: {
+      email: process.env.E2E_EMAIL,
+      password: process.env.E2E_PASSWORD,
+    },
+  });
+  expect(signedIn.ok(), "a sign-in for its own session").toBe(true);
+  return context.newPage();
+}
+
+type Target = Page | Frame;
+
+/** Opens the echo socket on the target's own pv- origin. */
+async function openSocket(target: Target, sock: string) {
+  const opened = await target.evaluate(
+    async ({ path, sock }) => {
+      const url = new URL(path, location.href);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.searchParams.set("sock", sock);
+      const ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+      const w = window as unknown as Record<string, unknown>;
+      w.__p4ws = ws;
+      w.__p4got = [] as Array<{ t: number; data: unknown }>;
+      w.__p4closed = new Promise((resolve) =>
+        ws.addEventListener("close", (e) =>
+          resolve({ t: Date.now(), code: e.code, reason: e.reason }),
+        ),
+      );
+      ws.addEventListener("message", (e) =>
+        (w.__p4got as Array<{ t: number; data: unknown }>).push({
+          t: Date.now(),
+          data: e.data,
+        }),
+      );
+      return new Promise<{ open: boolean; code?: number }>((resolve) => {
+        ws.addEventListener("open", () => resolve({ open: true }));
+        ws.addEventListener("close", (e) =>
+          resolve({ open: false, code: e.code }),
+        );
+      });
+    },
+    { path: `${socketBase(target)}${ECHO}`, sock },
+  );
+  expect(opened, "the socket opens on the pv- host").toEqual({ open: true });
+}
+
+function socketBase(target: Target): string {
+  const url = new URL(target.url());
+  return url.pathname.startsWith(DEV_BASE) ? DEV_BASE : "/";
+}
+
+/**
+ * Installed in every document of a case's context before the editor
+ * navigates; it only listens. The editor keeps each preview-ready message
+ * with the window that sent it, and a preview document keeps when its own
+ * bridge fired its in-page ready event. Hero visible is server-rendered
+ * HTML, not a page that has finished loading (A7 diagnosis, 2026-11-02).
+ */
+function recordReadiness() {
+  performance.setResourceTimingBufferSize(10_000);
+  const w = window as unknown as Record<string, unknown>;
+  const ready: Array<Record<string, unknown>> = [];
+  w.__p4ready = ready;
+  window.addEventListener("message", (event) => {
+    const data = event.data as Record<string, unknown> | null;
+    if (!data || data.type !== "morph:storefront-preview-ready") return;
+    ready.push({
+      t: Date.now(),
+      source: event.source,
+      origin: event.origin,
+      previewSession: data.previewSession,
+      previewDocument: data.previewDocument,
+    });
+  });
+  window.addEventListener("morph:storefront-preview-bridge-ready", () => {
+    w.__p4bridgeReadyAt ??= Date.now();
+  });
+}
+
+/**
+ * The document now in `frame`: its id and session, read from the protocol
+ * module its own page loaded (the same URL, so the same instance).
+ */
+async function documentInFrame(
+  frame: Frame,
+): Promise<{ previewDocument: string; previewSession: string } | null> {
+  return frame
+    .evaluate(async () => {
+      const url = performance
+        .getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .find((name) => name.includes("/morph/preview/preview-protocol"));
+      if (!url) return null;
+      const protocol = (await import(/* @vite-ignore */ url)) as {
+        documentPreviewIdentity?: () => string;
+        documentPreviewRuntimeChannel?: () => { previewSession: string } | null;
+      };
+      const channel = protocol.documentPreviewRuntimeChannel?.() ?? null;
+      const previewDocument = protocol.documentPreviewIdentity?.() ?? null;
+      return channel && previewDocument
+        ? { previewDocument, previewSession: channel.previewSession }
+        : null;
+    })
+    .catch(() => null);
+}
+
+/**
+ * Waits until the editor has the ready of the document now in the frame:
+ * sent by that iframe's window, from its origin, on its session, naming its
+ * document. A ready from an earlier document in the same frame names another
+ * document and does not count.
+ */
+async function frameDocumentReady(page: Page, frame: Frame) {
+  const origin = new URL(frame.url()).origin;
+  const iframe = await frame.frameElement();
+  let matched: { t: number; previewDocument: string } | null = null;
+  await expect
+    .poll(
+      async () => {
+        const current = await documentInFrame(frame);
+        if (!current) return null;
+        matched = await page.evaluate(
+          ({ iframe, origin, current }) => {
+            const ready = ((window as unknown as Record<string, unknown>)
+              .__p4ready ?? []) as Array<Record<string, unknown>>;
+            const hit = ready.find(
+              (message) =>
+                message.source === (iframe as HTMLIFrameElement).contentWindow &&
+                message.origin === origin &&
+                message.previewSession === current.previewSession &&
+                message.previewDocument === current.previewDocument,
+            );
+            return hit
+              ? { t: hit.t as number, previewDocument: current.previewDocument }
+              : null;
+          },
+          { iframe, origin, current },
+        );
+        return matched;
+      },
+      {
+        timeout: 120_000,
+        message: "the editor has the ready of the document now in the frame",
+      },
+    )
+    .not.toBeNull();
+  return { signal: "editor-received-ready", ...matched! };
+}
+
+/**
+ * A tab has no editor behind it: its bridge posts ready to `window.parent`,
+ * which in a tab is itself, on the editor's origin, so nothing receives it.
+ * Its own in-page ready event is what it has; recorded by this document's
+ * init script, so an earlier document's cannot count. Whether any ready
+ * reached the editor or the tab is recorded beside it.
+ */
+async function tabDocumentReady(page: Page, tab: Page) {
+  let readyAt: number | null = null;
+  await expect
+    .poll(
+      async () => {
+        readyAt = await tab
+          .evaluate(
+            () =>
+              ((window as unknown as Record<string, unknown>)
+                .__p4bridgeReadyAt ?? null) as number | null,
+          )
+          .catch(() => null);
+        return readyAt;
+      },
+      {
+        timeout: 120_000,
+        message: "the tab's own bridge said its document is ready",
+      },
+    )
+    .not.toBeNull();
+  const readyMessagesAtEditorNotFromAFrame = await page.evaluate(() => {
+    const frames = Array.from(document.querySelectorAll("iframe")).map(
+      (element) => element.contentWindow,
+    );
+    const ready = ((window as unknown as Record<string, unknown>).__p4ready ??
+      []) as Array<Record<string, unknown>>;
+    return ready.filter((message) => !frames.includes(message.source as Window))
+      .length;
+  });
+  const readyMessagesAtTab = await tab.evaluate(
+    () =>
+      (((window as unknown as Record<string, unknown>).__p4ready ?? []) as unknown[])
+        .length,
+  );
+  return {
+    signal: "tab-bridge-ready-event",
+    t: readyAt!,
+    readyMessagesAtEditorNotFromAFrame,
+    readyMessagesAtTab,
+  };
+}
+
+test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(10 * 60_000);
+
+  test("setup: the Theme's test-only socket fixture", async ({ page }) => {
+    const scope = themeScopeFromEditorPath(EDITOR_PATH!);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await serverFn(page, PREVIEW, "stopThemePreviewServer", scope).catch(
+      () => {},
+    );
+    const saved = await writeThemeFiles(page, scope, [
+      { path: "src/server.js", content: FIXTURE },
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+  });
+
+  test("mixed text and binary frames keep their order and bytes, both ways", async ({
+    page,
+  }) => {
+    await openEditor(page);
+    const frame = await previewFrame(page);
+    await expect(frame.locator(HERO)).toBeVisible({ timeout: 120_000 });
+    const sock = `order-${Date.now()}`;
+    await openSocket(frame, sock);
+    // Binary frames carry their index in the first four bytes and a pattern
+    // derived from it; text frames carry the index in their prefix.
+    const SIZES = [4, 7, 1024, 65_536, 262_144, 524_288];
+    const TEXT = [0, 1, 300, 20_000];
+    const COUNT = 240;
+    const sent = await frame.evaluate(
+      async ({ SIZES, TEXT, COUNT }) => {
+        const ws = (window as unknown as { __p4ws: WebSocket }).__p4ws;
+        const plan: Array<{
+          kind: string;
+          len: number;
+          sum?: number;
+          head?: string;
+        }> = [];
+        for (let i = 0; i < COUNT; i += 1) {
+          if (i % 2 === 0) {
+            const text = `t:${i}:` + "x".repeat(TEXT[(i / 2) % TEXT.length]!);
+            ws.send(text);
+            plan.push({
+              kind: "text",
+              len: text.length,
+              head: text.slice(0, 32),
+            });
+          } else {
+            const len = SIZES[((i - 1) / 2) % SIZES.length]!;
+            const bytes = new Uint8Array(len);
+            new DataView(bytes.buffer).setUint32(0, i);
+            for (let j = 4; j < len; j += 1) bytes[j] = (i * 31 + j) & 0xff;
+            let sum = 0;
+            for (const b of bytes) sum = (sum + b) >>> 0;
+            ws.send(bytes);
+            plan.push({ kind: "binary", len, sum });
+          }
+        }
+        return plan;
+      },
+      { SIZES, TEXT, COUNT },
+    );
+    const echoed = await frame.evaluate(
+      async ({ COUNT }) => {
+        const w = window as unknown as {
+          __p4got: Array<{ t: number; data: unknown }>;
+        };
+        const deadline = Date.now() + 60_000;
+        while (w.__p4got.length < COUNT && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        return w.__p4got.map(({ data }) => {
+          if (typeof data === "string") {
+            return { kind: "text", len: data.length, head: data.slice(0, 32) };
+          }
+          const bytes = new Uint8Array(data as ArrayBuffer);
+          let sum = 0;
+          for (const b of bytes) sum = (sum + b) >>> 0;
+          return { kind: "binary", len: bytes.length, sum };
+        });
+      },
+      { COUNT },
+    );
+    const atContainer = fixtureRecord(sock);
+    const containerSeen = (atContainer?.received ?? []).map((r) =>
+      r.kind === "text"
+        ? { kind: r.kind, len: r.len, head: r.head }
+        : { kind: r.kind, len: r.len, sum: r.sum },
+    );
+    const firstMismatch = (got: unknown[]) =>
+      sent.findIndex((s, i) => JSON.stringify(s) !== JSON.stringify(got[i]));
+    record.order = {
+      sent: sent.length,
+      atContainer: containerSeen.length,
+      echoed: echoed.length,
+      firstMismatchAtContainer: firstMismatch(containerSeen),
+      firstMismatchEchoed: firstMismatch(echoed),
+      sizes: SIZES,
+      textSizes: TEXT,
+    };
+    save();
+    expect(
+      containerSeen,
+      "toward the container: order, bytes, none lost",
+    ).toEqual(sent);
+    expect(echoed, "toward the browser: order, bytes, none lost").toEqual(sent);
+    await frame.evaluate(() =>
+      (window as unknown as { __p4ws: WebSocket }).__p4ws.close(1000),
+    );
+  });
+
+  /**
+   * One revocation case: `surface` is where the socket is opened, `revocation`
+   * how the grant ends. The four cases below are registered one by one, with
+   * literal titles, in the order the loop that registered them used to run.
+   */
+  async function revocationCase(
+    browser: Browser,
+    surface: "frame" | "tab",
+    revocation: "pushed" | "notice-lost",
+  ) {
+    const caseName = `${surface}-${revocation}`;
+    const caseStart = new Date().toISOString();
+    const page = await ownSessionPage(browser);
+    try {
+      // Before any navigation, so no ready can be missed.
+      await page.context().addInitScript(recordReadiness);
+      await openEditor(page);
+      const frame = await previewFrame(page);
+      await expect(frame.locator(HERO)).toBeVisible({ timeout: 120_000 });
+      // The case is a socket on a preview that has finished loading: wait
+      // for the target document's own ready, never a fixed delay.
+      let readiness: Record<string, unknown> | null =
+        surface === "frame" ? await frameDocumentReady(page, frame) : null;
+      let target: Target = frame;
+
+      if (surface === "tab") {
+        const framedHost = new URL(frame.url()).hostname;
+        const [tab] = await Promise.all([
+          page.context().waitForEvent("page"),
+          page.getByRole("button", { name: "Open preview in new tab" }).click(),
+        ]);
+        await tab.waitForURL(
+          (url) =>
+            url.hostname === framedHost &&
+            !url.pathname.startsWith("/__morph/preview-auth/"),
+          { timeout: 90_000 },
+        );
+        await expect(tab.locator(HERO)).toBeVisible({ timeout: 90_000 });
+        readiness = await tabDocumentReady(page, tab);
+        target = tab;
+      }
+      record.readiness ??= {} as Record<string, unknown>;
+      (record.readiness as Record<string, unknown>)[caseName] = readiness;
+      save();
+      const sock = `${caseName}-${Date.now()}`;
+      await openSocket(target, sock);
+      // A frame every 100 ms, each echoed back, until the socket ends.
+      await target.evaluate(() => {
+        const w = window as unknown as Record<string, unknown>;
+        const ws = w.__p4ws as WebSocket;
+        let n = 0;
+        w.__p4sent = [] as Array<{ n: number; t: number }>;
+        w.__p4timer = setInterval(() => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          n += 1;
+          ws.send(`b:${n}`);
+          (w.__p4sent as Array<{ n: number; t: number }>).push({
+            n,
+            t: Date.now(),
+          });
+        }, 100);
+      });
+      await page.waitForTimeout(3_000);
+
+      const kind = surface === "frame" ? "iframe" : "tab";
+      const live = d1(
+        `SELECT id FROM storefront_preview_access_grants
+          WHERE kind = ? AND revoked_at IS NULL AND created_at >= ?`,
+        kind,
+        caseStart,
+      ) as Array<{ id: string }>;
+      expect(live.length, `this case's live ${kind} grant`).toBeGreaterThan(0);
+
+      // R is not observed as one instant. The commit lies inside a
+      // window: for a push, between sending the sign-out and its answer
+      // (the after-hook revokes before the answer); for a lost notice,
+      // between just before the UPDATE and its return. Delays are judged
+      // from both ends of it (judge()).
+      let rWindow: { from: number; to: number };
+      let revokeDetail: Record<string, unknown>;
+      if (revocation === "pushed") {
+        const sentAt = Date.now();
+        const out = await page.context().request.post("/api/auth/sign-out", {
+          headers: { origin: new URL(page.url()).origin },
+          data: {},
+        });
+        const answeredAt = Date.now();
+        expect(out.ok(), "sign-out").toBe(true);
+        const rows = d1(
+          `SELECT revoked_at FROM storefront_preview_access_grants WHERE id = ?`,
+          live[0]!.id,
+        ) as Array<{ revoked_at: string | null }>;
+        expect(rows[0]?.revoked_at, "sign-out revoked the grant").toBeTruthy();
+        rWindow = { from: sentAt, to: answeredAt };
+        revokeDetail = {
+          // The Worker's stamp, taken before its write: not the commit.
+          revokedAtStampBeforeWrite: Date.parse(rows[0]!.revoked_at!),
+        };
+      } else {
+        const before = Date.now();
+        const stamp = new Date(before).toISOString();
+        const changed = d1(
+          `UPDATE storefront_preview_access_grants
+              SET revoked_at = ?, updated_at = ?
+            WHERE kind = ? AND revoked_at IS NULL AND created_at >= ?`,
+          stamp,
+          stamp,
+          kind,
+          caseStart,
+        );
+        rWindow = { from: before, to: Date.now() };
+        revokeDetail = { grantsRevokedInD1Only: changed };
+      }
+
+      const closed = (await target.evaluate(() =>
+        Promise.race([
+          (window as unknown as { __p4closed: Promise<unknown> }).__p4closed,
+          new Promise((r) => setTimeout(() => r({ timeout: true }), 75_000)),
+        ]),
+      )) as {
+        t?: number;
+        code?: number;
+        reason?: string;
+        timeout?: boolean;
+      };
+      const browserSide = (await target.evaluate(() => {
+        const w = window as unknown as {
+          __p4got: Array<{ t: number; data: unknown }>;
+          __p4sent: Array<{ n: number; t: number }>;
+          __p4timer: number;
+        };
+        clearInterval(w.__p4timer);
+        return {
+          sent: w.__p4sent.length,
+          lastSentAt: w.__p4sent.at(-1)?.t ?? null,
+          echoes: w.__p4got.length,
+          lastEchoAt: w.__p4got.at(-1)?.t ?? null,
+        };
+      })) as {
+        sent: number;
+        lastSentAt: number | null;
+        echoes: number;
+        lastEchoAt: number | null;
+      };
+      const atContainer = fixtureRecord(sock);
+      const lastReceivedAtContainer = atContainer?.received.at(-1)?.t ?? null;
+      const dataLimit = LEASE_MS + SLACK_MS;
+      const closeLimit = LEASE_MS + TICK_MS + SLACK_MS;
+      const verdicts = {
+        dataAtContainer:
+          lastReceivedAtContainer === null
+            ? null
+            : judge(lastReceivedAtContainer, rWindow, dataLimit),
+        dataAtBrowser:
+          browserSide.lastEchoAt === null
+            ? null
+            : judge(browserSide.lastEchoAt, rWindow, dataLimit),
+        close:
+          closed.t === undefined ? null : judge(closed.t, rWindow, closeLimit),
+        closeWithinTarget:
+          closed.t === undefined ? null : judge(closed.t, rWindow, TARGET_MS),
+      };
+      const result = {
+        readiness,
+        rWindow,
+        ...revokeDetail,
+        // When each endpoint received the last data frame. The relay's
+        // own forwarding moment is not observed; it is no later than
+        // these.
+        lastDataReceivedAtContainer: lastReceivedAtContainer,
+        lastEchoReceivedAtBrowser: browserSide.lastEchoAt,
+        // Closes, each side on its own.
+        browserClose: closed,
+        containerClose: atContainer
+          ? { t: atContainer.closedAt, code: atContainer.closeCode }
+          : null,
+        framesSent: browserSide.sent,
+        framesAtContainer: atContainer?.received.length ?? null,
+        echoes: browserSide.echoes,
+        // Each: the longest and shortest possible delay from R, and the
+        // verdict against its limit. closeWithinTarget is reported only.
+        verdicts,
+      };
+      record.cases ??= {} as Record<string, unknown>;
+      (record.cases as Record<string, unknown>)[caseName] = result;
+      save();
+
+      expect(closed.timeout, "the socket closed").toBeUndefined();
+      expect(closed.code, "closed as revoked").toBe(4401);
+      expect(atContainer, "the fixture's record was read").not.toBeNull();
+      expect(
+        browserSide.lastEchoAt,
+        "the browser received echoes",
+      ).not.toBeNull();
+      // Only a conservative pass passes; "uncertain" and "exceeded" fail
+      // under their own names.
+      expect(
+        verdicts.dataAtContainer?.verdict,
+        `data at the container within L + eps of R: ${JSON.stringify(verdicts.dataAtContainer)}`,
+      ).toBe("pass");
+      expect(
+        verdicts.dataAtBrowser?.verdict,
+        `data at the browser within L + eps of R: ${JSON.stringify(verdicts.dataAtBrowser)}`,
+      ).toBe("pass");
+      expect(
+        verdicts.close?.verdict,
+        `close within L + tick + eps of R: ${JSON.stringify(verdicts.close)}`,
+      ).toBe("pass");
+    } finally {
+      await page.context().close();
+    }
+  }
+
+  test("frame, pushed: the socket stops and closes 4401 within the lease", async ({
+    browser,
+  }) => {
+    await revocationCase(browser, "frame", "pushed");
+  });
+
+  test("frame, notice-lost: the socket stops and closes 4401 within the lease", async ({
+    browser,
+  }) => {
+    await revocationCase(browser, "frame", "notice-lost");
+  });
+
+  test("tab, pushed: the socket stops and closes 4401 within the lease", async ({
+    browser,
+  }) => {
+    await revocationCase(browser, "tab", "pushed");
+  });
+
+  test("tab, notice-lost: the socket stops and closes 4401 within the lease", async ({
+    browser,
+  }) => {
+    await revocationCase(browser, "tab", "notice-lost");
+  });
+});

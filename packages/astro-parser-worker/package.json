@@ -1,0 +1,21 @@
+{
+  "name": "@morph/astro-parser-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The dedicated .astro parser Worker, reached from Morph Core through a service binding only. Not deployed until approved.",
+  "type": "module",
+  "exports": {
+    "./contract": "./src/contract.ts",
+    "./testing": "./src/testing/local-binding.ts"
+  },
+  "dependencies": {
+    "@astrojs/compiler-binding-wasm32-wasi": "0.5.1",
+    "@emnapi/core": "1.11.3",
+    "@emnapi/runtime": "1.11.3",
+    "@napi-rs/wasm-runtime": "1.2.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "miniflare": "5.20261001.0-alpha"
+  }
+}
