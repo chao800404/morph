@@ -11,7 +11,15 @@ import { join } from "node:path";
 
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { getPlatformProxy } from "wrangler";
 
 import * as schema from "@/db/schema";
@@ -35,12 +43,16 @@ import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-prev
  * What this layer proves: a grant is issued through the real server function
  * and a real `getSession`; the next `pv-` request is decided from the session
  * row Better Auth itself wrote; that row's expiresAt is never moved by
- * issuance, redeem or a served request.
+ * issuance, redeem or a served request. And (#214 P2d) that sign-out and
+ * revoke-other-sessions, through Better Auth's own routes and the hooks in
+ * src/auth/index.ts, revoke exactly the ended sessions' grants in D1 and push
+ * their close, so the next request is refused as GRANT_REVOKED; a profile
+ * update that keeps the role revokes nothing.
  *
  * What it does not: `src/server.ts` routing and the forward into a container
- * (the local container E2E covers those); revoking a grant or closing open
- * sockets when a session ends (#366 / A7) — here a deleted session only makes
- * the next request fail, and the grant row is left as it was.
+ * (the local container E2E covers those), or that open sockets actually close:
+ * the preview's Durable Object is a stand-in (`push`) that records the close
+ * it was asked for.
  *
  * Time: issuance runs on the real clock. The service's `now` is injected only
  * as values derived from the stored session row (so no case races the real
@@ -54,6 +66,21 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("cloudflare:workers", () => ({ env: state.env }));
+// The preview's Durable Object, the one stand-in for the revocation hooks
+// (as preview-access-revocation.integration.test.ts): records each close.
+const push = vi.hoisted(() => ({
+  calls: [] as Array<{ previewId: string; grantIds: string[] }>,
+  fail: false,
+}));
+vi.mock("@cloudflare/sandbox", () => ({
+  getSandbox: (_ns: unknown, previewId: string) => ({
+    closePreviewGrants: async (grantIds: string[]) => {
+      if (push.fail) throw new Error("push down");
+      push.calls.push({ previewId, grantIds });
+      return grantIds.length;
+    },
+  }),
+}));
 vi.mock("@/lib/email", () => ({
   sendAuthVerificationEmail: async () => {},
   sendPasswordResetEmail: async () => {},
@@ -124,15 +151,28 @@ const MINUTE = 60_000;
 const EXPIRES_IN_MS = 7 * 24 * 60 * MINUTE;
 const UPDATE_AGE_MS = 24 * 60 * MINUTE;
 
-const ADMIN = { email: "preview-admin@preview-access.invalid", id: "" };
+type Account = {
+  email: string;
+  id: string;
+  previewId: string;
+  pvOrigin: string;
+};
+const account = (email: string): Account => ({
+  email,
+  id: "",
+  previewId: "",
+  pvOrigin: "",
+});
+const ADMIN = account("preview-admin@preview-access.invalid");
+// A second admin whose only sessions are the ones a case opens, so a call
+// that ends "every other session" ends exactly those.
+const OTHER_ADMIN = account("preview-admin-2@preview-access.invalid");
 
 let proxy: Awaited<ReturnType<typeof getPlatformProxy>> | null = null;
 let dir = "";
 let d1: D1Database;
 type Auth = ReturnType<(typeof import("@/auth"))["createAuth"]>;
 let auth: Auth;
-let pvHost = "";
-let pvOrigin = "";
 
 type ServerFnCall = (args: { data: unknown; context?: object }) => Promise<{
   success: boolean;
@@ -143,6 +183,8 @@ type ServerFnCall = (args: { data: unknown; context?: object }) => Promise<{
 
 /** The author's browser: the app origin's cookies and the pv- host's. */
 class Browser {
+  constructor(readonly account: Account) {}
+
   readonly app = new Map<string, string>();
   readonly pv = new Map<string, string>();
 
@@ -170,10 +212,10 @@ class Browser {
   }
 }
 
-async function signIn(): Promise<Browser> {
-  const browser = new Browser();
+async function signIn(who: Account = ADMIN): Promise<Browser> {
+  const browser = new Browser(who);
   const { headers } = await auth.api.signInEmail({
-    body: { email: ADMIN.email, password: PASSWORD },
+    body: { email: who.email, password: PASSWORD },
     returnHeaders: true,
   });
   Browser.apply(browser.app, headers);
@@ -204,6 +246,66 @@ async function grantRows(sessionId: string) {
     .all<{ id: string; expiresAt: string }>();
   return results;
 }
+
+/** Every grant of a session, revoked or not, as stored. */
+async function grantState(sessionId: string) {
+  const { results } = await d1
+    .prepare(
+      "SELECT id, preview_id AS previewId, revoked_at AS revokedAt, deleted_at AS deletedAt, expires_at AS expiresAt FROM storefront_preview_access_grants WHERE session_id = ?",
+    )
+    .bind(sessionId)
+    .all<{
+      id: string;
+      previewId: string;
+      revokedAt: string | null;
+      deletedAt: string | null;
+      expiresAt: string;
+    }>();
+  return results;
+}
+
+/** `revokedAt` set by the real clock, inside [t0, t1]. */
+function expectRevokedWithin(revokedAt: string | null, t0: number, t1: number) {
+  expect(revokedAt).not.toBeNull();
+  const at = Date.parse(revokedAt!);
+  expect(at).toBeGreaterThanOrEqual(t0);
+  expect(at).toBeLessThanOrEqual(t1);
+}
+
+/**
+ * Runs `run` inside a real TanStack Start request event, as a server function
+ * call does in the Worker (copied from session-identity.integration.test.ts):
+ * `updateProfile` reads the event's response headers.
+ */
+async function serveInEvent(cookie: string, run: () => Promise<unknown>) {
+  const { requestHandler } = await import("@tanstack/react-start/server");
+  state.request = null;
+  let result: unknown;
+  const response = await requestHandler(async () => {
+    result = await run();
+    return new Response("served");
+  })(
+    new Request(`${ORIGIN}/_serverFn/test`, {
+      method: "POST",
+      headers: { cookie, origin: ORIGIN },
+    }),
+    {} as never,
+  );
+  return { headers: response.headers, result };
+}
+
+const authPost = (path: string, browser: Browser) =>
+  auth.handler(
+    new Request(`${ORIGIN}/api/auth/${path}`, {
+      method: "POST",
+      headers: {
+        cookie: Browser.header(browser.app),
+        origin: ORIGIN,
+        "content-type": "application/json",
+      },
+      body: "{}",
+    }),
+  );
 
 /** One request on the pv- host, decided by the real DAL and service. */
 async function pv(
@@ -240,7 +342,10 @@ async function pv(
 /** begin → issueThemePreviewAccess (as the editor) → redeem, on real time. */
 async function flow(browser: Browser) {
   const flowId = createPreviewAccessSecret().slice(0, 32);
-  const beginUrl = new URL("/__morph/preview-auth/begin", pvOrigin);
+  const beginUrl = new URL(
+    "/__morph/preview-auth/begin",
+    browser.account.pvOrigin,
+  );
   beginUrl.searchParams.set("flow", flowId);
   beginUrl.searchParams.set("return", RETURN);
   beginUrl.searchParams.set("editorOrigin", ORIGIN);
@@ -266,20 +371,23 @@ async function flow(browser: Browser) {
   expect(issued.success).toBe(true);
 
   const redeemed = await pv(
-    new Request(new URL("/__morph/preview-auth/redeem", pvOrigin), {
-      method: "POST",
-      headers: {
-        origin: pvOrigin,
-        cookie: Browser.header(browser.pv),
-        "content-type": "application/x-www-form-urlencoded",
+    new Request(
+      new URL("/__morph/preview-auth/redeem", browser.account.pvOrigin),
+      {
+        method: "POST",
+        headers: {
+          origin: browser.account.pvOrigin,
+          cookie: Browser.header(browser.pv),
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          flow: flowId,
+          return: RETURN,
+          editorOrigin: ORIGIN,
+          code: issued.data!.code,
+        }).toString(),
       },
-      body: new URLSearchParams({
-        flow: flowId,
-        return: RETURN,
-        editorOrigin: ORIGIN,
-        code: issued.data!.code,
-      }).toString(),
-    }),
+    ),
   );
   expect(redeemed.response.status).toBe(200);
   Browser.apply(browser.pv, redeemed.response.headers);
@@ -288,7 +396,7 @@ async function flow(browser: Browser) {
 
 const page = (browser: Browser, now?: Date) =>
   pv(
-    new Request(new URL("/", pvOrigin), {
+    new Request(new URL("/", browser.account.pvOrigin), {
       headers: { cookie: Browser.header(browser.pv) },
     }),
     now,
@@ -336,17 +444,20 @@ beforeAll(async () => {
   state.env.DATABASE = d1;
   state.env.BETTER_AUTH_SECRET = SECRET;
   state.env.THEME_PREVIEW_HOSTNAME = PARENT;
+  state.env.PreviewSandbox = {};
 
   const { createAuth } = await import("@/auth");
   auth = createAuth(state.env as never, `${ORIGIN}/`);
-  const created = await auth.api.signUpEmail({
-    body: { email: ADMIN.email, password: PASSWORD, name: "admin" },
-  });
-  ADMIN.id = created.user.id;
-  await d1
-    .prepare("UPDATE users SET role = 'admin' WHERE id = ?")
-    .bind(ADMIN.id)
-    .run();
+  for (const who of [ADMIN, OTHER_ADMIN]) {
+    const created = await auth.api.signUpEmail({
+      body: { email: who.email, password: PASSWORD, name: "admin" },
+    });
+    who.id = created.user.id;
+    await d1
+      .prepare("UPDATE users SET role = 'admin' WHERE id = ?")
+      .bind(who.id)
+      .run();
+  }
 
   await d1
     .prepare(
@@ -363,13 +474,14 @@ beforeAll(async () => {
     .bind(THEME, STORE)
     .run();
 
-  const previewId = await deriveThemePreviewSessionId({
-    storefrontId: STORE,
-    themeId: THEME,
-    userId: ADMIN.id,
-  });
-  pvHost = previewAccessHostname(previewId, PARENT);
-  pvOrigin = `https://${pvHost}`;
+  for (const who of [ADMIN, OTHER_ADMIN]) {
+    who.previewId = await deriveThemePreviewSessionId({
+      storefrontId: STORE,
+      themeId: THEME,
+      userId: who.id,
+    });
+    who.pvOrigin = `https://${previewAccessHostname(who.previewId, PARENT)}`;
+  }
 }, 120_000);
 
 afterAll(async () => {
@@ -379,6 +491,11 @@ afterAll(async () => {
 });
 
 describe("Live Preview access on the auth configuration without cache or renewal", () => {
+  beforeEach(() => {
+    push.calls = [];
+    push.fail = false;
+  });
+
   it("issues through the real server function and serves the next pv- request, without moving the session's expiry", async () => {
     const browser = await signIn();
     const token = browser.sessionToken();
@@ -407,33 +524,111 @@ describe("Live Preview access on the auth configuration without cache or renewal
     expect(Date.parse(grant!.expiresAt)).toBeLessThanOrEqual(before);
   });
 
-  it("refuses the next request once sign-out has deleted the session (next request only)", async () => {
+  it("sign-out revokes the session's grant through the real hook and pushes its close; the next request is refused as GRANT_REVOKED", async () => {
     const browser = await signIn();
     const token = browser.sessionToken();
     const sessionId = (await sessionRow(token))!.id;
     await flow(browser);
     expect((await page(browser)).response.status).toBe(200);
+    const [issued] = await grantState(sessionId);
+    expect(issued!.revokedAt).toBeNull();
+    expect(issued!.previewId).toBe(ADMIN.previewId);
 
-    const signedOut = await auth.handler(
-      new Request(`${ORIGIN}/api/auth/sign-out`, {
-        method: "POST",
-        headers: {
-          cookie: Browser.header(browser.app),
-          origin: ORIGIN,
-          "content-type": "application/json",
-        },
-        body: "{}",
-      }),
-    );
+    const t0 = Date.now();
+    const signedOut = await authPost("sign-out", browser);
+    const t1 = Date.now();
     expect(signedOut.status).toBe(200);
     expect(await sessionRow(token)).toBeNull();
 
+    const grants = await grantState(sessionId);
+    expect(grants).toHaveLength(1);
+    expect(grants[0]!.id).toBe(issued!.id);
+    expect(grants[0]!.deletedAt).toBeNull();
+    expectRevokedWithin(grants[0]!.revokedAt, t0, t1);
+    expect(push.calls).toEqual([
+      { previewId: ADMIN.previewId, grantIds: [issued!.id] },
+    ]);
+
     const next = await page(browser);
     expect(next.response.status).toBe(403);
-    expect(next.decision).toEqual({ kind: "refused", reason: "SESSION_ENDED" });
+    expect(next.decision).toEqual({ kind: "refused", reason: "GRANT_REVOKED" });
     expect(next.forwarded).toHaveLength(0);
-    // Not claimed here: the grant row is not revoked by sign-out in this PR.
-    expect(await grantRows(sessionId)).toHaveLength(1);
+    expect(await next.response.text()).not.toContain("DRAFT");
+  });
+
+  it("revoke-other-sessions revokes only the other session's grant: that one is refused as GRANT_REVOKED, the caller's is still served", async () => {
+    const a = await signIn(OTHER_ADMIN);
+    const b = await signIn(OTHER_ADMIN);
+    const sessionA = (await sessionRow(a.sessionToken()))!.id;
+    const sessionB = (await sessionRow(b.sessionToken()))!.id;
+    expect(sessionA).not.toBe(sessionB);
+    await flow(a);
+    await flow(b);
+    expect((await page(a)).response.status).toBe(200);
+    expect((await page(b)).response.status).toBe(200);
+    const [grantA] = await grantState(sessionA);
+    const [grantB] = await grantState(sessionB);
+    expect(grantA!.id).not.toBe(grantB!.id);
+
+    const t0 = Date.now();
+    const revoked = await authPost("revoke-other-sessions", a);
+    const t1 = Date.now();
+    expect(revoked.status).toBe(200);
+    expect(await sessionRow(b.sessionToken())).toBeNull();
+    expect(await sessionRow(a.sessionToken())).not.toBeNull();
+
+    expectRevokedWithin((await grantState(sessionB))[0]!.revokedAt, t0, t1);
+    expect((await grantState(sessionA))[0]!.revokedAt).toBeNull();
+    expect(push.calls).toEqual([
+      { previewId: OTHER_ADMIN.previewId, grantIds: [grantB!.id] },
+    ]);
+
+    const nextB = await page(b);
+    expect(nextB.response.status).toBe(403);
+    expect(nextB.decision).toEqual({
+      kind: "refused",
+      reason: "GRANT_REVOKED",
+    });
+    expect(nextB.forwarded).toHaveLength(0);
+    expect(await nextB.response.text()).not.toContain("DRAFT");
+
+    const nextA = await page(a);
+    expect(nextA.response.status).toBe(200);
+    expect(nextA.decision?.kind).toBe("served");
+    expect(nextA.forwarded).toHaveLength(1);
+  });
+
+  it("an updateProfile name change that keeps the role revokes nothing and the grant is still served", async () => {
+    const browser = await signIn();
+    const sessionId = (await sessionRow(browser.sessionToken()))!.id;
+    await flow(browser);
+    expect((await page(browser)).response.status).toBe(200);
+
+    const { updateProfile } =
+      await import("@/server/auth/update-profile.serverFn");
+    const form = new FormData();
+    form.set("name", "Renamed by profile");
+    form.set("language", "en");
+    const { result } = await serveInEvent(Browser.header(browser.app), () =>
+      (updateProfile as unknown as ServerFnCall)({ data: form }),
+    );
+    expect(result).toMatchObject({ success: true });
+    const user = await d1
+      .prepare("SELECT name, role, banned FROM users WHERE id = ?")
+      .bind(ADMIN.id)
+      .first<{ name: string; role: string; banned: number | null }>();
+    expect(user).toMatchObject({ name: "Renamed by profile", role: "admin" });
+    expect(Boolean(user!.banned)).toBe(false);
+
+    const grants = await grantState(sessionId);
+    expect(grants).toHaveLength(1);
+    expect(grants[0]!.revokedAt).toBeNull();
+    expect(push.calls).toEqual([]);
+
+    const next = await page(browser);
+    expect(next.response.status).toBe(200);
+    expect(next.decision?.kind).toBe("served");
+    expect(next.forwarded).toHaveLength(1);
   });
 
   it("does not reuse a grant with clearly under 10 minutes left: a new, different grant, still capped by the session", async () => {
