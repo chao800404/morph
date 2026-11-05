@@ -17,6 +17,11 @@ const issuePreviewAccessInputSchema = z
     flowId: z.string().regex(/^[0-9a-f]{32}$/),
     /** What the begin page the editor framed reported; never the binder. */
     binderHash: z.string().regex(/^[0-9a-f]{64}$/),
+    /**
+     * Whose begin page reported it: the editor's frame, or a tab the editor
+     * opened (#214 P3). Redeem must present the same kind.
+     */
+    kind: z.enum(["iframe", "tab"]).default("iframe"),
   })
   .strict();
 
@@ -35,7 +40,7 @@ export const issueThemePreviewAccess = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     if (!input.success) return input;
-    const { storefrontId, themeId, flowId, binderHash } = input.data;
+    const { storefrontId, themeId, flowId, binderHash, kind } = input.data;
     const parent = (env as unknown as Record<string, unknown>)
       .THEME_PREVIEW_HOSTNAME;
     if (typeof parent !== "string" || !parent) {
@@ -61,7 +66,7 @@ export const issueThemePreviewAccess = createServerFn({ method: "POST" })
     });
     const issued = await issuePreviewAccessExchange({
       dal: storefrontPreviewAccessDal,
-      kind: "iframe",
+      kind,
       sessionId: context.session.session.id,
       userId: context.user.id,
       storefrontId,

@@ -20,7 +20,8 @@ const planDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 /**
  * The review the author confirmed: its source generation, and the digest of
  * each part they chose to apply, the Starter upgrade, the product catalog or
- * both.
+ * both. The Starter digest is the review's, or the one of the review with the
+ * Starter's new pages selected when the author selected them.
  */
 export const applyStorefrontStarterUpgradeInputSchema = z
   .object({

@@ -5,7 +5,10 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { ThemeRouteRecord } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  isThemeEndpointRoute,
+  type ThemeRouteRecord,
+} from "@/lib/storefront/compiler/theme-route-registry";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { cn } from "@/lib/utils";
@@ -66,7 +69,7 @@ export const EditorPathNavigator = memo(function EditorPathNavigator({
   // is still being initialized.
   const templateRoutes = useMemo(() => {
     const sourceRoutes = themeRoutes.filter(
-      (route) => route.kind === "route" && !route.isServerOnly,
+      (route) => route.kind === "route" && !isThemeEndpointRoute(route),
     );
     if (themeRoutes.some((route) => route.kind === "route")) {
       return sourceRoutes.map((route) => {

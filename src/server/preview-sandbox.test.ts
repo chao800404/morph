@@ -173,7 +173,14 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
         headers: Headers;
         webSocket: unknown;
         body: unknown;
-        constructor(body: unknown, init: { status?: number; headers?: HeadersInit; webSocket?: unknown } = {}) {
+        constructor(
+          body: unknown,
+          init: {
+            status?: number;
+            headers?: HeadersInit;
+            webSocket?: unknown;
+          } = {},
+        ) {
           this.body = body;
           this.status = init.status ?? 200;
           this.headers = new Headers(init.headers);
@@ -191,7 +198,9 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
   });
 
   const sandbox = () =>
-    new (PreviewSandbox as unknown as new () => InstanceType<typeof PreviewSandbox>)();
+    new (
+      PreviewSandbox as unknown as new () => InstanceType<typeof PreviewSandbox>
+    )();
   const upgrade = (headers: Record<string, string> = {}) =>
     new Request(`https://${HOST}/socket`, {
       headers: {
@@ -217,11 +226,16 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
     await Promise.resolve();
     expect(await object.closePreviewGrants([GRANT])).toBe(0);
     release(switched(container));
-    const response = (await answer) as unknown as { status: number; webSocket: unknown };
+    const response = (await answer) as unknown as {
+      status: number;
+      webSocket: unknown;
+    };
 
     expect(response.status).toBe(403);
     expect(response.webSocket).toBeNull();
-    expect(container.closes).toEqual([{ code: 1000, reason: "Preview access ended." }]);
+    expect(container.closes).toEqual([
+      { code: 1000, reason: "Preview access ended." },
+    ]);
     // No relay was registered, and no browser socket was made.
     expect(pairs).toEqual([]);
     expect(await object.closePreviewGrants([GRANT])).toBe(0);
@@ -232,7 +246,9 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
   it("refuses a new socket for a grant revoked before its upgrade, without asking the SDK", async () => {
     const object = sandbox();
     await object.closePreviewGrants([GRANT]);
-    const response = (await object.fetch(upgrade())) as unknown as { status: number };
+    const response = (await object.fetch(upgrade())) as unknown as {
+      status: number;
+    };
     expect(response.status).toBe(403);
     expect(sdk.fetch).not.toHaveBeenCalled();
   });
@@ -243,17 +259,24 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
     const object = sandbox();
     await object.closePreviewGrants([GRANT]);
     vi.setSystemTime(1_000_000 + 60_000);
-    expect(((await object.fetch(upgrade())) as unknown as { status: number }).status).toBe(403);
+    expect(
+      ((await object.fetch(upgrade())) as unknown as { status: number }).status,
+    ).toBe(403);
     vi.setSystemTime(1_000_000 + 60_001);
     sdk.fetch.mockResolvedValue(switched(fakeSocket()));
-    expect(((await object.fetch(upgrade())) as unknown as { status: number }).status).toBe(101);
+    expect(
+      ((await object.fetch(upgrade())) as unknown as { status: number }).status,
+    ).toBe(101);
   });
 
   it("relays a socket under its grant, and a push closes it 4401", async () => {
     const container = fakeSocket();
     sdk.fetch.mockResolvedValue(switched(container));
     const object = sandbox();
-    const response = (await object.fetch(upgrade())) as unknown as { status: number; webSocket: unknown };
+    const response = (await object.fetch(upgrade())) as unknown as {
+      status: number;
+      webSocket: unknown;
+    };
     expect(response.status).toBe(101);
     expect(response.webSocket).toBe(pairs[0]!.client);
     expect(container.accepted && pairs[0]!.server.accepted).toBe(true);
@@ -281,7 +304,9 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
       expect(container.sent).toHaveLength(1);
       expect(browser.sent).toHaveLength(1);
     });
-    expect([...new Uint8Array(container.sent[0] as ArrayBuffer)]).toEqual([0, 1, 255]);
+    expect([...new Uint8Array(container.sent[0] as ArrayBuffer)]).toEqual([
+      0, 1, 255,
+    ]);
     expect([...new Uint8Array(browser.sent[0] as ArrayBuffer)]).toEqual([7, 8]);
     expect([...browser.closes, ...container.closes]).toEqual([]);
     expect(container.acceptedAs).toBe("arraybuffer");
@@ -289,11 +314,18 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
   });
 
   it("never shows the container the relay's headers, and leaves other requests to the SDK", async () => {
-    sdk.fetch.mockResolvedValue({ status: 200, headers: new Headers(), webSocket: null });
+    sdk.fetch.mockResolvedValue({
+      status: 200,
+      headers: new Headers(),
+      webSocket: null,
+    });
     const object = sandbox();
     await object.fetch(
       new Request(`https://${HOST}/`, {
-        headers: { "x-morph-preview-grant": "forged", "x-morph-preview-host": "forged" },
+        headers: {
+          "x-morph-preview-grant": "forged",
+          "x-morph-preview-host": "forged",
+        },
       }),
     );
     await object.fetch(upgrade());
@@ -302,10 +334,16 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
       expect(request.headers.has("x-morph-preview-host")).toBe(false);
     }
     // An upgrade without a grant (the dev-only passthrough) is the SDK's.
-    const passthrough = { status: 101, headers: new Headers(), webSocket: fakeSocket() };
+    const passthrough = {
+      status: 101,
+      headers: new Headers(),
+      webSocket: fakeSocket(),
+    };
     sdk.fetch.mockResolvedValue(passthrough);
     const answer = await object.fetch(
-      new Request(`https://${HOST}/socket`, { headers: { upgrade: "websocket" } }),
+      new Request(`https://${HOST}/socket`, {
+        headers: { upgrade: "websocket" },
+      }),
     );
     expect(answer).toBe(passthrough);
     expect(pairs).toEqual([]);

@@ -64,6 +64,22 @@ describe("readBuildPreviewArtifact", () => {
     });
   });
 
+  it("previews a server-only build with no client assets, as a deployment now accepts it", async () => {
+    const { build, r2Bucket, objects, prefix } = fixtureBuild();
+    objects.delete(`${prefix}/runtime/client/app.css`);
+    const manifest = build.manifestJson as { files: Array<{ path: string }> };
+    manifest.files = manifest.files.filter(
+      (file) => file.path !== "runtime/client/app.css",
+    );
+    const result = await readBuildPreviewArtifact({ build, r2Bucket });
+    if (!result.ok) throw new Error(result.message);
+    expect(result.artifact.assets).toEqual([]);
+    expect(result.artifact.modules.map((m) => m.path)).toEqual(["index.js"]);
+    expect(result.artifact.workerConfig.assets).toEqual({
+      directory: "../client",
+    });
+  });
+
   it("refuses a binding a deployment would refuse", async () => {
     const { build, r2Bucket } = fixtureBuild({
       workerConfig: {
