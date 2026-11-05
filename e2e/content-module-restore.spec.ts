@@ -1,9 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../src/lib/storefront/starter-theme-v3-files";
 import { EDITOR_PATH, isServerFunctionCall, openEditor, previewFrame } from "./helpers";
+import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { themeScopeFromEditorPath, writeThemeFiles, type ThemeScope } from "./native-compat";
 
 /**
@@ -44,24 +43,11 @@ async function createOwnTheme(page: Page): Promise<{ scope: ThemeScope; editorPa
     themeId: randomUUID(),
   };
   const now = new Date().toISOString();
-  await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--command",
-    `INSERT INTO storefront_themes
+  execLocalD1(`INSERT INTO storefront_themes
       (id, storefront_id, name, metadata, created_at, updated_at)
       VALUES ('${scope.themeId}', '${scope.storefrontId}',
         'content-module-${scope.themeId}', '{"starterTemplateVersion":1}',
-        '${now}', '${now}');`,
-  ]);
+        '${now}', '${now}');`);
   const context = await page.evaluate(async (scope) => {
     const module = "/src/server/storefront/storefront-themes.serverFn.ts";
     const fns = await import(/* @vite-ignore */ module);

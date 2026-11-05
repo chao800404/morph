@@ -1,7 +1,5 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import {
   EDITOR_PATH,
   clickExposedElement,
@@ -18,6 +16,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { execLocalD1, queryLocalD1 } from "./helpers/editor-writes-paused";
 import {
   recordedPreviewRuntimeSql,
   verifyRecordedThemePreviewRuntime,
@@ -123,24 +122,13 @@ export default function CodeHero({
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
   const now = new Date().toISOString();
-  await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--command",
+  execLocalD1(
     `INSERT INTO storefront_themes
     (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
     VALUES ('${created.themeId}', '${created.storefrontId}',
       'code-controlled-field-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
-  ]);
+  );
   verifyRecordedThemePreviewRuntime(created);
   return created;
 }
@@ -165,28 +153,14 @@ type RawTemplate = {
  * has.
  */
 async function rawTemplates(scope: ThemeScope): Promise<RawTemplate[]> {
-  const { stdout } = await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--json",
-    "--command",
+  return queryLocalD1<RawTemplate>(
     `SELECT t.id, t.route_path, t.draft_generation, t.draft_revision_id, t.document,
       (SELECT r.document FROM storefront_theme_template_revisions r WHERE r.id = t.draft_revision_id) AS draft_document,
       (SELECT count(*) FROM storefront_theme_template_revisions r WHERE r.template_id = t.id) AS revisions
     FROM storefront_theme_templates t
     WHERE t.theme_id = '${scope.themeId}' AND t.deleted_at IS NULL
     ORDER BY t.id;`,
-  ]);
-  const parsed = JSON.parse(stdout) as Array<{ results: RawTemplate[] }>;
-  return parsed[0]!.results;
+  );
 }
 
 async function signedInPage(browser: Browser) {
@@ -926,31 +900,17 @@ function jsonDiff(before: unknown, after: unknown, path = "$"): JsonDiff[] {
   return Object.is(before, after) ? [] : [{ path, before, after }];
 }
 
+/**
+ * One SELECT's rows, or a write (one or more statements, in one transaction)
+ * with no rows: the writes here have no RETURNING, so their last statement
+ * returned none through `wrangler d1 execute` either.
+ */
 async function d1(command: string): Promise<Array<Record<string, unknown>>> {
-  const { stdout } = await promisify(execFile)(
-    "npx",
-    [
-      "wrangler",
-      "d1",
-      "execute",
-      "DATABASE",
-      "--local",
-      ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") ===
-      "local-sidecar"
-        ? ["--env", "local_preview_e2e"]
-        : []),
-      "--persist-to",
-      process.env.MORPH_E2E_STATE_DIR!,
-      "--json",
-      "--command",
-      command,
-    ],
-    { maxBuffer: 16 * 1024 * 1024 },
-  );
-  const parsed = JSON.parse(stdout) as Array<{
-    results: Array<Record<string, unknown>>;
-  }>;
-  return parsed.at(-1)?.results ?? [];
+  if (/^SELECT\b/i.test(command.trimStart())) {
+    return queryLocalD1<Record<string, unknown>>(command);
+  }
+  execLocalD1(command);
+  return [];
 }
 const sqlText = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
