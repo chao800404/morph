@@ -158,6 +158,31 @@ export function designWritesUnavailableReason(
   return `Design cannot change ${framework} Themes yet. Edit the source in Code mode.`;
 }
 
+export const LEGACY_LAYOUT_DESIGN_WRITE_REASON =
+  "This layout does not read Design content. Upgrade the Starter to edit it here, or edit it in Code mode.";
+
+/**
+ * Whether the Theme's routes are wrapped by a shell that never reads the
+ * layout Document: no `content(...)` slot, as in Starter v11 and v15.
+ *
+ * The renderer merges the layout Document only through the shell's slots
+ * (`renderSafeThemeRoute`), so anything written there — a value, a hidden
+ * flag, an order, a name — is stored and never shown. Such writes are
+ * refused, not accepted as a fake success; the Starter upgrade replaces an
+ * untouched copy of these shells with one that renders slots. A Theme with no
+ * route files has no source opinion and is left to the stored Document.
+ */
+function layoutIgnoresDocument(
+  files: readonly { path: string; content: string }[],
+  derived: ThemeRouteSectionResult = deriveThemeLayoutSections(files),
+): boolean {
+  return (
+    !derived.hasContentImport &&
+    derived.sections.length === 0 &&
+    files.some((file) => file.path.startsWith("src/routes/"))
+  );
+}
+
 type SectionSourceComponent =
   /** The source confirms which component renders the section. */
   | Readonly<{
@@ -189,7 +214,8 @@ type SectionSourceComponent =
  * undeclared slot, a named route that is not there or not this template's —
  * rather than checked against a component that may no longer render at all.
  * The stored ref is used only where the source has no opinion: a Theme with no
- * route files, or a route or layout that never adopted `content(...)`.
+ * route files, or a route that never adopted `content(...)`. A layout that
+ * never adopted it is refused instead (`layoutIgnoresDocument`).
  *
  * `routePath` names the route the editor is showing, because one template can
  * sit behind several routes and the default pick is only a guess. It selects
@@ -245,7 +271,16 @@ export function resolveSectionSourceComponent(args: {
   if (unavailable) return { kind: "unconfirmed", reason: unavailable };
 
   if (args.templateType === "layout") {
-    return fromSections(deriveThemeLayoutSections(args.files), "The layout");
+    const derived = deriveThemeLayoutSections(args.files);
+    // A stated limitation, not a Design edit: judged by this Theme's layout
+    // source alone, never its Starter version, such a shell's shared sections
+    // are not Design-editable through the Document until the layout reads
+    // `content(...)` (the Starter upgrade, or an edit in Code mode). Source
+    // default edits proven on the canvas are a separate path and stay open.
+    if (layoutIgnoresDocument(args.files, derived)) {
+      return { kind: "unconfirmed", reason: LEGACY_LAYOUT_DESIGN_WRITE_REASON };
+    }
+    return fromSections(derived, "The layout");
   }
 
   const hasRouteFiles = args.files.some((file) =>
@@ -1079,6 +1114,15 @@ export const storefrontThemeDal = {
     if (!context || !template) return null;
     // Refused, as every section write is, on a framework Design cannot judge.
     if (designWritesUnavailableReason(context.theme.framework)) return null;
+    // A shell that never reads the layout Document would never show the order.
+    if (
+      template.type === "layout" &&
+      layoutIgnoresDocument(
+        await listThemeSourceFiles(data.storefrontId, data.themeId),
+      )
+    ) {
+      return null;
+    }
 
     // The editor cannot choose a position for content it cannot bind. Refuse
     // the whole reorder, without writing, rather than moving or losing it.
@@ -1173,6 +1217,16 @@ export const storefrontThemeDal = {
     );
     if (!context || !template) return null;
     if (designWritesUnavailableReason(context.theme.framework)) return null;
+    // The editor lists no row for a section of a shell that never reads the
+    // layout Document, so a name stored there would never be seen.
+    if (
+      template.type === "layout" &&
+      layoutIgnoresDocument(
+        await listThemeSourceFiles(data.storefrontId, data.themeId),
+      )
+    ) {
+      return null;
+    }
     const baseDocument = templateSectionWriteBase(template, data.sectionId);
     if (!baseDocument.sections.some((s) => s.id === data.sectionId)) {
       return null;
@@ -1418,13 +1472,16 @@ export const storefrontThemeDal = {
         ? sourceComponent.componentRef
         : (targetSection.componentRef ?? null);
 
-    // In a route-backed Theme, derive the write mapping again from the exact
-    // source snapshot used to resolve this section. Canvas metadata is only a
-    // locator: it cannot authorize or redirect a Document write.
-    const b1ProofRequired =
-      template.type !== "layout" &&
-      sourceComponent.kind === "confirmed" &&
-      sourceComponent.callSitePath.startsWith("src/routes/");
+    // Wherever the source confirms the section, derive the write mapping again
+    // from the exact source snapshot used to resolve it. Canvas metadata is
+    // only a locator: it cannot authorize or redirect a Document write.
+    //
+    // This holds for the layout as much as for a route: the call site is
+    // then the layout file `deriveThemeLayoutSections` found the section in,
+    // which the same B1 analysis already reads to find layout sections. A
+    // layout that overrides a stored field after its spread would otherwise
+    // accept an edit the rendered page never shows.
+    const b1ProofRequired = sourceComponent.kind === "confirmed";
     let b1Claims: ReadonlyMap<
       string,
       Extract<B1Claim, { kind: "claim" }> | null
@@ -1447,7 +1504,7 @@ export const storefrontThemeDal = {
           normalizeThemeSourcePath(instance.componentPath) ===
             normalizedComponentPath,
       );
-      // A confirmed route-backed section must also have one exact B1 source
+      // A confirmed source-backed section must also have one exact B1 source
       // instance. Missing, duplicate or diagnostically ambiguous provenance
       // leaves an empty proof map, so every capability-allowed write fails
       // closed below; it never falls back to a name-based/legacy guess.
