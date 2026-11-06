@@ -497,3 +497,295 @@ test.describe("the editor adopting a route document it just created", () => {
       .toBe(third);
   });
 });
+
+/**
+ * After the first write on a route with no document of its own, the author
+ * goes on typing with the real keyboard at the end of the text, with no
+ * click anywhere: the field keeps their text, focus and caret across the
+ * page taking up the new route document, and what is stored, on the canvas
+ * and after a reload is their text plus what they appended. `fill()` would
+ * replace the field and hide a field rebuilt on another value. Each value is
+ * checked with expect.soft, so one run records all of them. Each test has
+ * its own Theme, so they run independently.
+ */
+test.describe("keyboard append across the page taking up its route document", () => {
+  const created: ThemeScope[] = [];
+
+  test.afterAll(async ({ browser }) => {
+    if (created.length === 0) return;
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    for (const theme of created) {
+      const removed = await removeThemeFiles(
+        page,
+        theme,
+        FILES.map((file) => file.path),
+      );
+      expect(removed.success, JSON.stringify(removed)).toBe(true);
+    }
+    await page.context().close();
+  });
+
+  type StoredTemplate = {
+    id: string;
+    routePath: string | null;
+    document: {
+      sections: Array<{ id: string; props?: Record<string, unknown> }>;
+    };
+  };
+
+  async function freshTheme(page: Page) {
+    const theme = await createThrowawayTheme();
+    created.push(theme);
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...theme,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const homeTemplateId = result.data!.templates.find(
+      (template) => template.type === "index",
+    )!.id;
+    const saved = await writeThemeFiles(page, theme, FILES);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    return { theme, homeTemplateId };
+  }
+
+  async function storedOn(page: Page, theme: ThemeScope) {
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...theme,
+    })) as { success: boolean; data?: { templates: StoredTemplate[] } };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const titleIn = (template: StoredTemplate) =>
+      template.document.sections.find((section) => section.id === SLOT)?.props
+        ?.title;
+    const templates = result.data!.templates;
+    const route = templates.find(
+      (template) => template.routePath === HOME_ROUTE,
+    );
+    return {
+      routeTemplateId: route?.id ?? null,
+      route: route ? titleIn(route) : undefined,
+      elsewhere: templates
+        .filter((template) => template !== route)
+        .map(titleIn)
+        .filter((title) => title !== undefined),
+    };
+  }
+
+  async function holdNextPropsWrite(page: Page) {
+    const held = { reached: false, answered: false, release: () => {} };
+    const released = new Promise<void>((resolve) => {
+      held.release = resolve;
+    });
+    let taken = false;
+    await page.route(
+      (url) => isServerFn(url.toString(), "updateStorefrontThemeSectionProps"),
+      async (route: Route) => {
+        if (taken) return route.continue();
+        taken = true;
+        const response = await route.fetch();
+        held.reached = true;
+        await released;
+        await route.fulfill({ response });
+        held.answered = true;
+      },
+    );
+    return held;
+  }
+
+  const urlTemplateId = (page: Page) =>
+    new URL(page.url()).searchParams.get("templateId");
+
+  /** The title field, focus and caret, and whether it is the marked element. */
+  async function fieldState(page: Page) {
+    const count = await titleField(page).count();
+    const field =
+      count === 1
+        ? await titleField(page).evaluate((input: HTMLInputElement) => {
+            const active = document.activeElement as HTMLInputElement | null;
+            return {
+              value: input.value,
+              defaultValue: input.defaultValue,
+              marked: input.dataset.appendMark ?? null,
+              focused: active === input,
+              caret: [input.selectionStart, input.selectionEnd, input.value.length],
+            };
+          })
+        : null;
+    const active = await page.evaluate(() => {
+      const element = document.activeElement as HTMLElement | null;
+      return element
+        ? {
+            tag: element.tagName.toLowerCase(),
+            slot: element.getAttribute("data-slot"),
+            text: (element as HTMLInputElement).value ?? null,
+          }
+        : null;
+    });
+    const header = await page
+      .locator('[data-slot="inspector-content-field"]')
+      .count();
+    return { fieldCount: count, field, activeElement: active, contentFields: header };
+  }
+
+  async function canvasText(page: Page) {
+    return (await cardTitle(page, SLOT).count()) === 1
+      ? await cardTitle(page, SLOT).textContent()
+      : null;
+  }
+
+  async function run(page: Page, hold: boolean, label: string) {
+    test.setTimeout(300_000);
+    const notes: Array<Record<string, unknown>> = [];
+    const note = async (step: string, extra: Record<string, unknown> = {}) => {
+      const entry = {
+        step,
+        t: Date.now(),
+        url: urlTemplateId(page),
+        canvas: await canvasText(page),
+        ...(await fieldState(page)),
+        ...extra,
+      };
+      notes.push(entry);
+      console.log(`[keyboard-append] ${label} | ${JSON.stringify(entry)}`);
+    };
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      if (isServerFn(request.url(), "updateStorefrontThemeSectionProps")) {
+        writes.push((request.postData() ?? "").slice(0, 4000));
+      }
+    });
+    const writeTitles = () =>
+      writes.map((body) => {
+        const match = body.match(/(first|Card default)[^"\\]*/g);
+        return match ?? [body.slice(0, 300)];
+      });
+
+    // Fixed after the run: serverFn needs a page on the app origin first.
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const { theme, homeTemplateId } = await freshTheme(page);
+    try {
+      await page.goto(
+        `/store/${theme.storefrontId}/themes/${theme.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+        timeout: 45_000,
+      });
+      await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
+      await enableSelection(page);
+      expect(
+        await clickExposedElement(page, cardTitle(page, SLOT)),
+      ).not.toBeNull();
+      await openContentTab(page);
+      await expect(titleField(page)).toBeVisible();
+
+      const held = hold ? await holdNextPropsWrite(page) : null;
+      const first = `first ${Date.now()}`;
+      await titleField(page).click();
+      await page.keyboard.press("ControlOrMeta+A");
+      await page.keyboard.type(first, { delay: 20 });
+      await titleField(page).evaluate((input: HTMLInputElement) => {
+        input.dataset.appendMark = "m1";
+      });
+      await note("typed first with the keyboard, focus kept");
+      if (held) {
+        await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
+      } else {
+        await expect
+          .poll(() => urlTemplateId(page), { timeout: 30_000 })
+          .not.toBe(homeTemplateId);
+        await expect
+          .poll(async () => (await storedOn(page, theme)).route, {
+            timeout: 30_000,
+          })
+          .toBe(first);
+      }
+      // While the first save is unanswered the page may or may not have
+      // taken up the route document yet; either way the field is the author's.
+      await page.waitForTimeout(800);
+      await note(
+        held ? "first write unanswered" : "after adoption, first answer landed",
+        { answered: held ? held.answered : "n/a", writes: writeTitles() },
+      );
+      const beforeAppend = await fieldState(page);
+      expect.soft(beforeAppend.field?.value, "field shows").toBe(first);
+      expect.soft(beforeAppend.field?.focused, "focus kept").toBe(true);
+      expect
+        .soft(beforeAppend.field?.marked, "same input element (not remounted)")
+        .toBe("m1");
+
+      // No click: End, then type, as a keyboard does.
+      await page.keyboard.press("End");
+      await page.keyboard.type(" more", { delay: 30 });
+      await page.waitForTimeout(800);
+      await note("End + ' more' with no click", { writes: writeTitles() });
+      const expected = `${first} more`;
+
+      if (held) {
+        held.release();
+        await expect.poll(() => held.answered, { timeout: 30_000 }).toBe(true);
+        await expect
+          .poll(() => urlTemplateId(page), { timeout: 30_000 })
+          .not.toBe(homeTemplateId);
+        await page.waitForTimeout(800);
+        const afterAdoption = await fieldState(page);
+        await note("after the answer and adoption", { writes: writeTitles() });
+        expect.soft(afterAdoption.field?.value, "field after adoption").toBe(expected);
+        expect.soft(afterAdoption.field?.focused, "focus after adoption").toBe(true);
+        expect
+          .soft(afterAdoption.field?.marked, "same input after adoption")
+          .toBe("m1");
+      }
+      await page.waitForTimeout(1_500);
+      await note("after the first answer", { writes: writeTitles() });
+      await page.keyboard.press("Tab");
+      await page.waitForTimeout(3_000);
+      const stored = await storedOn(page, theme);
+      await note("after Tab and 3 s", {
+        stored,
+        writes: writeTitles(),
+        saveStatus: await page
+          .locator("[data-editor-save-status]")
+          .first()
+          .getAttribute("aria-label")
+          .catch(() => null),
+      });
+      expect.soft(writeTitles().at(-1)?.[0], "last write sent").toBe(expected);
+      expect.soft(stored.route, "stored").toBe(expected);
+      expect.soft(stored.elsewhere, "stored elsewhere").toEqual([]);
+      expect.soft(await canvasText(page), "canvas").toBe(expected);
+      expect.soft((await fieldState(page)).field?.value, "field").toBe(expected);
+
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
+      await page.waitForTimeout(1_500);
+      const storedAfterReload = await storedOn(page, theme);
+      await enableSelection(page);
+      await clickExposedElement(page, cardTitle(page, SLOT));
+      await openContentTab(page);
+      await page.waitForTimeout(800);
+      await note("after reload, element re-selected", { stored: storedAfterReload });
+      expect.soft(await canvasText(page), "canvas after reload").toBe(expected);
+      expect
+        .soft((await fieldState(page)).field?.value, "field after reload")
+        .toBe(expected);
+    } finally {
+      const fs = await import("node:fs");
+      fs.writeFileSync(
+        test.info().outputPath("keyboard-append-notes.json"),
+        JSON.stringify({ label, notes, writes }, null, 2),
+      );
+    }
+  }
+
+  test("typed on while the first save is unanswered", async ({ page }) => {
+    await run(page, true, "inflight");
+  });
+
+  test("typed on after the first answer has landed", async ({ page }) => {
+    await run(page, false, "landed");
+  });
+});

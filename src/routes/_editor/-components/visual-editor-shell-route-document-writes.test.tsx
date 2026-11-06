@@ -2109,10 +2109,13 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     expect(server.route!.generation).toBe(3);
   });
 
-  it("F2b: placeholder-keyed input typed while the first write is in flight, with NO outside change, is sent at 2 (not refused as made on 1)", async () => {
+  it("F2b: placeholder-keyed input typed after the creating write's answer while the read its ensure started is still out, with NO outside change, is sent at 2 (not refused as made on 1)", async () => {
     // The read the first write's ensure started is slower than the write:
-    // the first copy this tab ever holds is the one at 2, and the input typed
-    // meanwhile has no recorded basis. Nobody else wrote the document.
+    // the first copy this tab holds is the one the write's answer brought,
+    // at 2, and the input is typed on the placeholder before that read
+    // arrives. Nobody else wrote the document. (The write itself has been
+    // answered here; input typed while it is still unanswered, with the
+    // read arriving first, is a separate case, not covered by this test.)
     await openOn(headingReport);
     holdReads();
     await type("Default heading", "Value 1");
@@ -2172,5 +2175,261 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
       generation: 5,
       props: { heading: "Value 2" },
     });
+  });
+});
+
+/**
+ * R1: one section has one pending identity across the page taking up its
+ * route document. An edit held under the placeholder (failed, refused, or
+ * sent with no answer) and a newer edit of the same section made after the
+ * page took up the document are one edit of one section, never two, so no
+ * recovery can send the older value after the newer one.
+ */
+describe("R1: one section, one pending edit across the page taking up its route document", () => {
+  /** Writes sent after `from` that carry `heading`. */
+  const sentSince = (from: number, heading: string) =>
+    sent()
+      .slice(from)
+      .filter((write) => write.props.heading === heading);
+
+  /** Presses whichever recovery is offered, if any, and settles. */
+  async function recoverIfOffered() {
+    if (screen.queryByRole("button", { name: "Try again" })) {
+      pressTryAgain();
+      await pause();
+    }
+    if (screen.queryByRole("button", { name: "Load latest, keep mine" })) {
+      pressKeepMine();
+      await pause();
+    }
+  }
+
+  it("failed under the placeholder, then a newer edit: the newer value is stored and no recovery puts the older one back", async () => {
+    answerNextWrite("failure");
+    await openOn(headingReport);
+    await type("Default heading", "Value 1");
+    await pause();
+    await expectAdopted();
+    expect(saveStatus()).toBe("Save failed");
+    expect(server.route).toEqual({ generation: 1, props: null });
+    const typedAt = sent().length;
+
+    typeInCard(0, "Value 2");
+    await pause();
+    await recoverIfOffered();
+
+    expect(sentSince(typedAt, "Value 1")).toHaveLength(0);
+    expect(storedHeading()).toBe("Value 2");
+    expect(server.route!.generation).toBe(2);
+    expect(saveStatus()).not.toBe("Save failed");
+    // Nothing more goes on its own.
+    const settled = sent().length;
+    await pause();
+    expect(sent()).toHaveLength(settled);
+  });
+
+  it("refused under the placeholder, then a newer edit: Theirs is written over only by the newer value, and only once", async () => {
+    answerNextWrite("conflict");
+    await openOn(headingReport);
+    await type("Default heading", "Value 1");
+    await pause();
+    await expectAdopted();
+    expect(saveStatus()).toBe("Out of date");
+    expect(storedHeading()).toBe("Theirs");
+    const typedAt = sent().length;
+
+    typeInCard(0, "Value 2");
+    await pause();
+    await recoverIfOffered();
+
+    expect(sentSince(typedAt, "Value 1")).toHaveLength(0);
+    // Every write after the newer edit carries it; one of them landed.
+    expect(sent().slice(typedAt).length).toBeGreaterThan(0);
+    expect(
+      sent()
+        .slice(typedAt)
+        .every((write) => write.props.heading === "Value 2"),
+    ).toBe(true);
+    expect(storedHeading()).toBe("Value 2");
+    const settled = sent().length;
+    await pause();
+    expect(sent()).toHaveLength(settled);
+  });
+
+  it("landed with no answer, then a newer edit: held; Try again checks the write as it was sent, then sends the newer value once", async () => {
+    // The write lands, and its answer never arrives.
+    updateSectionProps.mockImplementationOnce(
+      async ({ data }: { data: WriteRequest }) => {
+        applyWrite(data);
+        throw new Error("Failed to fetch");
+      },
+    );
+    await openOn(headingReport);
+    await type("Default heading", "Value 1");
+    await pause(1_500);
+    expect(storedHeading()).toBe("Value 1");
+    expect(server.route!.generation).toBe(2);
+    expect(saveStatus()).toBe("Save failed");
+
+    typeInCard(0, "Value 2");
+    await pause();
+    // Held behind the unanswered write: nothing goes on its own.
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+
+    await recoverIfOffered();
+    await pause();
+
+    expect(sent()).toHaveLength(2);
+    // The check found the write as it was sent (Value 1) landed: the newer
+    // value goes once, on the document that write produced.
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+    expect(server.route!.generation).toBe(3);
+  });
+});
+
+/**
+ * Q3: the Inspector field the author is typing in stays the same input
+ * across the page taking up the route document its own first write
+ * created: its text, focus, caret and anything typed since are the author's,
+ * and an edit that appends builds on what they typed, never on a default the
+ * field was rebuilt with. Typing appends to the value shown, as a keyboard
+ * does; `fill()`-style replacement would hide a rebuilt field.
+ */
+describe("Q3: the field the author types in, across the page taking up its route document", () => {
+  /** Row b's title, among the rows' titles the row selection shows. */
+  const rowB = () => cardFields()[1] as HTMLInputElement | undefined;
+
+  function typeKeeping(field: HTMLInputElement, value: string) {
+    act(() => {
+      field.focus();
+    });
+    fireEvent.input(field, { target: { value } });
+    field.setSelectionRange(value.length, value.length);
+  }
+
+  function expectSameField(field: HTMLInputElement, value: string) {
+    expect(field.isConnected).toBe(true);
+    expect(rowB()).toBe(field);
+    expect(field.value).toBe(value);
+    expect(document.activeElement).toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([
+      value.length,
+      value.length,
+    ]);
+  }
+
+  it("row b while the first write is unanswered: the same input keeps text, focus and caret; the appended text is stored", async () => {
+    await openOn(secondRowReport);
+    const first = holdNextWrite();
+    const field = rowB()!;
+    expect(field.value).toBe("Two");
+    typeKeeping(field, "Two edited");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
+    expectSameField(field, "Two edited");
+
+    typeKeeping(field, `${field.value} more`);
+    await act(async () => {
+      first.release();
+    });
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    await expectAdopted();
+
+    expectSameField(field, "Two edited more");
+    expect(rowsOf(sent()[1]!).map(([, title]) => title)).toEqual([
+      "One",
+      "Two edited more",
+    ]);
+    expect(
+      (server.route!.props!.items as Array<{ title: string }>).map(
+        (row) => row.title,
+      ),
+    ).toEqual(["One", "Two edited more"]);
+  });
+
+  it("row b after the first answer landed: the same input keeps text, focus and caret; the appended text is stored", async () => {
+    await openOn(secondRowReport);
+    const field = rowB()!;
+    typeKeeping(field, "Two edited");
+    await pause();
+    await expectAdopted();
+    expectSameField(field, "Two edited");
+
+    typeKeeping(field, `${field.value} more`);
+    await pause();
+    expectSameField(field, "Two edited more");
+    expect(
+      (server.route!.props!.items as Array<{ title: string }>).map(
+        (row) => row.title,
+      ),
+    ).toEqual(["One", "Two edited more"]);
+  });
+
+  it("the heading (saved on leaving the field) while the first write is unanswered: it shows the author's text, and appending builds on it", async () => {
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
+    const field = cardFields()[0] as HTMLTextAreaElement;
+    expect(field.value).toBe("Value 1");
+
+    // The author goes back into the field and appends to what is shown.
+    act(() => {
+      field.focus();
+    });
+    fireEvent.input(field, { target: { value: `${field.value} more` } });
+    fireEvent.blur(field);
+    await act(async () => {
+      first.release();
+    });
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    await expectAdopted();
+
+    expect(sent()[1]!.props.heading).toBe("Value 1 more");
+    expect(
+      sent().filter((write) =>
+        String(write.props.heading).startsWith("Default heading"),
+      ),
+    ).toHaveLength(0);
+    expect(storedHeading()).toBe("Value 1 more");
+    expect((cardFields()[0] as HTMLTextAreaElement).value).toBe("Value 1 more");
+  });
+
+  it("synthetic composition events (jsdom, not a real IME): a composition open across the page taking up the document ends in the same input and is stored", async () => {
+    await openOn(secondRowReport);
+    const first = holdNextWrite();
+    const field = rowB()!;
+    typeKeeping(field, "Two edited");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+
+    fireEvent.compositionStart(field);
+    fireEvent.input(field, { target: { value: "Two edited 新" } });
+    await act(async () => {
+      first.release();
+    });
+    await pause();
+    await expectAdopted();
+    expect(field.isConnected).toBe(true);
+    expect(rowB()).toBe(field);
+    expect(document.activeElement).toBe(field);
+    fireEvent.input(field, { target: { value: "Two edited 新年" } });
+    fireEvent.compositionEnd(field);
+    await pause();
+
+    expect(field.value).toBe("Two edited 新年");
+    expect(
+      (server.route!.props!.items as Array<{ title: string }>).map(
+        (row) => row.title,
+      ),
+    ).toEqual(["One", "Two edited 新年"]);
   });
 });
