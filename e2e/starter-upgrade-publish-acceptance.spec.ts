@@ -12,9 +12,11 @@ import {
   isServerFunctionCall,
   previewFrame,
 } from "./helpers";
+import { execLocalD1 } from "./helpers/editor-writes-paused";
 import {
   DOMAINS,
   RELEASES,
+  THEMES,
   editHero,
   expectHydrated,
   latestRelease,
@@ -31,6 +33,7 @@ import {
   removeThemeFiles,
   themeScopeFromEditorPath,
   writeThemeFiles,
+  type ThemeScope,
 } from "./native-compat";
 
 /**
@@ -63,10 +66,34 @@ import {
  *       artifact stays UNVERIFIED: a v20 workspace cannot be built here before
  *       its upgrade, so no release of v20's own bytes can exist.
  *
+ * Each test runs on a Theme of its own, created for it in the run's
+ * storefront and never used again: the run's shared editor Theme
+ * (EDITOR_PATH) is not opened, read or written; only its storefront id is
+ * taken from that path. A fresh Theme is recorded as Starter 1 with no files,
+ * and the editor's first read of it provisions the current Starter and
+ * records that version (`ensureStoredStarterPreview`); that provisioned
+ * workspace is the test's "original". The upgrade cannot be undone by
+ * restoring files: it also points the Theme's draft and published template
+ * revisions at the components it wrote (on 2026-11-06 a v20 upgrade left the
+ * shared index template's starter-introduction on the flat
+ * src/components/EditorialIntro.tsx, and the manifest migration then
+ * reported `blocked`). So nothing is restored: each Theme is left as its
+ * test ended it, upgraded (or wherever a failure stopped it). That is
+ * deliberate and recorded here; it reaches nothing else because nothing
+ * else uses that Theme. The domains each test connects are still removed.
+ *
+ * Releases are the storefront's, not a Theme's: `storefronts.active_release_id`
+ * is the one release every domain of the store serves, and each release
+ * names the Theme it was built from. Every release a test publishes or
+ * rolls back to is one it published from its own Theme, and
+ * `serveActiveRelease` refuses an active release of any other Theme
+ * (THEME_MISMATCH in verify-published-artifact.mjs), so each public check is
+ * of this test's Theme.
+ *
  * The two tests do not depend on each other: each sets up its own
- * preconditions (v28: nothing published yet on this run's D1; v20: its own
- * baseline release and domain), they are not serial, and either runs alone
- * with `-g` on its title.
+ * preconditions (v28: its own Theme, and nothing published yet on this
+ * run's D1; v20: its own Theme, baseline release and domain), they are not
+ * serial, and either runs alone with `-g` on its title.
  *
  * v28 and v20 bracket the two shapes an upgrade meets: a Starter whose pins
  * still build, and one the build refuses until the upgrade fixes them. v11,
@@ -75,7 +102,10 @@ import {
  *
  * Containers only: the build, the publish and the release are the container
  * transport's. The run's own D1 and R2, through the harness, as
- * m1-container-lifecycle-acceptance.spec.ts reads them.
+ * m1-container-lifecycle-acceptance.spec.ts reads them. The harness's own D1
+ * writes from here go through `execLocalD1` (the run's SQLite file, with a
+ * busy timeout), not a second workerd: one through `writeRunD1` collided
+ * with the dev server (SQLITE_BUSY) on 2026-11-06.
  */
 
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
@@ -90,7 +120,10 @@ test.skip(
   "Builds and publishes run in containers (MORPH_E2E_TRANSPORT=cloudflare-sandbox).",
 );
 
-const scope = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
+/** The run's storefront. Its shared editor Theme is not used here. */
+const STOREFRONT_ID = EDITOR_PATH
+  ? themeScopeFromEditorPath(EDITOR_PATH).storefrontId
+  : null;
 /** One storefront hostname per test, so neither reuses the other's domain. */
 const HOSTS = { v28: "t1-v28.localhost", v20: "t1-v20.localhost" } as const;
 const SERVER_FN_MODULE =
@@ -162,8 +195,25 @@ const PAGE_SECTION_ENTRIES = [
   "starter-story",
 ].map((slot) => `src/components/page-sections/index/${slot}/index.tsx`);
 
-/** Every text file, path → content. */
-async function workspace(page: Page): Promise<Record<string, string>> {
+/**
+ * One test's own Theme: where its editor opens, its harness (serving and
+ * reading this run's D1 for that Theme), and the workspace the editor
+ * provisioned on it, which is the current Starter.
+ */
+type ThemeRun = {
+  scope: ThemeScope;
+  editorPath: string;
+  harness: ReturnType<typeof storefrontHarness>;
+  original: Record<string, string>;
+};
+
+const sqlText = (value: string) => `'${value.replace(/'/g, "''")}'`;
+
+/** Every text file of `scope`'s workspace, path → content. */
+async function workspace(
+  page: Page,
+  scope: ThemeScope,
+): Promise<Record<string, string>> {
   return page.evaluate(
     async ({ module, scope }) => {
       const fns = await import(/* @vite-ignore */ module);
@@ -175,7 +225,7 @@ async function workspace(page: Page): Promise<Record<string, string>> {
         ),
       );
     },
-    { module: SERVER_FN_MODULE, scope: scope! },
+    { module: SERVER_FN_MODULE, scope },
   );
 }
 
@@ -237,20 +287,20 @@ async function applyReview(
   await expect(dialog).toBeHidden({ timeout: 30_000 });
 }
 
-/** Opens the editor and waits for the canvas to show the home hero. */
-async function openEditorWithHero(page: Page) {
-  await openEditor(page);
+/** Opens `run`'s editor and waits for the canvas to show the home hero. */
+async function openEditorWithHero(page: Page, run: ThemeRun) {
+  await openEditor(page, run.editorPath);
   await expect(
     previewFrame(page).locator('[data-storefront-section-id="starter-hero"]'),
     "the Live Preview renders the home hero",
   ).toBeVisible({ timeout: 180_000 });
 }
 
-/** Types `marker` into the hero and waits for the draft to hold it. */
-async function editHeroDraft(page: Page, marker: string) {
-  await openEditorWithHero(page);
+/** Types `marker` into the hero and waits for `run`'s draft to hold it. */
+async function editHeroDraft(page: Page, run: ThemeRun, marker: string) {
+  await openEditorWithHero(page, run);
   await editHero(page, marker);
-  await savedField(page, scope!, marker);
+  await savedField(page, run.scope, marker);
 }
 
 async function build(page: Page) {
@@ -267,44 +317,46 @@ async function build(page: Page) {
 
 test.describe("Starter upgrade from history, built, published and rolled back", () => {
   // Not serial: a failed v28 test must not skip the v20 test, which sets up
-  // its own baseline. After a failure Playwright runs afterAll, starts a new
-  // worker and runs beforeAll again, which is why both restore and re-read.
+  // its own Theme and baseline. After a failure Playwright runs afterAll and
+  // starts a new worker; nothing is shared between the tests but the
+  // storefront and the domain list afterAll empties.
   test.setTimeout(30 * 60_000);
   test.use({ actionTimeout: 60_000 });
 
-  const harness = STATE_DIR
-    ? storefrontHarness({ scope: scope!, stateDir: STATE_DIR })
-    : null;
   /** Domains this worker created, removed by afterAll. */
   const domainIds: string[] = [];
-  /** The workspace the editor provisioned: the current Starter. */
-  let original: Record<string, string> = {};
 
   const queryD1 = (sql: string, ...params: unknown[]) =>
     queryLifecycleD1(STATE_DIR!, sql, ...params);
 
-  function starterVersion() {
+  function starterVersion(run: Pick<ThemeRun, "scope">) {
     const [row] = queryD1(
-      "SELECT json_extract(metadata, '$.starterTemplateVersion') AS version FROM storefront_themes WHERE id = ?1",
-      scope!.themeId,
+      "SELECT json_extract(metadata, '$.starterTemplateVersion') AS version FROM storefront_themes WHERE id = ?1 AND storefront_id = ?2",
+      run.scope.themeId,
+      run.scope.storefrontId,
     );
     return row?.version;
   }
 
-  async function setStarterVersion(version: number) {
-    expect(
-      await harness!.writeD1(
-        "UPDATE storefront_themes SET metadata = json_set(COALESCE(metadata, '{}'), '$.starterTemplateVersion', ?1) WHERE id = ?2",
-        Number(version),
-        scope!.themeId,
-      ),
-    ).toBe(1);
+  /**
+   * Records `version` as `run`'s Starter, as an old Theme had it. Through
+   * the run's SQLite file (`execLocalD1`), read back to prove the row took it.
+   */
+  function setStarterVersion(run: ThemeRun, version: number) {
+    expect(Number.isInteger(version), "a whole Starter version").toBe(true);
+    execLocalD1(
+      `UPDATE storefront_themes
+         SET metadata = json_set(COALESCE(metadata, '{}'), '$.starterTemplateVersion', ${version})
+       WHERE id = ${sqlText(run.scope.themeId)}
+         AND storefront_id = ${sqlText(run.scope.storefrontId)};`,
+    );
+    expect(starterVersion(run)).toBe(version);
   }
 
-  function latestBuild() {
+  function latestBuild(run: ThemeRun) {
     const [row] = queryD1(
       "SELECT id, status, error_message FROM storefront_theme_builds WHERE theme_id = ?1 ORDER BY created_at DESC LIMIT 1",
-      scope!.themeId,
+      run.scope.themeId,
     );
     return row as
       | { id: string; status: string; error_message: string | null }
@@ -320,55 +372,125 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
   }
 
   /**
+   * A Theme of this test's own in the run's storefront, provisioned by the
+   * editor and open in it, with the same checks the shared Theme's
+   * workspace used to get: the current Starter is the version this spec's
+   * review lists were written against, the editor recorded it, and the
+   * provisioned workspace is v28 apart from exactly V28_REVIEW.
+   *
+   * Inserted with no files, recorded as Starter 1, as the other throwaway
+   * Themes are (code-tree-context-menu.spec.ts). The editor's read
+   * (`getStorefrontThemeEditor` → `ensureStoredStarterPreview`) then writes
+   * the current Starter's files, creates the index, product and layout
+   * templates and records the current version, because the stored version is
+   * below it and the workspace is empty.
+   */
+  async function setUpThemeRun(page: Page, label: string): Promise<ThemeRun> {
+    const scope: ThemeScope = {
+      storefrontId: STOREFRONT_ID!,
+      themeId: randomUUID(),
+    };
+    const now = new Date().toISOString();
+    execLocalD1(`INSERT INTO storefront_themes
+      (id, storefront_id, name, metadata, created_at, updated_at)
+      VALUES (${sqlText(scope.themeId)}, ${sqlText(scope.storefrontId)},
+        ${sqlText(`t1-${label}-${scope.themeId}`)}, '{"starterTemplateVersion":1}',
+        ${sqlText(now)}, ${sqlText(now)});`);
+    // Any page of the app reaches the server functions; not the shared
+    // Theme's editor.
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const provisioned = (await serverFn(
+      page,
+      THEMES,
+      "getStorefrontThemeEditor",
+      scope,
+    )) as {
+      success: boolean;
+      message?: string;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(provisioned.success, provisioned.message).toBe(true);
+    const home = provisioned.data!.templates.find(
+      (template) => template.type === "index",
+    );
+    expect(home, "the editor created the Theme's home template").toBeDefined();
+    const editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home!.id}`;
+    await openEditor(page, editorPath);
+
+    const original = await workspace(page, scope);
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(UPGRADE_TARGET_STARTER);
+    expect(starterVersion({ scope })).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
+    // Equal to the current Starter, apart from exactly the files versions
+    // 29 and 30 changed.
+    for (const file of V28.files) {
+      if (V28_REVIEW.includes(file.path)) {
+        expect(original[file.path], file.path).not.toBe(file.content);
+      } else {
+        expect(original[file.path], file.path).toBe(file.content);
+      }
+    }
+    return {
+      scope,
+      editorPath,
+      harness: storefrontHarness({ scope, stateDir: STATE_DIR! }),
+      original,
+    };
+  }
+
+  /**
    * Puts an old Starter's files in place of the Starter's own paths, through
    * the server function Code mode saves with, and records its version. Files
    * outside the Starter's paths (the catalog's, if any) are left alone.
    */
-  async function installStarter(page: Page, old: Fixture) {
-    const current = await workspace(page);
+  async function installStarter(page: Page, run: ThemeRun, old: Fixture) {
+    const current = await workspace(page, run.scope);
     const changed = old.files.filter(
       (file) => current[file.path] !== file.content,
     );
-    const saved = await writeThemeFiles(page, scope!, changed);
+    const saved = await writeThemeFiles(page, run.scope, changed);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
     const oldPaths = new Set(old.files.map((file) => file.path));
     const removed = await removeThemeFiles(
       page,
-      scope!,
+      run.scope,
       STARTER_PATHS.filter((path) => !oldPaths.has(path)),
     );
     expect(removed.success, JSON.stringify(removed)).toBe(true);
-    await setStarterVersion(old.starterVersion);
-    const installed = await workspace(page);
+    setStarterVersion(run, old.starterVersion);
+    const installed = await workspace(page, run.scope);
     for (const file of old.files) {
       expect(installed[file.path], file.path).toBe(file.content);
     }
     for (const path of STARTER_PATHS.filter((path) => !oldPaths.has(path))) {
       expect(installed[path], path).toBeUndefined();
     }
-    expect(starterVersion()).toBe(old.starterVersion);
+    expect(starterVersion(run)).toBe(old.starterVersion);
   }
 
   /** Opening the editor on the old workspace writes nothing. */
-  async function expectOpeningWritesNothing(page: Page, version: number) {
-    const before = await workspace(page);
-    await openEditor(page);
+  async function expectOpeningWritesNothing(
+    page: Page,
+    run: ThemeRun,
+    version: number,
+  ) {
+    const before = await workspace(page, run.scope);
+    await openEditor(page, run.editorPath);
     await expect(upgradeNotice(page)).toHaveAttribute(
       "data-editor-starter-upgrade",
       "available",
       { timeout: 30_000 },
     );
-    expect(await workspace(page)).toEqual(before);
-    expect(starterVersion()).toBe(version);
+    expect(await workspace(page, run.scope)).toEqual(before);
+    expect(starterVersion(run)).toBe(version);
   }
 
   /**
    * Reviews and applies the upgrade, checking the review lists exactly
    * `listed` (no more, no fewer) and wrote nothing.
    */
-  async function reviewAndApply(page: Page, listed: string[]) {
-    await openEditor(page);
-    const before = await workspace(page);
+  async function reviewAndApply(page: Page, run: ThemeRun, listed: string[]) {
+    await openEditor(page, run.editorPath);
+    const before = await workspace(page, run.scope);
     const dialog = await openReview(page);
     const starter = dialog.getByRole("region", { name: "Starter upgrade" });
     const heading = starter.getByRole("heading", { name: /^Changes \(\d+\)$/ });
@@ -384,28 +506,39 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
       ).toBeVisible();
     }
     // Nothing is written while the author reads it.
-    expect(await workspace(page)).toEqual(before);
+    expect(await workspace(page, run.scope)).toEqual(before);
     await applyReview(page, dialog);
-    expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
-    return { before, after: await workspace(page) };
+    expect(starterVersion(run)).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
+    return { before, after: await workspace(page, run.scope) };
   }
 
-  /** The Starter's paths that are missing, or differ from the current Starter. */
-  function againstCurrent(files: Record<string, string>) {
+  /**
+   * The Starter's paths that are missing, or differ from the current Starter
+   * as the editor provisioned it on `run`'s Theme.
+   */
+  function againstCurrent(run: ThemeRun, files: Record<string, string>) {
     return {
       differs: STARTER_PATHS.filter(
-        (path) => path in files && files[path] !== original[path],
+        (path) => path in files && files[path] !== run.original[path],
       ).sort(),
       missing: STARTER_PATHS.filter((path) => !(path in files)).sort(),
     };
   }
 
   /** Publishes from the toolbar; the release, its build and content. */
-  async function publishRelease(page: Page) {
+  async function publishRelease(page: Page, run: ThemeRun) {
     const shown = await publishShowingRelease(page);
     await shown.close();
-    const releaseId = await latestRelease(page, scope!);
-    const built = await harness!.releaseBuild(releaseId);
+    const releaseId = await latestRelease(page, run.scope);
+    // The store's newest release is the one this Theme just published.
+    const [made] = queryD1(
+      "SELECT theme_id FROM storefront_releases WHERE id = ?1",
+      releaseId,
+    );
+    expect(made?.theme_id, "the release is this test's Theme's").toBe(
+      run.scope.themeId,
+    );
+    const built = await run.harness.releaseBuild(releaseId);
     expect(built.buildId, "the release names its build").toBeTruthy();
     expect(built.releaseContent, "the release names its content").toBeTruthy();
     return { releaseId, ...built };
@@ -439,148 +572,57 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
     expect((await storefront(asset![1]!)).status).toBe(200);
   }
 
-  /** Rolls the active release back to `release` under its OCC. */
-  async function rollBack(page: Page, releaseId: string, from: string) {
+  /** Rolls the storefront's active release back to `release` under its OCC. */
+  async function rollBack(
+    page: Page,
+    run: ThemeRun,
+    releaseId: string,
+    from: string,
+  ) {
     const activated = (await serverFn(
       page,
       RELEASES,
       "activateStorefrontRelease",
       {
-        storefrontId: scope!.storefrontId,
+        storefrontId: run.scope.storefrontId,
         releaseId,
         expectedActiveReleaseId: from,
       },
     )) as { success: boolean; message?: string };
     expect(activated.success, activated.message).toBe(true);
-    expect((await harness!.publishedState()).active).toBe(releaseId);
+    expect((await run.harness.publishedState()).active).toBe(releaseId);
   }
 
   const origin = (host: string) =>
     `http://${host}:${new URL(test.info().project.use.baseURL!).port}`;
 
-  /** Puts the Starter's paths back as the editor provisioned them. */
-  /**
-   * The server's own legacy-manifest migration: previewed, and applied only
-   * when the server says it is ready (its gate and OCC are the server's).
-   */
-  async function migrateLegacyManifest(page: Page) {
-    return page.evaluate(
-      async ({ module, scope }) => {
-        const fns = await import(/* @vite-ignore */ module);
-        const preview = await fns.previewThemeManifestMigration({ data: scope });
-        if (!preview?.success) return { step: "preview", result: preview };
-        if (preview.data?.status !== "ready") {
-          return { step: "preview", result: preview };
-        }
-        const applied = await fns.applyThemeManifestMigrationServerFn({
-          data: scope,
-        });
-        return { step: "apply", result: applied };
-      },
-      { module: SERVER_FN_MODULE, scope: scope! },
-    );
-  }
-
-  /**
-   * Back to the current Starter as the editor provisioned it. This Theme is
-   * the run's shared editor Theme (EDITOR_PATH), not a throwaway one, so it
-   * must end exactly as it began: anything left would reach the run's other
-   * tests. Every step runs even when an earlier one failed, so whatever can
-   * be put back is, and the failures are reported together at the end.
-   *
-   * A manifest-era upgrade keeps the legacy `morph.theme.json`. The generic
-   * file API refuses to delete it, by design; it goes through the server's
-   * own migration, which removes it only when its gate passes. When that
-   * migration is not ready, the restore fails: the Theme is not left as it
-   * is, and the gate is not worked around.
-   */
-  async function restoreCurrentStarter(page: Page) {
-    const failures: string[] = [];
-    const now = await workspace(page);
-    const back = STARTER_PATHS.filter((path) => now[path] !== original[path]);
-    // Nothing to write when nothing moved; an empty batch is not sent.
-    if (back.length) {
-      const restored = await writeThemeFiles(
-        page,
-        scope!,
-        back.map((path) => ({ path, content: original[path]! })),
-      );
-      if (!restored.success) failures.push(`restore: ${JSON.stringify(restored)}`);
-    }
-    const extra = Object.keys(now).filter((path) => !(path in original));
-    const files = extra.filter((path) => path !== MANIFEST);
-    if (files.length) {
-      const removed = await removeThemeFiles(page, scope!, files);
-      if (!removed.success) failures.push(`remove: ${JSON.stringify(removed)}`);
-    }
-    if (extra.includes(MANIFEST)) {
-      const migrated = await migrateLegacyManifest(page);
-      if (migrated.step !== "apply" || !migrated.result?.success) {
-        failures.push(`manifest migration: ${JSON.stringify(migrated)}`);
-      }
-    }
-    try {
-      await setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
-    } catch (error) {
-      failures.push(`version: ${String(error)}`);
-    }
-    expect(failures, failures.join("\n")).toEqual([]);
-    expect(await workspace(page)).toEqual(original);
-  }
-
   /** Connects `host` to the store, for the public checks. */
-  async function connectDomain(page: Page, host: string) {
+  async function connectDomain(page: Page, run: ThemeRun, host: string) {
     const domain = (await serverFn(page, DOMAINS, "createStorefrontDomain", {
-      storefrontId: scope!.storefrontId,
+      storefrontId: run.scope.storefrontId,
       hostname: host,
     })) as { success: boolean; message?: string; data?: { id: string } };
     expect(domain.success, domain.message).toBe(true);
     domainIds.push(domain.data!.id);
   }
 
-  test.beforeAll(async ({ browser }) => {
-    const page = await signedInPage(browser);
-    try {
-      await openEditor(page);
-      original = await workspace(page);
-      expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(UPGRADE_TARGET_STARTER);
-      expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
-      // Equal to the current Starter, apart from exactly the files versions
-      // 29 and 30 changed.
-      for (const file of V28.files) {
-        if (V28_REVIEW.includes(file.path)) {
-          expect(original[file.path], file.path).not.toBe(file.content);
-        } else {
-          expect(original[file.path], file.path).toBe(file.content);
-        }
-      }
-    } finally {
-      await page.context().close();
-    }
-  });
-
   test.afterAll(async ({ browser }) => {
+    // The Themes the tests made are left as they ended (see the header):
+    // only the domains are removed. Each removal runs whatever failed before
+    // it; the failures are reported together, so one that cannot be undone
+    // does not leave the others behind.
+    if (!domainIds.length) return;
     const page = await signedInPage(browser);
-    // Each cleanup runs whatever failed before it; the failures are
-    // reported together, so one that cannot be undone does not leave the
-    // others behind.
     const failures: string[] = [];
     try {
-      // Back to the current Starter, as the editor provisioned it.
-      try {
-        await openEditor(page);
-        await restoreCurrentStarter(page);
-      } catch (error) {
-        failures.push(`starter: ${String(error)}`);
-      }
+      await page.goto("/", { waitUntil: "domcontentloaded" });
       for (const domainId of domainIds.splice(0)) {
         try {
           // As m1-container-lifecycle-acceptance.spec.ts: the local stand-in
           // domain has no Cloudflare custom domain, and a primary domain
           // cannot be deleted, so the row is made deletable first.
-          await harness!.writeD1(
-            "UPDATE storefront_domains SET is_primary = 0, cloudflare_domain_id = NULL WHERE id = ?1",
-            domainId,
+          execLocalD1(
+            `UPDATE storefront_domains SET is_primary = 0, cloudflare_domain_id = NULL WHERE id = ${sqlText(domainId)};`,
           );
           const deleted = (await serverFn(
             page,
@@ -598,7 +640,6 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
       expect(failures, failures.join("\n")).toEqual([]);
     } finally {
       await page.context().close();
-      await harness?.dispose();
     }
   });
 
@@ -607,81 +648,87 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
   }) => {
     const host = HOSTS.v28;
     const storefront = storefrontFetcher(origin(host));
-    // Precondition: this run's D1, with nothing published yet, and the
-    // workspace as the editor provisioned it.
-    const before = await harness!.publishedState();
-    expect(
-      before.active,
-      "v28 precondition: nothing is published on this run's D1",
-    ).toBeNull();
-    await openEditor(page);
-    await restoreCurrentStarter(page);
+    // This test's own Theme, provisioned as the current Starter. It is left
+    // upgraded when the test ends: single use, nothing else opens it.
+    const run = await setUpThemeRun(page, "v28");
+    try {
+      // Precondition: this run's D1, with nothing published yet on the
+      // storefront.
+      const before = await run.harness.publishedState();
+      expect(
+        before.active,
+        "v28 precondition: nothing is published on this run's D1",
+      ).toBeNull();
 
-    await installStarter(page, V28);
-    await expectOpeningWritesNothing(page, 28);
+      await installStarter(page, run, V28);
+      await expectOpeningWritesNothing(page, run, 28);
 
-    // R0: published from v28's own bytes.
-    const contentA = `t1-v28-a-${randomUUID().slice(0, 8)}`;
-    await editHeroDraft(page, contentA);
-    await connectDomain(page, host);
-    // Before any publish, the domain serves nothing, and not the draft.
-    const unpublished = await storefront("/");
-    expect(unpublished.status).toBe(404);
-    expect(unpublished.body).not.toContain(contentA);
+      // R0: published from v28's own bytes.
+      const contentA = `t1-v28-a-${randomUUID().slice(0, 8)}`;
+      await editHeroDraft(page, run, contentA);
+      await connectDomain(page, run, host);
+      // Before any publish, the domain serves nothing, and not the draft.
+      const unpublished = await storefront("/");
+      expect(unpublished.status).toBe(404);
+      expect(unpublished.body).not.toContain(contentA);
 
-    const r0 = await publishRelease(page);
-    const r0Source = releaseSource(r0.releaseId);
-    expect(r0Source).toBeTruthy();
-    const served0 = await harness!.serveActiveRelease(
-      contentA,
-      r0.releaseId,
-      origin(host),
-    );
-    expect(served0.buildId).toBe(r0.buildId);
-    await expectPublicSite(storefront, contentA, []);
+      const r0 = await publishRelease(page, run);
+      const r0Source = releaseSource(r0.releaseId);
+      expect(r0Source).toBeTruthy();
+      const served0 = await run.harness.serveActiveRelease(
+        contentA,
+        r0.releaseId,
+        origin(host),
+      );
+      expect(served0.buildId).toBe(r0.buildId);
+      await expectPublicSite(storefront, contentA, []);
 
-    // The reviewed upgrade: the files versions 29 and 30 changed.
-    const { after } = await reviewAndApply(page, V28_REVIEW);
-    expect(againstCurrent(after)).toEqual({ differs: [], missing: [] });
-    // The home Document was not reset: the draft still holds R0's content.
-    await savedField(page, scope!, contentA);
-    await openEditor(page);
-    await expect(
-      page.locator('[data-editor-starter-upgrade="available"]'),
-    ).toHaveCount(0);
+      // The reviewed upgrade: the files versions 29 and 30 changed.
+      const { after } = await reviewAndApply(page, run, V28_REVIEW);
+      expect(againstCurrent(run, after)).toEqual({ differs: [], missing: [] });
+      // The home Document was not reset: the draft still holds R0's content.
+      await savedField(page, run.scope, contentA);
+      await openEditor(page, run.editorPath);
+      await expect(
+        page.locator('[data-editor-starter-upgrade="available"]'),
+      ).toHaveCount(0);
 
-    // R1: a new build of the upgraded source.
-    const contentB = `t1-v28-b-${randomUUID().slice(0, 8)}`;
-    await editHeroDraft(page, contentB);
-    const r1 = await publishRelease(page);
-    expect(r1.releaseId).not.toBe(r0.releaseId);
-    expect(r1.buildId, "the upgraded source is built again").not.toBe(
-      r0.buildId,
-    );
-    // serveActiveRelease below refuses a release whose build did not succeed.
-    const r1Source = releaseSource(r1.releaseId);
-    expect(r1Source).toBeTruthy();
-    expect(r1Source).not.toBe(r0Source);
-    await harness!.serveActiveRelease(contentB, r1.releaseId, origin(host));
-    await expectPublicSite(storefront, contentB, [contentA]);
+      // R1: a new build of the upgraded source.
+      const contentB = `t1-v28-b-${randomUUID().slice(0, 8)}`;
+      await editHeroDraft(page, run, contentB);
+      const r1 = await publishRelease(page, run);
+      expect(r1.releaseId).not.toBe(r0.releaseId);
+      expect(r1.buildId, "the upgraded source is built again").not.toBe(
+        r0.buildId,
+      );
+      // serveActiveRelease below refuses a release whose build did not
+      // succeed, or one of another Theme.
+      const r1Source = releaseSource(r1.releaseId);
+      expect(r1Source).toBeTruthy();
+      expect(r1Source).not.toBe(r0Source);
+      await run.harness.serveActiveRelease(contentB, r1.releaseId, origin(host));
+      await expectPublicSite(storefront, contentB, [contentA]);
 
-    // A draft edit after the publish stays out of the public site.
-    const draftD = `t1-v28-d-${randomUUID().slice(0, 8)}`;
-    await editHeroDraft(page, draftD);
-    await expectPublicSite(storefront, contentB, [contentA, draftD]);
+      // A draft edit after the publish stays out of the public site.
+      const draftD = `t1-v28-d-${randomUUID().slice(0, 8)}`;
+      await editHeroDraft(page, run, draftD);
+      await expectPublicSite(storefront, contentB, [contentA, draftD]);
 
-    // Rolled back to R0, built from v28's own bytes: its own build, content
-    // and source again.
-    await rollBack(page, r0.releaseId, r1.releaseId);
-    const restored = await harness!.serveActiveRelease(
-      contentA,
-      r0.releaseId,
-      origin(host),
-    );
-    expect(restored.buildId).toBe(r0.buildId);
-    expect(restored.contentPublicationId).toBe(r0.releaseContent);
-    expect(restored.sourceRevisionId).toBe(r0Source);
-    await expectPublicSite(storefront, contentA, [contentB, draftD]);
+      // Rolled back to R0, built from v28's own bytes: its own build, content
+      // and source again.
+      await rollBack(page, run, r0.releaseId, r1.releaseId);
+      const restored = await run.harness.serveActiveRelease(
+        contentA,
+        r0.releaseId,
+        origin(host),
+      );
+      expect(restored.buildId).toBe(r0.buildId);
+      expect(restored.contentPublicationId).toBe(r0.releaseContent);
+      expect(restored.sourceRevisionId).toBe(r0Source);
+      await expectPublicSite(storefront, contentA, [contentB, draftD]);
+    } finally {
+      await run.harness.dispose();
+    }
   });
 
   test("v20: refused until upgraded by review, then published; the site can return to the release serving before the upgrade", async ({
@@ -689,111 +736,120 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
   }) => {
     const host = HOSTS.v20;
     const storefront = storefrontFetcher(origin(host));
+    // This test's own Theme, provisioned as the current Starter. It is left
+    // upgraded, legacy manifest and all, when the test ends: single use,
+    // nothing else opens it.
+    const run = await setUpThemeRun(page, "v20");
+    try {
+      // Precondition, established here and by no other test: a release that
+      // is serving before the upgrade. Built and published from the current
+      // Starter on this Theme, which builds, because v20's own bytes cannot
+      // be built before the upgrade. So the rollback below returns to this
+      // baseline; restoring an artifact of v20's own bytes stays unverified.
+      await connectDomain(page, run, host);
+      const baselineMarker = `t1-v20-base-${randomUUID().slice(0, 8)}`;
+      await editHeroDraft(page, run, baselineMarker);
+      const baseline = await publishRelease(page, run);
+      const baselineSource = releaseSource(baseline.releaseId);
+      expect(
+        baselineSource,
+        "v20 precondition: the baseline release names its source",
+      ).toBeTruthy();
+      const servedBaseline = await run.harness.serveActiveRelease(
+        baselineMarker,
+        baseline.releaseId,
+        origin(host),
+      );
+      expect(servedBaseline.buildId).toBe(baseline.buildId);
+      expect(
+        (await run.harness.publishedState()).active,
+        "v20 precondition: the baseline release is the one serving",
+      ).toBe(baseline.releaseId);
+      await expectPublicSite(storefront, baselineMarker, []);
 
-    // Precondition, established here and by no other test: a release that
-    // is serving before the upgrade. Built and published from the current
-    // Starter, which builds, because v20's own bytes cannot be built before
-    // the upgrade. So the rollback below returns to this baseline; restoring
-    // an artifact of v20's own bytes stays unverified.
-    await openEditor(page);
-    await restoreCurrentStarter(page);
-    await connectDomain(page, host);
-    const baselineMarker = `t1-v20-base-${randomUUID().slice(0, 8)}`;
-    await editHeroDraft(page, baselineMarker);
-    const baseline = await publishRelease(page);
-    const baselineSource = releaseSource(baseline.releaseId);
-    expect(
-      baselineSource,
-      "v20 precondition: the baseline release names its source",
-    ).toBeTruthy();
-    const servedBaseline = await harness!.serveActiveRelease(
-      baselineMarker,
-      baseline.releaseId,
-      origin(host),
-    );
-    expect(servedBaseline.buildId).toBe(baseline.buildId);
-    expect(
-      (await harness!.publishedState()).active,
-      "v20 precondition: the baseline release is the one serving",
-    ).toBe(baseline.releaseId);
-    await expectPublicSite(storefront, baselineMarker, []);
+      await installStarter(page, run, V20);
+      await expectOpeningWritesNothing(page, run, 20);
 
-    await installStarter(page, V20);
-    await expectOpeningWritesNothing(page, 20);
+      // The old workspace's pins are refused by the build; the live site
+      // stays on the baseline.
+      const releasesBefore = (await run.harness.publishedState()).releases;
+      await build(page);
+      const refused = latestBuild(run);
+      expect(refused?.status).toBe("failed");
+      expect(refused?.error_message ?? "").toContain("INVALID_START_PACKAGE");
+      const unchanged = await run.harness.publishedState();
+      expect(unchanged.active).toBe(baseline.releaseId);
+      expect(unchanged.releases).toBe(releasesBefore);
+      await expectPublicSite(storefront, baselineMarker, []);
 
-    // The old workspace's pins are refused by the build; the live site stays
-    // on the baseline.
-    const releasesBefore = (await harness!.publishedState()).releases;
-    await build(page);
-    const refused = latestBuild();
-    expect(refused?.status).toBe("failed");
-    expect(refused?.error_message ?? "").toContain("INVALID_START_PACKAGE");
-    const unchanged = await harness!.publishedState();
-    expect(unchanged.active).toBe(baseline.releaseId);
-    expect(unchanged.releases).toBe(releasesBefore);
-    await expectPublicSite(storefront, baselineMarker, []);
+      // The reviewed upgrade, in full: the pins, Header and Footer, the flat
+      // components, the page-owned section entries and the sections/
+      // re-exports it creates, the layout, the content module, and the
+      // routes (the home route updated; the account and order-transfer pages
+      // created).
+      const { after } = await reviewAndApply(page, run, [
+        PACKAGE,
+        "src/components/Header.tsx",
+        "src/components/Footer.tsx",
+        ...FLAT_COMPONENTS,
+        ...PAGE_SECTION_ENTRIES,
+        ...SECTION_REEXPORTS,
+        LAYOUT,
+        CONTENT,
+        "src/routes/account.tsx",
+        "src/routes/index.tsx",
+        "src/routes/order-transfer.tsx",
+      ]);
+      // What the unit test holds for v20 after one pass: every Starter path
+      // present; the pins corrected in package.json (serialised with a
+      // trailing newline); the sections/ entries re-export the flat
+      // components, which stay where the author's Theme had them, as does its
+      // manifest.
+      const { differs, missing } = againstCurrent(run, after);
+      expect(missing).toEqual([]);
+      expect(differs).toEqual([PACKAGE, ...SECTION_REEXPORTS].sort());
+      expect(JSON.parse(after[PACKAGE]!)).toEqual(
+        JSON.parse(run.original[PACKAGE]!),
+      );
+      for (const path of [...FLAT_COMPONENTS, MANIFEST]) {
+        expect(after[path], path).toBeDefined();
+      }
+      // The home Document was not reset: the draft still holds the
+      // baseline's.
+      await savedField(page, run.scope, baselineMarker);
+      await openEditor(page, run.editorPath);
+      await expect(
+        page.locator('[data-editor-starter-upgrade="available"]'),
+      ).toHaveCount(0);
 
-    // The reviewed upgrade, in full: the pins, Header and Footer, the flat
-    // components, the page-owned section entries and the sections/
-    // re-exports it creates, the layout, the content module, and the
-    // routes (the home route updated; the account and order-transfer pages
-    // created).
-    const { after } = await reviewAndApply(page, [
-      PACKAGE,
-      "src/components/Header.tsx",
-      "src/components/Footer.tsx",
-      ...FLAT_COMPONENTS,
-      ...PAGE_SECTION_ENTRIES,
-      ...SECTION_REEXPORTS,
-      LAYOUT,
-      CONTENT,
-      "src/routes/account.tsx",
-      "src/routes/index.tsx",
-      "src/routes/order-transfer.tsx",
-    ]);
-    // What the unit test holds for v20 after one pass: every Starter path
-    // present; the pins corrected in package.json (serialised with a trailing
-    // newline); the sections/ entries re-export the flat components, which
-    // stay where the author's Theme had them, as does its manifest.
-    const { differs, missing } = againstCurrent(after);
-    expect(missing).toEqual([]);
-    expect(differs).toEqual([PACKAGE, ...SECTION_REEXPORTS].sort());
-    expect(JSON.parse(after[PACKAGE]!)).toEqual(JSON.parse(original[PACKAGE]!));
-    for (const path of [...FLAT_COMPONENTS, MANIFEST]) {
-      expect(after[path], path).toBeDefined();
+      // A new build of the upgraded source, published.
+      const contentB = `t1-v20-b-${randomUUID().slice(0, 8)}`;
+      await editHeroDraft(page, run, contentB);
+      const r2 = await publishRelease(page, run);
+      expect(r2.releaseId).not.toBe(baseline.releaseId);
+      expect(r2.buildId).not.toBe(baseline.buildId);
+      expect(releaseSource(r2.releaseId)).not.toBe(baselineSource);
+      await run.harness.serveActiveRelease(contentB, r2.releaseId, origin(host));
+      await expectPublicSite(storefront, contentB, [baselineMarker]);
+
+      const draftD = `t1-v20-d-${randomUUID().slice(0, 8)}`;
+      await editHeroDraft(page, run, draftD);
+      await expectPublicSite(storefront, contentB, [baselineMarker, draftD]);
+
+      // After the upgrade is published, the site returns to the release that
+      // was serving before it: the baseline, not an artifact of v20's bytes.
+      await rollBack(page, run, baseline.releaseId, r2.releaseId);
+      const restored = await run.harness.serveActiveRelease(
+        baselineMarker,
+        baseline.releaseId,
+        origin(host),
+      );
+      expect(restored.buildId).toBe(baseline.buildId);
+      expect(restored.contentPublicationId).toBe(baseline.releaseContent);
+      expect(restored.sourceRevisionId).toBe(baselineSource);
+      await expectPublicSite(storefront, baselineMarker, [contentB, draftD]);
+    } finally {
+      await run.harness.dispose();
     }
-    // The home Document was not reset: the draft still holds the baseline's.
-    await savedField(page, scope!, baselineMarker);
-    await openEditor(page);
-    await expect(
-      page.locator('[data-editor-starter-upgrade="available"]'),
-    ).toHaveCount(0);
-
-    // A new build of the upgraded source, published.
-    const contentB = `t1-v20-b-${randomUUID().slice(0, 8)}`;
-    await editHeroDraft(page, contentB);
-    const r2 = await publishRelease(page);
-    expect(r2.releaseId).not.toBe(baseline.releaseId);
-    expect(r2.buildId).not.toBe(baseline.buildId);
-    expect(releaseSource(r2.releaseId)).not.toBe(baselineSource);
-    await harness!.serveActiveRelease(contentB, r2.releaseId, origin(host));
-    await expectPublicSite(storefront, contentB, [baselineMarker]);
-
-    const draftD = `t1-v20-d-${randomUUID().slice(0, 8)}`;
-    await editHeroDraft(page, draftD);
-    await expectPublicSite(storefront, contentB, [baselineMarker, draftD]);
-
-    // After the upgrade is published, the site returns to the release that
-    // was serving before it: the baseline, not an artifact of v20's bytes.
-    await rollBack(page, baseline.releaseId, r2.releaseId);
-    const restored = await harness!.serveActiveRelease(
-      baselineMarker,
-      baseline.releaseId,
-      origin(host),
-    );
-    expect(restored.buildId).toBe(baseline.buildId);
-    expect(restored.contentPublicationId).toBe(baseline.releaseContent);
-    expect(restored.sourceRevisionId).toBe(baselineSource);
-    await expectPublicSite(storefront, baselineMarker, [contentB, draftD]);
   });
 });
