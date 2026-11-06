@@ -15,7 +15,11 @@ import {
   previewFrame,
   settleSelection,
 } from "./helpers";
-import { savedField, signedInPage } from "./native-acceptance";
+import {
+  expectHydrated,
+  savedField,
+  signedInPage,
+} from "./native-acceptance";
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
@@ -194,9 +198,15 @@ const upgradeNotice = (page: Page) =>
 
 /** The author opens the review from the notice. */
 async function openReview(page: Page) {
-  await upgradeNotice(page)
-    .getByRole("button", { name: "Review upgrade" })
-    .click();
+  // The notice is server-rendered: a click before React has hydrated it is
+  // received by nothing and no review is ever asked for (seen on 0d9fc38,
+  // case E: the click landed about 1.6 s before the editor mounted). The
+  // button itself must be hydrated before it is clicked.
+  const review = upgradeNotice(page).getByRole("button", {
+    name: "Review upgrade",
+  });
+  await expectHydrated(review);
+  await review.click();
   const dialog = page.getByRole("dialog", {
     name: "Review the Starter upgrade",
   });

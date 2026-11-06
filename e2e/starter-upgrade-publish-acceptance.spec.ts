@@ -16,6 +16,7 @@ import {
   DOMAINS,
   RELEASES,
   editHero,
+  expectHydrated,
   latestRelease,
   openEditor,
   publishShowingRelease,
@@ -44,14 +45,16 @@ import {
  *
  *   v28 (source-first, current toolchain pins): the old workspace builds, so
  *       the store publishes Release R0 from v28's own bytes. The review lists
- *       the one file v29 changed; after it is applied the workspace is the
- *       current Starter. A new build is published as R1; the home page and a
+ *       exactly the files versions 29 and 30 changed (the layout, and the
+ *       content module's render-context reads); after it is applied the
+ *       workspace is the current Starter. A new build is published as R1; the home page and a
  *       non-home route render, a draft edit does not leak, and rolling back
  *       to R0 serves R0's build and content again.
  *   v20 (manifest era, flat components, stale toolchain pins): the old
  *       workspace's build is refused (INVALID_START_PACKAGE) and the live site
  *       stays on the release it had. The review brings the pins, Header,
- *       Footer, the section entries and the routes forward; the upgraded
+ *       Footer, the flat components, the section entries, the layout, the
+ *       content module and the routes forward (the full list is below); the upgraded
  *       workspace builds and is published, with the same public checks.
  *       Rollback, narrowly: after the upgrade is published, the site can
  *       return to the release that was serving before the upgrade. That
@@ -94,6 +97,16 @@ const SERVER_FN_MODULE =
   "/src/server/storefront/storefront-theme-files.serverFn.ts";
 const PACKAGE = "package.json";
 const LAYOUT = "src/layouts/StorefrontLayout.tsx";
+const CONTENT = "src/morph/content.ts";
+/**
+ * The Starter this run upgrades to. The review lists below are what the
+ * review shows for each fixture against this version, file by file (they
+ * match `starter-history-upgrade.test.ts`); a new Starter version changes
+ * them, and this check makes that a decision rather than a drift.
+ */
+const UPGRADE_TARGET_STARTER = 30;
+/** The files versions 29 (the layout) and 30 (the content module) changed. */
+const V28_REVIEW = [LAYOUT, CONTENT];
 const MANIFEST = "morph.theme.json";
 /** A Starter route that is not the home page. */
 const OTHER_ROUTE = "/order-transfer";
@@ -124,7 +137,7 @@ const V28 = fixture(28);
 const V20 = fixture(20);
 /**
  * The Starter's own paths. v28 has exactly the current Starter's (the unit
- * test "v28 is the current Starter apart from the one file version 29
+ * test "v28 is the current Starter apart from the files versions 29 and 30
  * changed").
  */
 const STARTER_PATHS = V28.files.map((file) => file.path);
@@ -139,6 +152,15 @@ const FLAT_COMPONENTS = [
 const SECTION_REEXPORTS = FLAT_COMPONENTS.map((path) =>
   path.replace("src/components/", "src/components/sections/"),
 );
+/** The page-owned home sections an upgrade from the manifest era creates. */
+const PAGE_SECTION_ENTRIES = [
+  "starter-categories",
+  "starter-hero",
+  "starter-introduction",
+  "starter-newsletter",
+  "starter-principles",
+  "starter-story",
+].map((slot) => `src/components/page-sections/index/${slot}/index.tsx`);
 
 /** Every text file, path → content. */
 async function workspace(page: Page): Promise<Record<string, string>> {
@@ -167,9 +189,15 @@ async function openReview(page: Page) {
     "available",
     { timeout: 30_000 },
   );
-  await upgradeNotice(page)
-    .getByRole("button", { name: "Review upgrade" })
-    .click();
+  // The notice is server-rendered: a click before React has hydrated it is
+  // received by nothing and no review is ever asked for (seen on 0d9fc38,
+  // case E: the click landed about 1.6 s before the editor mounted). The
+  // button itself must be hydrated before it is clicked.
+  const review = upgradeNotice(page).getByRole("button", {
+    name: "Review upgrade",
+  });
+  await expectHydrated(review);
+  await review.click();
   const dialog = page.getByRole("dialog", {
     name: "Review the Starter upgrade",
   });
@@ -334,7 +362,10 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
     expect(starterVersion()).toBe(version);
   }
 
-  /** Reviews and applies the upgrade, checking the review wrote nothing. */
+  /**
+   * Reviews and applies the upgrade, checking the review lists exactly
+   * `listed` (no more, no fewer) and wrote nothing.
+   */
   async function reviewAndApply(page: Page, listed: string[]) {
     await openEditor(page);
     const before = await workspace(page);
@@ -344,7 +375,8 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
     await expect(heading).toBeVisible();
     expect(
       Number(/\((\d+)\)/.exec((await heading.textContent()) ?? "")?.[1]),
-    ).toBeGreaterThan(0);
+      "the review lists exactly the expected files",
+    ).toBe(listed.length);
     for (const path of listed) {
       await expect(
         starter.getByRole("button", { name: path }),
@@ -464,10 +496,12 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
     try {
       await openEditor(page);
       original = await workspace(page);
+      expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(UPGRADE_TARGET_STARTER);
       expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
-      // Equal to the current Starter, apart from the layout v29 changed.
+      // Equal to the current Starter, apart from exactly the files versions
+      // 29 and 30 changed.
       for (const file of V28.files) {
-        if (file.path === LAYOUT) {
+        if (V28_REVIEW.includes(file.path)) {
           expect(original[file.path], file.path).not.toBe(file.content);
         } else {
           expect(original[file.path], file.path).toBe(file.content);
@@ -544,8 +578,8 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
     expect(served0.buildId).toBe(r0.buildId);
     await expectPublicSite(storefront, contentA, []);
 
-    // The reviewed upgrade: the one file v29 changed.
-    const { after } = await reviewAndApply(page, [LAYOUT]);
+    // The reviewed upgrade: the files versions 29 and 30 changed.
+    const { after } = await reviewAndApply(page, V28_REVIEW);
     expect(againstCurrent(after)).toEqual({ differs: [], missing: [] });
     // The home Document was not reset: the draft still holds R0's content.
     await savedField(page, scope!, contentA);
@@ -637,12 +671,22 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
     expect(unchanged.releases).toBe(releasesBefore);
     await expectPublicSite(storefront, baselineMarker, []);
 
-    // The reviewed upgrade.
+    // The reviewed upgrade, in full: the pins, Header and Footer, the flat
+    // components, the page-owned section entries and the sections/
+    // re-exports it creates, the layout, the content module, and the
+    // routes (the home route updated; the account and order-transfer pages
+    // created).
     const { after } = await reviewAndApply(page, [
       PACKAGE,
       "src/components/Header.tsx",
       "src/components/Footer.tsx",
-      SECTION_REEXPORTS[0]!,
+      ...FLAT_COMPONENTS,
+      ...PAGE_SECTION_ENTRIES,
+      ...SECTION_REEXPORTS,
+      LAYOUT,
+      CONTENT,
+      "src/routes/account.tsx",
+      "src/routes/index.tsx",
       "src/routes/order-transfer.tsx",
     ]);
     // What the unit test holds for v20 after one pass: every Starter path
