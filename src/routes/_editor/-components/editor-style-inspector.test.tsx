@@ -1,6 +1,7 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
 import {
   EditorStyleInspector,
@@ -2822,5 +2823,143 @@ describe("a section whose component file is gone", () => {
 
     expect(screen.getByText("CMS-only")).toBeTruthy();
     expect(screen.queryByText("Cannot render")).toBeNull();
+  });
+});
+
+/**
+ * Two lists the Document does not store yet, in one section. Each row card is
+ * keyed from the first render by the id its list's first edit stores, which is
+ * the id the server derives for the same rows; editing one list neither
+ * replaces nor renumbers the rows of the other. (Synthetic input events.)
+ */
+describe("rows of lists nothing stores yet", () => {
+  const ENTRIES_PATH = "src/components/Entries.tsx";
+  const ITEMS = [{ title: "One" }, { title: "Two" }];
+  const LINKS = [{ label: "Alpha" }, { label: "Beta" }];
+  const TEMPLATE_ID = "template-1";
+  const entriesFile = {
+    id: "entries-source",
+    storefrontId: "storefront-1",
+    themeId: "theme-1",
+    path: ENTRIES_PATH,
+    content: `export const contentFields = {
+  items: {
+    type: "array",
+    label: "Entries",
+    fields: { title: { type: "text", label: "Title" } },
+  },
+  links: {
+    type: "array",
+    label: "Links",
+    fields: { label: { type: "text", label: "Label" } },
+  },
+} as const;
+export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JSON.stringify(LINKS)} }: { items?: { id?: string; title?: string }[]; links?: { id?: string; label?: string }[] }) {
+  return <section>{items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}{links.map((link, index) => <a key={link.id ?? index}>{link.label}</a>)}</section>;
+}`,
+    mimeType: "text/typescript",
+    isEntry: false,
+    version: 1,
+    createdAt: "2026-11-06T00:00:00.000Z",
+    updatedAt: "2026-11-06T00:00:00.000Z",
+  };
+  /** The ids the server gives both default lists of this section. */
+  const serverIds = () => {
+    const props = normalizeDocumentRowIds(
+      { sections: [{ id: "section-1", props: { items: ITEMS, links: LINKS } }] },
+      TEMPLATE_ID,
+    ).value.sections[0]!.props as unknown as {
+      items: Array<{ id: string }>;
+      links: Array<{ id: string }>;
+    };
+    return {
+      items: props.items.map((row) => row.id),
+      links: props.links.map((row) => row.id),
+    };
+  };
+  const press = (input: HTMLInputElement, key: string) => {
+    const caret = input.selectionStart ?? input.value.length;
+    const next = input.value.slice(0, caret) + key + input.value.slice(caret);
+    input.value = next;
+    input.setSelectionRange(caret + key.length, caret + key.length);
+    fireEvent.input(input);
+  };
+  const renderEntries = (onPropsChange = vi.fn()) => {
+    render(
+      <EditorStyleInspector
+        view="content"
+        onPropsChange={onPropsChange}
+        onUpdateThemeFileStyle={vi.fn()}
+        onJumpToCode={vi.fn()}
+        resourceKey="storefront-1:theme-1:template-1"
+        rowIdTemplateId={TEMPLATE_ID}
+        section={{
+          id: "section-1",
+          type: "entries",
+          componentRef: ENTRIES_PATH,
+          enabled: true,
+          props: {},
+        }}
+        themeFiles={[entriesFile]}
+      />,
+    );
+    return onPropsChange;
+  };
+  const cardOf = (input: HTMLElement) =>
+    input.closest<HTMLElement>('[class*="bg-muted/30"]');
+
+  it("sends nothing by drawing the lists", () => {
+    const onPropsChange = renderEntries();
+    expect(screen.getByDisplayValue("Two")).toBeTruthy();
+    expect(screen.getByDisplayValue("Beta")).toBeTruthy();
+    expect(onPropsChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps every row's input and card, and gives each list the server's ids, as both are edited", () => {
+    const ids = serverIds();
+    const onPropsChange = renderEntries();
+    const two = screen.getByDisplayValue("Two") as HTMLInputElement;
+    const alpha = screen.getByDisplayValue("Alpha") as HTMLInputElement;
+    const beta = screen.getByDisplayValue("Beta") as HTMLInputElement;
+    const cards = [two, alpha, beta].map(cardOf);
+    expect(cards.every(Boolean)).toBe(true);
+
+    act(() => two.focus());
+    two.setSelectionRange(3, 3);
+    press(two, "!");
+    expect(two.isConnected).toBe(true);
+    expect(document.activeElement).toBe(two);
+    expect(two.selectionStart).toBe(4);
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [
+          { id: ids.items[0], title: "One" },
+          { id: ids.items[1], title: "Two!" },
+        ],
+      },
+      { inputFieldPath: "items.1.title" },
+    );
+
+    act(() => beta.focus());
+    beta.setSelectionRange(4, 4);
+    press(beta, "?");
+    expect(beta.isConnected).toBe(true);
+    expect(document.activeElement).toBe(beta);
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [
+          { id: ids.items[0], title: "One" },
+          { id: ids.items[1], title: "Two!" },
+        ],
+        links: [
+          { id: ids.links[0], label: "Alpha" },
+          { id: ids.links[1], label: "Beta?" },
+        ],
+      },
+      { inputFieldPath: "links.1.label" },
+    );
+    // Nothing either list did replaced a row of the other, or its own.
+    expect([two, alpha, beta].every((input) => input.isConnected)).toBe(true);
+    expect(cards.every((card) => card!.isConnected)).toBe(true);
   });
 });
