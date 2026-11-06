@@ -122,6 +122,19 @@ export type BasCase = Readonly<{
   body: Readonly<Record<BasSpelling, string>>;
   elements: readonly BasElement[];
   edit: BasEdit;
+  /**
+   * Set for sections the root layout renders on every page. They are stored
+   * in the Theme's one layout Document, not a route's; `body` is the layout
+   * component's body (it renders `{children}`, and reads its slots with
+   * `content()` in both spellings, as the starter layout does: the root
+   * route's `beforeLoad` loads them in full Start too). Every element must
+   * show the same on each of `pages`, the home page first; `routePath` and
+   * `routeFile` are that first page's.
+   */
+  layout?: Readonly<{
+    path: string;
+    pages: readonly Readonly<{ routePath: string; routeFile: string }>[];
+  }>;
 }>;
 
 const contentLocals = (slots: readonly string[]) =>
@@ -532,6 +545,51 @@ export const Route = createFileRoute("${routePath}")({
 function BasRoute() {
   const { ${testCase.slots.join(", ")} } = Route.useLoaderData();
 ${body}
+}
+`;
+}
+
+/**
+ * The root layout a layout case writes, in its case shape or (with `seed`)
+ * with each slot spread once, the shape the product binds.
+ */
+export function basLayoutSource(
+  testCase: BasCase,
+  options: Readonly<{ seed?: boolean }> = {},
+): string {
+  const componentName = testCase.component?.name ?? "BasHero";
+  const body = options.seed
+    ? `  return (
+    <div>
+      <header data-bas-case="${testCase.id}-seed">
+${testCase.slots
+  .map((slot) => `        <${componentName} {...content("${slot}")} />`)
+  .join("\n")}
+      </header>
+      {children}
+    </div>
+  );`
+    : testCase.body.content;
+  return `import type { ReactNode } from "react";
+import { content } from "../morph/content";
+import ${componentName} from "../components/${componentName}";
+
+export default function StorefrontLayout({ children }: { children?: ReactNode }) {
+${body}
+}
+`;
+}
+
+/** A page with no sections of its own, for a layout case to be seen on. */
+export function basPlainPageSource(routePath: string): string {
+  return `import { createFileRoute } from "@tanstack/react-router";
+
+export const Route = createFileRoute("${routePath}")({
+  component: BasPlainPage,
+});
+
+function BasPlainPage() {
+  return <main data-bas-page="${routePath}">Plain page</main>;
 }
 `;
 }

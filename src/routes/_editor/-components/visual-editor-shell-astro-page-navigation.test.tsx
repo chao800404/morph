@@ -606,15 +606,21 @@ describe("switching pages in a preview that navigates as documents (D3)", () => 
  */
 describe("following a link the author clicks inside an Astro preview", () => {
   let searchChanges: Partial<StorefrontThemeEditorSearch>[] = [];
+  let currentSearch = (): Partial<StorefrontThemeEditorSearch> => ({});
+  /** The address changing from outside the editor (Back, Forward). */
+  let navigateTo = (_next: Partial<StorefrontThemeEditorSearch>) => {};
 
   /** The editor at `routePath`, whose route follows its own requests. */
-  async function routed(routePath: string) {
+  async function routed(
+    routePath: string,
+    themeContext: StorefrontThemeEditorDTO = astroContext,
+  ) {
     searchChanges = [];
     modelCurrentBridge();
     getThemeEditor.mockResolvedValue({
       success: true,
       message: "ok",
-      data: astroContext,
+      data: themeContext,
     });
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -638,9 +644,11 @@ describe("following a link the author clicks inside an Astro preview", () => {
         routePath,
         viewport: "desktop",
       } as StorefrontThemeEditorSearch);
+      currentSearch = () => search;
+      navigateTo = (next) => setSearch((current) => ({ ...current, ...next }));
       return (
         <VisualEditorShell
-          context={astroContext}
+          context={themeContext}
           search={search}
           onSearchChange={(next) => {
             searchChanges.push(next);
@@ -765,5 +773,311 @@ describe("following a link the author clicks inside an Astro preview", () => {
       PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
       expect.anything(),
     );
+  });
+
+  /**
+   * D92-B: opening a page from the list switches the page and keeps the
+   * author's mode. The bridge leaves clicks to the Theme until the editor
+   * turns selection on (theme-preview-bridge-entry.test.ts, "leaves clicks to
+   * the Theme until the editor asks for them"), so what decides whether a link
+   * is followed is the selection mode the editor tells the frame.
+   */
+  describe("opening a page from the list keeps the interaction mode", () => {
+    type ModeMessage = Posted & {
+      enabled?: boolean;
+      restoreTarget?: { sectionId?: string };
+    };
+    const modeMessages = () =>
+      log.filter(
+        (message) =>
+          message.type === "morph:storefront-preview-set-selection-mode",
+      ) as ModeMessage[];
+    const selectionToggle = () =>
+      screen.getByRole("button", { name: /section selection$/ });
+    const isSelecting = () =>
+      selectionToggle().getAttribute("aria-pressed") === "true";
+
+    /** A page-list click; the frame then answers for that page. */
+    async function openFromList(
+      name: string,
+      routePath: string,
+      { newDocument }: { newDocument: boolean },
+    ) {
+      act(() => {
+        within(pagesList()).getByRole("button", { name }).click();
+      });
+      await tick();
+      expect(searchChanges.some((next) => next.routePath === routePath)).toBe(
+        true,
+      );
+      if (newDocument) {
+        reloadFrameDocument();
+        documentReady();
+        await tick();
+      }
+      frameAnswers(routePath);
+      report(routePath);
+      await tick();
+      await tick();
+    }
+
+    it("on Astro, stays in interact mode, so the frame never takes a link click as a selection", async () => {
+      await routed("/");
+      expect(isSelecting()).toBe(false);
+      const before = modeMessages().length;
+
+      await openFromList("/about", "/about", { newDocument: true });
+
+      // The page switched: the frame was asked for /about and answered.
+      expect(routeRequests().at(-1)?.routePath).toBe("/about");
+      expect(navigationNotice()).toBeNull();
+      // The mode did not: the frame was never told to select.
+      expect(isSelecting()).toBe(false);
+      expect(
+        modeMessages()
+          .slice(before)
+          .filter((message) => message.enabled === true),
+      ).toEqual([]);
+
+      // A link the author then clicks in the frame is followed, not located.
+      await linkFollowedFrom("/about", "/");
+      expect(searchChanges.at(-1)?.routePath).toBe("/");
+      expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+      expect(isSelecting()).toBe(false);
+    });
+
+    it("on Astro, stays in select mode when the author had turned it on", async () => {
+      await routed("/");
+      act(() => selectionToggle().click());
+      await tick();
+      expect(isSelecting()).toBe(true);
+
+      await openFromList("/about", "/about", { newDocument: true });
+
+      expect(routeRequests().at(-1)?.routePath).toBe("/about");
+      expect(isSelecting()).toBe(true);
+      expect(modeMessages().at(-1)?.enabled).toBe(true);
+    });
+
+    it("on TanStack Start, a page row still selects the page root and enters select mode, as before", async () => {
+      await routed("/", startContext);
+      expect(isSelecting()).toBe(false);
+
+      await openFromList("/guard", "/guard", { newDocument: false });
+
+      expect(isSelecting()).toBe(true);
+      expect(
+        modeMessages().some(
+          (message) =>
+            message.enabled === true &&
+            message.restoreTarget?.sectionId === "/guard",
+        ),
+      ).toBe(true);
+    });
+
+    /**
+     * D93-1: whatever the mode, the page left behind takes its selection with
+     * it. The Inspector and the page list never keep showing it.
+     */
+    describe("the selection of the page left behind", () => {
+      /** The Inspector's Content tab, as the author would read it. */
+      const inspector = () => {
+        const tab = screen.queryByRole("button", { name: /^Content$/ });
+        if (tab) act(() => tab.click());
+        return (
+          document.querySelector<HTMLElement>("[data-editor-inspector-panel]")
+            ?.textContent ?? ""
+        );
+      };
+      const selectionShown = () => !inspector().includes("Select a component");
+      const selectionNamed = () =>
+        modeMessages().at(-1)?.restoreTarget?.sectionId;
+
+      /** Select mode on, /about opened and its page root selected. */
+      async function aboutSelected() {
+        await routed("/");
+        act(() => selectionToggle().click());
+        await tick();
+        await openFromList("/about", "/about", { newDocument: true });
+        expect(currentSearch().section).toBe("/about");
+        expect(selectionShown()).toBe(true);
+        expect(selectionNamed()).toBe("/about");
+      }
+
+      it("on Astro in interact mode, is cleared and nothing is selected in its place", async () => {
+        await aboutSelected();
+        act(() => selectionToggle().click());
+        await tick();
+        expect(isSelecting()).toBe(false);
+        // Turning select mode off leaves the selection where it was.
+        expect(inspector()).toContain("page/about");
+        const before = modeMessages().length;
+
+        await openFromList("Home /", "/", { newDocument: true });
+
+        expect(routeRequests().at(-1)?.routePath).toBe("/");
+        expect(isSelecting()).toBe(false);
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+        expect(inspector()).not.toContain("/about");
+        const sent = modeMessages().slice(before);
+        expect(sent.filter((message) => message.enabled === true)).toEqual([]);
+        expect(
+          sent.some((message) => message.restoreTarget?.sectionId === "/about"),
+        ).toBe(false);
+      });
+
+      it("on Astro in select mode, is replaced by the new page's root", async () => {
+        await aboutSelected();
+        const before = modeMessages().length;
+
+        await openFromList("Home /", "/", { newDocument: true });
+
+        expect(isSelecting()).toBe(true);
+        expect(currentSearch().section).toBe("/");
+        expect(inspector()).toContain("page/");
+        expect(inspector()).not.toContain("/about");
+        const sent = modeMessages().slice(before);
+        expect(sent.at(-1)?.restoreTarget?.sectionId).toBe("/");
+        expect(
+          sent.some((message) => message.restoreTarget?.sectionId === "/about"),
+        ).toBe(false);
+      });
+
+      it("on Astro, a page-root selection still waiting for its page is not taken later in interact mode", async () => {
+        await routed("/");
+        act(() => selectionToggle().click());
+        await tick();
+        // Opened in select mode; its frame has not answered yet.
+        act(() => {
+          within(pagesList()).getByRole("button", { name: "/about" }).click();
+        });
+        await tick();
+        act(() => selectionToggle().click());
+        await tick();
+        await openFromList("Home /", "/", { newDocument: true });
+        expect(isSelecting()).toBe(false);
+        const before = modeMessages().length;
+
+        await openFromList("/about", "/about", { newDocument: true });
+
+        expect(isSelecting()).toBe(false);
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+        expect(
+          modeMessages()
+            .slice(before)
+            .filter((message) => message.enabled === true),
+        ).toEqual([]);
+      });
+
+      /** A page-list click whose frame answer is held back. */
+      function clickInList(name: string) {
+        act(() => {
+          within(pagesList()).getByRole("button", { name }).click();
+        });
+        return tick();
+      }
+      /** The held answer: a new document on `routePath`, answering. */
+      async function lateAnswer(routePath: string) {
+        reloadFrameDocument();
+        documentReady();
+        await tick();
+        frameAnswers(routePath);
+        report(routePath);
+        await tick();
+        await tick();
+      }
+
+      /** D94-2: a late answer never reopens select mode the author left. */
+      it("on Astro, a late answer after select mode was turned off selects nothing", async () => {
+        await routed("/");
+        act(() => selectionToggle().click());
+        await tick();
+        await clickInList("/about");
+        act(() => selectionToggle().click());
+        await tick();
+        expect(isSelecting()).toBe(false);
+        const before = modeMessages().length;
+
+        await lateAnswer("/about");
+
+        expect(currentSearch().routePath).toBe("/about");
+        expect(isSelecting()).toBe(false);
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+        expect(
+          modeMessages()
+            .slice(before)
+            .filter((message) => message.enabled === true),
+        ).toEqual([]);
+
+        // Nothing is left waiting: back in select mode, another answer for
+        // the page selects nothing either.
+        act(() => selectionToggle().click());
+        await tick();
+        frameAnswers("/about");
+        report("/about");
+        await tick();
+        await tick();
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+      });
+
+      it("on Astro, a selection queued for a page the editor has left is dropped", async () => {
+        await routed("/");
+        act(() => selectionToggle().click());
+        await tick();
+        await clickInList("/about");
+        // Before the frame answers, the address goes back to / (the browser's
+        // Back button), and the frame answers there.
+        act(() => navigateTo({ routePath: "/", section: undefined }));
+        await tick();
+        await lateAnswer("/");
+        expect(currentSearch().routePath).toBe("/");
+        expect(currentSearch().section).toBeUndefined();
+
+        // Forward to /about again, still in select mode: the selection queued
+        // for the earlier open is not taken.
+        act(() => navigateTo({ routePath: "/about", section: undefined }));
+        await tick();
+        await lateAnswer("/about");
+        expect(currentSearch().routePath).toBe("/about");
+        expect(isSelecting()).toBe(true);
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+      });
+
+      it("on TanStack Start, a late answer still selects the page root and enters select mode, as before", async () => {
+        await routed("/", startContext);
+        act(() => selectionToggle().click());
+        await tick();
+        await clickInList("/guard");
+        act(() => selectionToggle().click());
+        await tick();
+        expect(isSelecting()).toBe(false);
+
+        frameAnswers("/guard");
+        report("/guard");
+        await tick();
+        await tick();
+
+        expect(isSelecting()).toBe(true);
+        expect(currentSearch().section).toBe("/guard");
+        expect(modeMessages().at(-1)?.restoreTarget?.sectionId).toBe("/guard");
+      });
+    });
+
+    /** The frame, on `from`, follows a link to `to`: a new document there. */
+    async function linkFollowedFrom(from: string, to: string) {
+      reloadFrameDocument();
+      documentReady();
+      await tick();
+      // The editor's request after that ready still names its own page.
+      expect(routeRequests().at(-1)?.routePath).toBe(from);
+      frameAnswers(to);
+      report(to);
+      await tick();
+    }
   });
 });

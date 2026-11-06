@@ -325,6 +325,19 @@ import {
 } from "@/lib/storefront/editor/inline-text-edit";
 import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
+import {
+  acceptLivePreviewAccessBegin,
+  isLivePreviewAccessEnded,
+  isLivePreviewAccessFailure,
+  LIVE_PREVIEW_ACCESS_ENDED_NOTICE,
+  LIVE_PREVIEW_ACCESS_FAILED_NOTICE,
+  livePreviewAccessBeginUrl,
+  livePreviewAccessCodeMessage,
+  startLivePreviewAccessFlow,
+  type LivePreviewAccessFlow,
+  type LivePreviewAccessTab,
+} from "@/lib/storefront/editor/live-preview-access";
+import { issueThemePreviewAccess } from "@/server/storefront/storefront-theme-preview-access.serverFn";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { EditorPreviewRuntimeMenu } from "./editor-preview-runtime-menu";
 import {
@@ -1121,6 +1134,9 @@ export function VisualEditorShell({
     nodes: readonly PreviewEditableNode[];
   } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  /** For the page-list open, which reads the mode it was asked in. */
+  const isSelectionModeRef = useRef(isSelectionMode);
+  isSelectionModeRef.current = isSelectionMode;
   const [spacingOverlayMode, setSpacingOverlayMode] =
     useState<PreviewSpacingOverlayMode>("off");
   const [assistantPanelTab, setAssistantPanelTab] =
@@ -2753,8 +2769,69 @@ export function VisualEditorShell({
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
+  // A preview on its `pv-` host is framed through the authorization flow
+  // first (#214 P2): one flow per framed document, answered at most once.
+  const previewAccessMode =
+    previewServer.data?.success === true &&
+    previewServer.data.data.access === "pv-exchange"
+      ? "pv-exchange"
+      : "open";
+  const previewAccessFlowRef = useRef<{
+    key: string;
+    flow: LivePreviewAccessFlow;
+  } | null>(null);
+  if (
+    previewAccessMode === "pv-exchange" &&
+    previewKey &&
+    previewAccessFlowRef.current?.key !== previewKey
+  ) {
+    previewAccessFlowRef.current = {
+      key: previewKey,
+      flow: startLivePreviewAccessFlow(Date.now()),
+    };
+  }
+  const framedPreviewSrc =
+    previewAccessMode === "pv-exchange" &&
+    previewUrl &&
+    previewAccessFlowRef.current
+      ? livePreviewAccessBeginUrl({
+          framedUrl: previewUrl,
+          flowId: previewAccessFlowRef.current.flow.flowId,
+          editorOrigin: context.previewChannel?.editorOrigin ?? "",
+        })
+      : previewUrl;
   const previewUrlRef = useRef(previewUrl);
   previewUrlRef.current = previewUrl;
+  // A preview tab the editor opened runs its own flow, with its own grant
+  // (#214 P3, design §4b); one at a time, answered at most once.
+  const previewAccessTabRef = useRef<LivePreviewAccessTab | null>(null);
+  const previewTabEditorOrigin = context.previewChannel?.editorOrigin ?? null;
+  const openPreviewTab = useCallback(() => {
+    const framedUrl = previewUrlRef.current;
+    if (!framedUrl || !previewTabEditorOrigin) return;
+    const previous = previewAccessTabRef.current;
+    if (previous) previous.flow.ended = true;
+    const flow = startLivePreviewAccessFlow(Date.now());
+    // Opened with an opener: the tab's begin page reports to this window.
+    // It drops the opener itself before the Theme loads.
+    const opened = window.open(
+      livePreviewAccessBeginUrl({
+        framedUrl,
+        flowId: flow.flowId,
+        editorOrigin: previewTabEditorOrigin,
+        mode: "tab",
+      }),
+      "_blank",
+    );
+    if (!opened) {
+      previewAccessTabRef.current = null;
+      toast.error(
+        "The browser blocked the preview tab. Allow pop-ups for Morph, then try again.",
+      );
+      return;
+    }
+    previewAccessTabRef.current = { flow, window: opened };
+  }, [previewTabEditorOrigin]);
   const previewRevisionRef = useRef(previewRevision);
   previewRevisionRef.current = previewRevision;
   /**
@@ -2963,6 +3040,126 @@ export function VisualEditorShell({
   useEffect(() => {
     dispatchPreviewLifecycle({ type: "reset" });
   }, [livePreviewWorkspaceKey]);
+
+  // The authorization flow's two messages from the framed begin page. Only
+  // the frame's own window, on the preview's origin, for the flow being
+  // waited on, is answered, and only once (live-preview-access.ts).
+  useEffect(() => {
+    if (previewAccessMode !== "pv-exchange") return;
+    const storefrontId = context.storefront.id;
+    const themeId = context.theme.id;
+    const failed = () =>
+      dispatchPreviewLifecycle({
+        type: "server-failed",
+        message: LIVE_PREVIEW_ACCESS_FAILED_NOTICE,
+      });
+    const onMessage = (event: MessageEvent) => {
+      const tab = previewAccessTabRef.current;
+      if (tab && tab.window && event.source === tab.window) {
+        const fromTab = {
+          origin: previewSourceOriginRef.current ?? "",
+          window: tab.window,
+        };
+        // The tab shows its own failure; the editor only lets go of it.
+        if (isLivePreviewAccessFailure(tab.flow, event, fromTab)) {
+          tab.flow.ended = true;
+          tab.window = null;
+          return;
+        }
+        const tabBinderHash = acceptLivePreviewAccessBegin(
+          tab.flow,
+          event,
+          fromTab,
+          Date.now(),
+        );
+        if (!tabBinderHash) return;
+        const tabWindow = tab.window as Window;
+        void issueThemePreviewAccess({
+          data: {
+            storefrontId,
+            themeId,
+            flowId: tab.flow.flowId,
+            binderHash: tabBinderHash,
+            kind: "tab",
+          },
+        }).then(
+          (result) => {
+            if (previewAccessTabRef.current !== tab) return;
+            tab.window = null;
+            if (!result.success) {
+              tabWindow.close();
+              toast.error("The preview tab could not sign in. Try again.");
+              return;
+            }
+            tabWindow.postMessage(
+              livePreviewAccessCodeMessage(tab.flow, result.data.code),
+              fromTab.origin,
+            );
+          },
+          () => {
+            if (previewAccessTabRef.current !== tab) return;
+            tab.window = null;
+            tabWindow.close();
+            toast.error("The preview tab could not sign in. Try again.");
+          },
+        );
+        return;
+      }
+      const entry = previewAccessFlowRef.current;
+      if (!entry) return;
+      const frame = previewIframeRef.current?.contentWindow ?? null;
+      const expected = {
+        origin: previewSourceOriginRef.current ?? "",
+        window: frame,
+      };
+      if (isLivePreviewAccessFailure(entry.flow, event, expected)) {
+        entry.flow.ended = true;
+        failed();
+        return;
+      }
+      if (isLivePreviewAccessEnded(event, expected)) {
+        entry.flow.ended = true;
+        dispatchPreviewLifecycle({
+          type: "server-failed",
+          message: LIVE_PREVIEW_ACCESS_ENDED_NOTICE,
+        });
+        return;
+      }
+      const binderHash = acceptLivePreviewAccessBegin(
+        entry.flow,
+        event,
+        expected,
+        Date.now(),
+      );
+      if (!binderHash) return;
+      void issueThemePreviewAccess({
+        data: {
+          storefrontId,
+          themeId,
+          flowId: entry.flow.flowId,
+          binderHash,
+        },
+      }).then(
+        (result) => {
+          // A newer frame has its own flow; this answer is for nobody.
+          if (previewAccessFlowRef.current !== entry) return;
+          if (!result.success) {
+            failed();
+            return;
+          }
+          frame?.postMessage(
+            livePreviewAccessCodeMessage(entry.flow, result.data.code),
+            expected.origin,
+          );
+        },
+        () => {
+          if (previewAccessFlowRef.current === entry) failed();
+        },
+      );
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [previewAccessMode, context.storefront.id, context.theme.id]);
 
   useEffect(() => {
     if (previewLifecycle.phase === "reconnecting" || previewServer.isFetching) {
@@ -3238,6 +3435,13 @@ export function VisualEditorShell({
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
   const [isFlushingCodeChanges, setIsFlushingCodeChanges] = useState(false);
   const editorCodeWorkspaceRef = useRef<EditorCodeWorkspaceHandle>(null);
+  // The Command Palette opens the same Starter upgrade review as the notice,
+  // also when no notice is shown.
+  const [starterReviewRequest, setStarterReviewRequest] = useState(0);
+  const requestStarterReview = useCallback(
+    () => setStarterReviewRequest((current) => current + 1),
+    [],
+  );
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -4157,10 +4361,23 @@ export function VisualEditorShell({
         });
         return;
       }
-      setPendingRouteSelection({
-        routePath: route.path,
-        sectionId: route.path,
-      });
+      // Selecting the page root is a selection request, and a selection
+      // request turns select mode on (handleSectionsSearchChange). A
+      // document-navigating preview (Astro, D92) only switches the page and
+      // keeps the author's mode: in interact mode its links stay links. In
+      // select mode the page root is selected as before. Start is unchanged.
+      // The selection the page left behind is let go by the context reset
+      // (useEditorContextReset) once the route changes; one still waiting for
+      // a page opened in select mode is dropped here, or a later open of that
+      // page would take it and turn select mode on (D93-1).
+      if (!documentNavigationRef.current || isSelectionModeRef.current) {
+        setPendingRouteSelection({
+          routePath: route.path,
+          sectionId: route.path,
+        });
+      } else {
+        setPendingRouteSelection(null);
+      }
       setPendingRoutePath(route.path);
       const routeTemplate =
         templateForRoute(context.templates, route.path) ??
@@ -9503,6 +9720,17 @@ export function VisualEditorShell({
   useEffect(() => {
     const pending = pendingRouteSelection;
     if (!pending) return;
+    // A document-navigating preview (Astro) queued it only because the author
+    // was in select mode, for the page then being opened (D94-2). A page the
+    // editor is no longer on or going to never takes it.
+    if (
+      documentNavigationRef.current &&
+      (search.routePath ?? "/") !== pending.routePath &&
+      pendingRoutePathRef.current !== pending.routePath
+    ) {
+      setPendingRouteSelection(null);
+      return;
+    }
     if ((search.routePath ?? "/") !== pending.routePath) return;
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
     if (
@@ -9513,6 +9741,9 @@ export function VisualEditorShell({
     }
 
     setPendingRouteSelection(null);
+    // A late answer never turns select mode back on after the author turned
+    // it off while the page was opening.
+    if (documentNavigationRef.current && !isSelectionModeRef.current) return;
     handleSectionsSearchChange({ section: pending.sectionId });
   }, [
     handleSectionsSearchChange,
@@ -11073,10 +11304,15 @@ export function VisualEditorShell({
         lastSelection?.sectionId !== message.sectionId ||
         lastSelection.fieldKey !== message.fieldKey ||
         lastSelection.fieldPath !== message.fieldPath ||
-        !hasInlineTextDocumentTarget(
-          message.sectionId,
-          activeTemplate.document.sections.map((section) => section.id),
-          activeRouteSections.map((section) => section.slotId),
+        // The page's own sections, or one the shared layout renders: that one
+        // is stored in the layout's Document, and `templateIdForSection`
+        // below sends the write there, as it does for the Inspector.
+        !(
+          hasInlineTextDocumentTarget(
+            message.sectionId,
+            activeTemplate.document.sections.map((section) => section.id),
+            activeRouteSections.map((section) => section.slotId),
+          ) || sectionModel.sharedSectionIds.has(message.sectionId)
         )
       ) {
         return;
@@ -11177,6 +11413,7 @@ export function VisualEditorShell({
     activeRouteSections,
     handleSectionPropsChange,
     isSelectionMode,
+    sectionModel.sharedSectionIds,
     sectionPropsSnapshot,
     stepCanvasDeferral,
     templateIdForSection,
@@ -13478,6 +13715,7 @@ export function VisualEditorShell({
           />
           <EditorStarterUpgradeNotice
             status={context.starterUpgrade}
+            reviewRequest={starterReviewRequest}
             storefrontId={workspaceScope.storefrontId}
             themeId={workspaceScope.themeId}
             unsavedCount={unsavedWorkspaceFileCount + pendingSourceConflicts.length}
@@ -13668,6 +13906,7 @@ export function VisualEditorShell({
             jumpLocation={jumpLocation}
             onResolveConflict={handleResolveConflict}
             onRestartPreview={retryLivePreview}
+            onReviewStarterUpgrade={requestStarterReview}
             onThemeFilesMoved={handleThemeFilesMoved}
             onDirtyFilesChange={setMonacoDirtyFiles}
             // Typing in Code while a navigation waits on a save cancels it,
@@ -13853,7 +14092,7 @@ export function VisualEditorShell({
                   <iframe
                     ref={previewIframeRef}
                     key={previewKey}
-                    src={previewUrl}
+                    src={framedPreviewSrc ?? previewUrl}
                     title={`${activeTemplate?.name ?? context.theme.name} storefront preview`}
                     sandbox={
                       livePreviewSecurity.enabled
@@ -14177,6 +14416,11 @@ export function VisualEditorShell({
             spacingOverlayMode={spacingOverlayMode}
             onSpacingOverlayModeChange={setSpacingOverlayMode}
             onPreviewRuntimeChanged={retryLivePreview}
+            onOpenPreviewTab={
+              previewAccessMode === "pv-exchange" && previewUrl
+                ? openPreviewTab
+                : null
+            }
             isCommentMode={isCommentMode}
             onCommentModeChange={(enabled) => {
               autoEnabledSelectionForStylesRef.current = false;
@@ -14382,6 +14626,7 @@ function EditorControls({
   spacingOverlayMode,
   onSpacingOverlayModeChange,
   onPreviewRuntimeChanged,
+  onOpenPreviewTab,
   isCommentMode,
   onCommentModeChange,
   onRefresh,
@@ -14398,6 +14643,8 @@ function EditorControls({
   onSpacingOverlayModeChange: (mode: PreviewSpacingOverlayMode) => void;
   /** Restarts the Live Preview once the Theme records another runtime. */
   onPreviewRuntimeChanged: () => void;
+  /** Opens the preview in its own tab; null while the preview has no `pv-` host. */
+  onOpenPreviewTab: (() => void) | null;
   isCommentMode: boolean;
   onCommentModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
@@ -14508,9 +14755,14 @@ function EditorControls({
           variant="ghost"
           size="icon"
           className="size-7 shrink-0 shadow-none"
-          disabled
+          disabled={!onOpenPreviewTab}
           aria-label="Open preview in new tab"
-          title="Open preview is not available yet"
+          title={
+            onOpenPreviewTab
+              ? "Open preview in new tab"
+              : "Open preview in a new tab is not available for this preview"
+          }
+          onClick={() => onOpenPreviewTab?.()}
         >
           <ExternalLink />
         </Button>

@@ -5,6 +5,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { authMiddleware } from "../middleware/auth.middleware";
 import { getActionErrorMessage } from "@/lib/asset/action-result";
+import { withoutSessionCookieRewrite } from "./without-session-cookie-rewrite";
 
 export const updateProfile = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(profileSchema, data))
@@ -25,15 +26,20 @@ export const updateProfile = createServerFn({ method: "POST" })
     const auth = context.auth;
 
     try {
-      // Use Better Auth's updateUser API
-      await auth.api.updateUser({
-        headers: request.headers,
-        body: {
-          name: data.name,
-          language: data.language,
-          phoneNumber: data.phone || null,
-        },
-      });
+      // Use Better Auth's updateUser API. It changes this account's data, not
+      // who is signed in, so the session cookie it re-sets stays off the
+      // response: applied after another account signed in, it would sign this
+      // browser back in as this account.
+      await withoutSessionCookieRewrite(auth, () =>
+        auth.api.updateUser({
+          headers: request.headers,
+          body: {
+            name: data.name,
+            language: data.language,
+            phoneNumber: data.phone || null,
+          },
+        }),
+      );
 
       return {
         success: true,

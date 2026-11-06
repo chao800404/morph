@@ -762,6 +762,8 @@ export const storefrontDal = {
           changes: [],
           kept: [],
           digest: reviewPlanDigest(noPlan),
+          // Nothing of the Starter is offered either, its new pages included.
+          optional: null,
         },
         catalog: reviewThemeCatalog([], {
           hasProducts: false,
@@ -832,7 +834,10 @@ export const storefrontDal = {
    * Applies the parts of a review its author confirmed, and only those.
    *
    * Each part is named by the digest the author saw: `starterDigest` for the
-   * Starter upgrade, `catalogDigest` for the product catalog. The plans are
+   * Starter upgrade, `catalogDigest` for the product catalog. The Starter
+   * part's digest is the review's own or, when the author selected the
+   * Starter's new pages, the digest of the review with them selected
+   * (`review.optional`); which one it is decides what is written. The plans are
    * made again from the stored files; if the source generation or a named
    * part's digest is not the one reviewed, nothing is written. The files are
    * saved as one batch through the source store, under the generation and
@@ -881,7 +886,16 @@ export const storefrontDal = {
             storedVersion: recordedStarterVersion(stored.version),
           });
     if (starter && !starter.applies) return { status: "not-applicable" };
-    if (starter && starter.digest !== data.starterDigest) {
+    // The plan the author saw: without the Starter's new pages, or with them.
+    const starterPlan =
+      starter === null
+        ? null
+        : starter.digest === data.starterDigest
+          ? starter
+          : starter.optional?.digest === data.starterDigest
+            ? starter.optional
+            : undefined;
+    if (starterPlan === undefined) {
       return { status: "stale", sourceGeneration };
     }
     const catalog =
@@ -904,10 +918,10 @@ export const storefrontDal = {
     }
 
     const writes = [
-      ...(starter?.plan.files ?? []),
+      ...(starterPlan?.plan.files ?? []),
       ...(catalog?.plan.files ?? []),
     ];
-    const deletions = starter?.plan.deletions ?? [];
+    const deletions = starterPlan?.plan.deletions ?? [];
     // The two plans never name the same file; if they ever did, neither is
     // written over the other.
     const paths = [...writes, ...deletions].map((file) => file.path);
@@ -965,8 +979,8 @@ export const storefrontDal = {
     // origin, nor a complete upgrade: no version, and no home rule, which
     // belongs to the home route this upgrade then holds back.
     const versionRecorded =
-      starter !== null &&
-      !starter.kept.some((item) => item.reason === "origin-unknown");
+      starterPlan !== null &&
+      !starterPlan.kept.some((item) => item.reason === "origin-unknown");
     if (versionRecorded) {
       assertStarterUpgradeRecorded(
         await ensureStarterHomeDocument(db, data.themeId, {
