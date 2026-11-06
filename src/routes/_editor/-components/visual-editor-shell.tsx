@@ -902,6 +902,11 @@ type EditorShellProps = {
   onRetryThemeRead?: () => void;
 };
 
+const UNANSWERED_EARLIER_SAVE =
+  "An earlier save was not answered. Your changes are kept; check before saving again.";
+/** A content write held, after waiting its turn, by an unanswered earlier one. */
+const UNANSWERED_EARLIER_SAVE_CODE = "UNANSWERED_EARLIER_SAVE";
+
 /**
  * Resolves true when the navigation must not happen. `navigation` is where the
  * router is and where it is going, when the caller knows.
@@ -2014,6 +2019,20 @@ export function VisualEditorShell({
     [],
   );
 
+  /**
+   * Every id one document's writes are queued and kept under: the real id
+   * and each route placeholder this session created it from. Only ids the
+   * server returned to this session's own create are joined.
+   */
+  const templateQueueAliases = useCallback((templateId: string): string[] => {
+    const real = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+    const aliases = new Set([templateId, real]);
+    for (const [placeholder, created] of routeTemplateIdsRef.current) {
+      if (created === real) aliases.add(placeholder);
+    }
+    return Array.from(aliases);
+  }, []);
+
   const enqueueTemplateMutation = useCallback(
     (
       requestedTemplateId: string,
@@ -2027,22 +2046,32 @@ export function VisualEditorShell({
          */
         reportSent: (sent: number) => void,
       ) => Promise<ServerResult<unknown>>,
+      /**
+       * What the caller makes of the answer, run before the next write to
+       * this document starts: a content write's snapshot and unanswered
+       * bookkeeping are in place before anything is composed after it.
+       */
+      answer?: {
+        onResult: (result: ServerResult<unknown>) => ServerResult<unknown>;
+        onError: (error: unknown) => never;
+      },
     ) => {
       // A placeholder stands for a route document not created yet. Once it
-      // has been, writes queue behind the real id — and behind anything still
-      // queued under the placeholder, so the two never race one document.
+      // has been, the placeholder and the real id are one document, and so
+      // one queue: a write asked for under either waits for everything
+      // queued under any of them, and is queued under all of them.
       const knownId = routeTemplateIdsRef.current.get(requestedTemplateId);
       const queueKey = knownId ?? requestedTemplateId;
-      const currentQueue = Promise.all([
-        templateMutationQueueRef.current.get(queueKey) ?? Promise.resolve(),
-        knownId
-          ? (templateMutationQueueRef.current.get(requestedTemplateId) ??
-            Promise.resolve())
-          : Promise.resolve(),
-      ]);
-      const nextPromise = currentQueue
-        .catch(() => {})
-        .then(async (): Promise<ServerResult<unknown>> => {
+      const aliases = templateQueueAliases(requestedTemplateId);
+      const predecessors = aliases.flatMap((alias) => {
+        const tail = templateMutationQueueRef.current.get(alias);
+        return tail ? [tail] : [];
+      });
+      // Settled, not resolved: one that failed is over, not a reason to stop
+      // waiting for the others. Waiting is not permission to send either;
+      // what is sent still meets its own checks when it runs.
+      const nextPromise = Promise.allSettled(predecessors).then(
+        async (): Promise<ServerResult<unknown>> => {
           let templateId = queueKey;
           const routePath = routePathFromTemplatePlaceholder(templateId);
           if (routePath !== null) {
@@ -2126,9 +2155,17 @@ export function VisualEditorShell({
             }
           }
           return result;
-        });
-      templateMutationQueueRef.current.set(queueKey, nextPromise);
-      return nextPromise;
+        },
+      );
+      // The next write waits for this one's answer to have been taken in,
+      // not only for its request to return.
+      const tail = answer
+        ? nextPromise.then(answer.onResult, answer.onError)
+        : nextPromise;
+      for (const alias of new Set([...aliases, queueKey])) {
+        templateMutationQueueRef.current.set(alias, tail);
+      }
+      return tail;
     },
     [
       context.storefront.id,
@@ -2136,6 +2173,7 @@ export function VisualEditorShell({
       context.theme.id,
       ownDraftSteps,
       queryClient,
+      templateQueueAliases,
     ],
   );
 
@@ -2202,9 +2240,7 @@ export function VisualEditorShell({
     ) => {
       if (!confirmed && unconfirmedContentRef.current.size > 0) {
         setDraftSaveState("error");
-        throw new Error(
-          "An earlier save was not answered. Your changes are kept; check before saving again.",
-        );
+        throw new Error(UNANSWERED_EARLIER_SAVE);
       }
       const clearConflict = () => {
         setContentConflicts((current) => {
@@ -2249,6 +2285,14 @@ export function VisualEditorShell({
             enqueueTemplateMutation(
               tid,
               async (generation, templateId, reportSent) => {
+                // Having waited behind another write is not leave to send: if
+                // one of them went unanswered meanwhile, this one is held as
+                // it would have been had it started after.
+                if (!confirmed && unconfirmedContentRef.current.size > 0) {
+                  throw Object.assign(new Error(UNANSWERED_EARLIER_SAVE), {
+                    code: UNANSWERED_EARLIER_SAVE_CODE,
+                  });
+                }
                 // Composed here, after anything queued ahead of it: the
                 // stored copy, its draft generation and the rows checked are
                 // the ones current now, all from one snapshot.
@@ -2271,8 +2315,8 @@ export function VisualEditorShell({
                   expectedSourceGeneration: entry.expectedSourceGeneration!,
                 });
               },
-            ).then(
-              (result) => {
+              {
+              onResult: (result) => {
                 const answered = sentEntry as PendingContentEntry | undefined;
                 const hiddenBefore = answered
                   ? previewVisibilityRef.current.isHidden(answered.sectionId)
@@ -2318,7 +2362,7 @@ export function VisualEditorShell({
                 }
                 return result;
               },
-              (error: unknown) => {
+              onError: (error: unknown): never => {
                 // Sent, and no answer came back: it may have landed. A
                 // refusal answered for an earlier sign-in is an answer.
                 if (
@@ -2332,6 +2376,7 @@ export function VisualEditorShell({
                   syncUnconfirmedContentCount();
                 }
                 throw error;
+              },
               },
             ),
           onSaved: recordHistory
@@ -2377,6 +2422,11 @@ export function VisualEditorShell({
         // can do about it, so a conflict is recorded rather than only reported.
         if ((error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT) {
           setContentConflicts((current) => ({ ...current, [key]: tid }));
+        } else if (
+          (error as { code?: string }).code === UNANSWERED_EARLIER_SAVE_CODE
+        ) {
+          // Held, as at the top: nothing was sent, nothing failed.
+          setDraftSaveState("error");
         } else if (!isEditorWritePaused(error)) {
           // Kept per key, so another section's save landing later cannot
           // make this one read as saved.
@@ -2543,7 +2593,10 @@ export function VisualEditorShell({
 
     for (const [key, templateId] of conflicts) {
       const pending = pendingPropsMapRef.current.get(key);
-      const template = freshTemplates.find((entry) => entry.id === templateId);
+      // Recorded under the id it was sent by: a route placeholder is read
+      // back as the document this session created from it.
+      const documentId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const template = freshTemplates.find((entry) => entry.id === documentId);
       if (!pending || !template) continue;
       const section = template.document.sections.find(
         (entry) => entry.id === pending.sectionId,
@@ -2601,7 +2654,7 @@ export function VisualEditorShell({
       // document's, and reusing it would be refused for the same reason.
       if (typeof template.draftGeneration === "number") {
         templateDraftGenerationRef.current.set(
-          templateId,
+          documentId,
           template.draftGeneration,
         );
       }
@@ -2658,8 +2711,18 @@ export function VisualEditorShell({
     async (targetTemplateId?: string) => {
       const tid = targetTemplateId ?? pageTemplateId;
       if (!tid) return;
-      const prefix = `${tid}:`;
-      await templateMutationQueueRef.current.get(tid)?.catch(() => {});
+      // The document, under every id its writes were queued and kept under:
+      // edits made before its route document existed are keyed by the
+      // placeholder, later ones by the real id.
+      const aliases = templateQueueAliases(tid);
+      const aliasOf = (key: string) =>
+        aliases.find((alias) => key.startsWith(`${alias}:`));
+      await Promise.allSettled(
+        aliases.flatMap((alias) => {
+          const tail = templateMutationQueueRef.current.get(alias);
+          return tail ? [tail] : [];
+        }),
+      );
       // A flush runs ahead of another step (publish, a structural edit) and
       // is not the author asking to save, so a write that was never answered
       // stops it here: nothing is checked or sent until Check and save.
@@ -2667,15 +2730,26 @@ export function VisualEditorShell({
         throw new Error(UNCONFIRMED_SAVE_HOLD);
       }
       for (const key of Array.from(pendingPropsMapRef.current.keys())) {
-        if (!key.startsWith(prefix)) continue;
+        const keyTemplateId = aliasOf(key);
+        if (keyTemplateId === undefined) continue;
+        // Content under another of the document's ids that a save already
+        // failed or was refused for stays held: seeing the alias is not a
+        // reason to send it now. It keeps the step below from going on.
+        if (
+          keyTemplateId !== tid &&
+          (key in contentConflictsRef.current ||
+            failedContentKeysRef.current.has(key))
+        ) {
+          continue;
+        }
         const timer = pendingPropsTimersRef.current.get(key);
         if (timer !== undefined) clearTimeout(timer);
         pendingPropsTimersRef.current.delete(key);
-        await commitSectionPending(tid, key);
+        await commitSectionPending(keyTemplateId, key);
       }
       if (
-        [...pendingPropsMapRef.current.keys()].some((key) =>
-          key.startsWith(prefix),
+        [...pendingPropsMapRef.current.keys()].some(
+          (key) => aliasOf(key) !== undefined,
         )
       ) {
         // A conflicted write is not waiting on a retry — sending the same
@@ -2691,7 +2765,7 @@ export function VisualEditorShell({
         );
       }
     },
-    [pageTemplateId, commitSectionPending],
+    [pageTemplateId, commitSectionPending, templateQueueAliases],
   );
 
   const previewSourceOriginRef = useRef<string | null>(null);
