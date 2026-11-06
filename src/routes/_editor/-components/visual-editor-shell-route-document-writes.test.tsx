@@ -703,6 +703,18 @@ const saveStatus = () =>
     .querySelector("[data-editor-save-status]")
     ?.getAttribute("aria-label");
 
+/**
+ * A read of the Theme arrives while a write is still out. The editor's own
+ * read after creating the route document waits for that write to be over;
+ * any other read (another refetch, a window coming back) does not, and the
+ * page then takes up the document while the write is unanswered.
+ */
+async function readWhileOut() {
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: detailQuery().queryKey });
+  });
+}
+
 /** The page's own bindings are on the real id: the context holds the document. */
 async function expectAdopted() {
   await waitFor(() => expect(host.search?.templateId).toBe(ROUTE_DOC_ID));
@@ -913,6 +925,7 @@ describe("the selection when the page takes up the route document it created", (
     await type("Default heading", "Value 1");
     await waitFor(() => expect(sent()).toHaveLength(1));
     expect(liveTyped("Value 1")).toHaveLength(1);
+    await readWhileOut();
     await expectAdopted();
 
     // No click, no Inspector reopened: the author goes on typing.
@@ -962,6 +975,7 @@ describe("the second edit on a route document this editor just created", () => {
     });
     // The read after ensure moved the page onto the real id: the second
     // edit is staged and queued under it, not under the placeholder.
+    await readWhileOut();
     await expectAdopted();
 
     typeInCard(0, "Value 2");
@@ -1043,6 +1057,7 @@ describe("G1: someone else's change to the new document", () => {
     const first = holdNextWrite();
     await type("Default heading", "Value 1");
     await waitFor(() => expect(sent()).toHaveLength(1));
+    await readWhileOut();
     await expectAdopted();
     typeInCard(0, "Value 2");
     await pause();
@@ -1092,6 +1107,7 @@ describe("G2: a result that is not known", () => {
     const first = holdNextWrite();
     await type("Default heading", "Value 1");
     await waitFor(() => expect(sent()).toHaveLength(1));
+    await readWhileOut();
     await expectAdopted();
     typeInCard(0, "Value 2");
     await pause();
@@ -1213,6 +1229,10 @@ describe("the pre-step flush across the placeholder and the real id", () => {
     holdDebounce();
     typeInCard(0, "Value 2");
     vi.useRealTimers();
+    // A read arrives while the first write is out (see `readWhileOut`).
+    act(() => {
+      void client.invalidateQueries({ queryKey: detailQuery().queryKey });
+    });
     await releaseReads();
     await expectAdopted();
 
@@ -2313,6 +2333,27 @@ describe("Q3: the field the author types in, across the page taking up its route
     field.setSelectionRange(value.length, value.length);
   }
 
+  /**
+   * The first input into a list whose rows have no ids gives the rows their
+   * ids, and the row inputs are rebuilt then. That happens on any document,
+   * not when the page takes up its route document, and is recorded apart
+   * (handoff row-id-seeding: input lost, a separate fix). These tests start
+   * following the field once the rows have their ids, with focus and caret
+   * where the author left them. They show the page taking up its document
+   * no longer rebuilds the input; they do not show the first edit of rows
+   * without ids keeps it.
+   */
+  function beginInRowB(value: string): HTMLInputElement {
+    typeKeeping(rowB()!, value);
+    const field = rowB()!;
+    act(() => {
+      field.focus();
+    });
+    field.setSelectionRange(field.value.length, field.value.length);
+    expect(field.value).toBe(value);
+    return field;
+  }
+
   function expectSameField(field: HTMLInputElement, value: string) {
     expect(field.isConnected).toBe(true);
     expect(rowB()).toBe(field);
@@ -2327,9 +2368,8 @@ describe("Q3: the field the author types in, across the page taking up its route
   it("row b while the first write is unanswered: the same input keeps text, focus and caret; the appended text is stored", async () => {
     await openOn(secondRowReport);
     const first = holdNextWrite();
-    const field = rowB()!;
-    expect(field.value).toBe("Two");
-    typeKeeping(field, "Two edited");
+    expect(rowB()!.value).toBe("Two");
+    const field = beginInRowB("Two edited");
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expectSameField(field, "Two edited");
@@ -2356,8 +2396,7 @@ describe("Q3: the field the author types in, across the page taking up its route
 
   it("row b after the first answer landed: the same input keeps text, focus and caret; the appended text is stored", async () => {
     await openOn(secondRowReport);
-    const field = rowB()!;
-    typeKeeping(field, "Two edited");
+    const field = beginInRowB("Two edited");
     await pause();
     await expectAdopted();
     expectSameField(field, "Two edited");
@@ -2407,8 +2446,7 @@ describe("Q3: the field the author types in, across the page taking up its route
   it("synthetic composition events (jsdom, not a real IME): a composition open across the page taking up the document ends in the same input and is stored", async () => {
     await openOn(secondRowReport);
     const first = holdNextWrite();
-    const field = rowB()!;
-    typeKeeping(field, "Two edited");
+    const field = beginInRowB("Two edited");
     await waitFor(() => expect(sent()).toHaveLength(1));
 
     fireEvent.compositionStart(field);

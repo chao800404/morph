@@ -97,6 +97,7 @@ import {
 import {
   conflictingListKeys,
   heldContentMessage,
+  heldFlushMessage,
   rebaseContentProps,
 } from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
@@ -1973,6 +1974,28 @@ export function VisualEditorShell({
   /** Route documents created in this session, by the placeholder they replaced. */
   const routeTemplateIdsRef = useRef<Map<string, string>>(new Map());
   /**
+   * The page's document as the Inspector keys its inputs. A route with no
+   * document of its own is written under its placeholder until its first
+   * write creates one; the document the server answered that write's ensure
+   * with is the same page's document, under its real id. Keyed by the
+   * placeholder for both, the input the author is typing in is not rebuilt
+   * when the page takes the document up: its text, focus, caret and an open
+   * composition stay. Only that pair; any other document, route or Theme
+   * keys as its own id, and its inputs are rebuilt as before.
+   */
+  const routeDocumentPlaceholder =
+    search.routePath && routeOwnsDocument(search.routePath)
+      ? routeTemplatePlaceholderId(contentTargetRoutePath(search.routePath))
+      : null;
+  const inspectorDocumentKey =
+    routeDocumentPlaceholder &&
+    pageTemplateId &&
+    (pageTemplateId === routeDocumentPlaceholder ||
+      routeTemplateIdsRef.current.get(routeDocumentPlaceholder) ===
+        pageTemplateId)
+      ? routeDocumentPlaceholder
+      : undefined;
+  /**
    * The document a section's edits go to on the page on screen, resolved
    * past a route document's placeholder id; set beside `templateIdForSection`.
    */
@@ -2076,6 +2099,7 @@ export function VisualEditorShell({
         async (): Promise<ServerResult<unknown>> => {
           let templateId = queueKey;
           const routePath = routePathFromTemplatePlaceholder(templateId);
+          let createdRouteDocument = false;
           if (routePath !== null) {
             const ensured = await sendEditorWrite(
               {
@@ -2101,15 +2125,22 @@ export function VisualEditorShell({
                 ensured.data.draftGeneration,
               );
             }
-            // The editor context now has a document for this route; reading
-            // it back is what moves the page's bindings onto the real id.
+            createdRouteDocument = true;
+          }
+          // The editor context now has a document for this route; reading it
+          // back is what moves the page's bindings onto the real id. Read
+          // once this write is over (answered, refused, failed or lost), not
+          // while it is out: the document as created holds none of it, and a
+          // page taking it up then would show the section as if never edited.
+          const readCreatedDocument = () => {
+            if (!createdRouteDocument) return;
             void queryClient.invalidateQueries({
               queryKey: storefrontThemeQueries.detail(
                 context.storefront.id,
                 context.theme.id,
               ).queryKey,
             });
-          }
+          };
           const expectedDraftGeneration = resolveTemplateDraftGeneration({
             templateId,
             observed: templateDraftGenerationRef.current,
@@ -2118,17 +2149,22 @@ export function VisualEditorShell({
           let sentDraftGeneration = expectedDraftGeneration;
           // Every document write queued here — content, rename, promote —
           // meets the paused-writes check at the one place it is sent.
-          const result = await sendEditorWrite(
-            {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-            },
-            "theme",
-            () =>
-              op(expectedDraftGeneration, templateId, (sent) => {
-                sentDraftGeneration = sent;
-              }),
-          );
+          let result: ServerResult<unknown>;
+          try {
+            result = await sendEditorWrite(
+              {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+              },
+              "theme",
+              () =>
+                op(expectedDraftGeneration, templateId, (sent) => {
+                  sentDraftGeneration = sent;
+                }),
+            );
+          } finally {
+            readCreatedDocument();
+          }
           if (
             result.success &&
             result.data !== null &&
@@ -2776,21 +2812,21 @@ export function VisualEditorShell({
         pendingPropsTimersRef.current.delete(key);
         await commitSectionPending(keyTemplateId, key);
       }
-      if (
-        [...pendingPropsMapRef.current.keys()].some(
-          (key) => aliasOf(key) !== undefined,
-        )
-      ) {
+      const heldKeys = [...pendingPropsMapRef.current.keys()].filter(
+        (key) => aliasOf(key) !== undefined,
+      );
+      if (heldKeys.length > 0) {
         // A conflicted write is not waiting on a retry — sending the same
         // payload again is what the refusal was protecting against — so the
-        // message names the action that resolves it.
+        // message names the action that resolves it. Told from this
+        // document's own held entries: another document's conflict does not
+        // make a plain failure here read as one.
         throw new Error(
-          Object.keys(contentConflictsRef.current).length > 0
-            ? heldContentMessage({
-                hasListConflict:
-                  Object.keys(listConflictsRef.current).length > 0,
-              })
-            : "Content changed while saving. Retry before continuing.",
+          heldFlushMessage({
+            heldKeys,
+            conflicts: contentConflictsRef.current,
+            listConflicts: listConflictsRef.current,
+          }),
         );
       }
     },
@@ -4140,6 +4176,36 @@ export function VisualEditorShell({
     [sectionModel],
   );
   /**
+   * The key one section's content is kept under in a document. A section has
+   * one. Typed while its route had no document of its own, it is kept under
+   * the route placeholder; an edit made after the page took up the document
+   * that placeholder created joins it there for as long as anything is held
+   * for it (pending, waiting on its debounce, failed, refused or unanswered),
+   * never as a second entry under the real id. Two entries for one section
+   * let a recovery send the older value after the newer one was stored. Once
+   * nothing is held under the placeholder, edits go under the real id.
+   */
+  const contentKeyFor = useCallback(
+    (templateId: string, sectionId: string): string => {
+      for (const [placeholder, id] of routeTemplateIdsRef.current) {
+        if (id !== templateId || placeholder === templateId) continue;
+        const held = `${placeholder}:${sectionId}`;
+        if (
+          pendingPropsMapRef.current.has(held) ||
+          pendingPropsTimersRef.current.has(held) ||
+          unconfirmedContentRef.current.has(held) ||
+          failedContentKeysRef.current.has(held) ||
+          held in contentConflictsRef.current ||
+          held in listConflictsRef.current
+        ) {
+          return held;
+        }
+      }
+      return `${templateId}:${sectionId}`;
+    },
+    [],
+  );
+  /**
    * What the editor holds about one section's visibility, read at the moment
    * it is asked: the accepted copy, and the pending and unanswered entries,
    * keyed as the write path keys them (`previewSectionHidden`). Nothing here
@@ -4149,7 +4215,7 @@ export function VisualEditorShell({
     (sectionId: string) => {
       const templateId = templateIdForSection(sectionId);
       if (!templateId) return null;
-      const key = `${templateId}:${sectionId}`;
+      const key = contentKeyFor(templateId, sectionId);
       return {
         snapshot: contentSnapshotsRef.current.get(
           routeTemplateIdsRef.current.get(templateId) ?? templateId,
@@ -4159,7 +4225,7 @@ export function VisualEditorShell({
         unconfirmed: unconfirmedContentRef.current.get(key),
       };
     },
-    [templateIdForSection],
+    [contentKeyFor, templateIdForSection],
   );
   /** Read by the preview poster, which is created once. */
   const previewSectionStateRef = useRef(previewSectionState);
@@ -10813,7 +10879,7 @@ export function VisualEditorShell({
         const sourceGeneration = currentContentSourceGeneration();
         for (const [sectionId, binding] of sectionModelRef.current.bindings) {
           const templateId = binding.templateId;
-          const key = `${templateId}:${sectionId}`;
+          const key = contentKeyFor(templateId, sectionId);
           // A hidden section is replayed as hidden, with no props: its
           // stored values stay with the editor (`previewSectionPost`).
           const section = previewSectionPost({
@@ -11330,7 +11396,10 @@ export function VisualEditorShell({
 
       const templateId = templateIdForSection(sectionId);
       if (!templateId) return;
-      const key = `${templateId}:${sectionId}`;
+      // One entry per section: an edit still held under the route
+      // placeholder takes this one in, and is sent as the placeholder's.
+      const key = contentKeyFor(templateId, sectionId);
+      const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
 
       // 2. Debounced per-section timer (does NOT cancel edits on other sections)
       const existingTimer = pendingPropsTimersRef.current.get(key);
@@ -11419,7 +11488,7 @@ export function VisualEditorShell({
 
       const timer = setTimeout(() => {
         pendingPropsTimersRef.current.delete(key);
-        void commitSectionPending(templateId, key).catch(() => {
+        void commitSectionPending(keyTemplateId, key).catch(() => {
           // Mutation UI reports the error; the shared queue keeps the input.
         });
       }, 300);
@@ -11428,6 +11497,7 @@ export function VisualEditorShell({
     },
     [
       commitSectionPending,
+      contentKeyFor,
       leaveGuard,
       sectionPropsSnapshot,
       enqueueTemplateMutation,
@@ -11464,7 +11534,8 @@ export function VisualEditorShell({
     pendingProps: (sectionId) => {
       if (!activeTemplate) return undefined;
       const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
-      return pendingPropsMapRef.current.get(`${templateId}:${sectionId}`)?.props;
+      return pendingPropsMapRef.current.get(contentKeyFor(templateId, sectionId))
+        ?.props;
     },
   };
   useEffect(() => {
@@ -11509,7 +11580,10 @@ export function VisualEditorShell({
         return;
       }
 
-      const key = `${templateIdForSection(message.sectionId) ?? activeTemplate.id}:${message.sectionId}`;
+      const key = contentKeyFor(
+        templateIdForSection(message.sectionId) ?? activeTemplate.id,
+        message.sectionId,
+      );
       const currentProps = {
         ...sectionPropsSnapshot(message.sectionId),
         ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
@@ -11650,7 +11724,9 @@ export function VisualEditorShell({
         toast.error("This page has no document to store this section in.");
         return;
       }
-      const key = `${templateId}:${sectionId}`;
+      // One entry per section (`contentKeyFor`), sent as the key's own.
+      const key = contentKeyFor(templateId, sectionId);
+      const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
       const pendingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
       const currentProps = { ...section.props, ...pendingProps };
       const result = swapArrayItemsAtFieldPaths(
@@ -11754,7 +11830,7 @@ export function VisualEditorShell({
       });
 
       try {
-        await commitSectionPending(templateId, key, false);
+        await commitSectionPending(keyTemplateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
         // props the other one started from.
         history.record(
@@ -11854,7 +11930,9 @@ export function VisualEditorShell({
         syncPreviewSectionProps(sectionId, undefined, enabled);
         return;
       }
-      const key = `${templateId}:${sectionId}`;
+      // One entry per section (`contentKeyFor`), sent as the key's own.
+      const key = contentKeyFor(templateId, sectionId);
+      const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
 
       const existingTimer = pendingPropsTimersRef.current.get(key);
       if (existingTimer) {
@@ -11889,7 +11967,7 @@ export function VisualEditorShell({
       reconcilePreviewSection(sectionId);
 
       try {
-        await commitSectionPending(templateId, key, false);
+        await commitSectionPending(keyTemplateId, key, false);
       } catch (error) {
         if (historyGeneration !== undefined) throw error;
         return;
@@ -14654,6 +14732,7 @@ export function VisualEditorShell({
 
         <EditorAssistantPanel
           contentResetEpoch={contentResetEpoch}
+          inspectorDocumentKey={inspectorDocumentKey}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}
