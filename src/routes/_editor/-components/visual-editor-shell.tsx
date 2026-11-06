@@ -9781,6 +9781,38 @@ export function VisualEditorShell({
   // new object for the same document, and the route sent again would end an
   // inline edit open on the page (a Theme with a router finishes it first).
   const activeTemplateId = activeTemplate?.id;
+  const activeTemplateIdRef = useRef(activeTemplateId);
+  activeTemplateIdRef.current = activeTemplateId;
+  // The id the route was last sent for, kept across the editor taking up the
+  // route document its own write created. That is the same page (as the leave
+  // guard and the selection reset judge it), and the frame may have moved by
+  // itself in the meantime: sending the route again then would take it back
+  // to the editor's page. Any other change of document sends it again.
+  const routeSyncTemplateIdRef = useRef(activeTemplateId);
+  const previousRouteSyncTemplateId = routeSyncTemplateIdRef.current;
+  const routeSyncTemplateId =
+    previousRouteSyncTemplateId &&
+    activeTemplateId &&
+    previousRouteSyncTemplateId !== activeTemplateId &&
+    isRouteDocumentAdoption(
+      {
+        pathname: "",
+        search: {
+          templateId: previousRouteSyncTemplateId,
+          routePath: search.routePath,
+        },
+      },
+      {
+        pathname: "",
+        search: { templateId: activeTemplateId, routePath: search.routePath },
+      },
+      routeDocumentAdoptionKnown(),
+    )
+      ? previousRouteSyncTemplateId
+      : activeTemplateId;
+  useEffect(() => {
+    routeSyncTemplateIdRef.current = routeSyncTemplateId;
+  }, [routeSyncTemplateId]);
   /** Counts route requests, of any frame; the page echoes the one it answers. */
   const routeRequestIdRef = useRef(0);
   /**
@@ -9797,17 +9829,18 @@ export function VisualEditorShell({
   } | null>(null);
   /** Sends the route on screen; the request's id, or null when none was sent. */
   const syncPreviewRoute = useCallback((): number | null => {
-    if (!activeTemplateId) return null;
+    const templateId = activeTemplateIdRef.current;
+    if (!routeSyncTemplateId || !templateId) return null;
     routeRequestIdRef.current += 1;
     const routeRequestId = routeRequestIdRef.current;
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-route",
-      templateId: activeTemplateId,
+      templateId,
       routePath: search.routePath ?? null,
       routeRequestId,
     });
     return routeRequestId;
-  }, [activeTemplateId, postEditorToPreviewMessage, search.routePath]);
+  }, [routeSyncTemplateId, postEditorToPreviewMessage, search.routePath]);
   /**
    * A route request sent to a document-navigating frame: the page switch the
    * canvas now waits on (D3). Nothing for a Theme whose preview has a router.
