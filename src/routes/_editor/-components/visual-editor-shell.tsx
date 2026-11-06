@@ -24,6 +24,8 @@ import {
   sameContent,
   sectionContentLanded,
   rebaseFieldBasis,
+  draftConflictFailure,
+  ROUTE_DOCUMENT_CREATED_GENERATION,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import {
@@ -2267,6 +2269,10 @@ export function VisualEditorShell({
         let sentEntry: PendingContentEntry | undefined;
         let sentDraftGeneration = 0;
         let sentTemplateId = tid;
+        // Typed while the route had no document of its own: made on the
+        // document as created, never on whatever it has become since.
+        const madeBeforeDocument =
+          routePathFromTemplatePlaceholder(tid) !== null;
         const result = await commitPendingContent({
           key,
           pending: pendingPropsMapRef.current,
@@ -2280,6 +2286,9 @@ export function VisualEditorShell({
                 ? snapshotSectionProps(writeSnapshot, entry.sectionId)
                 : storedSectionPropsRef.current(entry.sectionId, tid),
               writeSnapshot,
+              madeBeforeDocument
+                ? { missingBasis: ROUTE_DOCUMENT_CREATED_GENERATION }
+                : undefined,
             ),
           saveWhenSent: (prepare) =>
             enqueueTemplateMutation(
@@ -2297,6 +2306,18 @@ export function VisualEditorShell({
                 // stored copy, its draft generation and the rows checked are
                 // the ones current now, all from one snapshot.
                 writeSnapshot = await contentSnapshotForWrite(templateId);
+                // With no copy of the document held, the only one such input
+                // can go onto is the document as created. A route document
+                // already past that (written by someone, or found existing
+                // after an answer was lost) has not been read here: refused
+                // as out of date, never sent over what it holds.
+                if (
+                  madeBeforeDocument &&
+                  !writeSnapshot &&
+                  generation !== ROUTE_DOCUMENT_CREATED_GENERATION
+                ) {
+                  throw draftConflictFailure();
+                }
                 const entry = prepare();
                 sentDraftGeneration =
                   entry.expectedDraftGeneration ?? generation;
@@ -2732,13 +2753,13 @@ export function VisualEditorShell({
       for (const key of Array.from(pendingPropsMapRef.current.keys())) {
         const keyTemplateId = aliasOf(key);
         if (keyTemplateId === undefined) continue;
-        // Content under another of the document's ids that a save already
-        // failed or was refused for stays held: seeing the alias is not a
-        // reason to send it now. It keeps the step below from going on.
+        // Content a save already failed or was refused for stays held, under
+        // whichever of the document's ids it is kept and whichever id the
+        // step asked by: only the author's own recovery (try again, load
+        // latest and keep mine) sends it. It keeps the step from going on.
         if (
-          keyTemplateId !== tid &&
-          (key in contentConflictsRef.current ||
-            failedContentKeysRef.current.has(key))
+          key in contentConflictsRef.current ||
+          failedContentKeysRef.current.has(key)
         ) {
           continue;
         }

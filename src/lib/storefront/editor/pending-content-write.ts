@@ -184,6 +184,13 @@ export function selectCurrentContentFields(
   generation: number,
   stored: Record<string, unknown>,
   snapshot?: ContentSnapshot,
+  options?: {
+    /**
+     * The copy a field with no recorded basis counts as made on. Unset, such
+     * a field is not checked against the snapshot's own range.
+     */
+    missingBasis?: number;
+  },
 ): PendingContentEntry {
   if (!Number.isSafeInteger(generation) || generation < 1)
     throw sourceSelectionFailure();
@@ -232,7 +239,10 @@ export function selectCurrentContentFields(
           ? { ...stored, [root]: entry.props[root] }
           : stored;
       if (
-        !basisWithinOwnRange(snapshot, field.basisDraftGeneration) ||
+        !basisWithinOwnRange(
+          snapshot,
+          field.basisDraftGeneration ?? options?.missingBasis,
+        ) ||
         !rowsStillMatch(base, path, field.rows)
       ) {
         throw draftConflictFailure();
@@ -299,6 +309,13 @@ export function rebaseFieldBasis(
     ),
   };
 }
+
+/**
+ * The draft generation a route document has when it is created. Input made
+ * while its route had no document counts as made on that copy: composed
+ * later, it may only go onto one whose every step since was this session's.
+ */
+export const ROUTE_DOCUMENT_CREATED_GENERATION = 1;
 
 /** Remove only the exact field snapshots acknowledged, not newer/unsent edits. */
 export function acknowledgeContentFields(
