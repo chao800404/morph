@@ -32,10 +32,21 @@ export type EditorLeaveKind =
   /** Another page in the same editor: unsaved edits stay in this tab. */
   | "switch-page";
 
-type EditorLocation = {
+export type EditorLocation = {
   pathname: string;
   search: Readonly<Record<string, unknown>>;
 };
+
+// The router strips `routePath=/`, so an absent one is the home page.
+const locationRoutePath = (search: EditorLocation["search"]) =>
+  typeof search.routePath === "string" && search.routePath
+    ? search.routePath
+    : "/";
+
+const locationTemplateId = (search: EditorLocation["search"]) =>
+  typeof search.templateId === "string" && search.templateId
+    ? search.templateId
+    : null;
 
 /**
  * What a navigation does to the editor, or null when it stays on the same
@@ -46,23 +57,56 @@ export function classifyEditorNavigation(
   next: EditorLocation,
 ): EditorLeaveKind | null {
   if (current.pathname !== next.pathname) return "leave-editor";
-  // The router strips `routePath=/`, so an absent one is the home page.
-  const routePath = (search: EditorLocation["search"]) =>
-    typeof search.routePath === "string" && search.routePath
-      ? search.routePath
-      : "/";
+  const routePath = locationRoutePath;
   if (routePath(current.search) !== routePath(next.search)) {
     return "switch-page";
   }
-  const templateId = (search: EditorLocation["search"]) =>
-    typeof search.templateId === "string" && search.templateId
-      ? search.templateId
-      : null;
+  const templateId = locationTemplateId;
   const from = templateId(current.search);
   const to = templateId(next.search);
   // Filling in a missing id is the URL being completed, not a page change.
   if (from && to && from !== to) return "switch-page";
   return null;
+}
+
+/**
+ * Whether a navigation that changes `templateId` is the editor taking up a
+ * route document it has itself just created, on the same route.
+ *
+ * A route with no document of its own borrows a shared one (the index) until
+ * its first write creates the route's document. Read back, the editor moves
+ * its URL from the borrowed id to the new one. That is the same page and the
+ * same place the edits now go, not the author switching pages, so it must not
+ * wait behind the save it was caused by.
+ *
+ * Only that one change counts. The new id must be one this editor was handed
+ * by the server for this very route, the id it leaves must be a shared
+ * document rather than a route's own, and nothing else in the address may
+ * name another page. Nothing in the URL can claim it.
+ */
+export function isRouteDocumentAdoption(
+  current: EditorLocation,
+  next: EditorLocation,
+  known: {
+    /**
+     * Route documents this editor created, by route path, as the server
+     * answered its own create.
+     */
+    createdRouteDocuments: ReadonlyMap<string, string>;
+    /** Whether an id is one of this Theme's shared (not route-owned) documents. */
+    isSharedDocument: (templateId: string) => boolean;
+  },
+): boolean {
+  if (current.pathname !== next.pathname) return false;
+  const routePath = locationRoutePath(current.search);
+  if (routePath !== locationRoutePath(next.search)) return false;
+  const from = locationTemplateId(current.search);
+  const to = locationTemplateId(next.search);
+  if (!from || !to || from === to) return false;
+  return (
+    known.createdRouteDocuments.get(routePath) === to &&
+    known.isSharedDocument(from)
+  );
 }
 
 export type EditorLeaveFlush =

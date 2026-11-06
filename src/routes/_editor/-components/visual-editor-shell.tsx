@@ -46,9 +46,11 @@ import {
 import { createDebouncedWrites } from "@/lib/storefront/editor/debounced-writes";
 import {
   createEditorLeaveGuard,
+  isRouteDocumentAdoption,
   type EditorLeaveFlush,
   type EditorLeaveKind,
   type EditorLeavePrompt,
+  type EditorLocation,
 } from "@/lib/storefront/editor/editor-leave-guard";
 import {
   editorSaveStatusLabel,
@@ -900,8 +902,14 @@ type EditorShellProps = {
   onRetryThemeRead?: () => void;
 };
 
-/** Resolves true when the navigation must not happen. */
-export type EditorNavigationGuard = (kind: EditorLeaveKind) => Promise<boolean>;
+/**
+ * Resolves true when the navigation must not happen. `navigation` is where the
+ * router is and where it is going, when the caller knows.
+ */
+export type EditorNavigationGuard = (
+  kind: EditorLeaveKind,
+  navigation?: { current: EditorLocation; next: EditorLocation },
+) => Promise<boolean>;
 
 const previewDefaultWidths = {
   desktop: 1440,
@@ -7530,9 +7538,35 @@ export function VisualEditorShell({
     }
   }, []);
 
+  // Read when a navigation is asked about, so the guard needs no re-register.
+  const contextTemplatesRef = useRef(context.templates);
+  contextTemplatesRef.current = context.templates;
+
   useEffect(() => {
     if (!navigationGuardRef) return;
-    navigationGuardRef.current = (kind) => {
+    navigationGuardRef.current = (kind, navigation) => {
+      // The editor moving its own URL onto the route document its write just
+      // created: same page, nothing to wait for or to commit.
+      if (
+        kind === "switch-page" &&
+        navigation &&
+        isRouteDocumentAdoption(navigation.current, navigation.next, {
+          createdRouteDocuments: new Map(
+            Array.from(routeTemplateIdsRef.current).flatMap(
+              ([placeholder, id]) => {
+                const routePath = routePathFromTemplatePlaceholder(placeholder);
+                return routePath === null ? [] : [[routePath, id] as const];
+              },
+            ),
+          ),
+          isSharedDocument: (templateId) =>
+            contextTemplatesRef.current.some(
+              (template) => template.id === templateId && !template.routePath,
+            ),
+        })
+      ) {
+        return Promise.resolve(false);
+      }
       commitFocusedField();
       return leaveGuard.request(kind);
     };
