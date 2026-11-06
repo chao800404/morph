@@ -1,4 +1,10 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Browser,
+  type Page,
+  type Route,
+} from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import {
   EDITOR_PATH,
@@ -7,7 +13,7 @@ import {
   openContentTab,
   previewFrame,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
+import { execLocalD1, isServerFn } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -246,5 +252,248 @@ test.describe("typing after the preview moved to another page by itself", () => 
     await titleField(page).press("Tab");
     await expect.poll(() => storedTitle(page, SLOT)).toBe(typed);
     expect(await storedTitle(page, OTHER_SLOT)).toBeUndefined();
+  });
+});
+
+/**
+ * The first write on a route that has no document of its own yet creates one
+ * (`ensureStorefrontThemeRouteTemplate`). When the editor reads it back, it
+ * moves its own URL from the borrowed index `templateId` to that document on
+ * the same route. That is the editor completing its own address, not the
+ * author switching pages, so it must not hold the editor behind the "saving"
+ * leave dialog while the first write is still unanswered. Found in PR #351 CI
+ * run 42105313742: the dialog took focus and the next thing typed never
+ * reached the field (handoff/2026-11-06/diag-save-8bdf85e/REPORT.md).
+ *
+ * The first write's response is held here, so the order is the one that
+ * failed. The test moves on when the URL has taken the route's document,
+ * never by waiting for a dialog. A real page switch still waits for the save.
+ */
+test.describe("the editor adopting a route document it just created", () => {
+  test.describe.configure({ mode: "serial" });
+
+  let own: ThemeScope | null = null;
+  let homeTemplateId: string | null = null;
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    own = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...own,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    homeTemplateId = result.data!.templates.find(
+      (template) => template.type === "index",
+    )!.id;
+    const saved = await writeThemeFiles(page, own, FILES);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    await page.context().close();
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!own) return;
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const removed = await removeThemeFiles(
+      page,
+      own,
+      FILES.map((file) => file.path),
+    );
+    expect(removed.success, JSON.stringify(removed)).toBe(true);
+    await page.context().close();
+  });
+
+  type StoredTemplate = {
+    id: string;
+    routePath: string | null;
+    document: {
+      sections: Array<{ id: string; props?: Record<string, unknown> }>;
+    };
+  };
+
+  /** The slot's stored title in the route's own document, and in any other. */
+  async function storedOn(page: Page) {
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...own!,
+    })) as { success: boolean; data?: { templates: StoredTemplate[] } };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const titleIn = (template: StoredTemplate) =>
+      template.document.sections.find((section) => section.id === SLOT)?.props
+        ?.title;
+    const templates = result.data!.templates;
+    const route = templates.find(
+      (template) => template.routePath === HOME_ROUTE,
+    );
+    return {
+      routeTemplateId: route?.id ?? null,
+      route: route ? titleIn(route) : undefined,
+      elsewhere: templates
+        .filter((template) => template !== route)
+        .map(titleIn)
+        .filter((title) => title !== undefined),
+    };
+  }
+
+  /** Holds the response of the next section-props write until released. */
+  async function holdNextPropsWrite(page: Page) {
+    const held = {
+      reached: false,
+      answered: false,
+      release: () => {},
+    };
+    const released = new Promise<void>((resolve) => {
+      held.release = resolve;
+    });
+    let taken = false;
+    await page.route(
+      (url) => isServerFn(url.toString(), "updateStorefrontThemeSectionProps"),
+      async (route: Route) => {
+        if (taken) return route.continue();
+        taken = true;
+        // The write reaches the server as it is; only its answer waits.
+        const response = await route.fetch();
+        held.reached = true;
+        await released;
+        await route.fulfill({ response });
+        held.answered = true;
+      },
+    );
+    return held;
+  }
+
+  const urlTemplateId = (page: Page) =>
+    new URL(page.url()).searchParams.get("templateId");
+  const leaveDialog = (page: Page) =>
+    page.locator("[data-editor-leave-prompt]");
+
+  test("typing while the first save is unanswered stays in the field and is saved to the route's document", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    await page.goto(
+      `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
+    await enableSelection(page);
+    expect(
+      await clickExposedElement(page, cardTitle(page, SLOT)),
+    ).not.toBeNull();
+    await openContentTab(page);
+    await expect(titleField(page)).toBeVisible();
+
+    const held = await holdNextPropsWrite(page);
+    const first = `first ${Date.now()}`;
+    await titleField(page).fill(first);
+    await titleField(page).press("Tab");
+    await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
+
+    // The editor takes the route's new document as its address while the
+    // first save is still unanswered, without asking the author anything.
+    await expect
+      .poll(() => urlTemplateId(page), {
+        timeout: 30_000,
+        message: "the URL should take the route's own document",
+      })
+      .not.toBe(homeTemplateId);
+    expect(held.answered).toBe(false);
+    await expect(leaveDialog(page)).toHaveCount(0);
+
+    // What the author types now reaches the field.
+    await openContentTab(page);
+    const second = `second ${Date.now()}`;
+    await titleField(page).fill(second);
+    await expect(titleField(page)).toHaveValue(second);
+
+    // The first answer arrives; it does not take the second value away.
+    held.release();
+    await expect.poll(() => held.answered, { timeout: 30_000 }).toBe(true);
+    await titleField(page).press("Tab");
+    await expect
+      .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
+      .toBe(second);
+    const stored = await storedOn(page);
+    expect(stored.routeTemplateId).toBe(urlTemplateId(page));
+    expect(stored.elsewhere).toEqual([]);
+    await expect(titleField(page)).toHaveValue(second);
+    await expect(cardTitle(page, SLOT)).toHaveText(second);
+
+    // And it is still there after a reload.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(cardTitle(page, SLOT)).toHaveText(second, { timeout: 90_000 });
+  });
+
+  test("switching to another page while a save is unanswered still waits for it", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    await page.goto(
+      `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?routePath=${encodeURIComponent(HOME_ROUTE)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
+    await enableSelection(page);
+    expect(
+      await clickExposedElement(page, cardTitle(page, SLOT)),
+    ).not.toBeNull();
+    await openContentTab(page);
+    await expect(titleField(page)).toBeVisible();
+
+    const held = await holdNextPropsWrite(page);
+    const third = `third ${Date.now()}`;
+    await titleField(page).fill(third);
+    await titleField(page).press("Tab");
+    await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
+
+    // The author goes to the home page: a real page switch.
+    await page.evaluate(() => {
+      const router = (
+        window as unknown as {
+          __TSR_ROUTER__: {
+            navigate(options: {
+              to: string;
+              search: (
+                previous: Record<string, unknown>,
+              ) => Record<string, unknown>;
+            }): unknown;
+          };
+        }
+      ).__TSR_ROUTER__;
+      void router.navigate({
+        to: location.pathname,
+        search: (previous) => {
+          const next = { ...previous };
+          delete next.routePath;
+          delete next.section;
+          return next;
+        },
+      });
+    });
+    await expect(leaveDialog(page)).toHaveAttribute(
+      "data-editor-leave-kind",
+      "switch-page",
+      { timeout: 15_000 },
+    );
+    expect(new URL(page.url()).searchParams.get("routePath")).toBe(HOME_ROUTE);
+
+    held.release();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("routePath"), {
+        timeout: 30_000,
+      })
+      .toBeNull();
+    await expect
+      .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
+      .toBe(third);
   });
 });
