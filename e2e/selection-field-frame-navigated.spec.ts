@@ -524,6 +524,223 @@ test.describe("the editor adopting a route document it just created", () => {
 });
 
 /**
+ * The order "typing after the preview moved to another page by itself" leaves
+ * to chance, fixed. There the first write on the route creates its document,
+ * and the editor takes it up either before or after the frame moves by
+ * itself. Found in PR #386 CI: when the editor took it up after the move, the
+ * frame was sent back to the editor's page. Here the first write's answer is
+ * held until the frame has moved and the author has typed, so the editor
+ * always takes up the route document after the move. Taking up its own
+ * document is the editor completing its address, not the author switching
+ * pages: the frame stays where it moved.
+ */
+test.describe("a route document adopted after the frame moved by itself", () => {
+  test.describe.configure({ mode: "serial" });
+
+  let own: ThemeScope | null = null;
+  let homeTemplateId: string | null = null;
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    own = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...own,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    homeTemplateId = result.data!.templates.find(
+      (template) => template.type === "index",
+    )!.id;
+    const saved = await writeThemeFiles(page, own, FILES);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    await page.context().close();
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!own) return;
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const removed = await removeThemeFiles(
+      page,
+      own,
+      FILES.map((file) => file.path),
+    );
+    expect(removed.success, JSON.stringify(removed)).toBe(true);
+    await page.context().close();
+  });
+
+  type StoredTemplate = {
+    id: string;
+    routePath: string | null;
+    document: {
+      sections: Array<{ id: string; props?: Record<string, unknown> }>;
+    };
+  };
+
+  /**
+   * The home slot's stored title in the route's own document and in any
+   * other, and every stored title of the other page's slot.
+   */
+  async function storedOn(page: Page) {
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...own!,
+    })) as { success: boolean; data?: { templates: StoredTemplate[] } };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const titleIn = (template: StoredTemplate, slot: string) =>
+      template.document.sections.find((section) => section.id === slot)?.props
+        ?.title;
+    const templates = result.data!.templates;
+    const route = templates.find(
+      (template) => template.routePath === HOME_ROUTE,
+    );
+    return {
+      routeTemplateId: route?.id ?? null,
+      route: route ? titleIn(route, SLOT) : undefined,
+      elsewhere: templates
+        .filter((template) => template !== route)
+        .map((template) => titleIn(template, SLOT))
+        .filter((title) => title !== undefined),
+      other: templates
+        .map((template) => titleIn(template, OTHER_SLOT))
+        .filter((title) => title !== undefined),
+    };
+  }
+
+  /** Holds the response of the next section-props write until released. */
+  async function holdNextPropsWrite(page: Page) {
+    const held = {
+      reached: false,
+      answered: false,
+      release: () => {},
+    };
+    const released = new Promise<void>((resolve) => {
+      held.release = resolve;
+    });
+    let taken = false;
+    await page.route(
+      (url) => isServerFn(url.toString(), "updateStorefrontThemeSectionProps"),
+      async (route: Route) => {
+        if (taken) return route.continue();
+        taken = true;
+        // The write reaches the server as it is; only its answer waits.
+        const response = await route.fetch();
+        held.reached = true;
+        await released;
+        await route.fulfill({ response });
+        held.answered = true;
+      },
+    );
+    return held;
+  }
+
+  const urlTemplateId = (page: Page) =>
+    new URL(page.url()).searchParams.get("templateId");
+
+  test("a route document adopted after the frame moved by itself leaves the frame where it moved", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    await page.goto(
+      `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
+    await enableSelection(page);
+    expect(
+      await clickExposedElement(page, cardTitle(page, SLOT)),
+    ).not.toBeNull();
+    await openContentTab(page);
+    await expect(titleField(page)).toBeVisible();
+
+    const held = await holdNextPropsWrite(page);
+    try {
+      // The first write on the route: it creates the route's document, and
+      // its answer is held.
+      const live = `live ${Date.now()}`;
+      await titleField(page).fill(live);
+      await expect(cardTitle(page, SLOT)).toHaveText(live);
+      await titleField(page).press("Tab");
+      await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
+
+      // The frame moves by itself, as a link inside it would.
+      await previewFrame(page)
+        .locator("body")
+        .evaluate((_body, to) => {
+          const router = (
+            window as unknown as {
+              __morphPreviewRouter?: {
+                navigate(options: { to: string }): unknown;
+              };
+            }
+          ).__morphPreviewRouter;
+          if (!router) throw new Error("the preview exposes no router");
+          void router.navigate({ to });
+        }, OTHER_PATH);
+      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(cardTitle(page, SLOT)).toHaveCount(0);
+      const otherBefore = await cardTitle(page, OTHER_SLOT).textContent();
+
+      // The field for the first page's section is still open; the author
+      // types into it while the frame shows the other page.
+      await expect(titleField(page)).toBeVisible();
+      const typed = `typed after navigation ${Date.now()}`;
+      await titleField(page).fill(typed);
+      await expect(previewFrame(page).getByText(typed)).toHaveCount(0);
+
+      // The order this test is for: the editor has not taken up the route
+      // document yet, and the frame has already moved.
+      expect(held.answered).toBe(false);
+      expect(urlTemplateId(page)).toBe(homeTemplateId);
+
+      // The first answer arrives and the editor takes up the document the
+      // server created for this route.
+      held.release();
+      await expect.poll(() => held.answered, { timeout: 30_000 }).toBe(true);
+      const created = (await storedOn(page)).routeTemplateId;
+      expect(created).not.toBeNull();
+      expect(created).not.toBe(homeTemplateId);
+      await expect
+        .poll(() => urlTemplateId(page), {
+          timeout: 30_000,
+          message: "the URL should name the route document the server created",
+        })
+        .toBe(created);
+
+      // The frame is still where it moved.
+      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible();
+      await expect(cardTitle(page, SLOT)).toHaveCount(0);
+      await expect(cardTitle(page, OTHER_SLOT)).toHaveText(otherBefore ?? "");
+
+      // Leaving the field saves what was typed, to the section it was typed
+      // for, in the route's document.
+      await titleField(page).press("Tab");
+      await expect
+        .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
+        .toBe(typed);
+      const stored = await storedOn(page);
+      expect(stored.routeTemplateId).toBe(created);
+      expect(stored.elsewhere).toEqual([]);
+      expect(stored.other).toEqual([]);
+
+      // And the frame has still not been sent back.
+      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible();
+      await expect(cardTitle(page, SLOT)).toHaveCount(0);
+    } finally {
+      // Never leave the answer waiting, whatever failed above.
+      held.release();
+    }
+  });
+});
+
+/**
  * After the first write on a route with no document of its own, the author
  * goes on typing with the real keyboard at the end of the text, with no
  * click anywhere: the field keeps their text, focus and caret across the
