@@ -2273,6 +2273,10 @@ export function VisualEditorShell({
         // document as created, never on whatever it has become since.
         const madeBeforeDocument =
           routePathFromTemplatePlaceholder(tid) !== null;
+        // Composed, with no copy held, on the document as its ensure answered
+        // it (generation 1, checked above): an answer at 2 then shows the step
+        // 1 -> 2 was this write's.
+        let composedOnCreatedDocument = false;
         const result = await commitPendingContent({
           key,
           pending: pendingPropsMapRef.current,
@@ -2318,6 +2322,7 @@ export function VisualEditorShell({
                 ) {
                   throw draftConflictFailure();
                 }
+                composedOnCreatedDocument = madeBeforeDocument && !writeSnapshot;
                 const entry = prepare();
                 sentDraftGeneration =
                   entry.expectedDraftGeneration ?? generation;
@@ -2368,6 +2373,9 @@ export function VisualEditorShell({
                       draftGeneration: data.draftGeneration,
                       sections: data.document?.sections,
                     },
+                    composedOnCreatedDocument
+                      ? { ownStepFrom: ROUTE_DOCUMENT_CREATED_GENERATION }
+                      : undefined,
                   );
                   if (next) contentSnapshotsRef.current.set(sentTemplateId, next);
                 }
@@ -6867,10 +6875,21 @@ export function VisualEditorShell({
       }
 
       // 1. Flush any pending debounced props saves and await queued template mutations
-      await flushTemplatePendingProps();
-      // The shell is published with whatever page is being published, so its
-      // pending edits have to be committed in the same breath.
-      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+      // Content the flush holds back (refused, failed or unanswered) stops
+      // the publish here, with the reason it was held; nothing is resent.
+      try {
+        await flushTemplatePendingProps();
+        // The shell is published with whatever page is being published, so its
+        // pending edits have to be committed in the same breath.
+        if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+      } catch (error) {
+        toast.error(
+          `Cannot publish: ${
+            error instanceof Error ? error.message : "Content is still saving."
+          }`,
+        );
+        return;
+      }
 
       const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
       for (const opKey of pendingSaveWritesRef.current.keys()) {
@@ -8212,9 +8231,19 @@ export function VisualEditorShell({
       await handleBuildPreview();
       return;
     }
-    // Pending field edits are part of the content being sealed.
-    await flushTemplatePendingProps();
-    if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+    // Pending field edits are part of the content being sealed. Content the
+    // flush holds back stops the build here, with the reason it was held.
+    try {
+      await flushTemplatePendingProps();
+      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+    } catch (error) {
+      toast.error(
+        `Cannot build: ${
+          error instanceof Error ? error.message : "Content is still saving."
+        }`,
+      );
+      return;
+    }
     const currentGeneration = workspace.getBaseSourceGeneration(workspaceScope);
     const prepared = await prepareContentDraftForBuild({
       currentGeneration,

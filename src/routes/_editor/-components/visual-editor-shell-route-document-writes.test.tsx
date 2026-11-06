@@ -44,6 +44,7 @@ import {
   normalizeEditorTemplateSearch,
   routeTemplatePlaceholderId,
 } from "./editor-template";
+import { UNCONFIRMED_SAVE_HOLD } from "./editor-unconfirmed-saves-notice";
 import { VisualEditorShell } from "./visual-editor-shell";
 
 /**
@@ -91,6 +92,14 @@ const renameSection = vi.hoisted(() => vi.fn());
 const renameOutcome = vi.hoisted(
   (): { settled?: { ok: boolean; message?: string } } => ({}),
 );
+// The other steps that flush first: publish, build, promote.
+const publishTemplate = vi.hoisted(() => vi.fn());
+const prepareInitialDraft = vi.hoisted(() => vi.fn());
+const promoteText = vi.hoisted(() => vi.fn());
+const createPreviewBuild = vi.hoisted(() => vi.fn());
+const checkPublishMedia = vi.hoisted(() => vi.fn());
+/** What the last promotion asked through the assistant panel came to. */
+const promoteOutcome = vi.hoisted((): { settled?: unknown } => ({}));
 
 vi.mock(
   "@/server/storefront/storefront-themes.serverFn",
@@ -100,8 +109,73 @@ vi.mock(
     getStorefrontThemeEditor: getThemeEditor,
     ensureStorefrontThemeRouteTemplate: ensureRouteTemplate,
     renameStorefrontThemeSection: renameSection,
+    publishStorefrontThemeTemplate: publishTemplate,
+    prepareInitialStorefrontThemeTemplateDraft: prepareInitialDraft,
+    promoteStorefrontThemeText: promoteText,
   }),
 );
+vi.mock(
+  "@/server/storefront/storefront-theme-builds.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    createPreviewBuild,
+  }),
+);
+vi.mock(
+  "@/server/storefront/storefront-publish-check.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    checkStorefrontPublishMedia: checkPublishMedia,
+  }),
+);
+/**
+ * The real assistant panel, with one button: a text promotion of the card's
+ * heading, a step that flushes the section's document first.
+ */
+vi.mock("./editor-assistant-panel", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./editor-assistant-panel")>();
+  const RealPanel = actual.EditorAssistantPanel;
+  return {
+    ...actual,
+    EditorAssistantPanel: (props: ComponentProps<typeof RealPanel>) => (
+      <>
+        <RealPanel {...props} />
+        <button
+          type="button"
+          onClick={() => {
+            promoteOutcome.settled = undefined;
+            if (!props.onPromoteText) {
+              promoteOutcome.settled = { status: "no promote" };
+              return;
+            }
+            void Promise.resolve(
+              props.onPromoteText({
+                sectionId: "about-card",
+                componentSourcePath: "src/components/AboutCard.tsx",
+                targetKey: "heading",
+                fieldName: "heading",
+                value: "Default heading",
+              }),
+            ).then(
+              (outcome) => {
+                promoteOutcome.settled = outcome;
+              },
+              (error: unknown) => {
+                promoteOutcome.settled = {
+                  status: "threw",
+                  message: error instanceof Error ? error.message : String(error),
+                };
+              },
+            );
+          }}
+        >
+          Promote the card text
+        </button>
+      </>
+    ),
+  };
+});
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   postEditorToPreviewMessage: vi.fn(
@@ -695,6 +769,29 @@ beforeEach(() => {
     if (readGate) await readGate.promise;
     return { success: true, message: "ok", data: contextOf() };
   });
+  // Steps past the flush. Any call is what the entry tests count; the answer
+  // is a refusal so nothing past it runs on.
+  const notExpected = async () => ({
+    success: false,
+    error: "NOT_EXPECTED",
+    message: "Not expected in this test.",
+  });
+  promoteOutcome.settled = undefined;
+  for (const step of [
+    publishTemplate,
+    prepareInitialDraft,
+    promoteText,
+    createPreviewBuild,
+  ]) {
+    step.mockReset();
+    step.mockImplementation(notExpected);
+  }
+  checkPublishMedia.mockReset();
+  checkPublishMedia.mockImplementation(async () => ({
+    success: true,
+    message: "ok",
+    data: { brokenImages: [] },
+  }));
   vi.spyOn(toast, "error").mockImplementation(() => "");
   vi.spyOn(toast, "success").mockImplementation(() => "");
   vi.spyOn(toast, "info").mockImplementation(() => "");
@@ -1157,5 +1254,856 @@ describe("the pre-step flush across the placeholder and the real id", () => {
     });
     expect(storedHeading()).toBe("Value 1");
     await waitFor(() => expect(saveStatus()).toBe("Unpublished"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Held content under every id, recovery, and the steps that flush first.
+
+const CONFLICT_HELD = heldContentMessage({ hasListConflict: false });
+const FAILED_HELD = "Content changed while saving. Retry before continuing.";
+const COMPOSE_REFUSED =
+  "This section changed elsewhere since you edited it. Your changes are kept.";
+
+/** Every request the server was asked for, by kind. */
+const calls = () => ({
+  props: updateSectionProps.mock.calls.length,
+  ensure: ensureRouteTemplate.mock.calls.length,
+  rename: renameSection.mock.calls.length,
+  publish: publishTemplate.mock.calls.length,
+  prepare: prepareInitialDraft.mock.calls.length,
+  build: createPreviewBuild.mock.calls.length,
+  promote: promoteText.mock.calls.length,
+});
+
+/** Presses the panel's rename and waits for what it came to. */
+async function rename() {
+  fireEvent.click(screen.getByRole("button", { name: "Rename the card" }));
+  await waitFor(() => expect(renameOutcome.settled).toBeDefined());
+  await pause(300);
+  return renameOutcome.settled!;
+}
+
+/** The next write is refused (someone wrote first, +2) or fails. */
+function answerNextWrite(answer: "conflict" | "failure") {
+  updateSectionProps.mockImplementationOnce(
+    async ({ data }: { data: WriteRequest }) => {
+      if (answer === "failure") {
+        return {
+          success: false,
+          error: "SECTION_WRITE_FAILED",
+          message: "Could not save the section.",
+        };
+      }
+      const route = server.route!;
+      route.props = { ...(route.props ?? {}), heading: "Theirs" };
+      route.generation += 2;
+      return applyWrite(data);
+    },
+  );
+}
+
+/** The server creates the route document; the answer to ensure is lost. */
+function loseNextEnsureAnswer() {
+  ensureRouteTemplate.mockImplementationOnce(async () => {
+    if (!server.route) server.route = { generation: 1, props: null };
+    throw new Error("Failed to fetch");
+  });
+}
+
+/** Releases held reads and waits until the shell's context is at `target`. */
+async function releaseReadsUntil(target: number) {
+  const gate = readGate;
+  readGate = null;
+  gate?.open();
+  const faked = vi.isFakeTimers();
+  for (let step = 0; step < 15 && host.routeGeneration !== target; step += 1) {
+    await act(async () => {
+      if (faked) await vi.advanceTimersByTimeAsync(10);
+      else await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  expect(host.routeGeneration).toBe(target);
+  await act(async () => {
+    await settleMicrotasks();
+  });
+}
+
+function pressKeepMine() {
+  act(() => {
+    screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+  });
+}
+function pressTryAgain() {
+  act(() => {
+    screen.getByRole("button", { name: "Try again" }).click();
+  });
+}
+
+/** The first write lands (generation 2) and the page is on the real id. */
+async function firstWriteLanded() {
+  await openOn(headingReport);
+  await type("Default heading", "Value 1");
+  await pause();
+  expect(sent()).toHaveLength(1);
+  expect(server.route!.generation).toBe(2);
+  await expectAdopted();
+}
+
+/**
+ * Content keyed by the real id is refused: the second edit, after an outside
+ * change to generation 4 ("Theirs") was read before it left.
+ */
+async function realKeyedRefused() {
+  await firstWriteLanded();
+  holdDebounce();
+  typeInCard(0, "Value 2");
+  await outsideWriteRead((route) => {
+    route.props = { ...route.props, heading: "Theirs" };
+    route.generation = 4;
+  });
+  await releaseDebounce();
+  expect(sent()).toHaveLength(1);
+  expect(saveStatus()).toBe("Out of date");
+  expect(storedHeading()).toBe("Theirs");
+}
+
+describe("A: the pre-step flush holds refused and failed content under every id", () => {
+  describe("the step asks by the real id (the page is on the real document)", () => {
+    it("refused, placeholder-keyed: nothing is sent, the step stops; Keep mine sends once, then the step runs", async () => {
+      answerNextWrite("conflict");
+      await openOn(headingReport);
+      await type("Default heading", "Value 1");
+      await pause();
+      await expectAdopted();
+      expect(saveStatus()).toBe("Out of date");
+      expect(storedHeading()).toBe("Theirs");
+      const before = calls();
+
+      expect(await rename()).toEqual({ ok: false, message: CONFLICT_HELD });
+      await pause();
+      expect(calls()).toEqual(before);
+      expect(storedHeading()).toBe("Theirs");
+      expect(server.route!.generation).toBe(3);
+
+      pressKeepMine();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 3,
+        props: { heading: "Value 1" },
+      });
+      expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+      expect(storedHeading()).toBe("Value 1");
+
+      expect(await rename()).toEqual({ ok: true });
+      expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection.mock.calls[0]![0].data).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 4,
+      });
+      expect(sent()).toHaveLength(2);
+    });
+
+    it("refused, real-keyed: nothing is sent, the step stops; Keep mine sends once, then the step runs", async () => {
+      await realKeyedRefused();
+      const before = calls();
+
+      expect(await rename()).toEqual({ ok: false, message: CONFLICT_HELD });
+      await pause();
+      expect(calls()).toEqual(before);
+      expect(storedHeading()).toBe("Theirs");
+      expect(screen.getAllByDisplayValue("Value 2").length).toBeGreaterThan(0);
+
+      pressKeepMine();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 4,
+        props: { heading: "Value 2" },
+      });
+      expect(storedHeading()).toBe("Value 2");
+
+      expect(await rename()).toEqual({ ok: true });
+      expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection.mock.calls[0]![0].data).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 5,
+      });
+    });
+
+    it("failed, placeholder-keyed: nothing is sent, the step stops; Try again sends once, then the step runs", async () => {
+      answerNextWrite("failure");
+      await openOn(headingReport);
+      await type("Default heading", "Value 1");
+      await pause();
+      await expectAdopted();
+      expect(saveStatus()).toBe("Save failed");
+      const before = calls();
+
+      expect(await rename()).toEqual({ ok: false, message: FAILED_HELD });
+      await pause();
+      expect(calls()).toEqual(before);
+      expect(server.route).toEqual({ generation: 1, props: null });
+
+      pressTryAgain();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 1,
+        props: { heading: "Value 1" },
+      });
+      expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+      expect(storedHeading()).toBe("Value 1");
+
+      expect(await rename()).toEqual({ ok: true });
+      expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection.mock.calls[0]![0].data).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+      });
+    });
+
+    it("failed, real-keyed: nothing is sent, the step stops; Try again sends once, then the step runs", async () => {
+      await firstWriteLanded();
+      answerNextWrite("failure");
+      typeInCard(0, "Value 2");
+      await pause();
+      expect(sent()).toHaveLength(2);
+      expect(saveStatus()).toBe("Save failed");
+      const before = calls();
+
+      expect(await rename()).toEqual({ ok: false, message: FAILED_HELD });
+      await pause();
+      expect(calls()).toEqual(before);
+      expect(storedHeading()).toBe("Value 1");
+      expect(screen.getAllByDisplayValue("Value 2").length).toBeGreaterThan(0);
+
+      pressTryAgain();
+      await waitFor(() => expect(sent()).toHaveLength(3));
+      await pause();
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+        props: { heading: "Value 2" },
+      });
+      expect(storedHeading()).toBe("Value 2");
+
+      expect(await rename()).toEqual({ ok: true });
+      expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection.mock.calls[0]![0].data).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 3,
+      });
+    });
+
+    it("failed with no answer, real-keyed: the step stops on the hold; Try again reads first, sends once, then the step runs", async () => {
+      await firstWriteLanded();
+      const second = holdNextWrite();
+      typeInCard(0, "Value 2");
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await act(async () => {
+        second.lose();
+      });
+      await pause();
+      expect(saveStatus()).toBe("Save failed");
+      const before = calls();
+
+      expect(await rename()).toEqual({
+        ok: false,
+        message: UNCONFIRMED_SAVE_HOLD,
+      });
+      await pause();
+      expect(calls()).toEqual(before);
+      expect(storedHeading()).toBe("Value 1");
+
+      const readsBefore = getThemeEditor.mock.calls.length;
+      pressTryAgain();
+      await waitFor(() => expect(sent()).toHaveLength(3));
+      await pause();
+      // Asked the server first (the settle read), then sent once.
+      expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore);
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+        props: { heading: "Value 2" },
+      });
+      expect(storedHeading()).toBe("Value 2");
+
+      expect(await rename()).toEqual({ ok: true });
+      expect(renameSection).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("the step asks by the placeholder (the page is still bound to it)", () => {
+    it("refused, before adoption: nothing is sent, the step stops; Keep mine sends once, then the step runs", async () => {
+      await openOn(headingReport);
+      holdReads();
+      answerNextWrite("conflict");
+      await type("Default heading", "Value 1");
+      await pause();
+      // The read after ensure is held: the page is still on the placeholder.
+      expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+      expect(saveStatus()).toBe("Out of date");
+      expect(storedHeading()).toBe("Theirs");
+      const before = calls();
+
+      expect(await rename()).toEqual({ ok: false, message: CONFLICT_HELD });
+      await pause();
+      expect(calls()).toEqual(before);
+      expect(storedHeading()).toBe("Theirs");
+      expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+
+      pressKeepMine();
+      await releaseReads();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 3,
+        props: { heading: "Value 1" },
+      });
+      expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+      expect(storedHeading()).toBe("Value 1");
+
+      expect(await rename()).toEqual({ ok: true });
+      expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection.mock.calls[0]![0].data).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 4,
+      });
+    });
+
+    it("failed, before adoption: nothing is sent, the step stops; Try again sends once, then the step runs", async () => {
+      await openOn(headingReport);
+      holdReads();
+      answerNextWrite("failure");
+      await type("Default heading", "Value 1");
+      await pause();
+      expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+      expect(saveStatus()).toBe("Save failed");
+      const before = calls();
+
+      expect(await rename()).toEqual({ ok: false, message: FAILED_HELD });
+      await pause();
+      expect(calls()).toEqual(before);
+      expect(server.route).toEqual({ generation: 1, props: null });
+
+      pressTryAgain();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 1,
+        props: { heading: "Value 1" },
+      });
+      expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+      expect(storedHeading()).toBe("Value 1");
+
+      await releaseReads();
+      await expectAdopted();
+      expect(await rename()).toEqual({ ok: true });
+      expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection.mock.calls[0]![0].data).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+      });
+    });
+
+    it("failed after a lost ensure answer (no mapping): nothing is sent or ensured, the step stops; Try again sends once, then the step runs", async () => {
+      loseNextEnsureAnswer();
+      await openOn(headingReport);
+      await type("Default heading", "Value 1");
+      await pause(1_500);
+      expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+      expect(saveStatus()).toBe("Save failed");
+      const before = calls();
+      expect(before).toMatchObject({ ensure: 1, props: 0 });
+
+      expect(await rename()).toEqual({ ok: false, message: FAILED_HELD });
+      await pause();
+      expect(calls()).toEqual(before);
+      expect(server.route).toEqual({ generation: 1, props: null });
+
+      pressTryAgain();
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await pause();
+      expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 1,
+        props: { heading: "Value 1" },
+      });
+      expect(storedHeading()).toBe("Value 1");
+
+      await expectAdopted();
+      expect(await rename()).toEqual({ ok: true });
+      expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection.mock.calls[0]![0].data).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+      });
+    });
+  });
+});
+
+describe("B: a lost ensure answer, then the author goes on", () => {
+  async function lostEnsureThenTheirs() {
+    loseNextEnsureAnswer();
+    await openOn(headingReport);
+    await type("Default heading", "Value 1");
+    await pause(1_500);
+    expect(saveStatus()).toBe("Save failed");
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    // Someone else writes the document this tab created, unread here.
+    server.route = { generation: 3, props: { heading: "Theirs" } };
+  }
+
+  async function refusedOverTheirs(kept: string) {
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(server.route).toEqual({ generation: 3, props: { heading: "Theirs" } });
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
+    await pause(1_500);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 3,
+      props: { heading: kept },
+    });
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+    expect(storedHeading()).toBe(kept);
+    expect(server.route!.generation).toBe(4);
+  }
+
+  it("typing again after an outside change: not written over Theirs, out of date, kept; Keep mine sends once at its generation", async () => {
+    await lostEnsureThenTheirs();
+    typeInCard(0, "Value 2");
+    await pause(1_500);
+    await refusedOverTheirs("Value 2");
+  });
+
+  it("Try again after an outside change: not written over Theirs, out of date, kept; Keep mine sends once at its generation", async () => {
+    await lostEnsureThenTheirs();
+    pressTryAgain();
+    await pause(1_500);
+    await refusedOverTheirs("Value 1");
+  });
+
+  it("mirror: with no outside change, typing again sends once at generation 1 and it is stored", async () => {
+    loseNextEnsureAnswer();
+    await openOn(headingReport);
+    await type("Default heading", "Value 1");
+    await pause(1_500);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    typeInCard(0, "Value 2");
+    await pause(1_500);
+
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+    expect(server.route!.generation).toBe(2);
+  });
+});
+
+describe("C: placeholder-keyed content sent after an outside change", () => {
+  /**
+   * The first write lands (generation 2) while the read after it is held, so
+   * the page stays on the placeholder and the next input is keyed by it. Its
+   * answer is taken only once that read returns (the content mutation's
+   * success awaits the Theme read), so the input has no recorded basis.
+   */
+  async function landedOnPlaceholder() {
+    await openOn(headingReport);
+    holdReads();
+    await type("Default heading", "Value 1");
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(server.route!.generation).toBe(2);
+    expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+  }
+  const theirsAt4 = () => {
+    server.route = { generation: 4, props: { heading: "Theirs" } };
+  };
+  function expectRefusedOverTheirs() {
+    expect(sent()).toHaveLength(1);
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(server.route).toEqual({ generation: 4, props: { heading: "Theirs" } });
+    expect(saveStatus()).toBe("Out of date");
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
+  }
+
+  it("typed while the first answer waits on its read, sent by the debounce: refused, kept, out of date; Keep mine sends once", async () => {
+    await landedOnPlaceholder();
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    theirsAt4();
+    await releaseReadsUntil(4);
+    await releaseDebounce();
+    expectRefusedOverTheirs();
+    await pause();
+    expectRefusedOverTheirs();
+
+    // Kept: the author's explicit recovery sends what they typed, once. (The
+    // field itself shows the stored value after adoption, the separate
+    // stale-field-display issue, Q3.)
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 4,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+  });
+
+  it("typed while the first answer waits on its read, sent by the pre-step flush: refused, the step stops, kept", async () => {
+    await landedOnPlaceholder();
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    vi.useRealTimers();
+    theirsAt4();
+    await releaseReadsUntil(4);
+    await expectAdopted();
+
+    const outcome = await rename();
+    expect(outcome.ok).toBe(false);
+    expect(outcome.message).toBe(COMPOSE_REFUSED);
+    await pause();
+    expect(renameSection).not.toHaveBeenCalled();
+    expectRefusedOverTheirs();
+  });
+
+  it("typed before the first answer (no basis recorded), sent by the debounce: refused, kept, out of date", async () => {
+    await openOn(headingReport);
+    holdReads();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    expect(server.route!.generation).toBe(2);
+    theirsAt4();
+    await releaseReadsUntil(4);
+    await releaseDebounce();
+    expectRefusedOverTheirs();
+  });
+});
+
+describe("D: steps that flush first stop on held content", () => {
+  it("build: stops on a refused entry; no draft is prepared and no build is created", async () => {
+    await realKeyedRefused();
+    const before = calls();
+    fireEvent.click(screen.getByRole("button", { name: "Build the theme" }));
+    await pause();
+    expect(calls()).toEqual(before);
+    expect(createPreviewBuild).not.toHaveBeenCalled();
+    expect(prepareInitialDraft).not.toHaveBeenCalled();
+    expect(storedHeading()).toBe("Theirs");
+    expect(saveStatus()).toBe("Out of date");
+    // Said, with the reason it was held.
+    expect(toast.error).toHaveBeenCalledWith(`Cannot build: ${CONFLICT_HELD}`);
+    // Kept: the explicit recovery sends the typed text once; the build does
+    // not go on by itself.
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 4,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+    expect(createPreviewBuild).not.toHaveBeenCalled();
+    expect(prepareInitialDraft).not.toHaveBeenCalled();
+  });
+
+  it("publish: stops on a refused entry; nothing is prepared or published", async () => {
+    await firstWriteLanded();
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    await waitFor(() =>
+      expect(document.querySelector("[data-publish-confirm]")).toBeTruthy(),
+    );
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await outsideWriteRead((route) => {
+      route.props = { ...route.props, heading: "Theirs" };
+      route.generation = 4;
+    });
+    await releaseDebounce();
+    expect(saveStatus()).toBe("Out of date");
+    const before = calls();
+
+    const confirm = await waitFor(() => {
+      const button = document.querySelector<HTMLButtonElement>(
+        "[data-publish-confirm]",
+      );
+      expect(button).toBeTruthy();
+      expect(button!.disabled).toBe(false);
+      return button!;
+    });
+    fireEvent.click(confirm);
+    await pause();
+    expect(calls()).toEqual(before);
+    expect(publishTemplate).not.toHaveBeenCalled();
+    expect(prepareInitialDraft).not.toHaveBeenCalled();
+    expect(storedHeading()).toBe("Theirs");
+    // Said, with the reason it was held.
+    expect(toast.error).toHaveBeenCalledWith(`Cannot publish: ${CONFLICT_HELD}`);
+    // Kept: the explicit recovery sends the typed text once; the publish
+    // does not go on by itself.
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 4,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+    expect(publishTemplate).not.toHaveBeenCalled();
+    expect(prepareInitialDraft).not.toHaveBeenCalled();
+  });
+
+  it("promote: stops on a refused entry with the held message; nothing is promoted", async () => {
+    await realKeyedRefused();
+    const before = calls();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Promote the card text" }),
+    );
+    await waitFor(() => expect(promoteOutcome.settled).toBeDefined());
+    await pause();
+    expect(promoteOutcome.settled).toEqual({
+      status: "failed",
+      message: CONFLICT_HELD,
+    });
+    expect(calls()).toEqual(before);
+    expect(promoteText).not.toHaveBeenCalled();
+    expect(storedHeading()).toBe("Theirs");
+  });
+});
+
+describe("E: generation 1 is not proof this tab created the document", () => {
+  it("E1: another tab created it and left it as created: this tab's write goes once at generation 1 and is stored", async () => {
+    await openOn(headingReport);
+    server.route = { generation: 1, props: null };
+    await type("Default heading", "Value 1");
+    await pause();
+
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
+  });
+
+  it("E2: another tab created and wrote it: refused, not written over Theirs, kept; Keep mine sends once", async () => {
+    await openOn(headingReport);
+    server.route = { generation: 2, props: { heading: "Theirs" } };
+    await type("Default heading", "Value 1");
+    await pause(1_500);
+
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(server.route).toEqual({ generation: 2, props: { heading: "Theirs" } });
+    expect(saveStatus()).toBe("Out of date");
+
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 1" },
+    });
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(server.route).toMatchObject({
+      generation: 3,
+      props: { heading: "Value 1" },
+    });
+  });
+});
+
+describe("F: the creation basis applies only to placeholder-keyed input", () => {
+  /** The route has its document at load (generation 3): bound to the real id. */
+  async function openOnExisting() {
+    server.route = { generation: 3, props: { heading: "Stored" } };
+    renderEditor();
+    await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
+    await flushFrames();
+    await select(headingReport);
+    expect(host.search?.templateId).toBe(ROUTE_DOC_ID);
+  }
+
+  it("F1: an existing document's own-step chain still sends, at its generations, with no ensure", async () => {
+    await openOnExisting();
+    await type("Stored", "Value 1");
+    await pause();
+    typeInCard(0, "Value 2");
+    await pause();
+
+    expect(ensureRouteTemplate).not.toHaveBeenCalled();
+    expect(sent().map((write) => write.expectedDraftGeneration)).toEqual([3, 4]);
+    expect(sent().map((write) => write.props.heading)).toEqual([
+      "Value 1",
+      "Value 2",
+    ]);
+    expect(server.route).toMatchObject({
+      generation: 5,
+      props: { heading: "Value 2" },
+    });
+  });
+
+  it("F1: an existing document's outside change is still refused", async () => {
+    await openOnExisting();
+    await type("Stored", "Value 1");
+    await pause();
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await outsideWriteRead((route) => {
+      route.props = { heading: "Theirs" };
+      route.generation = 7;
+    });
+    await releaseDebounce();
+
+    expect(ensureRouteTemplate).not.toHaveBeenCalled();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({ generation: 7, props: { heading: "Theirs" } });
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Value 2").length).toBeGreaterThan(0);
+  });
+
+  it("F2: placeholder-keyed input with a recorded basis (2) keeps it: sent once at 2, not refused as made on 1", async () => {
+    await openOn(headingReport);
+    // Reads of the Theme fail from here: the page stays on the placeholder,
+    // while the first write's answer is still taken (its document, at 2,
+    // becomes the copy held, nobody's own range before it).
+    getThemeEditor.mockImplementation(async () => {
+      throw new Error("Failed to fetch");
+    });
+    await type("Default heading", "Value 1");
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(server.route!.generation).toBe(2);
+    expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+    // Typed on that copy, so its basis is 2. Replaced by 1, it would be
+    // outside the own range and refused.
+    typeInCard(0, "Value 2");
+    await pause();
+
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+    expect(server.route!.generation).toBe(3);
+  });
+
+  it("F2b: placeholder-keyed input typed while the first write is in flight, with NO outside change, is sent at 2 (not refused as made on 1)", async () => {
+    // The read the first write's ensure started is slower than the write:
+    // the first copy this tab ever holds is the one at 2, and the input typed
+    // meanwhile has no recorded basis. Nobody else wrote the document.
+    await openOn(headingReport);
+    holdReads();
+    await type("Default heading", "Value 1");
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(server.route!.generation).toBe(2);
+    expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    // Held by the debounce: the second edit has not left yet.
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({ generation: 2, props: { heading: "Value 1" } });
+    await releaseReadsUntil(2);
+    await releaseDebounce();
+
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(saveStatus()).not.toBe("Out of date");
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+    expect(server.route).toEqual({ generation: 3, props: { heading: "Value 2" } });
+  });
+
+  it("F3: after Keep mine on a placeholder-keyed refusal, the rebased basis decides: sent once at the latest generation", async () => {
+    await openOn(headingReport);
+    holdReads();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    server.route = { generation: 4, props: { heading: "Theirs" } };
+    await releaseReadsUntil(4);
+    await releaseDebounce();
+    expect(sent()).toHaveLength(1);
+    expect(saveStatus()).toBe("Out of date");
+
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 4,
+      props: { heading: "Value 2" },
+    });
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(server.route).toMatchObject({
+      generation: 5,
+      props: { heading: "Value 2" },
+    });
   });
 });
