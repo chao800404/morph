@@ -390,44 +390,62 @@ test.describe("the editor adopting a route document it just created", () => {
     await expect(titleField(page)).toBeVisible();
 
     const held = await holdNextPropsWrite(page);
-    const first = `first ${Date.now()}`;
-    await titleField(page).fill(first);
-    await titleField(page).press("Tab");
-    await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
+    try {
+      const first = `first ${Date.now()}`;
+      await titleField(page).fill(first);
+      await titleField(page).press("Tab");
+      await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
 
-    // The editor takes the route's new document as its address while the
-    // first save is still unanswered, without asking the author anything.
-    await expect
-      .poll(() => urlTemplateId(page), {
-        timeout: 30_000,
-        message: "the URL should take the route's own document",
-      })
-      .not.toBe(homeTemplateId);
-    expect(held.answered).toBe(false);
-    await expect(leaveDialog(page)).toHaveCount(0);
+      // The first save is unanswered: nothing asks the author anything, and
+      // they go on editing. (When the page takes up the route's new document
+      // is not fixed here: the editor's own read of it waits for the write,
+      // and a read arriving earlier is covered by the shell tests.)
+      await page.waitForTimeout(1_000);
+      expect(held.answered).toBe(false);
+      await expect(leaveDialog(page)).toHaveCount(0);
 
-    // What the author types now reaches the field.
-    await openContentTab(page);
-    const second = `second ${Date.now()}`;
-    await titleField(page).fill(second);
-    await expect(titleField(page)).toHaveValue(second);
+      // What the author types now reaches the field.
+      await openContentTab(page);
+      const second = `second ${Date.now()}`;
+      await titleField(page).fill(second);
+      await expect(titleField(page)).toHaveValue(second);
+      expect(held.answered).toBe(false);
+      await expect(leaveDialog(page)).toHaveCount(0);
 
-    // The first answer arrives; it does not take the second value away.
-    held.release();
-    await expect.poll(() => held.answered, { timeout: 30_000 }).toBe(true);
-    await titleField(page).press("Tab");
-    await expect
-      .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
-      .toBe(second);
-    const stored = await storedOn(page);
-    expect(stored.routeTemplateId).toBe(urlTemplateId(page));
-    expect(stored.elsewhere).toEqual([]);
-    await expect(titleField(page)).toHaveValue(second);
-    await expect(cardTitle(page, SLOT)).toHaveText(second);
+      // The first answer arrives; it does not take the second value away,
+      // and the address is the document the server created for this route.
+      held.release();
+      await expect.poll(() => held.answered, { timeout: 30_000 }).toBe(true);
+      const created = (await storedOn(page)).routeTemplateId;
+      expect(created).not.toBeNull();
+      expect(created).not.toBe(homeTemplateId);
+      await expect
+        .poll(() => urlTemplateId(page), {
+          timeout: 30_000,
+          message: "the URL should name the route document the server created",
+        })
+        .toBe(created);
+      await expect(titleField(page)).toHaveValue(second);
+      await titleField(page).press("Tab");
+      await expect
+        .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
+        .toBe(second);
+      const stored = await storedOn(page);
+      expect(stored.routeTemplateId).toBe(created);
+      expect(stored.routeTemplateId).toBe(urlTemplateId(page));
+      expect(stored.elsewhere).toEqual([]);
+      await expect(titleField(page)).toHaveValue(second);
+      await expect(cardTitle(page, SLOT)).toHaveText(second);
 
-    // And it is still there after a reload.
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(cardTitle(page, SLOT)).toHaveText(second, { timeout: 90_000 });
+      // And it is still there after a reload.
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(cardTitle(page, SLOT)).toHaveText(second, {
+        timeout: 90_000,
+      });
+    } finally {
+      // Never leave the answer waiting, whatever failed above.
+      held.release();
+    }
   });
 
   test("switching to another page while a save is unanswered still waits for it", async ({
@@ -450,51 +468,58 @@ test.describe("the editor adopting a route document it just created", () => {
     await expect(titleField(page)).toBeVisible();
 
     const held = await holdNextPropsWrite(page);
-    const third = `third ${Date.now()}`;
-    await titleField(page).fill(third);
-    await titleField(page).press("Tab");
-    await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
+    try {
+      const third = `third ${Date.now()}`;
+      await titleField(page).fill(third);
+      await titleField(page).press("Tab");
+      await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
 
-    // The author goes to the home page: a real page switch.
-    await page.evaluate(() => {
-      const router = (
-        window as unknown as {
-          __TSR_ROUTER__: {
-            navigate(options: {
-              to: string;
-              search: (
-                previous: Record<string, unknown>,
-              ) => Record<string, unknown>;
-            }): unknown;
-          };
-        }
-      ).__TSR_ROUTER__;
-      void router.navigate({
-        to: location.pathname,
-        search: (previous) => {
-          const next = { ...previous };
-          delete next.routePath;
-          delete next.section;
-          return next;
-        },
+      // The author goes to the home page: a real page switch.
+      await page.evaluate(() => {
+        const router = (
+          window as unknown as {
+            __TSR_ROUTER__: {
+              navigate(options: {
+                to: string;
+                search: (
+                  previous: Record<string, unknown>,
+                ) => Record<string, unknown>;
+              }): unknown;
+            };
+          }
+        ).__TSR_ROUTER__;
+        void router.navigate({
+          to: location.pathname,
+          search: (previous) => {
+            const next = { ...previous };
+            delete next.routePath;
+            delete next.section;
+            return next;
+          },
+        });
       });
-    });
-    await expect(leaveDialog(page)).toHaveAttribute(
-      "data-editor-leave-kind",
-      "switch-page",
-      { timeout: 15_000 },
-    );
-    expect(new URL(page.url()).searchParams.get("routePath")).toBe(HOME_ROUTE);
+      await expect(leaveDialog(page)).toHaveAttribute(
+        "data-editor-leave-kind",
+        "switch-page",
+        { timeout: 15_000 },
+      );
+      expect(new URL(page.url()).searchParams.get("routePath")).toBe(
+        HOME_ROUTE,
+      );
 
-    held.release();
-    await expect
-      .poll(() => new URL(page.url()).searchParams.get("routePath"), {
-        timeout: 30_000,
-      })
-      .toBeNull();
-    await expect
-      .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
-      .toBe(third);
+      held.release();
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("routePath"), {
+          timeout: 30_000,
+        })
+        .toBeNull();
+      await expect
+        .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
+        .toBe(third);
+    } finally {
+      // Never leave the answer waiting, whatever failed above.
+      held.release();
+    }
   });
 });
 
@@ -610,7 +635,11 @@ test.describe("keyboard append across the page taking up its route document", ()
               defaultValue: input.defaultValue,
               marked: input.dataset.appendMark ?? null,
               focused: active === input,
-              caret: [input.selectionStart, input.selectionEnd, input.value.length],
+              caret: [
+                input.selectionStart,
+                input.selectionEnd,
+                input.value.length,
+              ],
             };
           })
         : null;
@@ -627,7 +656,12 @@ test.describe("keyboard append across the page taking up its route document", ()
     const header = await page
       .locator('[data-slot="inspector-content-field"]')
       .count();
-    return { fieldCount: count, field, activeElement: active, contentFields: header };
+    return {
+      fieldCount: count,
+      field,
+      activeElement: active,
+      contentFields: header,
+    };
   }
 
   async function canvasText(page: Page) {
@@ -666,14 +700,17 @@ test.describe("keyboard append across the page taking up its route document", ()
     // Fixed after the run: serverFn needs a page on the app origin first.
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
     const { theme, homeTemplateId } = await freshTheme(page);
+    let releaseHeld: (() => void) | null = null;
     try {
       await page.goto(
         `/store/${theme.storefrontId}/themes/${theme.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
         { waitUntil: "domcontentloaded" },
       );
-      await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
-        timeout: 45_000,
-      });
+      await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible(
+        {
+          timeout: 45_000,
+        },
+      );
       await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
       await enableSelection(page);
       expect(
@@ -683,6 +720,7 @@ test.describe("keyboard append across the page taking up its route document", ()
       await expect(titleField(page)).toBeVisible();
 
       const held = hold ? await holdNextPropsWrite(page) : null;
+      releaseHeld = held ? held.release : null;
       const first = `first ${Date.now()}`;
       await titleField(page).click();
       await page.keyboard.press("ControlOrMeta+A");
@@ -733,8 +771,12 @@ test.describe("keyboard append across the page taking up its route document", ()
         await page.waitForTimeout(800);
         const afterAdoption = await fieldState(page);
         await note("after the answer and adoption", { writes: writeTitles() });
-        expect.soft(afterAdoption.field?.value, "field after adoption").toBe(expected);
-        expect.soft(afterAdoption.field?.focused, "focus after adoption").toBe(true);
+        expect
+          .soft(afterAdoption.field?.value, "field after adoption")
+          .toBe(expected);
+        expect
+          .soft(afterAdoption.field?.focused, "focus after adoption")
+          .toBe(true);
         expect
           .soft(afterAdoption.field?.marked, "same input after adoption")
           .toBe("m1");
@@ -757,7 +799,9 @@ test.describe("keyboard append across the page taking up its route document", ()
       expect.soft(stored.route, "stored").toBe(expected);
       expect.soft(stored.elsewhere, "stored elsewhere").toEqual([]);
       expect.soft(await canvasText(page), "canvas").toBe(expected);
-      expect.soft((await fieldState(page)).field?.value, "field").toBe(expected);
+      expect
+        .soft((await fieldState(page)).field?.value, "field")
+        .toBe(expected);
 
       await page.reload({ waitUntil: "domcontentloaded" });
       await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
@@ -767,12 +811,16 @@ test.describe("keyboard append across the page taking up its route document", ()
       await clickExposedElement(page, cardTitle(page, SLOT));
       await openContentTab(page);
       await page.waitForTimeout(800);
-      await note("after reload, element re-selected", { stored: storedAfterReload });
+      await note("after reload, element re-selected", {
+        stored: storedAfterReload,
+      });
       expect.soft(await canvasText(page), "canvas after reload").toBe(expected);
       expect
         .soft((await fieldState(page)).field?.value, "field after reload")
         .toBe(expected);
     } finally {
+      // Never leave the answer waiting, whatever failed above.
+      releaseHeld?.();
       const fs = await import("node:fs");
       fs.writeFileSync(
         test.info().outputPath("keyboard-append-notes.json"),
