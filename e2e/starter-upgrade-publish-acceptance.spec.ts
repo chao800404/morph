@@ -459,25 +459,72 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
     `http://${host}:${new URL(test.info().project.use.baseURL!).port}`;
 
   /** Puts the Starter's paths back as the editor provisioned them. */
+  /**
+   * The server's own legacy-manifest migration: previewed, and applied only
+   * when the server says it is ready (its gate and OCC are the server's).
+   */
+  async function migrateLegacyManifest(page: Page) {
+    return page.evaluate(
+      async ({ module, scope }) => {
+        const fns = await import(/* @vite-ignore */ module);
+        const preview = await fns.previewThemeManifestMigration({ data: scope });
+        if (!preview?.success) return { step: "preview", result: preview };
+        if (preview.data?.status !== "ready") {
+          return { step: "preview", result: preview };
+        }
+        const applied = await fns.applyThemeManifestMigrationServerFn({
+          data: scope,
+        });
+        return { step: "apply", result: applied };
+      },
+      { module: SERVER_FN_MODULE, scope: scope! },
+    );
+  }
+
+  /**
+   * Back to the current Starter as the editor provisioned it. This Theme is
+   * the run's shared editor Theme (EDITOR_PATH), not a throwaway one, so it
+   * must end exactly as it began: anything left would reach the run's other
+   * tests. Every step runs even when an earlier one failed, so whatever can
+   * be put back is, and the failures are reported together at the end.
+   *
+   * A manifest-era upgrade keeps the legacy `morph.theme.json`. The generic
+   * file API refuses to delete it, by design; it goes through the server's
+   * own migration, which removes it only when its gate passes. When that
+   * migration is not ready, the restore fails: the Theme is not left as it
+   * is, and the gate is not worked around.
+   */
   async function restoreCurrentStarter(page: Page) {
+    const failures: string[] = [];
     const now = await workspace(page);
     const back = STARTER_PATHS.filter((path) => now[path] !== original[path]);
     // Nothing to write when nothing moved; an empty batch is not sent.
-    const restored = back.length
-      ? await writeThemeFiles(
-          page,
-          scope!,
-          back.map((path) => ({ path, content: original[path]! })),
-        )
-      : { success: true };
-    expect(restored.success, JSON.stringify(restored)).toBe(true);
-    const removed = await removeThemeFiles(
-      page,
-      scope!,
-      Object.keys(now).filter((path) => !(path in original)),
-    );
-    expect(removed.success, JSON.stringify(removed)).toBe(true);
-    await setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
+    if (back.length) {
+      const restored = await writeThemeFiles(
+        page,
+        scope!,
+        back.map((path) => ({ path, content: original[path]! })),
+      );
+      if (!restored.success) failures.push(`restore: ${JSON.stringify(restored)}`);
+    }
+    const extra = Object.keys(now).filter((path) => !(path in original));
+    const files = extra.filter((path) => path !== MANIFEST);
+    if (files.length) {
+      const removed = await removeThemeFiles(page, scope!, files);
+      if (!removed.success) failures.push(`remove: ${JSON.stringify(removed)}`);
+    }
+    if (extra.includes(MANIFEST)) {
+      const migrated = await migrateLegacyManifest(page);
+      if (migrated.step !== "apply" || !migrated.result?.success) {
+        failures.push(`manifest migration: ${JSON.stringify(migrated)}`);
+      }
+    }
+    try {
+      await setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
+    } catch (error) {
+      failures.push(`version: ${String(error)}`);
+    }
+    expect(failures, failures.join("\n")).toEqual([]);
     expect(await workspace(page)).toEqual(original);
   }
 
@@ -514,26 +561,41 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
 
   test.afterAll(async ({ browser }) => {
     const page = await signedInPage(browser);
+    // Each cleanup runs whatever failed before it; the failures are
+    // reported together, so one that cannot be undone does not leave the
+    // others behind.
+    const failures: string[] = [];
     try {
       // Back to the current Starter, as the editor provisioned it.
-      await openEditor(page);
-      await restoreCurrentStarter(page);
-      for (const domainId of domainIds.splice(0)) {
-        // As m1-container-lifecycle-acceptance.spec.ts: the local stand-in
-        // domain has no Cloudflare custom domain, and a primary domain cannot
-        // be deleted, so the row is made deletable first.
-        await harness!.writeD1(
-          "UPDATE storefront_domains SET is_primary = 0, cloudflare_domain_id = NULL WHERE id = ?1",
-          domainId,
-        );
-        const deleted = (await serverFn(
-          page,
-          DOMAINS,
-          "deleteStorefrontDomains",
-          { ids: [domainId] },
-        )) as { success: boolean; message?: string };
-        expect(deleted.success, deleted.message).toBe(true);
+      try {
+        await openEditor(page);
+        await restoreCurrentStarter(page);
+      } catch (error) {
+        failures.push(`starter: ${String(error)}`);
       }
+      for (const domainId of domainIds.splice(0)) {
+        try {
+          // As m1-container-lifecycle-acceptance.spec.ts: the local stand-in
+          // domain has no Cloudflare custom domain, and a primary domain
+          // cannot be deleted, so the row is made deletable first.
+          await harness!.writeD1(
+            "UPDATE storefront_domains SET is_primary = 0, cloudflare_domain_id = NULL WHERE id = ?1",
+            domainId,
+          );
+          const deleted = (await serverFn(
+            page,
+            DOMAINS,
+            "deleteStorefrontDomains",
+            { ids: [domainId] },
+          )) as { success: boolean; message?: string };
+          if (!deleted.success) {
+            failures.push(`domain ${domainId}: ${deleted.message}`);
+          }
+        } catch (error) {
+          failures.push(`domain ${domainId}: ${String(error)}`);
+        }
+      }
+      expect(failures, failures.join("\n")).toEqual([]);
     } finally {
       await page.context().close();
       await harness?.dispose();
