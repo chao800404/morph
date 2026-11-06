@@ -466,6 +466,11 @@ async function expectLiveProbe(page: Page, marker: string) {
 async function build(page: Page) {
   const action = page.locator("button[data-editor-build-action]");
   await expect(action).toBeEnabled({ timeout: 30_000 });
+  // Enabled is not hydrated: the server-rendered button is enabled too, and
+  // a click before React attaches its handler reaches nothing (e3106ab, case
+  // E: clicked 1.3 s before the editor's modules finished loading, no build
+  // request, no toast). The button itself must be hydrated before the click.
+  await expectHydrated(action);
   await action.click();
   await expect(action).toHaveAttribute("data-build-pending", "true", {
     timeout: 30_000,
