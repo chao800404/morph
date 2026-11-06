@@ -7656,6 +7656,28 @@ export function VisualEditorShell({
   const contextTemplatesRef = useRef(context.templates);
   contextTemplatesRef.current = context.templates;
 
+  /**
+   * What `isRouteDocumentAdoption` is judged on, read when asked: the route
+   * documents the server answered this editor's own creates with, and which
+   * of this Theme's documents are shared rather than a route's own. The leave
+   * guard and the selection reset both decide from this one reading.
+   */
+  const routeDocumentAdoptionKnown = useCallback(
+    () => ({
+      createdRouteDocuments: new Map(
+        Array.from(routeTemplateIdsRef.current).flatMap(([placeholder, id]) => {
+          const routePath = routePathFromTemplatePlaceholder(placeholder);
+          return routePath === null ? [] : [[routePath, id] as const];
+        }),
+      ),
+      isSharedDocument: (templateId: string) =>
+        contextTemplatesRef.current.some(
+          (template) => template.id === templateId && !template.routePath,
+        ),
+    }),
+    [],
+  );
+
   useEffect(() => {
     if (!navigationGuardRef) return;
     navigationGuardRef.current = (kind, navigation) => {
@@ -7664,20 +7686,11 @@ export function VisualEditorShell({
       if (
         kind === "switch-page" &&
         navigation &&
-        isRouteDocumentAdoption(navigation.current, navigation.next, {
-          createdRouteDocuments: new Map(
-            Array.from(routeTemplateIdsRef.current).flatMap(
-              ([placeholder, id]) => {
-                const routePath = routePathFromTemplatePlaceholder(placeholder);
-                return routePath === null ? [] : [[routePath, id] as const];
-              },
-            ),
-          ),
-          isSharedDocument: (templateId) =>
-            contextTemplatesRef.current.some(
-              (template) => template.id === templateId && !template.routePath,
-            ),
-        })
+        isRouteDocumentAdoption(
+          navigation.current,
+          navigation.next,
+          routeDocumentAdoptionKnown(),
+        )
       ) {
         return Promise.resolve(false);
       }
@@ -7687,7 +7700,12 @@ export function VisualEditorShell({
     return () => {
       navigationGuardRef.current = null;
     };
-  }, [commitFocusedField, leaveGuard, navigationGuardRef]);
+  }, [
+    commitFocusedField,
+    leaveGuard,
+    navigationGuardRef,
+    routeDocumentAdoptionKnown,
+  ]);
 
   // Reloading or closing the tab cannot be held for a save, only warned
   // about. Asked at the moment of leaving, so an edit made a moment earlier
@@ -8827,6 +8845,21 @@ export function VisualEditorShell({
     templateId: search.templateId,
     routePath: search.routePath,
     onReset: resetEditorContext,
+    // The editor taking up the route document its own write just created is
+    // the same page, as the leave guard judges it: the selection, the
+    // Inspector it feeds and the canvas scroll stay. Only while the section
+    // selected is still one of this page's; otherwise it is let go as on any
+    // other change. Every other change of page, document or Theme resets.
+    isSamePage: (previous, next) =>
+      isRouteDocumentAdoption(
+        { pathname: "", search: previous },
+        { pathname: "", search: next },
+        routeDocumentAdoptionKnown(),
+      ) &&
+      (!activeSelection ||
+        sectionModel.document.sections.some(
+          (section) => section.id === activeSelection.sectionId,
+        )),
   });
 
   useEffect(() => {

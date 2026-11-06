@@ -475,10 +475,13 @@ const detailQuery = () =>
 const host: {
   search?: StorefrontThemeEditorSearch;
   routeGeneration?: number | null;
+  /** Moves the editor's address, as a link or the page picker would. */
+  go?: (next: Partial<StorefrontThemeEditorSearch>) => void;
 } = {};
 function Host({ initial }: { initial: StorefrontThemeEditorSearch }) {
   const query = useQuery({ ...detailQuery(), staleTime: Infinity });
   const [search, setSearch] = useState(initial);
+  host.go = (next) => setSearch((previous) => ({ ...previous, ...next }));
   const data = query.data as
     | { success: boolean; data?: StorefrontThemeEditorDTO }
     | undefined;
@@ -896,6 +899,57 @@ const rowsOf = (write: WriteRequest) =>
 
 // ---------------------------------------------------------------------------
 
+const liveTyped = (value: string) =>
+  posted.filter(
+    (message) =>
+      message.type === "morph:storefront-preview-update-selection-field" &&
+      message.value === value,
+  );
+
+describe("the selection when the page takes up the route document it created", () => {
+  it("stays: typing on, with nothing selected again, reaches the canvas and the new document", async () => {
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    expect(liveTyped("Value 1")).toHaveLength(1);
+    await expectAdopted();
+
+    // No click, no Inspector reopened: the author goes on typing.
+    typeInCard(0, "Value 2");
+    expect(liveTyped("Value 2")).toHaveLength(1);
+    expect(liveTyped("Value 2")[0]).toMatchObject({ sectionId: SLOT });
+
+    await act(async () => {
+      first.release();
+    });
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      sectionId: SLOT,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+  });
+
+  it("is let go on a real change of page, after the route document was taken up", async () => {
+    await openOn(headingReport);
+    await type("Default heading", "Value 1");
+    await pause();
+    await expectAdopted();
+    expect(cardFields().length).toBeGreaterThan(0);
+
+    // Another page: the selection and the Inspector it fed are let go.
+    act(() => {
+      host.go!({ routePath: "/", templateId: undefined });
+    });
+    await waitFor(() => expect(cardFields()).toHaveLength(0));
+    expect(liveTyped("Value 2")).toHaveLength(0);
+  });
+});
+
 describe("the second edit on a route document this editor just created", () => {
   it("C1: waits for the first write's answer, then goes to the real id at the generation it returned", async () => {
     await openOn(headingReport);
@@ -1082,6 +1136,19 @@ describe("G2: a result that is not known", () => {
 });
 
 describe("G3: row identity on the new document", () => {
+  /**
+   * Row b's title. Taking up the route document keeps the row element
+   * selected, so the Inspector still shows the rows' titles, row b's as
+   * saved.
+   */
+  function typeInSelectedRow(value: string) {
+    expect(cardFields().map((field) => field.value)).toEqual([
+      "One",
+      "Two edited",
+    ]);
+    typeInCard(1, value);
+  }
+
   async function firstRowWriteLanded() {
     await openOn(secondRowReport);
     await type("Two", "Two edited");
@@ -1102,7 +1169,7 @@ describe("G3: row identity on the new document", () => {
   it("refuses an edit to row b when the rows are read back reordered before it leaves", async () => {
     await firstRowWriteLanded();
     holdDebounce();
-    typeInCard(2, "Two again");
+    typeInSelectedRow("Two again");
     await outsideWriteRead((route) => {
       const items = route.props!.items as unknown[];
       route.props = { ...route.props, items: [items[1], items[0]] };
@@ -1118,7 +1185,7 @@ describe("G3: row identity on the new document", () => {
   it("mirror: with the rows unchanged the edit goes to row b, by the answered ids", async () => {
     const { one, two } = await firstRowWriteLanded();
     holdDebounce();
-    typeInCard(2, "Two again");
+    typeInSelectedRow("Two again");
     await releaseDebounce();
 
     expect(sent()).toHaveLength(2);
