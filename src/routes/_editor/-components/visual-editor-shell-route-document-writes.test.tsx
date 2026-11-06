@@ -963,6 +963,62 @@ describe("the selection when the page takes up the route document it created", (
   });
 });
 
+/** The route requests the editor posted to the frame, in order. */
+const routeRequests = () =>
+  posted.filter(
+    (message) => message.type === "morph:storefront-preview-set-route",
+  );
+
+describe("the frame's route when the page takes up the route document it created", () => {
+  it("is not sent again when the editor takes up the document its own first write created", async () => {
+    await openOn(headingReport);
+    // On the route with the borrowed shared document, the frame told once.
+    expect(host.search?.templateId).toBe("template-1");
+    const before = routeRequests().length;
+    expect(before).toBeGreaterThan(0);
+    expect(routeRequests().at(-1)).toMatchObject({
+      templateId: "template-1",
+      routePath: ROUTE_PATH,
+    });
+
+    // The first write creates the route document, is answered, and the
+    // editor's own read after it moves the page onto the new id.
+    await type("Default heading", "Value 1");
+    await pause();
+    await expectAdopted();
+    await flushFrames();
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+
+    // Same page: the frame is asked for nothing, so one that moved away by
+    // itself meanwhile is not taken back.
+    expect(routeRequests()).toHaveLength(before);
+  });
+
+  it("control: is sent again when the route's document changes to one this editor did not create", async () => {
+    await openOn(headingReport);
+    expect(host.search?.templateId).toBe("template-1");
+    const before = routeRequests().length;
+    expect(before).toBeGreaterThan(0);
+
+    // Another tab created the route document; this editor only reads it.
+    server.route = { generation: 1, props: null };
+    await readWhileOut();
+    await expectAdopted();
+    await flushFrames();
+    expect(ensureRouteTemplate).not.toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(routeRequests().length).toBeGreaterThan(before),
+    );
+    expect(routeRequests().at(-1)).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      routePath: ROUTE_PATH,
+    });
+  });
+});
+
 describe("the second edit on a route document this editor just created", () => {
   it("C1: waits for the first write's answer, then goes to the real id at the generation it returned", async () => {
     await openOn(headingReport);
