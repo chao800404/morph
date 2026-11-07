@@ -157,6 +157,37 @@ describe("an answered write", () => {
     });
   });
 
+  it("counts the step from the generation it was composed on only when the write itself made it", () => {
+    const made = { sentAt: 1, draftGeneration: 2, sections: sections("Created") };
+    // Sent at the ensure's generation and answered with the next: ours.
+    expect(acceptAnsweredWrite(undefined, made, { ownStepFrom: 1 })).toEqual({
+      draftGeneration: 2,
+      sections: sections("Created"),
+      ownSince: 1,
+    });
+    // Answered further on: steps nobody vouches for lie between.
+    expect(
+      acceptAnsweredWrite(
+        undefined,
+        { sentAt: 1, draftGeneration: 3, sections: sections("Further") },
+        { ownStepFrom: 1 },
+      )?.ownSince,
+    ).toBe(3);
+    // Sent at another generation than the one named.
+    expect(
+      acceptAnsweredWrite(
+        undefined,
+        { sentAt: 2, draftGeneration: 3, sections: sections("Other") },
+        { ownStepFrom: 1 },
+      )?.ownSince,
+    ).toBe(3);
+    // A copy held decides as before, whatever is named.
+    const held = at(2, "Read", 2);
+    expect(acceptAnsweredWrite(held, made, { ownStepFrom: 1 })).toBe(held);
+    // Nothing named: nobody's own range.
+    expect(acceptAnsweredWrite(undefined, made)?.ownSince).toBe(2);
+  });
+
   it("leaves no copy when the answer brings no document or no valid generation", () => {
     expect(
       acceptAnsweredWrite(undefined, { sentAt: 1, draftGeneration: 2, sections: undefined }),

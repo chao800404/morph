@@ -265,9 +265,13 @@ export async function publish(page: Page) {
   await (await publishShowingRelease(page)).close();
 }
 
-/** Opens the editor and waits for the Publish control to be live. */
-export async function openEditor(page: Page) {
-  await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+/**
+ * Opens the editor and waits for the Publish control to be live. Without
+ * `editorPath` it opens the run's shared editor Theme (EDITOR_PATH); a spec
+ * on a Theme of its own passes that Theme's editor path.
+ */
+export async function openEditor(page: Page, editorPath: string = EDITOR_PATH!) {
+  await page.goto(editorPath, { waitUntil: "domcontentloaded" });
   const publishButton = page.getByRole("button", { name: /^Publish$/ });
   await expect(publishButton).toBeVisible({ timeout: 45_000 });
   await expectHydrated(publishButton);
