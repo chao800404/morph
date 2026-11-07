@@ -47,6 +47,13 @@ type EditorAssistantPanelProps = {
    * makes it read the section afresh instead of sending that copy again.
    */
   contentResetEpoch?: number;
+  /**
+   * Which document the Inspector's inputs hold content of, for keying them:
+   * the active template's id unless the shell says the page's document is
+   * the same one under another id (a route's placeholder and the document
+   * its first write created). The inputs stay mounted across that change.
+   */
+  inspectorDocumentKey?: string;
   /** Modules the layout supplies; an edit to one reaches every page. */
   sharedLayoutPaths?: ReadonlySet<string>;
   /** Section library source, including what its entries re-export. */
@@ -255,6 +262,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onJumpToCode,
   onTabChange,
   contentResetEpoch = 0,
+  inspectorDocumentKey,
   selectionSourceCurrent = false,
 }: EditorAssistantPanelProps) {
   // Seeded from the value the server already resolved, so both renders agree.
@@ -554,7 +562,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               <EditorStyleInspector
                 sharedLayoutPaths={sharedLayoutPaths}
                 sectionTemplatePaths={sectionTemplatePaths}
-                resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentStore}:${contentResetEpoch}`}
+                resourceKey={`${context.storefront.id}:${context.theme.id}:${inspectorDocumentKey ?? activeTemplate?.id ?? ""}:${contentStore}:${contentResetEpoch}`}
                 rowIdTemplateId={activeTemplate?.id}
                 view={tab === "content" ? "content" : "styles"}
                 section={inspectorSection}

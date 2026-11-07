@@ -2,9 +2,100 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   classifyEditorNavigation,
   createEditorLeaveGuard,
+  isRouteDocumentAdoption,
   type EditorLeaveFlush,
   type EditorLeavePrompt,
 } from "./editor-leave-guard";
+
+describe("isRouteDocumentAdoption", () => {
+  const editor = "/store/s/themes/t/editor";
+  const at = (search: Record<string, unknown>, pathname = editor) => ({
+    pathname,
+    search,
+  });
+  const known = {
+    createdRouteDocuments: new Map([["/about", "route-about"]]),
+    isSharedDocument: (id: string) => id === "index" || id === "product",
+  };
+
+  it("lets the editor move from the borrowed index onto the route document it created", () => {
+    expect(
+      isRouteDocumentAdoption(
+        at({ routePath: "/about", templateId: "index" }),
+        at({ routePath: "/about", templateId: "route-about", template: "page" }),
+        known,
+      ),
+    ).toBe(true);
+  });
+
+  it("is not a page switch on another route, even to a document it created", () => {
+    expect(
+      isRouteDocumentAdoption(
+        at({ routePath: "/contact", templateId: "index" }),
+        at({ routePath: "/about", templateId: "route-about" }),
+        known,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not let another document on the same route through", () => {
+    expect(
+      isRouteDocumentAdoption(
+        at({ routePath: "/about", templateId: "index" }),
+        at({ routePath: "/about", templateId: "someone-elses" }),
+        known,
+      ),
+    ).toBe(false);
+  });
+
+  it("only replaces a shared document, never a route's own", () => {
+    expect(
+      isRouteDocumentAdoption(
+        at({ routePath: "/about", templateId: "route-other" }),
+        at({ routePath: "/about", templateId: "route-about" }),
+        known,
+      ),
+    ).toBe(false);
+    // Nor the way back, from the route's document to the index.
+    expect(
+      isRouteDocumentAdoption(
+        at({ routePath: "/about", templateId: "route-about" }),
+        at({ routePath: "/about", templateId: "index" }),
+        known,
+      ),
+    ).toBe(false);
+  });
+
+  it("knows nothing it was not told by the server, whatever the URL says", () => {
+    expect(
+      isRouteDocumentAdoption(
+        at({ routePath: "/about", templateId: "index" }),
+        at({ routePath: "/about", templateId: "route-about", adopt: "1" }),
+        { ...known, createdRouteDocuments: new Map() },
+      ),
+    ).toBe(false);
+  });
+
+  it("never covers leaving the editor or a missing id", () => {
+    expect(
+      isRouteDocumentAdoption(
+        at({ routePath: "/about", templateId: "index" }),
+        at(
+          { routePath: "/about", templateId: "route-about" },
+          "/store/s/themes/other/editor",
+        ),
+        known,
+      ),
+    ).toBe(false);
+    expect(
+      isRouteDocumentAdoption(
+        at({ routePath: "/about" }),
+        at({ routePath: "/about", templateId: "route-about" }),
+        known,
+      ),
+    ).toBe(false);
+  });
+});
 
 /**
  * A navigation that arrives while an edit is still waiting to be saved.

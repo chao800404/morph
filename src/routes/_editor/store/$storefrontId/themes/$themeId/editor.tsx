@@ -95,18 +95,22 @@ function VisualEditorRoute() {
       current: { pathname: string; search: unknown };
       next: { pathname: string; search: unknown };
     }) => {
-      const kind = classifyEditorNavigation(
-        {
+      const navigation = {
+        current: {
           pathname: current.pathname,
           search: (current.search ?? {}) as Record<string, unknown>,
         },
-        {
+        next: {
           pathname: next.pathname,
           search: (next.search ?? {}) as Record<string, unknown>,
         },
+      };
+      const kind = classifyEditorNavigation(
+        navigation.current,
+        navigation.next,
       );
       if (!kind) return false;
-      return navigationGuardRef.current?.(kind) ?? false;
+      return navigationGuardRef.current?.(kind, navigation) ?? false;
     },
     [],
   );
