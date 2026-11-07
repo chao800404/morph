@@ -4644,4 +4644,84 @@ function Home() {
       ]);
     });
   });
+
+  /**
+   * A list the Document stores, dragged on the canvas. The swap was staged
+   * field by field: every leaf of the moved rows recorded the row now at its
+   * index, which is the other row in the stored copy, so the write was
+   * refused as "changed elsewhere" and nothing was saved. That includes the
+   * second drag on a list the first drag had just stored.
+   */
+  describe("dragging an entry of a stored list on the canvas", () => {
+    const drag = (dragged: number, target: number) =>
+      fromPreview({
+        type: "morph:storefront-preview-commit-array-item-reorder",
+        sectionId: "section",
+        draggedFieldPath: `items.${dragged}`,
+        targetFieldPath: `items.${target}`,
+      });
+    const notices = () => ({
+      warning: vi.spyOn(toast, "warning").mockImplementation(() => ""),
+      error: vi.spyOn(toast, "error").mockImplementation(() => ""),
+    });
+
+    it("swaps the stored rows and saves the list in its new order", async () => {
+      const { warning, error } = notices();
+      const [one, two] = identified();
+      await openTitle({ items: [one, two] }, 1);
+
+      drag(1, 0);
+      await settle();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+      expect(rowsSent(sent()[0]!)).toEqual([
+        [two!.id, "Two"],
+        [one!.id, "One"],
+      ]);
+      expect(saveStatus()).toBe("Unpublished");
+    });
+
+    it("swaps again once the first drag has stored a list nothing stored", async () => {
+      const { warning, error } = notices();
+      const [one, two] = identified();
+      // "One", where the first drop left it, selected again on the canvas
+      // once the list is stored. (Taken first: it replaces the body.)
+      const moved = await reportTitle({ items: [two, one] }, 1);
+      expect(moved).toMatchObject({
+        fieldPath: "items.1.title",
+        itemId: one!.id,
+      });
+      const { receive } = await openTitle({}, 1);
+      drag(1, 0);
+      await settle();
+      expect(sent()).toHaveLength(1);
+      // The editor reads back what the server now holds.
+      act(() => {
+        receive(editorAt({ ...stored }, draftGeneration));
+      });
+      await flushFrames();
+      fromPreview(moved);
+      await flushFrames();
+
+      drag(1, 0);
+      await settle();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([
+        1, 2,
+      ]);
+      expect(rowsSent(sent()[1]!)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two"],
+      ]);
+      expect(stored.items).toEqual([
+        { id: one!.id, title: "One" },
+        { id: two!.id, title: "Two" },
+      ]);
+    });
+  });
 });

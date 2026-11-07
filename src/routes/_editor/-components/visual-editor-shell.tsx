@@ -374,7 +374,10 @@ import {
   resolveTemplateDraftGeneration,
 } from "@/lib/storefront/editor/template-draft-generation";
 import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
-import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
+import {
+  parseArrayItemFieldPath,
+  swapArrayItemsAtFieldPaths,
+} from "@/lib/storefront/editor/reorder-array-items";
 import { declaredUnstoredListRows } from "@/lib/storefront/editor/section-content-declaration";
 import {
   getFieldPathValue,
@@ -11557,6 +11560,12 @@ export function VisualEditorShell({
         sectionId,
         stored: sectionPropsSnapshot(sectionId),
         next: { [arrayRoot]: result.value[arrayRoot] },
+        // One structural change to the list, not an edit of each moved row.
+        // Staged leaf by leaf, every field of a moved row would record the
+        // row now at its index — the other one in the stored copy — and the
+        // write would be refused as made on rows that moved. The rows that
+        // hold the list (a nested list's parent rows) are still checked.
+        inputPath: parseArrayItemFieldPath(draggedFieldPath)!.arrayPath,
         routePath: routePathForTemplate(templateId),
         sourceForPath: () => generation,
         basisDraftGeneration: contentBasisFor(templateId),
