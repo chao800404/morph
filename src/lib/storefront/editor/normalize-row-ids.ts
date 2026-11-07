@@ -211,6 +211,31 @@ export function normalizeRowIds<T>(
   return { changed, value: changed ? next : value, assigned, deduplicated };
 }
 
+/**
+ * The rows of one list the Document does not store yet, with the ids its first
+ * edit will store.
+ *
+ * The Inspector shows such a list from the component's own defaults, which
+ * carry no ids. It keys each row card by this result from the first render and
+ * hands the same result to the first edit as the list to store, so the card a
+ * row is drawn in keeps its key through that edit — and the input inside it,
+ * its focus and its caret with it.
+ *
+ * Exactly what `normalizeDocumentRowIds` gives the same rows under the same
+ * section: the derivation reads only template, section, the list's own field
+ * path, each row's position and each row's content, so the other props of the
+ * section are irrelevant to it. Call it only on rows as the component declares
+ * them, never on a list an edit has touched: a derived id depends on the row's
+ * content.
+ */
+export function identifyUnstoredListRows(
+  fieldKey: string,
+  rows: unknown,
+  scope: RowIdScope,
+): unknown {
+  return normalizeRowIds({ [fieldKey]: rows }, scope).value[fieldKey];
+}
+
 /** The shape this needs of a page document, so it can be used from either side. */
 type RowIdDocument = {
   sections: Array<{ id: string; props: Record<string, unknown> }>;

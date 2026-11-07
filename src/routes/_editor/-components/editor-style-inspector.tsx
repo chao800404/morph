@@ -27,7 +27,7 @@ import {
   rebaseSelectedRowPath,
   type SelectedRowRefusal,
 } from "@/lib/storefront/editor/selected-row-identity";
-import { normalizeRowIds } from "@/lib/storefront/editor/normalize-row-ids";
+import { identifyUnstoredListRows } from "@/lib/storefront/editor/normalize-row-ids";
 import { earlierBasis } from "@/lib/storefront/editor/content-write-snapshot";
 import { sameContent } from "@/lib/storefront/editor/pending-content-write";
 import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
@@ -262,8 +262,9 @@ type EditorStyleInspectorProps = {
   /**
    * The template this section belongs to, which the rows of a list nothing
    * stores yet are identified under before their first edit — the ids the
-   * server would give the same rows (`normalizeRowIds`). Without it those
-   * rows keep no id, and an edit to one of them is refused when it is sent.
+   * server would give the same rows (`normalizeRowIds`), shown as their row
+   * keys from the first render. Without it those rows keep no id, are keyed
+   * by position, and an edit to one of them is refused when it is sent.
    */
   rowIdTemplateId?: string;
   /**
@@ -2793,15 +2794,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         // it after the edit would name a different row than the one typed
         // in. Done once — from here on the list is the author's copy, and
         // later input, a retry or the send never derives an id again.
-        const seeded = { [seed.key]: seed.value };
+        //
+        // The panel passes the rows it drew, which already carry these ids
+        // (see `identifyUnstoredListRows` where the list is rendered), so this
+        // keeps them as they are; it derives only for a seed drawn without.
         base = {
           ...current,
-          [seed.key]: (rowIdTemplateId
-            ? normalizeRowIds(seeded, {
+          [seed.key]: rowIdTemplateId
+            ? identifyUnstoredListRows(seed.key, seed.value, {
                 templateId: rowIdTemplateId,
                 sectionId: section.id,
-              }).value
-            : seeded)[seed.key],
+              })
+            : seed.value,
         };
       }
       const next = toStorableContentProps(setFieldPathValue(base, path, value));
@@ -3216,11 +3220,31 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             selectedArrayRow?.fieldKey === fieldKey
                               ? (props[fieldKey] ?? value)
                               : value;
-                          const rows: Record<string, unknown>[] = Array.isArray(
-                            listValue,
-                          )
-                            ? (listValue as Record<string, unknown>[])
-                            : [];
+                          const declaredRows: Record<string, unknown>[] =
+                            Array.isArray(listValue)
+                              ? (listValue as Record<string, unknown>[])
+                              : [];
+                          // A list nothing stores yet is drawn with the ids
+                          // its first edit will store. Its rows are the
+                          // component's defaults, which carry none, and a card
+                          // keyed by position would be replaced — with the
+                          // input the author is typing in — the moment that
+                          // edit gave the row its id. Derived from the
+                          // defaults as declared, the same input the first
+                          // edit seeds from (it is handed these very rows), so
+                          // the key holds through it; nothing is written by
+                          // drawing them. A stored list keeps the ids it has.
+                          const rows: Record<string, unknown>[] =
+                            rowIdTemplateId && props[fieldKey] === undefined
+                              ? (identifyUnstoredListRows(
+                                  fieldKey,
+                                  declaredRows,
+                                  {
+                                    templateId: rowIdTemplateId,
+                                    sectionId: section.id,
+                                  },
+                                ) as Record<string, unknown>[])
+                              : declaredRows;
                           const resolvedRowFields = arrayRowFields(definition);
                           // A list whose row shape never resolved is shown as such
                           // rather than as an empty list: the difference is whether the

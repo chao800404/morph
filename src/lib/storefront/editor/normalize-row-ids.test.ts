@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MIGRATED_ROW_ID_PREFIX, normalizeRowIds } from "./normalize-row-ids";
+import {
+  identifyUnstoredListRows,
+  MIGRATED_ROW_ID_PREFIX,
+  normalizeDocumentRowIds,
+  normalizeRowIds,
+} from "./normalize-row-ids";
 import { createMorphItemId } from "./reorder-array-items";
 
 const scope = { templateId: "tpl-1", sectionId: "starter-header" };
@@ -255,5 +260,66 @@ describe("normalizeRowIds is reproducible across sides", () => {
         false,
       );
     }
+  });
+});
+
+describe("identifyUnstoredListRows", () => {
+  const items = [{ title: "One" }, { title: "Two" }];
+  const links = [{ label: "Alpha" }, { label: "Beta" }];
+  const serverRows = () =>
+    normalizeDocumentRowIds(
+      { sections: [{ id: scope.sectionId, props: { items, links } }] },
+      scope.templateId,
+    ).value.sections[0]!.props as unknown as {
+      items: Array<{ id: string }>;
+      links: Array<{ id: string }>;
+    };
+
+  it("gives one list the ids the server gives it, whatever else the section holds", () => {
+    expect(identifyUnstoredListRows("items", items, scope)).toEqual(
+      serverRows().items,
+    );
+    expect(identifyUnstoredListRows("links", links, scope)).toEqual(
+      serverRows().links,
+    );
+  });
+
+  it("keeps the ids it gave, so a seed drawn with them derives nothing again", () => {
+    const shown = identifyUnstoredListRows("items", items, scope);
+    expect(identifyUnstoredListRows("items", shown, scope)).toBe(shown);
+  });
+
+  it("keeps an id a default row already has, and derives only the missing one", () => {
+    const rows = identifyUnstoredListRows(
+      "items",
+      [{ id: "hand-written", title: "One" }, { title: "Two" }],
+      scope,
+    ) as Array<{ id: string; title: string }>;
+    expect(rows[0]).toEqual({ id: "hand-written", title: "One" });
+    expect(rows[1]!.id.startsWith(MIGRATED_ROW_ID_PREFIX)).toBe(true);
+  });
+
+  /**
+   * Why the caller must only ever hand it rows as declared: the id depends on
+   * the content, so rows carrying a keystroke would derive another id.
+   */
+  it("derives from the content it is given", () => {
+    const before = identifyUnstoredListRows("items", items, scope) as Array<{
+      id: string;
+    }>;
+    const after = identifyUnstoredListRows(
+      "items",
+      [{ title: "One" }, { title: "Two!" }],
+      scope,
+    ) as Array<{ id: string }>;
+    expect(after[0]!.id).toBe(before[0]!.id);
+    expect(after[1]!.id).not.toBe(before[1]!.id);
+  });
+
+  it("leaves a value that is not a row list as it is", () => {
+    expect(identifyUnstoredListRows("items", [], scope)).toEqual([]);
+    expect(identifyUnstoredListRows("items", undefined, scope)).toBe(
+      undefined,
+    );
   });
 });
