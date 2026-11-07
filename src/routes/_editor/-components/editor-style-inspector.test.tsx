@@ -2962,4 +2962,77 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
     expect([two, alpha, beta].every((input) => input.isConnected)).toBe(true);
     expect(cards.every((card) => card!.isConnected)).toBe(true);
   });
+
+  const addButtons = () => screen.getAllByRole("button", { name: "Add entry" });
+  const removeButtonOf = (input: HTMLElement) =>
+    Array.from(cardOf(input)!.querySelectorAll("button")).find(
+      (button) => button.textContent === "Remove",
+    )!;
+
+  it("adds an entry after the rows it draws, keeping them and their ids", () => {
+    const ids = serverIds();
+    const onPropsChange = renderEntries();
+    const one = screen.getByDisplayValue("One") as HTMLInputElement;
+    const two = screen.getByDisplayValue("Two") as HTMLInputElement;
+    const cards = [one, two].map(cardOf);
+
+    // The first list's button: lists render in declaration order.
+    fireEvent.click(addButtons()[0]!);
+
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+    const [sent] = onPropsChange.mock.calls[0]!;
+    expect(sent).toEqual({
+      items: [
+        { id: ids.items[0], title: "One" },
+        { id: ids.items[1], title: "Two" },
+        { id: expect.stringMatching(/^morph-/), title: "" },
+      ],
+    });
+    // The new row's id is minted once, not derived like the defaults'.
+    expect(ids.items).not.toContain(sent.items[2].id);
+    // The rows already drawn keep their cards: their keys are the ids sent.
+    expect([one, two].every((input) => input.isConnected)).toBe(true);
+    expect(cards.every((card) => card!.isConnected)).toBe(true);
+  });
+
+  it("removes the entry pressed, keeping the other rows and their ids", () => {
+    const ids = serverIds();
+    const onPropsChange = renderEntries();
+    const one = screen.getByDisplayValue("One") as HTMLInputElement;
+    const two = screen.getByDisplayValue("Two") as HTMLInputElement;
+    const twoCard = cardOf(two);
+
+    fireEvent.click(removeButtonOf(one));
+
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+    expect(onPropsChange.mock.calls[0]![0]).toEqual({
+      items: [{ id: ids.items[1], title: "Two" }],
+    });
+    expect(two.isConnected).toBe(true);
+    expect(twoCard!.isConnected).toBe(true);
+    expect(one.isConnected).toBe(false);
+  });
+
+  it("edits a default row by its id after an entry was added", () => {
+    const ids = serverIds();
+    const onPropsChange = renderEntries();
+    fireEvent.click(addButtons()[0]!);
+    const added = onPropsChange.mock.calls[0]![0].items[2];
+
+    const two = screen.getByDisplayValue("Two") as HTMLInputElement;
+    act(() => two.focus());
+    two.setSelectionRange(3, 3);
+    press(two, "!");
+
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [
+          { id: ids.items[0], title: "One" },
+          { id: ids.items[1], title: "Two!" },
+          added,
+        ],
+      },
+      { inputFieldPath: "items.1.title" },
+    );
+  });
 });
