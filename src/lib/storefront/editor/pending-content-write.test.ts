@@ -813,4 +813,75 @@ describe("classifyUnconfirmedContent: version first, then content", () => {
       expect(classify(mixed, { ok: false })).toBe("undecided");
     });
   });
+
+  // Added with the implementation (user decision 3): the generation did not
+  // move, yet everything the write sent is already there. It cannot be shown
+  // that this request did it, so it is never resent.
+  describe("unchanged generation with everything already there", () => {
+    it("a reset-only write whose key is already gone: moved", () => {
+      expect(classify(resetOnly, read(SENT_AT, { heading: "x" }))).toBe(
+        "moved",
+      );
+    });
+    it("a mixed write whose value is restored and key gone: moved", () => {
+      expect(classify(mixed, read(SENT_AT, { heading: "Hello" }))).toBe(
+        "moved",
+      );
+    });
+  });
+
+  it("a write with no recorded draft generation: moved, never resent", () => {
+    const { expectedDraftGeneration: _unset, ...unrecorded } = resetOnly;
+    expect(classify(unrecorded, read(SENT_AT, { items: rows }))).toBe("moved");
+  });
+});
+
+describe("sentContentWrite: what was sent stays as sent", () => {
+  it("is not changed by later changes to the entry it was made from", () => {
+    const props: Record<string, unknown> = { heading: "Hello" };
+    const resetProps = ["items"];
+    const entry: PendingContentEntry = {
+      sectionId: "section",
+      props,
+      resetProps,
+      expectedDraftGeneration: 4,
+      expectedSourceGeneration: 1,
+    };
+    const sent = pendingContentWrite.sentContentWrite(entry);
+    // Later input reuses and rewrites the objects it came from.
+    props.heading = "Typed later";
+    props.extra = "x";
+    resetProps.push("heading");
+    entry.expectedDraftGeneration = 9;
+
+    expect(sent).toEqual({
+      sectionId: "section",
+      props: { heading: "Hello" },
+      resetProps: ["items"],
+      expectedDraftGeneration: 4,
+      expectedSourceGeneration: 1,
+    });
+  });
+
+  it("cannot be rewritten in place", () => {
+    const sent = pendingContentWrite.sentContentWrite({
+      sectionId: "section",
+      props: { heading: "Hello" },
+      resetProps: ["items"],
+      expectedDraftGeneration: 4,
+    });
+    expect(Object.isFrozen(sent)).toBe(true);
+    expect(Object.isFrozen(sent.props)).toBe(true);
+    expect(Object.isFrozen(sent.resetProps)).toBe(true);
+    expect(() => {
+      (sent.props as Record<string, unknown>).heading = "x";
+    }).toThrow(TypeError);
+    expect(() => {
+      (sent.resetProps as string[]).push("x");
+    }).toThrow(TypeError);
+    expect(() => {
+      (sent as { expectedDraftGeneration?: number }).expectedDraftGeneration =
+        5;
+    }).toThrow(TypeError);
+  });
 });

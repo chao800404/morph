@@ -42,7 +42,31 @@ export type PendingContentEntry = {
   expectedDraftGeneration?: number;
   /** Immutable per-field input snapshots; not upgraded by selection or retry. */
   fields?: Readonly<Record<string, PendingFieldEdit>>;
+  /**
+   * Keys the write removes from the section ("Use code default", or the
+   * undo of a write that first stored them), sent as `resetProps`. Present
+   * only on a write that removes keys; a read-back counts it landed only once
+   * every one of them is gone.
+   */
+  resetProps?: readonly string[];
 };
+
+/**
+ * A write as it was sent, frozen: its props, removed keys and generations
+ * are what a read-back is compared with and what a retry sends again, so
+ * nothing typed after it may change them.
+ */
+export function sentContentWrite(
+  entry: PendingContentEntry,
+): Readonly<PendingContentEntry> {
+  return Object.freeze({
+    ...entry,
+    props: Object.freeze({ ...entry.props }),
+    ...(entry.resetProps !== undefined
+      ? { resetProps: Object.freeze([...entry.resetProps]) }
+      : {}),
+  });
+}
 
 export function changedContentPaths(
   before: unknown,
@@ -467,11 +491,80 @@ export function sectionContentLanded(
 ): boolean {
   if (!section) return false;
   const held = (section.props ?? {}) as Record<string, unknown>;
-  return Object.entries(sent.props).every(([key, value]) =>
-    key === "enabled"
-      ? (section.enabled !== false) === value
-      : sameContent(held[key], value),
+  return (
+    Object.entries(sent.props).every(([key, value]) =>
+      key === "enabled"
+        ? (section.enabled !== false) === value
+        : sameContent(held[key], value),
+    ) &&
+    // A removed key is gone only when the section no longer holds it at
+    // all; one held with the value `undefined` is still held. With nothing
+    // in `props`, this is the whole test: `props: {}` alone never landed.
+    (sent.resetProps ?? []).every(
+      (key) => !Object.prototype.hasOwnProperty.call(held, key),
+    )
   );
+}
+
+/** What reading back an unanswered write found, as the settle reads it. */
+export type UnconfirmedContentRead =
+  | Readonly<{ ok: false }>
+  | Readonly<{
+      ok: true;
+      template?: Readonly<{
+        draftGeneration?: number;
+        section?: Readonly<{ props?: unknown; enabled?: boolean }>;
+      }>;
+    }>;
+
+export type UnconfirmedContentOutcome =
+  /** This write produced the read-back: nothing to send, history may move. */
+  | "landed"
+  /** Nothing moved and the write is not there: may be sent again, as sent. */
+  | "not-landed"
+  /** Something else happened, or it cannot be told apart: never resent. */
+  | "moved"
+  /** The read failed: nothing is decided. */
+  | "undecided";
+
+/**
+ * Whether an unanswered content write landed, decided by the draft
+ * generation first and the content second.
+ *
+ * - exactly one generation on, and every sent value and removal there:
+ *   landed, the one step being this write's;
+ * - the generation unchanged and the content not all there: not landed;
+ * - anything else — one generation on with any mismatch, the generation
+ *   unchanged with everything already there (it cannot be shown that this
+ *   request did it), any other generation, a missing template or section,
+ *   or no generation recorded for the write — moved.
+ *
+ * A partial content mismatch alone never makes a write "not landed": the
+ * only write that may be resent is one nothing has happened to.
+ */
+export function classifyUnconfirmedContent(
+  sent: PendingContentEntry,
+  read: UnconfirmedContentRead,
+): UnconfirmedContentOutcome {
+  if (!read.ok) return "undecided";
+  const template = read.template;
+  const section = template?.section;
+  const sentAt = sent.expectedDraftGeneration;
+  const now = template?.draftGeneration;
+  if (
+    !template ||
+    !section ||
+    typeof sentAt !== "number" ||
+    !Number.isSafeInteger(sentAt) ||
+    typeof now !== "number" ||
+    !Number.isSafeInteger(now)
+  ) {
+    return "moved";
+  }
+  const applied = sectionContentLanded(sent, section);
+  if (now === sentAt) return applied ? "moved" : "not-landed";
+  if (now === sentAt + 1) return applied ? "landed" : "moved";
+  return "moved";
 }
 
 /**

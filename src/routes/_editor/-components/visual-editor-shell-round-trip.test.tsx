@@ -4911,6 +4911,37 @@ function Home() {
 
         // The entry is still there to retry once the store answers again.
         updateSectionProps.mockImplementation(answerWrites);
+        if (label === "unanswered") {
+          // #388 round 3 (A3) changed this half. An unanswered reset may have
+          // landed, so it is read back before anything is sent again: the
+          // next Undo is held (the existing unconfirmed hold), and Check and
+          // save reads the Document back, finds the list still stored at the
+          // generation the reset was sent at (not landed), and sends it once
+          // more, as first sent. Before A3 the next Undo resent it at once,
+          // with no read-back.
+          await undo();
+          expect(sent(), "the next Undo is held").toHaveLength(2);
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          getThemeEditor.mockResolvedValue({
+            success: true,
+            message: "ok",
+            data: editorAt({ ...stored }, draftGeneration),
+          });
+          fireEvent.click(
+            await screen.findByRole("button", { name: "Check and save" }),
+          );
+          await settle();
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
+            props: {},
+            resetProps: ["items"],
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).not.toHaveProperty("items");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+          return;
+        }
         await undo();
         expect(sent()).toHaveLength(3);
         expect(sent()[2]).toMatchObject({
@@ -5343,6 +5374,30 @@ function Home() {
           expect(unconfirmedCount()).toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
         });
+      });
+
+      // Added with the implementation (user decision 2): what was sent stays
+      // as sent. Input typed into the same section while the reset is held
+      // is held under the section's pending entry; it never rewrites the
+      // unconfirmed record, and the resend carries exactly the first write.
+      it("input typed while a reset is held does not change what is sent again", async () => {
+        notices();
+        await resetOnlyWrite();
+        answerNext.push(lost);
+        await undo();
+        expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+        await type("Hello", "Typed later");
+        await settle();
+        expect(sent(), "the input is held").toHaveLength(2);
+        serverHolds({ ...stored }, 2);
+
+        await checkAndSave();
+
+        expect(sent().length).toBeGreaterThanOrEqual(3);
+        expect(shape(sent()[2]!), "resent exactly as first sent").toEqual(
+          resetUndo(2),
+        );
+        expect(sent()[2]!.props).not.toHaveProperty("heading");
       });
 
       describe("A3: reading back a mixed undo that got no answer", () => {

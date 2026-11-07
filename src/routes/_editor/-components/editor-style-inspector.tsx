@@ -1702,15 +1702,29 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       return undefined;
     }
     return () => {
-      void onResetContentFields(section.id, [fieldKey]).then((result) => {
-        if (!result.success) return;
-        const { [fieldKey]: _removed, ...rest } = localPropsRef.current;
-        localPropsRef.current = rest;
-        setLocalProps(rest);
-        // The inputs hold their own value; they are remounted to show the
-        // default rather than the value that was just removed.
-        setResetEpoch((epoch) => epoch + 1);
-      });
+      void onResetContentFields(section.id, [fieldKey]).then(
+        (result) => {
+          if (!result.success) return;
+          const { [fieldKey]: _removed, ...rest } = localPropsRef.current;
+          localPropsRef.current = rest;
+          setLocalProps(rest);
+          // The inputs hold their own value; they are remounted to show the
+          // default rather than the value that was just removed.
+          setResetEpoch((epoch) => epoch + 1);
+        },
+        (error: unknown) => {
+          // No answer came back: the removal may or may not have been
+          // stored. The value stays on screen, the editor holds the write as
+          // unconfirmed until it is checked, and the author is told.
+          toast.error(
+            `Could not confirm that the code default was used: ${
+              error instanceof Error && error.message
+                ? error.message
+                : "no answer from the server"
+            }. Your content is kept; use Check and save.`,
+          );
+        },
+      );
     };
   };
   const hasDirectContentField = DIRECT_CONTENT_FIELD_KEYS.some(

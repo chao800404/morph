@@ -77,6 +77,11 @@ export function useEditorHistory() {
       record: (entry: EditorHistoryEntry) => history.record(entry),
       discard: (id: number) => history.discard(id),
       discardScope: (scope: string) => history.discardScope(scope),
+      confirm: (
+        entryId: number,
+        direction: "undo" | "redo",
+        attemptId: number,
+      ) => history.confirm(entryId, direction, attemptId),
     }),
     [history, redo, undo],
   );

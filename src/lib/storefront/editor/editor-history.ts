@@ -16,7 +16,23 @@
  * reload would undo edits the person is no longer looking at.
  */
 
-export type EditorHistoryAction = () => Promise<unknown> | unknown;
+/**
+ * One run of an entry's undo or redo.
+ *
+ * Every run gets its own `attemptId`. A write whose answer was lost can later
+ * be found to have landed; `confirm` then completes that very run, once,
+ * without running anything again. A later run of the same entry (a retry, or
+ * an undo/redo round trip) closes the earlier one.
+ */
+export type EditorHistoryAttempt = Readonly<{
+  entryId: number;
+  direction: "undo" | "redo";
+  attemptId: number;
+}>;
+
+export type EditorHistoryAction = (
+  attempt: EditorHistoryAttempt,
+) => Promise<unknown> | unknown;
 
 export type EditorHistoryEntry = Readonly<{
   /** Shown to the person, e.g. "Padding". */
@@ -96,6 +112,24 @@ export type EditorHistory = Readonly<{
   discardScope(scope: string): void;
   undo(): Promise<boolean>;
   redo(): Promise<boolean>;
+  /**
+   * Completes a step that already happened, without running it again: the
+   * run `attemptId` threw (its answer was lost) and its write was later
+   * found to have landed.
+   *
+   * Moves the entry only when no step is running (a confirm while busy is
+   * refused, not queued), the entry is the top of the stack for `direction`,
+   * and `attemptId` is that entry's latest open run. A successful confirm
+   * consumes the run, so a duplicate or late one returns false.
+   *
+   * False means only that the history did not move. It says nothing about
+   * the write, and is never a reason to send it again.
+   */
+  confirm(
+    entryId: number,
+    direction: "undo" | "redo",
+    attemptId: number,
+  ): boolean;
   clear(): void;
   getSnapshot(): EditorHistorySnapshot;
   subscribe(listener: () => void): () => void;
@@ -108,6 +142,9 @@ export function createEditorHistory(
   let past: StoredEntry[] = [];
   let future: StoredEntry[] = [];
   let nextId = 1;
+  let nextAttemptId = 1;
+  /** Each entry's latest run that threw, until a later run or confirm closes it. */
+  const openAttempts = new Map<number, EditorHistoryAttempt>();
   let busy = false;
   let snapshot: EditorHistorySnapshot = {
     canUndo: false,
@@ -163,8 +200,16 @@ export function createEditorHistory(
 
     busy = true;
     publish();
+    const attempt: EditorHistoryAttempt = {
+      entryId: entry.id,
+      direction,
+      attemptId: nextAttemptId++,
+    };
+    // This run supersedes any earlier one of the same entry.
+    openAttempts.set(entry.id, attempt);
     try {
-      await (direction === "undo" ? entry.undo() : entry.redo());
+      await (direction === "undo" ? entry.undo(attempt) : entry.redo(attempt));
+      openAttempts.delete(entry.id);
     } catch (error) {
       // The entry stays where it is. Moving it would leave the stack claiming a
       // reversal that storage rejected.
@@ -204,9 +249,30 @@ export function createEditorHistory(
     },
     undo: () => step("undo"),
     redo: () => step("redo"),
+    confirm(entryId, direction, attemptId) {
+      if (busy) return false;
+      const source = direction === "undo" ? past : future;
+      const target = direction === "undo" ? future : past;
+      const entry = source.at(-1);
+      if (!entry || entry.id !== entryId) return false;
+      const open = openAttempts.get(entryId);
+      if (
+        !open ||
+        open.direction !== direction ||
+        open.attemptId !== attemptId
+      ) {
+        return false;
+      }
+      openAttempts.delete(entryId);
+      source.pop();
+      target.push(entry);
+      publish();
+      return true;
+    },
     clear() {
       past = [];
       future = [];
+      openAttempts.clear();
       publish();
     },
     getSnapshot: () => snapshot,
