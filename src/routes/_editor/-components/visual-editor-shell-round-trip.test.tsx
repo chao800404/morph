@@ -4336,4 +4336,204 @@ function Home() {
     expect(saveStatus()).toBe("Out of date");
     expect(screen.getAllByDisplayValue("Two edited").length).toBeGreaterThan(0);
   });
+
+  /**
+   * The first keystroke stores the list, which gives its rows their ids. A row
+   * card keyed by position until then was replaced at that keystroke, and the
+   * input with it: focus went to the body, the caret was gone and the next
+   * keys reached nothing (handoff 2026-11-06/row-id-seeding). The cards are
+   * now keyed from the first render by the ids that keystroke stores.
+   *
+   * Keystrokes are synthetic: the value and caret are set the way a browser
+   * leaves them, then an input event is fired. A real IME is not exercised.
+   */
+  describe("typing into a row of a list nothing stores yet", () => {
+    /** The card one row is drawn in; keyed by the row's id. */
+    const rowCardOf = (input: HTMLElement) =>
+      input.closest<HTMLElement>('[class*="bg-muted/30"]');
+    /** One key at the caret, as a browser's input event would leave it. */
+    const press = (input: HTMLInputElement, key: string) => {
+      const caret = input.selectionStart ?? input.value.length;
+      const next = input.value.slice(0, caret) + key + input.value.slice(caret);
+      act(() => {
+        input.value = next;
+        input.setSelectionRange(caret + key.length, caret + key.length);
+      });
+      fireEvent.input(input);
+    };
+    /** The focused element, which is where a real next key goes. */
+    const focused = () => {
+      const active = document.activeElement;
+      expect(active).toBeInstanceOf(HTMLInputElement);
+      return active as HTMLInputElement;
+    };
+    async function enter(shown: string, caret: number) {
+      const input = (await screen.findAllByDisplayValue(
+        shown,
+      ))[0]! as HTMLInputElement;
+      act(() => input.focus());
+      input.setSelectionRange(caret, caret);
+      return input;
+    }
+
+    /** Two keys into "Two", checked after each, then left and saved. */
+    async function typeTwoKeys() {
+      const input = await enter("Two", 3);
+      const card = rowCardOf(input);
+      expect(card).toBeTruthy();
+
+      press(input, "!");
+      await flushFrames();
+      expect(input.isConnected, "the same input after key 1").toBe(true);
+      expect(card!.isConnected, "the same row card after key 1").toBe(true);
+      expect(document.activeElement, "focus after key 1").toBe(input);
+      expect(input.selectionStart, "caret after key 1").toBe(4);
+
+      press(focused(), "?");
+      await flushFrames();
+      expect(input.isConnected, "the same input after key 2").toBe(true);
+      expect(document.activeElement, "focus after key 2").toBe(input);
+      expect(input.selectionStart, "caret after key 2").toBe(5);
+      expect(input.value).toBe("Two!?");
+
+      act(() => input.blur());
+      await settle();
+      return { input, card: card! };
+    }
+
+    it("keeps the input, its focus and caret from the first key, and stores the ids the server derives", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      const [one, two] = identified();
+      await openTitle({}, 1);
+
+      await typeTwoKeys();
+
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+      expect(rowsSent(sent()[0]!)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two!?"],
+      ]);
+      expect(stored.items).toEqual([
+        { id: one!.id, title: "One" },
+        { id: two!.id, title: "Two!?" },
+      ]);
+      expect(saveStatus()).toBe("Unpublished");
+    });
+
+    it("control: a list stored with ids behaves the same", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      const [one, two] = identified();
+      await openTitle({ items: [one, two] }, 1);
+
+      await typeTwoKeys();
+
+      expect(sent()).toHaveLength(1);
+      expect(rowsSent(sent()[0]!)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two!?"],
+      ]);
+      expect(saveStatus()).toBe("Unpublished");
+    });
+
+    it("keeps the ids, the card and the input after the first save, without deriving them again", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      const [one, two] = identified();
+      await openTitle({}, 1);
+      const { input, card } = await typeTwoKeys();
+
+      // The server's answer now holds the list; the same card and input stay.
+      expect(card.isConnected, "the same row card after the save").toBe(true);
+      expect(input.isConnected, "the same input after the save").toBe(true);
+      act(() => input.focus());
+      input.setSelectionRange(5, 5);
+      press(input, ".");
+      await flushFrames();
+      expect(document.activeElement).toBe(input);
+      act(() => input.blur());
+      await settle();
+
+      expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([
+        1, 2,
+      ]);
+      // Derived again from "Two!?" the second row would get another id.
+      expect(rowsSent(sent()[1]!)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two!?."],
+      ]);
+    });
+
+    it("changes no other row's id or card when another row is typed in", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      const [one, two] = identified();
+      await openTitle({}, 0);
+      const other = (await screen.findAllByDisplayValue(
+        "Two",
+      ))[0]! as HTMLInputElement;
+      const otherCard = rowCardOf(other);
+      expect(otherCard).toBeTruthy();
+
+      const input = await enter("One", 3);
+      press(input, "!");
+      await flushFrames();
+      expect(input.isConnected).toBe(true);
+      expect(document.activeElement).toBe(input);
+      expect(other.isConnected, "the other row's input").toBe(true);
+      expect(otherCard!.isConnected, "the other row's card").toBe(true);
+      act(() => input.blur());
+      await settle();
+
+      expect(sent()).toHaveLength(1);
+      expect(rowsSent(sent()[0]!)).toEqual([
+        [one!.id, "One!"],
+        [two!.id, "Two"],
+      ]);
+    });
+
+    it("sends and stores nothing by drawing the list", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      await openTitle({}, 1);
+      expect(screen.getAllByDisplayValue("One").length).toBeGreaterThan(0);
+      expect(screen.getAllByDisplayValue("Two").length).toBeGreaterThan(0);
+      await settle();
+
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      expect(stored).toEqual({});
+      expect(saveStatus()).not.toBe("Out of date");
+    });
+
+    it("keeps the input through a synthetic composition (jsdom events, not a real IME)", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      const [one, two] = identified();
+      await openTitle({}, 1);
+      const input = await enter("Two", 3);
+
+      fireEvent.compositionStart(input);
+      press(input, "あ");
+      await flushFrames();
+      expect(input.isConnected, "the same input during composition").toBe(
+        true,
+      );
+      expect(document.activeElement).toBe(input);
+      act(() => {
+        input.value = "Two亜";
+        input.setSelectionRange(4, 4);
+      });
+      fireEvent.input(input);
+      fireEvent.compositionEnd(input, { data: "亜" });
+      await flushFrames();
+      expect(input.isConnected, "the same input after composition").toBe(
+        true,
+      );
+      expect(document.activeElement).toBe(input);
+      expect(input.selectionStart).toBe(4);
+      act(() => input.blur());
+      await settle();
+
+      expect(rowsSent(sent().at(-1)!)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two亜"],
+      ]);
+    });
+  });
 });
