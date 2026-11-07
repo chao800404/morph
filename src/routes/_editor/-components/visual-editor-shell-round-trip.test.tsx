@@ -4057,7 +4057,13 @@ export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items
     vi.restoreAllMocks();
   });
 
-  async function reportTitle(props: Record<string, unknown>, index: number) {
+  async function reportTitle(
+    props: Record<string, unknown>,
+    index: number,
+    /** The element clicked; by default the `index`th title. */
+    pick: (root: HTMLElement) => Element | null = (root) =>
+      root.querySelectorAll("h3")[index] ?? null,
+  ) {
     const fixture = entries(props);
     const route = `import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
@@ -4080,9 +4086,7 @@ function Home() {
       },
     });
     const root = objposMount(html);
-    const item = objposResolveSelectable(
-      root.querySelectorAll("h3")[index] ?? null,
-    );
+    const item = objposResolveSelectable(pick(root) as HTMLElement | null);
     document.body.replaceChildren();
     expect(item).toBeTruthy();
     return {
@@ -4534,6 +4538,192 @@ function Home() {
         [one!.id, "One"],
         [two!.id, "Two亜"],
       ]);
+    });
+  });
+
+  /**
+   * The Inspector's "Add entry" and "Remove" on a list nothing stores yet,
+   * seen from the shell: what the write sends and whether the shell takes
+   * the answer. The Inspector's own tests only see the props it hands the
+   * shell; staging and the send happen here.
+   *
+   * The server is the mock above, extended to drop `resetProps` keys as the
+   * server does. A mocked success taken by the shell shows the shell accepts
+   * it, not that the real data layer would.
+   *
+   * The section itself is selected on the canvas, which is where the panel
+   * offers "Add entry": a selected entry scopes the panel to that one row.
+   */
+  describe("adding and removing entries of a list nothing stores yet, from the Inspector", () => {
+    /**
+     * Opens the editor on `props` with the section selected on the canvas.
+     * The canvas report is taken first: rendering it replaces the body.
+     */
+    async function openSection(props: Record<string, unknown>) {
+      const report = await reportTitle(props, 0, (root) =>
+        root.querySelector("[data-storefront-section-id],[data-morph-section]"),
+      );
+      expect(report).toMatchObject({ isSection: true, itemId: null });
+      renderEntries(props, 1);
+      await flushFrames();
+      fromPreview(report);
+      await flushFrames();
+      const contentTab = screen.queryByRole("button", { name: /^Content$/ });
+      if (contentTab) fireEvent.click(contentTab);
+      await flushFrames();
+    }
+
+    beforeEach(() => {
+      updateSectionProps.mockImplementation(async ({ data }) => {
+        stored = { ...stored, ...(data.props as Record<string, unknown>) };
+        for (const key of (data.resetProps as string[] | undefined) ?? []) {
+          delete stored[key];
+        }
+        draftGeneration = data.expectedDraftGeneration + 1;
+        return {
+          success: true,
+          data: {
+            draftGeneration,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "section",
+                  type: "entries",
+                  componentRef: ENTRIES_PATH,
+                  enabled: true,
+                  props: stored,
+                },
+              ],
+            },
+          },
+        };
+      });
+    });
+
+    const notices = () => ({
+      warning: vi.spyOn(toast, "warning").mockImplementation(() => ""),
+      error: vi.spyOn(toast, "error").mockImplementation(() => ""),
+    });
+    const addEntry = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Add entry" }));
+      await settle();
+    };
+    /** Presses Remove on the card drawn for the row whose title is `title`. */
+    const removeRow = async (title: string) => {
+      const input = (await screen.findAllByDisplayValue(title))[0]!;
+      const card = input.closest<HTMLElement>('[class*="bg-muted/30"]');
+      expect(card, `the card drawn for "${title}"`).toBeTruthy();
+      const button = Array.from(card!.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.trim() === "Remove",
+      );
+      expect(button, `the Remove button of "${title}"`).toBeTruthy();
+      fireEvent.click(button!);
+      await settle();
+    };
+    /** The write's version fields, as sent. */
+    const versionsSent = (data: Record<string, unknown>) => ({
+      expectedDraftGeneration: data.expectedDraftGeneration,
+      expectedSourceGeneration: data.expectedSourceGeneration,
+    });
+    const accepted = (notice: ReturnType<typeof notices>) => {
+      expect(notice.warning).not.toHaveBeenCalled();
+      expect(notice.error).not.toHaveBeenCalled();
+      expect(saveStatus()).toBe("Unpublished");
+    };
+
+    it("first Add sends the drawn defaults with their ids, in order, plus one new row, at the current generations", async () => {
+      const notice = notices();
+      const [one, two] = identified();
+      const precondition = editorAt({}, 1).templates[0]!.document.sections[0]!;
+      expect(precondition.props).not.toHaveProperty("items");
+      await openSection({});
+
+      await addEntry();
+
+      expect(sent()).toHaveLength(1);
+      const write = sent()[0]!;
+      expect(versionsSent(write)).toEqual({
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      });
+      expect(write).not.toHaveProperty("resetProps");
+      expect(Object.keys(write.props as object)).toEqual(["items"]);
+      const rows = rowsSent(write);
+      expect(rows).toHaveLength(3);
+      expect(rows.slice(0, 2)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two"],
+      ]);
+      const added = rows[2]![0] as string;
+      expect(added).toMatch(/^morph-/);
+      expect(added.startsWith("morph-mig-")).toBe(false);
+      expect([one!.id, two!.id]).not.toContain(added);
+      accepted(notice);
+      expect((stored.items as unknown[]).length).toBe(3);
+    });
+
+    it("first Remove drops exactly the pressed row and keeps the other with its id", async () => {
+      const notice = notices();
+      const [one] = identified();
+      await openSection({});
+
+      await removeRow("Two");
+
+      expect(sent()).toHaveLength(1);
+      const write = sent()[0]!;
+      expect(versionsSent(write)).toEqual({
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      });
+      expect(write).not.toHaveProperty("resetProps");
+      expect(rowsSent(write)).toEqual([[one!.id, "One"]]);
+      accepted(notice);
+      expect(stored.items).toEqual([{ id: one!.id, title: "One" }]);
+    });
+
+    it("control: on a stored list, Add appends to the stored rows with their ids unchanged", async () => {
+      const notice = notices();
+      const [one, two] = identified();
+      stored = { items: [one, two] };
+      await openSection({ items: [one, two] });
+
+      await addEntry();
+
+      expect(sent()).toHaveLength(1);
+      const write = sent()[0]!;
+      expect(versionsSent(write)).toEqual({
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      });
+      const rows = rowsSent(write);
+      expect(rows.slice(0, 2)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two"],
+      ]);
+      expect(rows).toHaveLength(3);
+      expect(rows[2]![0]).toMatch(/^morph-/);
+      expect([one!.id, two!.id]).not.toContain(rows[2]![0]);
+      accepted(notice);
+    });
+
+    it("control: on a stored list, Remove drops the row at the pressed index with the other's id unchanged", async () => {
+      const notice = notices();
+      const [one, two] = identified();
+      stored = { items: [one, two] };
+      await openSection({ items: [one, two] });
+
+      await removeRow("Two");
+
+      expect(sent()).toHaveLength(1);
+      expect(versionsSent(sent()[0]!)).toEqual({
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      });
+      expect(rowsSent(sent()[0]!)).toEqual([[one!.id, "One"]]);
+      accepted(notice);
+      expect(stored.items).toEqual([{ id: one!.id, title: "One" }]);
     });
   });
 });
