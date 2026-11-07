@@ -375,6 +375,7 @@ import {
 } from "@/lib/storefront/editor/template-draft-generation";
 import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
 import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
+import { declaredUnstoredListRows } from "@/lib/storefront/editor/section-content-declaration";
 import {
   getFieldPathValue,
   setFieldPathValue,
@@ -11462,8 +11463,27 @@ export function VisualEditorShell({
       const key = `${templateId}:${sectionId}`;
       const pendingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
       const currentProps = { ...section.props, ...pendingProps };
+      const arrayRoot = draggedFieldPath.split(".")[0]!;
+      // A list nothing stores yet is on screen as the component's declared
+      // defaults; the swap starts from those rows, with the ids the Inspector
+      // keys their cards by and the server derives for them. Given once, here:
+      // from then on the list is the author's copy and keeps these ids.
+      const unstoredRows =
+        currentProps[arrayRoot] === undefined
+          ? declaredUnstoredListRows(effectiveThemeFiles, section, {
+              fieldKey: arrayRoot,
+              scope: { templateId, sectionId },
+              selectionSourceFilePath:
+                activeSelection?.sectionId === sectionId
+                  ? activeSelection.sourceFilePath
+                  : null,
+            })
+          : undefined;
+      const startProps = unstoredRows
+        ? { ...currentProps, [arrayRoot]: unstoredRows }
+        : currentProps;
       const result = swapArrayItemsAtFieldPaths(
-        currentProps,
+        startProps,
         draggedFieldPath,
         targetFieldPath,
       );
@@ -11511,7 +11531,6 @@ export function VisualEditorShell({
         clearTimeout(existingTimer);
         pendingPropsTimersRef.current.delete(key);
       }
-      const arrayRoot = draggedFieldPath.split(".")[0]!;
       const generation =
         selectedFieldBaseline(sectionId, draggedFieldPath)?.sourceGeneration ??
         selectedFieldBaseline(
@@ -11572,7 +11591,7 @@ export function VisualEditorShell({
             undo: () =>
               handleSectionPropsChange(
                 sectionId,
-                { [arrayRoot]: currentProps[arrayRoot] },
+                { [arrayRoot]: startProps[arrayRoot] },
                 { historySourceGeneration: generation },
               ),
             redo: () =>
@@ -11610,7 +11629,10 @@ export function VisualEditorShell({
       selectedFieldBaseline,
       sectionPropsSnapshot,
       activeSelection?.fieldPath,
+      activeSelection?.sectionId,
+      activeSelection?.sourceFilePath,
       currentContentSourceGeneration,
+      effectiveThemeFiles,
     ],
   );
 

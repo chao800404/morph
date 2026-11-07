@@ -63,6 +63,8 @@ export const EDITOR_SHARDS = [
     "responsive.spec.ts",
     "source-asset.spec.ts",
     "row-component-content.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "unstored-list-canvas-reorder.spec.ts",
     // The files below measured zero seconds: every test in them is gated on
     // an environment the shards do not have (the container transport,
     // MORPH_ASTRO_THEMES=1 or the full Start preview), so they skip on every
