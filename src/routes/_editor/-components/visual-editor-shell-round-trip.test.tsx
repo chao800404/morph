@@ -8,7 +8,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import type { ComponentProps } from "react";
+import { forwardRef, type ComponentProps } from "react";
 import { toast } from "sonner";
 import {
   afterEach,
@@ -21,6 +21,7 @@ import {
 } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
+import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
@@ -48,6 +49,20 @@ import {
   mountLivePreview as objposMount,
   renderLivePreviewRoute as objposRenderRoute,
 } from "@/lib/test-utils/live-preview-render";
+import type { EditorCodeWorkspaceHandle } from "./editor-code-workspace";
+
+const themeFileServerControl = vi.hoisted(() => ({
+  save: null as null | ((...args: unknown[]) => unknown),
+  read: null as null | ((...args: unknown[]) => unknown),
+}));
+const themeFileQueueControl = vi.hoisted(() => ({
+  supersedeNext: false,
+  supersededCount: 0,
+}));
+const editFileSaveControl = vi.hoisted(() => ({
+  captureSave: false,
+  saveFile: null as unknown,
+}));
 
 /**
  * Every Theme file save the shell starts, recorded and then made as usual:
@@ -61,15 +76,68 @@ vi.mock(
     const save = actual.saveStorefrontThemeFile as (
       ...args: unknown[]
     ) => unknown;
+    const read = actual.getStorefrontThemeFile as (
+      ...args: unknown[]
+    ) => unknown;
     return {
       ...actual,
+      getStorefrontThemeFile: (...args: unknown[]) =>
+        themeFileServerControl.read
+          ? themeFileServerControl.read(...args)
+          : read(...args),
       saveStorefrontThemeFile: (...args: unknown[]) => {
         objposSavedFiles.push(args[0]);
-        return save(...args);
+        return themeFileServerControl.save
+          ? themeFileServerControl.save(...args)
+          : save(...args);
       },
     };
   },
 );
+
+vi.mock("./theme-file-save-queue", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("./theme-file-save-queue")
+  >();
+  return {
+    ...actual,
+    createThemeFileSaveQueue: () => {
+      const queue = actual.createThemeFileSaveQueue();
+      const controlled: typeof queue = {
+        ...queue,
+        enqueue: (args) => {
+          if (themeFileQueueControl.supersedeNext) {
+            themeFileQueueControl.supersedeNext = false;
+            themeFileQueueControl.supersededCount += 1;
+            return Promise.resolve(args.superseded());
+          }
+          return queue.enqueue(args);
+        },
+      };
+      return controlled;
+    },
+  };
+});
+
+vi.mock("./editor-code-workspace", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("./editor-code-workspace")
+  >();
+  const RealWorkspace = actual.EditorCodeWorkspace;
+  return {
+    ...actual,
+    EditorCodeWorkspace: forwardRef<
+      EditorCodeWorkspaceHandle,
+      ComponentProps<typeof RealWorkspace>
+    >((props, ref) => {
+      if (editFileSaveControl.captureSave) {
+        editFileSaveControl.saveFile = props.onSaveFile;
+        return null;
+      }
+      return <RealWorkspace {...props} ref={ref} />;
+    }),
+  };
+});
 
 /**
  * The selection round trip through the shell, rather than through the rules.
@@ -105,6 +173,13 @@ const posted: Array<Record<string, unknown>> = [];
 
 beforeEach(() => {
   posted.length = 0;
+  themeFileServerControl.save = null;
+  themeFileServerControl.read = null;
+  themeFileQueueControl.supersedeNext = false;
+  themeFileQueueControl.supersededCount = 0;
+  editFileSaveControl.captureSave = false;
+  editFileSaveControl.saveFile = null;
+  useEditorWriteGateStore.setState({ gates: {} });
   // Code acceptance and observed query versions are intentionally distinct.
   // No scenario may inherit the previous test's observed source generation.
   useThemeWorkspaceStore.setState({
@@ -1130,6 +1205,126 @@ function renderShellWithHero(
   );
 }
 
+const STYLE_SOURCE =
+  'export function Hero() { return <section data-morph-node="section" className="p-4">x</section>; }';
+const STYLE_AFTER =
+  'export function Hero() { return <section data-morph-node="section" className="p-4 p-8">x</section>; }';
+
+type ThemeFileOutcome =
+  | "saved"
+  | "source-conflict"
+  | "server-refusal"
+  | "offline"
+  | "offline-after-landing";
+
+/**
+ * A controllable Theme-file endpoint for the shell's real save/recovery path.
+ * The test owns the server bytes and the sequence of answers; reads made by
+ * `confirmLostSave` therefore observe whether a lost reply actually landed.
+ */
+function controlledThemeFile(initialContent: string) {
+  let current = {
+    id: "file-hero",
+    storefrontId: "storefront-1",
+    themeId: "theme-1",
+    path: stylePatchTarget.filePath,
+    content: initialContent,
+    mimeType: "text/typescript",
+    isEntry: false,
+    version: 1,
+    sourceGeneration: 1,
+    createdAt: "2026-08-20T00:00:00.000Z",
+    updatedAt: "2026-08-20T00:00:00.000Z",
+  };
+  const events: string[] = [];
+  const outcomes: ThemeFileOutcome[] = [];
+  const save = vi.fn(async (...args: unknown[]) => {
+    const data = (args[0] as { data?: { content?: unknown } } | undefined)?.data;
+    if (typeof data?.content !== "string") {
+      throw new Error("Theme-file test write had no content");
+    }
+    const content = data.content;
+    const outcome = outcomes.shift() ?? "saved";
+    events.push("write:" + content);
+
+    if (outcome === "source-conflict") {
+      return {
+        success: false,
+        error: "SOURCE_GENERATION_CONFLICT",
+        message: "The Theme source generation changed.",
+      };
+    }
+    if (outcome === "server-refusal") {
+      return {
+        success: false,
+        error: "THEME_FILE_REFUSED",
+        message: "The Theme file write was refused.",
+      };
+    }
+    if (outcome === "offline") {
+      throw new Error("The Theme-file write got no answer");
+    }
+
+    const landed = {
+      ...current,
+      content,
+      version: current.version + 1,
+      sourceGeneration: current.sourceGeneration + 1,
+    };
+    if (outcome === "offline-after-landing") {
+      current = landed;
+      throw new Error("The answer was lost after the file landed");
+    }
+    current = landed;
+    return { success: true, data: { ...current } };
+  });
+  const read = vi.fn(async () => {
+    events.push("read");
+    return { success: true, data: { ...current } };
+  });
+
+  themeFileServerControl.save = save;
+  themeFileServerControl.read = read;
+  return { save, read, outcomes, events, file: () => ({ ...current }) };
+}
+
+function localThemeFile() {
+  return useThemeWorkspaceStore
+    .getState()
+    .getWorkspaceFiles("storefront-1", "theme-1")[stylePatchTarget.filePath];
+}
+
+async function captureCodeFileSave() {
+  editFileSaveControl.captureSave = true;
+  fireEvent.click(screen.getByRole("button", { name: "Code" }));
+  await waitFor(() =>
+    expect(typeof editFileSaveControl.saveFile).toBe("function"),
+  );
+  const saveFile = editFileSaveControl.saveFile as
+    | (
+        (
+          filePath: string,
+          content: string,
+          options?: { confirmed?: boolean },
+        ) => Promise<unknown>
+      )
+    | null;
+  if (!saveFile) throw new Error("Code Workspace did not expose onSaveFile");
+  return saveFile;
+}
+
+async function createEditHistoryEntry(content: string) {
+  renderShellWithHero(STYLE_SOURCE);
+  const saveFile = await captureCodeFileSave();
+  await act(async () => {
+    await saveFile(stylePatchTarget.filePath, content);
+  });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"))
+      .toBe(false),
+  );
+}
+
 /**
  * Diagnostic contract only: reselecting does not confirm retained input.
  * New input confirms that field, not every pending prop in its section.
@@ -1861,6 +2056,304 @@ describe("a style patch the source cannot answer", () => {
       ),
     );
   });
+});
+
+describe("Style history writes and refusals", () => {
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+
+  beforeEach(() => {
+    useThemeWorkspaceStore.setState({ workspaces: {} });
+    stylePatchTarget.filePath = "src/components/Hero.tsx";
+    stylePatchTarget.elementName = "section";
+  });
+
+  async function applyAndSaveStyle(server: ReturnType<typeof controlledThemeFile>) {
+    renderShellWithHero(STYLE_SOURCE);
+    applyStylePatch();
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(localThemeFile()?.saveState).toBe("clean"));
+  }
+
+  const historyState = () => ({
+    undoAvailable: !screen
+      .getByRole("button", { name: "Undo" })
+      .hasAttribute("disabled"),
+    redoAvailable: !screen
+      .getByRole("button", { name: "Redo" })
+      .hasAttribute("disabled"),
+  });
+
+  it("keeps a landed, unanswered first Style write undoable until read-back", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    server.outcomes.push("offline-after-landing");
+    renderShellWithHero(STYLE_SOURCE);
+
+    applyStylePatch();
+
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_AFTER),
+    );
+    const undoWasAvailable = historyState().undoAvailable;
+    if (undoWasAvailable) {
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(server.save).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+      );
+    } else {
+      // On the buggy baseline the Style entry has already been discarded.
+      // Make an explicit file-save request to prove the existing recovery
+      // path still reads the server before deciding whether another write is
+      // needed; do not let the missing history hide that independent contract.
+      const saveFile = await captureCodeFileSave();
+      await act(async () => {
+        await saveFile(stylePatchTarget.filePath, STYLE_AFTER, {
+          confirmed: true,
+        });
+      });
+      await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+      );
+    }
+
+    const sourceUndo = server.events.indexOf("write:" + STYLE_SOURCE);
+    const read = server.events.indexOf("read");
+    const readBeforeUndoWrite =
+      read >= 0 && sourceUndo >= 0 && read < sourceUndo;
+    expect({
+      undoWasAvailable,
+      recoveryReadOccurred: server.read.mock.calls.length === 1,
+      unconfirmedCleared: localThemeFile()?.unconfirmedContent === undefined,
+      confirmedBeforeUndoWrite: readBeforeUndoWrite,
+      finalServerContent: server.file().content,
+    }).toEqual({
+      undoWasAvailable: true,
+      recoveryReadOccurred: true,
+      unconfirmedCleared: true,
+      confirmedBeforeUndoWrite: true,
+      finalServerContent: STYLE_SOURCE,
+    });
+  });
+
+  it.each(["auth-paused", "superseded"] as const)(
+    "does not leave an undoable first Style record when %s never lands",
+    async (outcome) => {
+      const server = controlledThemeFile(STYLE_SOURCE);
+      if (outcome === "auth-paused") {
+        useEditorWriteGateStore
+          .getState()
+          .pause(scope, "ACCESS_DENIED", "theme");
+      } else {
+        themeFileQueueControl.supersedeNext = true;
+      }
+      renderShellWithHero(STYLE_SOURCE);
+
+      applyStylePatch();
+
+      if (outcome === "auth-paused") {
+        await waitFor(() => expect(localThemeFile()?.authPaused).toBe(true));
+      } else {
+        await waitFor(() =>
+          expect(themeFileQueueControl.supersededCount).toBe(1),
+        );
+        await act(async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        });
+      }
+
+      expect({
+        undoAvailable: historyState().undoAvailable,
+        localContent: localThemeFile()?.localContent,
+        authPaused: localThemeFile()?.authPaused ?? false,
+        serverContent: server.file().content,
+        serverWriteCount: server.save.mock.calls.length,
+      }).toEqual({
+        undoAvailable: false,
+        localContent: STYLE_AFTER,
+        authPaused: outcome === "auth-paused",
+        serverContent: STYLE_SOURCE,
+        serverWriteCount: 0,
+      });
+    },
+  );
+
+  const styleReplayAttempts = [
+    { direction: "undo", outcome: "source-conflict" },
+    { direction: "undo", outcome: "auth-paused" },
+    { direction: "undo", outcome: "superseded" },
+    { direction: "redo", outcome: "source-conflict" },
+    { direction: "redo", outcome: "auth-paused" },
+    { direction: "redo", outcome: "superseded" },
+  ] as const;
+
+  it.each(styleReplayAttempts)(
+    "does not advance Style $direction history or hide $outcome refusal",
+    async ({ direction, outcome }) => {
+      const server = controlledThemeFile(STYLE_SOURCE);
+      await applyAndSaveStyle(server);
+      if (direction === "redo") {
+        fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+        await waitFor(() => expect(server.save).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(historyState().redoAvailable).toBe(true));
+        expect(server.file().content).toBe(STYLE_SOURCE);
+      }
+      const writesBeforeReplay = server.save.mock.calls.length;
+      const supersededBeforeReplay = themeFileQueueControl.supersededCount;
+      const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+      if (outcome === "source-conflict") {
+        server.outcomes.push("source-conflict");
+      } else if (outcome === "auth-paused") {
+        useEditorWriteGateStore
+          .getState()
+          .pause(scope, "ACCESS_DENIED", "theme");
+      } else {
+        themeFileQueueControl.supersedeNext = true;
+      }
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: direction === "undo" ? "Undo" : "Redo",
+        }),
+      );
+
+      if (outcome === "source-conflict") {
+        await waitFor(() =>
+          expect(server.save).toHaveBeenCalledTimes(writesBeforeReplay + 1),
+        );
+      } else if (outcome === "auth-paused") {
+        await waitFor(() => expect(localThemeFile()?.authPaused).toBe(true));
+      } else {
+        await waitFor(() =>
+          expect(themeFileQueueControl.supersededCount).toBe(
+            supersededBeforeReplay + 1,
+          ),
+        );
+      }
+      await act(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect({
+        ...historyState(),
+        visibleNotice: error.mock.calls.some(([message]) =>
+          String(message).startsWith(
+            direction === "undo" ? "Could not undo:" : "Could not redo:",
+          ),
+        ),
+      }).toEqual({
+        undoAvailable: direction === "undo",
+        redoAvailable: direction === "redo",
+        visibleNotice: true,
+      });
+    },
+  );
+
+  it("keeps Style Undo history when the replay throws an answered error", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    server.outcomes.push("server-refusal");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(error).toHaveBeenCalled());
+
+    expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+    expect(localThemeFile()?.unconfirmedContent).toBeUndefined();
+  });
+});
+
+describe("Edit replay as the file-history control", () => {
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+  const editedSource = STYLE_SOURCE + "\n// saved through Code mode";
+
+  beforeEach(() => {
+    useThemeWorkspaceStore.setState({ workspaces: {} });
+    stylePatchTarget.filePath = "src/components/Hero.tsx";
+    stylePatchTarget.elementName = "section";
+  });
+
+  const historyState = () => ({
+    undoAvailable: !screen
+      .getByRole("button", { name: "Undo" })
+      .hasAttribute("disabled"),
+    redoAvailable: !screen
+      .getByRole("button", { name: "Redo" })
+      .hasAttribute("disabled"),
+  });
+
+  const editReplayAttempts = [
+    { direction: "undo", outcome: "source-conflict" },
+    { direction: "undo", outcome: "auth-paused" },
+    { direction: "undo", outcome: "superseded" },
+    { direction: "undo", outcome: "server-refusal" },
+    { direction: "redo", outcome: "source-conflict" },
+    { direction: "redo", outcome: "auth-paused" },
+    { direction: "redo", outcome: "superseded" },
+    { direction: "redo", outcome: "server-refusal" },
+  ] as const;
+
+  it.each(editReplayAttempts)(
+    "keeps Edit $direction history and reports $outcome",
+    async ({ direction, outcome }) => {
+      const server = controlledThemeFile(STYLE_SOURCE);
+      await createEditHistoryEntry(editedSource);
+      expect(server.save).toHaveBeenCalledTimes(1);
+      if (direction === "redo") {
+        fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+        await waitFor(() => expect(server.save).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(historyState().redoAvailable).toBe(true));
+        expect(server.file().content).toBe(STYLE_SOURCE);
+      }
+      const writesBeforeReplay = server.save.mock.calls.length;
+      const supersededBeforeReplay = themeFileQueueControl.supersededCount;
+      const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+      if (outcome === "source-conflict" || outcome === "server-refusal") {
+        server.outcomes.push(outcome);
+      } else if (outcome === "auth-paused") {
+        useEditorWriteGateStore
+          .getState()
+          .pause(scope, "ACCESS_DENIED", "theme");
+      } else {
+        themeFileQueueControl.supersedeNext = true;
+      }
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: direction === "undo" ? "Undo" : "Redo",
+        }),
+      );
+
+      if (outcome === "source-conflict" || outcome === "server-refusal") {
+        await waitFor(() =>
+          expect(server.save).toHaveBeenCalledTimes(writesBeforeReplay + 1),
+        );
+      } else if (outcome === "auth-paused") {
+        await waitFor(() => expect(localThemeFile()?.authPaused).toBe(true));
+      } else {
+        await waitFor(() =>
+          expect(themeFileQueueControl.supersededCount).toBe(
+            supersededBeforeReplay + 1,
+          ),
+        );
+      }
+      await waitFor(() => expect(error).toHaveBeenCalled());
+
+      expect(historyState()).toEqual({
+        undoAvailable: direction === "undo",
+        redoAvailable: direction === "redo",
+      });
+      expect(
+        error.mock.calls.some(([message]) =>
+          String(message).startsWith(
+            direction === "undo" ? "Could not undo:" : "Could not redo:",
+          ),
+        ),
+      ).toBe(true);
+    },
+  );
 });
 
 /**
