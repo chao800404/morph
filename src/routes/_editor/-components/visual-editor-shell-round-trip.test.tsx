@@ -4723,5 +4723,106 @@ function Home() {
         { id: two!.id, title: "Two" },
       ]);
     });
+
+    /**
+     * The swap sent, and no answer: it may have landed, so it is not sent
+     * again on its own. "Try again" asks the server first and sends the swap
+     * once more only when the server does not hold it.
+     */
+    describe("when the swap gets no answer", () => {
+      afterEach(() => getThemeEditor.mockReset());
+      /** What the server function answers when the shell asks what it holds. */
+      const readBack = (
+        props: Record<string, unknown>,
+        atGeneration: number,
+      ) => ({
+        success: true,
+        message: "ok",
+        data: editorAt(props, atGeneration),
+      });
+
+      const dragWithLostAnswer = async () => {
+        const [one, two] = identified();
+        await openTitle({ items: [one, two] }, 1);
+        updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+        drag(1, 0);
+        await settle();
+        await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+        return { one: one!, two: two! };
+      };
+
+      it("is not sent again by itself", async () => {
+        const { warning, error } = notices();
+        await dragWithLostAnswer();
+
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        expect(sent()).toHaveLength(1);
+        expect(warning).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledWith(
+          "Failed to update section properties",
+        );
+        expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+      });
+
+      it("sends the swap once more when the server does not hold it", async () => {
+        const { warning } = notices();
+        const { one, two } = await dragWithLostAnswer();
+        // The server still holds the list in its first order.
+        getThemeEditor.mockResolvedValue(readBack({ items: [one, two] }, 1));
+
+        act(() => {
+          screen.getByRole("button", { name: "Try again" }).click();
+        });
+
+        await waitFor(() => expect(sent()).toHaveLength(2));
+        expect(getThemeEditor.mock.invocationCallOrder[0]!).toBeLessThan(
+          updateSectionProps.mock.invocationCallOrder[1]!,
+        );
+        expect(sent()[1]!.expectedDraftGeneration).toBe(1);
+        expect(rowsSent(sent()[1]!)).toEqual([
+          [two.id, "Two"],
+          [one.id, "One"],
+        ]);
+        await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+        expect(warning).not.toHaveBeenCalled();
+      });
+
+      it("control: a refused swap is an answer, rolled back and not kept", async () => {
+        notices();
+        const [one, two] = identified();
+        await openTitle({ items: [one, two] }, 1);
+        updateSectionProps.mockResolvedValueOnce({
+          success: false,
+          message: "Template draft was modified concurrently.",
+        } as never);
+        drag(1, 0);
+        await settle();
+        expect(sent()).toHaveLength(1);
+
+        // The next edit is composed on the list as stored, not on the swap.
+        await type("Two", "Two edited");
+        await settle();
+        expect(sent()).toHaveLength(2);
+        expect(rowsSent(sent()[1]!)).toEqual([
+          [one!.id, "One"],
+          [two!.id, "Two edited"],
+        ]);
+      });
+
+      it("sends nothing again when the swap had landed", async () => {
+        notices();
+        const { one, two } = await dragWithLostAnswer();
+        // The write landed; only its answer was lost.
+        getThemeEditor.mockResolvedValue(readBack({ items: [two, one] }, 2));
+
+        act(() => {
+          screen.getByRole("button", { name: "Try again" }).click();
+        });
+
+        await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+        expect(sent()).toHaveLength(1);
+        expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+      });
+    });
   });
 });

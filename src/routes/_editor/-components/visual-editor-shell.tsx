@@ -11590,6 +11590,9 @@ export function VisualEditorShell({
         };
       });
 
+      // An earlier unanswered write of this section, if any: only one this send
+      // leaves behind says the swap itself went out and got no answer.
+      const unansweredBefore = unconfirmedContentRef.current.get(key);
       try {
         await commitSectionPending(templateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
@@ -11612,6 +11615,19 @@ export function VisualEditorShell({
           }),
         );
       } catch {
+        // Sent, and no answer: the swap may have landed. It stays pending and
+        // on the canvas like any content write, so "Try again" asks the server
+        // first and sends it once more only if it did not land. Dropping it
+        // here left nothing to send, and the swap was lost while the editor
+        // read as saved. A refusal is an answer, and is rolled back below.
+        const unanswered = unconfirmedContentRef.current.get(key);
+        if (
+          unanswered &&
+          unanswered !== unansweredBefore &&
+          pendingPropsMapRef.current.get(key) === reorderPending
+        ) {
+          return;
+        }
         const hiddenBefore = previewSectionIsHidden(sectionId);
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
           if (priorPending) pendingPropsMapRef.current.set(key, priorPending);
