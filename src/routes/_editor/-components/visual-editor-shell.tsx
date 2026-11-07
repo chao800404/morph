@@ -10968,6 +10968,7 @@ export function VisualEditorShell({
         sectionId: string,
         fieldKeys: string[],
         recordHistory?: boolean,
+        historyGeneration?: number,
       ) => Promise<{ success: boolean; message?: string }>)
     | null
   >(null);
@@ -11555,6 +11556,8 @@ export function VisualEditorShell({
         });
         return;
       }
+      // The list the two rows belong to (a nested list's own path).
+      const listPath = parseArrayItemFieldPath(draggedFieldPath)!.arrayPath;
       const reorderPending = stageContentFields({
         pending: priorPending,
         sectionId,
@@ -11565,7 +11568,7 @@ export function VisualEditorShell({
         // row now at its index — the other one in the stored copy — and the
         // write would be refused as made on rows that moved. The rows that
         // hold the list (a nested list's parent rows) are still checked.
-        inputPath: parseArrayItemFieldPath(draggedFieldPath)!.arrayPath,
+        inputPath: listPath,
         routePath: routePathForTemplate(templateId),
         sourceForPath: () => generation,
         basisDraftGeneration: contentBasisFor(templateId),
@@ -11601,30 +11604,39 @@ export function VisualEditorShell({
         // would look the same but pin the component's defaults in the
         // Document, where a later change to the Theme's defaults no longer
         // reaches them. The removal is the "Use code default" write.
+        //
+        // Replayed through the refs, which hold the handlers of the render the
+        // undo runs in. The handlers of this render would stage the swap back
+        // on the stored copy as it was before the drag — which already is the
+        // order undo asks for — and send nothing. Each direction is one change
+        // to the list, staged like the drag itself.
         history.record(
           fenceSectionHistory(sectionId, templateId, {
             label: "Reorder · item",
             undo: unstoredRows
               ? async () => {
-                  const reset = await handleResetContentFields(
+                  const reset = await resetContentFieldsRef.current?.(
                     sectionId,
                     [arrayRoot],
                     false,
                     generation,
                   );
-                  if (!reset.success) throw sourceSelectionFailure();
+                  if (!reset?.success) throw sourceSelectionFailure();
                 }
               : () =>
-                  handleSectionPropsChange(
+                  contentChangeRef.current?.(
                     sectionId,
                     { [arrayRoot]: startProps[arrayRoot] },
-                    { historySourceGeneration: generation },
+                    {
+                      historySourceGeneration: generation,
+                      inputFieldPath: listPath,
+                    },
                   ),
             redo: () =>
-              handleSectionPropsChange(
+              contentChangeRef.current?.(
                 sectionId,
                 { [arrayRoot]: result.value[arrayRoot] },
-                { historySourceGeneration: generation },
+                { historySourceGeneration: generation, inputFieldPath: listPath },
               ),
           }),
         );

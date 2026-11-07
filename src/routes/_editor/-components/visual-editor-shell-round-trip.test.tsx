@@ -4781,6 +4781,46 @@ function Home() {
     });
 
     /**
+     * Undo replays the swap back once the editor has read the swapped list.
+     * Replayed with the handlers of the drag's own render, it staged the swap
+     * back on the stored copy from before the drag — already the order undo
+     * asks for — and sent nothing. (Redo is not asserted: an undo replayed as
+     * a content edit records that edit once it saves, which clears redo for
+     * every kind of content undo, not only this one.)
+     */
+    it("undoes the swap of a stored list once the swapped list is read back", async () => {
+      const { warning, error } = notices();
+      const [one, two] = identified();
+      const { receive } = await openTitle({ items: [one, two] }, 1);
+      drag(1, 0);
+      await settle();
+      expect(sent()).toHaveLength(1);
+      // The editor reads back what the server now holds, as after any save.
+      act(() => {
+        receive(editorAt({ ...stored }, draftGeneration));
+      });
+      await flushFrames();
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+        ).toBe(false),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await settle();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]!.expectedDraftGeneration).toBe(2);
+      expect(rowsSent(sent()[1]!)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two"],
+      ]);
+      expect(stored.items).toEqual([one, two]);
+    });
+
+    /**
      * The swap sent, and no answer: it may have landed, so it is not sent
      * again on its own. "Try again" asks the server first and sends the swap
      * once more only when the server does not hold it.
