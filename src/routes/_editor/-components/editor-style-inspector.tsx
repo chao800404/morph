@@ -78,7 +78,10 @@ import {
 } from "@/lib/storefront/theme-link";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
-import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
+import {
+  declaredContentDefault,
+  resolveSectionContentDeclaration,
+} from "@/lib/storefront/editor/section-content-declaration";
 import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
   resolveObjectPositionTarget,
@@ -1344,43 +1347,19 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 
   const { capability: themeContentCapability, sourcePath: contentSourcePath } =
-    useMemo(() => {
-      // Resolved from the workspace rather than the manifest alone so a
-      // component that declares its own `contentFields` is editable without
-      // being registered anywhere. Server validation resolves the same way, so
-      // the form and what the server accepts cannot diverge.
-      if (!themeFiles) return { capability: null, sourcePath: componentPath };
-      const { capabilities } =
-        resolveThemeContentCapabilitiesFromFiles(themeFiles);
-      const fromRef = section.componentRef
-        ? capabilities[section.componentRef]
-        : null;
-      if (fromRef) {
-        return {
-          capability: fromRef,
-          sourcePath: sectionComponentPath ?? componentPath,
-        };
-      }
-      // Falls back to the component's own source path so a component that was
-      // never registered anywhere — the case co-located declaration exists to
-      // support — still resolves what it declares.
-      const fromSelection = componentPath ? capabilities[componentPath] : null;
-      if (fromSelection) {
-        return { capability: fromSelection, sourcePath: componentPath };
-      }
-      // Last, the section's own component. `componentPath` follows the
-      // selection, so clicking a button rendered by a shared link component
-      // asks that shared file what this section may edit — and it declares
-      // nothing, because the fields belong to the section's component. Without
-      // this the panel fell back to guessing fields from default props and the
-      // declared link never appeared.
-      const fromSection = sectionComponentPath
-        ? capabilities[sectionComponentPath]
-        : null;
-      return fromSection
-        ? { capability: fromSection, sourcePath: sectionComponentPath }
-        : { capability: null, sourcePath: componentPath };
-    }, [componentPath, sectionComponentPath, section.componentRef, themeFiles]);
+    // Shared with the canvas, which writes a list nothing stores yet from the
+    // same declaration. Without the section's own component last, the panel
+    // fell back to guessing fields from default props and a declared link on a
+    // shared button component never appeared.
+    useMemo(
+      () =>
+        resolveSectionContentDeclaration(themeFiles, {
+          componentRef: section.componentRef,
+          componentPath,
+          sectionComponentPath,
+        }),
+      [componentPath, sectionComponentPath, section.componentRef, themeFiles],
+    );
   /**
    * The source the content's defaults are read from: the component whose
    * declaration answered above, not necessarily the clicked one.
@@ -1676,10 +1655,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     // What the component itself renders when the Document holds nothing for
     // it. Falling back to the empty string for every type showed a list field
     // as "no entries" beside a page rendering the component's own — and the
-    // first edit then saved that emptiness.
-    const declared = contentMeta?.defaultPropValues[fieldKey];
-    if (declared !== undefined) return declared;
-    return contentMeta?.defaultProps[fieldKey] ?? "";
+    // first edit then saved that emptiness. A default stated as `null` is
+    // shown as `null`, not as the empty string.
+    const declared = declaredContentDefault(contentMeta, fieldKey);
+    return declared !== undefined ? declared : "";
   };
   /**
    * The default the component renders when this page stores nothing, when the
@@ -1687,9 +1666,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    * an author can predict, so only then is it offered.
    */
   const [resetEpoch, setResetEpoch] = useState(0);
+  // A default stated as `null` offers no reset, as before: removing the
+  // stored value would leave the field to whatever the component does with
+  // `null`, which the panel cannot state.
   const codeDefaultFor = (fieldKey: string): unknown =>
-    contentMeta?.defaultPropValues[fieldKey] ??
-    contentMeta?.defaultProps[fieldKey];
+    declaredContentDefault(contentMeta, fieldKey) ?? undefined;
   const resetHandlerFor = (fieldKey: string): (() => void) | undefined => {
     if (
       !onResetContentFields ||

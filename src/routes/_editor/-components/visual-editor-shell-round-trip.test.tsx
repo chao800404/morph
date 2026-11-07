@@ -4030,6 +4030,10 @@ export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items
     updateSectionProps.mockReset();
     updateSectionProps.mockImplementation(async ({ data }) => {
       stored = { ...stored, ...(data.props as Record<string, unknown>) };
+      // A reset removes the stored value, as the server does.
+      for (const key of (data.resetProps as string[] | undefined) ?? []) {
+        delete stored[key];
+      }
       draftGeneration = data.expectedDraftGeneration + 1;
       return {
         success: true,
@@ -4534,6 +4538,166 @@ function Home() {
         [one!.id, "One"],
         [two!.id, "Two亜"],
       ]);
+    });
+  });
+
+  /**
+   * Dragging one entry over another on the canvas swaps the two in the list.
+   * On a list nothing stores yet the stored props hold no rows to swap, so the
+   * shell refused with "cannot be mapped to a safe array position", rolled the
+   * canvas back and wrote nothing. The swap starts from the rows the Inspector
+   * draws: the component's declared defaults, with the ids their first edit
+   * stores (the ids the row cards are keyed by).
+   */
+  describe("dragging an entry of a list nothing stores yet on the canvas", () => {
+    const drag = (dragged: number, target: number) =>
+      fromPreview({
+        type: "morph:storefront-preview-commit-array-item-reorder",
+        sectionId: "section",
+        draggedFieldPath: `items.${dragged}`,
+        targetFieldPath: `items.${target}`,
+      });
+    const notices = () => ({
+      warning: vi.spyOn(toast, "warning").mockImplementation(() => ""),
+      error: vi.spyOn(toast, "error").mockImplementation(() => ""),
+    });
+
+    it("swaps the rows as drawn, with the ids the Inspector keys them by", async () => {
+      const { warning, error } = notices();
+      const [one, two] = identified();
+      await openTitle({}, 1);
+
+      drag(1, 0);
+      await settle();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+      expect(rowsSent(sent()[0]!)).toEqual([
+        [two!.id, "Two"],
+        [one!.id, "One"],
+      ]);
+      expect(stored.items).toEqual([
+        { id: two!.id, title: "Two" },
+        { id: one!.id, title: "One" },
+      ]);
+      expect(saveStatus()).toBe("Unpublished");
+    });
+
+    it("keeps each row's id through the edit that follows, without deriving it again", async () => {
+      const { warning } = notices();
+      const [one, two] = identified();
+      // "Two" selected where the drop left it, once the list is stored.
+      // (Taken first: it replaces the body.)
+      const moved = await reportTitle({ items: [two, one] }, 0);
+      expect(moved).toMatchObject({
+        fieldPath: "items.0.title",
+        itemId: two!.id,
+      });
+      const { receive } = await openTitle({}, 1);
+      drag(1, 0);
+      await settle();
+      expect(sent()).toHaveLength(1);
+      // The editor reads back what the server now holds.
+      act(() => {
+        receive(editorAt({ ...stored }, draftGeneration));
+      });
+      await flushFrames();
+      fromPreview(moved);
+      await flushFrames();
+      const contentTab = screen.queryByRole("button", { name: /^Content$/ });
+      if (contentTab) fireEvent.click(contentTab);
+      await flushFrames();
+
+      // "Two" now sits at index 0. Derived again from there, it would get
+      // another id; it keeps the one it was drawn and moved with.
+      await type("Two", "Two edited");
+      await settle();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([
+        1, 2,
+      ]);
+      expect(rowsSent(sent()[1]!)).toEqual([
+        [two!.id, "Two edited"],
+        [one!.id, "One"],
+      ]);
+    });
+
+    // Undo returns the list to storing nothing, not to its drawn rows written
+    // into the Document: those would look the same but pin the component's
+    // defaults, so a later change to them in the Theme would never show.
+    const undo = async () => {
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+        ).toBe(false),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await settle();
+    };
+
+    it("undoes to storing nothing, so the Theme's defaults show again", async () => {
+      const { warning, error } = notices();
+      await openTitle({}, 1);
+      drag(1, 0);
+      await settle();
+      expect(sent()).toHaveLength(1);
+      expect(stored).toHaveProperty("items");
+
+      await undo();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]!).toMatchObject({
+        props: {},
+        resetProps: ["items"],
+        expectedDraftGeneration: 2,
+      });
+      expect(stored).not.toHaveProperty("items");
+    });
+
+    it("redoes the swap after undoing it, under the same ids", async () => {
+      const { warning, error } = notices();
+      // A reset answers without the document, so the next write reads the
+      // server's copy first; this fake server answers with what it holds.
+      getThemeEditor.mockImplementation(async () => ({
+        success: true,
+        message: "ok",
+        data: editorAt({ ...stored }, draftGeneration),
+      }));
+      try {
+        const [one, two] = identified();
+        await openTitle({}, 1);
+        drag(1, 0);
+        await settle();
+        await undo();
+        expect(stored).not.toHaveProperty("items");
+
+        await waitFor(() =>
+          expect(
+            screen
+              .getByRole("button", { name: "Redo" })
+              .hasAttribute("disabled"),
+          ).toBe(false),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+        await settle();
+
+        expect(warning).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+        expect(sent()).toHaveLength(3);
+        expect(sent()[2]!.expectedDraftGeneration).toBe(3);
+        expect(rowsSent(sent()[2]!)).toEqual([
+          [two!.id, "Two"],
+          [one!.id, "One"],
+        ]);
+        expect(saveStatus()).toBe("Unpublished");
+      } finally {
+        getThemeEditor.mockReset();
+      }
     });
   });
 });
