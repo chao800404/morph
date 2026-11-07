@@ -383,6 +383,9 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
         const savedPublished = await writeThemeFiles(page, scope!, NAV_FILES_PUBLISHED);
         expect(savedPublished.success, JSON.stringify(savedPublished)).toBe(true);
 
+        // Reopened after the write: an editor loaded before it holds the older
+        // source generation, and publishing refuses on that difference.
+        await openEditor(page);
         const shown = await publishShowingRelease(page);
         await shown.close();
 
