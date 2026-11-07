@@ -2,6 +2,7 @@ import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 import { EDITOR_PATH, isServerFunctionCall, previewFrame } from "./helpers";
 import {
   DOMAINS,
+  openEditor,
   publishShowingRelease,
   serverFn,
   signedInPage,
@@ -372,7 +373,9 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
     test.setTimeout(240_000);
     const page = await signedInPage(browser);
     try {
-      await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+      // Waits for the Publish control to be hydrated: a click on the
+      // server-rendered button before that sends no publish.
+      await openEditor(page);
 
       const transport = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
       if (transport === "cloudflare-sandbox") {
