@@ -32,6 +32,7 @@ import {
 import {
   acceptAnsweredWrite,
   acceptReadSnapshot,
+  basisWithinOwnRange,
   earlierBasis,
   newestAcceptedCopy,
   snapshotSectionProps,
@@ -910,6 +911,27 @@ const UNANSWERED_EARLIER_SAVE =
   "An earlier save was not answered. Your changes are kept; check before saving again.";
 /** A content write held, after waiting its turn, by an unanswered earlier one. */
 const UNANSWERED_EARLIER_SAVE_CODE = "UNANSWERED_EARLIER_SAVE";
+
+/** How a removal of stored content keys ("Use code default") is sent. */
+type ContentResetOptions = Readonly<{
+  /** Records the removal as its own history entry once it is answered. */
+  recordHistory?: boolean;
+  /** A history entry's own source generation, never re-read from a selection. */
+  historyGeneration?: number;
+  /**
+   * The undo of a recorded content write that also stored keys the section
+   * did not hold before: the values it puts back, sent in the SAME request
+   * as the removal, so the undo lands whole or not at all.
+   */
+  restore?: Readonly<Record<string, unknown>>;
+  /**
+   * The draft generation the undone write was answered with. The undo is
+   * sent only onto a copy every step since was this editor's own
+   * (`basisWithinOwnRange`); anything else is someone else's change, and
+   * the undo is refused as out of date rather than written over it.
+   */
+  basisDraftGeneration?: number;
+}>;
 
 /**
  * Resolves true when the navigation must not happen. `navigation` is where the
@@ -2305,6 +2327,9 @@ export function VisualEditorShell({
         // leaving is not one that may have landed.
         let sentEntry: PendingContentEntry | undefined;
         let sentDraftGeneration = 0;
+        // The draft generation the answer gave this write: what an undo of
+        // it is checked against (`basisWithinOwnRange`).
+        let answeredDraftGeneration: number | undefined;
         let sentTemplateId = tid;
         // Typed while the route had no document of its own: made on the
         // document as created, never on whatever it has become since.
@@ -2402,6 +2427,13 @@ export function VisualEditorShell({
                 // Accepted here, before the write's pending input is
                 // acknowledged, so this editor's copy is never older than
                 // what it has just stopped holding as pending.
+                if (
+                  result.success &&
+                  typeof data?.draftGeneration === "number" &&
+                  Number.isSafeInteger(data.draftGeneration)
+                ) {
+                  answeredDraftGeneration = data.draftGeneration;
+                }
                 if (result.success && data) {
                   const next = acceptAnsweredWrite(
                     contentSnapshotsRef.current.get(sentTemplateId),
@@ -2458,6 +2490,7 @@ export function VisualEditorShell({
                   entry.props,
                 );
                 const historySourceGeneration = entry.expectedSourceGeneration;
+                const basisDraftGeneration = answeredDraftGeneration;
                 history.record(
                   fenceSectionHistory(entry.sectionId, tid, {
                     label: "Content",
@@ -2468,18 +2501,26 @@ export function VisualEditorShell({
                         if (historySourceGeneration === undefined) {
                           throw sourceSelectionFailure();
                         }
-                        const removed = await resetContentFieldsRef.current?.(
+                        // One awaited write: the values put back and the
+                        // keys removed again go in the same request, so the
+                        // undo lands whole or the entry stays where it is.
+                        const undone = await resetContentFieldsRef.current?.(
                           entry.sectionId,
                           reset,
-                          false,
-                          historySourceGeneration,
+                          {
+                            recordHistory: false,
+                            historyGeneration: historySourceGeneration,
+                            restore,
+                            basisDraftGeneration,
+                          },
                         );
                         // Refused, or not sent: the entry stays where it is.
-                        if (!removed?.success) {
-                          throw removed?.message
-                            ? new Error(removed.message)
+                        if (!undone?.success) {
+                          throw undone?.message
+                            ? new Error(undone.message)
                             : sourceSelectionFailure();
                         }
+                        return;
                       }
                       if (Object.keys(restore).length > 0) {
                         contentChangeRef.current?.(entry.sectionId, restore, {
@@ -11276,8 +11317,7 @@ export function VisualEditorShell({
     | ((
         sectionId: string,
         fieldKeys: string[],
-        recordHistory?: boolean,
-        historyGeneration?: number,
+        options?: ContentResetOptions,
       ) => Promise<{ success: boolean; message?: string }>)
     | null
   >(null);
@@ -11285,9 +11325,12 @@ export function VisualEditorShell({
     async (
       sectionId: string,
       fieldKeys: string[],
-      recordHistory = true,
-      historyGeneration?: number,
+      options: ContentResetOptions = {},
     ): Promise<{ success: boolean; message?: string }> => {
+      const recordHistory = options.recordHistory ?? true;
+      const historyGeneration = options.historyGeneration;
+      const restore = { ...options.restore };
+      const basisDraftGeneration = options.basisDraftGeneration;
       reportAuthenticatedUserActivity();
       if (!isDocumentWriteTarget(sectionId, templateIdForSection)) {
         return { success: false, message: "Nothing to reset here." };
@@ -11331,22 +11374,44 @@ export function VisualEditorShell({
 
       const result = (await enqueueTemplateMutation(
         templateId,
-        (expectedDraftGeneration, resolvedTemplateId) =>
-          updatePropsMutation.mutateAsync({
+        async (generation, resolvedTemplateId, reportSent) => {
+          let expectedDraftGeneration = generation;
+          if (basisDraftGeneration !== undefined) {
+            // The undo of a recorded write, checked against the copy it is
+            // sent onto, as a content write is: every step since the write
+            // it reverses must be this editor's own.
+            const snapshot = await contentSnapshotForWrite(resolvedTemplateId);
+            if (snapshot) {
+              if (!basisWithinOwnRange(snapshot, basisDraftGeneration)) {
+                throw draftConflictFailure();
+              }
+              expectedDraftGeneration = snapshot.draftGeneration;
+            }
+          }
+          reportSent(expectedDraftGeneration);
+          return updatePropsMutation.mutateAsync({
             templateId: resolvedTemplateId,
             sectionId,
-            props: {},
+            props: restore,
             resetProps: fieldKeys,
             expectedDraftGeneration,
             expectedSourceGeneration: sourceGeneration,
             routePath: routePathForTemplate(templateId),
-          }),
+          });
+        },
       )) as { success: boolean; message?: string };
       if (!result.success) {
         return { success: false, message: result.message };
       }
 
-      syncPreviewSectionProps(sectionId, {}, undefined, fieldKeys);
+      // Only once the whole write is answered: the restored values and the
+      // removal reach the preview together, or neither does.
+      syncPreviewSectionProps(
+        sectionId,
+        parsePreviewSectionProps(restore) ?? {},
+        undefined,
+        fieldKeys,
+      );
       if (recordHistory && Object.keys(removed).length > 0) {
         history.record(
           fenceSectionHistory(sectionId, templateId, {
@@ -11359,8 +11424,7 @@ export function VisualEditorShell({
               const replay = await handleResetContentFields(
                 sectionId,
                 fieldKeys,
-                false,
-                sourceGeneration,
+                { recordHistory: false, historyGeneration: sourceGeneration },
               );
               if (!replay.success) throw sourceSelectionFailure();
             },
@@ -11370,6 +11434,7 @@ export function VisualEditorShell({
       return { success: true };
     },
     [
+      contentSnapshotForWrite,
       enqueueTemplateMutation,
       flushTemplatePendingProps,
       history,
