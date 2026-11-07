@@ -15,7 +15,11 @@ import {
   previewFrame,
   settleSelection,
 } from "./helpers";
-import { savedField, signedInPage } from "./native-acceptance";
+import {
+  expectHydrated,
+  savedField,
+  signedInPage,
+} from "./native-acceptance";
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
@@ -194,9 +198,15 @@ const upgradeNotice = (page: Page) =>
 
 /** The author opens the review from the notice. */
 async function openReview(page: Page) {
-  await upgradeNotice(page)
-    .getByRole("button", { name: "Review upgrade" })
-    .click();
+  // The notice is server-rendered: a click before React has hydrated it is
+  // received by nothing and no review is ever asked for (seen on 0d9fc38,
+  // case E: the click landed about 1.6 s before the editor mounted). The
+  // button itself must be hydrated before it is clicked.
+  const review = upgradeNotice(page).getByRole("button", {
+    name: "Review upgrade",
+  });
+  await expectHydrated(review);
+  await review.click();
   const dialog = page.getByRole("dialog", {
     name: "Review the Starter upgrade",
   });
@@ -456,6 +466,11 @@ async function expectLiveProbe(page: Page, marker: string) {
 async function build(page: Page) {
   const action = page.locator("button[data-editor-build-action]");
   await expect(action).toBeEnabled({ timeout: 30_000 });
+  // Enabled is not hydrated: the server-rendered button is enabled too, and
+  // a click before React attaches its handler reaches nothing (e3106ab, case
+  // E: clicked 1.3 s before the editor's modules finished loading, no build
+  // request, no toast). The button itself must be hydrated before the click.
+  await expectHydrated(action);
   await action.click();
   await expect(action).toHaveAttribute("data-build-pending", "true", {
     timeout: 30_000,
@@ -654,10 +669,16 @@ test.describe("Starter upgrade, reviewed by the author", () => {
   }) => {
     test.skip(!CONTAINERS, "Builds run in containers.");
     await openEditor(page);
-    const pkg = JSON.parse((await workspace(page))[PACKAGE]!);
+    const files = await workspace(page);
+    const pkg = JSON.parse(files[PACKAGE]!);
     // What the Starter wrote between 2026-09-23 and 2026-10-03.
     pkg.devDependencies["@cloudflare/vite-plugin"] = "1.50.0";
-    await save(page, [{ path: PACKAGE, content: JSON.stringify(pkg, null, 2) }]);
+    await save(page, [
+      // The probe the Build Preview check reads. A saves it too; E saves its
+      // own so it also runs alone, as the container job runs it.
+      ...(files[PROBE_ROUTE] === PROBE_FILE.content ? [] : [PROBE_FILE]),
+      { path: PACKAGE, content: JSON.stringify(pkg, null, 2) },
+    ]);
 
     // On the current version nothing offers to upgrade it.
     setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
