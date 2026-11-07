@@ -18,8 +18,6 @@
  * that is in neither, so a new Start-gated spec cannot stay CI-skipped by
  * omission.
  */
-import { TARGET as NAVIGATION_MATRIX_PUBLIC } from "./container-acceptance-targets/navigation-matrix-public.mjs";
-
 /** The job's name, as GitHub reports the check. */
 export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 
@@ -93,12 +91,4 @@ export const START_PREVIEW_EXPECTED_SKIPS = [
     title:
       "E. a toolchain pin an earlier Starter wrote: refused by the build, built once the reviewed upgrade is applied",
   },
-  // The same for the navigation matrix's public storefront cells: they need
-  // the container transport and skip here. A skip here is not container
-  // acceptance; the exact list a container run must pass is the target
-  // module (container-acceptance-targets/navigation-matrix-public.mjs).
-  ...NAVIGATION_MATRIX_PUBLIC.titles.map((title) => ({
-    file: NAVIGATION_MATRIX_PUBLIC.file,
-    title: title.split(" › ").at(-1) ?? title,
-  })),
 ];
