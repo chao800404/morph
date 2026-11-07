@@ -123,6 +123,13 @@ export function acceptOwnSnapshot(
  * — the document the server returned is the document at that generation,
  * and is taken the way a read is (`acceptReadSnapshot`): as nobody's own
  * range, so nothing typed on an earlier copy is composed on it.
+ *
+ * One exception, on evidence the write itself carries: `ownStepFrom` names
+ * the generation the write was composed on when the document's own answer
+ * (a route document's ensure) put it there and no copy was held. A write
+ * sent at exactly that generation and answered with the next one made that
+ * step, so the range starts at it. Anything else (another generation sent
+ * or returned, or a copy already held) is decided as above.
  */
 export function acceptAnsweredWrite(
   current: ContentSnapshot | undefined,
@@ -131,14 +138,26 @@ export function acceptAnsweredWrite(
     draftGeneration: unknown;
     sections: readonly SnapshotSection[] | undefined;
   }>,
+  options?: Readonly<{ ownStepFrom?: number }>,
 ): ContentSnapshot | undefined {
   if (current) return acceptOwnSnapshot(current, ack);
   if (!ack.sections) return undefined;
-  return acceptReadSnapshot(
+  const read = acceptReadSnapshot(
     undefined,
     { draftGeneration: ack.draftGeneration, sections: ack.sections },
     new Map(),
   );
+  const from = options?.ownStepFrom;
+  if (
+    read &&
+    from !== undefined &&
+    validGeneration(from) &&
+    ack.sentAt === from &&
+    read.draftGeneration === from + 1
+  ) {
+    return { ...read, ownSince: from };
+  }
+  return read;
 }
 
 /**

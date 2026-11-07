@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   conflictingListKeys,
+  HELD_FAILED_CONTENT_MESSAGE,
   heldContentMessage,
+  heldFlushMessage,
   rebaseContentProps,
   sameContentValue,
 } from "./content-rebase";
@@ -215,5 +217,47 @@ describe("what an author whose content is held is told", () => {
     expect(heldContentMessage({ hasListConflict: false })).toMatch(
       /Load the latest version and keep your changes/,
     );
+  });
+});
+
+describe("why a step that saves one document first stopped", () => {
+  const CONFLICT = heldContentMessage({ hasListConflict: false });
+  const LIST = heldContentMessage({ hasListConflict: true });
+
+  it("tells this document's plain failure as one, though another document has a conflict", () => {
+    expect(
+      heldFlushMessage({
+        heldKeys: ["doc-a:hero"],
+        conflicts: { "doc-b:footer": "doc-b" },
+        listConflicts: { "doc-b:footer": "doc-b" },
+      }),
+    ).toBe(HELD_FAILED_CONTENT_MESSAGE);
+  });
+
+  it("points this document's own conflict at its way out", () => {
+    expect(
+      heldFlushMessage({
+        heldKeys: ["doc-a:hero"],
+        conflicts: { "doc-a:hero": "doc-a" },
+        listConflicts: {},
+      }),
+    ).toBe(CONFLICT);
+  });
+
+  it("points a list conflict here at Discard mine, not another document's list conflict", () => {
+    expect(
+      heldFlushMessage({
+        heldKeys: ["doc-a:hero", "doc-a:cards"],
+        conflicts: { "doc-a:cards": "doc-a" },
+        listConflicts: { "doc-a:cards": "doc-a" },
+      }),
+    ).toBe(LIST);
+    expect(
+      heldFlushMessage({
+        heldKeys: ["doc-a:hero"],
+        conflicts: { "doc-a:hero": "doc-a" },
+        listConflicts: { "doc-b:cards": "doc-b" },
+      }),
+    ).toBe(CONFLICT);
   });
 });

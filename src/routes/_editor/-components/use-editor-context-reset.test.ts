@@ -53,4 +53,40 @@ describe("useEditorContextReset", () => {
 
     expect(onReset).toHaveBeenCalledTimes(1);
   });
+
+  it("does not reset for a change the shell names the same page, and judges the next change from it", () => {
+    const onReset = vi.fn();
+    const judged: Array<[unknown, unknown]> = [];
+    const isSamePage = (
+      previous: { templateId?: string; routePath?: string },
+      next: { templateId?: string; routePath?: string },
+    ) => {
+      judged.push([previous, next]);
+      return (
+        previous.routePath === next.routePath &&
+        previous.templateId === "index" &&
+        next.templateId === "route-doc"
+      );
+    };
+    const { rerender } = renderHook(
+      ({ templateId, routePath }) =>
+        useEditorContextReset({ templateId, routePath, onReset, isSamePage }),
+      { initialProps: { templateId: "index", routePath: "/about" } },
+    );
+
+    rerender({ templateId: "route-doc", routePath: "/about" });
+    expect(onReset).not.toHaveBeenCalled();
+
+    // Back to the index is a real change, judged from the route document.
+    rerender({ templateId: "index", routePath: "/about" });
+    expect(onReset).toHaveBeenCalledTimes(1);
+    expect(judged.at(-1)).toEqual([
+      { templateId: "route-doc", routePath: "/about" },
+      { templateId: "index", routePath: "/about" },
+    ]);
+
+    // A route change is reset whatever the template.
+    rerender({ templateId: "route-doc", routePath: "/contact" });
+    expect(onReset).toHaveBeenCalledTimes(2);
+  });
 });
