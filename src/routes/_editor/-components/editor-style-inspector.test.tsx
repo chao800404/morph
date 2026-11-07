@@ -3035,4 +3035,137 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       { inputFieldPath: "items.1.title" },
     );
   });
+
+  /**
+   * #388 round 3, B (red before the fix where noted). A row field of a list
+   * nothing stores yet is selected on the canvas, with no row id. The row is
+   * refused (`row-id-missing`) and the list is offered instead; a list write
+   * there names the list as its input and the selection's own path as the key
+   * of its source proof, and nothing else does.
+   */
+  describe("a list write while a row of the unstored list is selected", () => {
+    const renderSelected = (
+      selected: Partial<EditorSelectionDescriptor>,
+      onPropsChange = vi.fn(),
+    ) => {
+      render(
+        <EditorStyleInspector
+          view="content"
+          onPropsChange={onPropsChange}
+          onUpdateThemeFileStyle={vi.fn()}
+          onJumpToCode={vi.fn()}
+          resourceKey="storefront-1:theme-1:template-1"
+          rowIdTemplateId={TEMPLATE_ID}
+          section={{
+            id: "section-1",
+            type: "entries",
+            componentRef: ENTRIES_PATH,
+            enabled: true,
+            props: {},
+          }}
+          selection={selectionDescriptor({
+            kind: "heading",
+            tagName: "h3",
+            sourceFilePath: ENTRIES_PATH,
+            ...selected,
+          })}
+          themeFiles={[entriesFile]}
+        />,
+      );
+      return onPropsChange;
+    };
+    const itemsTitle = {
+      sectionId: "section-1",
+      elementKey: "title",
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+      itemId: null,
+    } as Partial<EditorSelectionDescriptor>;
+    /** The Add button drawn under the list whose row card shows `shown`. */
+    const addFor = (shown: string) => {
+      const input = screen.getByDisplayValue(shown);
+      const buttons = addButtons();
+      const button = buttons.find((candidate) => {
+        const card = cardOf(input)!;
+        // The list's Add button follows its row cards in document order.
+        return (
+          card.compareDocumentPosition(candidate) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+        );
+      });
+      expect(button, `an Add button after "${shown}"`).toBeTruthy();
+      return button!;
+    };
+
+    it("offers the list, says why the row is not, and names the list and the selection on Add", () => {
+      const onPropsChange = renderSelected(itemsTitle);
+      expect(
+        screen.getByText(/This entry has no id yet/),
+        "the row-id-missing message",
+      ).toBeTruthy();
+
+      fireEvent.click(addFor("Two"));
+
+      expect(onPropsChange).toHaveBeenCalledTimes(1);
+      expect(onPropsChange.mock.calls[0]![1]).toEqual({
+        inputFieldPath: "items",
+        selectionFieldPath: "items.1.title",
+      });
+    });
+
+    it("names the list and the selection on Remove", () => {
+      const onPropsChange = renderSelected(itemsTitle);
+
+      fireEvent.click(removeButtonOf(screen.getByDisplayValue("One")));
+
+      expect(onPropsChange).toHaveBeenCalledTimes(1);
+      expect(onPropsChange.mock.calls[0]![1]).toEqual({
+        inputFieldPath: "items",
+        selectionFieldPath: "items.1.title",
+      });
+    });
+
+    it("names nothing for a selection in another section", () => {
+      const onPropsChange = renderSelected({
+        ...itemsTitle,
+        sectionId: "section-2",
+      });
+      // The list is still drawn (the row is refused either way).
+      fireEvent.click(addFor("Two"));
+
+      expect(onPropsChange).toHaveBeenCalledTimes(1);
+      const [, options] = onPropsChange.mock.calls[0]!;
+      expect(options?.inputFieldPath).toBeUndefined();
+      expect(options?.selectionFieldPath).toBeUndefined();
+    });
+
+    // "Selected in `links`, Add pressed on `items`" cannot be reached from
+    // the panel: with a row of one list selected, only that list is drawn.
+    // Pinned here, with the selected list's own write.
+    it("offers only the selected row's list, and names that list and the selection on its Add", () => {
+      const onPropsChange = renderSelected({
+        ...itemsTitle,
+        elementKey: "label",
+        fieldKey: "label",
+        fieldPath: "links.1.label",
+      });
+      expect(
+        screen.queryByDisplayValue("Two"),
+        "items is not drawn",
+      ).toBeNull();
+      expect(screen.getAllByRole("button", { name: "Add entry" })).toHaveLength(
+        1,
+      );
+
+      fireEvent.click(addFor("Beta"));
+
+      expect(onPropsChange).toHaveBeenCalledTimes(1);
+      const [sent, options] = onPropsChange.mock.calls[0]!;
+      expect(Object.keys(sent)).toEqual(["links"]);
+      expect(options).toEqual({
+        inputFieldPath: "links",
+        selectionFieldPath: "links.1.label",
+      });
+    });
+  });
 });
