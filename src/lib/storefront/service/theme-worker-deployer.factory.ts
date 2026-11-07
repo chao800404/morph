@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { SandboxWranglerThemeWorkerDeployer } from "./sandbox-wrangler-theme-worker-deployer";
-import { isProductionEnvironment } from "./storefront-domain-provider";
+import { localThemeTransportAllowed } from "./local-theme-transport";
 import {
   OperatorManagedThemeWorkerDeployer,
   UnavailableThemeWorkerDeployer,
@@ -35,15 +35,8 @@ export function createServerThemeWorkerDeployer(): ThemeWorkerDeployer {
   // where activation must mean the artifact was really uploaded — and never
   // when real credentials are present, so a configured environment cannot
   // silently skip deployment.
-  const localThemeOrigin =
-    typeof bindings.MORPH_LOCAL_THEME_ORIGIN === "string" &&
-    bindings.MORPH_LOCAL_THEME_ORIGIN.trim() !== "";
-  if (
-    localThemeOrigin &&
-    !apiToken &&
-    !accountId &&
-    !isProductionEnvironment(bindings)
-  ) {
+  // The storefront runtime reads the same predicate, so the two cannot diverge.
+  if (localThemeTransportAllowed(bindings)) {
     return new OperatorManagedThemeWorkerDeployer();
   }
 
