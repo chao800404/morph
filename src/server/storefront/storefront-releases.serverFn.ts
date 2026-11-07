@@ -3,6 +3,7 @@ import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import { storefrontReleaseDal } from "@/lib/storefront/dal/storefront-release.dal";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { activateReleaseWithDeployment } from "@/lib/storefront/service/storefront-release-reconciler";
+import { releaseDeploymentFailureCode } from "@/lib/storefront/service/release-deployment-failure";
 import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-worker-deployer.factory";
 import {
   activateStorefrontReleaseInputSchema,
@@ -142,13 +143,19 @@ export const activateStorefrontRelease = createServerFn({ method: "POST" })
           result.reason === "PLAN_REJECTED" ||
           result.reason === "WORKER_CONFIG_UNREADABLE"
         ) {
-          return fail(result.message, { error: "RELEASE_NOT_ACTIVATABLE" });
+          return fail(result.message, {
+            error: "RELEASE_NOT_ACTIVATABLE",
+            reason: releaseDeploymentFailureCode(result),
+          });
         }
         return fail(
           result.deploymentDrift
             ? `${result.message} The active release no longer matches the deployed Theme Worker and must be reconciled.`
             : result.message,
-          { error: "RELEASE_DEPLOYMENT_FAILED" },
+          {
+            error: "RELEASE_DEPLOYMENT_FAILED",
+            reason: releaseDeploymentFailureCode(result),
+          },
         );
       }
 

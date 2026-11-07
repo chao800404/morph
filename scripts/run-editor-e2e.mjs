@@ -15,6 +15,9 @@
  *
  * Usage:
  *   node scripts/run-editor-e2e.mjs [-- <extra playwright args>]
+ *   MORPH_E2E_ASTRO_PARSER=1 node scripts/run-editor-e2e.mjs ...
+ *     also runs the `.astro` parser Worker behind Core's ASTRO_PARSER binding
+ *     (see `WITH_ASTRO_PARSER`)
  *
  * Reads `.env.e2e` for E2E_EMAIL, E2E_PASSWORD and E2E_EDITOR_PATH, and
  * `.dev.vars.local_preview_e2e` for the sidecar origin and token. Neither is
@@ -34,7 +37,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { verifyPublishedArtifact } from "./verify-published-artifact.mjs";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { editorShardArguments } from "./editor-e2e-shards.mjs";
@@ -131,6 +134,59 @@ const USES_SIDECAR = TRANSPORT === "local-sidecar";
 const WRANGLER_ENV = USES_SIDECAR ? "local_preview_e2e" : "";
 const DEV_PORT = Number(process.env.MORPH_E2E_PORT ?? 3000);
 const DEV_ORIGIN = `http://localhost:${DEV_PORT}`;
+
+/**
+ * Whether this run also starts the `.astro` parser Worker
+ * (packages/astro-parser-worker) behind Core's `ASTRO_PARSER` binding.
+ *
+ * `local_preview_e2e` declares that binding, and the Vite dev server does not
+ * run the Worker it names: the binding resolves through Wrangler's dev
+ * registry, finds no session and answers HTTP 503, which the client reports
+ * as `binding-failed`. Measured both ways (handoff/2026-11-02/
+ * m2-pra-binding-check): Core alone refuses, Core beside `wrangler dev` of the
+ * parser confirms.
+ *
+ * Opt-in, `MORPH_E2E_ASTRO_PARSER=1`, rather than every sidecar run: no spec
+ * the suite runs today calls the parser, and without it Core refuses the parse
+ * fail-closed, so a default run has nothing to gain from a third process and
+ * one more way to fail before the first test. A run that needs the parser
+ * says so, and then gets it or does not start: the runner waits until the
+ * parser is registered and answering, and then until Core itself confirms a
+ * parse through the binding, before the suite starts.
+ *
+ * Both processes share a dev registry of this run's own, in the state
+ * directory, so neither can find, or be found by, another session's Workers.
+ * A run without the parser leaves the registry as it was.
+ */
+const ASTRO_PARSER_SETTING = process.env.MORPH_E2E_ASTRO_PARSER ?? "";
+if (!["", "0", "1"].includes(ASTRO_PARSER_SETTING)) {
+  console.error(
+    `[e2e] MORPH_E2E_ASTRO_PARSER must be "1", "0" or unset, not "${ASTRO_PARSER_SETTING}".`,
+  );
+  await exitAfterFlush(1);
+}
+const WITH_ASTRO_PARSER = ASTRO_PARSER_SETTING === "1";
+if (WITH_ASTRO_PARSER && !USES_SIDECAR) {
+  console.error(
+    "[e2e] ASTRO_PARSER_NEEDS_LOCAL_PREVIEW: only Wrangler's local_preview_e2e environment binds ASTRO_PARSER, and the container transport runs the default one. Unset MORPH_E2E_ASTRO_PARSER or use the local-sidecar transport.",
+  );
+  await exitAfterFlush(1);
+}
+/** Clear of 3000 (`pnpm dev`) and the 3417/3418 the E2E dev server uses. */
+const ASTRO_PARSER_PORT = Number(
+  process.env.MORPH_E2E_ASTRO_PARSER_PORT ?? 3419,
+);
+/** Explicit, so it cannot meet another `wrangler dev`'s default 9229. */
+const ASTRO_PARSER_INSPECTOR_PORT = Number(
+  process.env.MORPH_E2E_ASTRO_PARSER_INSPECTOR_PORT ?? 9319,
+);
+const ASTRO_PARSER_CONFIG = "packages/astro-parser-worker/wrangler.jsonc";
+/** Its `name`, which is also its file name in the dev registry. */
+const ASTRO_PARSER_WORKER = "morph-astro-parser";
+/** Core's DEV-only hook (src/server/dev/astro-parser-binding-check.ts). */
+const ASTRO_PARSER_CHECK_PATH = "/_morph/e2e/astro-parser-binding-check";
+/** How long a `binding-failed` from Core is waited out after the parser is up. */
+const ASTRO_PARSER_BINDING_GRACE_MS = 15_000;
 const SIDECAR_ENV_FILE = ".dev.vars.local_preview_e2e";
 /** Where the setup project stores the signed-in browser state. */
 const STORAGE_STATE = "e2e/.auth/user.json";
@@ -870,6 +926,134 @@ async function verifyPublishedRelease() {
   await verifyServedImage(origin, verified.image);
 }
 
+/**
+ * Starts the `.astro` parser with `wrangler dev` in a dev registry of this
+ * run's own, and returns once it is registered there and answering. Returns
+ * the environment the dev server needs to find it. See `WITH_ASTRO_PARSER`.
+ *
+ * Listed in `started` like every other child, so the one teardown stops it on
+ * success, failure and signals; the registry goes with the state directory.
+ * Its output is echoed and written to `astro-parser.log`, copied beside the
+ * report the way the sidecar's record is.
+ */
+async function startAstroParser(report) {
+  const registry = path.join(stateDir, "dev-registry");
+  await mkdir(registry, { recursive: true });
+  const registryEnv = {
+    WRANGLER_REGISTRY_PATH: registry,
+    MINIFLARE_REGISTRY_PATH: registry,
+  };
+  const parserLog = path.join(stateDir, "astro-parser.log");
+  await writeFile(parserLog, "");
+  if (process.env.MORPH_E2E_REPORT_PATH) {
+    keptAfterTeardown.push({
+      from: parserLog,
+      to: `${report}.astro-parser.log`,
+    });
+  }
+  const args = [
+    "wrangler",
+    "dev",
+    "--config",
+    ASTRO_PARSER_CONFIG,
+    "--port",
+    String(ASTRO_PARSER_PORT),
+    "--ip",
+    "127.0.0.1",
+    "--inspector-port",
+    String(ASTRO_PARSER_INSPECTOR_PORT),
+    "--persist-to",
+    stateDir,
+    "--show-interactive-dev-session=false",
+  ];
+  log(
+    `starting the .astro parser on ${ASTRO_PARSER_PORT}, dev registry ${registry}`,
+  );
+  const parser = start(
+    "astro parser",
+    "npx",
+    args,
+    registryEnv,
+    (line, stream) => appendFileSync(parserLog, `[${stream}] ${line}\n`),
+  );
+  const origin = `http://127.0.0.1:${ASTRO_PARSER_PORT}`;
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  for (;;) {
+    if (parser.exitCode !== null || parser.signalCode !== null) {
+      throw new Error(
+        `ASTRO_PARSER_EXITED: the .astro parser exited before it was ready (code ${parser.exitCode}, signal ${parser.signalCode}). Its output is above.`,
+      );
+    }
+    if (existsSync(path.join(registry, ASTRO_PARSER_WORKER))) {
+      const answered = await fetch(origin, { redirect: "manual" }).then(
+        (response) => response.status > 0,
+        () => false,
+      );
+      if (answered) break;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `ASTRO_PARSER_NOT_READY: the .astro parser was not registered and answering within ${READY_TIMEOUT_MS}ms.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  log(`.astro parser ready on ${origin}, registered as ${ASTRO_PARSER_WORKER}`);
+  return registryEnv;
+}
+
+/**
+ * Asks Core, through its DEV-only hook, to parse a fixed source over its real
+ * `ASTRO_PARSER` binding, and refuses the run unless the answer is confirmed.
+ * That the parser answers on its own port says nothing about whether Core
+ * reaches it; this is the check that does. The answer is kept beside the
+ * report.
+ */
+async function confirmAstroParserBinding(report) {
+  const url = `${DEV_ORIGIN}${ASTRO_PARSER_CHECK_PATH}`;
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  let graceUntil = 0;
+  for (;;) {
+    let status = 0;
+    let body = "";
+    try {
+      const response = await fetch(url, { redirect: "manual" });
+      status = response.status;
+      body = await response.text();
+    } catch {
+      /* Not answering yet. */
+    }
+    if (status === 200) {
+      const outcome = JSON.parse(body).outcome;
+      if (outcome?.status === "confirmed") {
+        await writeFile(`${report}.astro-parser-check.json`, body);
+        log(
+          `Core confirmed a parse through ASTRO_PARSER (compiler ${outcome.result?.compiler})`,
+        );
+        return;
+      }
+      // Only a binding Core could not reach yet is waited out, and briefly:
+      // the parser is up, so anything else is the answer.
+      graceUntil ||= Date.now() + ASTRO_PARSER_BINDING_GRACE_MS;
+      if (outcome?.code !== "binding-failed" || Date.now() > graceUntil) {
+        throw new Error(
+          `ASTRO_PARSER_UNREACHABLE: Core's ${ASTRO_PARSER_CHECK_PATH} answered ${outcome?.status} ${outcome?.code} (${outcome?.reason}): ${outcome?.detail}`,
+        );
+      }
+    } else if (status > 0 && status < 500) {
+      throw new Error(
+        `ASTRO_PARSER_CHECK_REFUSED: Core's ${ASTRO_PARSER_CHECK_PATH} answered HTTP ${status}; a 404 means this dev server has no ASTRO_PARSER binding.`,
+      );
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `ASTRO_PARSER_UNREACHABLE: Core's ${ASTRO_PARSER_CHECK_PATH} gave no answer within ${READY_TIMEOUT_MS}ms (last HTTP ${status}).`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+}
+
 async function main() {
   const passed = process.argv.slice(2);
   const extra = passed[0] === "--" ? passed.slice(1) : passed;
@@ -995,6 +1179,15 @@ async function main() {
       `PORT_IN_USE: something already listens on ${DEV_PORT}. Stop it first, or set MORPH_E2E_PORT to run beside it — a run that attached to a developer's own dev server would exercise their database and still pass.`,
     );
   }
+  if (WITH_ASTRO_PARSER) {
+    for (const port of [ASTRO_PARSER_PORT, ASTRO_PARSER_INSPECTOR_PORT]) {
+      if (await portInUse(port)) {
+        throw new Error(
+          `ASTRO_PARSER_PORT_IN_USE: something already listens on ${port}. Stop it, or set MORPH_E2E_ASTRO_PARSER_PORT and MORPH_E2E_ASTRO_PARSER_INSPECTOR_PORT to free ports.`,
+        );
+      }
+    }
+  }
 
   stateDir = await mkdtemp(path.join(tmpdir(), "morph-e2e-"));
   log(`state directory ${stateDir}`);
@@ -1110,6 +1303,11 @@ async function main() {
     log(`this run's containers are named ${containerPrefix}*`);
   }
 
+  // Before the dev server, which reads the registry as it starts.
+  const astroParserEnv = WITH_ASTRO_PARSER
+    ? await startAstroParser(report)
+    : {};
+
   const lateDependencyReoptimizations = [];
   let suiteStarted = false;
 
@@ -1126,6 +1324,7 @@ async function main() {
       ...(containerWorkerName
         ? { MORPH_E2E_WORKER_NAME: containerWorkerName }
         : {}),
+      ...astroParserEnv,
     },
     (line) => {
       if (suiteStarted) {
@@ -1157,6 +1356,7 @@ async function main() {
   );
   await waitForOk(DEV_ORIGIN, "the dev server");
   log("dev server ready");
+  if (WITH_ASTRO_PARSER) await confirmAstroParserBinding(report);
 
   // A leading `--` is dropped rather than forwarded. The usage above offers it,
   // and Playwright reads it as end-of-options — so `-- e2e/editor.spec.ts -g x`

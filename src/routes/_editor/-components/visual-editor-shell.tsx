@@ -24,6 +24,8 @@ import {
   sameContent,
   sectionContentLanded,
   rebaseFieldBasis,
+  draftConflictFailure,
+  ROUTE_DOCUMENT_CREATED_GENERATION,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import {
@@ -46,9 +48,11 @@ import {
 import { createDebouncedWrites } from "@/lib/storefront/editor/debounced-writes";
 import {
   createEditorLeaveGuard,
+  isRouteDocumentAdoption,
   type EditorLeaveFlush,
   type EditorLeaveKind,
   type EditorLeavePrompt,
+  type EditorLocation,
 } from "@/lib/storefront/editor/editor-leave-guard";
 import {
   editorSaveStatusLabel,
@@ -93,6 +97,7 @@ import {
 import {
   conflictingListKeys,
   heldContentMessage,
+  heldFlushMessage,
   rebaseContentProps,
 } from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
@@ -325,6 +330,19 @@ import {
 } from "@/lib/storefront/editor/inline-text-edit";
 import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
+import {
+  acceptLivePreviewAccessBegin,
+  isLivePreviewAccessEnded,
+  isLivePreviewAccessFailure,
+  LIVE_PREVIEW_ACCESS_ENDED_NOTICE,
+  LIVE_PREVIEW_ACCESS_FAILED_NOTICE,
+  livePreviewAccessBeginUrl,
+  livePreviewAccessCodeMessage,
+  startLivePreviewAccessFlow,
+  type LivePreviewAccessFlow,
+  type LivePreviewAccessTab,
+} from "@/lib/storefront/editor/live-preview-access";
+import { issueThemePreviewAccess } from "@/server/storefront/storefront-theme-preview-access.serverFn";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { EditorPreviewRuntimeMenu } from "./editor-preview-runtime-menu";
 import {
@@ -887,8 +905,19 @@ type EditorShellProps = {
   onRetryThemeRead?: () => void;
 };
 
-/** Resolves true when the navigation must not happen. */
-export type EditorNavigationGuard = (kind: EditorLeaveKind) => Promise<boolean>;
+const UNANSWERED_EARLIER_SAVE =
+  "An earlier save was not answered. Your changes are kept; check before saving again.";
+/** A content write held, after waiting its turn, by an unanswered earlier one. */
+const UNANSWERED_EARLIER_SAVE_CODE = "UNANSWERED_EARLIER_SAVE";
+
+/**
+ * Resolves true when the navigation must not happen. `navigation` is where the
+ * router is and where it is going, when the caller knows.
+ */
+export type EditorNavigationGuard = (
+  kind: EditorLeaveKind,
+  navigation?: { current: EditorLocation; next: EditorLocation },
+) => Promise<boolean>;
 
 const previewDefaultWidths = {
   desktop: 1440,
@@ -1121,6 +1150,9 @@ export function VisualEditorShell({
     nodes: readonly PreviewEditableNode[];
   } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  /** For the page-list open, which reads the mode it was asked in. */
+  const isSelectionModeRef = useRef(isSelectionMode);
+  isSelectionModeRef.current = isSelectionMode;
   const [spacingOverlayMode, setSpacingOverlayMode] =
     useState<PreviewSpacingOverlayMode>("off");
   const [assistantPanelTab, setAssistantPanelTab] =
@@ -1942,6 +1974,28 @@ export function VisualEditorShell({
   /** Route documents created in this session, by the placeholder they replaced. */
   const routeTemplateIdsRef = useRef<Map<string, string>>(new Map());
   /**
+   * The page's document as the Inspector keys its inputs. A route with no
+   * document of its own is written under its placeholder until its first
+   * write creates one; the document the server answered that write's ensure
+   * with is the same page's document, under its real id. Keyed by the
+   * placeholder for both, the input the author is typing in is not rebuilt
+   * when the page takes the document up: its text, focus, caret and an open
+   * composition stay. Only that pair; any other document, route or Theme
+   * keys as its own id, and its inputs are rebuilt as before.
+   */
+  const routeDocumentPlaceholder =
+    search.routePath && routeOwnsDocument(search.routePath)
+      ? routeTemplatePlaceholderId(contentTargetRoutePath(search.routePath))
+      : null;
+  const inspectorDocumentKey =
+    routeDocumentPlaceholder &&
+    pageTemplateId &&
+    (pageTemplateId === routeDocumentPlaceholder ||
+      routeTemplateIdsRef.current.get(routeDocumentPlaceholder) ===
+        pageTemplateId)
+      ? routeDocumentPlaceholder
+      : undefined;
+  /**
    * The document a section's edits go to on the page on screen, resolved
    * past a route document's placeholder id; set beside `templateIdForSection`.
    */
@@ -1990,6 +2044,20 @@ export function VisualEditorShell({
     [],
   );
 
+  /**
+   * Every id one document's writes are queued and kept under: the real id
+   * and each route placeholder this session created it from. Only ids the
+   * server returned to this session's own create are joined.
+   */
+  const templateQueueAliases = useCallback((templateId: string): string[] => {
+    const real = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+    const aliases = new Set([templateId, real]);
+    for (const [placeholder, created] of routeTemplateIdsRef.current) {
+      if (created === real) aliases.add(placeholder);
+    }
+    return Array.from(aliases);
+  }, []);
+
   const enqueueTemplateMutation = useCallback(
     (
       requestedTemplateId: string,
@@ -2003,24 +2071,35 @@ export function VisualEditorShell({
          */
         reportSent: (sent: number) => void,
       ) => Promise<ServerResult<unknown>>,
+      /**
+       * What the caller makes of the answer, run before the next write to
+       * this document starts: a content write's snapshot and unanswered
+       * bookkeeping are in place before anything is composed after it.
+       */
+      answer?: {
+        onResult: (result: ServerResult<unknown>) => ServerResult<unknown>;
+        onError: (error: unknown) => never;
+      },
     ) => {
       // A placeholder stands for a route document not created yet. Once it
-      // has been, writes queue behind the real id — and behind anything still
-      // queued under the placeholder, so the two never race one document.
+      // has been, the placeholder and the real id are one document, and so
+      // one queue: a write asked for under either waits for everything
+      // queued under any of them, and is queued under all of them.
       const knownId = routeTemplateIdsRef.current.get(requestedTemplateId);
       const queueKey = knownId ?? requestedTemplateId;
-      const currentQueue = Promise.all([
-        templateMutationQueueRef.current.get(queueKey) ?? Promise.resolve(),
-        knownId
-          ? (templateMutationQueueRef.current.get(requestedTemplateId) ??
-            Promise.resolve())
-          : Promise.resolve(),
-      ]);
-      const nextPromise = currentQueue
-        .catch(() => {})
-        .then(async (): Promise<ServerResult<unknown>> => {
+      const aliases = templateQueueAliases(requestedTemplateId);
+      const predecessors = aliases.flatMap((alias) => {
+        const tail = templateMutationQueueRef.current.get(alias);
+        return tail ? [tail] : [];
+      });
+      // Settled, not resolved: one that failed is over, not a reason to stop
+      // waiting for the others. Waiting is not permission to send either;
+      // what is sent still meets its own checks when it runs.
+      const nextPromise = Promise.allSettled(predecessors).then(
+        async (): Promise<ServerResult<unknown>> => {
           let templateId = queueKey;
           const routePath = routePathFromTemplatePlaceholder(templateId);
+          let createdRouteDocument = false;
           if (routePath !== null) {
             const ensured = await sendEditorWrite(
               {
@@ -2046,15 +2125,22 @@ export function VisualEditorShell({
                 ensured.data.draftGeneration,
               );
             }
-            // The editor context now has a document for this route; reading
-            // it back is what moves the page's bindings onto the real id.
+            createdRouteDocument = true;
+          }
+          // The editor context now has a document for this route; reading it
+          // back is what moves the page's bindings onto the real id. Read
+          // once this write is over (answered, refused, failed or lost), not
+          // while it is out: the document as created holds none of it, and a
+          // page taking it up then would show the section as if never edited.
+          const readCreatedDocument = () => {
+            if (!createdRouteDocument) return;
             void queryClient.invalidateQueries({
               queryKey: storefrontThemeQueries.detail(
                 context.storefront.id,
                 context.theme.id,
               ).queryKey,
             });
-          }
+          };
           const expectedDraftGeneration = resolveTemplateDraftGeneration({
             templateId,
             observed: templateDraftGenerationRef.current,
@@ -2063,17 +2149,22 @@ export function VisualEditorShell({
           let sentDraftGeneration = expectedDraftGeneration;
           // Every document write queued here — content, rename, promote —
           // meets the paused-writes check at the one place it is sent.
-          const result = await sendEditorWrite(
-            {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-            },
-            "theme",
-            () =>
-              op(expectedDraftGeneration, templateId, (sent) => {
-                sentDraftGeneration = sent;
-              }),
-          );
+          let result: ServerResult<unknown>;
+          try {
+            result = await sendEditorWrite(
+              {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+              },
+              "theme",
+              () =>
+                op(expectedDraftGeneration, templateId, (sent) => {
+                  sentDraftGeneration = sent;
+                }),
+            );
+          } finally {
+            readCreatedDocument();
+          }
           if (
             result.success &&
             result.data !== null &&
@@ -2102,9 +2193,17 @@ export function VisualEditorShell({
             }
           }
           return result;
-        });
-      templateMutationQueueRef.current.set(queueKey, nextPromise);
-      return nextPromise;
+        },
+      );
+      // The next write waits for this one's answer to have been taken in,
+      // not only for its request to return.
+      const tail = answer
+        ? nextPromise.then(answer.onResult, answer.onError)
+        : nextPromise;
+      for (const alias of new Set([...aliases, queueKey])) {
+        templateMutationQueueRef.current.set(alias, tail);
+      }
+      return tail;
     },
     [
       context.storefront.id,
@@ -2112,6 +2211,7 @@ export function VisualEditorShell({
       context.theme.id,
       ownDraftSteps,
       queryClient,
+      templateQueueAliases,
     ],
   );
 
@@ -2178,9 +2278,7 @@ export function VisualEditorShell({
     ) => {
       if (!confirmed && unconfirmedContentRef.current.size > 0) {
         setDraftSaveState("error");
-        throw new Error(
-          "An earlier save was not answered. Your changes are kept; check before saving again.",
-        );
+        throw new Error(UNANSWERED_EARLIER_SAVE);
       }
       const clearConflict = () => {
         setContentConflicts((current) => {
@@ -2207,6 +2305,14 @@ export function VisualEditorShell({
         let sentEntry: PendingContentEntry | undefined;
         let sentDraftGeneration = 0;
         let sentTemplateId = tid;
+        // Typed while the route had no document of its own: made on the
+        // document as created, never on whatever it has become since.
+        const madeBeforeDocument =
+          routePathFromTemplatePlaceholder(tid) !== null;
+        // Composed, with no copy held, on the document as its ensure answered
+        // it (generation 1, checked above): an answer at 2 then shows the step
+        // 1 -> 2 was this write's.
+        let composedOnCreatedDocument = false;
         const result = await commitPendingContent({
           key,
           pending: pendingPropsMapRef.current,
@@ -2220,15 +2326,39 @@ export function VisualEditorShell({
                 ? snapshotSectionProps(writeSnapshot, entry.sectionId)
                 : storedSectionPropsRef.current(entry.sectionId, tid),
               writeSnapshot,
+              madeBeforeDocument
+                ? { missingBasis: ROUTE_DOCUMENT_CREATED_GENERATION }
+                : undefined,
             ),
           saveWhenSent: (prepare) =>
             enqueueTemplateMutation(
               tid,
               async (generation, templateId, reportSent) => {
+                // Having waited behind another write is not leave to send: if
+                // one of them went unanswered meanwhile, this one is held as
+                // it would have been had it started after.
+                if (!confirmed && unconfirmedContentRef.current.size > 0) {
+                  throw Object.assign(new Error(UNANSWERED_EARLIER_SAVE), {
+                    code: UNANSWERED_EARLIER_SAVE_CODE,
+                  });
+                }
                 // Composed here, after anything queued ahead of it: the
                 // stored copy, its draft generation and the rows checked are
                 // the ones current now, all from one snapshot.
                 writeSnapshot = await contentSnapshotForWrite(templateId);
+                // With no copy of the document held, the only one such input
+                // can go onto is the document as created. A route document
+                // already past that (written by someone, or found existing
+                // after an answer was lost) has not been read here: refused
+                // as out of date, never sent over what it holds.
+                if (
+                  madeBeforeDocument &&
+                  !writeSnapshot &&
+                  generation !== ROUTE_DOCUMENT_CREATED_GENERATION
+                ) {
+                  throw draftConflictFailure();
+                }
+                composedOnCreatedDocument = madeBeforeDocument && !writeSnapshot;
                 const entry = prepare();
                 sentDraftGeneration =
                   entry.expectedDraftGeneration ?? generation;
@@ -2247,8 +2377,8 @@ export function VisualEditorShell({
                   expectedSourceGeneration: entry.expectedSourceGeneration!,
                 });
               },
-            ).then(
-              (result) => {
+              {
+              onResult: (result) => {
                 const answered = sentEntry as PendingContentEntry | undefined;
                 const hiddenBefore = answered
                   ? previewVisibilityRef.current.isHidden(answered.sectionId)
@@ -2279,6 +2409,9 @@ export function VisualEditorShell({
                       draftGeneration: data.draftGeneration,
                       sections: data.document?.sections,
                     },
+                    composedOnCreatedDocument
+                      ? { ownStepFrom: ROUTE_DOCUMENT_CREATED_GENERATION }
+                      : undefined,
                   );
                   if (next) contentSnapshotsRef.current.set(sentTemplateId, next);
                 }
@@ -2294,7 +2427,7 @@ export function VisualEditorShell({
                 }
                 return result;
               },
-              (error: unknown) => {
+              onError: (error: unknown): never => {
                 // Sent, and no answer came back: it may have landed. A
                 // refusal answered for an earlier sign-in is an answer.
                 if (
@@ -2308,6 +2441,7 @@ export function VisualEditorShell({
                   syncUnconfirmedContentCount();
                 }
                 throw error;
+              },
               },
             ),
           onSaved: recordHistory
@@ -2353,6 +2487,11 @@ export function VisualEditorShell({
         // can do about it, so a conflict is recorded rather than only reported.
         if ((error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT) {
           setContentConflicts((current) => ({ ...current, [key]: tid }));
+        } else if (
+          (error as { code?: string }).code === UNANSWERED_EARLIER_SAVE_CODE
+        ) {
+          // Held, as at the top: nothing was sent, nothing failed.
+          setDraftSaveState("error");
         } else if (!isEditorWritePaused(error)) {
           // Kept per key, so another section's save landing later cannot
           // make this one read as saved.
@@ -2519,7 +2658,10 @@ export function VisualEditorShell({
 
     for (const [key, templateId] of conflicts) {
       const pending = pendingPropsMapRef.current.get(key);
-      const template = freshTemplates.find((entry) => entry.id === templateId);
+      // Recorded under the id it was sent by: a route placeholder is read
+      // back as the document this session created from it.
+      const documentId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const template = freshTemplates.find((entry) => entry.id === documentId);
       if (!pending || !template) continue;
       const section = template.document.sections.find(
         (entry) => entry.id === pending.sectionId,
@@ -2577,7 +2719,7 @@ export function VisualEditorShell({
       // document's, and reusing it would be refused for the same reason.
       if (typeof template.draftGeneration === "number") {
         templateDraftGenerationRef.current.set(
-          templateId,
+          documentId,
           template.draftGeneration,
         );
       }
@@ -2634,8 +2776,18 @@ export function VisualEditorShell({
     async (targetTemplateId?: string) => {
       const tid = targetTemplateId ?? pageTemplateId;
       if (!tid) return;
-      const prefix = `${tid}:`;
-      await templateMutationQueueRef.current.get(tid)?.catch(() => {});
+      // The document, under every id its writes were queued and kept under:
+      // edits made before its route document existed are keyed by the
+      // placeholder, later ones by the real id.
+      const aliases = templateQueueAliases(tid);
+      const aliasOf = (key: string) =>
+        aliases.find((alias) => key.startsWith(`${alias}:`));
+      await Promise.allSettled(
+        aliases.flatMap((alias) => {
+          const tail = templateMutationQueueRef.current.get(alias);
+          return tail ? [tail] : [];
+        }),
+      );
       // A flush runs ahead of another step (publish, a structural edit) and
       // is not the author asking to save, so a write that was never answered
       // stops it here: nothing is checked or sent until Check and save.
@@ -2643,31 +2795,42 @@ export function VisualEditorShell({
         throw new Error(UNCONFIRMED_SAVE_HOLD);
       }
       for (const key of Array.from(pendingPropsMapRef.current.keys())) {
-        if (!key.startsWith(prefix)) continue;
+        const keyTemplateId = aliasOf(key);
+        if (keyTemplateId === undefined) continue;
+        // Content a save already failed or was refused for stays held, under
+        // whichever of the document's ids it is kept and whichever id the
+        // step asked by: only the author's own recovery (try again, load
+        // latest and keep mine) sends it. It keeps the step from going on.
+        if (
+          key in contentConflictsRef.current ||
+          failedContentKeysRef.current.has(key)
+        ) {
+          continue;
+        }
         const timer = pendingPropsTimersRef.current.get(key);
         if (timer !== undefined) clearTimeout(timer);
         pendingPropsTimersRef.current.delete(key);
-        await commitSectionPending(tid, key);
+        await commitSectionPending(keyTemplateId, key);
       }
-      if (
-        [...pendingPropsMapRef.current.keys()].some((key) =>
-          key.startsWith(prefix),
-        )
-      ) {
+      const heldKeys = [...pendingPropsMapRef.current.keys()].filter(
+        (key) => aliasOf(key) !== undefined,
+      );
+      if (heldKeys.length > 0) {
         // A conflicted write is not waiting on a retry — sending the same
         // payload again is what the refusal was protecting against — so the
-        // message names the action that resolves it.
+        // message names the action that resolves it. Told from this
+        // document's own held entries: another document's conflict does not
+        // make a plain failure here read as one.
         throw new Error(
-          Object.keys(contentConflictsRef.current).length > 0
-            ? heldContentMessage({
-                hasListConflict:
-                  Object.keys(listConflictsRef.current).length > 0,
-              })
-            : "Content changed while saving. Retry before continuing.",
+          heldFlushMessage({
+            heldKeys,
+            conflicts: contentConflictsRef.current,
+            listConflicts: listConflictsRef.current,
+          }),
         );
       }
     },
-    [pageTemplateId, commitSectionPending],
+    [pageTemplateId, commitSectionPending, templateQueueAliases],
   );
 
   const previewSourceOriginRef = useRef<string | null>(null);
@@ -2753,8 +2916,69 @@ export function VisualEditorShell({
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
+  // A preview on its `pv-` host is framed through the authorization flow
+  // first (#214 P2): one flow per framed document, answered at most once.
+  const previewAccessMode =
+    previewServer.data?.success === true &&
+    previewServer.data.data.access === "pv-exchange"
+      ? "pv-exchange"
+      : "open";
+  const previewAccessFlowRef = useRef<{
+    key: string;
+    flow: LivePreviewAccessFlow;
+  } | null>(null);
+  if (
+    previewAccessMode === "pv-exchange" &&
+    previewKey &&
+    previewAccessFlowRef.current?.key !== previewKey
+  ) {
+    previewAccessFlowRef.current = {
+      key: previewKey,
+      flow: startLivePreviewAccessFlow(Date.now()),
+    };
+  }
+  const framedPreviewSrc =
+    previewAccessMode === "pv-exchange" &&
+    previewUrl &&
+    previewAccessFlowRef.current
+      ? livePreviewAccessBeginUrl({
+          framedUrl: previewUrl,
+          flowId: previewAccessFlowRef.current.flow.flowId,
+          editorOrigin: context.previewChannel?.editorOrigin ?? "",
+        })
+      : previewUrl;
   const previewUrlRef = useRef(previewUrl);
   previewUrlRef.current = previewUrl;
+  // A preview tab the editor opened runs its own flow, with its own grant
+  // (#214 P3, design §4b); one at a time, answered at most once.
+  const previewAccessTabRef = useRef<LivePreviewAccessTab | null>(null);
+  const previewTabEditorOrigin = context.previewChannel?.editorOrigin ?? null;
+  const openPreviewTab = useCallback(() => {
+    const framedUrl = previewUrlRef.current;
+    if (!framedUrl || !previewTabEditorOrigin) return;
+    const previous = previewAccessTabRef.current;
+    if (previous) previous.flow.ended = true;
+    const flow = startLivePreviewAccessFlow(Date.now());
+    // Opened with an opener: the tab's begin page reports to this window.
+    // It drops the opener itself before the Theme loads.
+    const opened = window.open(
+      livePreviewAccessBeginUrl({
+        framedUrl,
+        flowId: flow.flowId,
+        editorOrigin: previewTabEditorOrigin,
+        mode: "tab",
+      }),
+      "_blank",
+    );
+    if (!opened) {
+      previewAccessTabRef.current = null;
+      toast.error(
+        "The browser blocked the preview tab. Allow pop-ups for Morph, then try again.",
+      );
+      return;
+    }
+    previewAccessTabRef.current = { flow, window: opened };
+  }, [previewTabEditorOrigin]);
   const previewRevisionRef = useRef(previewRevision);
   previewRevisionRef.current = previewRevision;
   /**
@@ -2963,6 +3187,126 @@ export function VisualEditorShell({
   useEffect(() => {
     dispatchPreviewLifecycle({ type: "reset" });
   }, [livePreviewWorkspaceKey]);
+
+  // The authorization flow's two messages from the framed begin page. Only
+  // the frame's own window, on the preview's origin, for the flow being
+  // waited on, is answered, and only once (live-preview-access.ts).
+  useEffect(() => {
+    if (previewAccessMode !== "pv-exchange") return;
+    const storefrontId = context.storefront.id;
+    const themeId = context.theme.id;
+    const failed = () =>
+      dispatchPreviewLifecycle({
+        type: "server-failed",
+        message: LIVE_PREVIEW_ACCESS_FAILED_NOTICE,
+      });
+    const onMessage = (event: MessageEvent) => {
+      const tab = previewAccessTabRef.current;
+      if (tab && tab.window && event.source === tab.window) {
+        const fromTab = {
+          origin: previewSourceOriginRef.current ?? "",
+          window: tab.window,
+        };
+        // The tab shows its own failure; the editor only lets go of it.
+        if (isLivePreviewAccessFailure(tab.flow, event, fromTab)) {
+          tab.flow.ended = true;
+          tab.window = null;
+          return;
+        }
+        const tabBinderHash = acceptLivePreviewAccessBegin(
+          tab.flow,
+          event,
+          fromTab,
+          Date.now(),
+        );
+        if (!tabBinderHash) return;
+        const tabWindow = tab.window as Window;
+        void issueThemePreviewAccess({
+          data: {
+            storefrontId,
+            themeId,
+            flowId: tab.flow.flowId,
+            binderHash: tabBinderHash,
+            kind: "tab",
+          },
+        }).then(
+          (result) => {
+            if (previewAccessTabRef.current !== tab) return;
+            tab.window = null;
+            if (!result.success) {
+              tabWindow.close();
+              toast.error("The preview tab could not sign in. Try again.");
+              return;
+            }
+            tabWindow.postMessage(
+              livePreviewAccessCodeMessage(tab.flow, result.data.code),
+              fromTab.origin,
+            );
+          },
+          () => {
+            if (previewAccessTabRef.current !== tab) return;
+            tab.window = null;
+            tabWindow.close();
+            toast.error("The preview tab could not sign in. Try again.");
+          },
+        );
+        return;
+      }
+      const entry = previewAccessFlowRef.current;
+      if (!entry) return;
+      const frame = previewIframeRef.current?.contentWindow ?? null;
+      const expected = {
+        origin: previewSourceOriginRef.current ?? "",
+        window: frame,
+      };
+      if (isLivePreviewAccessFailure(entry.flow, event, expected)) {
+        entry.flow.ended = true;
+        failed();
+        return;
+      }
+      if (isLivePreviewAccessEnded(event, expected)) {
+        entry.flow.ended = true;
+        dispatchPreviewLifecycle({
+          type: "server-failed",
+          message: LIVE_PREVIEW_ACCESS_ENDED_NOTICE,
+        });
+        return;
+      }
+      const binderHash = acceptLivePreviewAccessBegin(
+        entry.flow,
+        event,
+        expected,
+        Date.now(),
+      );
+      if (!binderHash) return;
+      void issueThemePreviewAccess({
+        data: {
+          storefrontId,
+          themeId,
+          flowId: entry.flow.flowId,
+          binderHash,
+        },
+      }).then(
+        (result) => {
+          // A newer frame has its own flow; this answer is for nobody.
+          if (previewAccessFlowRef.current !== entry) return;
+          if (!result.success) {
+            failed();
+            return;
+          }
+          frame?.postMessage(
+            livePreviewAccessCodeMessage(entry.flow, result.data.code),
+            expected.origin,
+          );
+        },
+        () => {
+          if (previewAccessFlowRef.current === entry) failed();
+        },
+      );
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [previewAccessMode, context.storefront.id, context.theme.id]);
 
   useEffect(() => {
     if (previewLifecycle.phase === "reconnecting" || previewServer.isFetching) {
@@ -3238,6 +3582,13 @@ export function VisualEditorShell({
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
   const [isFlushingCodeChanges, setIsFlushingCodeChanges] = useState(false);
   const editorCodeWorkspaceRef = useRef<EditorCodeWorkspaceHandle>(null);
+  // The Command Palette opens the same Starter upgrade review as the notice,
+  // also when no notice is shown.
+  const [starterReviewRequest, setStarterReviewRequest] = useState(0);
+  const requestStarterReview = useCallback(
+    () => setStarterReviewRequest((current) => current + 1),
+    [],
+  );
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -3825,6 +4176,36 @@ export function VisualEditorShell({
     [sectionModel],
   );
   /**
+   * The key one section's content is kept under in a document. A section has
+   * one. Typed while its route had no document of its own, it is kept under
+   * the route placeholder; an edit made after the page took up the document
+   * that placeholder created joins it there for as long as anything is held
+   * for it (pending, waiting on its debounce, failed, refused or unanswered),
+   * never as a second entry under the real id. Two entries for one section
+   * let a recovery send the older value after the newer one was stored. Once
+   * nothing is held under the placeholder, edits go under the real id.
+   */
+  const contentKeyFor = useCallback(
+    (templateId: string, sectionId: string): string => {
+      for (const [placeholder, id] of routeTemplateIdsRef.current) {
+        if (id !== templateId || placeholder === templateId) continue;
+        const held = `${placeholder}:${sectionId}`;
+        if (
+          pendingPropsMapRef.current.has(held) ||
+          pendingPropsTimersRef.current.has(held) ||
+          unconfirmedContentRef.current.has(held) ||
+          failedContentKeysRef.current.has(held) ||
+          held in contentConflictsRef.current ||
+          held in listConflictsRef.current
+        ) {
+          return held;
+        }
+      }
+      return `${templateId}:${sectionId}`;
+    },
+    [],
+  );
+  /**
    * What the editor holds about one section's visibility, read at the moment
    * it is asked: the accepted copy, and the pending and unanswered entries,
    * keyed as the write path keys them (`previewSectionHidden`). Nothing here
@@ -3834,7 +4215,7 @@ export function VisualEditorShell({
     (sectionId: string) => {
       const templateId = templateIdForSection(sectionId);
       if (!templateId) return null;
-      const key = `${templateId}:${sectionId}`;
+      const key = contentKeyFor(templateId, sectionId);
       return {
         snapshot: contentSnapshotsRef.current.get(
           routeTemplateIdsRef.current.get(templateId) ?? templateId,
@@ -3844,7 +4225,7 @@ export function VisualEditorShell({
         unconfirmed: unconfirmedContentRef.current.get(key),
       };
     },
-    [templateIdForSection],
+    [contentKeyFor, templateIdForSection],
   );
   /** Read by the preview poster, which is created once. */
   const previewSectionStateRef = useRef(previewSectionState);
@@ -4157,10 +4538,23 @@ export function VisualEditorShell({
         });
         return;
       }
-      setPendingRouteSelection({
-        routePath: route.path,
-        sectionId: route.path,
-      });
+      // Selecting the page root is a selection request, and a selection
+      // request turns select mode on (handleSectionsSearchChange). A
+      // document-navigating preview (Astro, D92) only switches the page and
+      // keeps the author's mode: in interact mode its links stay links. In
+      // select mode the page root is selected as before. Start is unchanged.
+      // The selection the page left behind is let go by the context reset
+      // (useEditorContextReset) once the route changes; one still waiting for
+      // a page opened in select mode is dropped here, or a later open of that
+      // page would take it and turn select mode on (D93-1).
+      if (!documentNavigationRef.current || isSelectionModeRef.current) {
+        setPendingRouteSelection({
+          routePath: route.path,
+          sectionId: route.path,
+        });
+      } else {
+        setPendingRouteSelection(null);
+      }
       setPendingRoutePath(route.path);
       const routeTemplate =
         templateForRoute(context.templates, route.path) ??
@@ -6547,10 +6941,21 @@ export function VisualEditorShell({
       }
 
       // 1. Flush any pending debounced props saves and await queued template mutations
-      await flushTemplatePendingProps();
-      // The shell is published with whatever page is being published, so its
-      // pending edits have to be committed in the same breath.
-      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+      // Content the flush holds back (refused, failed or unanswered) stops
+      // the publish here, with the reason it was held; nothing is resent.
+      try {
+        await flushTemplatePendingProps();
+        // The shell is published with whatever page is being published, so its
+        // pending edits have to be committed in the same breath.
+        if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+      } catch (error) {
+        toast.error(
+          `Cannot publish: ${
+            error instanceof Error ? error.message : "Content is still saving."
+          }`,
+        );
+        return;
+      }
 
       const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
       for (const opKey of pendingSaveWritesRef.current.keys()) {
@@ -7313,16 +7718,60 @@ export function VisualEditorShell({
     }
   }, []);
 
+  // Read when a navigation is asked about, so the guard needs no re-register.
+  const contextTemplatesRef = useRef(context.templates);
+  contextTemplatesRef.current = context.templates;
+
+  /**
+   * What `isRouteDocumentAdoption` is judged on, read when asked: the route
+   * documents the server answered this editor's own creates with, and which
+   * of this Theme's documents are shared rather than a route's own. The leave
+   * guard and the selection reset both decide from this one reading.
+   */
+  const routeDocumentAdoptionKnown = useCallback(
+    () => ({
+      createdRouteDocuments: new Map(
+        Array.from(routeTemplateIdsRef.current).flatMap(([placeholder, id]) => {
+          const routePath = routePathFromTemplatePlaceholder(placeholder);
+          return routePath === null ? [] : [[routePath, id] as const];
+        }),
+      ),
+      isSharedDocument: (templateId: string) =>
+        contextTemplatesRef.current.some(
+          (template) => template.id === templateId && !template.routePath,
+        ),
+    }),
+    [],
+  );
+
   useEffect(() => {
     if (!navigationGuardRef) return;
-    navigationGuardRef.current = (kind) => {
+    navigationGuardRef.current = (kind, navigation) => {
+      // The editor moving its own URL onto the route document its write just
+      // created: same page, nothing to wait for or to commit.
+      if (
+        kind === "switch-page" &&
+        navigation &&
+        isRouteDocumentAdoption(
+          navigation.current,
+          navigation.next,
+          routeDocumentAdoptionKnown(),
+        )
+      ) {
+        return Promise.resolve(false);
+      }
       commitFocusedField();
       return leaveGuard.request(kind);
     };
     return () => {
       navigationGuardRef.current = null;
     };
-  }, [commitFocusedField, leaveGuard, navigationGuardRef]);
+  }, [
+    commitFocusedField,
+    leaveGuard,
+    navigationGuardRef,
+    routeDocumentAdoptionKnown,
+  ]);
 
   // Reloading or closing the tab cannot be held for a save, only warned
   // about. Asked at the moment of leaving, so an edit made a moment earlier
@@ -7866,9 +8315,19 @@ export function VisualEditorShell({
       await handleBuildPreview();
       return;
     }
-    // Pending field edits are part of the content being sealed.
-    await flushTemplatePendingProps();
-    if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+    // Pending field edits are part of the content being sealed. Content the
+    // flush holds back stops the build here, with the reason it was held.
+    try {
+      await flushTemplatePendingProps();
+      if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+    } catch (error) {
+      toast.error(
+        `Cannot build: ${
+          error instanceof Error ? error.message : "Content is still saving."
+        }`,
+      );
+      return;
+    }
     const currentGeneration = workspace.getBaseSourceGeneration(workspaceScope);
     const prepared = await prepareContentDraftForBuild({
       currentGeneration,
@@ -8452,6 +8911,21 @@ export function VisualEditorShell({
     templateId: search.templateId,
     routePath: search.routePath,
     onReset: resetEditorContext,
+    // The editor taking up the route document its own write just created is
+    // the same page, as the leave guard judges it: the selection, the
+    // Inspector it feeds and the canvas scroll stay. Only while the section
+    // selected is still one of this page's; otherwise it is let go as on any
+    // other change. Every other change of page, document or Theme resets.
+    isSamePage: (previous, next) =>
+      isRouteDocumentAdoption(
+        { pathname: "", search: previous },
+        { pathname: "", search: next },
+        routeDocumentAdoptionKnown(),
+      ) &&
+      (!activeSelection ||
+        sectionModel.document.sections.some(
+          (section) => section.id === activeSelection.sectionId,
+        )),
   });
 
   useEffect(() => {
@@ -9307,6 +9781,38 @@ export function VisualEditorShell({
   // new object for the same document, and the route sent again would end an
   // inline edit open on the page (a Theme with a router finishes it first).
   const activeTemplateId = activeTemplate?.id;
+  const activeTemplateIdRef = useRef(activeTemplateId);
+  activeTemplateIdRef.current = activeTemplateId;
+  // The id the route was last sent for, kept across the editor taking up the
+  // route document its own write created. That is the same page (as the leave
+  // guard and the selection reset judge it), and the frame may have moved by
+  // itself in the meantime: sending the route again then would take it back
+  // to the editor's page. Any other change of document sends it again.
+  const routeSyncTemplateIdRef = useRef(activeTemplateId);
+  const previousRouteSyncTemplateId = routeSyncTemplateIdRef.current;
+  const routeSyncTemplateId =
+    previousRouteSyncTemplateId &&
+    activeTemplateId &&
+    previousRouteSyncTemplateId !== activeTemplateId &&
+    isRouteDocumentAdoption(
+      {
+        pathname: "",
+        search: {
+          templateId: previousRouteSyncTemplateId,
+          routePath: search.routePath,
+        },
+      },
+      {
+        pathname: "",
+        search: { templateId: activeTemplateId, routePath: search.routePath },
+      },
+      routeDocumentAdoptionKnown(),
+    )
+      ? previousRouteSyncTemplateId
+      : activeTemplateId;
+  useEffect(() => {
+    routeSyncTemplateIdRef.current = routeSyncTemplateId;
+  }, [routeSyncTemplateId]);
   /** Counts route requests, of any frame; the page echoes the one it answers. */
   const routeRequestIdRef = useRef(0);
   /**
@@ -9323,17 +9829,18 @@ export function VisualEditorShell({
   } | null>(null);
   /** Sends the route on screen; the request's id, or null when none was sent. */
   const syncPreviewRoute = useCallback((): number | null => {
-    if (!activeTemplateId) return null;
+    const templateId = activeTemplateIdRef.current;
+    if (!routeSyncTemplateId || !templateId) return null;
     routeRequestIdRef.current += 1;
     const routeRequestId = routeRequestIdRef.current;
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-route",
-      templateId: activeTemplateId,
+      templateId,
       routePath: search.routePath ?? null,
       routeRequestId,
     });
     return routeRequestId;
-  }, [activeTemplateId, postEditorToPreviewMessage, search.routePath]);
+  }, [routeSyncTemplateId, postEditorToPreviewMessage, search.routePath]);
   /**
    * A route request sent to a document-navigating frame: the page switch the
    * canvas now waits on (D3). Nothing for a Theme whose preview has a router.
@@ -9503,6 +10010,17 @@ export function VisualEditorShell({
   useEffect(() => {
     const pending = pendingRouteSelection;
     if (!pending) return;
+    // A document-navigating preview (Astro) queued it only because the author
+    // was in select mode, for the page then being opened (D94-2). A page the
+    // editor is no longer on or going to never takes it.
+    if (
+      documentNavigationRef.current &&
+      (search.routePath ?? "/") !== pending.routePath &&
+      pendingRoutePathRef.current !== pending.routePath
+    ) {
+      setPendingRouteSelection(null);
+      return;
+    }
     if ((search.routePath ?? "/") !== pending.routePath) return;
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
     if (
@@ -9513,6 +10031,9 @@ export function VisualEditorShell({
     }
 
     setPendingRouteSelection(null);
+    // A late answer never turns select mode back on after the author turned
+    // it off while the page was opening.
+    if (documentNavigationRef.current && !isSelectionModeRef.current) return;
     handleSectionsSearchChange({ section: pending.sectionId });
   }, [
     handleSectionsSearchChange,
@@ -10391,7 +10912,7 @@ export function VisualEditorShell({
         const sourceGeneration = currentContentSourceGeneration();
         for (const [sectionId, binding] of sectionModelRef.current.bindings) {
           const templateId = binding.templateId;
-          const key = `${templateId}:${sectionId}`;
+          const key = contentKeyFor(templateId, sectionId);
           // A hidden section is replayed as hidden, with no props: its
           // stored values stay with the editor (`previewSectionPost`).
           const section = previewSectionPost({
@@ -10908,7 +11429,10 @@ export function VisualEditorShell({
 
       const templateId = templateIdForSection(sectionId);
       if (!templateId) return;
-      const key = `${templateId}:${sectionId}`;
+      // One entry per section: an edit still held under the route
+      // placeholder takes this one in, and is sent as the placeholder's.
+      const key = contentKeyFor(templateId, sectionId);
+      const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
 
       // 2. Debounced per-section timer (does NOT cancel edits on other sections)
       const existingTimer = pendingPropsTimersRef.current.get(key);
@@ -10997,7 +11521,7 @@ export function VisualEditorShell({
 
       const timer = setTimeout(() => {
         pendingPropsTimersRef.current.delete(key);
-        void commitSectionPending(templateId, key).catch(() => {
+        void commitSectionPending(keyTemplateId, key).catch(() => {
           // Mutation UI reports the error; the shared queue keeps the input.
         });
       }, 300);
@@ -11006,6 +11530,7 @@ export function VisualEditorShell({
     },
     [
       commitSectionPending,
+      contentKeyFor,
       leaveGuard,
       sectionPropsSnapshot,
       enqueueTemplateMutation,
@@ -11042,7 +11567,8 @@ export function VisualEditorShell({
     pendingProps: (sectionId) => {
       if (!activeTemplate) return undefined;
       const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
-      return pendingPropsMapRef.current.get(`${templateId}:${sectionId}`)?.props;
+      return pendingPropsMapRef.current.get(contentKeyFor(templateId, sectionId))
+        ?.props;
     },
   };
   useEffect(() => {
@@ -11073,16 +11599,24 @@ export function VisualEditorShell({
         lastSelection?.sectionId !== message.sectionId ||
         lastSelection.fieldKey !== message.fieldKey ||
         lastSelection.fieldPath !== message.fieldPath ||
-        !hasInlineTextDocumentTarget(
-          message.sectionId,
-          activeTemplate.document.sections.map((section) => section.id),
-          activeRouteSections.map((section) => section.slotId),
+        // The page's own sections, or one the shared layout renders: that one
+        // is stored in the layout's Document, and `templateIdForSection`
+        // below sends the write there, as it does for the Inspector.
+        !(
+          hasInlineTextDocumentTarget(
+            message.sectionId,
+            activeTemplate.document.sections.map((section) => section.id),
+            activeRouteSections.map((section) => section.slotId),
+          ) || sectionModel.sharedSectionIds.has(message.sectionId)
         )
       ) {
         return;
       }
 
-      const key = `${templateIdForSection(message.sectionId) ?? activeTemplate.id}:${message.sectionId}`;
+      const key = contentKeyFor(
+        templateIdForSection(message.sectionId) ?? activeTemplate.id,
+        message.sectionId,
+      );
       const currentProps = {
         ...sectionPropsSnapshot(message.sectionId),
         ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
@@ -11177,6 +11711,7 @@ export function VisualEditorShell({
     activeRouteSections,
     handleSectionPropsChange,
     isSelectionMode,
+    sectionModel.sharedSectionIds,
     sectionPropsSnapshot,
     stepCanvasDeferral,
     templateIdForSection,
@@ -11222,7 +11757,9 @@ export function VisualEditorShell({
         toast.error("This page has no document to store this section in.");
         return;
       }
-      const key = `${templateId}:${sectionId}`;
+      // One entry per section (`contentKeyFor`), sent as the key's own.
+      const key = contentKeyFor(templateId, sectionId);
+      const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
       const pendingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
       const currentProps = { ...section.props, ...pendingProps };
       const result = swapArrayItemsAtFieldPaths(
@@ -11326,7 +11863,7 @@ export function VisualEditorShell({
       });
 
       try {
-        await commitSectionPending(templateId, key, false);
+        await commitSectionPending(keyTemplateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
         // props the other one started from.
         history.record(
@@ -11426,7 +11963,9 @@ export function VisualEditorShell({
         syncPreviewSectionProps(sectionId, undefined, enabled);
         return;
       }
-      const key = `${templateId}:${sectionId}`;
+      // One entry per section (`contentKeyFor`), sent as the key's own.
+      const key = contentKeyFor(templateId, sectionId);
+      const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
 
       const existingTimer = pendingPropsTimersRef.current.get(key);
       if (existingTimer) {
@@ -11461,7 +12000,7 @@ export function VisualEditorShell({
       reconcilePreviewSection(sectionId);
 
       try {
-        await commitSectionPending(templateId, key, false);
+        await commitSectionPending(keyTemplateId, key, false);
       } catch (error) {
         if (historyGeneration !== undefined) throw error;
         return;
@@ -13478,6 +14017,7 @@ export function VisualEditorShell({
           />
           <EditorStarterUpgradeNotice
             status={context.starterUpgrade}
+            reviewRequest={starterReviewRequest}
             storefrontId={workspaceScope.storefrontId}
             themeId={workspaceScope.themeId}
             unsavedCount={unsavedWorkspaceFileCount + pendingSourceConflicts.length}
@@ -13668,6 +14208,7 @@ export function VisualEditorShell({
             jumpLocation={jumpLocation}
             onResolveConflict={handleResolveConflict}
             onRestartPreview={retryLivePreview}
+            onReviewStarterUpgrade={requestStarterReview}
             onThemeFilesMoved={handleThemeFilesMoved}
             onDirtyFilesChange={setMonacoDirtyFiles}
             // Typing in Code while a navigation waits on a save cancels it,
@@ -13853,7 +14394,7 @@ export function VisualEditorShell({
                   <iframe
                     ref={previewIframeRef}
                     key={previewKey}
-                    src={previewUrl}
+                    src={framedPreviewSrc ?? previewUrl}
                     title={`${activeTemplate?.name ?? context.theme.name} storefront preview`}
                     sandbox={
                       livePreviewSecurity.enabled
@@ -14177,6 +14718,11 @@ export function VisualEditorShell({
             spacingOverlayMode={spacingOverlayMode}
             onSpacingOverlayModeChange={setSpacingOverlayMode}
             onPreviewRuntimeChanged={retryLivePreview}
+            onOpenPreviewTab={
+              previewAccessMode === "pv-exchange" && previewUrl
+                ? openPreviewTab
+                : null
+            }
             isCommentMode={isCommentMode}
             onCommentModeChange={(enabled) => {
               autoEnabledSelectionForStylesRef.current = false;
@@ -14219,6 +14765,7 @@ export function VisualEditorShell({
 
         <EditorAssistantPanel
           contentResetEpoch={contentResetEpoch}
+          inspectorDocumentKey={inspectorDocumentKey}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}
@@ -14382,6 +14929,7 @@ function EditorControls({
   spacingOverlayMode,
   onSpacingOverlayModeChange,
   onPreviewRuntimeChanged,
+  onOpenPreviewTab,
   isCommentMode,
   onCommentModeChange,
   onRefresh,
@@ -14398,6 +14946,8 @@ function EditorControls({
   onSpacingOverlayModeChange: (mode: PreviewSpacingOverlayMode) => void;
   /** Restarts the Live Preview once the Theme records another runtime. */
   onPreviewRuntimeChanged: () => void;
+  /** Opens the preview in its own tab; null while the preview has no `pv-` host. */
+  onOpenPreviewTab: (() => void) | null;
   isCommentMode: boolean;
   onCommentModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
@@ -14508,9 +15058,14 @@ function EditorControls({
           variant="ghost"
           size="icon"
           className="size-7 shrink-0 shadow-none"
-          disabled
+          disabled={!onOpenPreviewTab}
           aria-label="Open preview in new tab"
-          title="Open preview is not available yet"
+          title={
+            onOpenPreviewTab
+              ? "Open preview in new tab"
+              : "Open preview in a new tab is not available for this preview"
+          }
+          onClick={() => onOpenPreviewTab?.()}
         >
           <ExternalLink />
         </Button>

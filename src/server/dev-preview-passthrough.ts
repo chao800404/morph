@@ -46,7 +46,10 @@ export function isDevPreviewHost(
   if (/^\d{2,5}-[a-z0-9_-]+$/.test(label)) return true;
   // A Build Preview host (`bp-<token>`): the build's instance answers every
   // path there, so none of them may be Morph's own Vite modules either.
-  return /^bp-[0-9a-f]{40}$/.test(label);
+  if (/^bp-[0-9a-f]{40}$/.test(label)) return true;
+  // A Live Preview host that verifies its credential per request
+  // (`pv-<previewId>`): the same holds.
+  return /^pv-[0-9a-f]{32}$/.test(label);
 }
 
 /**

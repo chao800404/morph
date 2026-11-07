@@ -105,6 +105,36 @@ export function heldContentMessage({
     : "Content is out of date with the document. Load the latest version and keep your changes before continuing.";
 }
 
+/** Content held after its save failed: the author tries again. */
+export const HELD_FAILED_CONTENT_MESSAGE =
+  "Content changed while saving. Retry before continuing.";
+
+/**
+ * Why a step that saves one document's content first (publish, build, a
+ * structural edit) stopped, read from that document's own held entries
+ * only. Another document's conflict says nothing about this one: a plain
+ * failure here is still told as one, and only a conflict on one of these
+ * entries (a list one included) points at the conflict's way out.
+ */
+export function heldFlushMessage({
+  heldKeys,
+  conflicts,
+  listConflicts,
+}: {
+  /** The keys of this document's content still held after the flush. */
+  heldKeys: readonly string[];
+  conflicts: Readonly<Record<string, unknown>>;
+  listConflicts: Readonly<Record<string, unknown>>;
+}): string {
+  const refused = heldKeys.filter(
+    (key) => key in conflicts || key in listConflicts,
+  );
+  if (refused.length === 0) return HELD_FAILED_CONTENT_MESSAGE;
+  return heldContentMessage({
+    hasListConflict: refused.some((key) => key in listConflicts),
+  });
+}
+
 export function rebaseContentProps({
   incoming,
   baseline,

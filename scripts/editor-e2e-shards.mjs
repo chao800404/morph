@@ -78,9 +78,16 @@ export const EDITOR_SHARDS = [
     "astro-preview-container.spec.ts",
     "astro-publish-acceptance.spec.ts",
     "authored-content.spec.ts",
+    // Container transport and full Start only, so it skips here. Its exact
+    // tests are listed in scripts/container-acceptance-targets/; no CI step
+    // runs that check until the container jobs are wired (stage 3).
+    "b1-publish-rollback-acceptance.spec.ts",
     "build-preview-isolated.spec.ts",
     "loader-data-binding.spec.ts",
     "m1-container-lifecycle-acceptance.spec.ts",
+    "preview-access-container.spec.ts",
+    "start-container-content-sync.spec.ts",
+    "preview-socket-acceptance.spec.ts",
     "native-compat-published.spec.ts",
     "native-content-dependency.spec.ts",
     "native-publish-acceptance.spec.ts",
@@ -89,6 +96,9 @@ export const EDITOR_SHARDS = [
     "publish.spec.ts",
     "source-asset-publish.spec.ts",
     "preview-start-bridge-interruption.spec.ts",
+    // Container transport only, so it skips on every shard. Its exact tests
+    // are listed in scripts/container-acceptance-targets/.
+    "starter-upgrade-publish-acceptance.spec.ts",
   ],
   [
     "session-editor-writes.spec.ts",
