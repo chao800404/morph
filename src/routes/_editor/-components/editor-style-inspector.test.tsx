@@ -3036,3 +3036,61 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
     );
   });
 });
+
+/**
+ * A default the source states as `null` is a stated default, not a missing
+ * one (`staticLiteralValue` reports `{ ok: true, value: null }`). The panel
+ * shows the field as the component renders it with that value: a select falls
+ * back to its first option, as it does for any value the field does not hold.
+ * Read through the shared declaration helper, `null` must not turn into `""`.
+ */
+describe("a content default the source states as null", () => {
+  const PATH = "src/components/Sized.tsx";
+  const sizedFile = {
+    id: "sized-source",
+    storefrontId: "storefront-1",
+    themeId: "theme-1",
+    path: PATH,
+    content: `export const contentFields = {
+  size: {
+    type: "select",
+    label: "Size",
+    options: [
+      { label: "Small", value: "sm" },
+      { label: "Large", value: "lg" },
+    ],
+  },
+} as const;
+export default function Sized({ size = null }: { size?: string | null }) {
+  return <section data-size={size ?? "sm"} />;
+}`,
+    mimeType: "text/typescript",
+    isEntry: false,
+    version: 1,
+    createdAt: "2026-11-07T00:00:00.000Z",
+    updatedAt: "2026-11-07T00:00:00.000Z",
+  };
+
+  it("shows the select's first option, not a blank value", () => {
+    render(
+      <EditorStyleInspector
+        view="content"
+        onPropsChange={vi.fn()}
+        onUpdateThemeFileStyle={vi.fn()}
+        onJumpToCode={vi.fn()}
+        resourceKey="storefront-1:theme-1:template-1"
+        section={{
+          id: "section-1",
+          type: "sized",
+          componentRef: PATH,
+          enabled: true,
+          props: {},
+        }}
+        themeFiles={[sizedFile]}
+      />,
+    );
+    expect(
+      screen.getByRole("combobox", { name: "Size" }).textContent,
+    ).toContain("Small");
+  });
+});

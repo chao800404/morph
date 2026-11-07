@@ -77,13 +77,21 @@ export function resolveSectionContentDeclaration(
 /**
  * What the component itself renders for a field when the Document holds
  * nothing for it, when its source states a default: the structured value
- * (a list, a link) where there is one, else the string form.
+ * (a list, a link) where there is one, else the string form. `undefined`
+ * when the source states none.
+ *
+ * A default stated as `null` is returned as `null`: the parser reports it as
+ * a stated value (`{ ok: true, value: null }`) precisely so it can be told
+ * from no default, and a caller deciding what to show must see that.
  */
 export function declaredContentDefault(
   meta: Pick<ParsedComponentMeta, "defaultProps" | "defaultPropValues"> | null,
   fieldKey: string,
 ): unknown {
-  return meta?.defaultPropValues[fieldKey] ?? meta?.defaultProps[fieldKey];
+  if (!meta) return undefined;
+  return Object.prototype.hasOwnProperty.call(meta.defaultPropValues, fieldKey)
+    ? meta.defaultPropValues[fieldKey]
+    : meta.defaultProps[fieldKey];
 }
 
 /**

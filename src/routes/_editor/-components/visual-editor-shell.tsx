@@ -11584,16 +11584,30 @@ export function VisualEditorShell({
       try {
         await commitSectionPending(templateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
-        // props the other one started from.
+        // props the other one started from. A list nothing stored before the
+        // drag is undone by storing nothing again: writing its drawn rows back
+        // would look the same but pin the component's defaults in the
+        // Document, where a later change to the Theme's defaults no longer
+        // reaches them. The removal is the "Use code default" write.
         history.record(
           fenceSectionHistory(sectionId, templateId, {
             label: "Reorder · item",
-            undo: () =>
-              handleSectionPropsChange(
-                sectionId,
-                { [arrayRoot]: startProps[arrayRoot] },
-                { historySourceGeneration: generation },
-              ),
+            undo: unstoredRows
+              ? async () => {
+                  const reset = await handleResetContentFields(
+                    sectionId,
+                    [arrayRoot],
+                    false,
+                    generation,
+                  );
+                  if (!reset.success) throw sourceSelectionFailure();
+                }
+              : () =>
+                  handleSectionPropsChange(
+                    sectionId,
+                    { [arrayRoot]: startProps[arrayRoot] },
+                    { historySourceGeneration: generation },
+                  ),
             redo: () =>
               handleSectionPropsChange(
                 sectionId,
@@ -11615,6 +11629,7 @@ export function VisualEditorShell({
     [
       history,
       handleSectionPropsChange,
+      handleResetContentFields,
       invalidateSectionHistory,
       commitSectionPending,
       previewSectionIsHidden,
