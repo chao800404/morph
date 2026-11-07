@@ -14,6 +14,7 @@ import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
 import { writeThemePublicTextFile } from "../-queries/theme-binary-files";
 import {
   commitPendingContent,
+  contentUndoSteps,
   acknowledgeContentFields,
   fieldsNeedingReselection,
   stageContentFields,
@@ -2447,23 +2448,45 @@ export function VisualEditorShell({
           onSaved: recordHistory
             ? (entry, baseline) => {
                 if (!baseline) return;
+                // A key the section did not store before this write (a list
+                // first stored by an Add, say) is undone by storing nothing
+                // again: the "Use code default" removal, at the source
+                // generation this write was made against. Writing back
+                // `undefined` would send nothing and lose the undo silently.
+                const { restore, reset } = contentUndoSteps(
+                  baseline,
+                  entry.props,
+                );
+                const historySourceGeneration = entry.expectedSourceGeneration;
                 history.record(
                   fenceSectionHistory(entry.sectionId, tid, {
                     label: "Content",
-                    undo: () =>
-                      contentChangeRef.current?.(
-                        entry.sectionId,
-                        Object.fromEntries(
-                          Object.keys(entry.props).map((key) => [
-                            key,
-                            baseline[key],
-                          ]),
-                        ),
-                        {
-                          historySourceGeneration:
-                            entry.expectedSourceGeneration,
-                        },
-                      ),
+                    undo: async () => {
+                      if (reset.length > 0) {
+                        // Never re-read from the selection: a history entry
+                        // keeps the generation it was recorded at.
+                        if (historySourceGeneration === undefined) {
+                          throw sourceSelectionFailure();
+                        }
+                        const removed = await resetContentFieldsRef.current?.(
+                          entry.sectionId,
+                          reset,
+                          false,
+                          historySourceGeneration,
+                        );
+                        // Refused, or not sent: the entry stays where it is.
+                        if (!removed?.success) {
+                          throw removed?.message
+                            ? new Error(removed.message)
+                            : sourceSelectionFailure();
+                        }
+                      }
+                      if (Object.keys(restore).length > 0) {
+                        contentChangeRef.current?.(entry.sectionId, restore, {
+                          historySourceGeneration,
+                        });
+                      }
+                    },
                     redo: () =>
                       contentChangeRef.current?.(entry.sectionId, entry.props, {
                         historySourceGeneration: entry.expectedSourceGeneration,
@@ -11254,6 +11277,7 @@ export function VisualEditorShell({
         sectionId: string,
         fieldKeys: string[],
         recordHistory?: boolean,
+        historyGeneration?: number,
       ) => Promise<{ success: boolean; message?: string }>)
     | null
   >(null);

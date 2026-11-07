@@ -31,7 +31,10 @@ import {
   VisualEditorShell,
 } from "./visual-editor-shell";
 import { STARTER_THEME_FILES as OBJPOS_STARTER_FILES } from "@/lib/storefront/starter-theme-files";
-import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
+import {
+  identifyUnstoredListRows,
+  normalizeDocumentRowIds,
+} from "@/lib/storefront/editor/normalize-row-ids";
 import {
   resolveSelectable as objposResolveSelectable,
   selectionMetadata as objposSelectionMetadata,
@@ -3981,6 +3984,8 @@ describe("a list nothing stores yet, edited for the first time", () => {
   // row identity guard applies to it like to any stored list.
   const ENTRIES_PATH = "src/components/Entries.tsx";
   const DEFAULTS = [{ title: "One" }, { title: "Two" }];
+  /** The rows the component declares; a test may declare others. */
+  let defaults: ReadonlyArray<{ title: string }> = DEFAULTS;
   const entries = (storedProps?: Record<string, unknown>) => ({
     path: ENTRIES_PATH,
     type: "entries",
@@ -3992,7 +3997,7 @@ describe("a list nothing stores yet, edited for the first time", () => {
     fields: { title: { type: "text", label: "Title", maxLength: 150 } },
   },
 } as const;
-export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items?: { id?: string; title?: string }[] }) {
+export default function Entries({ items = ${JSON.stringify(defaults)} }: { items?: { id?: string; title?: string }[] }) {
   return <section>{items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}</section>;
 }`,
   });
@@ -4001,7 +4006,7 @@ export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items
     normalizeDocumentRowIds(
       {
         version: 1,
-        sections: [{ id: "section", props: { items: DEFAULTS } }],
+        sections: [{ id: "section", props: { items: defaults } }],
       },
       context.templates[0]!.id,
     ).value.sections[0]!.props.items as Array<{ id: string; title: string }>;
@@ -4025,6 +4030,7 @@ export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items
   let draftGeneration = 1;
   let stored: Record<string, unknown> = {};
   beforeEach(() => {
+    defaults = DEFAULTS;
     draftGeneration = 1;
     stored = {};
     updateSectionProps.mockReset();
@@ -4564,14 +4570,27 @@ function Home() {
         root.querySelector("[data-storefront-section-id],[data-morph-section]"),
       );
       expect(report).toMatchObject({ isSection: true, itemId: null });
-      renderEntries(props, 1);
+      const editor = renderEntries(props, 1);
       await flushFrames();
       fromPreview(report);
       await flushFrames();
       const contentTab = screen.queryByRole("button", { name: /^Content$/ });
       if (contentTab) fireEvent.click(contentTab);
       await flushFrames();
+      return editor;
     }
+    /**
+     * The route's read of the Theme after a removal: the shell does not take
+     * the document from a reset's answer, it invalidates the read, and the
+     * route hands it the new one. Modeled by giving the editor what the mock
+     * store now holds, as editor.tsx would once that read comes back.
+     */
+    const reread = async (
+      receive: (next: StorefrontThemeEditorDTO) => void,
+    ) => {
+      act(() => receive(editorAt(stored, draftGeneration)));
+      await flushFrames();
+    };
 
     beforeEach(() => {
       updateSectionProps.mockImplementation(async ({ data }) => {
@@ -4622,6 +4641,34 @@ function Home() {
       fireEvent.click(button!);
       await settle();
     };
+    const THREE = [{ title: "One" }, { title: "Two" }, { title: "Three" }];
+    /** The titles of the row cards the panel draws, in order. */
+    const panelTitles = () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>('[class*="bg-muted/30"]'),
+      ).map(
+        (card) => card.querySelector<HTMLInputElement>("input")?.value ?? null,
+      );
+    /** Whether Undo and Redo can be pressed. */
+    const historyButtons = () => ({
+      undo: !screen
+        .getByRole("button", { name: "Undo" })
+        .hasAttribute("disabled"),
+      redo: !screen
+        .getByRole("button", { name: "Redo" })
+        .hasAttribute("disabled"),
+    });
+    const press = async (name: "Undo" | "Redo") => {
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name }).hasAttribute("disabled"),
+        ).toBe(false),
+      );
+      fireEvent.click(screen.getByRole("button", { name }));
+      await settle();
+    };
+    const undo = () => press("Undo");
+    const redo = () => press("Redo");
     /** The write's version fields, as sent. */
     const versionsSent = (data: Record<string, unknown>) => ({
       expectedDraftGeneration: data.expectedDraftGeneration,
@@ -4664,10 +4711,19 @@ function Home() {
       expect((stored.items as unknown[]).length).toBe(3);
     });
 
-    it("first Remove drops exactly the pressed row and keeps the other with its id", async () => {
+    it("first Remove of the middle of three drawn rows drops exactly that row and keeps the first and third with their ids", async () => {
+      defaults = THREE;
       const notice = notices();
-      const [one] = identified();
+      const [one, two, three] = identified();
+      // The ids the panel keys the drawn rows by are the server's.
+      expect(
+        identifyUnstoredListRows("items", THREE, {
+          templateId: context.templates[0]!.id,
+          sectionId: "section",
+        }),
+      ).toEqual([one, two, three]);
       await openSection({});
+      expect(panelTitles()).toEqual(["One", "Two", "Three"]);
 
       await removeRow("Two");
 
@@ -4678,10 +4734,181 @@ function Home() {
         expectedSourceGeneration: 1,
       });
       expect(write).not.toHaveProperty("resetProps");
-      expect(rowsSent(write)).toEqual([[one!.id, "One"]]);
+      expect(rowsSent(write)).toEqual([
+        [one!.id, "One"],
+        [three!.id, "Three"],
+      ]);
       accepted(notice);
-      expect(stored.items).toEqual([{ id: one!.id, title: "One" }]);
+      expect(stored.items).toEqual([
+        { id: one!.id, title: "One" },
+        { id: three!.id, title: "Three" },
+      ]);
+      expect(panelTitles()).toEqual(["One", "Three"]);
     });
+
+    it("undo of the first Add stores nothing again, and redo writes the added list back with the same ids", async () => {
+      const notice = notices();
+      const { receive } = await openSection({});
+      await addEntry();
+      await reread(receive);
+      expect(sent()).toHaveLength(1);
+      const added = (sent()[0]!.props as { items: unknown[] }).items;
+      expect(added).toHaveLength(3);
+
+      await undo();
+
+      expect(sent(), "undo sends one write").toHaveLength(2);
+      const reset = sent()[1]!;
+      expect(reset).toMatchObject({
+        templateId: "template-1",
+        sectionId: "section",
+        props: {},
+        resetProps: ["items"],
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+      });
+      expect(reset.props, "no rows are written back").not.toHaveProperty(
+        "items",
+      );
+      expect(stored, "the Document stores no items again").not.toHaveProperty(
+        "items",
+      );
+      accepted(notice);
+      await reread(receive);
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+      expect(panelTitles()).toEqual(["One", "Two"]);
+
+      await redo();
+
+      expect(sent(), "redo sends one write").toHaveLength(3);
+      const again = sent()[2]!;
+      expect(again).not.toHaveProperty("resetProps");
+      expect(versionsSent(again)).toEqual({
+        expectedDraftGeneration: 3,
+        expectedSourceGeneration: 1,
+      });
+      expect((again.props as { items: unknown }).items).toEqual(added);
+      expect(stored.items).toEqual(added);
+      accepted(notice);
+      await reread(receive);
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+      expect(panelTitles()).toEqual(["One", "Two", ""]);
+    });
+
+    it("undo of the first Remove stores nothing again, and redo writes the shortened list back with the same ids", async () => {
+      defaults = THREE;
+      const notice = notices();
+      const [one, , three] = identified();
+      const { receive } = await openSection({});
+      await removeRow("Two");
+      await reread(receive);
+      expect(sent()).toHaveLength(1);
+
+      await undo();
+
+      expect(sent(), "undo sends one write").toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: "template-1",
+        sectionId: "section",
+        props: {},
+        resetProps: ["items"],
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+      });
+      expect(stored, "the Document stores no items again").not.toHaveProperty(
+        "items",
+      );
+      accepted(notice);
+      await reread(receive);
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+      expect(panelTitles()).toEqual(["One", "Two", "Three"]);
+
+      await redo();
+
+      expect(sent(), "redo sends one write").toHaveLength(3);
+      const again = sent()[2]!;
+      expect(again).not.toHaveProperty("resetProps");
+      expect(versionsSent(again)).toEqual({
+        expectedDraftGeneration: 3,
+        expectedSourceGeneration: 1,
+      });
+      expect(rowsSent(again)).toEqual([
+        [one!.id, "One"],
+        [three!.id, "Three"],
+      ]);
+      expect(stored.items).toEqual([
+        { id: one!.id, title: "One" },
+        { id: three!.id, title: "Three" },
+      ]);
+      accepted(notice);
+      await reread(receive);
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+      expect(panelTitles()).toEqual(["One", "Three"]);
+    });
+
+    // The reset is answered with a refusal, or gets no answer: the history
+    // must not claim the reversal, and the change stays on screen.
+    for (const [label, answerReset] of [
+      [
+        "refused",
+        async () => ({
+          success: false,
+          error: "REFUSED_BY_MOCK",
+          message: "The mock refused the reset.",
+        }),
+      ],
+      [
+        "unanswered",
+        async () => {
+          throw new Error("offline");
+        },
+      ],
+    ] as const) {
+      it(`undo of the first Add whose reset is ${label} keeps the entry, the change and says so`, async () => {
+        const notice = notices();
+        const { receive } = await openSection({});
+        await addEntry();
+        await reread(receive);
+        expect(sent()).toHaveLength(1);
+        const added = stored.items;
+        const answerWrites = updateSectionProps.getMockImplementation()!;
+        updateSectionProps.mockImplementation(async (call) =>
+          (call.data.resetProps as string[] | undefined)?.length
+            ? answerReset()
+            : answerWrites(call),
+        );
+
+        await undo();
+
+        expect(sent(), "the reset was sent").toHaveLength(2);
+        expect(sent()[1]).toMatchObject({ resetProps: ["items"] });
+        expect(stored.items, "the mock store kept the list").toEqual(added);
+        expect(historyButtons(), "history did not move").toEqual({
+          undo: true,
+          redo: false,
+        });
+        expect(panelTitles(), "the panel still shows the Add").toEqual([
+          "One",
+          "Two",
+          "",
+        ]);
+        expect(
+          notice.error.mock.calls.map((call) => String(call[0])),
+        ).toContainEqual(expect.stringMatching(/^Could not undo/));
+
+        // The entry is still there to retry once the store answers again.
+        updateSectionProps.mockImplementation(answerWrites);
+        await undo();
+        expect(sent()).toHaveLength(3);
+        expect(sent()[2]).toMatchObject({
+          props: {},
+          resetProps: ["items"],
+          expectedSourceGeneration: 1,
+        });
+        expect(stored).not.toHaveProperty("items");
+        expect(historyButtons()).toEqual({ undo: false, redo: true });
+      });
+    }
 
     it("control: on a stored list, Add appends to the stored rows with their ids unchanged", async () => {
       const notice = notices();

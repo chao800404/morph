@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   commitPendingContent,
+  contentUndoSteps,
   sectionContentLanded,
   stageContentFields,
   selectCurrentContentFields,
@@ -601,5 +602,42 @@ describe("a content write composed on one snapshot", () => {
     answer({ success: true });
     await commit;
     expect(pending.get("key")?.fields?.heading?.value).toBe("Second");
+  });
+});
+
+describe("what undoing a saved content write puts back", () => {
+  const rows = [{ id: "morph-a", title: "One" }];
+
+  it("removes a key the section did not store before the write", () => {
+    expect(contentUndoSteps({ heading: "Hi" }, { items: rows })).toEqual({
+      restore: {},
+      reset: ["items"],
+    });
+  });
+
+  it("writes a stored null back as null, never as a removal", () => {
+    expect(contentUndoSteps({ items: null }, { items: rows })).toEqual({
+      restore: { items: null },
+      reset: [],
+    });
+  });
+
+  it("writes a stored value back, and splits a write over stored and unstored keys", () => {
+    expect(
+      contentUndoSteps(
+        { heading: "Old", subheading: "" },
+        { heading: "New", items: rows, subheading: "Sub" },
+      ),
+    ).toEqual({
+      restore: { heading: "Old", subheading: "" },
+      reset: ["items"],
+    });
+  });
+
+  it("puts visibility back as before: it is not a field to reset", () => {
+    expect(contentUndoSteps({}, { enabled: false })).toEqual({
+      restore: { enabled: undefined },
+      reset: [],
+    });
   });
 });

@@ -474,6 +474,37 @@ export function sectionContentLanded(
   );
 }
 
+/**
+ * What undoing a saved content write puts back, for each key it wrote.
+ *
+ * A key the section stored before the write gets that value written back —
+ * `null` included. A key it did not store at all is removed again (the "Use
+ * code default" reset): writing back `undefined` sends nothing, and writing
+ * back what the panel drew would pin the component's defaults in the
+ * Document. Decided by whether the key was there, never by its value.
+ *
+ * `enabled` lives on the section, not in its props, and is not a field that
+ * can be reset; it is put back as before.
+ */
+export function contentUndoSteps(
+  baseline: Readonly<Record<string, unknown>>,
+  written: Readonly<Record<string, unknown>>,
+): { restore: Record<string, unknown>; reset: string[] } {
+  const restore: Record<string, unknown> = {};
+  const reset: string[] = [];
+  for (const key of Object.keys(written)) {
+    if (
+      key !== "enabled" &&
+      !Object.prototype.hasOwnProperty.call(baseline, key)
+    ) {
+      reset.push(key);
+    } else {
+      restore[key] = baseline[key];
+    }
+  }
+  return { restore, reset };
+}
+
 /** Equal as stored content: the same JSON values, in any key order. */
 export function sameContent(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
