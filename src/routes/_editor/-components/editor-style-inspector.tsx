@@ -58,7 +58,8 @@ import {
   type TailwindPropertyFamily,
   type TailwindToken,
 } from "@/lib/storefront/ast/tailwind-token-engine";
-import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
+import { isThemeEndpointRoute } from "@/lib/storefront/compiler/theme-route-registry";
+import { themeRoutesFor } from "@/lib/storefront/theme-framework/theme-routes";
 import {
   deriveThemeDocumentLayoutPath,
   readSlotPropsSetInCode,
@@ -294,6 +295,11 @@ type EditorStyleInspectorProps = {
    */
   sourceDefaultRefusal?: (fieldKey: string) => SourceDefaultRefusal | null;
   themeFiles?: StorefrontThemeFileDTO[];
+  /**
+   * The Theme's recorded framework (NULL reads as TanStack Start): which
+   * pages a link may point at. See `resolveInternalLinkPages`.
+   */
+  framework?: string | null;
   /** The route being edited, to find the page that renders the section. */
   routeSourcePath?: string | null;
   /** Makes fixed text a field; absent, the Content tab only describes it. */
@@ -768,23 +774,31 @@ export type InternalLinkPage = { path: string; label: string };
 /**
  * Pages of this store, offered as destinations for an action link.
  *
- * Read from the same source route registry the Pages panel uses, so the list
- * cannot drift from the routes the Theme actually builds. Dynamic and splat
- * routes are left out: `/products/$id` needs params this panel has no way to
- * supply, so linking to the literal path would only produce a dead link.
+ * Read from the same source route registry the Pages panel uses, the way the
+ * Theme's recorded framework reads it (`themeRoutesFor`; absent is TanStack
+ * Start), so the list cannot drift from the routes the Theme actually builds
+ * and an Astro Theme is offered its Astro pages, never Start routes. Dynamic
+ * and splat routes are left out: `/products/$id` and `/blog/[slug]` need
+ * params this panel has no way to supply, so linking to the literal path would
+ * only produce a dead link. An Astro endpoint is not a page to link to either.
  */
 export function resolveInternalLinkPages(
   themeFiles: readonly { path: string; content: string }[] | undefined,
+  framework?: string | null,
 ): InternalLinkPage[] {
   if (!themeFiles?.length) return [];
-  const { routes } = buildThemeRouteRegistry(
+  const read = themeRoutesFor(
+    framework,
     themeFiles.map((file) => ({ path: file.path, content: file.content })),
   );
+  if (!read.ok) return [];
+  const { routes } = read.registry;
   const seen = new Set<string>();
   return routes
     .filter(
       (route) =>
         route.kind === "route" &&
+        !isThemeEndpointRoute(route) &&
         !route.dynamic &&
         !route.isSplat &&
         !route.isPathless &&
@@ -848,6 +862,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   contentStore = "document",
   sourceDefaultRefusal,
   themeFiles,
+  framework = null,
   routeSourcePath = null,
   onPromoteText,
   onCreatePageCopy,
@@ -1338,8 +1353,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     themeFiles,
   ]);
   const internalLinkPages = useMemo(
-    () => resolveInternalLinkPages(themeFiles),
-    [themeFiles],
+    () => resolveInternalLinkPages(themeFiles, framework),
+    [themeFiles, framework],
   );
 
   const { capability: themeContentCapability, sourcePath: contentSourcePath } =
