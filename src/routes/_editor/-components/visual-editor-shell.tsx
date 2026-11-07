@@ -1878,6 +1878,14 @@ export function VisualEditorShell({
    */
   const movedHistoryEntriesRef = useRef<Set<number>>(new Set());
   /**
+   * History entries whose unanswered write was found to have landed while the
+   * history could not move them (`confirm` refused: busy, or another entry
+   * recorded on top), with the direction that landed. The next run of that
+   * entry in that direction sends nothing and lets the history move it: the
+   * step already happened, and is never written a second time.
+   */
+  const landedHistoryRunsRef = useRef<Map<number, "undo" | "redo">>(new Map());
+  /**
    * Pending keys shown out of date because an unanswered reset was read back
    * as moved, with no pending input of their own; "Load latest" clears them.
    */
@@ -2107,6 +2115,14 @@ export function VisualEditorShell({
           // Its unanswered write was read back as moved: never run again.
           if (movedHistoryEntriesRef.current.has(attempt.entryId)) {
             throw new Error(HISTORY_MOVED_MESSAGE);
+          }
+          // Already landed (read back), only not moved yet: nothing is sent.
+          if (
+            landedHistoryRunsRef.current.get(attempt.entryId) ===
+            attempt.direction
+          ) {
+            landedHistoryRunsRef.current.delete(attempt.entryId);
+            return undefined;
           }
           const now = sectionDocumentRef.current(sectionId);
           if (now === null || now !== resolve(recordedTemplateId)) {
@@ -2664,11 +2680,18 @@ export function VisualEditorShell({
         link.record();
         return;
       }
-      history.confirm(
+      const moved = history.confirm(
         link.attempt.entryId,
         link.attempt.direction,
         link.attempt.attemptId,
       );
+      // Not moved now, but done: its next run completes it without a write.
+      if (!moved) {
+        landedHistoryRunsRef.current.set(
+          link.attempt.entryId,
+          link.attempt.direction,
+        );
+      }
     },
     [history],
   );
