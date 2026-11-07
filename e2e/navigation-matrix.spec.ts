@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 import { EDITOR_PATH, isServerFunctionCall, previewFrame } from "./helpers";
 import {
   DOMAINS,
+  editHero,
   openEditor,
   publishShowingRelease,
+  savedField,
   serverFn,
   signedInPage,
   storefrontHarness,
@@ -55,6 +58,14 @@ const EXPECTED_RUNTIME: "start" | "client" =
 const scope: ThemeScope | null = EDITOR_PATH
   ? themeScopeFromEditorPath(EDITOR_PATH)
   : null;
+
+/**
+ * A content edit this run publishes with the baseline release. The release is
+ * served through the harness, which only serves a release whose content
+ * publication carries this run's authored edit; the routes this spec writes
+ * are source, not content, so they cannot be that edit.
+ */
+const PUBLISHED_CONTENT_MARKER = `nav-matrix-${randomUUID().slice(0, 8)}`;
 
 const HOME_ROUTE = "/e2e-nav-matrix-home";
 const DETAIL_ROUTE = "/e2e-nav-matrix-detail";
@@ -386,6 +397,8 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
         // Reopened after the write: an editor loaded before it holds the older
         // source generation, and publishing refuses on that difference.
         await openEditor(page);
+        await editHero(page, PUBLISHED_CONTENT_MARKER);
+        await savedField(page, scope!, PUBLISHED_CONTENT_MARKER);
         const shown = await publishShowingRelease(page);
         await shown.close();
 
@@ -717,7 +730,7 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
         const releaseId = history.data.releases[0]!.id;
 
         storefrontOrigin = `http://${HOST}:${new URL(test.info().project.use.baseURL!).port}`;
-        await harness.serveActiveRelease("nav-matrix", releaseId, storefrontOrigin);
+        await harness.serveActiveRelease(PUBLISHED_CONTENT_MARKER, releaseId, storefrontOrigin);
       } finally {
         await page.context().close();
       }
