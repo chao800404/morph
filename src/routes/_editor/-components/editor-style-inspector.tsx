@@ -2791,6 +2791,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
        * declared defaults are kept and the index pressed is the row drawn.
        */
       seed?: { key: string; value: unknown },
+      /** The top-level list being written, e.g. `items`. */
+      listKey?: string,
     ) => {
       if (documentWritesRefusedRef.current) return;
       const result = mutate(seedUnstoredList(localPropsRef.current, seed));
@@ -2807,12 +2809,39 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       const next = toStorableContentProps(result.value);
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next, {
-        inputFieldPath: activeFieldPath?.split(".")[0],
-        selectionFieldPath: activeFieldPath ?? undefined,
-      });
+      // A row selected without an id: the row itself is refused and its list
+      // is offered instead. A write to that list names the list as its input
+      // and the selection's own path as the key of its source proof — the
+      // generation captured when that row was selected. The path is only
+      // ever that key, never where anything is written. Any other list in
+      // this state names nothing, and is refused as before.
+      const selectionPath = selection?.fieldPath ?? null;
+      const options =
+        unconfirmedRowListKey !== null
+          ? listKey === unconfirmedRowListKey &&
+            selection?.sectionId === section.id &&
+            selectionPath !== null &&
+            selectionPath.split(".")[0] === unconfirmedRowListKey
+            ? {
+                inputFieldPath: unconfirmedRowListKey,
+                selectionFieldPath: selectionPath,
+              }
+            : {}
+          : {
+              inputFieldPath: activeFieldPath?.split(".")[0],
+              selectionFieldPath: activeFieldPath ?? undefined,
+            };
+      onPropsChange(next, options);
     },
-    [activeFieldPath, onPropsChange, seedUnstoredList],
+    [
+      activeFieldPath,
+      onPropsChange,
+      section.id,
+      seedUnstoredList,
+      selection?.fieldPath,
+      selection?.sectionId,
+      unconfirmedRowListKey,
+    ],
   );
 
   const handleNestedFieldChange = useCallback(
@@ -3381,6 +3410,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                               definition,
                                             ),
                                           rowSeed,
+                                          fieldKey,
                                         )
                                       }
                                       className="text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-40"
@@ -3599,6 +3629,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                           },
                                         ),
                                       rowSeed,
+                                      fieldKey,
                                     )
                                   }
                                   className="w-full rounded-lg border border-dashed py-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
