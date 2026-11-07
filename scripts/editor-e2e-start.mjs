@@ -18,7 +18,6 @@
  * that is in neither, so a new Start-gated spec cannot stay CI-skipped by
  * omission.
  */
-
 /** The job's name, as GitHub reports the check. */
 export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 
@@ -26,7 +25,10 @@ export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 export const START_PREVIEW_SHARDS = [
   ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "code-controlled-field.spec.ts"],
   ["spread-override-binding.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts"],
-  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts"],
+  // navigation-matrix: shard 3 was the shortest Start shard job of main run
+  // 41267736430 (10m53s, against 19m44s and 17m45s); the spec's Start preview
+  // cells took ~2.6 min locally.
+  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts", "navigation-matrix.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 

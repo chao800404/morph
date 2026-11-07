@@ -63,6 +63,11 @@ export const EDITOR_SHARDS = [
     "responsive.spec.ts",
     "source-asset.spec.ts",
     "row-component-content.spec.ts",
+    // Added after the duration measurement above; not in its projection. Its
+    // client-only preview cells run here (~1.6 min locally); its public cells
+    // are navigation-matrix-public.spec.ts below. Shard 5 was the shortest
+    // shard job of main run 41267736430 (11m27s).
+    "navigation-matrix.spec.ts",
     // The files below measured zero seconds: every test in them is gated on
     // an environment the shards do not have (the container transport,
     // MORPH_ASTRO_THEMES=1 or the full Start preview), so they skip on every
@@ -93,6 +98,10 @@ export const EDITOR_SHARDS = [
     // Container transport only, so it skips on every shard. Its exact tests
     // are listed in scripts/container-acceptance-targets/.
     "starter-upgrade-publish-acceptance.spec.ts",
+    // The navigation matrix's public storefront cells: container transport
+    // only, so it skips on every shard. Its exact tests are listed in
+    // scripts/container-acceptance-targets/navigation-matrix-public.mjs.
+    "navigation-matrix-public.spec.ts",
   ],
   [
     "session-editor-writes.spec.ts",
