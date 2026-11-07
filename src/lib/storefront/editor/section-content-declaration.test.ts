@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeDocumentRowIds } from "./normalize-row-ids";
 import {
+  declaredContentDefault,
   declaredUnstoredListRows,
   resolveSectionContentDeclaration,
 } from "./section-content-declaration";
@@ -146,5 +147,29 @@ describe("resolveSectionContentDeclaration", () => {
     );
     expect(resolved.sourcePath).toBe(ENTRIES_PATH);
     expect(resolved.capability).not.toBeNull();
+  });
+});
+
+describe("declaredContentDefault", () => {
+  const meta = {
+    defaultProps: { title: "Hi" },
+    defaultPropValues: { title: "Hi", size: null, items: [{ title: "One" }] },
+  };
+
+  it("keeps a default stated as null, apart from no default at all", () => {
+    expect(declaredContentDefault(meta, "size")).toBeNull();
+    expect(declaredContentDefault(meta, "missing")).toBeUndefined();
+    expect(declaredContentDefault(null, "size")).toBeUndefined();
+  });
+
+  it("answers the structured value, else the string form", () => {
+    expect(declaredContentDefault(meta, "items")).toEqual([{ title: "One" }]);
+    expect(declaredContentDefault(meta, "title")).toBe("Hi");
+    expect(
+      declaredContentDefault(
+        { defaultProps: { label: "Go" }, defaultPropValues: {} },
+        "label",
+      ),
+    ).toBe("Go");
   });
 });

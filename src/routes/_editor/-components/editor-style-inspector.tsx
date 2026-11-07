@@ -1655,8 +1655,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     // What the component itself renders when the Document holds nothing for
     // it. Falling back to the empty string for every type showed a list field
     // as "no entries" beside a page rendering the component's own — and the
-    // first edit then saved that emptiness.
-    return declaredContentDefault(contentMeta, fieldKey) ?? "";
+    // first edit then saved that emptiness. A default stated as `null` is
+    // shown as `null`, not as the empty string.
+    const declared = declaredContentDefault(contentMeta, fieldKey);
+    return declared !== undefined ? declared : "";
   };
   /**
    * The default the component renders when this page stores nothing, when the
@@ -1664,8 +1666,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    * an author can predict, so only then is it offered.
    */
   const [resetEpoch, setResetEpoch] = useState(0);
+  // A default stated as `null` offers no reset, as before: removing the
+  // stored value would leave the field to whatever the component does with
+  // `null`, which the panel cannot state.
   const codeDefaultFor = (fieldKey: string): unknown =>
-    declaredContentDefault(contentMeta, fieldKey);
+    declaredContentDefault(contentMeta, fieldKey) ?? undefined;
   const resetHandlerFor = (fieldKey: string): (() => void) | undefined => {
     if (
       !onResetContentFields ||

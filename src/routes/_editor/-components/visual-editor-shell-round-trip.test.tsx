@@ -4030,6 +4030,10 @@ export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items
     updateSectionProps.mockReset();
     updateSectionProps.mockImplementation(async ({ data }) => {
       stored = { ...stored, ...(data.props as Record<string, unknown>) };
+      // A reset removes the stored value, as the server does.
+      for (const key of (data.resetProps as string[] | undefined) ?? []) {
+        delete stored[key];
+      }
       draftGeneration = data.expectedDraftGeneration + 1;
       return {
         success: true,
@@ -4621,14 +4625,10 @@ function Home() {
       ]);
     });
 
-    it("undoes to the drawn order under the same ids", async () => {
-      notices();
-      const [one, two] = identified();
-      await openTitle({}, 1);
-      drag(1, 0);
-      await settle();
-      expect(sent()).toHaveLength(1);
-
+    // Undo returns the list to storing nothing, not to its drawn rows written
+    // into the Document: those would look the same but pin the component's
+    // defaults, so a later change to them in the Theme would never show.
+    const undo = async () => {
       await waitFor(() =>
         expect(
           screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
@@ -4636,12 +4636,68 @@ function Home() {
       );
       fireEvent.click(screen.getByRole("button", { name: "Undo" }));
       await settle();
+    };
 
+    it("undoes to storing nothing, so the Theme's defaults show again", async () => {
+      const { warning, error } = notices();
+      await openTitle({}, 1);
+      drag(1, 0);
+      await settle();
+      expect(sent()).toHaveLength(1);
+      expect(stored).toHaveProperty("items");
+
+      await undo();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
       expect(sent()).toHaveLength(2);
-      expect(rowsSent(sent()[1]!)).toEqual([
-        [one!.id, "One"],
-        [two!.id, "Two"],
-      ]);
+      expect(sent()[1]!).toMatchObject({
+        props: {},
+        resetProps: ["items"],
+        expectedDraftGeneration: 2,
+      });
+      expect(stored).not.toHaveProperty("items");
+    });
+
+    it("redoes the swap after undoing it, under the same ids", async () => {
+      const { warning, error } = notices();
+      // A reset answers without the document, so the next write reads the
+      // server's copy first; this fake server answers with what it holds.
+      getThemeEditor.mockImplementation(async () => ({
+        success: true,
+        message: "ok",
+        data: editorAt({ ...stored }, draftGeneration),
+      }));
+      try {
+        const [one, two] = identified();
+        await openTitle({}, 1);
+        drag(1, 0);
+        await settle();
+        await undo();
+        expect(stored).not.toHaveProperty("items");
+
+        await waitFor(() =>
+          expect(
+            screen
+              .getByRole("button", { name: "Redo" })
+              .hasAttribute("disabled"),
+          ).toBe(false),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+        await settle();
+
+        expect(warning).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+        expect(sent()).toHaveLength(3);
+        expect(sent()[2]!.expectedDraftGeneration).toBe(3);
+        expect(rowsSent(sent()[2]!)).toEqual([
+          [two!.id, "Two"],
+          [one!.id, "One"],
+        ]);
+        expect(saveStatus()).toBe("Unpublished");
+      } finally {
+        getThemeEditor.mockReset();
+      }
     });
   });
 
