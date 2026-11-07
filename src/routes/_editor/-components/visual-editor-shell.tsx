@@ -374,7 +374,10 @@ import {
   resolveTemplateDraftGeneration,
 } from "@/lib/storefront/editor/template-draft-generation";
 import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
-import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
+import {
+  parseArrayItemFieldPath,
+  swapArrayItemsAtFieldPaths,
+} from "@/lib/storefront/editor/reorder-array-items";
 import { declaredUnstoredListRows } from "@/lib/storefront/editor/section-content-declaration";
 import {
   getFieldPathValue,
@@ -10965,6 +10968,7 @@ export function VisualEditorShell({
         sectionId: string,
         fieldKeys: string[],
         recordHistory?: boolean,
+        historyGeneration?: number,
       ) => Promise<{ success: boolean; message?: string }>)
     | null
   >(null);
@@ -11552,11 +11556,19 @@ export function VisualEditorShell({
         });
         return;
       }
+      // The list the two rows belong to (a nested list's own path).
+      const listPath = parseArrayItemFieldPath(draggedFieldPath)!.arrayPath;
       const reorderPending = stageContentFields({
         pending: priorPending,
         sectionId,
         stored: sectionPropsSnapshot(sectionId),
         next: { [arrayRoot]: result.value[arrayRoot] },
+        // One structural change to the list, not an edit of each moved row.
+        // Staged leaf by leaf, every field of a moved row would record the
+        // row now at its index — the other one in the stored copy — and the
+        // write would be refused as made on rows that moved. The rows that
+        // hold the list (a nested list's parent rows) are still checked.
+        inputPath: listPath,
         routePath: routePathForTemplate(templateId),
         sourceForPath: () => generation,
         basisDraftGeneration: contentBasisFor(templateId),
@@ -11581,6 +11593,9 @@ export function VisualEditorShell({
         };
       });
 
+      // An earlier unanswered write of this section, if any: only one this send
+      // leaves behind says the swap itself went out and got no answer.
+      const unansweredBefore = unconfirmedContentRef.current.get(key);
       try {
         await commitSectionPending(templateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
@@ -11589,34 +11604,56 @@ export function VisualEditorShell({
         // would look the same but pin the component's defaults in the
         // Document, where a later change to the Theme's defaults no longer
         // reaches them. The removal is the "Use code default" write.
+        //
+        // Replayed through the refs, which hold the handlers of the render the
+        // undo runs in. The handlers of this render would stage the swap back
+        // on the stored copy as it was before the drag — which already is the
+        // order undo asks for — and send nothing. Each direction is one change
+        // to the list, staged like the drag itself.
         history.record(
           fenceSectionHistory(sectionId, templateId, {
             label: "Reorder · item",
             undo: unstoredRows
               ? async () => {
-                  const reset = await handleResetContentFields(
+                  const reset = await resetContentFieldsRef.current?.(
                     sectionId,
                     [arrayRoot],
                     false,
                     generation,
                   );
-                  if (!reset.success) throw sourceSelectionFailure();
+                  if (!reset?.success) throw sourceSelectionFailure();
                 }
               : () =>
-                  handleSectionPropsChange(
+                  contentChangeRef.current?.(
                     sectionId,
                     { [arrayRoot]: startProps[arrayRoot] },
-                    { historySourceGeneration: generation },
+                    {
+                      historySourceGeneration: generation,
+                      inputFieldPath: listPath,
+                    },
                   ),
             redo: () =>
-              handleSectionPropsChange(
+              contentChangeRef.current?.(
                 sectionId,
                 { [arrayRoot]: result.value[arrayRoot] },
-                { historySourceGeneration: generation },
+                { historySourceGeneration: generation, inputFieldPath: listPath },
               ),
           }),
         );
       } catch {
+        // Sent, and no answer: the swap may have landed. It stays pending and
+        // on the canvas like any content write, so "Try again" asks the server
+        // first and sends it once more only if it did not land. Dropping it
+        // here left nothing to send, and the swap was lost while the editor
+        // read as saved. A refusal is an answer, and is rolled back below.
+        const unanswered = unconfirmedContentRef.current.get(key);
+        if (
+          unanswered &&
+          unanswered !== unansweredBefore &&
+          pendingPropsMapRef.current.get(key) === reorderPending
+        ) {
+          return;
+        }
         const hiddenBefore = previewSectionIsHidden(sectionId);
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
           if (priorPending) pendingPropsMapRef.current.set(key, priorPending);

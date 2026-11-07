@@ -603,3 +603,94 @@ describe("a content write composed on one snapshot", () => {
     expect(pending.get("key")?.fields?.heading?.value).toBe("Second");
   });
 });
+
+/**
+ * A canvas reorder swaps two rows of one list. It is staged as one change to
+ * that list (`inputPath` is the list), not leaf by leaf: staged per leaf,
+ * every field of a moved row recorded the row now at its index, which in the
+ * stored copy is the other row, and the write was refused as out of date.
+ */
+describe("a reorder staged as one change to its list", () => {
+  const snapshot = { draftGeneration: 3, ownSince: 3, sections: [] };
+  const swap = (
+    stored: Record<string, unknown>,
+    next: Record<string, unknown>,
+    inputPath: string,
+  ) =>
+    stageContentFields({
+      sectionId: "hero",
+      stored,
+      next,
+      inputPath,
+      sourceForPath: () => 1,
+      basisDraftGeneration: 3,
+    })!;
+
+  it("sends a stored list in its new order", () => {
+    const stored = {
+      items: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B" },
+      ],
+    };
+    const swapped = {
+      items: [
+        { id: "b", title: "B" },
+        { id: "a", title: "A" },
+      ],
+    };
+    const entry = swap(stored, swapped, "items");
+    expect(Object.keys(entry.fields!)).toEqual(["items"]);
+    const sent = selectCurrentContentFields(entry, 1, stored, snapshot);
+    expect(sent.props).toEqual(swapped);
+    expect(sent.expectedDraftGeneration).toBe(3);
+  });
+
+  it("control: the same swap staged leaf by leaf is refused", () => {
+    const stored = {
+      items: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B" },
+      ],
+    };
+    const entry = stageContentFields({
+      sectionId: "hero",
+      stored,
+      next: {
+        items: [
+          { id: "b", title: "B" },
+          { id: "a", title: "A" },
+        ],
+      },
+      sourceForPath: () => 1,
+      basisDraftGeneration: 3,
+    })!;
+    expect(() =>
+      selectCurrentContentFields(entry, 1, stored, snapshot),
+    ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+  });
+
+  it("still refuses a nested list whose parent row is no longer at its index", () => {
+    const parent = (id: string, children: string[]) => ({
+      id,
+      children: children.map((child) => ({ id: child, title: child })),
+    });
+    const seen = { items: [parent("p", ["x", "y"]), parent("q", ["z"])] };
+    const entry = swap(
+      seen,
+      { items: [parent("p", ["y", "x"]), parent("q", ["z"])] },
+      "items.0.children",
+    );
+    expect(Object.keys(entry.fields!)).toEqual(["items.0.children"]);
+    // Someone else moved the parent rows before the write left.
+    const now = { items: [parent("q", ["z"]), parent("p", ["x", "y"])] };
+    expect(() => selectCurrentContentFields(entry, 1, now, snapshot)).toThrow(
+      expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }),
+    );
+    // With the parent where it was, only that nested list is sent.
+    const sent = selectCurrentContentFields(entry, 1, seen, snapshot);
+    expect(sent.props).toEqual({
+      items: [parent("p", ["y", "x"]), parent("q", ["z"])],
+    });
+  });
+});

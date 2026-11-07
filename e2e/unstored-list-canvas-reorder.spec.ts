@@ -135,7 +135,7 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
     await page.context().close();
   });
 
-  test("stores the drawn rows in their new order, with the ids they were drawn with", async ({
+  test("stores the drawn rows in their new order, and reorders the stored list again", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -152,45 +152,8 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
     await expect(row(page, 0).locator("h3")).toHaveText(FIRST);
     await expect(row(page, 1).locator("h3")).toHaveText(SECOND);
 
-    if (
-      await page
-        .getByRole("button", { name: "Enable section selection" })
-        .isVisible()
-        .catch(() => false)
-    ) {
-      await enableSelection(page);
-    }
-    await row(page, 1).scrollIntoViewIfNeeded();
-    expect(
-      await clickExposedElement(page, row(page, 1)),
-      "the second entry was not exposed on the canvas",
-    ).not.toBeNull();
-    const handle = previewFrame(page).locator(
-      '[data-storefront-editor-drag-handle="true"]',
-    );
-    await expect(handle).toBeVisible({ timeout: 15_000 });
-
-    const saved = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        isServerFunctionCall(
-          response.url(),
-          "updateStorefrontThemeSectionProps",
-        ),
-      { timeout: 30_000 },
-    );
-    // The frame's own drag-and-drop listeners, driven with the events a drop
-    // fires. Playwright's `dragTo` starts the gesture inside an iframe but
-    // never delivers its drop, which leaves the canvas mid-drag.
-    const dataTransfer = await previewFrame(page)
-      .locator("body")
-      .evaluateHandle(() => new DataTransfer());
-    await handle.dispatchEvent("dragstart", { dataTransfer });
-    await row(page, 0).dispatchEvent("dragover", { dataTransfer });
-    await row(page, 0).dispatchEvent("drop", { dataTransfer });
-    await handle.dispatchEvent("dragend", { dataTransfer });
-    const response = await saved;
-    expect(response.ok()).toBe(true);
+    await selectRow(page, 1);
+    await dropSelectedOnto(page, 0);
 
     await expect(
       page.getByText("cannot be mapped to a safe array position"),
@@ -200,7 +163,8 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
     // The whole list, in its new order, every row with a derived id.
     expect(body.indexOf(SECOND)).toBeGreaterThan(-1);
     expect(body.indexOf(SECOND)).toBeLessThan(body.indexOf(FIRST));
-    expect(body.match(/morph-mig-[0-9a-f]+/g) ?? []).toHaveLength(2);
+    const ids = body.match(/morph-mig-[0-9a-f]+/g) ?? [];
+    expect(ids).toHaveLength(2);
     await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
       "aria-label",
       /^(Unpublished|Published)$/,
@@ -208,9 +172,95 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
     await expect(row(page, 0).locator("h3")).toHaveText(SECOND);
     await expect(row(page, 1).locator("h3")).toHaveText(FIRST);
 
+    // The list is stored now. The same entry, selected again where it landed
+    // (after the write the canvas selects the section) and dragged back: a
+    // second write, under the ids the first one stored.
+    await selectRow(page, 0);
+    await dropSelectedOnto(page, 1);
+    expect(writes).toHaveLength(2);
+    expect(writes[1]!.indexOf(FIRST)).toBeLessThan(writes[1]!.indexOf(SECOND));
+    expect(writes[1]!.match(/morph-mig-[0-9a-f]+/g)).toEqual([ids[1], ids[0]]);
+    await expect(row(page, 0).locator("h3")).toHaveText(FIRST);
+    await expect(row(page, 1).locator("h3")).toHaveText(SECOND);
+
     // What was saved is what a fresh load renders.
+    await openRoute(page);
+    await expect(row(page, 0).locator("h3")).toHaveText(FIRST);
+    await expect(row(page, 1).locator("h3")).toHaveText(SECOND);
+
+    // A stored list, selected afresh after the load, dragged once more.
+    await selectRow(page, 1);
+    await dropSelectedOnto(page, 0);
+    expect(writes).toHaveLength(3);
+    expect(writes[2]!.indexOf(SECOND)).toBeLessThan(writes[2]!.indexOf(FIRST));
     await openRoute(page);
     await expect(row(page, 0).locator("h3")).toHaveText(SECOND);
     await expect(row(page, 1).locator("h3")).toHaveText(FIRST);
   });
 });
+
+/** Clicks one entry on the canvas, so the drag handle sits on it. */
+async function selectRow(page: Page, index: number) {
+  if (
+    await page
+      .getByRole("button", { name: "Enable section selection" })
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await enableSelection(page);
+  }
+  await row(page, index).scrollIntoViewIfNeeded();
+  expect(
+    await clickExposedElement(page, row(page, index)),
+    `entry ${index} was not exposed on the canvas`,
+  ).not.toBeNull();
+  await expect(dragHandle(page)).toBeVisible({ timeout: 15_000 });
+}
+
+const dragHandle = (page: Page) =>
+  previewFrame(page).locator('[data-storefront-editor-drag-handle="true"]');
+
+/**
+ * Drops the selected entry onto another one and waits for the write.
+ *
+ * The frame's own drag-and-drop listeners, driven with the events a drop
+ * fires: Playwright's `dragTo` starts the gesture inside an iframe but never
+ * delivers its drop, which leaves the canvas mid-drag. A drop the editor
+ * refuses names the notice it raised instead of timing out silently.
+ */
+async function dropSelectedOnto(page: Page, index: number) {
+  const saved = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        isServerFunctionCall(
+          response.url(),
+          "updateStorefrontThemeSectionProps",
+        ),
+      { timeout: 20_000 },
+    )
+    .catch(() => null);
+  const dataTransfer = await previewFrame(page)
+    .locator("body")
+    .evaluateHandle(() => new DataTransfer());
+  const handle = dragHandle(page);
+  await handle.dispatchEvent("dragstart", { dataTransfer });
+  await row(page, index).dispatchEvent("dragover", { dataTransfer });
+  await row(page, index).dispatchEvent("drop", { dataTransfer });
+  await handle.dispatchEvent("dragend", { dataTransfer }).catch(() => {});
+  const response = await saved;
+  if (!response) {
+    const notices = await page
+      .locator("[data-sonner-toast]")
+      .allInnerTexts()
+      .catch(() => []);
+    throw new Error(
+      `the drop sent no write; notices: ${JSON.stringify(notices)}`,
+    );
+  }
+  expect(response.ok()).toBe(true);
+  await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+    "aria-label",
+    /^(Unpublished|Published)$/,
+  );
+}

@@ -4700,4 +4700,225 @@ function Home() {
       }
     });
   });
+
+  /**
+   * A list the Document stores, dragged on the canvas. The swap was staged
+   * field by field: every leaf of the moved rows recorded the row now at its
+   * index, which is the other row in the stored copy, so the write was
+   * refused as "changed elsewhere" and nothing was saved. That includes the
+   * second drag on a list the first drag had just stored.
+   */
+  describe("dragging an entry of a stored list on the canvas", () => {
+    const drag = (dragged: number, target: number) =>
+      fromPreview({
+        type: "morph:storefront-preview-commit-array-item-reorder",
+        sectionId: "section",
+        draggedFieldPath: `items.${dragged}`,
+        targetFieldPath: `items.${target}`,
+      });
+    const notices = () => ({
+      warning: vi.spyOn(toast, "warning").mockImplementation(() => ""),
+      error: vi.spyOn(toast, "error").mockImplementation(() => ""),
+    });
+
+    it("swaps the stored rows and saves the list in its new order", async () => {
+      const { warning, error } = notices();
+      const [one, two] = identified();
+      await openTitle({ items: [one, two] }, 1);
+
+      drag(1, 0);
+      await settle();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+      expect(rowsSent(sent()[0]!)).toEqual([
+        [two!.id, "Two"],
+        [one!.id, "One"],
+      ]);
+      expect(saveStatus()).toBe("Unpublished");
+    });
+
+    it("swaps again once the first drag has stored a list nothing stored", async () => {
+      const { warning, error } = notices();
+      const [one, two] = identified();
+      // "One", where the first drop left it, selected again on the canvas
+      // once the list is stored. (Taken first: it replaces the body.)
+      const moved = await reportTitle({ items: [two, one] }, 1);
+      expect(moved).toMatchObject({
+        fieldPath: "items.1.title",
+        itemId: one!.id,
+      });
+      const { receive } = await openTitle({}, 1);
+      drag(1, 0);
+      await settle();
+      expect(sent()).toHaveLength(1);
+      // The editor reads back what the server now holds.
+      act(() => {
+        receive(editorAt({ ...stored }, draftGeneration));
+      });
+      await flushFrames();
+      fromPreview(moved);
+      await flushFrames();
+
+      drag(1, 0);
+      await settle();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([
+        1, 2,
+      ]);
+      expect(rowsSent(sent()[1]!)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two"],
+      ]);
+      expect(stored.items).toEqual([
+        { id: one!.id, title: "One" },
+        { id: two!.id, title: "Two" },
+      ]);
+    });
+
+    /**
+     * Undo replays the swap back once the editor has read the swapped list.
+     * Replayed with the handlers of the drag's own render, it staged the swap
+     * back on the stored copy from before the drag — already the order undo
+     * asks for — and sent nothing. (Redo is not asserted: an undo replayed as
+     * a content edit records that edit once it saves, which clears redo for
+     * every kind of content undo, not only this one.)
+     */
+    it("undoes the swap of a stored list once the swapped list is read back", async () => {
+      const { warning, error } = notices();
+      const [one, two] = identified();
+      const { receive } = await openTitle({ items: [one, two] }, 1);
+      drag(1, 0);
+      await settle();
+      expect(sent()).toHaveLength(1);
+      // The editor reads back what the server now holds, as after any save.
+      act(() => {
+        receive(editorAt({ ...stored }, draftGeneration));
+      });
+      await flushFrames();
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+        ).toBe(false),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await settle();
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]!.expectedDraftGeneration).toBe(2);
+      expect(rowsSent(sent()[1]!)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two"],
+      ]);
+      expect(stored.items).toEqual([one, two]);
+    });
+
+    /**
+     * The swap sent, and no answer: it may have landed, so it is not sent
+     * again on its own. "Try again" asks the server first and sends the swap
+     * once more only when the server does not hold it.
+     */
+    describe("when the swap gets no answer", () => {
+      afterEach(() => getThemeEditor.mockReset());
+      /** What the server function answers when the shell asks what it holds. */
+      const readBack = (
+        props: Record<string, unknown>,
+        atGeneration: number,
+      ) => ({
+        success: true,
+        message: "ok",
+        data: editorAt(props, atGeneration),
+      });
+
+      const dragWithLostAnswer = async () => {
+        const [one, two] = identified();
+        await openTitle({ items: [one, two] }, 1);
+        updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+        drag(1, 0);
+        await settle();
+        await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+        return { one: one!, two: two! };
+      };
+
+      it("is not sent again by itself", async () => {
+        const { warning, error } = notices();
+        await dragWithLostAnswer();
+
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        expect(sent()).toHaveLength(1);
+        expect(warning).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledWith(
+          "Failed to update section properties",
+        );
+        expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+      });
+
+      it("sends the swap once more when the server does not hold it", async () => {
+        const { warning } = notices();
+        const { one, two } = await dragWithLostAnswer();
+        // The server still holds the list in its first order.
+        getThemeEditor.mockResolvedValue(readBack({ items: [one, two] }, 1));
+
+        act(() => {
+          screen.getByRole("button", { name: "Try again" }).click();
+        });
+
+        await waitFor(() => expect(sent()).toHaveLength(2));
+        expect(getThemeEditor.mock.invocationCallOrder[0]!).toBeLessThan(
+          updateSectionProps.mock.invocationCallOrder[1]!,
+        );
+        expect(sent()[1]!.expectedDraftGeneration).toBe(1);
+        expect(rowsSent(sent()[1]!)).toEqual([
+          [two.id, "Two"],
+          [one.id, "One"],
+        ]);
+        await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+        expect(warning).not.toHaveBeenCalled();
+      });
+
+      it("control: a refused swap is an answer, rolled back and not kept", async () => {
+        notices();
+        const [one, two] = identified();
+        await openTitle({ items: [one, two] }, 1);
+        updateSectionProps.mockResolvedValueOnce({
+          success: false,
+          message: "Template draft was modified concurrently.",
+        } as never);
+        drag(1, 0);
+        await settle();
+        expect(sent()).toHaveLength(1);
+
+        // The next edit is composed on the list as stored, not on the swap.
+        await type("Two", "Two edited");
+        await settle();
+        expect(sent()).toHaveLength(2);
+        expect(rowsSent(sent()[1]!)).toEqual([
+          [one!.id, "One"],
+          [two!.id, "Two edited"],
+        ]);
+      });
+
+      it("sends nothing again when the swap had landed", async () => {
+        notices();
+        const { one, two } = await dragWithLostAnswer();
+        // The write landed; only its answer was lost.
+        getThemeEditor.mockResolvedValue(readBack({ items: [two, one] }, 2));
+
+        act(() => {
+          screen.getByRole("button", { name: "Try again" }).click();
+        });
+
+        await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+        expect(sent()).toHaveLength(1);
+        expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+      });
+    });
+  });
 });
