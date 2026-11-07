@@ -5122,6 +5122,85 @@ function Home() {
         await reread(editor.receive);
         return editor;
       }
+      /**
+       * Replay integrity (red before the fix where the replay records a
+       * second "Content" entry): a successful Undo or Redo moves only the
+       * entry it ran, records nothing new, and keeps the other direction.
+       * Two full rounds, checking the writes sent, the history and the data
+       * after every step.
+       */
+      describe("two rounds of Undo then Redo move only the original entry", () => {
+        const depth = () =>
+          document
+            .querySelector("[data-editor-undo-depth]")
+            ?.getAttribute("data-editor-undo-depth") ?? null;
+        const step = async (
+          press: () => Promise<void>,
+          receive: (next: StorefrontThemeEditorDTO) => void,
+        ) => {
+          await press();
+          await reread(receive);
+        };
+
+        it("a stored field: Undo writes the old value, Redo the new, nothing else is recorded", async () => {
+          stored = { ...STORED };
+          const { receive } = await openSection({ ...STORED });
+          await type("Hello", "New");
+          await settle();
+          await reread(receive);
+          expect(sent()).toHaveLength(1);
+          expect(depth()).toBe("1");
+
+          for (const round of [1, 2]) {
+            await step(undo, receive);
+            expect(sent(), `round ${round}: undo sent once`).toHaveLength(
+              round * 2,
+            );
+            expect(sent().at(-1)!.props).toEqual({ heading: "Hello" });
+            expect(stored).toEqual({ heading: "Hello" });
+            expect(depth(), `round ${round}: after undo`).toBe("0");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+            await step(redo, receive);
+            expect(sent(), `round ${round}: redo sent once`).toHaveLength(
+              round * 2 + 1,
+            );
+            expect(sent().at(-1)!.props).toEqual({ heading: "New" });
+            expect(stored).toEqual({ heading: "New" });
+            expect(depth(), `round ${round}: after redo`).toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+          }
+        });
+
+        it("a first Add: Undo removes the list again, Redo stores the same rows, nothing else is recorded", async () => {
+          const { receive } = await resetOnlyWrite();
+          const first = (sent()[0]!.props as { items: unknown[] }).items;
+          expect(depth()).toBe("1");
+
+          for (const round of [1, 2]) {
+            await step(undo, receive);
+            expect(sent(), `round ${round}: undo sent once`).toHaveLength(
+              round * 2,
+            );
+            expect(sent().at(-1)!.resetProps).toEqual(["items"]);
+            expect(stored).toEqual({ ...STORED });
+            expect(depth(), `round ${round}: after undo`).toBe("0");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+            await step(redo, receive);
+            expect(sent(), `round ${round}: redo sent once`).toHaveLength(
+              round * 2 + 1,
+            );
+            expect((sent().at(-1)!.props as { items: unknown[] }).items).toEqual(
+              first,
+            );
+            expect(stored.items).toEqual(first);
+            expect(depth(), `round ${round}: after redo`).toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+          }
+        });
+      });
+
       /** A write as sent, by the fields an undo is decided by. */
       const shape = (data: Record<string, unknown>) => ({
         templateId: data.templateId,
@@ -5509,7 +5588,7 @@ function Home() {
         });
 
         it("landed on read-back: its history entry is recorded once, and nothing is sent", async () => {
-          await lostCodeDefault();
+          const { receive } = await lostCodeDefault();
           expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
           serverHolds({}, 2);
 
@@ -5518,6 +5597,11 @@ function Home() {
           expect(sent(), "nothing is sent again").toHaveLength(1);
           expect(unconfirmedCount()).toBeNull();
           expect(historyButtons()).toEqual({ undo: true, redo: false });
+          // The route hands the shell the Theme the read-back fetched, as
+          // editor.tsx does once its query updates (see `reread`). Without
+          // it this harness keeps the pre-reset context, and the Undo below
+          // would compare against `heading: "Hello"` still being stored.
+          await reread(receive);
           await undo();
           expect(sent()).toHaveLength(2);
           expect(sent()[1]!.props).toEqual({ heading: "Hello" });
