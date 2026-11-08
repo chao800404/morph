@@ -143,6 +143,21 @@ export function earlierRefusalStillApplies(
   );
 }
 
+/** A file write was sent, got no answer, and is marked unconfirmed for read-back. */
+export class UnconfirmedThemeFileWriteError extends Error {
+  readonly originalError: unknown;
+
+  constructor(originalError: unknown) {
+    super(
+      originalError instanceof Error
+        ? originalError.message
+        : String(originalError),
+    );
+    this.name = "UnconfirmedThemeFileWriteError";
+    this.originalError = originalError;
+  }
+}
+
 /**
  * Finds out whether a save that was sent and never answered landed.
  *

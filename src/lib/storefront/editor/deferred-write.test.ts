@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDebouncedWrites } from "./debounced-writes";
 import { scheduleDeferredWrite } from "./deferred-write";
+import { UnconfirmedThemeFileWriteError } from "./editor-write-recovery";
 
 /**
  * The ordering the style path depends on.
@@ -96,6 +97,24 @@ describe("a write that is recorded before it lands", () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(discard).toHaveBeenCalledWith(1);
+    expect(onError).toHaveBeenCalledWith(failure);
+  });
+
+  it("keeps the entry when a sent write has an unknown outcome", async () => {
+    const { args, discard, onError, save } = harness();
+    const failure = new UnconfirmedThemeFileWriteError(
+      new Error("The answer was lost"),
+    );
+    save.mockRejectedValue(failure);
+
+    scheduleDeferredWrite({
+      ...args,
+      retainOnError: (error) =>
+        error instanceof UnconfirmedThemeFileWriteError,
+    });
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(discard).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(failure);
   });
 

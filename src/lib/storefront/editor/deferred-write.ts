@@ -36,6 +36,8 @@ export type DeferredWritePorts<TId, TResult> = Readonly<{
   save: () => Promise<TResult>;
   /** Whether the result confirms that the write did not land. */
   isNotLanded: (result: TResult) => boolean;
+  /** Keeps the optimistic history entry when the write outcome is unknown. */
+  retainOnError?: (error: unknown) => boolean;
   /** Reports a write that failed outright. */
   onError: (error: unknown) => void;
 }>;
@@ -43,8 +45,17 @@ export type DeferredWritePorts<TId, TResult> = Readonly<{
 export function scheduleDeferredWrite<TId, TResult>(
   ports: DeferredWritePorts<TId, TResult>,
 ): void {
-  const { writes, key, delayMs, record, discard, save, isNotLanded, onError } =
-    ports;
+  const {
+    writes,
+    key,
+    delayMs,
+    record,
+    discard,
+    save,
+    isNotLanded,
+    retainOnError,
+    onError,
+  } = ports;
 
   // Recorded here rather than when the write lands: the author can press undo
   // during the debounce window, and an entry that arrives afterwards cannot
@@ -59,7 +70,7 @@ export function scheduleDeferredWrite<TId, TResult>(
         if (isNotLanded(result)) discard(id);
       })
       .catch((error: unknown) => {
-        discard(id);
+        if (!retainOnError?.(error)) discard(id);
         onError(error);
       }),
   );

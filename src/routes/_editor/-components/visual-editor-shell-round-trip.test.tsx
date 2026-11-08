@@ -1209,6 +1209,7 @@ const STYLE_SOURCE =
   'export function Hero() { return <section data-morph-node="section" className="p-4">x</section>; }';
 const STYLE_AFTER =
   'export function Hero() { return <section data-morph-node="section" className="p-4 p-8">x</section>; }';
+const STYLE_REMOTE = STYLE_SOURCE + "\n// saved by another editor";
 
 type ThemeFileOutcome =
   | "saved"
@@ -1282,10 +1283,25 @@ function controlledThemeFile(initialContent: string) {
     events.push("read");
     return { success: true, data: { ...current } };
   });
+  const externalWrite = (content: string) => {
+    current = {
+      ...current,
+      content,
+      version: current.version + 1,
+      sourceGeneration: current.sourceGeneration + 1,
+    };
+  };
 
   themeFileServerControl.save = save;
   themeFileServerControl.read = read;
-  return { save, read, outcomes, events, file: () => ({ ...current }) };
+  return {
+    save,
+    read,
+    outcomes,
+    events,
+    externalWrite,
+    file: () => ({ ...current }),
+  };
 }
 
 function localThemeFile() {
@@ -2134,6 +2150,103 @@ describe("Style history writes and refusals", () => {
       unconfirmedCleared: true,
       confirmedBeforeUndoWrite: true,
       finalServerContent: STYLE_SOURCE,
+    });
+  });
+
+  it("keeps an ordinary save held while a Style write is unconfirmed", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    server.outcomes.push("offline-after-landing");
+    renderShellWithHero(STYLE_SOURCE);
+
+    applyStylePatch();
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_AFTER),
+    );
+    const saveFile = await captureCodeFileSave();
+
+    await act(async () => {
+      await expect(
+        saveFile(stylePatchTarget.filePath, STYLE_AFTER),
+      ).rejects.toThrow();
+    });
+
+    expect({
+      reads: server.read.mock.calls.length,
+      writes: server.save.mock.calls.length,
+      unconfirmed: localThemeFile()?.unconfirmedContent,
+      undoAvailable: historyState().undoAvailable,
+    }).toEqual({
+      reads: 0,
+      writes: 1,
+      unconfirmed: STYLE_AFTER,
+      undoAvailable: true,
+    });
+  });
+
+  it("turns a changed read-back into a file conflict without sending the replay", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    server.outcomes.push("offline-after-landing");
+    renderShellWithHero(STYLE_SOURCE);
+
+    applyStylePatch();
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_AFTER),
+    );
+    server.externalWrite(STYLE_REMOTE);
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(error).toHaveBeenCalled());
+    expect({
+      ...historyState(),
+      writeCount: server.save.mock.calls.length,
+      serverContent: server.file().content,
+      remoteConflict: localThemeFile()?.conflict?.remoteContent,
+      unconfirmed: localThemeFile()?.unconfirmedContent,
+    }).toEqual({
+      undoAvailable: true,
+      redoAvailable: false,
+      writeCount: 1,
+      serverContent: STYLE_REMOTE,
+      remoteConflict: STYLE_REMOTE,
+      unconfirmed: undefined,
+    });
+    expect(
+      error.mock.calls.some(([message]) =>
+        String(message).startsWith("Could not undo:"),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps the Style record and sends nothing when recovery read-back fails", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    server.outcomes.push("offline-after-landing");
+    renderShellWithHero(STYLE_SOURCE);
+
+    applyStylePatch();
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_AFTER),
+    );
+    server.read.mockRejectedValueOnce(new Error("Read-back unavailable"));
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(error).toHaveBeenCalled());
+    expect({
+      ...historyState(),
+      writeCount: server.save.mock.calls.length,
+      unconfirmed: localThemeFile()?.unconfirmedContent,
+      conflict: localThemeFile()?.conflict,
+    }).toEqual({
+      undoAvailable: true,
+      redoAvailable: false,
+      writeCount: 1,
+      unconfirmed: STYLE_AFTER,
+      conflict: undefined,
     });
   });
 

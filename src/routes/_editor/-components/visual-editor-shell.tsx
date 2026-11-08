@@ -88,6 +88,7 @@ import {
   earlierRefusalStillApplies,
   settleHeldFile,
   templateIdOfPendingContentKey,
+  UnconfirmedThemeFileWriteError,
   verifyEditorWriter,
 } from "@/lib/storefront/editor/editor-write-recovery";
 import {
@@ -700,6 +701,8 @@ class DesignStructureRefusedError extends Error {}
 /** An undo or redo whose write did not land; the entry stays. */
 export const HISTORY_REPLAY_NOT_SAVED_MESSAGE =
   "the change is not saved yet. It stays in the history; try again once the file is saved.";
+const HISTORY_REPLAY_FILE_CONFLICT_MESSAGE =
+  "The file changed while its save was unanswered. Resolve the file conflict before retrying.";
 
 const HISTORY_REPLAY_REFUSAL_MESSAGES = {
   superseded: "A newer Theme file write replaced this history change. Try again.",
@@ -6413,6 +6416,7 @@ export function VisualEditorShell({
       | { status: "superseded" }
       | { status: "source-conflict" }
       | { status: "auth-paused" }
+      | { status: "file-conflict" }
     > => {
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
@@ -6427,6 +6431,7 @@ export function VisualEditorShell({
           | { status: "superseded" }
           | { status: "source-conflict" }
           | { status: "auth-paused" }
+          | { status: "file-conflict" }
         > => {
           const readCurrent = () =>
             useThemeWorkspaceStore
@@ -6463,6 +6468,10 @@ export function VisualEditorShell({
             // and the file stays as it is.
             if (current.unconfirmedContent !== undefined) {
               const confirmed: { file?: StorefrontThemeFileDTO } = {};
+              let latestDuringRecovery:
+                | StorefrontThemeFileDTO
+                | null
+                | undefined;
               await confirmLostSave({
                 unconfirmedContent: current.unconfirmedContent,
                 readLatest: async () => {
@@ -6476,8 +6485,14 @@ export function VisualEditorShell({
                     reportEditorReadFailure(workspaceScope, error);
                     throw error;
                   });
-                  if (latest.success) return latest.data ?? null;
-                  if (latest.error === "NOT_FOUND") return null;
+                  if (latest.success) {
+                    latestDuringRecovery = latest.data ?? null;
+                    return latestDuringRecovery;
+                  }
+                  if (latest.error === "NOT_FOUND") {
+                    latestDuringRecovery = null;
+                    return null;
+                  }
                   throw new Error(latest.message);
                 },
                 markLanded: (latest) => {
@@ -6489,6 +6504,54 @@ export function VisualEditorShell({
               if (confirmed.file?.content === contentToSave) {
                 pendingDesignWritesRef.current.landed(filePath, targetRevision);
                 return { status: "saved", file: confirmed.file };
+              }
+              if (!confirmed.file && latestDuringRecovery !== undefined) {
+                const latest = latestDuringRecovery;
+                const sameFileBaseline = latest
+                  ? current.serverExists === true &&
+                    current.serverFileId === latest.id &&
+                    current.serverVersion === latest.version &&
+                    current.serverContent === latest.content
+                  : current.serverExists !== true;
+                const acceptedGeneration = useThemeWorkspaceStore
+                  .getState()
+                  .getAcceptedSourceGeneration(workspaceScope);
+                const sameSourceBaseline =
+                  !latest ||
+                  typeof latest.sourceGeneration !== "number" ||
+                  latest.sourceGeneration === acceptedGeneration;
+                const stillAtSavedBaseline =
+                  sameFileBaseline && sameSourceBaseline;
+                if (!stillAtSavedBaseline) {
+                  markWorkspaceConflict(
+                    filePath,
+                    latest
+                      ? {
+                          kind: current.serverExists ? "modified" : "created",
+                          remoteExists: true,
+                          remoteFileId: latest.id,
+                          remoteVersion: latest.version,
+                          remoteContent: latest.content,
+                        }
+                      : {
+                          kind: "deleted",
+                          remoteExists: false,
+                          remoteFileId: null,
+                          remoteVersion: null,
+                          remoteContent: null,
+                        },
+                    workspaceScope,
+                  );
+                  return { status: "file-conflict" };
+                }
+                if (latest) markWorkspaceSaved(latest, workspaceScope);
+                if (latest?.content === contentToSave) {
+                  pendingDesignWritesRef.current.landed(
+                    filePath,
+                    targetRevision,
+                  );
+                  return { status: "saved", file: latest };
+                }
               }
               current = readCurrent();
               if (!current)
@@ -6550,7 +6613,7 @@ export function VisualEditorShell({
                 useThemeWorkspaceStore
                   .getState()
                   .markUnconfirmed(filePath, contentToSave, workspaceScope);
-                throw error;
+                throw new UnconfirmedThemeFileWriteError(error);
               }
               // Not sent, or refused for who is asking: the edit stays in the
               // workspace, marked, and goes when writes are resumed.
@@ -6982,6 +7045,12 @@ export function VisualEditorShell({
       ) {
         if (options?.historyReplay) {
           throw new Error(HISTORY_REPLAY_REFUSAL_MESSAGES[result.status]);
+        }
+        return null;
+      }
+      if (result.status === "file-conflict") {
+        if (options?.historyReplay) {
+          throw new Error(HISTORY_REPLAY_FILE_CONFLICT_MESSAGE);
         }
         return null;
       }
@@ -9296,6 +9365,25 @@ export function VisualEditorShell({
         const styleBefore = targetCurrentSource;
         const styleAfter = updatedContent;
         const stylePath = targetFilePath;
+        const replayStyle = (content: string) => {
+          const files = useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            );
+          const hasOnlyThisUnconfirmedFile =
+            files[stylePath]?.unconfirmedContent !== undefined &&
+            unconfirmedPaths(files).every((path) => path === stylePath);
+          return handleUnifiedSaveFile(stylePath, content, {
+            fromHistory: true,
+            historyReplay: true,
+            renderDocument: true,
+            // A person pressing this file's Style Undo/Redo explicitly resumes
+            // its unanswered write. Other files remain behind the normal hold.
+            confirmed: hasOnlyThisUnconfirmedFile,
+          });
+        };
         scheduleDeferredWrite({
           writes: pendingSaveWritesRef.current,
           key: opKey,
@@ -9306,19 +9394,11 @@ export function VisualEditorShell({
               scope: themeFileHistoryScope(stylePath),
               undo: () => {
                 resetPreviewSelectionStyle();
-                return handleUnifiedSaveFile(stylePath, styleBefore, {
-                  fromHistory: true,
-                  historyReplay: true,
-                  renderDocument: true,
-                });
+                return replayStyle(styleBefore);
               },
               redo: () => {
                 resetPreviewSelectionStyle();
-                return handleUnifiedSaveFile(stylePath, styleAfter, {
-                  fromHistory: true,
-                  historyReplay: true,
-                  renderDocument: true,
-                });
+                return replayStyle(styleAfter);
               },
             }),
           discard: (id) => history.discard(id),
@@ -9332,6 +9412,8 @@ export function VisualEditorShell({
             result.status === "source-conflict" ||
             result.status === "auth-paused" ||
             result.status === "superseded",
+          retainOnError: (error) =>
+            error instanceof UnconfirmedThemeFileWriteError,
           onError: (error) => {
             toast.error(
               `Failed to save source file ${targetFilePath}: ${
