@@ -6451,6 +6451,295 @@ function Home() {
           // over the 20 s default on a busy machine. The wait is the
           // harness's fixed settle, not a slow write.
         }, 45_000);
+
+        /**
+         * #390: the canvas reorder of a stored list is one change to the list,
+         * and its Undo and Redo are history runs of their own, as #388's
+         * content replays are: one awaited write each, checked against the
+         * draft generation answered for the step it reverses or re-applies,
+         * recording nothing new. (Drafted for #388, which could not send the
+         * reorder's first write; red before the fix where noted.)
+         */
+        describe('"Reorder · item" on a stored list', () => {
+          const reorderMessage = {
+            type: "morph:storefront-preview-commit-array-item-reorder",
+            sectionId: "section",
+            draggedFieldPath: "items.0",
+            targetFieldPath: "items.1",
+          };
+          /** A stored list of two, reordered (draft 1 -> 2): one entry. */
+          async function reordered() {
+            const [one, two] = identified();
+            stored = { items: [one, two] };
+            const editor = await openSection({ items: [one, two] });
+            fromPreview(reorderMessage);
+            await settle();
+            expect(sent()).toHaveLength(1);
+            expect(sent()[0]).toMatchObject({ expectedDraftGeneration: 1 });
+            expect(rowsSent(sent()[0]!)).toEqual([
+              [two!.id, "Two"],
+              [one!.id, "One"],
+            ]);
+            await reread(editor.receive);
+            expect(depth()).toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+            return { ...editor, one: one!, two: two! };
+          }
+          const order = () =>
+            ((stored.items as Array<{ id: string }> | undefined) ?? []).map(
+              (row) => row.id,
+            );
+          /** The next write waits for `release` before it is answered. */
+          const heldAnswer = () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            answerNext.push(async (data) => {
+              await gate;
+              return apply(data);
+            });
+            return release;
+          };
+
+          it("Undo and Redo each move history only once their own write is answered, and record nothing", async () => {
+            const notice = notices();
+            const { receive, one, two } = await reordered();
+
+            const releaseUndo = heldAnswer();
+            fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+            await settle();
+            expect(sent(), "the undo is out").toHaveLength(2);
+            expect(sent()[1]).toMatchObject({ expectedDraftGeneration: 2 });
+            expect(depth(), "not moved before its answer").toBe("1");
+            expect(historyButtons().redo).toBe(false);
+            releaseUndo();
+            await settle();
+            await reread(receive);
+            expect(order()).toEqual([one.id, two.id]);
+            expect(depth()).toBe("0");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+            const releaseRedo = heldAnswer();
+            fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+            await settle();
+            expect(sent(), "the redo is out").toHaveLength(3);
+            expect(sent()[2]).toMatchObject({ expectedDraftGeneration: 3 });
+            expect(depth(), "not moved before its answer").toBe("0");
+            expect(historyButtons().undo).toBe(false);
+            releaseRedo();
+            await settle();
+            await reread(receive);
+            expect(order()).toEqual([two.id, one.id]);
+            expect(depth()).toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+            accepted(notice);
+          });
+
+          it("a refused Undo, then a refused Redo, leave history and the order as they were", async () => {
+            const notice = notices();
+            const { receive, one, two } = await reordered();
+            const refusal = () => ({
+              success: false,
+              error: "REFUSED_BY_MOCK",
+              message: "The mock refused the replay.",
+            });
+
+            answerNext.push(refusal);
+            await undo();
+            expect(sent()).toHaveLength(2);
+            expect(order()).toEqual([two.id, one.id]);
+            expect(depth()).toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+            expect(errors(notice)).toContainEqual(
+              expect.stringMatching(/^Could not undo/),
+            );
+            expect(unconfirmedCount()).toBeNull();
+            await settle();
+            expect(sent(), "nothing is sent after it").toHaveLength(2);
+            expect(depth(), "nothing new is recorded").toBe("1");
+
+            await undo();
+            await reread(receive);
+            expect(sent()).toHaveLength(3);
+            expect(order()).toEqual([one.id, two.id]);
+            expect(depth()).toBe("0");
+
+            answerNext.push(refusal);
+            await redo();
+            expect(sent()).toHaveLength(4);
+            expect(order()).toEqual([one.id, two.id]);
+            expect(depth()).toBe("0");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+            expect(errors(notice)).toContainEqual(
+              expect.stringMatching(/^Could not redo/),
+            );
+          });
+
+          it("two rounds of Undo then Redo: one write each, and only the reorder's entry moves", async () => {
+            const notice = notices();
+            const { receive, one, two } = await reordered();
+            for (const round of [1, 2]) {
+              await undo();
+              await reread(receive);
+              expect(sent(), `round ${round}: undo`).toHaveLength(round * 2);
+              expect(sent().at(-1)).toMatchObject({
+                expectedDraftGeneration: round * 2,
+              });
+              expect(order()).toEqual([one.id, two.id]);
+              expect(depth(), `round ${round}: after undo`).toBe("0");
+              expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+              await redo();
+              await reread(receive);
+              expect(sent(), `round ${round}: redo`).toHaveLength(
+                round * 2 + 1,
+              );
+              expect(sent().at(-1)).toMatchObject({
+                expectedDraftGeneration: round * 2 + 1,
+              });
+              expect(order()).toEqual([two.id, one.id]);
+              expect(depth(), `round ${round}: after redo`).toBe("1");
+              expect(historyButtons()).toEqual({ undo: true, redo: false });
+            }
+            accepted(notice);
+          }, 45_000);
+
+          for (const direction of ["undo", "redo"] as const) {
+            it(`its ${direction}, after someone else's change to the list the editor read: refused before sending, their list kept`, async () => {
+              const notice = notices();
+              const { receive, one, two } = await reordered();
+              if (direction === "redo") {
+                await undo();
+                await reread(receive);
+                expect(order()).toEqual([one.id, two.id]);
+              }
+              const buttons = historyButtons();
+              const depthBefore = depth();
+              const theirs = [two, { ...one, title: "Theirs" }];
+              theyWrite({ items: theirs });
+              await editorReads(receive);
+              const before = sent().length;
+
+              await press(direction === "undo" ? "Undo" : "Redo");
+
+              expect(sent(), "nothing is sent").toHaveLength(before);
+              expect(stored).toEqual({ items: theirs });
+              expect(depth()).toBe(depthBefore);
+              expect(historyButtons()).toEqual(buttons);
+              expect(errors(notice)).toContainEqual(
+                expect.stringMatching(
+                  direction === "undo" ? /^Could not undo/ : /^Could not redo/,
+                ),
+              );
+            });
+          }
+
+          /** Its undo sent at draft 2, and no answer comes back. */
+          async function lostReorderUndo() {
+            const notice = notices();
+            const editor = await reordered();
+            answerNext.push(lost);
+
+            await undo();
+
+            expect(sent()).toHaveLength(2);
+            expect(sent()[1]).toMatchObject({ expectedDraftGeneration: 2 });
+            expect(rowsSent(sent()[1]!)).toEqual([
+              [editor.one.id, "One"],
+              [editor.two.id, "Two"],
+            ]);
+            expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+            expect(depth(), "history did not move").toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+            expect(errors(notice)).toContainEqual(
+              expect.stringMatching(/^Could not undo/),
+            );
+            await settle();
+            expect(sent(), "nothing is sent by itself").toHaveLength(2);
+            return editor;
+          }
+
+          it("an Undo with no answer, read back as landed: history moves once, nothing is sent again, Redo still there", async () => {
+            const { receive, one, two } = await lostReorderUndo();
+            serverHolds({ items: [one, two] }, 3);
+
+            await checkAndSave();
+
+            expect(sent(), "nothing is sent again").toHaveLength(2);
+            expect(unconfirmedCount()).toBeNull();
+            expect(depth(), "moved once").toBe("0");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+            await reread(receive);
+            await redo();
+
+            expect(sent()).toHaveLength(3);
+            expect(sent()[2]).toMatchObject({ expectedDraftGeneration: 3 });
+            expect(order()).toEqual([two.id, one.id]);
+            expect(depth()).toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+          });
+
+          it("an Undo with no answer, read back as not landed: sent once more, as first sent, only on Check and save", async () => {
+            const { one, two } = await lostReorderUndo();
+            serverHolds({ items: [two, one] }, 2);
+            await settle();
+            expect(sent(), "nothing is sent by itself").toHaveLength(2);
+
+            await checkAndSave();
+
+            expect(sent(), "sent once more").toHaveLength(3);
+            expect(sent()[2]).toMatchObject({ expectedDraftGeneration: 2 });
+            expect(rowsSent(sent()[2]!)).toEqual(rowsSent(sent()[1]!));
+            expect(order()).toEqual([one.id, two.id]);
+            expect(unconfirmedCount()).toBeNull();
+            expect(depth(), "moved once, nothing new recorded").toBe("0");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+            await settle();
+            expect(sent(), "and nothing after it").toHaveLength(3);
+          });
+
+          /**
+           * Codex review of #389/#390 (§5): another tab writes the same list
+           * while the drag's write is on its way. The write goes at the draft
+           * generation the editor composed it on, and the server's check
+           * refuses it: their list is kept and nothing is recorded.
+           */
+          for (const when of [
+            "before the drag, unread by the editor",
+            "after the drag, before its write lands",
+          ] as const) {
+            it(`the drag, when another tab writes the same list ${when}: refused by the draft generation, their list kept`, async () => {
+              notices();
+              const [one, two] = identified();
+              stored = { items: [one, two] };
+              await openSection({ items: [one, two] });
+              const theirs = [{ ...one!, title: "Theirs" }, two!];
+              if (when === "before the drag, unread by the editor") {
+                theyWrite({ items: theirs });
+              } else {
+                answerNext.push((data) => {
+                  theyWrite({ items: theirs });
+                  return apply(data);
+                });
+              }
+
+              fromPreview(reorderMessage);
+              await settle();
+
+              expect(sent(), "the one refused write").toHaveLength(1);
+              expect(sent()[0]).toMatchObject({ expectedDraftGeneration: 1 });
+              expect(stored, "their list is kept").toEqual({ items: theirs });
+              expect(draftGeneration).toBe(2);
+              expect(depth(), "nothing recorded").toBe("0");
+              expect(historyButtons()).toEqual({ undo: false, redo: false });
+              expect(unconfirmedCount()).toBeNull();
+              await settle();
+              expect(sent(), "not sent again by itself").toHaveLength(1);
+            });
+          }
+        });
       });
     });
 

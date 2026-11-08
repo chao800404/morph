@@ -695,6 +695,55 @@ describe("a reorder staged as one change to its list", () => {
       items: [parent("p", ["y", "x"]), parent("q", ["z"])],
     });
   });
+
+  /**
+   * Codex review of #389/#390 (§5). A root list has no row above it, so the
+   * basis is what refuses a swap composed before another writer's step the
+   * editor has since read. With no basis recorded (no copy of the document
+   * held when the drag was staged), nothing here refuses it: it is sent at the
+   * snapshot's own draft generation, and only the server's check of that
+   * generation stands between it and the other writer's list.
+   */
+  describe("a root list swap over another writer's step the editor has read", () => {
+    const stored = {
+      items: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B" },
+      ],
+    };
+    const swapped = {
+      items: [
+        { id: "b", title: "B" },
+        { id: "a", title: "A" },
+      ],
+    };
+    // Another writer's step 3 -> 4, read by the editor: its own range now
+    // starts at 4.
+    const theirs = { draftGeneration: 4, ownSince: 4, sections: [] };
+    const staged = (basisDraftGeneration: number | undefined) =>
+      stageContentFields({
+        sectionId: "hero",
+        stored,
+        next: swapped,
+        inputPath: "items",
+        sourceForPath: () => 1,
+        basisDraftGeneration,
+      })!;
+
+    it("with the basis it was made on (3): refused before it is sent", () => {
+      expect(() =>
+        selectCurrentContentFields(staged(3), 1, stored, theirs),
+      ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+    });
+
+    it("with no basis recorded: not refused here, sent at the snapshot's generation", () => {
+      const entry = staged(undefined);
+      expect(entry.fields!.items!.basisDraftGeneration).toBeUndefined();
+      const sent = selectCurrentContentFields(entry, 1, stored, theirs);
+      expect(sent.props).toEqual(swapped);
+      expect(sent.expectedDraftGeneration).toBe(4);
+    });
+  });
 });
 
 describe("what undoing a saved content write puts back", () => {
