@@ -661,7 +661,7 @@ describe("confirming a step whose write got no answer", () => {
     expect(stack(history)).toEqual({
       depth: 0,
       undoLabel: null,
-      redoLabel: "later",
+      redoLabel: "first",
     });
     // Used once: the redo and undo after it run their actions.
     await history.redo();

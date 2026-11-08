@@ -5272,6 +5272,21 @@ function Home() {
           });
         }
 
+        /**
+         * Types into the field showing `shown` and presses Undo in the same
+         * task, so the input is still inside the 300 ms debounce when the
+         * Undo runs (awaiting between them can let it leave first).
+         */
+        async function typeThenUndo(shown: string, value: string) {
+          const field = (await screen.findAllByDisplayValue(shown))[0]!;
+          const button = screen.getByRole("button", { name: "Undo" });
+          expect(button.hasAttribute("disabled")).toBe(false);
+          fireEvent.input(field, { target: { value } });
+          fireEvent.blur(field);
+          fireEvent.click(button);
+          await settle();
+        }
+
         /** Its undo sent at draft 2, and no answer comes back. */
         async function lostUndo() {
           const notice = notices();
@@ -5359,26 +5374,23 @@ function Home() {
          * it: nothing is sent for the older entry, history keeps both, in
          * order, and says so. The next Undo is the input's, the one after it
          * the older entry's, and Redo puts them back in the same order.
+         *
+         * `heading` is the input: its edits wait out the 300 ms debounce
+         * (a row title of the unstored list is saved at once, so it would
+         * be recorded before Undo is pressed).
          */
         it("input of the section still pending when Undo is pressed is saved first, as its own entry; that Undo then refuses", async () => {
           const notice = notices();
           const { receive } = await storedFieldEdit();
           // Typed, and Undo pressed inside the 300 ms debounce.
-          await type("Two", "Two edited");
-
-          await undo();
+          await typeThenUndo("New", "Newer");
 
           expect(sent(), "the input only, no undo after it").toHaveLength(2);
-          expect(Object.keys(sent()[1]!.props as object)).toEqual(["items"]);
-          expect(rowsSent(sent()[1]!).map(([, title]) => title)).toEqual([
-            "One",
-            "Two edited",
-          ]);
+          expect(sent()[1]!.props).toEqual({ heading: "Newer" });
           expect(sent()[1]).toMatchObject({ expectedDraftGeneration: 2 });
-          expect(stored.heading, "the heading is not undone").toBe("New");
-          expect(
-            (stored.items as Array<{ title: string }>).map((row) => row.title),
-          ).toEqual(["One", "Two edited"]);
+          expect(stored, "the older entry is not undone").toEqual({
+            heading: "Newer",
+          });
           expect(depth(), "both entries kept").toBe("2");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
           expect(errors(notice)).toContainEqual(
@@ -5388,46 +5400,78 @@ function Home() {
           await settle();
           expect(sent(), "nothing sent after it").toHaveLength(2);
 
-          // The input's entry is on top: its undo removes the list it stored.
+          // The input's entry is on top: its undo puts back "New".
           await reread(receive);
           await undo();
           expect(sent()).toHaveLength(3);
           expect(sent()[2]).toMatchObject({
-            props: {},
-            resetProps: ["items"],
+            props: { heading: "New" },
             expectedDraftGeneration: 3,
           });
           expect(stored).toEqual({ heading: "New" });
           expect(depth()).toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: true });
 
-          // Then the heading's entry, under it.
+          // Then the older entry, under it: "Hello".
           await reread(receive);
           await undo();
           expect(sent()).toHaveLength(4);
           expect(sent()[3]!.props).toEqual({ heading: "Hello" });
-          expect(sent()[3]).not.toHaveProperty("resetProps");
           expect(stored).toEqual({ heading: "Hello" });
           expect(depth()).toBe("0");
           expect(historyButtons()).toEqual({ undo: false, redo: true });
 
-          // Redo in the same order: the heading, then the input.
+          // Redo in the same order: the older entry, then the input.
           await reread(receive);
           await redo();
           expect(sent()).toHaveLength(5);
           expect(sent()[4]!.props).toEqual({ heading: "New" });
           expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: true });
           await reread(receive);
           await redo();
           expect(sent()).toHaveLength(6);
-          expect(Object.keys(sent()[5]!.props as object)).toEqual(["items"]);
-          expect(rowsSent(sent()[5]!).map(([, title]) => title)).toEqual([
-            "One",
-            "Two edited",
-          ]);
+          expect(sent()[5]!.props).toEqual({ heading: "Newer" });
+          expect(stored).toEqual({ heading: "Newer" });
           expect(depth()).toBe("2");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
-          expect(stored.heading).toBe("New");
+          expect(sent().every((data) => data.expectedSourceGeneration === 1)).toBe(
+            true,
+          );
+        });
+
+        // The same rule on the reset path (the undo of a first Add).
+        it("input pending when the undo of a first Add is pressed is saved first; that undo then refuses", async () => {
+          const notice = notices();
+          const { receive } = await resetOnlyWrite();
+          expect(depth()).toBe("1");
+          await typeThenUndo("Hello", "Hi");
+
+          expect(sent(), "the input only, no reset after it").toHaveLength(2);
+          expect(sent()[1]!.props).toEqual({ heading: "Hi" });
+          expect(sent()[1]).not.toHaveProperty("resetProps");
+          expect(stored.heading).toBe("Hi");
+          expect(stored).toHaveProperty("items");
+          expect(depth(), "both entries kept").toBe("2");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(/^Could not undo/),
+          );
+
+          // The input's entry first, then the Add's.
+          await reread(receive);
+          await undo();
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]!.props).toEqual({ heading: "Hello" });
+          expect(sent()[2]).not.toHaveProperty("resetProps");
+          expect(depth()).toBe("1");
+          await reread(receive);
+          await undo();
+          expect(sent()).toHaveLength(4);
+          expect(sent()[3]).toMatchObject({ props: {}, resetProps: ["items"] });
+          expect(stored).toEqual({ ...STORED });
+          expect(depth()).toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
         });
       });
 
