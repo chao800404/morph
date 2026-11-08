@@ -4732,6 +4732,191 @@ function Home() {
         getThemeEditor.mockReset();
       }
     });
+
+    /**
+     * The first drag's Undo removes the list again and its Redo stores the
+     * swapped rows again, each as a history run of its own (#388): one
+     * awaited write, checked against the draft generation answered for the
+     * step it reverses or re-applies, recording nothing new. Red where the
+     * Undo is sent unchecked at whatever generation is held, or the Redo
+     * goes through the pending input path (which records a second entry).
+     */
+    describe("Undo and Redo of the first drag, as history runs of their own", () => {
+      const depth = () =>
+        document
+          .querySelector("[data-editor-undo-depth]")
+          ?.getAttribute("data-editor-undo-depth") ?? null;
+      const historyButtons = () => ({
+        undo: !screen
+          .getByRole("button", { name: "Undo" })
+          .hasAttribute("disabled"),
+        redo: !screen
+          .getByRole("button", { name: "Redo" })
+          .hasAttribute("disabled"),
+      });
+      const press = async (name: "Undo" | "Redo") => {
+        await waitFor(() =>
+          expect(
+            screen.getByRole("button", { name }).hasAttribute("disabled"),
+          ).toBe(false),
+        );
+        fireEvent.click(screen.getByRole("button", { name }));
+        await settle();
+      };
+      const errors = (notice: ReturnType<typeof notices>) =>
+        notice.error.mock.calls.map((call) => String(call[0]));
+      /** The route's read of the Theme: what the fake server holds now. */
+      const reread = async (
+        receive: (next: StorefrontThemeEditorDTO) => void,
+      ) => {
+        act(() => receive(editorAt({ ...stored }, draftGeneration)));
+        await flushFrames();
+      };
+
+      beforeEach(() => {
+        // A reset answers without the document, so a later write may read
+        // the server's copy first; this fake server answers with what it
+        // holds.
+        getThemeEditor.mockImplementation(async () => ({
+          success: true,
+          message: "ok",
+          data: editorAt({ ...stored }, draftGeneration),
+        }));
+      });
+      afterEach(() => {
+        getThemeEditor.mockReset();
+      });
+
+      /** "Two" dropped on "One": one write (draft 1 -> 2), one entry. */
+      async function firstDrag() {
+        const editor = await openTitle({}, 1);
+        drag(1, 0);
+        await settle();
+        await reread(editor.receive);
+        expect(sent()).toHaveLength(1);
+        expect(depth()).toBe("1");
+        expect(historyButtons()).toEqual({ undo: true, redo: false });
+        return editor;
+      }
+
+      it("two rounds: Undo removes the list again, Redo stores the swapped rows under the same ids, and nothing else is recorded", async () => {
+        const notice = notices();
+        const [one, two] = identified();
+        const swapped = [
+          { id: two!.id, title: "Two" },
+          { id: one!.id, title: "One" },
+        ];
+        const { receive } = await firstDrag();
+        expect(stored.items).toEqual(swapped);
+
+        for (const round of [1, 2]) {
+          await press("Undo");
+          await reread(receive);
+          expect(sent(), `round ${round}: undo sent once`).toHaveLength(
+            round * 2,
+          );
+          expect(sent().at(-1)!).toMatchObject({
+            props: {},
+            resetProps: ["items"],
+            expectedDraftGeneration: round * 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored, `round ${round}: nothing stored`).not.toHaveProperty(
+            "items",
+          );
+          expect(depth(), `round ${round}: after undo`).toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+          await press("Redo");
+          await reread(receive);
+          expect(sent(), `round ${round}: redo sent once`).toHaveLength(
+            round * 2 + 1,
+          );
+          expect(sent().at(-1)!).toMatchObject({
+            expectedDraftGeneration: round * 2 + 1,
+            expectedSourceGeneration: 1,
+          });
+          expect(rowsSent(sent().at(-1)!)).toEqual([
+            [two!.id, "Two"],
+            [one!.id, "One"],
+          ]);
+          expect(stored.items, `round ${round}: the swapped rows`).toEqual(
+            swapped,
+          );
+          expect(depth(), `round ${round}: after redo`).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        }
+        expect(notice.warning).not.toHaveBeenCalled();
+        expect(notice.error).not.toHaveBeenCalled();
+      }, 45_000);
+
+      it("a refused Undo leaves the history, the data and the entries as they were, and says so", async () => {
+        const notice = notices();
+        await firstDrag();
+        const before = structuredClone(stored);
+        updateSectionProps.mockImplementationOnce(async () => ({
+          success: false,
+          error: "REFUSED_BY_MOCK",
+          message: "The mock refused the undo.",
+        }));
+
+        await press("Undo");
+
+        expect(sent(), "the undo is sent once").toHaveLength(2);
+        expect(sent()[1]!).toMatchObject({
+          props: {},
+          resetProps: ["items"],
+          expectedDraftGeneration: 2,
+        });
+        expect(stored, "the Document is unchanged").toEqual(before);
+        expect(depth(), "history did not move").toBe("1");
+        expect(historyButtons()).toEqual({ undo: true, redo: false });
+        expect(errors(notice)).toContainEqual(
+          expect.stringMatching(/^Could not undo/),
+        );
+        await settle();
+        expect(sent(), "nothing is sent after it").toHaveLength(2);
+        expect(depth(), "nothing new is recorded").toBe("1");
+      });
+
+      for (const direction of ["undo", "redo"] as const) {
+        it(`a ${direction} after another tab's change the editor has read: refused before sending, their list kept`, async () => {
+          const notice = notices();
+          const { receive } = await firstDrag();
+          if (direction === "redo") {
+            await press("Undo");
+            await reread(receive);
+            expect(stored).not.toHaveProperty("items");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+          }
+          const buttons = historyButtons();
+          const depthBefore = depth();
+          // Another tab: same source generation, the Document one step on.
+          const theirs = { items: [{ id: "theirs-1", title: "Theirs" }] };
+          stored = structuredClone(theirs);
+          draftGeneration += 1;
+          await reread(receive);
+          const before = sent().length;
+
+          await press(direction === "undo" ? "Undo" : "Redo");
+
+          expect(
+            sent(),
+            "nothing is sent over a step that was not this editor's own",
+          ).toHaveLength(before);
+          expect(stored, "their list is kept").toEqual(theirs);
+          expect(depth(), "history did not move").toBe(depthBefore);
+          expect(historyButtons()).toEqual(buttons);
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(
+              direction === "undo" ? /^Could not undo/ : /^Could not redo/,
+            ),
+          );
+          await settle();
+          expect(sent(), "nothing is sent after it").toHaveLength(before);
+        });
+      }
+    });
   });
 
   /**
