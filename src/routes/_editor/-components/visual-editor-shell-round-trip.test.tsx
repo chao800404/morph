@@ -1641,13 +1641,23 @@ describe("source refusal recovery contract", () => {
         screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
       ).toBe(false),
     );
+    // #388 round 5: the Undo now waits for its own write's answer before the
+    // history moves (before, it moved at once, the write still out). That
+    // write is composed on a read of the Document, which the answer above
+    // (no document in it) leaves this editor needing, and which this harness
+    // never answered, so the Undo stayed out and Redo never came. The read
+    // is answered here as the server would: the saved heading, at draft 2.
+    getThemeEditor.mockResolvedValue(
+      editorHolding({ heading: "Saved heading", subheading: "Summary" }, 2),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled"),
       ).toBe(false),
     );
-    // A replay may debounce like ordinary content. It must never borrow gen2.
+    // A replay keeps the source generation it was recorded at (round 5: it no
+    // longer debounces like ordinary content). It must never borrow gen2.
     act(() =>
       useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
     );

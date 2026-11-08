@@ -205,6 +205,7 @@ import {
   readThemeInstanceStyleClasses,
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
+import type { EditorHistoryAttempt } from "@/lib/storefront/editor/editor-history";
 import {
   GLOBAL_LAYOUT_LABEL,
   SECTION_TEMPLATE_HINT,
@@ -219,6 +220,11 @@ export type InspectorPropsChangeOptions = {
   skipPreviewSync?: boolean;
   /** A history replay retains its original source precondition. */
   historySourceGeneration?: number;
+  /**
+   * Set only by the shell's own history entries: the history run this
+   * replay is. The write is then its own, awaited and never recorded.
+   */
+  historyAttempt?: EditorHistoryAttempt;
   /** Which control changed; the other props are only a display snapshot. */
   inputFieldPath?: string;
   /** Selected row whose explicit action changes its list or creates an id. */

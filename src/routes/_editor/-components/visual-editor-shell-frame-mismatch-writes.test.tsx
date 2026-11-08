@@ -1488,18 +1488,24 @@ describe("undo and redo after a page switch", () => {
       expect(server.heading("template-c")).toBe("C heading");
     });
 
-    it("control: redo is not offered once the undo's own write landed", async () => {
-      // Pinned as it is, on main too: a content undo is replayed as an edit
-      // of its own, and recording it starts a new branch of the history.
+    // #388 round 5: this pinned the bug. A content undo was replayed as an
+    // edit of its own and recorded, which started a new branch of the
+    // history, so Redo was gone (old title: "control: redo is not offered
+    // once the undo's own write landed"; it expected Redo disabled and the
+    // Redo press to write nothing). A replay is now its own write, recorded
+    // never: Redo stays, and writes /b's edit back to /b once.
+    it("control: redo is still offered once the undo's own write landed, and writes /b again", async () => {
       const { server } = await editedOnB();
       press("undo");
       await tick(400);
       expect(server.heading("template-b")).toBe(SAME);
-      expect(enabled(redoButton())).toBe(false);
+      expect(enabled(redoButton())).toBe(true);
       const before = writtenTemplates().length;
       press("redo");
       await tick(400);
-      expect(writtenTemplates().length).toBe(before);
+      expect(writtenTemplates().slice(before)).toEqual(["template-b"]);
+      expect(server.heading("template-b")).toBe("Typed on B");
+      expect(server.heading("template-c")).toBe("C heading");
     });
 
     it("redo on /c applies nothing of /b's history to /c", async () => {

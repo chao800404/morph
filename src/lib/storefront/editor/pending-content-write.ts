@@ -392,10 +392,18 @@ export async function commitPendingContent<
   onSaved,
   failureCode,
   select,
+  own,
 }: {
   key: string;
   pending: Map<string, PendingContentEntry>;
   baselines: Map<string, Record<string, unknown>>;
+  /**
+   * A write of its own (a history replay), sent instead of the section's
+   * pending input and never merged with it: input typed while it is out
+   * stays pending, unacknowledged, for its own save. On success only that
+   * input's baseline moves past what this write stored.
+   */
+  own?: PendingContentEntry;
   /** Sends a write composed now. Exactly one of this and `saveWhenSent`. */
   save?: (entry: PendingContentEntry) => Promise<T>;
   /**
@@ -422,12 +430,12 @@ export async function commitPendingContent<
   failureCode: (result: T) => string | undefined;
   select?: (entry: PendingContentEntry) => PendingContentEntry;
 }): Promise<T | null> {
-  const held = pending.get(key);
+  const held = own ?? pending.get(key);
   if (!held) return null;
   const baseline = baselines.get(key);
   let prepared: PendingContentEntry | undefined;
   const prepare = () => {
-    const now = pending.get(key) ?? held;
+    const now = own ?? pending.get(key) ?? held;
     prepared = select ? select(now) : now;
     return prepared;
   };
@@ -447,7 +455,9 @@ export async function commitPendingContent<
     );
     const code = failureCode(result);
     if (code) failure.code = code;
-    if (code === SELECTION_SOURCE_CONFLICT && entry.fields) {
+    // Only the section's own pending input is marked refused; a write of its
+    // own carries none of it.
+    if (code === SELECTION_SOURCE_CONFLICT && entry.fields && !own) {
       const now = pending.get(key);
       if (now?.fields) {
         const fields = { ...now.fields };
@@ -459,6 +469,17 @@ export async function commitPendingContent<
       }
     }
     throw failure;
+  }
+  if (own) {
+    // Nothing pending was this write's. Input typed since is undone, once
+    // saved, to what this write stored.
+    if (pending.has(key)) {
+      baselines.set(key, { ...baselines.get(key), ...entry.props });
+    } else {
+      baselines.delete(key);
+    }
+    onSaved?.(entry, baseline);
+    return result;
   }
   if (acknowledgeContentFields(pending, key, entry)) {
     if (!pending.has(key)) baselines.delete(key);

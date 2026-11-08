@@ -82,6 +82,8 @@ export function useEditorHistory() {
         direction: "undo" | "redo",
         attemptId: number,
       ) => history.confirm(entryId, direction, attemptId),
+      isOnTop: (entryId: number, direction: "undo" | "redo") =>
+        history.isOnTop(entryId, direction),
     }),
     [history, redo, undo],
   );
