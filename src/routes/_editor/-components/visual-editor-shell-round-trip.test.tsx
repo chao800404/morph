@@ -31,7 +31,11 @@ import {
   VisualEditorShell,
 } from "./visual-editor-shell";
 import { STARTER_THEME_FILES as OBJPOS_STARTER_FILES } from "@/lib/storefront/starter-theme-files";
-import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
+import {
+  identifyUnstoredListRows,
+  normalizeDocumentRowIds,
+} from "@/lib/storefront/editor/normalize-row-ids";
+import { RESELECT_CONTENT_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
 import {
   resolveSelectable as objposResolveSelectable,
   selectionMetadata as objposSelectionMetadata,
@@ -1637,13 +1641,23 @@ describe("source refusal recovery contract", () => {
         screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
       ).toBe(false),
     );
+    // #388 round 5: the Undo now waits for its own write's answer before the
+    // history moves (before, it moved at once, the write still out). That
+    // write is composed on a read of the Document, which the answer above
+    // (no document in it) leaves this editor needing, and which this harness
+    // never answered, so the Undo stayed out and Redo never came. The read
+    // is answered here as the server would: the saved heading, at draft 2.
+    getThemeEditor.mockResolvedValue(
+      editorHolding({ heading: "Saved heading", subheading: "Summary" }, 2),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled"),
       ).toBe(false),
     );
-    // A replay may debounce like ordinary content. It must never borrow gen2.
+    // A replay keeps the source generation it was recorded at (round 5: it no
+    // longer debounces like ordinary content). It must never borrow gen2.
     act(() =>
       useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
     );
@@ -3981,19 +3995,32 @@ describe("a list nothing stores yet, edited for the first time", () => {
   // row identity guard applies to it like to any stored list.
   const ENTRIES_PATH = "src/components/Entries.tsx";
   const DEFAULTS = [{ title: "One" }, { title: "Two" }];
+  /** The rows the component declares; a test may declare others. */
+  let defaults: ReadonlyArray<{ title: string }> = DEFAULTS;
+  /**
+   * Whether the component also declares a top-level `heading` (#388 round 3:
+   * a write over a stored key and an unstored list at once). Off, the source
+   * is exactly what it was without it.
+   */
+  let headingField = false;
   const entries = (storedProps?: Record<string, unknown>) => ({
     path: ENTRIES_PATH,
     type: "entries",
     props: storedProps ?? {},
-    source: `export const contentFields = {
+    source: `export const contentFields = {${
+      headingField
+        ? `
+  heading: { type: "text", label: "Heading", maxLength: 150 },`
+        : ""
+    }
   items: {
     type: "array",
     label: "Entries",
     fields: { title: { type: "text", label: "Title", maxLength: 150 } },
   },
 } as const;
-export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items?: { id?: string; title?: string }[] }) {
-  return <section>{items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}</section>;
+export default function Entries({ ${headingField ? `heading = "Default heading", ` : ""}items = ${JSON.stringify(defaults)} }: { ${headingField ? "heading?: string; " : ""}items?: { id?: string; title?: string }[] }) {
+  return <section>${headingField ? "<h2>{heading}</h2>" : ""}{items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}</section>;
 }`,
   });
   /** The ids the server would give the default rows of this section. */
@@ -4001,7 +4028,7 @@ export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items
     normalizeDocumentRowIds(
       {
         version: 1,
-        sections: [{ id: "section", props: { items: DEFAULTS } }],
+        sections: [{ id: "section", props: { items: defaults } }],
       },
       context.templates[0]!.id,
     ).value.sections[0]!.props.items as Array<{ id: string; title: string }>;
@@ -4025,6 +4052,8 @@ export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items
   let draftGeneration = 1;
   let stored: Record<string, unknown> = {};
   beforeEach(() => {
+    defaults = DEFAULTS;
+    headingField = false;
     draftGeneration = 1;
     stored = {};
     updateSectionProps.mockReset();
@@ -4057,7 +4086,13 @@ export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items
     vi.restoreAllMocks();
   });
 
-  async function reportTitle(props: Record<string, unknown>, index: number) {
+  async function reportTitle(
+    props: Record<string, unknown>,
+    index: number,
+    /** The element clicked; by default the `index`th title. */
+    pick: (root: HTMLElement) => Element | null = (root) =>
+      root.querySelectorAll("h3")[index] ?? null,
+  ) {
     const fixture = entries(props);
     const route = `import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
@@ -4080,9 +4115,7 @@ function Home() {
       },
     });
     const root = objposMount(html);
-    const item = objposResolveSelectable(
-      root.querySelectorAll("h3")[index] ?? null,
-    );
+    const item = objposResolveSelectable(pick(root) as HTMLElement | null);
     document.body.replaceChildren();
     expect(item).toBeTruthy();
     return {
@@ -4534,6 +4567,1761 @@ function Home() {
         [one!.id, "One"],
         [two!.id, "Two亜"],
       ]);
+    });
+  });
+
+  /**
+   * The Inspector's "Add entry" and "Remove" on a list nothing stores yet,
+   * seen from the shell: what the write sends and whether the shell takes
+   * the answer. The Inspector's own tests only see the props it hands the
+   * shell; staging and the send happen here.
+   *
+   * The server is the mock above, extended to drop `resetProps` keys as the
+   * server does. A mocked success taken by the shell shows the shell accepts
+   * it, not that the real data layer would.
+   *
+   * The section itself is selected on the canvas, which is where the panel
+   * offers "Add entry": a selected entry scopes the panel to that one row.
+   */
+  describe("adding and removing entries of a list nothing stores yet, from the Inspector", () => {
+    /**
+     * Opens the editor on `props` with the section selected on the canvas.
+     * The canvas report is taken first: rendering it replaces the body.
+     */
+    async function openSection(props: Record<string, unknown>) {
+      const report = await reportTitle(props, 0, (root) =>
+        root.querySelector("[data-storefront-section-id],[data-morph-section]"),
+      );
+      expect(report).toMatchObject({ isSection: true, itemId: null });
+      const editor = renderEntries(props, 1);
+      await flushFrames();
+      fromPreview(report);
+      await flushFrames();
+      const contentTab = screen.queryByRole("button", { name: /^Content$/ });
+      if (contentTab) fireEvent.click(contentTab);
+      await flushFrames();
+      return editor;
+    }
+    /**
+     * The route's read of the Theme after a removal: the shell does not take
+     * the document from a reset's answer, it invalidates the read, and the
+     * route hands it the new one. Modeled by giving the editor what the mock
+     * store now holds, as editor.tsx would once that read comes back.
+     */
+    const reread = async (
+      receive: (next: StorefrontThemeEditorDTO) => void,
+    ) => {
+      act(() => receive(editorAt(stored, draftGeneration)));
+      await flushFrames();
+    };
+
+    beforeEach(() => {
+      updateSectionProps.mockImplementation(async ({ data }) => {
+        stored = { ...stored, ...(data.props as Record<string, unknown>) };
+        for (const key of (data.resetProps as string[] | undefined) ?? []) {
+          delete stored[key];
+        }
+        draftGeneration = data.expectedDraftGeneration + 1;
+        return {
+          success: true,
+          data: {
+            draftGeneration,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "section",
+                  type: "entries",
+                  componentRef: ENTRIES_PATH,
+                  enabled: true,
+                  props: stored,
+                },
+              ],
+            },
+          },
+        };
+      });
+    });
+
+    const notices = () => ({
+      warning: vi.spyOn(toast, "warning").mockImplementation(() => ""),
+      error: vi.spyOn(toast, "error").mockImplementation(() => ""),
+    });
+    const addEntry = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Add entry" }));
+      await settle();
+    };
+    /** Presses Remove on the card drawn for the row whose title is `title`. */
+    const removeRow = async (title: string) => {
+      const input = (await screen.findAllByDisplayValue(title))[0]!;
+      const card = input.closest<HTMLElement>('[class*="bg-muted/30"]');
+      expect(card, `the card drawn for "${title}"`).toBeTruthy();
+      const button = Array.from(card!.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.trim() === "Remove",
+      );
+      expect(button, `the Remove button of "${title}"`).toBeTruthy();
+      fireEvent.click(button!);
+      await settle();
+    };
+    const THREE = [{ title: "One" }, { title: "Two" }, { title: "Three" }];
+    /** The titles of the row cards the panel draws, in order. */
+    const panelTitles = () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>('[class*="bg-muted/30"]'),
+      ).map(
+        (card) => card.querySelector<HTMLInputElement>("input")?.value ?? null,
+      );
+    /** Whether Undo and Redo can be pressed. */
+    const historyButtons = () => ({
+      undo: !screen
+        .getByRole("button", { name: "Undo" })
+        .hasAttribute("disabled"),
+      redo: !screen
+        .getByRole("button", { name: "Redo" })
+        .hasAttribute("disabled"),
+    });
+    const press = async (name: "Undo" | "Redo") => {
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name }).hasAttribute("disabled"),
+        ).toBe(false),
+      );
+      fireEvent.click(screen.getByRole("button", { name }));
+      await settle();
+    };
+    const undo = () => press("Undo");
+    const redo = () => press("Redo");
+    /** The write's version fields, as sent. */
+    const versionsSent = (data: Record<string, unknown>) => ({
+      expectedDraftGeneration: data.expectedDraftGeneration,
+      expectedSourceGeneration: data.expectedSourceGeneration,
+    });
+    const accepted = (notice: ReturnType<typeof notices>) => {
+      expect(notice.warning).not.toHaveBeenCalled();
+      expect(notice.error).not.toHaveBeenCalled();
+      expect(saveStatus()).toBe("Unpublished");
+    };
+
+    it("first Add sends the drawn defaults with their ids, in order, plus one new row, at the current generations", async () => {
+      const notice = notices();
+      const [one, two] = identified();
+      const precondition = editorAt({}, 1).templates[0]!.document.sections[0]!;
+      expect(precondition.props).not.toHaveProperty("items");
+      await openSection({});
+
+      await addEntry();
+
+      expect(sent()).toHaveLength(1);
+      const write = sent()[0]!;
+      expect(versionsSent(write)).toEqual({
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      });
+      expect(write).not.toHaveProperty("resetProps");
+      expect(Object.keys(write.props as object)).toEqual(["items"]);
+      const rows = rowsSent(write);
+      expect(rows).toHaveLength(3);
+      expect(rows.slice(0, 2)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two"],
+      ]);
+      const added = rows[2]![0] as string;
+      expect(added).toMatch(/^morph-/);
+      expect(added.startsWith("morph-mig-")).toBe(false);
+      expect([one!.id, two!.id]).not.toContain(added);
+      accepted(notice);
+      expect((stored.items as unknown[]).length).toBe(3);
+    });
+
+    it("first Remove of the middle of three drawn rows drops exactly that row and keeps the first and third with their ids", async () => {
+      defaults = THREE;
+      const notice = notices();
+      const [one, two, three] = identified();
+      // The ids the panel keys the drawn rows by are the server's.
+      expect(
+        identifyUnstoredListRows("items", THREE, {
+          templateId: context.templates[0]!.id,
+          sectionId: "section",
+        }),
+      ).toEqual([one, two, three]);
+      await openSection({});
+      expect(panelTitles()).toEqual(["One", "Two", "Three"]);
+
+      await removeRow("Two");
+
+      expect(sent()).toHaveLength(1);
+      const write = sent()[0]!;
+      expect(versionsSent(write)).toEqual({
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      });
+      expect(write).not.toHaveProperty("resetProps");
+      expect(rowsSent(write)).toEqual([
+        [one!.id, "One"],
+        [three!.id, "Three"],
+      ]);
+      accepted(notice);
+      expect(stored.items).toEqual([
+        { id: one!.id, title: "One" },
+        { id: three!.id, title: "Three" },
+      ]);
+      expect(panelTitles()).toEqual(["One", "Three"]);
+    });
+
+    it("undo of the first Add stores nothing again, and redo writes the added list back with the same ids", async () => {
+      const notice = notices();
+      const { receive } = await openSection({});
+      await addEntry();
+      await reread(receive);
+      expect(sent()).toHaveLength(1);
+      const added = (sent()[0]!.props as { items: unknown[] }).items;
+      expect(added).toHaveLength(3);
+
+      await undo();
+
+      expect(sent(), "undo sends one write").toHaveLength(2);
+      const reset = sent()[1]!;
+      expect(reset).toMatchObject({
+        templateId: "template-1",
+        sectionId: "section",
+        props: {},
+        resetProps: ["items"],
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+      });
+      expect(reset.props, "no rows are written back").not.toHaveProperty(
+        "items",
+      );
+      expect(stored, "the Document stores no items again").not.toHaveProperty(
+        "items",
+      );
+      accepted(notice);
+      await reread(receive);
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+      expect(panelTitles()).toEqual(["One", "Two"]);
+
+      await redo();
+
+      expect(sent(), "redo sends one write").toHaveLength(3);
+      const again = sent()[2]!;
+      expect(again).not.toHaveProperty("resetProps");
+      expect(versionsSent(again)).toEqual({
+        expectedDraftGeneration: 3,
+        expectedSourceGeneration: 1,
+      });
+      expect((again.props as { items: unknown }).items).toEqual(added);
+      expect(stored.items).toEqual(added);
+      accepted(notice);
+      await reread(receive);
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+      expect(panelTitles()).toEqual(["One", "Two", ""]);
+    });
+
+    it("undo of the first Remove stores nothing again, and redo writes the shortened list back with the same ids", async () => {
+      defaults = THREE;
+      const notice = notices();
+      const [one, , three] = identified();
+      const { receive } = await openSection({});
+      await removeRow("Two");
+      await reread(receive);
+      expect(sent()).toHaveLength(1);
+
+      await undo();
+
+      expect(sent(), "undo sends one write").toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: "template-1",
+        sectionId: "section",
+        props: {},
+        resetProps: ["items"],
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+      });
+      expect(stored, "the Document stores no items again").not.toHaveProperty(
+        "items",
+      );
+      accepted(notice);
+      await reread(receive);
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+      expect(panelTitles()).toEqual(["One", "Two", "Three"]);
+
+      await redo();
+
+      expect(sent(), "redo sends one write").toHaveLength(3);
+      const again = sent()[2]!;
+      expect(again).not.toHaveProperty("resetProps");
+      expect(versionsSent(again)).toEqual({
+        expectedDraftGeneration: 3,
+        expectedSourceGeneration: 1,
+      });
+      expect(rowsSent(again)).toEqual([
+        [one!.id, "One"],
+        [three!.id, "Three"],
+      ]);
+      expect(stored.items).toEqual([
+        { id: one!.id, title: "One" },
+        { id: three!.id, title: "Three" },
+      ]);
+      accepted(notice);
+      await reread(receive);
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+      expect(panelTitles()).toEqual(["One", "Three"]);
+    });
+
+    // The reset is answered with a refusal, or gets no answer: the history
+    // must not claim the reversal, and the change stays on screen.
+    for (const [label, answerReset] of [
+      [
+        "refused",
+        async () => ({
+          success: false,
+          error: "REFUSED_BY_MOCK",
+          message: "The mock refused the reset.",
+        }),
+      ],
+      [
+        "unanswered",
+        async () => {
+          throw new Error("offline");
+        },
+      ],
+    ] as const) {
+      it(`undo of the first Add whose reset is ${label} keeps the entry, the change and says so`, async () => {
+        const notice = notices();
+        const { receive } = await openSection({});
+        await addEntry();
+        await reread(receive);
+        expect(sent()).toHaveLength(1);
+        const added = stored.items;
+        const answerWrites = updateSectionProps.getMockImplementation()!;
+        updateSectionProps.mockImplementation(async (call) =>
+          (call.data.resetProps as string[] | undefined)?.length
+            ? answerReset()
+            : answerWrites(call),
+        );
+
+        await undo();
+
+        expect(sent(), "the reset was sent").toHaveLength(2);
+        expect(sent()[1]).toMatchObject({ resetProps: ["items"] });
+        expect(stored.items, "the mock store kept the list").toEqual(added);
+        expect(historyButtons(), "history did not move").toEqual({
+          undo: true,
+          redo: false,
+        });
+        expect(panelTitles(), "the panel still shows the Add").toEqual([
+          "One",
+          "Two",
+          "",
+        ]);
+        expect(
+          notice.error.mock.calls.map((call) => String(call[0])),
+        ).toContainEqual(expect.stringMatching(/^Could not undo/));
+
+        // The entry is still there to retry once the store answers again.
+        updateSectionProps.mockImplementation(answerWrites);
+        if (label === "unanswered") {
+          // #388 round 3 (A3) changed this half. An unanswered reset may have
+          // landed, so it is read back before anything is sent again: the
+          // next Undo is held (the existing unconfirmed hold), and Check and
+          // save reads the Document back, finds the list still stored at the
+          // generation the reset was sent at (not landed), and sends it once
+          // more, as first sent. Before A3 the next Undo resent it at once,
+          // with no read-back.
+          await undo();
+          expect(sent(), "the next Undo is held").toHaveLength(2);
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          getThemeEditor.mockResolvedValue({
+            success: true,
+            message: "ok",
+            data: editorAt({ ...stored }, draftGeneration),
+          });
+          fireEvent.click(
+            await screen.findByRole("button", { name: "Check and save" }),
+          );
+          await settle();
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
+            props: {},
+            resetProps: ["items"],
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).not.toHaveProperty("items");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+          return;
+        }
+        await undo();
+        expect(sent()).toHaveLength(3);
+        expect(sent()[2]).toMatchObject({
+          props: {},
+          resetProps: ["items"],
+          expectedSourceGeneration: 1,
+        });
+        expect(stored).not.toHaveProperty("items");
+        expect(historyButtons()).toEqual({ undo: false, redo: true });
+      });
+    }
+
+    it("control: on a stored list, Add appends to the stored rows with their ids unchanged", async () => {
+      const notice = notices();
+      const [one, two] = identified();
+      stored = { items: [one, two] };
+      await openSection({ items: [one, two] });
+
+      await addEntry();
+
+      expect(sent()).toHaveLength(1);
+      const write = sent()[0]!;
+      expect(versionsSent(write)).toEqual({
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      });
+      const rows = rowsSent(write);
+      expect(rows.slice(0, 2)).toEqual([
+        [one!.id, "One"],
+        [two!.id, "Two"],
+      ]);
+      expect(rows).toHaveLength(3);
+      expect(rows[2]![0]).toMatch(/^morph-/);
+      expect([one!.id, two!.id]).not.toContain(rows[2]![0]);
+      accepted(notice);
+    });
+
+    it("control: on a stored list, Remove drops the row at the pressed index with the other's id unchanged", async () => {
+      const notice = notices();
+      const [one, two] = identified();
+      stored = { items: [one, two] };
+      await openSection({ items: [one, two] });
+
+      await removeRow("Two");
+
+      expect(sent()).toHaveLength(1);
+      expect(versionsSent(sent()[0]!)).toEqual({
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      });
+      expect(rowsSent(sent()[0]!)).toEqual([[one!.id, "One"]]);
+      accepted(notice);
+      expect(stored.items).toEqual([{ id: one!.id, title: "One" }]);
+    });
+
+    /**
+     * #388 round 3, A2/A3 (red before the fix where noted; see
+     * handoff/2026-11-07/pr388-round3-tests/SUMMARY.md).
+     *
+     * The component also declares `heading`, stored as "Hello". One write
+     * over both `heading` and the unstored `items` is undone by restoring the
+     * one and removing the other, in ONE awaited write. A reset or mixed
+     * write that gets no answer is held as unconfirmed, and its read-back is
+     * decided version first, then content.
+     *
+     * The server here checks the draft generation as the DAL does, and drops
+     * `resetProps` keys.
+     */
+    describe("#388 round 3: undoing a write that also removes keys", () => {
+      const STORED = { heading: "Hello" } as const;
+      /** One-off answers, in order, before the server's own. */
+      let answerNext: Array<(data: Record<string, unknown>) => unknown> = [];
+      const conflictAnswer = {
+        success: false,
+        error: "TEMPLATE_DRAFT_CONFLICT",
+        message: "Template draft was modified concurrently.",
+      };
+      const apply = (data: Record<string, unknown>) => {
+        if (data.expectedDraftGeneration !== draftGeneration) {
+          return conflictAnswer;
+        }
+        stored = { ...stored, ...(data.props as Record<string, unknown>) };
+        for (const key of (data.resetProps as string[] | undefined) ?? []) {
+          delete stored[key];
+        }
+        draftGeneration += 1;
+        return {
+          success: true,
+          data: {
+            draftGeneration,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "section",
+                  type: "entries",
+                  componentRef: ENTRIES_PATH,
+                  enabled: true,
+                  props: stored,
+                },
+              ],
+            },
+          },
+        };
+      };
+      /** The request is sent and no answer comes back. */
+      const lost = () => {
+        throw new Error("offline");
+      };
+      /** What the server holds now, and what reading it answers. */
+      const serverHolds = (
+        props: Record<string, unknown>,
+        generation: number,
+      ) => {
+        stored = { ...props };
+        draftGeneration = generation;
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: editorAt({ ...props }, generation),
+        });
+      };
+      const unconfirmedCount = () =>
+        document
+          .querySelector("[data-editor-unconfirmed-saves]")
+          ?.getAttribute("data-editor-unconfirmed-saves") ?? null;
+      const checkAndSave = async () => {
+        fireEvent.click(
+          await screen.findByRole("button", { name: "Check and save" }),
+        );
+        await settle();
+      };
+      const errors = (notice: ReturnType<typeof notices>) =>
+        notice.error.mock.calls.map((call) => String(call[0]));
+
+      beforeEach(() => {
+        headingField = true;
+        answerNext = [];
+        getThemeEditor.mockReset();
+        updateSectionProps.mockImplementation(async ({ data }) => {
+          const override = answerNext.shift();
+          return override ? override(data) : apply(data);
+        });
+      });
+
+      /**
+       * `heading` typed and an entry added inside one debounce: one write,
+       * one history entry, whose undo restores `heading` and removes `items`.
+       */
+      async function mixedWrite() {
+        stored = { ...STORED };
+        const editor = await openSection({ ...STORED });
+        const heading = (await screen.findAllByDisplayValue("Hello"))[0]!;
+        const add = await screen.findByRole("button", { name: "Add entry" });
+        // Both inside the shell's 300 ms debounce, with nothing awaited
+        // between them: one pending entry, so one write.
+        fireEvent.input(heading, { target: { value: "New" } });
+        fireEvent.blur(heading);
+        fireEvent.click(add);
+        await settle();
+        expect(sent(), "one write for both keys").toHaveLength(1);
+        expect(Object.keys(sent()[0]!.props as object).sort()).toEqual([
+          "heading",
+          "items",
+        ]);
+        await reread(editor.receive);
+        const added = (sent()[0]!.props as { items: unknown[] }).items;
+        expect(added).toHaveLength(3);
+        return { ...editor, added };
+      }
+      /** An entry added to the unstored list: one write, one history entry. */
+      async function resetOnlyWrite() {
+        stored = { ...STORED };
+        const editor = await openSection({ ...STORED });
+        await addEntry();
+        expect(sent()).toHaveLength(1);
+        await reread(editor.receive);
+        return editor;
+      }
+      /**
+       * Replay integrity (red before the fix where the replay records a
+       * second "Content" entry): a successful Undo or Redo moves only the
+       * entry it ran, records nothing new, and keeps the other direction.
+       * Two full rounds, checking the writes sent, the history and the data
+       * after every step.
+       */
+      describe("two rounds of Undo then Redo move only the original entry", () => {
+        const depth = () =>
+          document
+            .querySelector("[data-editor-undo-depth]")
+            ?.getAttribute("data-editor-undo-depth") ?? null;
+        const step = async (
+          press: () => Promise<void>,
+          receive: (next: StorefrontThemeEditorDTO) => void,
+        ) => {
+          await press();
+          await reread(receive);
+        };
+
+        it("a stored field: Undo writes the old value, Redo the new, nothing else is recorded", async () => {
+          stored = { ...STORED };
+          const { receive } = await openSection({ ...STORED });
+          await type("Hello", "New");
+          await settle();
+          await reread(receive);
+          expect(sent()).toHaveLength(1);
+          expect(depth()).toBe("1");
+
+          for (const round of [1, 2]) {
+            await step(undo, receive);
+            expect(sent(), `round ${round}: undo sent once`).toHaveLength(
+              round * 2,
+            );
+            expect(sent().at(-1)!.props).toEqual({ heading: "Hello" });
+            expect(stored).toEqual({ heading: "Hello" });
+            expect(depth(), `round ${round}: after undo`).toBe("0");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+            await step(redo, receive);
+            expect(sent(), `round ${round}: redo sent once`).toHaveLength(
+              round * 2 + 1,
+            );
+            expect(sent().at(-1)!.props).toEqual({ heading: "New" });
+            expect(stored).toEqual({ heading: "New" });
+            expect(depth(), `round ${round}: after redo`).toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+          }
+        });
+
+        it("a first Add: Undo removes the list again, Redo stores the same rows, nothing else is recorded", async () => {
+          const { receive } = await resetOnlyWrite();
+          const first = (sent()[0]!.props as { items: unknown[] }).items;
+          expect(depth()).toBe("1");
+
+          for (const round of [1, 2]) {
+            await step(undo, receive);
+            expect(sent(), `round ${round}: undo sent once`).toHaveLength(
+              round * 2,
+            );
+            expect(sent().at(-1)!.resetProps).toEqual(["items"]);
+            expect(stored).toEqual({ ...STORED });
+            expect(depth(), `round ${round}: after undo`).toBe("0");
+            expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+            await step(redo, receive);
+            expect(sent(), `round ${round}: redo sent once`).toHaveLength(
+              round * 2 + 1,
+            );
+            expect((sent().at(-1)!.props as { items: unknown[] }).items).toEqual(
+              first,
+            );
+            expect(stored.items).toEqual(first);
+            expect(depth(), `round ${round}: after redo`).toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+          }
+        });
+      });
+
+      /**
+       * #388 round 5 (red before the fix): a history replay is its own
+       * awaited write, sent with no debounce and recording nothing. History
+       * moves only once that write is answered; a refusal or a lost answer
+       * leaves it where it was, and a lost one is held, read back, and
+       * completes its own run exactly once.
+       */
+      describe("a Content replay is its own awaited write", () => {
+        const depth = () =>
+          document
+            .querySelector("[data-editor-undo-depth]")
+            ?.getAttribute("data-editor-undo-depth") ?? null;
+        /** `heading` Hello -> New: one write (draft 1 -> 2), one entry. */
+        async function storedFieldEdit() {
+          stored = { ...STORED };
+          const editor = await openSection({ ...STORED });
+          await type("Hello", "New");
+          await settle();
+          await reread(editor.receive);
+          expect(sent()).toHaveLength(1);
+          expect(stored).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+          return editor;
+        }
+
+        for (const [label, prepare] of [
+          [
+            "answered with a refusal",
+            () => {
+              answerNext.push(() => ({
+                success: false,
+                error: "REFUSED_BY_MOCK",
+                message: "The mock refused the undo.",
+              }));
+            },
+          ],
+          [
+            "refused as out of date (another tab moved the Document)",
+            () => {
+              stored = { heading: "Theirs" };
+              draftGeneration = 3;
+            },
+          ],
+        ] as const) {
+          it(`an Undo ${label}: history, data and entries unchanged, and says so`, async () => {
+            const notice = notices();
+            await storedFieldEdit();
+            prepare();
+            const before = { ...stored };
+
+            await undo();
+
+            expect(sent(), "the undo is sent once").toHaveLength(2);
+            expect(sent()[1]!.props).toEqual({ heading: "Hello" });
+            expect(sent()[1]).toMatchObject({
+              expectedDraftGeneration: 2,
+              expectedSourceGeneration: 1,
+            });
+            expect(stored, "the Document is unchanged").toEqual(before);
+            expect(depth(), "history did not move").toBe("1");
+            expect(historyButtons()).toEqual({ undo: true, redo: false });
+            expect(errors(notice)).toContainEqual(
+              expect.stringMatching(/^Could not undo/),
+            );
+            expect(unconfirmedCount()).toBeNull();
+            await settle();
+            expect(sent(), "nothing is sent after it").toHaveLength(2);
+            expect(depth(), "nothing new is recorded").toBe("1");
+          });
+        }
+
+        /**
+         * Types into the field showing `shown` and presses Undo in the same
+         * task, so the input is still inside the 300 ms debounce when the
+         * Undo runs (awaiting between them can let it leave first).
+         */
+        async function typeThenUndo(shown: string, value: string) {
+          const field = (await screen.findAllByDisplayValue(shown))[0]!;
+          const button = screen.getByRole("button", { name: "Undo" });
+          expect(button.hasAttribute("disabled")).toBe(false);
+          fireEvent.input(field, { target: { value } });
+          fireEvent.blur(field);
+          fireEvent.click(button);
+          await settle();
+        }
+
+        /** Its undo sent at draft 2, and no answer comes back. */
+        async function lostUndo() {
+          const notice = notices();
+          const editor = await storedFieldEdit();
+          answerNext.push(lost);
+
+          await undo();
+
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "Hello" },
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          expect(depth(), "history did not move").toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(/^Could not undo/),
+          );
+          return { ...editor, notice };
+        }
+
+        it("an Undo with no answer, read back as landed: history moves once, nothing is sent again, Redo still there", async () => {
+          const { receive } = await lostUndo();
+          serverHolds({ heading: "Hello" }, 3);
+
+          await checkAndSave();
+
+          expect(sent(), "nothing is sent again").toHaveLength(2);
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth(), "moved once").toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+          await reread(receive);
+          await redo();
+
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 3,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+
+        it("an Undo with no answer, read back as not landed: sent once, as first sent, only on Check and save; history moves once", async () => {
+          const { receive } = await lostUndo();
+          serverHolds({ heading: "New" }, 2);
+          await settle();
+          expect(sent(), "nothing is sent by itself").toHaveLength(2);
+          expect(depth()).toBe("1");
+
+          await checkAndSave();
+
+          expect(sent(), "sent once more").toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
+            props: { heading: "Hello" },
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(sent()[2]).not.toHaveProperty("resetProps");
+          expect(stored).toEqual({ heading: "Hello" });
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth(), "moved once, nothing new recorded").toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+          await settle();
+          expect(sent(), "and nothing after it").toHaveLength(3);
+
+          await reread(receive);
+          await redo();
+
+          expect(sent()).toHaveLength(4);
+          expect(sent()[3]!.props).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+
+        /**
+         * The section's own input is still pending when Undo is pressed. It
+         * is sent first, as its own write, and records its own entry on top
+         * of the one Undo was pressed for. That Undo then does not run over
+         * it: nothing is sent for the older entry, history keeps both, in
+         * order, and says so. The next Undo is the input's, the one after it
+         * the older entry's, and Redo puts them back in the same order.
+         *
+         * `heading` is the input: its edits wait out the 300 ms debounce
+         * (a row title of the unstored list is saved at once, so it would
+         * be recorded before Undo is pressed).
+         */
+        it("input of the section still pending when Undo is pressed is saved first, as its own entry; that Undo then refuses", async () => {
+          const notice = notices();
+          const { receive } = await storedFieldEdit();
+          // Typed, and Undo pressed inside the 300 ms debounce.
+          await typeThenUndo("New", "Newer");
+
+          expect(sent(), "the input only, no undo after it").toHaveLength(2);
+          expect(sent()[1]!.props).toEqual({ heading: "Newer" });
+          expect(sent()[1]).toMatchObject({ expectedDraftGeneration: 2 });
+          expect(stored, "the older entry is not undone").toEqual({
+            heading: "Newer",
+          });
+          expect(depth(), "both entries kept").toBe("2");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(/^Could not undo/),
+          );
+          expect(unconfirmedCount()).toBeNull();
+          await settle();
+          expect(sent(), "nothing sent after it").toHaveLength(2);
+
+          // The input's entry is on top: its undo puts back "New".
+          await reread(receive);
+          await undo();
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 3,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: true });
+
+          // Then the older entry, under it: "Hello".
+          await reread(receive);
+          await undo();
+          expect(sent()).toHaveLength(4);
+          expect(sent()[3]!.props).toEqual({ heading: "Hello" });
+          expect(stored).toEqual({ heading: "Hello" });
+          expect(depth()).toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+          // Redo in the same order: the older entry, then the input.
+          await reread(receive);
+          await redo();
+          expect(sent()).toHaveLength(5);
+          expect(sent()[4]!.props).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: true });
+          await reread(receive);
+          await redo();
+          expect(sent()).toHaveLength(6);
+          expect(sent()[5]!.props).toEqual({ heading: "Newer" });
+          expect(stored).toEqual({ heading: "Newer" });
+          expect(depth()).toBe("2");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(sent().every((data) => data.expectedSourceGeneration === 1)).toBe(
+            true,
+          );
+        });
+
+        // The same rule on the reset path (the undo of a first Add).
+        it("input pending when the undo of a first Add is pressed is saved first; that undo then refuses", async () => {
+          const notice = notices();
+          const { receive } = await resetOnlyWrite();
+          expect(depth()).toBe("1");
+          await typeThenUndo("Hello", "Hi");
+
+          expect(sent(), "the input only, no reset after it").toHaveLength(2);
+          expect(sent()[1]!.props).toEqual({ heading: "Hi" });
+          expect(sent()[1]).not.toHaveProperty("resetProps");
+          expect(stored.heading).toBe("Hi");
+          expect(stored).toHaveProperty("items");
+          expect(depth(), "both entries kept").toBe("2");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(/^Could not undo/),
+          );
+
+          // The input's entry first, then the Add's.
+          await reread(receive);
+          await undo();
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]!.props).toEqual({ heading: "Hello" });
+          expect(sent()[2]).not.toHaveProperty("resetProps");
+          expect(depth()).toBe("1");
+          await reread(receive);
+          await undo();
+          expect(sent()).toHaveLength(4);
+          expect(sent()[3]).toMatchObject({ props: {}, resetProps: ["items"] });
+          expect(stored).toEqual({ ...STORED });
+          expect(depth()).toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+      });
+
+      /** A write as sent, by the fields an undo is decided by. */
+      const shape = (data: Record<string, unknown>) => ({
+        templateId: data.templateId,
+        sectionId: data.sectionId,
+        props: data.props,
+        resetProps: data.resetProps,
+        expectedDraftGeneration: data.expectedDraftGeneration,
+        expectedSourceGeneration: data.expectedSourceGeneration,
+      });
+      /** The combined undo of `mixedWrite`, as it must be sent. */
+      const mixedUndo = (draft: number) => ({
+        templateId: "template-1",
+        sectionId: "section",
+        props: { heading: "Hello" },
+        resetProps: ["items"],
+        expectedDraftGeneration: draft,
+        expectedSourceGeneration: 1,
+      });
+      const resetUndo = (draft: number) => ({
+        templateId: "template-1",
+        sectionId: "section",
+        props: {},
+        resetProps: ["items"],
+        expectedDraftGeneration: draft,
+        expectedSourceGeneration: 1,
+      });
+
+      describe("A2: a mixed undo is one awaited write", () => {
+        it("sends one write carrying both the restore and the reset; redo round-trips", async () => {
+          const notice = notices();
+          const { receive, added } = await mixedWrite();
+
+          await undo();
+          await settle();
+
+          expect(sent(), "undo sends exactly one write").toHaveLength(2);
+          expect(shape(sent()[1]!)).toEqual(mixedUndo(2));
+          expect(stored).toEqual({ heading: "Hello" });
+          accepted(notice);
+          await reread(receive);
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+          expect(panelTitles()).toEqual(["One", "Two"]);
+
+          await redo();
+
+          expect(sent(), "redo sends one write").toHaveLength(3);
+          const again = sent()[2]!;
+          expect(again).not.toHaveProperty("resetProps");
+          expect(again.props).toEqual({ heading: "New", items: added });
+          expect(stored).toEqual({ heading: "New", items: added });
+          accepted(notice);
+          await reread(receive);
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+
+        for (const [label, answer] of [
+          [
+            "refused",
+            () => ({
+              success: false,
+              error: "REFUSED_BY_MOCK",
+              message: "The mock refused the undo.",
+            }),
+          ],
+          ["thrown", lost],
+        ] as const) {
+          it(`a ${label} combined write changes nothing, keeps history, says so, and sends no restore after`, async () => {
+            const notice = notices();
+            const { added } = await mixedWrite();
+            const before = { ...stored };
+            answerNext.push(answer);
+
+            await undo();
+            await settle();
+
+            expect(sent(), "one undo write, and nothing after it").toHaveLength(
+              2,
+            );
+            expect(shape(sent()[1]!)).toEqual(mixedUndo(2));
+            expect(stored).toEqual(before);
+            expect(stored).toEqual({ heading: "New", items: added });
+            expect(historyButtons(), "history did not move").toEqual({
+              undo: true,
+              redo: false,
+            });
+            expect(errors(notice)).toContainEqual(
+              expect.stringMatching(/^Could not undo/),
+            );
+          });
+        }
+
+        it("refuses by the draft generation when someone else changed the Document and the editor has not read it", async () => {
+          const notice = notices();
+          const { added } = await mixedWrite();
+          // Another tab: same source generation, the Document moved to 3.
+          stored = { ...stored, heading: "Theirs" };
+          draftGeneration = 3;
+
+          await undo();
+
+          expect(sent(), "at most the one refused undo").toHaveLength(2);
+          expect(sent()[1]!.expectedDraftGeneration).toBe(2);
+          expect(stored).toEqual({ heading: "Theirs", items: added });
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice).length).toBeGreaterThan(0);
+        });
+
+        it("refuses before sending when someone else changed the Document and the editor already read it", async () => {
+          const notice = notices();
+          const { receive, added } = await mixedWrite();
+          stored = { ...stored, heading: "Theirs" };
+          draftGeneration = 3;
+          act(() => receive(editorAt({ ...stored }, 3)));
+          await flushFrames();
+
+          await undo();
+
+          expect(
+            sent(),
+            "nothing is sent over a step that was not this editor's own",
+          ).toHaveLength(1);
+          expect(stored).toEqual({ heading: "Theirs", items: added });
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice).length).toBeGreaterThan(0);
+        });
+      });
+
+      describe("A3: an undo that removes keys and gets no answer", () => {
+        it("reset-only: keeps history, counts one unconfirmed save, and holds the next edit", async () => {
+          notices();
+          await resetOnlyWrite();
+          answerNext.push(lost);
+
+          await undo();
+
+          expect(sent()).toHaveLength(2);
+          expect(shape(sent()[1]!)).toEqual(resetUndo(2));
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          await type("Two", "Two edited");
+          await settle();
+          expect(sent(), "the next edit is held").toHaveLength(2);
+          expect(unconfirmedCount()).toBe("1");
+        });
+
+        it("mixed: keeps history, counts one unconfirmed save, and holds the next edit", async () => {
+          notices();
+          await mixedWrite();
+          answerNext.push(lost);
+
+          await undo();
+
+          expect(sent()).toHaveLength(2);
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          expect(shape(sent()[1]!)).toEqual(mixedUndo(2));
+          await type("Two", "Two edited");
+          await settle();
+          expect(sent(), "the next edit is held").toHaveLength(2);
+        });
+      });
+
+      describe("A3: reading back a reset-only undo that got no answer", () => {
+        /** Add (draft 1 -> 2), then its undo sent at 2 with no answer. */
+        async function lostResetUndo() {
+          const notice = notices();
+          const editor = await resetOnlyWrite();
+          const added = stored.items;
+          answerNext.push(lost);
+          await undo();
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          return { ...editor, notice, added };
+        }
+
+        it("same generation, key still held: not landed; sent once, as first sent, only on Check and save", async () => {
+          const { added } = await lostResetUndo();
+          serverHolds({ ...STORED, items: added }, 2);
+          await settle();
+          expect(sent(), "nothing is sent by itself").toHaveLength(2);
+
+          await checkAndSave();
+
+          expect(sent(), "sent once more").toHaveLength(3);
+          expect(shape(sent()[2]!)).toEqual(resetUndo(2));
+          expect(stored).toEqual({ ...STORED });
+          expect(unconfirmedCount()).toBeNull();
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+
+        it("one generation on, key gone: landed; confirmed once, nothing sent, and Undo then undoes the entry before it", async () => {
+          notices();
+          stored = { ...STORED };
+          const { receive } = await openSection({ ...STORED });
+          await type("Hello", "New");
+          await settle();
+          await reread(receive);
+          await addEntry();
+          await reread(receive);
+          expect(sent()).toHaveLength(2);
+          answerNext.push(lost);
+          await undo();
+          expect(shape(sent()[2]!)).toEqual(resetUndo(3));
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          serverHolds({ heading: "New" }, 4);
+
+          await checkAndSave();
+
+          expect(sent(), "nothing is sent again").toHaveLength(3);
+          expect(unconfirmedCount()).toBeNull();
+          expect(historyButtons(), "the Add's undo is confirmed").toEqual({
+            undo: true,
+            redo: true,
+          });
+
+          await undo();
+
+          expect(sent()).toHaveLength(4);
+          expect(sent()[3]).not.toHaveProperty("resetProps");
+          expect(sent()[3]!.props).toEqual({ heading: "Hello" });
+        });
+
+        for (const [label, held] of [
+          ["one generation on, key still held", 3],
+          ["two generations on, key gone", 4],
+        ] as const) {
+          it(`${label}: moved; never resent, on settle or on a later Undo`, async () => {
+            const { added } = await lostResetUndo();
+            const now =
+              held === 3 ? { ...STORED, items: added } : { ...STORED };
+            serverHolds(now, held);
+
+            await checkAndSave();
+
+            expect(sent(), "nothing on settle").toHaveLength(2);
+            expect(saveStatus()).toBe("Out of date");
+            await undo();
+            expect(sent(), "nothing on a later Undo").toHaveLength(2);
+            expect(stored).toEqual(now);
+          });
+        }
+
+        it("read failed: nothing sent, the record and the history unchanged", async () => {
+          await lostResetUndo();
+          getThemeEditor.mockRejectedValue(new Error("offline"));
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+      });
+
+      // Added with the implementation (user decision 2): what was sent stays
+      // as sent. Input typed into the same section while the reset is held
+      // is held under the section's pending entry; it never rewrites the
+      // unconfirmed record, and the resend carries exactly the first write.
+      it("input typed while a reset is held does not change what is sent again", async () => {
+        notices();
+        await resetOnlyWrite();
+        answerNext.push(lost);
+        await undo();
+        expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+        await type("Hello", "Typed later");
+        await settle();
+        expect(sent(), "the input is held").toHaveLength(2);
+        serverHolds({ ...stored }, 2);
+
+        await checkAndSave();
+
+        expect(sent().length).toBeGreaterThanOrEqual(3);
+        expect(shape(sent()[2]!), "resent exactly as first sent").toEqual(
+          resetUndo(2),
+        );
+        expect(sent()[2]!.props).not.toHaveProperty("heading");
+      });
+
+      describe("A3: reading back a mixed undo that got no answer", () => {
+        async function lostMixedUndo() {
+          const notice = notices();
+          const editor = await mixedWrite();
+          answerNext.push(lost);
+          await undo();
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          expect(shape(sent()[1]!)).toEqual(mixedUndo(2));
+          return { ...editor, notice };
+        }
+
+        it("same generation, nothing applied: not landed; sent once, as first sent, only on Check and save", async () => {
+          const { added } = await lostMixedUndo();
+          serverHolds({ heading: "New", items: added }, 2);
+          await settle();
+          expect(sent(), "nothing is sent by itself").toHaveLength(2);
+
+          await checkAndSave();
+
+          expect(sent(), "sent once more").toHaveLength(3);
+          expect(shape(sent()[2]!)).toEqual(mixedUndo(2));
+          expect(stored).toEqual({ heading: "Hello" });
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+
+        it("one generation on, value restored and key gone: landed; confirmed once, nothing sent", async () => {
+          await lostMixedUndo();
+          serverHolds({ heading: "Hello" }, 3);
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount()).toBeNull();
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+
+        for (const [label, holds] of [
+          [
+            "one generation on, a value wrong and the key gone",
+            (_added: unknown) => [{ heading: "Theirs" }, 3] as const,
+          ],
+          [
+            "one generation on, values right and the key still held",
+            (added: unknown) =>
+              [{ heading: "Hello", items: added }, 3] as const,
+          ],
+          [
+            "two generations on, everything applied",
+            (_added: unknown) => [{ heading: "Hello" }, 4] as const,
+          ],
+        ] as const) {
+          it(`${label}: moved; never resent, on settle or on a later Undo`, async () => {
+            const { added } = await lostMixedUndo();
+            const [now, generation] = holds(added);
+            serverHolds(now, generation);
+
+            await checkAndSave();
+
+            expect(sent(), "nothing on settle").toHaveLength(2);
+            expect(saveStatus()).toBe("Out of date");
+            await undo();
+            expect(sent(), "nothing on a later Undo").toHaveLength(2);
+            expect(stored).toEqual(now);
+          });
+        }
+
+        it("read failed: nothing sent, the record and the history unchanged", async () => {
+          await lostMixedUndo();
+          getThemeEditor.mockRejectedValue(new Error("offline"));
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+      });
+
+      describe('A3: the "Use code default" button with no answer', () => {
+        async function lostCodeDefault() {
+          const notice = notices();
+          stored = { ...STORED };
+          const editor = await openSection({ ...STORED });
+          answerNext.push(lost);
+          fireEvent.click(
+            await screen.findByRole("button", { name: "Use code default" }),
+          );
+          await settle();
+          expect(sent()).toHaveLength(1);
+          expect(sent()[0]).toMatchObject({
+            props: {},
+            resetProps: ["heading"],
+            expectedDraftGeneration: 1,
+            expectedSourceGeneration: 1,
+          });
+          return { ...editor, notice };
+        }
+
+        it("is held as unconfirmed, and the next edit is held", async () => {
+          await lostCodeDefault();
+
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          await type("Two", "Two edited");
+          await settle();
+          expect(sent(), "the next edit is held").toHaveLength(1);
+        });
+
+        it("landed on read-back: its history entry is recorded once, and nothing is sent", async () => {
+          const { receive } = await lostCodeDefault();
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          serverHolds({}, 2);
+
+          await checkAndSave();
+
+          expect(sent(), "nothing is sent again").toHaveLength(1);
+          expect(unconfirmedCount()).toBeNull();
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          // The route hands the shell the Theme the read-back fetched, as
+          // editor.tsx does once its query updates (see `reread`). Without
+          // it this harness keeps the pre-reset context, and the Undo below
+          // would compare against `heading: "Hello"` still being stored.
+          await reread(receive);
+          await undo();
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]!.props).toEqual({ heading: "Hello" });
+          expect(historyButtons(), "recorded once").toEqual({
+            undo: false,
+            redo: true,
+          });
+        });
+
+        it("not landed on read-back: sent once more, as first sent, only on Check and save", async () => {
+          await lostCodeDefault();
+          expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+          serverHolds({ ...STORED }, 1);
+          await settle();
+          expect(sent(), "nothing is sent by itself").toHaveLength(1);
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: {},
+            resetProps: ["heading"],
+            expectedDraftGeneration: 1,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).toEqual({});
+        });
+      });
+
+      /**
+       * #388 round 7 (red before the fix where noted): a replay that only
+       * puts values back (a Content Undo with nothing to remove, a Redo, the
+       * Undo of "Use code default", the Redo of a first Add, a list reorder's
+       * Undo and Redo) is checked as the mixed undo is: the copy it goes onto
+       * must be within this editor's own range since the draft generation
+       * answered for the step it reverses or re-applies
+       * (`basisWithinOwnRange`), never just the copy held now. Someone
+       * else's change is refused, read by the editor or not; the editor's own
+       * steps stay in range.
+       *
+       * A reorder of a stored list is not covered here: its first write is
+       * already refused before sending by the row guard (`rowsStillMatch`
+       * sees the reordered rows at their old paths), so neither its Undo nor
+       * its Redo can be reached in this harness.
+       */
+      describe("round 7: a restore-only replay is checked against its own step", () => {
+        const depth = () =>
+          document
+            .querySelector("[data-editor-undo-depth]")
+            ?.getAttribute("data-editor-undo-depth") ?? null;
+        const THEIRS = { heading: "Theirs" } as const;
+        /** Another tab writes `props` at the next draft generation. */
+        const theyWrite = (props: Record<string, unknown>) => {
+          stored = { ...props };
+          draftGeneration += 1;
+        };
+        /** The editor reads what the server holds now. */
+        const editorReads = async (
+          receive: (next: StorefrontThemeEditorDTO) => void,
+        ) => {
+          act(() => receive(editorAt({ ...stored }, draftGeneration)));
+          await flushFrames();
+        };
+        /** `heading` Hello -> New: one write (draft 1 -> 2), one entry. */
+        async function storedFieldEdit() {
+          stored = { ...STORED };
+          const editor = await openSection({ ...STORED });
+          await type("Hello", "New");
+          await settle();
+          await reread(editor.receive);
+          expect(sent()).toHaveLength(1);
+          expect(stored).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+          return editor;
+        }
+
+        for (const direction of ["undo", "redo"] as const) {
+          for (const read of [false, true]) {
+            const label = read
+              ? "already read by the editor: refused before sending (basisWithinOwnRange)"
+              : "not read by the editor yet: refused by the draft generation";
+            it(`a Content ${direction} after someone else's change, ${label}`, async () => {
+              const notice = notices();
+              const { receive } = await storedFieldEdit();
+              // The step's own basis: the draft generation answered for the
+              // write it reverses (2) or for the undo it re-applies (3).
+              let basis = 2;
+              if (direction === "redo") {
+                await undo();
+                await reread(receive);
+                expect(stored).toEqual({ ...STORED });
+                expect(depth()).toBe("0");
+                basis = 3;
+              }
+              const buttons = historyButtons();
+              const depthBefore = depth();
+              theyWrite(THEIRS);
+              if (read) await editorReads(receive);
+              const before = sent().length;
+
+              await press(direction === "undo" ? "Undo" : "Redo");
+
+              if (read) {
+                expect(
+                  sent(),
+                  "nothing is sent over a step that was not this editor's own",
+                ).toHaveLength(before);
+              } else {
+                expect(sent(), "the one refused replay").toHaveLength(
+                  before + 1,
+                );
+                expect(sent().at(-1)!.expectedDraftGeneration).toBe(basis);
+              }
+              expect(stored, "their change is kept").toEqual({ ...THEIRS });
+              expect(depth(), "history did not move").toBe(depthBefore);
+              expect(historyButtons()).toEqual(buttons);
+              expect(errors(notice)).toContainEqual(
+                expect.stringMatching(
+                  direction === "undo" ? /^Could not undo/ : /^Could not redo/,
+                ),
+              );
+              expect(unconfirmedCount()).toBeNull();
+              await settle();
+              expect(sent(), "nothing is sent after it").toHaveLength(
+                read ? before : before + 1,
+              );
+              expect(stored).toEqual({ ...THEIRS });
+            });
+          }
+        }
+
+        it("the Redo of a first Add, after someone else's change the editor read: refused before sending", async () => {
+          const notice = notices();
+          const { receive } = await resetOnlyWrite();
+          await undo();
+          await reread(receive);
+          expect(stored).toEqual({ ...STORED });
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+          theyWrite(THEIRS);
+          await editorReads(receive);
+
+          await redo();
+
+          expect(sent(), "the Add and its undo only").toHaveLength(2);
+          expect(stored).toEqual({ ...THEIRS });
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(/^Could not redo/),
+          );
+        });
+
+        it('the Undo of "Use code default", after someone else\'s change the editor read: refused before sending', async () => {
+          const notice = notices();
+          stored = { ...STORED };
+          const { receive } = await openSection({ ...STORED });
+          fireEvent.click(
+            await screen.findByRole("button", { name: "Use code default" }),
+          );
+          await settle();
+          expect(sent()).toHaveLength(1);
+          expect(stored).toEqual({});
+          await reread(receive);
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          theyWrite(THEIRS);
+          await editorReads(receive);
+
+          await undo();
+
+          expect(sent(), "the reset only").toHaveLength(1);
+          expect(stored).toEqual({ ...THEIRS });
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(/^Could not undo/),
+          );
+        });
+
+        it("control: two rounds of Undo/Undo/Redo/Redo over two own edits, each at the generation the last answer returned", async () => {
+          const notice = notices();
+          const { receive } = await storedFieldEdit();
+          await type("New", "Newer");
+          await settle();
+          await reread(receive);
+          expect(sent()).toHaveLength(2);
+          expect(stored).toEqual({ heading: "Newer" });
+          expect(depth()).toBe("2");
+
+          const steps = [
+            [undo, "New", "1", { undo: true, redo: true }],
+            [undo, "Hello", "0", { undo: false, redo: true }],
+            [redo, "New", "1", { undo: true, redo: true }],
+            [redo, "Newer", "2", { undo: true, redo: false }],
+          ] as const;
+          for (const round of [1, 2]) {
+            for (const [run, heading, after, buttons] of steps) {
+              const generation = draftGeneration;
+              const before = sent().length;
+              await run();
+              await reread(receive);
+              expect(sent(), `round ${round}: one write`).toHaveLength(
+                before + 1,
+              );
+              expect(sent().at(-1)).toMatchObject({
+                props: { heading },
+                expectedDraftGeneration: generation,
+                expectedSourceGeneration: 1,
+              });
+              expect(stored).toEqual({ heading });
+              expect(depth(), `round ${round}`).toBe(after);
+              expect(historyButtons()).toEqual(buttons);
+            }
+          }
+          accepted(notice);
+          // Ten saved steps, each past the 1.2 s settle: about 19 s alone,
+          // over the 20 s default on a busy machine. The wait is the
+          // harness's fixed settle, not a slow write.
+        }, 45_000);
+      });
+    });
+
+    /**
+     * #388 round 3, B (red before the fix where noted). A row title of the
+     * unstored list is selected on the canvas (no row id, so the row is
+     * refused with `row-id-missing`), and the list is added to or removed
+     * from in the Inspector. The list write takes its source proof from the
+     * selection's own key (`items.1.title`), and from nothing else.
+     */
+    describe("#388 round 3: Add/Remove with a row of the unstored list selected", () => {
+      const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+      const reselectNotices = (notice: ReturnType<typeof notices>) =>
+        notice.error.mock.calls.filter(
+          (call) => call[0] === RESELECT_CONTENT_MESSAGE,
+        ).length;
+
+      it("first Add is sent with the defaults and their ids, plus one new row", async () => {
+        const notice = notices();
+        const [one, two] = identified();
+        const { report } = await openTitle({}, 1);
+        expect(report).toMatchObject({
+          fieldPath: "items.1.title",
+          itemId: null,
+        });
+
+        await addEntry();
+
+        expect(notice.error.mock.calls, "no refusal notice").toEqual([]);
+        expect(sent(), "the first Add is sent").toHaveLength(1);
+        expect(versionsSent(sent()[0]!)).toEqual({
+          expectedDraftGeneration: 1,
+          expectedSourceGeneration: 1,
+        });
+        const rows = rowsSent(sent()[0]!);
+        expect(rows.slice(0, 2)).toEqual([
+          [one!.id, "One"],
+          [two!.id, "Two"],
+        ]);
+        expect(rows).toHaveLength(3);
+        expect([one!.id, two!.id]).not.toContain(rows[2]![0]);
+        accepted(notice);
+      });
+
+      it("first Add, then Undo removes the list again and Redo writes it back with the same ids", async () => {
+        const notice = notices();
+        const { receive } = await openTitle({}, 1);
+        await addEntry();
+        expect(sent(), "the first Add is sent").toHaveLength(1);
+        await reread(receive);
+        const added = (sent()[0]!.props as { items: unknown[] }).items;
+
+        await undo();
+
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1]).toMatchObject({
+          props: {},
+          resetProps: ["items"],
+          expectedDraftGeneration: 2,
+          expectedSourceGeneration: 1,
+        });
+        expect(stored).not.toHaveProperty("items");
+        await reread(receive);
+
+        await redo();
+
+        expect(sent()).toHaveLength(3);
+        expect((sent()[2]!.props as { items: unknown }).items).toEqual(added);
+        expect(stored.items).toEqual(added);
+        accepted(notice);
+      });
+
+      it("first Remove of the middle of three keeps the first and third with their ids; Undo and Redo", async () => {
+        defaults = THREE;
+        const notice = notices();
+        const [one, , three] = identified();
+        const { receive } = await openTitle({}, 1);
+
+        await removeRow("Two");
+
+        expect(notice.error.mock.calls, "no refusal notice").toEqual([]);
+        expect(sent(), "the first Remove is sent").toHaveLength(1);
+        expect(rowsSent(sent()[0]!)).toEqual([
+          [one!.id, "One"],
+          [three!.id, "Three"],
+        ]);
+        await reread(receive);
+
+        await undo();
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1]).toMatchObject({ props: {}, resetProps: ["items"] });
+        expect(stored).not.toHaveProperty("items");
+        await reread(receive);
+
+        await redo();
+        expect(sent()).toHaveLength(3);
+        expect(rowsSent(sent()[2]!)).toEqual([
+          [one!.id, "One"],
+          [three!.id, "Three"],
+        ]);
+        accepted(notice);
+      });
+
+      it("refuses the Add when the selection's capture failed (a tombstone at items.1.title)", async () => {
+        const notice = notices();
+        const report = await reportTitle({}, 1);
+        renderEntries({}, 1);
+        await flushFrames();
+        // Selected while the source was ahead of the copy the editor holds:
+        // no generation can be captured for this selection.
+        act(() => {
+          useThemeWorkspaceStore.setState({
+            observedGenerations: { "storefront-1:theme-1": 2 },
+          });
+        });
+        fromPreview(report);
+        await flushFrames();
+        act(() => {
+          useThemeWorkspaceStore.setState({ observedGenerations: {} });
+        });
+        await flushFrames();
+        const contentTab = screen.queryByRole("button", { name: /^Content$/ });
+        if (contentTab) fireEvent.click(contentTab);
+        await flushFrames();
+
+        await addEntry();
+
+        expect(sent()).toHaveLength(0);
+        expect(reselectNotices(notice)).toBeGreaterThan(0);
+        expect(historyButtons()).toEqual({ undo: false, redo: false });
+      });
+
+      it("refuses the Add once the source generation moved on after the selection", async () => {
+        const notice = notices();
+        await openTitle({}, 1);
+        act(() => {
+          useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope);
+        });
+        await flushFrames();
+
+        await addEntry();
+
+        expect(sent()).toHaveLength(0);
+        expect(reselectNotices(notice)).toBeGreaterThan(0);
+        expect(historyButtons()).toEqual({ undo: false, redo: false });
+      });
+
+      it("refuses the Add while a refused input under items is still held", async () => {
+        const notice = notices();
+        await openTitle({}, 1);
+        const answerWrites = updateSectionProps.getMockImplementation()!;
+        updateSectionProps.mockImplementationOnce(async () => ({
+          success: false,
+          error: "SELECTION_SOURCE_CONFLICT",
+          message: RESELECT_CONTENT_MESSAGE,
+        }));
+        await type("Two", "Two edited");
+        await settle();
+        expect(sent(), "the input was sent and refused").toHaveLength(1);
+        updateSectionProps.mockImplementation(answerWrites);
+        notice.error.mockClear();
+
+        await addEntry();
+
+        expect(sent(), "the Add is not sent").toHaveLength(1);
+        expect(reselectNotices(notice)).toBeGreaterThan(0);
+        expect(stored).not.toHaveProperty("items");
+        expect(historyButtons()).toEqual({ undo: false, redo: false });
+      });
+
+      it("meets another tab's stored list as a conflict, never an overwrite", async () => {
+        notices();
+        const [one, two] = identified();
+        await openTitle({}, 1);
+        // Another tab stored the list (reordered) at draft 2; not read here.
+        const theirs = { items: [two, one] };
+        stored = { ...theirs };
+        draftGeneration = 2;
+        updateSectionProps.mockImplementation(async ({ data }) =>
+          data.expectedDraftGeneration !== draftGeneration
+            ? {
+                success: false,
+                error: "TEMPLATE_DRAFT_CONFLICT",
+                message: "Template draft was modified concurrently.",
+              }
+            : (() => {
+                throw new Error("only the conflict is expected here");
+              })(),
+        );
+
+        await addEntry();
+
+        expect(stored, "their list stays").toEqual(theirs);
+        expect(sent(), "sent at the generation the editor holds").toHaveLength(
+          1,
+        );
+        expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+        expect(saveStatus()).toBe("Out of date");
+      });
+
+      // The canvas's own inline commit cannot be driven here: a control with
+      // a stored, id-bearing row sent nothing either (selection-mode and
+      // tree-selection preconditions this harness does not set up), so a
+      // "nothing sent" assertion would hold vacuously. What is pinned is the
+      // panel's refusal of the row, which the fix must leave as it is.
+      it("still refuses the selected row itself (row-id-missing), before and after a list Add", async () => {
+        notices();
+        await openTitle({}, 1);
+        expect(
+          screen.getByText(/This entry has no id yet/),
+          "the row-id-missing message",
+        ).toBeTruthy();
+
+        await addEntry();
+
+        expect(
+          screen.getByText(/This entry has no id yet/),
+          "still refused after the Add: the selection names no row id",
+        ).toBeTruthy();
+      });
     });
   });
 });
