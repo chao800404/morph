@@ -12634,34 +12634,32 @@ export function VisualEditorShell({
       });
 
       try {
-        const answer = await commitSectionPending(keyTemplateId, key, false);
+        await commitSectionPending(keyTemplateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
         // props the other one started from.
-        const entryId = history.record(
+        //
+        // Not yet a replay with its own awaited write and step basis (#388):
+        // a stored list's canvas reorder cannot send its first write on main
+        // (its per-row paths fail `rowsStillMatch`), so this undo/redo is
+        // unreachable and untested here. #390 fixes the reorder and moves it
+        // onto the replay path with its tests.
+        history.record(
           fenceSectionHistory(sectionId, templateId, {
             label: "Reorder · item",
-            undo: (attempt) =>
+            undo: () =>
               handleSectionPropsChange(
                 sectionId,
                 { [arrayRoot]: currentProps[arrayRoot] },
-                {
-                  historySourceGeneration: generation,
-                  historyAttempt: attempt,
-                },
+                { historySourceGeneration: generation },
               ),
-            redo: (attempt) =>
+            redo: () =>
               handleSectionPropsChange(
                 sectionId,
                 { [arrayRoot]: result.value[arrayRoot] },
-                {
-                  historySourceGeneration: generation,
-                  historyAttempt: attempt,
-                },
+                { historySourceGeneration: generation },
               ),
           }),
         );
-        // Its undo goes onto the copy the reorder's own answer made.
-        setHistoryStepBasis(entryId, "undo", answeredDraftGenerationOf(answer));
       } catch {
         const hiddenBefore = previewSectionIsHidden(sectionId);
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
@@ -12676,7 +12674,6 @@ export function VisualEditorShell({
       history,
       handleSectionPropsChange,
       invalidateSectionHistory,
-      setHistoryStepBasis,
       commitSectionPending,
       previewSectionIsHidden,
       reconcileAfterRemoval,
