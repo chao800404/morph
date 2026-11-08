@@ -1246,6 +1246,9 @@ function controlledThemeFile(initialContent: string) {
     createdAt: "2026-08-20T00:00:00.000Z",
     updatedAt: "2026-08-20T00:00:00.000Z",
   };
+  let externalFile:
+    | Omit<typeof current, "sourceGeneration">
+    | undefined;
   const events: string[] = [];
   const outcomes: ThemeFileOutcome[] = [];
   const save = vi.fn(async (...args: unknown[]) => {
@@ -1299,7 +1302,7 @@ function controlledThemeFile(initialContent: string) {
       success: true,
       message: "Theme files listed",
       data: {
-        files: [file],
+        files: externalFile ? [file, externalFile] : [file],
         binaryFiles: [],
         tree: [],
         sourceGeneration,
@@ -1316,6 +1319,18 @@ function controlledThemeFile(initialContent: string) {
     };
   };
   const externalSourceWrite = () => {
+    externalFile = {
+      id: "file-other",
+      storefrontId: current.storefrontId,
+      themeId: current.themeId,
+      path: "src/components/Other.tsx",
+      content: "export const Other = () => null;",
+      mimeType: "text/typescript",
+      isEntry: false,
+      version: 1,
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    };
     current = {
       ...current,
       sourceGeneration: current.sourceGeneration + 1,
