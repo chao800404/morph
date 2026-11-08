@@ -6883,6 +6883,7 @@ export function VisualEditorShell({
           fromHistory?: boolean;
           renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
+          confirmed?: boolean;
           operation?: "code-default" | "design-element";
           codeDefault?: CodeDefaultWriteProof;
           designElement?: DesignElementOperation;
