@@ -33,7 +33,7 @@ import {
  * folder of their own, and removes them afterwards. The slot is named per run,
  * so the list is unstored at the start of every run.
  */
-test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to a seeded editor store.");
+test.skip(!EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR, "Set E2E_EDITOR_PATH to a seeded editor store, and MORPH_E2E_STATE_DIR to the runner's state dir for the D1 reads.");
 
 const scope = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
 const ROUTE_PATH = "/unstored-list-reorder";
@@ -212,10 +212,6 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
   test("on a stored list, Undo puts the order and ids back and Redo swaps them again, one draft generation each", async ({
     page,
   }) => {
-    test.skip(
-      !process.env.MORPH_E2E_STATE_DIR,
-      "Reads the runner-owned D1 file.",
-    );
     test.setTimeout(240_000);
     const writes = countContentWrites(page);
     await openRoute(page);
