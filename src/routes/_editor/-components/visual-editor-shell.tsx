@@ -254,6 +254,7 @@ import {
   deleteStorefrontThemePage,
   getStorefrontThemeFile,
   initStorefrontStarterTheme,
+  listStorefrontThemeFiles,
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -6472,10 +6473,11 @@ export function VisualEditorShell({
                 | StorefrontThemeFileDTO
                 | null
                 | undefined;
+              let sourceGenerationDuringRecovery: number | undefined;
               await confirmLostSave({
                 unconfirmedContent: current.unconfirmedContent,
                 readLatest: async () => {
-                  const latest = await getStorefrontThemeFile({
+                  const latestFile = await getStorefrontThemeFile({
                     data: {
                       storefrontId: context.storefront.id,
                       themeId: context.theme.id,
@@ -6485,19 +6487,63 @@ export function VisualEditorShell({
                     reportEditorReadFailure(workspaceScope, error);
                     throw error;
                   });
-                  if (latest.success) {
-                    latestDuringRecovery = latest.data ?? null;
-                    return latestDuringRecovery;
+                  let file: StorefrontThemeFileDTO | null;
+                  if (latestFile.success) {
+                    file = latestFile.data ?? null;
+                  } else if (latestFile.error === "NOT_FOUND") {
+                    file = null;
+                  } else {
+                    throw new Error(latestFile.message);
                   }
-                  if (latest.error === "NOT_FOUND") {
-                    latestDuringRecovery = null;
-                    return null;
+
+                  // A single-file read has the file id/version but no source
+                  // generation. Read the existing workspace snapshot too;
+                  // if the file moved between the two reads, decide nothing.
+                  const latest = await listStorefrontThemeFiles({
+                    data: {
+                      storefrontId: context.storefront.id,
+                      themeId: context.theme.id,
+                    },
+                  }).catch((error: unknown) => {
+                    reportEditorReadFailure(workspaceScope, error);
+                    throw error;
+                  });
+                  if (!latest.success) {
+                    throw new Error(latest.message);
                   }
-                  throw new Error(latest.message);
+                  if (
+                    !Number.isSafeInteger(latest.data.sourceGeneration) ||
+                    latest.data.sourceGeneration < 1
+                  ) {
+                    throw new Error(
+                      "Theme source generation was unavailable during save recovery.",
+                    );
+                  }
+                  const snapshotFile = latest.data.files.find(
+                    (candidate) => candidate.path === filePath,
+                  );
+                  const sameFileRead = file
+                    ? snapshotFile?.id === file.id &&
+                      snapshotFile.version === file.version &&
+                      snapshotFile.content === file.content
+                    : snapshotFile === undefined;
+                  if (!sameFileRead) {
+                    throw new Error(
+                      "Theme file changed during save recovery read-back.",
+                    );
+                  }
+                  sourceGenerationDuringRecovery =
+                    latest.data.sourceGeneration;
+                  latestDuringRecovery = file;
+                  return latestDuringRecovery;
                 },
                 markLanded: (latest) => {
                   confirmed.file = latest;
-                  markWorkspaceSaved(latest, workspaceScope);
+                  markWorkspaceSaved(
+                    latest,
+                    workspaceScope,
+                    sourceGenerationDuringRecovery,
+                  );
                 },
               });
               // What would be sent is what the server already holds.
@@ -6516,13 +6562,7 @@ export function VisualEditorShell({
                 const acceptedGeneration = useThemeWorkspaceStore
                   .getState()
                   .getAcceptedSourceGeneration(workspaceScope);
-                const sameSourceBaseline =
-                  !latest ||
-                  typeof latest.sourceGeneration !== "number" ||
-                  latest.sourceGeneration === acceptedGeneration;
-                const stillAtSavedBaseline =
-                  sameFileBaseline && sameSourceBaseline;
-                if (!stillAtSavedBaseline) {
+                if (!sameFileBaseline) {
                   markWorkspaceConflict(
                     filePath,
                     latest
@@ -6544,7 +6584,21 @@ export function VisualEditorShell({
                   );
                   return { status: "file-conflict" };
                 }
-                if (latest) markWorkspaceSaved(latest, workspaceScope);
+                if (
+                  sourceGenerationDuringRecovery !== acceptedGeneration
+                ) {
+                  useThemeWorkspaceStore
+                    .getState()
+                    .markSourceConflict(filePath, workspaceScope);
+                  return { status: "source-conflict" };
+                }
+                if (latest) {
+                  markWorkspaceSaved(
+                    latest,
+                    workspaceScope,
+                    sourceGenerationDuringRecovery,
+                  );
+                }
                 if (latest?.content === contentToSave) {
                   pendingDesignWritesRef.current.landed(
                     filePath,

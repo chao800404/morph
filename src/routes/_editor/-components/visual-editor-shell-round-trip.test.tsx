@@ -54,6 +54,7 @@ import type { EditorCodeWorkspaceHandle } from "./editor-code-workspace";
 const themeFileServerControl = vi.hoisted(() => ({
   save: null as null | ((...args: unknown[]) => unknown),
   read: null as null | ((...args: unknown[]) => unknown),
+  list: null as null | ((...args: unknown[]) => unknown),
 }));
 const themeFileQueueControl = vi.hoisted(() => ({
   supersedeNext: false,
@@ -79,8 +80,15 @@ vi.mock(
     const read = actual.getStorefrontThemeFile as (
       ...args: unknown[]
     ) => unknown;
+    const list = actual.listStorefrontThemeFiles as (
+      ...args: unknown[]
+    ) => unknown;
     return {
       ...actual,
+      listStorefrontThemeFiles: (...args: unknown[]) =>
+        themeFileServerControl.list
+          ? themeFileServerControl.list(...args)
+          : list(...args),
       getStorefrontThemeFile: (...args: unknown[]) =>
         themeFileServerControl.read
           ? themeFileServerControl.read(...args)
@@ -175,6 +183,7 @@ beforeEach(() => {
   posted.length = 0;
   themeFileServerControl.save = null;
   themeFileServerControl.read = null;
+  themeFileServerControl.list = null;
   themeFileQueueControl.supersedeNext = false;
   themeFileQueueControl.supersededCount = 0;
   editFileSaveControl.captureSave = false;
@@ -1283,6 +1292,21 @@ function controlledThemeFile(initialContent: string) {
     events.push("read");
     return { success: true, data: { ...current } };
   });
+  const list = vi.fn(async () => {
+    events.push("snapshot");
+    const { sourceGeneration, ...file } = current;
+    return {
+      success: true,
+      message: "Theme files listed",
+      data: {
+        files: [file],
+        binaryFiles: [],
+        tree: [],
+        sourceGeneration,
+        latestPublishedRevision: null,
+      },
+    };
+  });
   const externalWrite = (content: string) => {
     current = {
       ...current,
@@ -1291,15 +1315,24 @@ function controlledThemeFile(initialContent: string) {
       sourceGeneration: current.sourceGeneration + 1,
     };
   };
+  const externalSourceWrite = () => {
+    current = {
+      ...current,
+      sourceGeneration: current.sourceGeneration + 1,
+    };
+  };
 
   themeFileServerControl.save = save;
   themeFileServerControl.read = read;
+  themeFileServerControl.list = list;
   return {
     save,
     read,
+    list,
     outcomes,
     events,
     externalWrite,
+    externalSourceWrite,
     file: () => ({ ...current }),
   };
 }
@@ -2220,6 +2253,42 @@ describe("Style history writes and refusals", () => {
     ).toBe(true);
   });
 
+  it("refuses recovery when another file advanced the source generation", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    server.outcomes.push("offline");
+    renderShellWithHero(STYLE_SOURCE);
+
+    applyStylePatch();
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_AFTER),
+    );
+    server.externalSourceWrite();
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const snapshotsBeforeRecovery = server.list.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(server.list).toHaveBeenCalledTimes(snapshotsBeforeRecovery + 1),
+    );
+    await waitFor(() => expect(error).toHaveBeenCalled());
+    expect({
+      ...historyState(),
+      writes: server.save.mock.calls.length,
+      sourceConflict: localThemeFile()?.sourceConflict,
+      unconfirmed: localThemeFile()?.unconfirmedContent,
+      serverContent: server.file().content,
+    }).toEqual({
+      undoAvailable: true,
+      redoAvailable: false,
+      writes: 1,
+      sourceConflict: true,
+      unconfirmed: STYLE_AFTER,
+      serverContent: STYLE_SOURCE,
+    });
+  });
+
   it("keeps the Style record and sends nothing when recovery read-back fails", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
     server.outcomes.push("offline-after-landing");
@@ -2229,12 +2298,16 @@ describe("Style history writes and refusals", () => {
     await waitFor(() =>
       expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_AFTER),
     );
-    server.read.mockRejectedValueOnce(new Error("Read-back unavailable"));
+    server.list.mockRejectedValueOnce(new Error("Read-back unavailable"));
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const snapshotsBeforeRecovery = server.list.mock.calls.length;
 
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
 
     await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(server.list).toHaveBeenCalledTimes(snapshotsBeforeRecovery + 1),
+    );
     await waitFor(() => expect(error).toHaveBeenCalled());
     expect({
       ...historyState(),
