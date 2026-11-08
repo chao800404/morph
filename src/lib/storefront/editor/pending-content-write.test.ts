@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   commitPendingContent,
+  contentUndoSteps,
   sectionContentLanded,
   stageContentFields,
   selectCurrentContentFields,
@@ -8,6 +9,7 @@ import {
   rebaseFieldBasis,
   type PendingContentEntry,
 } from "./pending-content-write";
+import * as pendingContentWrite from "./pending-content-write";
 
 describe("per-field source recovery", () => {
   const stored = { heading: "Old heading", subheading: "Old subheading" };
@@ -692,5 +694,285 @@ describe("a reorder staged as one change to its list", () => {
     expect(sent.props).toEqual({
       items: [parent("p", ["y", "x"]), parent("q", ["z"])],
     });
+  });
+});
+
+describe("what undoing a saved content write puts back", () => {
+  const rows = [{ id: "morph-a", title: "One" }];
+
+  it("removes a key the section did not store before the write", () => {
+    expect(contentUndoSteps({ heading: "Hi" }, { items: rows })).toEqual({
+      restore: {},
+      reset: ["items"],
+    });
+  });
+
+  it("writes a stored null back as null, never as a removal", () => {
+    expect(contentUndoSteps({ items: null }, { items: rows })).toEqual({
+      restore: { items: null },
+      reset: [],
+    });
+  });
+
+  it("writes a stored value back, and splits a write over stored and unstored keys", () => {
+    expect(
+      contentUndoSteps(
+        { heading: "Old", subheading: "" },
+        { heading: "New", items: rows, subheading: "Sub" },
+      ),
+    ).toEqual({
+      restore: { heading: "Old", subheading: "" },
+      reset: ["items"],
+    });
+  });
+
+  it("puts visibility back as before: it is not a field to reset", () => {
+    expect(contentUndoSteps({}, { enabled: false })).toEqual({
+      restore: { enabled: undefined },
+      reset: [],
+    });
+  });
+});
+
+/**
+ * #388 round 3 (red before the fix). A content write that also removes keys
+ * (`resetProps`, the "Use code default" removal) carries them on its entry,
+ * so a read-back can tell whether it landed.
+ *
+ * Assumed (not on b4a18c0):
+ * - `PendingContentEntry.resetProps?: readonly string[]`;
+ * - `sectionContentLanded` also requires every `resetProps` key to be absent
+ *   (`!hasOwnProperty`) from the section's props;
+ * - `classifyUnconfirmedContent(sent, read)` with
+ *   `read: { ok: false } | { ok: true; template?: { draftGeneration?: number;
+ *   section?: { props?: unknown; enabled?: boolean } } }`
+ *   answers `"landed" | "not-landed" | "moved" | "undecided"` per the plan's
+ *   Revision 3 table: version first, then content.
+ */
+type WithReset = PendingContentEntry & { resetProps?: readonly string[] };
+
+describe("sectionContentLanded for a write that also removes keys", () => {
+  const rows = [{ id: "morph-a", title: "One" }];
+  const resetOnly: WithReset = {
+    sectionId: "section",
+    props: {},
+    resetProps: ["items"],
+  };
+  const mixed: WithReset = {
+    sectionId: "section",
+    props: { heading: "Hello" },
+    resetProps: ["items"],
+  };
+
+  it("answers no while a removed key is still held: `props: {}` alone never landed", () => {
+    expect(sectionContentLanded(resetOnly, { props: { items: rows } })).toBe(
+      false,
+    );
+  });
+
+  it("answers yes once every removed key is gone", () => {
+    expect(sectionContentLanded(resetOnly, { props: { heading: "x" } })).toBe(
+      true,
+    );
+  });
+
+  it("answers no when the values match but a removed key is still held", () => {
+    expect(
+      sectionContentLanded(mixed, {
+        props: { heading: "Hello", items: rows },
+      }),
+    ).toBe(false);
+    // A present `undefined` is still a key the section holds.
+    expect(
+      sectionContentLanded(mixed, {
+        props: { heading: "Hello", items: undefined },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("classifyUnconfirmedContent: version first, then content", () => {
+  const rows = [{ id: "morph-a", title: "One" }];
+  const SENT_AT = 4;
+  const resetOnly: WithReset = {
+    sectionId: "section",
+    props: {},
+    resetProps: ["items"],
+    expectedDraftGeneration: SENT_AT,
+    expectedSourceGeneration: 1,
+  };
+  const mixed: WithReset = {
+    sectionId: "section",
+    props: { heading: "Hello" },
+    resetProps: ["items"],
+    expectedDraftGeneration: SENT_AT,
+    expectedSourceGeneration: 1,
+  };
+  const read = (draftGeneration: number, props: Record<string, unknown>) => ({
+    ok: true as const,
+    template: { draftGeneration, section: { props } },
+  });
+  const classify = (
+    sent: WithReset,
+    readBack:
+      | { ok: false }
+      | {
+          ok: true;
+          template?: {
+            draftGeneration?: number;
+            section?: { props?: unknown; enabled?: boolean };
+          };
+        },
+  ) => {
+    const fn = (
+      pendingContentWrite as unknown as {
+        classifyUnconfirmedContent?: (
+          sent: WithReset,
+          read: typeof readBack,
+        ) => string;
+      }
+    ).classifyUnconfirmedContent;
+    expect(typeof fn, "classifyUnconfirmedContent exists").toBe("function");
+    return fn!(sent, readBack);
+  };
+
+  describe("a reset-only write", () => {
+    it("unchanged generation, key still held: not landed", () => {
+      expect(classify(resetOnly, read(SENT_AT, { items: rows }))).toBe(
+        "not-landed",
+      );
+    });
+    it("one generation on, key gone: landed", () => {
+      expect(classify(resetOnly, read(SENT_AT + 1, { heading: "x" }))).toBe(
+        "landed",
+      );
+    });
+    it("one generation on, key still held: moved, never resent", () => {
+      expect(classify(resetOnly, read(SENT_AT + 1, { items: rows }))).toBe(
+        "moved",
+      );
+    });
+    it("two generations on, key gone: moved", () => {
+      expect(classify(resetOnly, read(SENT_AT + 2, {}))).toBe("moved");
+    });
+    it("a generation behind the one sent: moved", () => {
+      expect(classify(resetOnly, read(SENT_AT - 1, { items: rows }))).toBe(
+        "moved",
+      );
+    });
+    it("template or section missing: moved", () => {
+      expect(classify(resetOnly, { ok: true })).toBe("moved");
+      expect(
+        classify(resetOnly, {
+          ok: true,
+          template: { draftGeneration: SENT_AT },
+        }),
+      ).toBe("moved");
+    });
+    it("read failed: undecided", () => {
+      expect(classify(resetOnly, { ok: false })).toBe("undecided");
+    });
+  });
+
+  describe("a mixed write (restored values and removed keys)", () => {
+    it("unchanged generation, nothing applied: not landed", () => {
+      expect(
+        classify(mixed, read(SENT_AT, { heading: "New", items: rows })),
+      ).toBe("not-landed");
+    });
+    it("one generation on, value restored and key gone: landed", () => {
+      expect(classify(mixed, read(SENT_AT + 1, { heading: "Hello" }))).toBe(
+        "landed",
+      );
+    });
+    it("one generation on, a value wrong and the key gone: moved", () => {
+      expect(classify(mixed, read(SENT_AT + 1, { heading: "Theirs" }))).toBe(
+        "moved",
+      );
+    });
+    it("one generation on, values right and the key still held: moved", () => {
+      expect(
+        classify(mixed, read(SENT_AT + 1, { heading: "Hello", items: rows })),
+      ).toBe("moved");
+    });
+    it("two generations on, everything applied: moved", () => {
+      expect(classify(mixed, read(SENT_AT + 2, { heading: "Hello" }))).toBe(
+        "moved",
+      );
+    });
+    it("read failed: undecided", () => {
+      expect(classify(mixed, { ok: false })).toBe("undecided");
+    });
+  });
+
+  // Added with the implementation (user decision 3): the generation did not
+  // move, yet everything the write sent is already there. It cannot be shown
+  // that this request did it, so it is never resent.
+  describe("unchanged generation with everything already there", () => {
+    it("a reset-only write whose key is already gone: moved", () => {
+      expect(classify(resetOnly, read(SENT_AT, { heading: "x" }))).toBe(
+        "moved",
+      );
+    });
+    it("a mixed write whose value is restored and key gone: moved", () => {
+      expect(classify(mixed, read(SENT_AT, { heading: "Hello" }))).toBe(
+        "moved",
+      );
+    });
+  });
+
+  it("a write with no recorded draft generation: moved, never resent", () => {
+    const { expectedDraftGeneration: _unset, ...unrecorded } = resetOnly;
+    expect(classify(unrecorded, read(SENT_AT, { items: rows }))).toBe("moved");
+  });
+});
+
+describe("sentContentWrite: what was sent stays as sent", () => {
+  it("is not changed by later changes to the entry it was made from", () => {
+    const props: Record<string, unknown> = { heading: "Hello" };
+    const resetProps = ["items"];
+    const entry: PendingContentEntry = {
+      sectionId: "section",
+      props,
+      resetProps,
+      expectedDraftGeneration: 4,
+      expectedSourceGeneration: 1,
+    };
+    const sent = pendingContentWrite.sentContentWrite(entry);
+    // Later input reuses and rewrites the objects it came from.
+    props.heading = "Typed later";
+    props.extra = "x";
+    resetProps.push("heading");
+    entry.expectedDraftGeneration = 9;
+
+    expect(sent).toEqual({
+      sectionId: "section",
+      props: { heading: "Hello" },
+      resetProps: ["items"],
+      expectedDraftGeneration: 4,
+      expectedSourceGeneration: 1,
+    });
+  });
+
+  it("cannot be rewritten in place", () => {
+    const sent = pendingContentWrite.sentContentWrite({
+      sectionId: "section",
+      props: { heading: "Hello" },
+      resetProps: ["items"],
+      expectedDraftGeneration: 4,
+    });
+    expect(Object.isFrozen(sent)).toBe(true);
+    expect(Object.isFrozen(sent.props)).toBe(true);
+    expect(Object.isFrozen(sent.resetProps)).toBe(true);
+    expect(() => {
+      (sent.props as Record<string, unknown>).heading = "x";
+    }).toThrow(TypeError);
+    expect(() => {
+      (sent.resetProps as string[]).push("x");
+    }).toThrow(TypeError);
+    expect(() => {
+      (sent as { expectedDraftGeneration?: number }).expectedDraftGeneration =
+        5;
+    }).toThrow(TypeError);
   });
 });

@@ -16,7 +16,26 @@
  * reload would undo edits the person is no longer looking at.
  */
 
-export type EditorHistoryAction = () => Promise<unknown> | unknown;
+/**
+ * One run of an entry's undo or redo.
+ *
+ * Every run gets its own `attemptId`. A write whose answer was lost can later
+ * be found to have landed; `confirm` then completes that very run, once,
+ * without running anything again. A later run of the same entry (a retry, or
+ * an undo/redo round trip) closes the earlier one.
+ */
+export type EditorHistoryAttempt = Readonly<{
+  entryId: number;
+  direction: "undo" | "redo";
+  attemptId: number;
+}>;
+
+export type EditorHistoryAction = (
+  attempt: EditorHistoryAttempt,
+) => Promise<unknown> | unknown;
+
+/** What `confirm` did; see there. */
+export type EditorHistoryConfirmation = "moved" | "deferred" | "stale";
 
 export type EditorHistoryEntry = Readonly<{
   /** Shown to the person, e.g. "Padding". */
@@ -96,6 +115,36 @@ export type EditorHistory = Readonly<{
   discardScope(scope: string): void;
   undo(): Promise<boolean>;
   redo(): Promise<boolean>;
+  /**
+   * Completes a step that already happened, without running it again: the
+   * run `attemptId` threw (its answer was lost) and its write was later
+   * found to have landed.
+   *
+   * Only `attemptId` being the entry's latest open run counts; anything else
+   * (a duplicate, a run superseded by a later one, an entry cleared or
+   * discarded) is "stale" and leaves no trace. For the latest open run:
+   * - "moved": no step is running and the entry is on top of the stack for
+   *   `direction`; it moves now, and the run is consumed;
+   * - "deferred": it cannot move now (a step is running, or another entry is
+   *   on top). The run is marked landed: the entry's next step in that
+   *   direction moves it without running its action, provided that run is
+   *   still the entry's latest open one when the step starts.
+   *
+   * Neither "deferred" nor "stale" says anything about the write. Neither is
+   * ever a reason to send it again.
+   */
+  confirm(
+    entryId: number,
+    direction: "undo" | "redo",
+    attemptId: number,
+  ): EditorHistoryConfirmation;
+  /**
+   * Whether `entryId` is the entry the next step in `direction` would run.
+   * A step's own action asks this after doing something that may record (an
+   * input still pending, saved first): an entry recorded on top meanwhile
+   * is the latest step now, and the action does not run over it.
+   */
+  isOnTop(entryId: number, direction: "undo" | "redo"): boolean;
   clear(): void;
   getSnapshot(): EditorHistorySnapshot;
   subscribe(listener: () => void): () => void;
@@ -108,6 +157,18 @@ export function createEditorHistory(
   let past: StoredEntry[] = [];
   let future: StoredEntry[] = [];
   let nextId = 1;
+  let nextAttemptId = 1;
+  /**
+   * Each entry's latest run that threw, until a later run or confirm closes
+   * it (or the entry leaves the history). `landed`: confirmed while it could
+   * not move (`confirm` answered "deferred").
+   */
+  const openAttempts = new Map<
+    number,
+    { attempt: EditorHistoryAttempt; landed: boolean }
+  >();
+  /** The entry whose step is running, if one is. */
+  let running: StoredEntry | null = null;
   let busy = false;
   let snapshot: EditorHistorySnapshot = {
     canUndo: false,
@@ -148,6 +209,29 @@ export function createEditorHistory(
   }
 
   /**
+   * Moves exactly `entry` to the other stack: by identity, never whatever is
+   * on top, since an entry may have been recorded while its step ran (the
+   * step saved input still pending first). Read from the stacks as they are
+   * now, for `record` and `discard` replace them.
+   */
+  function move(entry: StoredEntry, direction: "undo" | "redo") {
+    if (direction === "undo") {
+      past = past.filter((candidate) => candidate !== entry);
+      future.push(entry);
+    } else {
+      // A redo's entry is gone from `future` when an edit was recorded while
+      // it ran; it ran all the same, after that edit, and goes on top of it.
+      future = future.filter((candidate) => candidate !== entry);
+      past.push(entry);
+    }
+  }
+
+  /** Drops the open runs of entries no longer in the history. */
+  function forgetRuns(removed: readonly StoredEntry[]) {
+    for (const entry of removed) openAttempts.delete(entry.id);
+  }
+
+  /**
    * Runs one direction, serialized.
    *
    * Two quick presses must not interleave: the second would read a stack the
@@ -156,24 +240,46 @@ export function createEditorHistory(
    */
   async function step(direction: "undo" | "redo"): Promise<boolean> {
     if (busy) return false;
-    const source = direction === "undo" ? past : future;
-    const target = direction === "undo" ? future : past;
-    const entry = source.at(-1);
+    const entry = (direction === "undo" ? past : future).at(-1);
     if (!entry) return false;
 
+    // Its last run's write was found landed while it could not move: that
+    // run is completed now, and nothing is run or written again.
+    const open = openAttempts.get(entry.id);
+    if (open?.landed && open.attempt.direction === direction) {
+      openAttempts.delete(entry.id);
+      move(entry, direction);
+      publish();
+      return true;
+    }
+
     busy = true;
+    running = entry;
     publish();
+    const attempt: EditorHistoryAttempt = {
+      entryId: entry.id,
+      direction,
+      attemptId: nextAttemptId++,
+    };
+    // This run supersedes any earlier one of the same entry, and its mark.
+    const run = { attempt, landed: false };
+    openAttempts.set(entry.id, run);
     try {
-      await (direction === "undo" ? entry.undo() : entry.redo());
+      await (direction === "undo" ? entry.undo(attempt) : entry.redo(attempt));
     } catch (error) {
       // The entry stays where it is. Moving it would leave the stack claiming a
       // reversal that storage rejected.
+      running = null;
       busy = false;
       publish();
       throw error;
     }
-    source.pop();
-    target.push(entry);
+    running = null;
+    // Discarded or cleared while it ran: it is no longer in the history.
+    if (openAttempts.get(entry.id) === run) {
+      openAttempts.delete(entry.id);
+      move(entry, direction);
+    }
     busy = false;
     publish();
     return true;
@@ -183,9 +289,14 @@ export function createEditorHistory(
     record(entry) {
       const stored: StoredEntry = { ...entry, id: nextId++ };
       past.push(stored);
-      if (past.length > limit) past = past.slice(past.length - limit);
+      if (past.length > limit) {
+        forgetRuns(past.slice(0, past.length - limit));
+        past = past.slice(past.length - limit);
+      }
       // A new edit invalidates everything that was undone: those changes are no
-      // longer the ones that follow this state.
+      // longer the ones that follow this state. A redo running now keeps its
+      // run: it is moved once it is answered (`move`).
+      forgetRuns(future.filter((candidate) => candidate !== running));
       future = [];
       publish();
       return stored.id;
@@ -194,19 +305,43 @@ export function createEditorHistory(
       const before = past.length + future.length;
       past = past.filter((entry) => entry.id !== id);
       future = future.filter((entry) => entry.id !== id);
+      openAttempts.delete(id);
       if (past.length + future.length !== before) publish();
     },
     discardScope(scope) {
       const before = past.length + future.length;
+      forgetRuns([...past, ...future].filter((entry) => entry.scope === scope));
       past = past.filter((entry) => entry.scope !== scope);
       future = future.filter((entry) => entry.scope !== scope);
       if (past.length + future.length !== before) publish();
     },
     undo: () => step("undo"),
     redo: () => step("redo"),
+    confirm(entryId, direction, attemptId) {
+      const open = openAttempts.get(entryId);
+      if (
+        !open ||
+        open.attempt.direction !== direction ||
+        open.attempt.attemptId !== attemptId
+      ) {
+        return "stale";
+      }
+      const entry = (direction === "undo" ? past : future).at(-1);
+      if (busy || !entry || entry.id !== entryId) {
+        open.landed = true;
+        return "deferred";
+      }
+      openAttempts.delete(entryId);
+      move(entry, direction);
+      publish();
+      return "moved";
+    },
+    isOnTop: (entryId, direction) =>
+      (direction === "undo" ? past : future).at(-1)?.id === entryId,
     clear() {
       past = [];
       future = [];
+      openAttempts.clear();
       publish();
     },
     getSnapshot: () => snapshot,
