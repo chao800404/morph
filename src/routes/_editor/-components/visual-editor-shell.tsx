@@ -11976,8 +11976,10 @@ export function VisualEditorShell({
       if (historySourceGeneration === undefined) {
         throw sourceSelectionFailure();
       }
+      // Nothing to write to, or nothing to write: refused, never resolved,
+      // since resolving moves the history as if the step had been written.
       const templateId = templateIdForSection(sectionId);
-      if (!templateId) return;
+      if (!templateId) throw new Error(HISTORY_OTHER_PAGE_MESSAGE);
       const key = contentKeyFor(templateId, sectionId);
       const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
       // Run again while its own earlier run's write is held unanswered: the
@@ -12021,7 +12023,7 @@ export function VisualEditorShell({
       // the history writes what it says.
       const staged =
         stage(storedSectionPropsRef.current(sectionId)) ?? stage({});
-      if (!staged) return;
+      if (!staged) throw sourceSelectionFailure();
       if (!requestedFinishCommitRef.current) leaveGuard.noteInput();
       await commitSectionPending(keyTemplateId, key, false, false, {
         entry: staged,

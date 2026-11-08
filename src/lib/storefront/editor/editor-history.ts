@@ -209,13 +209,6 @@ export function createEditorHistory(
   }
 
   /**
-   * Runs one direction, serialized.
-   *
-   * Two quick presses must not interleave: the second would read a stack the
-   * first has not finished moving, and the writes would reach storage out of
-   * order.
-   */
-  /**
    * Moves exactly `entry` to the other stack: by identity, never whatever is
    * on top, since an entry may have been recorded while its step ran (the
    * step saved input still pending first). Read from the stacks as they are
