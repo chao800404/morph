@@ -2147,6 +2147,110 @@ describe("Style history writes and refusals", () => {
       .hasAttribute("disabled"),
   });
 
+  async function confirmPausedWriteResume() {
+    const gate = useEditorWriteGateStore.getState();
+    const epoch = gate.beginVerification(scope);
+    if (epoch === null) throw new Error("Expected a paused write gate");
+    gate.finishVerification(scope, epoch, "verified");
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "Save my changes" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save my changes" }));
+  }
+
+  it("records one undo only after a paused Style write lands", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    useEditorWriteGateStore
+      .getState()
+      .pause(scope, "ACCESS_DENIED", "theme");
+    renderShellWithHero(STYLE_SOURCE);
+
+    applyStylePatch();
+    await waitFor(() => expect(localThemeFile()?.authPaused).toBe(true));
+    expect(historyState()).toEqual({ undoAvailable: false, redoAvailable: false });
+
+    await confirmPausedWriteResume();
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(localThemeFile()?.saveState).toBe("clean"));
+
+    expect(server.file().content).toBe(STYLE_AFTER);
+    expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(server.file().content).toBe(STYLE_SOURCE));
+    expect(historyState()).toEqual({ undoAvailable: false, redoAvailable: true });
+  });
+
+  it.each(["superseded", "server-refusal"] as const)(
+    "does not create paused Style history when resume is %s",
+    async (outcome) => {
+      const server = controlledThemeFile(STYLE_SOURCE);
+      const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+      useEditorWriteGateStore
+        .getState()
+        .pause(scope, "ACCESS_DENIED", "theme");
+      renderShellWithHero(STYLE_SOURCE);
+
+      applyStylePatch();
+      await waitFor(() => expect(localThemeFile()?.authPaused).toBe(true));
+      if (outcome === "superseded") {
+        themeFileQueueControl.supersedeNext = true;
+      } else {
+        server.outcomes.push("server-refusal");
+      }
+
+      await confirmPausedWriteResume();
+      if (outcome === "superseded") {
+        await waitFor(() =>
+          expect(themeFileQueueControl.supersededCount).toBe(1),
+        );
+      } else {
+        await waitFor(() => expect(server.save).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(error).toHaveBeenCalled());
+      }
+
+      expect(server.file().content).toBe(STYLE_SOURCE);
+      expect(historyState()).toEqual({ undoAvailable: false, redoAvailable: false });
+    },
+  );
+
+  it("keeps a resumed Style write pending until an unanswered save is read back", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    server.outcomes.push("offline-after-landing");
+    useEditorWriteGateStore
+      .getState()
+      .pause(scope, "ACCESS_DENIED", "theme");
+    renderShellWithHero(STYLE_SOURCE);
+
+    applyStylePatch();
+    await waitFor(() => expect(localThemeFile()?.authPaused).toBe(true));
+    expect(historyState()).toEqual({ undoAvailable: false, redoAvailable: false });
+
+    await confirmPausedWriteResume();
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_AFTER),
+    );
+    expect(server.save).toHaveBeenCalledTimes(1);
+    expect(historyState()).toEqual({ undoAvailable: false, redoAvailable: false });
+
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+    );
+    expect(server.save).toHaveBeenCalledTimes(1);
+    expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(server.file().content).toBe(STYLE_SOURCE));
+  });
+
   it("keeps a landed, unanswered first Style write undoable until read-back", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
     server.outcomes.push("offline-after-landing");
