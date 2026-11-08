@@ -12662,7 +12662,7 @@ export function VisualEditorShell({
       });
 
       try {
-        await commitSectionPending(keyTemplateId, key, false);
+        const answer = await commitSectionPending(keyTemplateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
         // props the other one started from. A list nothing stored before the
         // drag is undone by storing nothing again: writing its drawn rows back
@@ -12670,22 +12670,37 @@ export function VisualEditorShell({
         // Document, where a later change to the Theme's defaults no longer
         // reaches them. The removal is the "Use code default" write.
         //
+        // That first drag's undo and redo are history runs of their own, as
+        // the first Add's are (#388): one awaited write each, checked against
+        // the draft generation answered for the step it reverses or
+        // re-applies (`historyStepBasis`), recording nothing new.
+        //
         // A stored list's undo/redo is not yet a replay with its own awaited
         // write and step basis (#388): its canvas reorder cannot send its
         // first write on main (its per-row paths fail `rowsStillMatch`), so
         // that undo/redo is unreachable and untested here. #390 fixes the
         // reorder and moves it onto the replay path with its tests.
-        history.record(
+        const entryId = history.record(
           fenceSectionHistory(sectionId, templateId, {
             label: "Reorder · item",
             undo: unstoredRows
-              ? async () => {
+              ? async (attempt) => {
                   const reset = await handleResetContentFields(
                     sectionId,
                     [arrayRoot],
-                    { recordHistory: false, historyGeneration: generation },
+                    {
+                      recordHistory: false,
+                      historyGeneration: generation,
+                      basisDraftGeneration: historyStepBasis(attempt),
+                      attempt,
+                    },
                   );
-                  if (!reset.success) throw sourceSelectionFailure();
+                  // Refused, or not sent: the entry stays where it is.
+                  if (!reset.success) {
+                    throw reset.message
+                      ? new Error(reset.message)
+                      : sourceSelectionFailure();
+                  }
                 }
               : () =>
                   handleSectionPropsChange(
@@ -12693,14 +12708,34 @@ export function VisualEditorShell({
                     { [arrayRoot]: startProps[arrayRoot] },
                     { historySourceGeneration: generation },
                   ),
-            redo: () =>
-              handleSectionPropsChange(
-                sectionId,
-                { [arrayRoot]: result.value[arrayRoot] },
-                { historySourceGeneration: generation },
-              ),
+            redo: unstoredRows
+              ? (attempt) =>
+                  handleSectionPropsChange(
+                    sectionId,
+                    { [arrayRoot]: result.value[arrayRoot] },
+                    {
+                      historySourceGeneration: generation,
+                      historyAttempt: attempt,
+                    },
+                  )
+              : () =>
+                  handleSectionPropsChange(
+                    sectionId,
+                    { [arrayRoot]: result.value[arrayRoot] },
+                    { historySourceGeneration: generation },
+                  ),
           }),
         );
+        // The undo of the first drag goes onto the copy its write was
+        // answered with; an answer that reports none leaves it no basis, so
+        // that undo refuses.
+        if (unstoredRows) {
+          setHistoryStepBasis(
+            entryId,
+            "undo",
+            answeredDraftGenerationOf(answer),
+          );
+        }
       } catch {
         const hiddenBefore = previewSectionIsHidden(sectionId);
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
@@ -12733,6 +12768,8 @@ export function VisualEditorShell({
       activeSelection?.sourceFilePath,
       currentContentSourceGeneration,
       effectiveThemeFiles,
+      historyStepBasis,
+      setHistoryStepBasis,
     ],
   );
 
