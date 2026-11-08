@@ -9328,7 +9328,10 @@ export function VisualEditorShell({
               updatedContent,
               nextRevision,
             ),
-          isConflict: (result) => result.status === "source-conflict",
+          isNotLanded: (result) =>
+            result.status === "source-conflict" ||
+            result.status === "auth-paused" ||
+            result.status === "superseded",
           onError: (error) => {
             toast.error(
               `Failed to save source file ${targetFilePath}: ${

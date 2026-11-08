@@ -34,8 +34,8 @@ export type DeferredWritePorts<TId, TResult> = Readonly<{
   record: () => TId;
   discard: (id: TId) => void;
   save: () => Promise<TResult>;
-  /** Whether the result means the write never landed. */
-  isConflict: (result: TResult) => boolean;
+  /** Whether the result confirms that the write did not land. */
+  isNotLanded: (result: TResult) => boolean;
   /** Reports a write that failed outright. */
   onError: (error: unknown) => void;
 }>;
@@ -43,7 +43,7 @@ export type DeferredWritePorts<TId, TResult> = Readonly<{
 export function scheduleDeferredWrite<TId, TResult>(
   ports: DeferredWritePorts<TId, TResult>,
 ): void {
-  const { writes, key, delayMs, record, discard, save, isConflict, onError } =
+  const { writes, key, delayMs, record, discard, save, isNotLanded, onError } =
     ports;
 
   // Recorded here rather than when the write lands: the author can press undo
@@ -54,8 +54,9 @@ export function scheduleDeferredWrite<TId, TResult>(
   writes.schedule(key, delayMs, () =>
     save()
       .then((result) => {
-        // A conflicted write never landed, so there is nothing to reverse.
-        if (isConflict(result)) discard(id);
+        // A refused or superseded write never landed, so there is nothing to
+        // reverse.
+        if (isNotLanded(result)) discard(id);
       })
       .catch((error: unknown) => {
         discard(id);

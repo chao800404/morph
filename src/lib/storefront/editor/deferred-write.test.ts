@@ -36,8 +36,10 @@ function harness() {
       record,
       discard,
       save,
-      isConflict: (result: { status: string }) =>
-        result.status === "source-conflict",
+      isNotLanded: (result: { status: string }) =>
+        result.status === "source-conflict" ||
+        result.status === "auth-paused" ||
+        result.status === "superseded",
       onError,
     },
   };
@@ -70,17 +72,20 @@ describe("a write that is recorded before it lands", () => {
     expect(writes.size).toBe(0);
   });
 
-  it("takes the entry back when the write reports a conflict", async () => {
-    const { args, discard, save } = harness();
-    save.mockResolvedValue({ status: "source-conflict" });
+  it.each(["source-conflict", "auth-paused", "superseded"] as const)(
+    "takes the entry back when the write reports %s",
+    async (status) => {
+      const { args, discard, save } = harness();
+      save.mockResolvedValue({ status });
 
-    scheduleDeferredWrite(args);
-    await vi.advanceTimersByTimeAsync(300);
+      scheduleDeferredWrite(args);
+      await vi.advanceTimersByTimeAsync(300);
 
-    // Nothing landed, so an entry left behind would undo an edit that never
-    // happened.
-    expect(discard).toHaveBeenCalledWith(1);
-  });
+      // Nothing landed, so an entry left behind would undo an edit that never
+      // happened.
+      expect(discard).toHaveBeenCalledWith(1);
+    },
+  );
 
   it("takes the entry back and reports when the write throws", async () => {
     const { args, discard, onError, save } = harness();
