@@ -5236,6 +5236,30 @@ export function VisualEditorShell({
 
   /** Source writes waiting out a debounce, kept with what they would send. */
   const pendingSaveWritesRef = useRef(createDebouncedWrites());
+  /**
+   * Style edits whose first file write was held by the auth gate. They are
+   * not history until the existing resume/read-back path proves the text was
+   * saved. Keep the original file precondition and source generation with the
+   * edit while it waits.
+   */
+  type PausedStyleHistoryIntent = {
+    storefrontId: string;
+    themeId: string;
+    path: string;
+    label: string;
+    before: string;
+    after: string;
+    serverExists: boolean;
+    serverFileId: string | null;
+    serverVersion: number | null;
+    sourceGeneration: number;
+  };
+  const pausedStyleHistoryRef = useRef(
+    new Map<string, PausedStyleHistoryIntent[]>(),
+  );
+  const recordPausedStyleHistoryRef = useRef<
+    ((intent: PausedStyleHistoryIntent) => void) | null
+  >(null);
   // Ordering and supersession live in `theme-file-save-queue`, where both rules
   // can be stated as tests instead of reproduced by typing quickly.
   const saveQueueRef = useRef(createThemeFileSaveQueue());
@@ -7212,6 +7236,97 @@ export function VisualEditorShell({
 
   handleUnifiedSaveFileRef.current = handleUnifiedSaveFile;
 
+  const recordPausedStyleHistory = useCallback(
+    (intent: PausedStyleHistoryIntent) => {
+      const replayStyle = async (content: string) => {
+        const files = useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          );
+        const hasOnlyThisUnconfirmedFile =
+          files[intent.path]?.unconfirmedContent !== undefined &&
+          unconfirmedPaths(files).every((path) => path === intent.path);
+        const save = handleUnifiedSaveFileRef.current;
+        if (!save) throw new Error("Theme file history is not ready.");
+        const saved = await save(intent.path, content, {
+          fromHistory: true,
+          historyReplay: true,
+          renderDocument: true,
+          confirmed: hasOnlyThisUnconfirmedFile,
+        });
+        if (saved === null || saved === undefined) {
+          throw new Error("The Style change was not saved.");
+        }
+        return saved;
+      };
+
+      history.record({
+        label: intent.label,
+        scope: themeFileHistoryScope(intent.path),
+        undo: () => {
+          resetPreviewSelectionStyle();
+          return replayStyle(intent.before);
+        },
+        redo: () => {
+          resetPreviewSelectionStyle();
+          return replayStyle(intent.after);
+        },
+      });
+    },
+    [history, resetPreviewSelectionStyle, workspaceScope],
+  );
+  recordPausedStyleHistoryRef.current = recordPausedStyleHistory;
+
+  const settlePausedStyleHistoryWrite = useCallback(
+    (filePath: string, content: string, result: unknown) => {
+      const pending = pausedStyleHistoryRef.current.get(filePath);
+      if (!pending?.length) return;
+      if (result === null || typeof result !== "object") {
+        pausedStyleHistoryRef.current.delete(filePath);
+        return;
+      }
+      const saved = result as Partial<StorefrontThemeFileDTO>;
+      const first = pending[0];
+      const last = pending[pending.length - 1];
+      const sameBaseline = pending.every(
+        (intent) =>
+          intent.storefrontId === workspaceScope.storefrontId &&
+          intent.themeId === workspaceScope.themeId &&
+          intent.serverExists === first.serverExists &&
+          intent.serverFileId === first.serverFileId &&
+          intent.serverVersion === first.serverVersion &&
+          intent.sourceGeneration === first.sourceGeneration,
+      );
+      const continuous = pending.every(
+        (intent, index) =>
+          index === 0 || pending[index - 1]?.after === intent.before,
+      );
+      if (
+        !sameBaseline ||
+        !continuous ||
+        saved.path !== filePath ||
+        saved.content !== content ||
+        content !== last.after ||
+        (first.serverExists &&
+          (first.serverFileId === null ||
+            first.serverVersion === null ||
+            saved.id !== first.serverFileId ||
+            typeof saved.version !== "number" ||
+            saved.version <= first.serverVersion))
+      ) {
+        pausedStyleHistoryRef.current.delete(filePath);
+        return;
+      }
+      const record = recordPausedStyleHistoryRef.current;
+      if (!record) return;
+      for (const intent of pending) record(intent);
+      pausedStyleHistoryRef.current.delete(filePath);
+    },
+    [workspaceScope],
+  );
+
   const handleRepairThemeLinkBinding = useCallback(
     async (filePath: string, fieldKey: string): Promise<boolean> => {
       if (refuseSectionTemplateWrite(filePath)) return false;
@@ -8693,13 +8808,35 @@ export function VisualEditorShell({
             pendingDesignWritesRef.current.heldByServer(path, latest.content);
             markWorkspaceSaved(latest, workspaceScope);
           },
-          save: (content) =>
-            handleUnifiedSaveFile(path, content, {
-              fromHistory: true,
-              confirmed: true,
-              ...pendingDesignSaveOptions(path, content),
-            }),
+          save: async (content) => {
+            try {
+              const saved = await handleUnifiedSaveFile(path, content, {
+                fromHistory: true,
+                confirmed: true,
+                ...pendingDesignSaveOptions(path, content),
+              });
+              settlePausedStyleHistoryWrite(path, content, saved);
+              return saved;
+            } catch (error) {
+              // An unanswered send is resolved only by the existing
+              // read-back path. An answered refusal cannot create history.
+              const remainsUnconfirmed =
+                readFiles()[path]?.unconfirmedContent !== undefined;
+              if (
+                !(error instanceof UnconfirmedThemeFileWriteError) &&
+                !remainsUnconfirmed
+              ) {
+                pausedStyleHistoryRef.current.delete(path);
+              }
+              throw error;
+            }
+          },
         });
+        if (settled === "landed" || settled === "skipped") {
+          // The read already found the draft (or could not safely send it);
+          // it was not a resumed write that this Style operation can own.
+          pausedStyleHistoryRef.current.delete(path);
+        }
         if (settled === "unanswered") unanswered += 1;
       }
       if (unanswered > 0) {
@@ -8732,6 +8869,7 @@ export function VisualEditorShell({
     pendingDesignSaveOptions,
     pendingDesignWritesToLeave,
     resendUnconfirmedResets,
+    settlePausedStyleHistoryWrite,
     settleUnconfirmedContent,
     workspaceScope,
     writeGate.epoch,
@@ -8765,11 +8903,24 @@ export function VisualEditorShell({
       for (const path of unconfirmedPaths(readFiles())) {
         const content = readFiles()[path]?.localContent;
         if (content === undefined) continue;
-        await handleUnifiedSaveFile(path, content, {
-          fromHistory: true,
-          confirmed: true,
-          ...pendingDesignSaveOptions(path, content),
-        });
+        try {
+          const saved = await handleUnifiedSaveFile(path, content, {
+            fromHistory: true,
+            confirmed: true,
+            ...pendingDesignSaveOptions(path, content),
+          });
+          settlePausedStyleHistoryWrite(path, content, saved);
+        } catch (error) {
+          const remainsUnconfirmed =
+            readFiles()[path]?.unconfirmedContent !== undefined;
+          if (
+            !(error instanceof UnconfirmedThemeFileWriteError) &&
+            !remainsUnconfirmed
+          ) {
+            pausedStyleHistoryRef.current.delete(path);
+          }
+          throw error;
+        }
       }
       await retryFailedContent();
     } catch (error) {
@@ -8786,6 +8937,7 @@ export function VisualEditorShell({
     pendingDesignSaveOptions,
     pendingDesignWritesToLeave,
     retryFailedContent,
+    settlePausedStyleHistoryWrite,
     workspaceScope,
   ]);
 
@@ -9419,6 +9571,32 @@ export function VisualEditorShell({
         const styleBefore = targetCurrentSource;
         const styleAfter = updatedContent;
         const stylePath = targetFilePath;
+        const styleWorkspaceFile = useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[stylePath];
+        const styleServerFile = themeFiles.find(
+          (file) => file.path === stylePath,
+        );
+        const pausedStyleIntent: PausedStyleHistoryIntent = {
+          storefrontId: workspaceScope.storefrontId,
+          themeId: workspaceScope.themeId,
+          path: stylePath,
+          label: `Style · ${elementName}`,
+          before: styleBefore,
+          after: styleAfter,
+          serverExists:
+            styleWorkspaceFile?.serverExists ?? Boolean(styleServerFile),
+          serverFileId:
+            styleWorkspaceFile?.serverFileId ?? styleServerFile?.id ?? null,
+          serverVersion:
+            styleWorkspaceFile?.serverVersion ?? styleServerFile?.version ?? null,
+          sourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+        };
         const replayStyle = (content: string) => {
           const files = useThemeWorkspaceStore
             .getState()
@@ -9456,12 +9634,29 @@ export function VisualEditorShell({
               },
             }),
           discard: (id) => history.discard(id),
-          save: () =>
-            saveThemeFileSequentially(
+          save: async () => {
+            const result = await saveThemeFileSequentially(
               targetFilePath,
               updatedContent,
               nextRevision,
-            ),
+            );
+            if (result.status === "auth-paused") {
+              const existing =
+                pausedStyleHistoryRef.current.get(stylePath) ?? [];
+              const pending = existing.every(
+                (intent) =>
+                  intent.storefrontId === workspaceScope.storefrontId &&
+                  intent.themeId === workspaceScope.themeId,
+              )
+                ? existing
+                : [];
+              pausedStyleHistoryRef.current.set(stylePath, [
+                ...pending,
+                pausedStyleIntent,
+              ]);
+            }
+            return result;
+          },
           isNotLanded: (result) =>
             result.status === "source-conflict" ||
             result.status === "auth-paused" ||
