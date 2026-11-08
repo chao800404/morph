@@ -2231,9 +2231,7 @@ describe("Style history writes and refusals", () => {
           ),
         );
       }
-      await act(async () => {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      });
+      await waitFor(() => expect(error).toHaveBeenCalled());
 
       expect({
         ...historyState(),

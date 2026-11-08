@@ -701,6 +701,14 @@ class DesignStructureRefusedError extends Error {}
 export const HISTORY_REPLAY_NOT_SAVED_MESSAGE =
   "the change is not saved yet. It stays in the history; try again once the file is saved.";
 
+const HISTORY_REPLAY_REFUSAL_MESSAGES = {
+  superseded: "A newer Theme file write replaced this history change. Try again.",
+  "source-conflict":
+    "The Theme source changed. Resolve the source conflict before retrying.",
+  "auth-paused":
+    "Theme file saving is paused. Restore access before retrying.",
+} as const;
+
 /**
  * Whether a file may take a Design element edit now: the edit is judged on
  * the stored file, so one with changes not yet saved (or a save running)
@@ -6972,6 +6980,9 @@ export function VisualEditorShell({
         result.status === "source-conflict" ||
         result.status === "auth-paused"
       ) {
+        if (options?.historyReplay) {
+          throw new Error(HISTORY_REPLAY_REFUSAL_MESSAGES[result.status]);
+        }
         return null;
       }
       // Only a landed write is reversible, and only one that actually changed
@@ -9297,6 +9308,7 @@ export function VisualEditorShell({
                 resetPreviewSelectionStyle();
                 return handleUnifiedSaveFile(stylePath, styleBefore, {
                   fromHistory: true,
+                  historyReplay: true,
                   renderDocument: true,
                 });
               },
@@ -9304,6 +9316,7 @@ export function VisualEditorShell({
                 resetPreviewSelectionStyle();
                 return handleUnifiedSaveFile(stylePath, styleAfter, {
                   fromHistory: true,
+                  historyReplay: true,
                   renderDocument: true,
                 });
               },
