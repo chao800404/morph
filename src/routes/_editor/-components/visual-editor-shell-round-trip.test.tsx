@@ -5914,6 +5914,192 @@ function Home() {
           expect(stored).toEqual({});
         });
       });
+
+      /**
+       * #388 round 7 (red before the fix where noted): a replay that only
+       * puts values back (a Content Undo with nothing to remove, a Redo, the
+       * Undo of "Use code default", the Redo of a first Add, a list reorder's
+       * Undo and Redo) is checked as the mixed undo is: the copy it goes onto
+       * must be within this editor's own range since the draft generation
+       * answered for the step it reverses or re-applies
+       * (`basisWithinOwnRange`), never just the copy held now. Someone
+       * else's change is refused, read by the editor or not; the editor's own
+       * steps stay in range.
+       *
+       * A reorder of a stored list is not covered here: its first write is
+       * already refused before sending by the row guard (`rowsStillMatch`
+       * sees the reordered rows at their old paths), so neither its Undo nor
+       * its Redo can be reached in this harness.
+       */
+      describe("round 7: a restore-only replay is checked against its own step", () => {
+        const depth = () =>
+          document
+            .querySelector("[data-editor-undo-depth]")
+            ?.getAttribute("data-editor-undo-depth") ?? null;
+        const THEIRS = { heading: "Theirs" } as const;
+        /** Another tab writes `props` at the next draft generation. */
+        const theyWrite = (props: Record<string, unknown>) => {
+          stored = { ...props };
+          draftGeneration += 1;
+        };
+        /** The editor reads what the server holds now. */
+        const editorReads = async (
+          receive: (next: StorefrontThemeEditorDTO) => void,
+        ) => {
+          act(() => receive(editorAt({ ...stored }, draftGeneration)));
+          await flushFrames();
+        };
+        /** `heading` Hello -> New: one write (draft 1 -> 2), one entry. */
+        async function storedFieldEdit() {
+          stored = { ...STORED };
+          const editor = await openSection({ ...STORED });
+          await type("Hello", "New");
+          await settle();
+          await reread(editor.receive);
+          expect(sent()).toHaveLength(1);
+          expect(stored).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+          return editor;
+        }
+
+        for (const direction of ["undo", "redo"] as const) {
+          for (const read of [false, true]) {
+            const label = read
+              ? "already read by the editor: refused before sending (basisWithinOwnRange)"
+              : "not read by the editor yet: refused by the draft generation";
+            it(`a Content ${direction} after someone else's change, ${label}`, async () => {
+              const notice = notices();
+              const { receive } = await storedFieldEdit();
+              // The step's own basis: the draft generation answered for the
+              // write it reverses (2) or for the undo it re-applies (3).
+              let basis = 2;
+              if (direction === "redo") {
+                await undo();
+                await reread(receive);
+                expect(stored).toEqual({ ...STORED });
+                expect(depth()).toBe("0");
+                basis = 3;
+              }
+              const buttons = historyButtons();
+              const depthBefore = depth();
+              theyWrite(THEIRS);
+              if (read) await editorReads(receive);
+              const before = sent().length;
+
+              await press(direction === "undo" ? "Undo" : "Redo");
+
+              if (read) {
+                expect(
+                  sent(),
+                  "nothing is sent over a step that was not this editor's own",
+                ).toHaveLength(before);
+              } else {
+                expect(sent(), "the one refused replay").toHaveLength(
+                  before + 1,
+                );
+                expect(sent().at(-1)!.expectedDraftGeneration).toBe(basis);
+              }
+              expect(stored, "their change is kept").toEqual({ ...THEIRS });
+              expect(depth(), "history did not move").toBe(depthBefore);
+              expect(historyButtons()).toEqual(buttons);
+              expect(errors(notice)).toContainEqual(
+                expect.stringMatching(
+                  direction === "undo" ? /^Could not undo/ : /^Could not redo/,
+                ),
+              );
+              expect(unconfirmedCount()).toBeNull();
+              await settle();
+              expect(sent(), "nothing is sent after it").toHaveLength(
+                read ? before : before + 1,
+              );
+              expect(stored).toEqual({ ...THEIRS });
+            });
+          }
+        }
+
+        it("the Redo of a first Add, after someone else's change the editor read: refused before sending", async () => {
+          const notice = notices();
+          const { receive } = await resetOnlyWrite();
+          await undo();
+          await reread(receive);
+          expect(stored).toEqual({ ...STORED });
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+          theyWrite(THEIRS);
+          await editorReads(receive);
+
+          await redo();
+
+          expect(sent(), "the Add and its undo only").toHaveLength(2);
+          expect(stored).toEqual({ ...THEIRS });
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(/^Could not redo/),
+          );
+        });
+
+        it('the Undo of "Use code default", after someone else\'s change the editor read: refused before sending', async () => {
+          const notice = notices();
+          stored = { ...STORED };
+          const { receive } = await openSection({ ...STORED });
+          fireEvent.click(
+            await screen.findByRole("button", { name: "Use code default" }),
+          );
+          await settle();
+          expect(sent()).toHaveLength(1);
+          expect(stored).toEqual({});
+          await reread(receive);
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          theyWrite(THEIRS);
+          await editorReads(receive);
+
+          await undo();
+
+          expect(sent(), "the reset only").toHaveLength(1);
+          expect(stored).toEqual({ ...THEIRS });
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice)).toContainEqual(
+            expect.stringMatching(/^Could not undo/),
+          );
+        });
+
+        it("control: two rounds of Undo/Undo/Redo/Redo over two own edits, each at the generation the last answer returned", async () => {
+          const notice = notices();
+          const { receive } = await storedFieldEdit();
+          await type("New", "Newer");
+          await settle();
+          await reread(receive);
+          expect(sent()).toHaveLength(2);
+          expect(stored).toEqual({ heading: "Newer" });
+          expect(depth()).toBe("2");
+
+          const steps = [
+            [undo, "New", "1", { undo: true, redo: true }],
+            [undo, "Hello", "0", { undo: false, redo: true }],
+            [redo, "New", "1", { undo: true, redo: true }],
+            [redo, "Newer", "2", { undo: true, redo: false }],
+          ] as const;
+          for (const round of [1, 2]) {
+            for (const [run, heading, after, buttons] of steps) {
+              const generation = draftGeneration;
+              const before = sent().length;
+              await run();
+              await reread(receive);
+              expect(sent(), `round ${round}: one write`).toHaveLength(
+                before + 1,
+              );
+              expect(sent().at(-1)).toMatchObject({
+                props: { heading },
+                expectedDraftGeneration: generation,
+                expectedSourceGeneration: 1,
+              });
+              expect(stored).toEqual({ heading });
+              expect(depth(), `round ${round}`).toBe(after);
+              expect(historyButtons()).toEqual(buttons);
+            }
+          }
+          accepted(notice);
+        });
+      });
     });
 
     /**
