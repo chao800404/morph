@@ -12098,6 +12098,9 @@ export function VisualEditorShell({
       nextProps: Record<string, unknown>,
       historySourceGeneration: number | undefined,
       attempt: EditorHistoryAttempt,
+      // A structural change staged as one field (a canvas reorder's list),
+      // as the step it replays was.
+      inputPath?: string,
     ): Promise<void> => {
       // A history record keeps its original version; it is never re-read.
       if (historySourceGeneration === undefined) {
@@ -12146,6 +12149,7 @@ export function VisualEditorShell({
           next: nextProps,
           stored,
           routePath: routePathForTemplate(templateId),
+          inputPath,
           basisDraftGeneration,
           sourceForPath: () => historySourceGeneration,
         });
@@ -12200,6 +12204,7 @@ export function VisualEditorShell({
           nextProps,
           options.historySourceGeneration,
           options.historyAttempt,
+          options.inputFieldPath,
         );
       }
       // 1. Instant 0ms visual sync to iframe canvas
@@ -12684,18 +12689,12 @@ export function VisualEditorShell({
         // Document, where a later change to the Theme's defaults no longer
         // reaches them. The removal is the "Use code default" write.
         //
-        // That first drag's undo and redo are history runs of their own, as
-        // the first Add's are (#388): one awaited write each, checked against
-        // the draft generation answered for the step it reverses or
-        // re-applies (`historyStepBasis`), recording nothing new.
-        //
-        // A stored list's undo/redo is not yet a replay with its own awaited
-        // write and step basis (#388). It is replayed through the refs, which
-        // hold the handlers of the render the undo runs in: the handlers of
-        // this render would stage the swap back on the stored copy as it was
-        // before the drag — which already is the order undo asks for — and
-        // send nothing. Each direction is one change to the list, staged like
-        // the drag itself.
+        // Both directions are history runs of their own, as #388's content
+        // replays are: one awaited write each, checked against the draft
+        // generation answered for the step it reverses or re-applies
+        // (`historyStepBasis`), recording nothing new. A replay is staged on
+        // the stored copy held when it runs (`storedSectionPropsRef`), never
+        // on this render's, and as one change to the list, like the drag.
         const entryId = history.record(
           fenceSectionHistory(sectionId, templateId, {
             label: "Reorder · item",
@@ -12718,46 +12717,31 @@ export function VisualEditorShell({
                       : sourceSelectionFailure();
                   }
                 }
-              : () =>
-                  contentChangeRef.current?.(
+              : (attempt) =>
+                  handleSectionPropsChange(
                     sectionId,
                     { [arrayRoot]: startProps[arrayRoot] },
                     {
                       historySourceGeneration: generation,
-                      inputFieldPath: listPath,
-                    },
-                  ),
-            redo: unstoredRows
-              ? (attempt) =>
-                  handleSectionPropsChange(
-                    sectionId,
-                    { [arrayRoot]: result.value[arrayRoot] },
-                    {
-                      historySourceGeneration: generation,
                       historyAttempt: attempt,
-                    },
-                  )
-              : () =>
-                  contentChangeRef.current?.(
-                    sectionId,
-                    { [arrayRoot]: result.value[arrayRoot] },
-                    {
-                      historySourceGeneration: generation,
                       inputFieldPath: listPath,
                     },
                   ),
+            redo: (attempt) =>
+              handleSectionPropsChange(
+                sectionId,
+                { [arrayRoot]: result.value[arrayRoot] },
+                {
+                  historySourceGeneration: generation,
+                  historyAttempt: attempt,
+                  inputFieldPath: listPath,
+                },
+              ),
           }),
         );
-        // The undo of the first drag goes onto the copy its write was
-        // answered with; an answer that reports none leaves it no basis, so
-        // that undo refuses.
-        if (unstoredRows) {
-          setHistoryStepBasis(
-            entryId,
-            "undo",
-            answeredDraftGenerationOf(answer),
-          );
-        }
+        // The undo goes onto the copy the drag's write was answered with; an
+        // answer that reports none leaves it no basis, so that undo refuses.
+        setHistoryStepBasis(entryId, "undo", answeredDraftGenerationOf(answer));
       } catch {
         // Sent, and no answer: the swap may have landed. It stays pending and
         // on the canvas like any content write, so "Try again" asks the server
