@@ -2638,6 +2638,13 @@ export function VisualEditorShell({
                 writeSnapshot = replay?.resend
                   ? undefined
                   : await contentSnapshotForWrite(templateId);
+                // A history replay is checked against its step's own basis
+                // (`basisWithinOwnRange`), which needs the copy it goes onto.
+                // With none held it is not sent: never at whatever generation
+                // the queue holds now.
+                if (replay && !replay.resend && !writeSnapshot) {
+                  throw draftConflictFailure();
+                }
                 // With no copy of the document held, the only one such input
                 // can go onto is the document as created. A route document
                 // already past that (written by someone, or found existing
@@ -11896,13 +11903,15 @@ export function VisualEditorShell({
             // The undo of a recorded write, checked against the copy it is
             // sent onto, as a content write is: every step since the write
             // it reverses must be this editor's own.
+            // With no copy held, the basis cannot be checked: not sent.
             const snapshot = await contentSnapshotForWrite(resolvedTemplateId);
-            if (snapshot) {
-              if (!basisWithinOwnRange(snapshot, basisDraftGeneration)) {
-                throw draftConflictFailure();
-              }
-              expectedDraftGeneration = snapshot.draftGeneration;
+            if (
+              !snapshot ||
+              !basisWithinOwnRange(snapshot, basisDraftGeneration)
+            ) {
+              throw draftConflictFailure();
             }
+            expectedDraftGeneration = snapshot.draftGeneration;
           }
           reportSent(expectedDraftGeneration);
           const sent =
