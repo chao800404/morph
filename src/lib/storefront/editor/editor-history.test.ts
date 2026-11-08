@@ -221,6 +221,84 @@ describe("editor history", () => {
     expect(history.getSnapshot().busy).toBe(false);
   });
 
+  // #388 round 5 (red before the fix): an undo first saves input still
+  // pending, which records its own entry while the undo runs. The entry that
+  // ran is the one that moves; the one recorded meanwhile stays on top.
+  it("moves the undo that ran, not an entry recorded while it ran", async () => {
+    const log: string[] = [];
+    const history = createEditorHistory();
+    history.record(entry("below", log));
+    history.record({
+      label: "heading",
+      undo: () => {
+        log.push("undo:heading");
+        history.record(entry("pending input", log));
+      },
+      redo: () => {
+        log.push("redo:heading");
+      },
+    });
+
+    await history.undo();
+
+    expect(history.getSnapshot()).toMatchObject({
+      depth: 2,
+      undoLabel: "pending input",
+      redoLabel: "heading",
+    });
+    // The order below is kept: the recorded entry, then what was under it.
+    await history.undo();
+    await history.undo();
+    expect(log).toEqual(["undo:heading", "undo:pending input", "undo:below"]);
+    expect(history.getSnapshot()).toMatchObject({
+      depth: 0,
+      redoLabel: "below",
+    });
+    await history.redo();
+    await history.redo();
+    await history.redo();
+    expect(log.slice(3)).toEqual([
+      "redo:below",
+      "redo:pending input",
+      "redo:heading",
+    ]);
+  });
+
+  it("moves the redo that ran onto the entry recorded while it ran", async () => {
+    const log: string[] = [];
+    const history = createEditorHistory();
+    history.record(entry("below", log));
+    history.record({
+      label: "heading",
+      undo: () => {
+        log.push("undo:heading");
+      },
+      redo: () => {
+        log.push("redo:heading");
+        // Recording clears what was undone, the running entry included; it
+        // ran all the same, after the recorded one, and goes on top of it.
+        history.record(entry("pending input", log));
+      },
+    });
+    await history.undo();
+
+    await history.redo();
+
+    expect(history.getSnapshot()).toMatchObject({
+      depth: 3,
+      undoLabel: "heading",
+      redoLabel: null,
+    });
+    await history.undo();
+    await history.undo();
+    await history.undo();
+    expect(log.slice(2)).toEqual([
+      "undo:heading",
+      "undo:pending input",
+      "undo:below",
+    ]);
+  });
+
   it("forgets the oldest edits past its limit", () => {
     const log: string[] = [];
     const history = createEditorHistory({ limit: 2 });
@@ -373,6 +451,21 @@ describe("who owns the undo shortcut", () => {
  *   of the stack for that direction, and `attemptId` is that entry's latest
  *   open attempt, never confirmed nor superseded. Otherwise it changes nothing
  *   and answers `false` (not queued).
+ *
+ * #388 round 5 changes that contract (user review): `confirm` answers
+ * `"moved" | "deferred" | "stale"` instead of a boolean.
+ * - "moved": as `true` was;
+ * - "deferred": the attempt is the entry's latest open one, but the entry
+ *   cannot move now (the engine is busy, or the entry is not on top). The
+ *   engine marks that attempt landed; the entry's next step in that direction
+ *   moves it without running its action, if that attempt is still its latest
+ *   open one when the step starts;
+ * - "stale": not the latest open attempt (a duplicate, a late one, or one for
+ *   an entry cleared or discarded). No mark is left.
+ * Neither "deferred" nor "stale" ever means the write did not land.
+ * The four round-3 tests below keep their scenarios; their boolean
+ * expectations are rewritten to this union (true -> "moved"; false ->
+ * "stale", or "deferred" where the attempt was still open).
  */
 describe("confirming a step whose write got no answer", () => {
   type Attempt = {
@@ -385,7 +478,7 @@ describe("confirming a step whose write got no answer", () => {
       entryId: number,
       direction: "undo" | "redo",
       attemptId: number,
-    ) => boolean;
+    ) => "moved" | "deferred" | "stale" | boolean;
   };
   const confirmOf = (history: ReturnType<typeof createEditorHistory>) => {
     const confirm = (history as unknown as Confirmable).confirm;
@@ -438,13 +531,13 @@ describe("confirming a step whose write got no answer", () => {
       attemptId: expect.any(Number),
     });
 
-    expect(confirm(secondId, "undo", attempt!.attemptId)).toBe(true);
+    expect(confirm(secondId, "undo", attempt!.attemptId)).toBe("moved");
     expect(stack(history)).toEqual({
       depth: 1,
       undoLabel: "first",
       redoLabel: "second",
     });
-    expect(confirm(secondId, "undo", attempt!.attemptId)).toBe(false);
+    expect(confirm(secondId, "undo", attempt!.attemptId)).toBe("stale");
     expect(stack(history), "the second confirm moved nothing").toEqual({
       depth: 1,
       undoLabel: "first",
@@ -480,7 +573,7 @@ describe("confirming a step whose write got no answer", () => {
     ).toBe(3);
 
     // The entry is on top of `past` again, but that attempt was superseded.
-    expect(confirm(id, "undo", stale!.attemptId)).toBe(false);
+    expect(confirm(id, "undo", stale!.attemptId)).toBe("stale");
     expect(stack(history)).toEqual({
       depth: 1,
       undoLabel: "only",
@@ -488,7 +581,9 @@ describe("confirming a step whose write got no answer", () => {
     });
   });
 
-  it("a confirm while another step runs does nothing, and is not queued", async () => {
+  // Round 5: the busy confirm is "deferred" (the attempt is still open), and
+  // still moves nothing by itself; it was `false` before.
+  it("a confirm while another step runs moves nothing, and is not applied on its own", async () => {
     const history = createEditorHistory();
     const confirm = confirmOf(history);
     const first = attempted("first");
@@ -506,7 +601,7 @@ describe("confirming a step whose write got no answer", () => {
     await Promise.resolve();
     expect(history.getSnapshot().busy).toBe(true);
 
-    expect(confirm(firstId, "undo", attempt.attemptId)).toBe(false);
+    expect(confirm(firstId, "undo", attempt.attemptId)).toBe("deferred");
     expect(stack(history), "unchanged while busy").toEqual({
       depth: 1,
       undoLabel: "first",
@@ -520,11 +615,14 @@ describe("confirming a step whose write got no answer", () => {
       redoLabel: "second",
     });
     // The attempt itself is still open: the refusal above was the busy engine.
-    expect(confirm(firstId, "undo", attempt.attemptId)).toBe(true);
+    expect(confirm(firstId, "undo", attempt.attemptId)).toBe("moved");
     expect(stack(history).depth).toBe(0);
+    expect(first.attempts, "nothing ran again").toHaveLength(1);
   });
 
-  it("a confirm for an entry no longer on top does nothing", async () => {
+  // Round 5: the attempt is still open, so this confirm is "deferred"; it
+  // moves nothing now (it was `false` before).
+  it("a confirm for an entry no longer on top moves nothing now", async () => {
     const history = createEditorHistory();
     const confirm = confirmOf(history);
     const first = attempted("first");
@@ -534,11 +632,144 @@ describe("confirming a step whose write got no answer", () => {
     const attempt = first.attempts[0]!;
     history.record(attempted("later").entry);
 
-    expect(confirm(firstId, "undo", attempt.attemptId)).toBe(false);
+    expect(confirm(firstId, "undo", attempt.attemptId)).toBe("deferred");
     expect(stack(history)).toEqual({
       depth: 2,
       undoLabel: "later",
       redoLabel: null,
     });
   });
+
+  // #388 round 5 (red before the fix): the deferred mark, keyed by attempt.
+  it("deferred: the entry's next step that way moves it without running, once", async () => {
+    const history = createEditorHistory();
+    const confirm = confirmOf(history);
+    const first = attempted("first");
+    const firstId = history.record(first.entry);
+    first.next.push("lost");
+    await expect(history.undo()).rejects.toThrow("offline");
+    const attempt = first.attempts[0]!;
+    const later = attempted("later");
+    history.record(later.entry);
+    expect(confirm(firstId, "undo", attempt.attemptId)).toBe("deferred");
+
+    await history.undo();
+    expect(later.attempts, "the entry on top runs as usual").toHaveLength(1);
+    await expect(history.undo()).resolves.toBe(true);
+
+    expect(first.attempts, "the landed undo is not run again").toHaveLength(1);
+    expect(stack(history)).toEqual({
+      depth: 0,
+      undoLabel: null,
+      redoLabel: "later",
+    });
+    // Used once: the redo and undo after it run their actions.
+    await history.redo();
+    await history.undo();
+    expect(first.attempts).toHaveLength(3);
+  });
+
+  it("deferred while busy: the next step moves it without running", async () => {
+    const history = createEditorHistory();
+    const confirm = confirmOf(history);
+    const first = attempted("first");
+    const second = attempted("second");
+    const firstId = history.record(first.entry);
+    history.record(second.entry);
+    await history.undo(); // second -> future
+    first.next.push("lost");
+    await expect(history.undo()).rejects.toThrow("offline");
+    const attempt = first.attempts[0]!;
+    const held = deferred();
+    second.next.push(held.promise);
+    const redo = history.redo();
+    await Promise.resolve();
+    expect(confirm(firstId, "undo", attempt.attemptId)).toBe("deferred");
+    held.reject(new Error("refused"));
+    await expect(redo).rejects.toThrow("refused");
+
+    await expect(history.undo()).resolves.toBe(true);
+
+    expect(first.attempts, "the landed undo is not run again").toHaveLength(1);
+    expect(stack(history)).toEqual({
+      depth: 0,
+      undoLabel: null,
+      redoLabel: "first",
+    });
+  });
+
+  it("a duplicate confirm after the entry moved is stale and leaves no mark", async () => {
+    const history = createEditorHistory();
+    const confirm = confirmOf(history);
+    const only = attempted("only");
+    const id = history.record(only.entry);
+    only.next.push("lost");
+    await expect(history.undo()).rejects.toThrow("offline");
+    const attempt = only.attempts[0]!;
+    expect(confirm(id, "undo", attempt.attemptId)).toBe("moved");
+
+    expect(confirm(id, "undo", attempt.attemptId)).toBe("stale");
+    expect(confirm(id, "redo", attempt.attemptId)).toBe("stale");
+
+    await history.redo();
+    await history.undo();
+    expect(only.attempts, "both ran their actions").toHaveLength(3);
+    expect(stack(history)).toEqual({
+      depth: 0,
+      undoLabel: null,
+      redoLabel: "only",
+    });
+  });
+
+  it("a late confirm after a newer attempt is stale, leaves no mark, and the next step runs", async () => {
+    const history = createEditorHistory();
+    const confirm = confirmOf(history);
+    const only = attempted("only");
+    const id = history.record(only.entry);
+    only.next.push("lost", "lost");
+    await expect(history.undo()).rejects.toThrow("offline");
+    await expect(history.undo()).rejects.toThrow("offline");
+    const [older, newer] = only.attempts;
+    expect(older!.attemptId).not.toBe(newer!.attemptId);
+
+    expect(confirm(id, "undo", older!.attemptId)).toBe("stale");
+    expect(stack(history).depth).toBe(1);
+
+    await history.undo();
+    expect(only.attempts, "the step ran its action").toHaveLength(3);
+    expect(stack(history).depth).toBe(0);
+  });
+
+  for (const [label, drop] of [
+    [
+      "clear()",
+      (history: ReturnType<typeof createEditorHistory>, _id: number) =>
+        history.clear(),
+    ],
+    [
+      "discard()",
+      (history: ReturnType<typeof createEditorHistory>, id: number) =>
+        history.discard(id),
+    ],
+  ] as const) {
+    it(`${label} drops the entry's open attempt and its mark`, async () => {
+      const history = createEditorHistory();
+      const confirm = confirmOf(history);
+      const first = attempted("first");
+      const firstId = history.record(first.entry);
+      first.next.push("lost");
+      await expect(history.undo()).rejects.toThrow("offline");
+      const attempt = first.attempts[0]!;
+      history.record(attempted("later").entry);
+      expect(confirm(firstId, "undo", attempt.attemptId)).toBe("deferred");
+
+      drop(history, firstId);
+
+      expect(confirm(firstId, "undo", attempt.attemptId)).toBe("stale");
+      expect(stack(history).undoLabel).toBe(
+        label === "clear()" ? null : "later",
+      );
+    });
+  }
 });
+
