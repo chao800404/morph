@@ -208,6 +208,7 @@ import {
   readThemeInstanceStyleClasses,
   type ThemeInstanceStyleTarget,
 } from "@/lib/storefront/editor/theme-instance-style-source";
+import type { EditorHistoryAttempt } from "@/lib/storefront/editor/editor-history";
 import {
   GLOBAL_LAYOUT_LABEL,
   SECTION_TEMPLATE_HINT,
@@ -222,6 +223,11 @@ export type InspectorPropsChangeOptions = {
   skipPreviewSync?: boolean;
   /** A history replay retains its original source precondition. */
   historySourceGeneration?: number;
+  /**
+   * Set only by the shell's own history entries: the history run this
+   * replay is. The write is then its own, awaited and never recorded.
+   */
+  historyAttempt?: EditorHistoryAttempt;
   /** Which control changed; the other props are only a display snapshot. */
   inputFieldPath?: string;
   /** Selected row whose explicit action changes its list or creates an id. */
@@ -1683,15 +1689,29 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       return undefined;
     }
     return () => {
-      void onResetContentFields(section.id, [fieldKey]).then((result) => {
-        if (!result.success) return;
-        const { [fieldKey]: _removed, ...rest } = localPropsRef.current;
-        localPropsRef.current = rest;
-        setLocalProps(rest);
-        // The inputs hold their own value; they are remounted to show the
-        // default rather than the value that was just removed.
-        setResetEpoch((epoch) => epoch + 1);
-      });
+      void onResetContentFields(section.id, [fieldKey]).then(
+        (result) => {
+          if (!result.success) return;
+          const { [fieldKey]: _removed, ...rest } = localPropsRef.current;
+          localPropsRef.current = rest;
+          setLocalProps(rest);
+          // The inputs hold their own value; they are remounted to show the
+          // default rather than the value that was just removed.
+          setResetEpoch((epoch) => epoch + 1);
+        },
+        (error: unknown) => {
+          // No answer came back: the removal may or may not have been
+          // stored. The value stays on screen, the editor holds the write as
+          // unconfirmed until it is checked, and the author is told.
+          toast.error(
+            `Could not confirm that the code default was used: ${
+              error instanceof Error && error.message
+                ? error.message
+                : "no answer from the server"
+            }. Your content is kept; use Check and save.`,
+          );
+        },
+      );
     };
   };
   const hasDirectContentField = DIRECT_CONTENT_FIELD_KEYS.some(
@@ -2758,6 +2778,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
        * declared defaults are kept and the index pressed is the row drawn.
        */
       seed?: { key: string; value: unknown },
+      /** The top-level list being written, e.g. `items`. */
+      listKey?: string,
     ) => {
       if (documentWritesRefusedRef.current) return;
       const result = mutate(seedUnstoredList(localPropsRef.current, seed));
@@ -2774,12 +2796,39 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       const next = toStorableContentProps(result.value);
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next, {
-        inputFieldPath: activeFieldPath?.split(".")[0],
-        selectionFieldPath: activeFieldPath ?? undefined,
-      });
+      // A row selected without an id: the row itself is refused and its list
+      // is offered instead. A write to that list names the list as its input
+      // and the selection's own path as the key of its source proof — the
+      // generation captured when that row was selected. The path is only
+      // ever that key, never where anything is written. Any other list in
+      // this state names nothing, and is refused as before.
+      const selectionPath = selection?.fieldPath ?? null;
+      const options =
+        unconfirmedRowListKey !== null
+          ? listKey === unconfirmedRowListKey &&
+            selection?.sectionId === section.id &&
+            selectionPath !== null &&
+            selectionPath.split(".")[0] === unconfirmedRowListKey
+            ? {
+                inputFieldPath: unconfirmedRowListKey,
+                selectionFieldPath: selectionPath,
+              }
+            : {}
+          : {
+              inputFieldPath: activeFieldPath?.split(".")[0],
+              selectionFieldPath: activeFieldPath ?? undefined,
+            };
+      onPropsChange(next, options);
     },
-    [activeFieldPath, onPropsChange, seedUnstoredList],
+    [
+      activeFieldPath,
+      onPropsChange,
+      section.id,
+      seedUnstoredList,
+      selection?.fieldPath,
+      selection?.sectionId,
+      unconfirmedRowListKey,
+    ],
   );
 
   const handleNestedFieldChange = useCallback(
@@ -3348,6 +3397,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                               definition,
                                             ),
                                           rowSeed,
+                                          fieldKey,
                                         )
                                       }
                                       className="text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-40"
@@ -3566,6 +3616,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                           },
                                         ),
                                       rowSeed,
+                                      fieldKey,
                                     )
                                   }
                                   className="w-full rounded-lg border border-dashed py-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
