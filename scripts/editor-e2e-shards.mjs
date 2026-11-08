@@ -67,6 +67,8 @@ export const EDITOR_SHARDS = [
     "responsive.spec.ts",
     "source-asset.spec.ts",
     "row-component-content.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "unstored-list-canvas-reorder.spec.ts",
     // Added after the duration measurement above; not in its projection. Its
     // client-only preview cells run here (~1.6 min locally); its public cells
     // are navigation-matrix-public.spec.ts below. Shard 5 was the shortest

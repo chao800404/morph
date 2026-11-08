@@ -385,6 +385,7 @@ import {
 } from "@/lib/storefront/editor/template-draft-generation";
 import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
 import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
+import { declaredUnstoredListRows } from "@/lib/storefront/editor/section-content-declaration";
 import {
   getFieldPathValue,
   setFieldPathValue,
@@ -12542,8 +12543,27 @@ export function VisualEditorShell({
       const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
       const pendingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
       const currentProps = { ...section.props, ...pendingProps };
+      const arrayRoot = draggedFieldPath.split(".")[0]!;
+      // A list nothing stores yet is on screen as the component's declared
+      // defaults; the swap starts from those rows, with the ids the Inspector
+      // keys their cards by and the server derives for them. Given once, here:
+      // from then on the list is the author's copy and keeps these ids.
+      const unstoredRows =
+        currentProps[arrayRoot] === undefined
+          ? declaredUnstoredListRows(effectiveThemeFiles, section, {
+              fieldKey: arrayRoot,
+              scope: { templateId, sectionId },
+              selectionSourceFilePath:
+                activeSelection?.sectionId === sectionId
+                  ? activeSelection.sourceFilePath
+                  : null,
+            })
+          : undefined;
+      const startProps = unstoredRows
+        ? { ...currentProps, [arrayRoot]: unstoredRows }
+        : currentProps;
       const result = swapArrayItemsAtFieldPaths(
-        currentProps,
+        startProps,
         draggedFieldPath,
         targetFieldPath,
       );
@@ -12591,7 +12611,6 @@ export function VisualEditorShell({
         clearTimeout(existingTimer);
         pendingPropsTimersRef.current.delete(key);
       }
-      const arrayRoot = draggedFieldPath.split(".")[0]!;
       const generation =
         selectedFieldBaseline(sectionId, draggedFieldPath)?.sourceGeneration ??
         selectedFieldBaseline(
@@ -12643,32 +12662,80 @@ export function VisualEditorShell({
       });
 
       try {
-        await commitSectionPending(keyTemplateId, key, false);
+        const answer = await commitSectionPending(keyTemplateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
-        // props the other one started from.
+        // props the other one started from. A list nothing stored before the
+        // drag is undone by storing nothing again: writing its drawn rows back
+        // would look the same but pin the component's defaults in the
+        // Document, where a later change to the Theme's defaults no longer
+        // reaches them. The removal is the "Use code default" write.
         //
-        // Not yet a replay with its own awaited write and step basis (#388):
-        // a stored list's canvas reorder cannot send its first write on main
-        // (its per-row paths fail `rowsStillMatch`), so this undo/redo is
-        // unreachable and untested here. #390 fixes the reorder and moves it
-        // onto the replay path with its tests.
-        history.record(
+        // That first drag's undo and redo are history runs of their own, as
+        // the first Add's are (#388): one awaited write each, checked against
+        // the draft generation answered for the step it reverses or
+        // re-applies (`historyStepBasis`), recording nothing new.
+        //
+        // A stored list's undo/redo is not yet a replay with its own awaited
+        // write and step basis (#388): its canvas reorder cannot send its
+        // first write on main (its per-row paths fail `rowsStillMatch`), so
+        // that undo/redo is unreachable and untested here. #390 fixes the
+        // reorder and moves it onto the replay path with its tests.
+        const entryId = history.record(
           fenceSectionHistory(sectionId, templateId, {
             label: "Reorder · item",
-            undo: () =>
-              handleSectionPropsChange(
-                sectionId,
-                { [arrayRoot]: currentProps[arrayRoot] },
-                { historySourceGeneration: generation },
-              ),
-            redo: () =>
-              handleSectionPropsChange(
-                sectionId,
-                { [arrayRoot]: result.value[arrayRoot] },
-                { historySourceGeneration: generation },
-              ),
+            undo: unstoredRows
+              ? async (attempt) => {
+                  const reset = await handleResetContentFields(
+                    sectionId,
+                    [arrayRoot],
+                    {
+                      recordHistory: false,
+                      historyGeneration: generation,
+                      basisDraftGeneration: historyStepBasis(attempt),
+                      attempt,
+                    },
+                  );
+                  // Refused, or not sent: the entry stays where it is.
+                  if (!reset.success) {
+                    throw reset.message
+                      ? new Error(reset.message)
+                      : sourceSelectionFailure();
+                  }
+                }
+              : () =>
+                  handleSectionPropsChange(
+                    sectionId,
+                    { [arrayRoot]: startProps[arrayRoot] },
+                    { historySourceGeneration: generation },
+                  ),
+            redo: unstoredRows
+              ? (attempt) =>
+                  handleSectionPropsChange(
+                    sectionId,
+                    { [arrayRoot]: result.value[arrayRoot] },
+                    {
+                      historySourceGeneration: generation,
+                      historyAttempt: attempt,
+                    },
+                  )
+              : () =>
+                  handleSectionPropsChange(
+                    sectionId,
+                    { [arrayRoot]: result.value[arrayRoot] },
+                    { historySourceGeneration: generation },
+                  ),
           }),
         );
+        // The undo of the first drag goes onto the copy its write was
+        // answered with; an answer that reports none leaves it no basis, so
+        // that undo refuses.
+        if (unstoredRows) {
+          setHistoryStepBasis(
+            entryId,
+            "undo",
+            answeredDraftGenerationOf(answer),
+          );
+        }
       } catch {
         const hiddenBefore = previewSectionIsHidden(sectionId);
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
@@ -12682,6 +12749,7 @@ export function VisualEditorShell({
     [
       history,
       handleSectionPropsChange,
+      handleResetContentFields,
       invalidateSectionHistory,
       commitSectionPending,
       previewSectionIsHidden,
@@ -12696,7 +12764,12 @@ export function VisualEditorShell({
       selectedFieldBaseline,
       sectionPropsSnapshot,
       activeSelection?.fieldPath,
+      activeSelection?.sectionId,
+      activeSelection?.sourceFilePath,
       currentContentSourceGeneration,
+      effectiveThemeFiles,
+      historyStepBasis,
+      setHistoryStepBasis,
     ],
   );
 
