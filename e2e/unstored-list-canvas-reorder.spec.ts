@@ -7,6 +7,12 @@ import {
   previewFrame,
 } from "./helpers";
 import {
+  countContentWrites,
+  nextContentWrite,
+  queryLocalD1,
+} from "./helpers/editor-writes-paused";
+import { THEMES, serverFn } from "./native-acceptance";
+import {
   removeThemeFiles,
   themeScopeFromEditorPath,
   writeThemeFiles,
@@ -197,7 +203,147 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
     await expect(row(page, 0).locator("h3")).toHaveText(SECOND);
     await expect(row(page, 1).locator("h3")).toHaveText(FIRST);
   });
+
+  /**
+   * #390: the Undo and Redo of a canvas reorder of a stored list are each one
+   * write of the list, read back from the run's own D1 file: the order and
+   * ids, and one draft generation per step.
+   */
+  test("on a stored list, Undo puts the order and ids back and Redo swaps them again, one draft generation each", async ({
+    page,
+  }) => {
+    test.skip(
+      !process.env.MORPH_E2E_STATE_DIR,
+      "Reads the runner-owned D1 file.",
+    );
+    test.setTimeout(240_000);
+    const writes = countContentWrites(page);
+    await openRoute(page);
+    const templateId = await routeTemplateId(page);
+    if (!storedRows(templateId)) {
+      // Run on its own: store the list first.
+      await selectRow(page, 1);
+      await dropSelectedOnto(page, 0);
+      await openRoute(page);
+    }
+    const start = storedRows(templateId)!;
+    expect(start.rows, "a stored list of two").toHaveLength(2);
+    const ids = start.rows.map((entry) => entry.id);
+    const titles = start.rows.map((entry) => String(entry.title));
+    expect(start.rows.map((entry) => entry.title)).toEqual(titles);
+    expect(ids.every((id) => typeof id === "string" && id.length > 0)).toBe(
+      true,
+    );
+    await expectHistory(page, { depth: 0, undo: false, redo: false });
+
+    // The drag: one write, the rows swapped with their ids.
+    let before = writes.sent;
+    await selectRow(page, 1);
+    await dropSelectedOnto(page, 0);
+    await page.waitForTimeout(1_500);
+    expect(writes.sent - before, "the drag's writes").toBe(1);
+    const swapped = storedRows(templateId)!;
+    expect(swapped.rows.map((entry) => entry.id)).toEqual([ids[1], ids[0]]);
+    expect(swapped.draftGeneration).toBe(start.draftGeneration + 1);
+    await expectHistory(page, { depth: 1, undo: true, redo: false });
+
+    // Undo, from the toolbar: the first order and ids again.
+    before = writes.sent;
+    let answer = nextContentWrite(page);
+    await undoButton(page).click();
+    expect(await answer, "the Undo's write").toBe("saved");
+    await page.waitForTimeout(1_500);
+    expect(writes.sent - before, "the Undo's writes").toBe(1);
+    const undone = storedRows(templateId)!;
+    expect(undone.rows.map((entry) => entry.id)).toEqual(ids);
+    expect(undone.rows.map((entry) => entry.title)).toEqual(titles);
+    expect(undone.draftGeneration).toBe(swapped.draftGeneration + 1);
+    await expectHistory(page, { depth: 0, undo: false, redo: true });
+    await expect(row(page, 0).locator("h3")).toHaveText(titles[0]!);
+    await expect(row(page, 1).locator("h3")).toHaveText(titles[1]!);
+
+    // Redo: swapped again.
+    before = writes.sent;
+    answer = nextContentWrite(page);
+    await redoButton(page).click();
+    expect(await answer, "the Redo's write").toBe("saved");
+    await page.waitForTimeout(1_500);
+    expect(writes.sent - before, "the Redo's writes").toBe(1);
+    const redone = storedRows(templateId)!;
+    expect(redone.rows.map((entry) => entry.id)).toEqual([ids[1], ids[0]]);
+    expect(redone.rows.map((entry) => entry.title)).toEqual([
+      titles[1],
+      titles[0],
+    ]);
+    expect(redone.draftGeneration).toBe(undone.draftGeneration + 1);
+    await expectHistory(page, { depth: 1, undo: true, redo: false });
+
+    // What was saved is what a fresh load renders.
+    await openRoute(page);
+    await expect(row(page, 0).locator("h3")).toHaveText(titles[1]!);
+    await expect(row(page, 1).locator("h3")).toHaveText(titles[0]!);
+  });
 });
+
+const undoButton = (page: Page) =>
+  page.locator('button[aria-label="Undo"][data-editor-undo-depth]');
+const redoButton = (page: Page) => page.locator('button[aria-label="Redo"]');
+
+/** The history as the toolbar shows it: depth, and which buttons can be pressed. */
+async function expectHistory(
+  page: Page,
+  want: { depth: number; undo: boolean; redo: boolean },
+) {
+  await expect(undoButton(page)).toHaveAttribute(
+    "data-editor-undo-depth",
+    String(want.depth),
+    { timeout: 30_000 },
+  );
+  if (want.undo) await expect(undoButton(page)).toBeEnabled();
+  else await expect(undoButton(page)).toBeDisabled();
+  if (want.redo) await expect(redoButton(page)).toBeEnabled();
+  else await expect(redoButton(page)).toBeDisabled();
+}
+
+/** The id of the route's own Document (it exists once a write stored it). */
+async function routeTemplateId(page: Page) {
+  const ensured = (await serverFn(
+    page,
+    THEMES,
+    "ensureStorefrontThemeRouteTemplate",
+    { ...scope!, routePath: ROUTE_PATH },
+  )) as { success: boolean; data?: { id: string } };
+  expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+  const id = ensured.data!.id;
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error(`template id ${id}`);
+  return id;
+}
+
+/**
+ * The slot's stored rows and the route Document's draft generation, as D1
+ * holds them (the draft revision, or the template's own document before it
+ * has one); `null` while the slot stores no list.
+ */
+function storedRows(templateId: string) {
+  const rows = queryLocalD1<{ document: string; draft_generation: number }>(
+    `SELECT CASE WHEN t.draft_revision_id IS NULL THEN t.document ELSE r.document END AS document,
+       t.draft_generation AS draft_generation
+     FROM storefront_theme_templates t LEFT JOIN storefront_theme_template_revisions r
+       ON r.id = t.draft_revision_id AND r.template_id = t.id
+     WHERE t.id = '${templateId}' AND t.deleted_at IS NULL`,
+  );
+  expect(rows, "one stored route Document").toHaveLength(1);
+  const document = JSON.parse(String(rows[0]!.document)) as {
+    sections?: Array<{ id: string; props?: Record<string, unknown> }>;
+  };
+  const items = document.sections?.find((section) => section.id === SLOT)
+    ?.props?.items;
+  if (!Array.isArray(items)) return null;
+  return {
+    rows: items as Array<{ id?: unknown; title?: unknown }>,
+    draftGeneration: Number(rows[0]!.draft_generation),
+  };
+}
 
 /** Clicks one entry on the canvas, so the drag handle sits on it. */
 async function selectRow(page: Page, index: number) {
