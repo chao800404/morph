@@ -6098,7 +6098,10 @@ function Home() {
             }
           }
           accepted(notice);
-        });
+          // Ten saved steps, each past the 1.2 s settle: about 19 s alone,
+          // over the 20 s default on a busy machine. The wait is the
+          // harness's fixed settle, not a slow write.
+        }, 45_000);
       });
     });
 
