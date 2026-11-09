@@ -162,9 +162,11 @@ describe("U2: the composed post", () => {
         pending: {
           sectionId: SECTION,
           props: { enabled: true, heading: "Typed" },
+          // Made on the snapshot's own copy (3): stage 1 of "no basis ->
+          // refuse" draws no field without a basis, so this stays a valid entry.
           fields: {
-            enabled: { value: true, sourceGeneration: 1 },
-            heading: { value: "Typed", sourceGeneration: 1 },
+            enabled: { value: true, sourceGeneration: 1, basisDraftGeneration: 3 },
+            heading: { value: "Typed", sourceGeneration: 1, basisDraftGeneration: 3 },
           },
         },
         unconfirmed: undefined,

@@ -2614,3 +2614,94 @@ describe("Q3: the field the author types in, across the page taking up its route
     ).toEqual(["One", "Two edited 新年"]);
   });
 });
+
+/**
+ * Moved from visual-editor-shell-inline-guard-accepted-copy.test.tsx (R1-R3),
+ * where they wrote with no copy held of an existing document. Stage 1 of "no
+ * basis -> refuse" sends no such write; the one write still sent with no copy
+ * held is onto a route document this editor's ensure created
+ * (`createdByThisCall`), so they run on that path here. Their intent is
+ * unchanged: only an answered write with a valid document makes the first
+ * copy; a refused, document-less or unanswered answer moves no source
+ * baseline and makes no first copy.
+ */
+describe("only an answered write with a valid document makes the first copy", () => {
+  const sourceBaseline = () => {
+    const state = useThemeWorkspaceStore.getState();
+    const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+    return {
+      accepted: state.getAcceptedSourceGeneration(scope),
+      observed: state.getObservedSourceGeneration(scope),
+    };
+  };
+  /** The first write: sent once, with no copy held, onto the created document. */
+  const sentOnceOntoCreatedDocument = () => {
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+  };
+
+  // Stage 1 of "no basis -> refuse": on a route document this editor created,
+  // where the no-copy write is still sent (before: an existing document).
+  it("R1 a refused write moves no source baseline", async () => {
+    updateSectionProps.mockImplementation(async () => conflictAnswer());
+    await openOn(headingReport);
+    const before = sourceBaseline();
+    await type("Default heading", "Value 1");
+    await pause();
+    sentOnceOntoCreatedDocument();
+    expect(sourceBaseline()).toEqual(before);
+  });
+
+  // Stage 1 of "no basis -> refuse": on a route document this editor created
+  // (before: an existing document, observed through a canvas commit). Reads
+  // of the Theme fail, so no read brings a copy; the only copy there could
+  // be is one made from the answer. F2 is the control: the same steps with
+  // an answer that carries its document make a copy at 2, and the next edit
+  // is sent at 2. Here none is made, so the next edit is not sent.
+  it("R2 an answer without a document makes no copy: the answered text is not taken as stored", async () => {
+    await openOn(headingReport);
+    getThemeEditor.mockImplementation(async () => {
+      throw new Error("Failed to fetch");
+    });
+    updateSectionProps.mockImplementationOnce(
+      async ({ data }: { data: WriteRequest }) => {
+        const saved = applyWrite(data) as ReturnType<typeof savedAnswer>;
+        return {
+          ...saved,
+          data: { draftGeneration: saved.data.draftGeneration, droppedProps: [] },
+        };
+      },
+    );
+    const before = sourceBaseline();
+    await type("Default heading", "Value 1");
+    await pause();
+    sentOnceOntoCreatedDocument();
+    expect(server.route).toEqual({ generation: 2, props: { heading: "Value 1" } });
+    expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+
+    typeInCard(0, "Value 2");
+    await pause();
+    expect(sent(), "no copy at 2 to send the next edit on").toHaveLength(1);
+    expect(server.route).toEqual({ generation: 2, props: { heading: "Value 1" } });
+    expect(sourceBaseline()).toEqual(before);
+  });
+
+  // Stage 1 of "no basis -> refuse": on a route document this editor created,
+  // where the no-copy write is still sent (before: an existing document).
+  it("R3 an unanswered write moves no source baseline", async () => {
+    updateSectionProps.mockImplementation(async () => {
+      throw new Error("Failed to fetch");
+    });
+    await openOn(headingReport);
+    const before = sourceBaseline();
+    await type("Default heading", "Value 1");
+    await pause();
+    sentOnceOntoCreatedDocument();
+    expect(sourceBaseline()).toEqual(before);
+  });
+});
