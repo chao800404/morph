@@ -695,6 +695,9 @@ describe("preview protocol", () => {
     } as const;
     expect(parseEditorToPreviewMessage(update)).toMatchObject(update);
     expect(
+      parseEditorToPreviewMessage({ ...update, sectionId: "another-section" }),
+    ).toBeNull();
+    expect(
       parseEditorToPreviewMessage({
         ...update,
         presentationToken: {
