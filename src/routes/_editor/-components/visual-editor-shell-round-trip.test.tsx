@@ -2569,8 +2569,6 @@ describe("Style history writes and refusals", () => {
 });
 
 describe("Style replay read-back confirmation", () => {
-  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
-
   beforeEach(() => {
     useThemeWorkspaceStore.setState({ workspaces: {} });
     stylePatchTarget.filePath = "src/components/Hero.tsx";
@@ -2694,6 +2692,41 @@ describe("Style replay read-back confirmation", () => {
       }
     },
   );
+
+  it("uses the Theme file version contract to confirm an unanswered Style Undo", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    server.outcomes.push("offline");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+    );
+    expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+
+    // A single file and source-generation advance is the chosen Theme write
+    // contract. The server content alone is not used as the replay proof.
+    server.externalWrite(STYLE_REMOTE);
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+    );
+    expect({
+      history: historyState(),
+      writes: server.save.mock.calls.length,
+      serverContent: server.file().content,
+      serverVersion: server.file().version,
+      sourceGeneration: server.file().sourceGeneration,
+    }).toEqual({
+      history: { undoAvailable: false, redoAvailable: true },
+      writes: 2,
+      serverContent: STYLE_REMOTE,
+      serverVersion: 3,
+      sourceGeneration: 3,
+    });
+  });
 
   it("keeps an unanswered Style replay linked when recovery read-back fails", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
