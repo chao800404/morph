@@ -603,7 +603,7 @@ describe("a content save that fails", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
-  it("asks the server before sending again, and sends what did not land once", async () => {
+  it("keeps an unanswered write tracked when the readback does not show it", async () => {
     updateSectionProps
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue({
@@ -620,19 +620,23 @@ describe("a content save that fails", () => {
       screen.getByRole("button", { name: "Try again" }).click();
     });
 
-    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
-    // Asked first; the server did not hold the edit, so it went once more.
+    await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
+    // A negative read does not cancel the request that got no answer. Keep it
+    // tracked and do not send the frozen payload again.
     expect(getThemeEditor).toHaveBeenCalled();
-    expect(getThemeEditor.mock.invocationCallOrder[0]!).toBeLessThan(
-      updateSectionProps.mock.invocationCallOrder[1]!,
-    );
-    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(
+      document
+        .querySelector("[data-editor-unconfirmed-saves]")
+        ?.getAttribute("data-editor-unconfirmed-saves"),
+    ).toBe("1");
+    expect(saveStatus()).toBe("Save failed");
   });
 
   it("does not send again a write that landed when its answer was lost", async () => {
     updateSectionProps.mockRejectedValue(new Error("offline"));
     // The server made the write; only the answer was lost on the way back.
-    getThemeEditor.mockResolvedValue(editorHolding({ heading: "Hello" }));
+    getThemeEditor.mockResolvedValue(editorHolding({ heading: "Hello" }, 2));
     renderShell();
     await commitInlineText();
     await waitFor(() => expect(saveStatus()).toBe("Save failed"));
