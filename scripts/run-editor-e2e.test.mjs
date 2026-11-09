@@ -379,6 +379,39 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
     },
   );
 
+  it(
+    "records run identity before teardown and its exact cleanup outcome",
+    { timeout: 90_000 },
+    async () => {
+      const handover = path.join(scratch, "retained", "container-run.json");
+      const result = await runRunner(
+        {
+          MORPH_E2E_HANDOVER_RECORD: handover,
+          FAKE_REPORT_STATUS: "passed",
+        },
+        undefined,
+        [FIRST_SHARD],
+      );
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      const record = JSON.parse(await readFile(handover, "utf8"));
+      assert.equal(record.schemaVersion, 1);
+      assert.match(record.invocationId, /^[0-9a-f-]{36}$/);
+      assert.equal(record.spec, FIRST_SHARD);
+      assert.equal(record.phase, "teardown-complete");
+      assert.ok(Number.isSafeInteger(record.runner.pid));
+      assert.ok(Number.isSafeInteger(record.runner.pgid));
+      assert.ok(record.children.some((child) => child.name === "dev server"));
+      assert.ok(record.children.every((child) => child.stopped === true));
+      assert.equal(record.stateDir.removed, true);
+      assert.match(record.containers.prefix, /^workerd-morph-e2e-[a-f0-9]{12}-$/);
+      assert.equal(record.containers.cleanupAttempted, true);
+      assert.equal(record.containers.gone, true);
+      assert.equal(record.machineLock.acquired, true);
+      assert.equal(record.machineLock.releaseCompleted, true);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
   it("rejects an unsupported shard before starting services", async () => {
     const result = await runRunner({}, undefined, [
       `--shard=1/${EDITOR_SHARD_COUNT + 1}`,
