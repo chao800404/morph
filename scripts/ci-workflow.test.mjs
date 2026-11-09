@@ -4,6 +4,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   mkdtempSync,
   readFileSync,
   writeFileSync,
@@ -124,6 +125,63 @@ test("architecture CI executes these workflow gate tests", () => {
     withoutComments(jobBlock(workflow, "architecture-guards")),
     /^\s+node --test scripts\/ci-workflow\.test\.mjs$/m,
   );
+});
+
+test("container acceptance targets are exactly wired or explicitly deferred", async () => {
+  const container = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  const targetNames = readdirSync(
+    new URL("./container-acceptance-targets/", import.meta.url),
+  )
+    .filter((name) => name.endsWith(".mjs"))
+    .sort();
+  const wired = [
+    ...container.matchAll(
+      /scripts\/container-acceptance-targets\/([a-z0-9-]+\.mjs)/g,
+    ),
+  ].map((match) => match[1]);
+  const deferred = [
+    "b1-publish-rollback.mjs",
+    "navigation-matrix-public.mjs",
+    "preview-socket-acceptance.mjs",
+    "start-container-content-sync.mjs",
+    "starter-upgrade-case-e.mjs",
+    "starter-upgrade-publish.mjs",
+  ];
+
+  assert.deepEqual(wired, ["preview-access-container.mjs"]);
+  assert.deepEqual([...deferred].sort(), deferred);
+  assert.equal(new Set(wired).size, wired.length, "wired targets must be unique");
+  assert.equal(
+    new Set(deferred).size,
+    deferred.length,
+    "deferred targets must be unique",
+  );
+  assert.equal(
+    wired.filter((name) => deferred.includes(name)).length,
+    0,
+    "wired and deferred targets must be disjoint",
+  );
+  assert.deepEqual([...wired, ...deferred].sort(), targetNames);
+
+  const wiredFiles = [];
+  for (const name of wired) {
+    const { TARGET } = await import(
+      new URL(`./container-acceptance-targets/${name}`, import.meta.url).href
+    );
+    wiredFiles.push(TARGET.file);
+  }
+  const invokedSpecs = [
+    ...container.matchAll(
+      /node scripts\/run-editor-e2e\.mjs e2e\/([^\s]+)/g,
+    ),
+  ].map((match) => match[1]);
+  for (const file of wiredFiles) {
+    assert.equal(
+      invokedSpecs.filter((spec) => spec === file).length,
+      1,
+      `${file} must be run exactly once by the container job`,
+    );
+  }
 });
 
 test("every job that installs Chromium first puts the primary Ubuntu archive ahead of the Azure mirror", () => {
