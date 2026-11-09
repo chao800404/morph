@@ -1,14 +1,32 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { verifyContainerRunHandover } from "./check-container-run-handover.mjs";
+
+const CHECKER = fileURLToPath(
+  new URL("./check-container-run-handover.mjs", import.meta.url),
+);
 
 const stateRoot = "/tmp";
 const lockFile = "/tmp/morph-editor-e2e.lock";
 const validRecord = () => ({
   schemaVersion: 1,
-  invocationId: "run-attempt-step-uuid",
+  invocationId: "123e4567-e89b-42d3-a456-426614174000",
   spec: "e2e/m1-container-lifecycle-acceptance.spec.ts",
   phase: "teardown-complete",
+  identityRecordedBeforeTeardown: true,
   runner: { pid: 1234, pgid: 1200, startedAtUtc: "2026-11-10T00:00:00.000Z" },
   children: [
     { name: "dev server", pid: 2345, pgid: 2345, stopped: true },
@@ -75,7 +93,25 @@ test("requires the runner PID and its process group to be gone", async (t) => {
   }
 });
 
-test("requires every recorded child process group to be gone", async (t) => {
+test("requires every recorded child process and process group to be gone", async (t) => {
+  await t.test("a child pid is alive", async () => {
+    await assert.rejects(
+      verifyContainerRunHandover(
+        validRecord(),
+        adapters({ processState: (pid) => (pid === 2345 ? "alive" : "gone") }),
+      ),
+      /HANDOVER_CHILD_ALIVE/,
+    );
+  });
+  await t.test("a child pid cannot be inspected", async () => {
+    await assert.rejects(
+      verifyContainerRunHandover(
+        validRecord(),
+        adapters({ processState: (pid) => (pid === 2345 ? "unknown" : "gone") }),
+      ),
+      /HANDOVER_CHILD_ALIVE/,
+    );
+  });
   await t.test("a child group is alive", async () => {
     await assert.rejects(
       verifyContainerRunHandover(
@@ -178,4 +214,59 @@ test("requires the configured machine lock to be released and reacquirable", asy
       );
     });
   }
+});
+
+test("CLI checks real process and path state and uses the exact Docker and lock probes", async (t) => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "container-handover-cli-"));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const bin = path.join(scratch, "bin");
+  const argsFile = path.join(scratch, "flock-args.txt");
+  const lockFile = path.join(scratch, "machine.lock");
+  const manifestFile = path.join(scratch, "handover.json");
+  const stateDir = path.join(tmpdir(), `morph-e2e-${randomUUID()}`);
+  const dead = spawn(process.execPath, ["-e", "process.exit(0)"], {
+    detached: true,
+    stdio: "ignore",
+  });
+  const deadPid = dead.pid;
+  await new Promise((resolve) => dead.once("exit", resolve));
+  assert.ok(deadPid);
+
+  mkdirSync(bin);
+  writeFileSync(lockFile, "");
+  writeFileSync(path.join(bin, "docker"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(
+    path.join(bin, "flock"),
+    "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$HANDOVER_FLOCK_ARGS\"\nexit 0\n",
+  );
+  chmodSync(path.join(bin, "docker"), 0o755);
+  chmodSync(path.join(bin, "flock"), 0o755);
+  const record = validRecord();
+  record.runner.pid = deadPid;
+  record.runner.pgid = deadPid;
+  record.children = [];
+  record.stateDir.path = stateDir;
+  record.machineLock.path = lockFile;
+  writeFileSync(manifestFile, JSON.stringify(record));
+
+  const result = spawnSync(
+    process.execPath,
+    [CHECKER, manifestFile, record.spec],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        HANDOVER_FLOCK_ARGS: argsFile,
+        MORPH_E2E_LOCK_FILE: lockFile,
+      },
+    },
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.match(result.stdout, /Container handover .* verified/);
+  assert.equal(
+    readFileSync(argsFile, "utf8").trim(),
+    `--nonblock ${lockFile} true`,
+  );
 });
