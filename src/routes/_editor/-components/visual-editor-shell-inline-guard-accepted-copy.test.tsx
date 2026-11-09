@@ -7,6 +7,7 @@ import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-s
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
+import { MISSING_BASIS_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
 import { INLINE_TEXT_NOT_SAVED_MESSAGE, VisualEditorShell } from "./visual-editor-shell";
 import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
 
@@ -342,16 +343,28 @@ describe("a canvas commit right after a write was answered, before the context c
     expect(savedHeadings()).toEqual(["Inspector heading", "Canvas heading"]);
   });
 
-  it("P2 no copy held before the write: its answered document is the stored value", async () => {
-    // A context with no draft generation gives the editor no accepted copy,
-    // as before the first read of a document this tab has just created.
+  // Stage 1 of "no basis -> refuse": this pinned that a write made with no
+  // copy held was sent and its answer became the stored value. An existing
+  // document with no copy held now gets no write at all; the one no-copy
+  // write left (a route document this editor created) is covered in
+  // visual-editor-shell-route-document-writes.test.tsx.
+  it("P2 no copy held of an existing document: the Inspector save is refused before it is sent, the input kept", async () => {
+    // A context with no draft generation gives the editor no accepted copy
+    // of a document that already exists (template-1).
     renderEditor(contextAt({ heading: "Welcome", subheading: "Summary" }, undefined));
     await inspectorSavesHeading("Welcome", "Inspector heading");
-    expect(savedHeadings()).toEqual(["Inspector heading"]);
 
-    await canvasCommits("Canvas heading", "Inspector heading");
-    expect(refusedNotices()).toEqual([]);
-    expect(savedHeadings()).toEqual(["Inspector heading", "Canvas heading"]);
+    expect(updateSectionProps, "nothing sent").not.toHaveBeenCalled();
+    expect(screen.getAllByDisplayValue("Inspector heading").length).toBeGreaterThan(0);
+    expect(
+      document.querySelector("[data-editor-save-status]")?.getAttribute("aria-label"),
+    ).toBe("Out of date");
+    expect(vi.mocked(toast.error).mock.calls.map((call) => String(call[0]))).toContain(
+      MISSING_BASIS_MESSAGE,
+    );
+    // Nothing is sent on its own afterwards either.
+    await saveSettles();
+    expect(updateSectionProps).not.toHaveBeenCalled();
   });
 });
 
@@ -385,58 +398,8 @@ describe("what still refuses", () => {
   });
 });
 
-describe("only an answered write with a valid document makes the first copy", () => {
-  const sourceBaseline = () => {
-    const state = useThemeWorkspaceStore.getState();
-    return {
-      accepted: state.getAcceptedSourceGeneration(scope),
-      observed: state.getObservedSourceGeneration(scope),
-    };
-  };
-
-  // R1 and R3 keep their pending input, which the guard reads first, so the
-  // absence of a copy is not observable through a canvas commit there; they
-  // pin that the source baseline did not move. R2 drops its pending input,
-  // so a copy made from its answer would be observable.
-  it("R1 a refused write moves no source baseline", async () => {
-    updateSectionProps.mockImplementation(async () => ({
-      success: false,
-      error: "TEMPLATE_DRAFT_CONFLICT",
-      message: "This section changed elsewhere since you edited it. Your changes are kept.",
-    }));
-    renderEditor(contextAt({ heading: "Welcome", subheading: "Summary" }, undefined));
-    const before = sourceBaseline();
-    await inspectorSavesHeading("Welcome", "Inspector heading");
-    expect(savedHeadings()).toEqual(["Inspector heading"]);
-    expect(sourceBaseline()).toEqual(before);
-  });
-
-  it("R2 an answer without a document makes no copy: the answered text is not taken as stored", async () => {
-    updateSectionProps.mockImplementation(async ({ data }: { data: { props: Partial<HeroProps> } }) => {
-      server = { props: { ...server.props, ...data.props }, generation: server.generation + 1 };
-      return { success: true, data: { draftGeneration: server.generation, droppedProps: [] } };
-    });
-    renderEditor(contextAt({ heading: "Welcome", subheading: "Summary" }, undefined));
-    const before = sourceBaseline();
-    await inspectorSavesHeading("Welcome", "Inspector heading");
-    expect(savedHeadings()).toEqual(["Inspector heading"]);
-
-    // The pending input is answered and dropped; with no copy made from the
-    // answer, the context's copy is all this editor has, and it is older.
-    await canvasCommits("Canvas heading", "Inspector heading");
-    expect(refusedNotices()).toHaveLength(1);
-    expect(savedHeadings()).toEqual(["Inspector heading"]);
-    expect(sourceBaseline()).toEqual(before);
-  });
-
-  it("R3 an unanswered write moves no source baseline", async () => {
-    updateSectionProps.mockImplementation(async () => {
-      throw new Error("Failed to fetch");
-    });
-    renderEditor(contextAt({ heading: "Welcome", subheading: "Summary" }, undefined));
-    const before = sourceBaseline();
-    await inspectorSavesHeading("Welcome", "Inspector heading");
-    expect(savedHeadings()).toEqual(["Inspector heading"]);
-    expect(sourceBaseline()).toEqual(before);
-  });
-});
+// "Only an answered write with a valid document makes the first copy" (R1-R3)
+// moved to visual-editor-shell-route-document-writes.test.tsx. They wrote
+// with no copy held of an existing document, which stage 1 of "no basis ->
+// refuse" no longer sends (P2 above); they now run on the one no-copy write
+// left, a route document this editor's ensure created.

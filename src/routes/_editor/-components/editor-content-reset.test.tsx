@@ -58,9 +58,13 @@ describe("Use code default", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Use code default" }));
 
-    await waitFor(() =>
-      expect(onReset).toHaveBeenCalledWith("promo", ["heading"]),
-    );
+    await waitFor(() => expect(onReset).toHaveBeenCalledTimes(1));
+    // Stage 1 of "no basis -> refuse": the press names the copy it was made
+    // on. This Inspector has no shell naming copies (no `contentBasis`) and
+    // nothing focused, so it passes an undefined basis, never `basisUnknown`.
+    expect(onReset.mock.calls).toStrictEqual([
+      ["promo", ["heading"], { basisDraftGeneration: undefined }],
+    ]);
     expect(await screen.findByDisplayValue("Code heading")).toBeTruthy();
     expect(screen.queryByDisplayValue("Page heading")).toBeNull();
   });
@@ -70,9 +74,12 @@ describe("Use code default", () => {
   it("is offered on a field under any name", async () => {
     const onReset = renderInspector({ tagline: "Page tagline" });
     fireEvent.click(screen.getByRole("button", { name: "Use code default" }));
-    await waitFor(() =>
-      expect(onReset).toHaveBeenCalledWith("promo", ["tagline"]),
-    );
+    await waitFor(() => expect(onReset).toHaveBeenCalledTimes(1));
+    // Stage 1 of "no basis -> refuse": the press's basis is passed along (as
+    // above, undefined in this shell-less render).
+    expect(onReset.mock.calls).toStrictEqual([
+      ["promo", ["tagline"], { basisDraftGeneration: undefined }],
+    ]);
     expect(await screen.findByDisplayValue("Code tagline")).toBeTruthy();
   });
 

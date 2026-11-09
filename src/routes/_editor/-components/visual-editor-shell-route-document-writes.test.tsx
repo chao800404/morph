@@ -26,6 +26,7 @@ import {
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { heldContentMessage } from "@/lib/storefront/editor/content-rebase";
+import { MISSING_BASIS_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import {
@@ -757,11 +758,13 @@ beforeEach(() => {
   );
   ensureRouteTemplate.mockReset();
   ensureRouteTemplate.mockImplementation(async () => {
+    // As the DAL answers: created by this call only on the insert.
+    const createdByThisCall = !server.route;
     if (!server.route) server.route = { generation: 1, props: null };
     return {
       success: true,
       message: "Route document ready",
-      data: routeTemplate(server.route),
+      data: { ...routeTemplate(server.route), createdByThisCall },
     };
   });
   renameSection.mockReset();
@@ -838,6 +841,55 @@ describe("the fixture", () => {
     });
     await expectAdopted();
     expect(PLACEHOLDER).toBe(`route-template:${ROUTE_PATH}`);
+  });
+});
+
+/**
+ * Stage 1 of "refuse an existing-Document content write that has no version
+ * basis": input made while the route had no document carries no basis, and
+ * goes with none only onto a document this editor confirmed creating (the
+ * ensure's `createdByThisCall`), at generation 1. A generation-1 document
+ * that already existed is not one: generation 1 alone proves nothing.
+ */
+describe("the route-document exception to the version basis", () => {
+  it("control: the document this editor's ensure created takes the first write once, at generation 1", async () => {
+    await openOn(headingReport);
+    await type("Default heading", "Value 1");
+    await pause();
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
+  });
+
+  it("an existing generation-1 document the ensure found (not created by it): no write, the input kept as not saved", async () => {
+    await openOn(headingReport);
+    // Another editor created the route's document after this one opened.
+    server.route = { generation: 1, props: null };
+    await type("Default heading", "Value 1");
+    await pause(1_500);
+
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps, "no content write").not.toHaveBeenCalled();
+    expect(server.route, "their document unchanged").toEqual({
+      generation: 1,
+      props: null,
+    });
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Value 1").length).toBeGreaterThan(0);
+    expect(
+      vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    ).toContain(MISSING_BASIS_MESSAGE);
+    // Nothing goes on its own afterwards either.
+    await pause(1_500);
+    expect(updateSectionProps).not.toHaveBeenCalled();
   });
 });
 
@@ -1763,7 +1815,13 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       });
     });
 
-    it("failed after a lost ensure answer (no mapping): nothing is sent or ensured, the step stops; Try again sends once, then the step runs", async () => {
+    // Stage 1 of "refuse a write with no version basis": after a lost ensure
+    // answer, the next ensure finds the document existing, so this editor
+    // cannot prove it created it, and generation 1 alone is no proof. Try
+    // again no longer sends at generation 1: it is refused before sending,
+    // kept, and "Load latest, keep mine" sends it once. (Before, Try again
+    // sent it at generation 1 with no basis.)
+    it("failed after a lost ensure answer (no mapping): nothing is sent or ensured, the step stops; Try again refuses for want of a basis, Keep mine sends once, then the step runs", async () => {
       loseNextEnsureAnswer();
       await openOn(headingReport);
       await type("Default heading", "Value 1");
@@ -1779,9 +1837,15 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       expect(server.route).toEqual({ generation: 1, props: null });
 
       pressTryAgain();
-      await waitFor(() => expect(sent()).toHaveLength(1));
+      await waitFor(() => expect(saveStatus()).toBe("Out of date"));
       await pause();
       expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      expect(server.route).toEqual({ generation: 1, props: null });
+
+      pressKeepMine();
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await pause();
       expect(sent()).toHaveLength(1);
       expect(sent()[0]).toMatchObject({
         templateId: ROUTE_DOC_ID,
@@ -1853,7 +1917,12 @@ describe("B: a lost ensure answer, then the author goes on", () => {
     await refusedOverTheirs("Value 1");
   });
 
-  it("mirror: with no outside change, typing again sends once at generation 1 and it is stored", async () => {
+  // Stage 1 of "refuse a write with no version basis": with the ensure's
+  // answer lost, the document is found existing next time, not proven
+  // created here; typing again is refused before sending even with no
+  // outside change, and Keep mine sends it once at generation 1. (Before,
+  // typing again sent it at generation 1 with no basis.)
+  it("mirror: with no outside change, typing again is refused for want of a basis; Keep mine sends once at generation 1 and it is stored", async () => {
     loseNextEnsureAnswer();
     await openOn(headingReport);
     await type("Default heading", "Value 1");
@@ -1863,6 +1932,13 @@ describe("B: a lost ensure answer, then the author goes on", () => {
     await pause(1_500);
 
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(server.route).toEqual({ generation: 1, props: null });
+
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toMatchObject({
       templateId: ROUTE_DOC_ID,
@@ -2060,13 +2136,24 @@ describe("D: steps that flush first stop on held content", () => {
 });
 
 describe("E: generation 1 is not proof this tab created the document", () => {
-  it("E1: another tab created it and left it as created: this tab's write goes once at generation 1 and is stored", async () => {
+  // Stage 1 of "refuse a write with no version basis": an existing
+  // generation-1 document this editor did not create is no exception. The
+  // write is refused before it is sent and kept; Keep mine sends it once.
+  // (Before, it went once at generation 1 with no basis.)
+  it("E1: another tab created it and left it as created: this tab's write is refused for want of a basis, kept; Keep mine sends once at generation 1", async () => {
     await openOn(headingReport);
     server.route = { generation: 1, props: null };
     await type("Default heading", "Value 1");
     await pause();
 
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(screen.getAllByDisplayValue("Value 1").length).toBeGreaterThan(0);
+
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toMatchObject({
       templateId: ROUTE_DOC_ID,
@@ -2525,5 +2612,96 @@ describe("Q3: the field the author types in, across the page taking up its route
         (row) => row.title,
       ),
     ).toEqual(["One", "Two edited 新年"]);
+  });
+});
+
+/**
+ * Moved from visual-editor-shell-inline-guard-accepted-copy.test.tsx (R1-R3),
+ * where they wrote with no copy held of an existing document. Stage 1 of "no
+ * basis -> refuse" sends no such write; the one write still sent with no copy
+ * held is onto a route document this editor's ensure created
+ * (`createdByThisCall`), so they run on that path here. Their intent is
+ * unchanged: only an answered write with a valid document makes the first
+ * copy; a refused, document-less or unanswered answer moves no source
+ * baseline and makes no first copy.
+ */
+describe("only an answered write with a valid document makes the first copy", () => {
+  const sourceBaseline = () => {
+    const state = useThemeWorkspaceStore.getState();
+    const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+    return {
+      accepted: state.getAcceptedSourceGeneration(scope),
+      observed: state.getObservedSourceGeneration(scope),
+    };
+  };
+  /** The first write: sent once, with no copy held, onto the created document. */
+  const sentOnceOntoCreatedDocument = () => {
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+  };
+
+  // Stage 1 of "no basis -> refuse": on a route document this editor created,
+  // where the no-copy write is still sent (before: an existing document).
+  it("R1 a refused write moves no source baseline", async () => {
+    updateSectionProps.mockImplementation(async () => conflictAnswer());
+    await openOn(headingReport);
+    const before = sourceBaseline();
+    await type("Default heading", "Value 1");
+    await pause();
+    sentOnceOntoCreatedDocument();
+    expect(sourceBaseline()).toEqual(before);
+  });
+
+  // Stage 1 of "no basis -> refuse": on a route document this editor created
+  // (before: an existing document, observed through a canvas commit). Reads
+  // of the Theme fail, so no read brings a copy; the only copy there could
+  // be is one made from the answer. F2 is the control: the same steps with
+  // an answer that carries its document make a copy at 2, and the next edit
+  // is sent at 2. Here none is made, so the next edit is not sent.
+  it("R2 an answer without a document makes no copy: the answered text is not taken as stored", async () => {
+    await openOn(headingReport);
+    getThemeEditor.mockImplementation(async () => {
+      throw new Error("Failed to fetch");
+    });
+    updateSectionProps.mockImplementationOnce(
+      async ({ data }: { data: WriteRequest }) => {
+        const saved = applyWrite(data) as ReturnType<typeof savedAnswer>;
+        return {
+          ...saved,
+          data: { draftGeneration: saved.data.draftGeneration, droppedProps: [] },
+        };
+      },
+    );
+    const before = sourceBaseline();
+    await type("Default heading", "Value 1");
+    await pause();
+    sentOnceOntoCreatedDocument();
+    expect(server.route).toEqual({ generation: 2, props: { heading: "Value 1" } });
+    expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+
+    typeInCard(0, "Value 2");
+    await pause();
+    expect(sent(), "no copy at 2 to send the next edit on").toHaveLength(1);
+    expect(server.route).toEqual({ generation: 2, props: { heading: "Value 1" } });
+    expect(sourceBaseline()).toEqual(before);
+  });
+
+  // Stage 1 of "no basis -> refuse": on a route document this editor created,
+  // where the no-copy write is still sent (before: an existing document).
+  it("R3 an unanswered write moves no source baseline", async () => {
+    updateSectionProps.mockImplementation(async () => {
+      throw new Error("Failed to fetch");
+    });
+    await openOn(headingReport);
+    const before = sourceBaseline();
+    await type("Default heading", "Value 1");
+    await pause();
+    sentOnceOntoCreatedDocument();
+    expect(sourceBaseline()).toEqual(before);
   });
 });

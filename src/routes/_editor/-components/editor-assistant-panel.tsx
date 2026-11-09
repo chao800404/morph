@@ -69,6 +69,11 @@ type EditorAssistantPanelProps = {
   onResetContentFields?: (
     sectionId: string,
     fieldKeys: string[],
+    /** The copy the Inspector showed when it was pressed. */
+    options?: Readonly<{
+      basisDraftGeneration?: number;
+      basisUnknown?: boolean;
+    }>,
   ) => Promise<{ success: boolean; message?: string }>;
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;

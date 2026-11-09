@@ -35,7 +35,10 @@ import {
   identifyUnstoredListRows,
   normalizeDocumentRowIds,
 } from "@/lib/storefront/editor/normalize-row-ids";
-import { RESELECT_CONTENT_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
+import {
+  MISSING_BASIS_MESSAGE,
+  RESELECT_CONTENT_MESSAGE,
+} from "@/lib/storefront/editor/pending-content-write";
 import {
   resolveSelectable as objposResolveSelectable,
   selectionMetadata as objposSelectionMetadata,
@@ -7180,6 +7183,424 @@ function Home() {
         await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
         expect(sent()).toHaveLength(1);
         expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+      });
+    });
+  });
+
+  /**
+   * Stage 1 of "refuse an existing-Document content write that has no version
+   * basis". The basis is the latest accepted snapshot generation at the time
+   * the author acted. A content write made with none is refused before any
+   * request: the input stays (Out of date, "Load latest, keep mine"), the
+   * history does not move, nothing reads as saved, and nothing is sent again
+   * on its own with a newer basis.
+   *
+   * How the missing basis is constructed here: every read the editor is
+   * given before the other tab's change (its context and the Theme read the
+   * preview's instance replay makes) carries no valid draft generation for
+   * the document (`NO_GENERATION`), so it holds no snapshot of it when the
+   * author acts. That is a state this shell test builds; whether the real
+   * editor can reach it for a document already in its context is not shown
+   * here.
+   */
+  describe("stage 1: a content write with no version basis", () => {
+    // Not undefined: the helpers default an omitted generation to 1.
+    const NO_GENERATION = null as unknown as number;
+    const depth = () =>
+      document
+        .querySelector("[data-editor-undo-depth]")
+        ?.getAttribute("data-editor-undo-depth") ?? null;
+    const unconfirmedCount = () =>
+      document
+        .querySelector("[data-editor-unconfirmed-saves]")
+        ?.getAttribute("data-editor-unconfirmed-saves") ?? null;
+    const notices = () => ({
+      warning: vi.spyOn(toast, "warning").mockImplementation(() => ""),
+      error: vi.spyOn(toast, "error").mockImplementation(() => ""),
+    });
+    const errors = (notice: ReturnType<typeof notices>) =>
+      notice.error.mock.calls.map((call) => String(call[0]));
+    const conflictAnswer = {
+      success: false,
+      error: "TEMPLATE_DRAFT_CONFLICT",
+      message: "Template draft was modified concurrently.",
+    };
+    /** The rows another tab stored: the drawn rows, one title changed. */
+    const theirRows = () => {
+      const [one, two] = identified();
+      return [one!, { ...two!, title: "Theirs" }];
+    };
+    /** Another tab stores `props` at the next draft generation. */
+    const theyWrite = (props: Record<string, unknown>) => {
+      stored = { ...props };
+      draftGeneration += 1;
+    };
+    /** The last row titles the canvas was told for the section. */
+    const canvasRows = () => {
+      const last = posted
+        .filter(
+          (message) =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            message.sectionId === "section" &&
+            message.props &&
+            typeof message.props === "object",
+        )
+        .at(-1);
+      const items = (last?.props as { items?: Array<{ title?: string }> })
+        ?.items;
+      return items?.map((row) => row.title) ?? null;
+    };
+
+    /** Whether a read of the Theme carries the document's draft generation. */
+    let readsCarryGeneration = true;
+    beforeEach(() => {
+      readsCarryGeneration = true;
+      // A read of the Theme answers what the server holds.
+      getThemeEditor.mockReset();
+      getThemeEditor.mockImplementation(async () => ({
+        success: true,
+        message: "ok",
+        data: editorAt(
+          { ...stored },
+          readsCarryGeneration ? draftGeneration : NO_GENERATION,
+        ),
+      }));
+      // The server checks the draft generation, as the real one does.
+      updateSectionProps.mockImplementation(async ({ data }) => {
+        if (data.expectedDraftGeneration !== draftGeneration) {
+          return conflictAnswer;
+        }
+        stored = { ...stored, ...(data.props as Record<string, unknown>) };
+        for (const key of (data.resetProps as string[] | undefined) ?? []) {
+          delete stored[key];
+        }
+        draftGeneration += 1;
+        return {
+          success: true,
+          data: {
+            draftGeneration,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "section",
+                  type: "entries",
+                  componentRef: ENTRIES_PATH,
+                  enabled: true,
+                  props: stored,
+                },
+              ],
+            },
+          },
+        };
+      });
+    });
+
+    describe("an Inspector field", () => {
+      /**
+       * A scalar field. (The same timeline on a list row is already refused
+       * before this change by the list guards, without saying why; the
+       * scalar is where nothing else refused it.)
+       */
+      async function openHeading(atGeneration: number) {
+        headingField = true;
+        stored = { heading: "Hello" };
+        const report = await reportTitle({ heading: "Hello" }, 0, (root) =>
+          root.querySelector(
+            "[data-storefront-section-id],[data-morph-section]",
+          ),
+        );
+        const editor = renderEntries({ heading: "Hello" }, atGeneration);
+        await flushFrames();
+        fromPreview(report);
+        await flushFrames();
+        const contentTab = screen.queryByRole("button", {
+          name: /^Content$/,
+        });
+        if (contentTab) fireEvent.click(contentTab);
+        await flushFrames();
+        return editor;
+      }
+
+      it("typed with no basis, then another tab's change read before it leaves: nothing sent, theirs kept, the input kept as not saved", async () => {
+        const notice = notices();
+        readsCarryGeneration = false;
+        const { receive } = await openHeading(NO_GENERATION);
+        const field = (await screen.findAllByDisplayValue("Hello"))[0]!;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          fireEvent.input(field, { target: { value: "Mine" } });
+          fireEvent.blur(field);
+          expect(sent()).toHaveLength(0);
+          // Another tab stores its own heading; the editor reads it before
+          // the debounced write leaves.
+          theyWrite({ heading: "Theirs" });
+          act(() => {
+            receive(editorAt({ ...stored }, draftGeneration));
+          });
+          await act(async () => {
+            vi.advanceTimersByTime(300);
+          });
+        } finally {
+          vi.useRealTimers();
+        }
+        await settle();
+
+        expect(sent(), "no request").toHaveLength(0);
+        expect(stored, "their heading kept").toEqual({ heading: "Theirs" });
+        expect(saveStatus()).toBe("Out of date");
+        expect(screen.getAllByDisplayValue("Mine").length).toBeGreaterThan(0);
+        expect(depth(), "history unchanged").toBe("0");
+        expect(unconfirmedCount()).toBeNull();
+        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        await settle();
+        expect(sent(), "nothing is sent on its own").toHaveLength(0);
+      });
+
+      it("focused with no basis, then another tab's change read, then typed: nothing sent, theirs kept, the input kept", async () => {
+        const notice = notices();
+        readsCarryGeneration = false;
+        const { receive } = await openHeading(NO_GENERATION);
+        const field = (await screen.findAllByDisplayValue(
+          "Hello",
+        ))[0]! as HTMLInputElement;
+        act(() => field.focus());
+        theyWrite({ heading: "Theirs" });
+        act(() => {
+          receive(editorAt({ ...stored }, draftGeneration));
+        });
+        await flushFrames();
+        fireEvent.input(field, { target: { value: "Mine" } });
+        fireEvent.blur(field);
+        await settle();
+
+        expect(sent(), "no request").toHaveLength(0);
+        expect(stored).toEqual({ heading: "Theirs" });
+        expect(saveStatus()).toBe("Out of date");
+        expect(depth()).toBe("0");
+        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+      });
+
+      it("control: focused on generation 1, another tab's change read, then typed: refused as out of date", async () => {
+        notices();
+        const { receive } = await openHeading(1);
+        const field = (await screen.findAllByDisplayValue(
+          "Hello",
+        ))[0]! as HTMLInputElement;
+        act(() => field.focus());
+        theyWrite({ heading: "Theirs" });
+        act(() => {
+          receive(editorAt({ ...stored }, draftGeneration));
+        });
+        await flushFrames();
+        fireEvent.input(field, { target: { value: "Mine" } });
+        fireEvent.blur(field);
+        await settle();
+        expect(sent()).toHaveLength(0);
+        expect(stored).toEqual({ heading: "Theirs" });
+        expect(saveStatus()).toBe("Out of date");
+      });
+
+      it("control: typed with the basis it was made on, nothing else in between: written once", async () => {
+        notices();
+        await openTitle({}, 1);
+        await type("Two", "Two edited");
+        await settle();
+        expect(sent()).toHaveLength(1);
+        expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+        expect(saveStatus()).toBe("Unpublished");
+        expect(depth()).toBe("1");
+      });
+
+      it("control: typed on generation 1, another tab's change read before it leaves: refused as out of date", async () => {
+        notices();
+        const { receive } = await openTitle({}, 1);
+        const field = (await screen.findAllByDisplayValue("Two"))[0]!;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          fireEvent.input(field, { target: { value: "Two edited" } });
+          fireEvent.blur(field);
+          theyWrite({ items: theirRows() });
+          act(() => {
+            receive(editorAt({ ...stored }, draftGeneration));
+          });
+          await act(async () => {
+            vi.advanceTimersByTime(300);
+          });
+        } finally {
+          vi.useRealTimers();
+        }
+        await settle();
+        expect(sent()).toHaveLength(0);
+        expect(stored).toEqual({ items: theirRows() });
+        expect(saveStatus()).toBe("Out of date");
+      });
+    });
+
+    describe("a canvas reorder", () => {
+      const drag = (dragged: number, target: number) =>
+        fromPreview({
+          type: "morph:storefront-preview-commit-array-item-reorder",
+          sectionId: "section",
+          draggedFieldPath: `items.${dragged}`,
+          targetFieldPath: `items.${target}`,
+        });
+
+      it("dragged with no basis, another tab's change on the server: nothing sent, theirs kept, the swap kept as not saved", async () => {
+        const notice = notices();
+        readsCarryGeneration = false;
+        await openTitle({}, 1, NO_GENERATION);
+        theyWrite({ items: theirRows() });
+
+        drag(1, 0);
+        await settle();
+
+        expect(sent(), "no request").toHaveLength(0);
+        expect(stored).toEqual({ items: theirRows() });
+        expect(saveStatus()).toBe("Out of date");
+        expect(canvasRows(), "the swap stays drawn").toEqual(["Two", "One"]);
+        expect(depth(), "history unchanged").toBe("0");
+        expect(unconfirmedCount()).toBeNull();
+        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        await settle();
+        expect(sent()).toHaveLength(0);
+      });
+
+      it("control: dragged with the basis it was made on: written once", async () => {
+        notices();
+        await openTitle({}, 1);
+        drag(1, 0);
+        await settle();
+        expect(sent()).toHaveLength(1);
+        expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+        expect(depth()).toBe("1");
+      });
+
+      it("control: dragged on generation 1 after another tab's unread change: refused by the draft generation, theirs kept", async () => {
+        notices();
+        await openTitle({}, 1);
+        theyWrite({ items: theirRows() });
+        drag(1, 0);
+        await settle();
+        expect(sent()).toHaveLength(1);
+        expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+        expect(stored).toEqual({ items: theirRows() });
+        expect(depth()).toBe("0");
+      });
+    });
+
+    describe('"Use code default"', () => {
+      async function openSection(
+        props: Record<string, unknown>,
+        atGeneration = 1,
+      ) {
+        const report = await reportTitle(props, 0, (root) =>
+          root.querySelector(
+            "[data-storefront-section-id],[data-morph-section]",
+          ),
+        );
+        const editor = renderEntries(props, atGeneration);
+        await flushFrames();
+        fromPreview(report);
+        await flushFrames();
+        const contentTab = screen.queryByRole("button", {
+          name: /^Content$/,
+        });
+        if (contentTab) fireEvent.click(contentTab);
+        await flushFrames();
+        return editor;
+      }
+      /** Pressed as a pointer does: down, focus leaves the input, click. */
+      const pressReset = async () => {
+        const button = await screen.findByRole("button", {
+          name: "Use code default",
+        });
+        fireEvent.pointerDown(button);
+        act(() => (document.activeElement as HTMLElement | null)?.blur());
+        fireEvent.click(button);
+        await settle();
+      };
+      beforeEach(() => {
+        headingField = true;
+      });
+
+      it("pressed with no basis while the field still shows the copy it was focused on, after another tab's change was read: nothing sent, theirs kept, the value kept", async () => {
+        const notice = notices();
+        stored = { heading: "Hello" };
+        readsCarryGeneration = false;
+        const { receive } = await openSection(
+          { heading: "Hello" },
+          NO_GENERATION,
+        );
+        const field = (await screen.findAllByDisplayValue(
+          "Hello",
+        ))[0]! as HTMLInputElement;
+        act(() => field.focus());
+        theyWrite({ heading: "Theirs" });
+        act(() => {
+          receive(editorAt({ ...stored }, draftGeneration));
+        });
+        await flushFrames();
+
+        await pressReset();
+
+        expect(sent(), "no request").toHaveLength(0);
+        expect(stored, "their value kept").toEqual({ heading: "Theirs" });
+        expect(depth(), "history unchanged").toBe("0");
+        expect(unconfirmedCount()).toBeNull();
+        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(
+          screen.getByRole("button", { name: "Use code default" }),
+        ).toBeTruthy();
+      });
+
+      it("pressed with no basis, another tab's change on the server: nothing sent, theirs kept", async () => {
+        const notice = notices();
+        stored = { heading: "Hello" };
+        readsCarryGeneration = false;
+        await openSection({ heading: "Hello" }, NO_GENERATION);
+        theyWrite({ heading: "Theirs" });
+
+        await pressReset();
+
+        expect(sent(), "no request").toHaveLength(0);
+        expect(stored).toEqual({ heading: "Theirs" });
+        expect(depth()).toBe("0");
+        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+      });
+
+      it("control: pressed with the basis it was made on: one removal, recorded once", async () => {
+        notices();
+        stored = { heading: "Hello" };
+        await openSection({ heading: "Hello" });
+        await pressReset();
+        expect(sent()).toHaveLength(1);
+        expect(sent()[0]).toMatchObject({
+          resetProps: ["heading"],
+          expectedDraftGeneration: 1,
+        });
+        expect(stored).toEqual({});
+        expect(depth()).toBe("1");
+      });
+
+      it("control: pressed on generation 1 while the field still shows the copy it was focused on, after another tab's change was read: refused before sending, theirs kept", async () => {
+        notices();
+        stored = { heading: "Hello" };
+        const { receive } = await openSection({ heading: "Hello" });
+        const field = (await screen.findAllByDisplayValue(
+          "Hello",
+        ))[0]! as HTMLInputElement;
+        act(() => field.focus());
+        theyWrite({ heading: "Theirs" });
+        act(() => {
+          receive(editorAt({ ...stored }, draftGeneration));
+        });
+        await flushFrames();
+        await pressReset();
+        expect(sent()).toHaveLength(0);
+        expect(stored).toEqual({ heading: "Theirs" });
+        expect(depth()).toBe("0");
       });
     });
   });
