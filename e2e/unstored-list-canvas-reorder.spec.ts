@@ -355,7 +355,7 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
       );
       await expectHistory(page, { depth: 1, undo: true, redo: false });
       await expect(sectionWrapper(page)).toHaveAttribute(
-        "data-morph-section-hidden",
+        "hidden",
         "",
         { timeout: 30_000 },
       );
@@ -370,7 +370,7 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
       await expectHistory(page, { depth: 0, undo: false, redo: true });
       await expect(row(page, 0)).toBeVisible({ timeout: 30_000 });
       await expect(sectionWrapper(page)).not.toHaveAttribute(
-        "data-morph-section-hidden",
+        "hidden",
         "",
       );
 
@@ -382,7 +382,7 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
       );
       await expectHistory(page, { depth: 1, undo: true, redo: false });
       await expect(sectionWrapper(page)).toHaveAttribute(
-        "data-morph-section-hidden",
+        "hidden",
         "",
         { timeout: 30_000 },
       );
@@ -395,7 +395,7 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
       });
       await expect(show).toBeVisible({ timeout: 90_000 });
       await expect(sectionWrapper(page)).toHaveAttribute(
-        "data-morph-section-hidden",
+        "hidden",
         "",
         { timeout: 90_000 },
       );
@@ -412,6 +412,7 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
   });
 });
 
+/** The slot's wrapper on the canvas; a hidden slot is kept `hidden`. */
 const sectionWrapper = (page: Page) =>
   previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`);
 
