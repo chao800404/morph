@@ -2450,6 +2450,45 @@ export default function Hero() { return <h1 />; }`;
       );
     });
 
+    /**
+     * Stage 1 of "refuse a write with no version basis": the editor writes
+     * with no copy of a route document only onto one it created itself, so
+     * the ensure says whether this call created it. A row found existing,
+     * and the row a lost unique-index race reads back, are not.
+     */
+    it("says the document was created by this call only on the insert", async () => {
+      seed();
+      const first = await ensure("/aboutus");
+      const again = await ensure("/aboutus");
+      expect(first).toMatchObject({ ok: true, createdByThisCall: true });
+      expect(again).toMatchObject({ ok: true, createdByThisCall: false });
+      expect(again.ok && again.template.draftGeneration).toBe(1);
+    });
+
+    it("does not count the row a lost unique race reads back as created by this call", async () => {
+      seed();
+      // Another editor's insert lands between this call's read and its own
+      // insert, which the unique index then refuses.
+      const db = await getDb();
+      const insert = db.insert.bind(db);
+      vi.spyOn(db, "insert").mockImplementationOnce(((table: never) => {
+        sqlite
+          .prepare(
+            `INSERT INTO storefront_theme_templates
+              (id, theme_id, type, name, route_path, document, created_at, updated_at)
+            VALUES ('rival', 'theme-a', 'page', 'rival-contact', '/contact', ?, 'now', 'now')`,
+          )
+          .run(JSON.stringify({ version: 1, sections: [] }));
+        return insert(table);
+      }) as never);
+      const raced = await ensure("/contact");
+      expect(raced).toMatchObject({
+        ok: true,
+        createdByThisCall: false,
+        template: { id: "rival", draftGeneration: 1 },
+      });
+    });
+
     it("prepares and publishes a new source route without a Design content write", async () => {
       seed();
       const ensured = await ensure("/aboutus");

@@ -26,6 +26,7 @@ import {
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { heldContentMessage } from "@/lib/storefront/editor/content-rebase";
+import { MISSING_BASIS_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import {
@@ -757,11 +758,13 @@ beforeEach(() => {
   );
   ensureRouteTemplate.mockReset();
   ensureRouteTemplate.mockImplementation(async () => {
+    // As the DAL answers: created by this call only on the insert.
+    const createdByThisCall = !server.route;
     if (!server.route) server.route = { generation: 1, props: null };
     return {
       success: true,
       message: "Route document ready",
-      data: routeTemplate(server.route),
+      data: { ...routeTemplate(server.route), createdByThisCall },
     };
   });
   renameSection.mockReset();
@@ -838,6 +841,55 @@ describe("the fixture", () => {
     });
     await expectAdopted();
     expect(PLACEHOLDER).toBe(`route-template:${ROUTE_PATH}`);
+  });
+});
+
+/**
+ * Stage 1 of "refuse an existing-Document content write that has no version
+ * basis": input made while the route had no document carries no basis, and
+ * goes with none only onto a document this editor confirmed creating (the
+ * ensure's `createdByThisCall`), at generation 1. A generation-1 document
+ * that already existed is not one: generation 1 alone proves nothing.
+ */
+describe("the route-document exception to the version basis", () => {
+  it("control: the document this editor's ensure created takes the first write once, at generation 1", async () => {
+    await openOn(headingReport);
+    await type("Default heading", "Value 1");
+    await pause();
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
+  });
+
+  it("an existing generation-1 document the ensure found (not created by it): no write, the input kept as not saved", async () => {
+    await openOn(headingReport);
+    // Another editor created the route's document after this one opened.
+    server.route = { generation: 1, props: null };
+    await type("Default heading", "Value 1");
+    await pause(1_500);
+
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps, "no content write").not.toHaveBeenCalled();
+    expect(server.route, "their document unchanged").toEqual({
+      generation: 1,
+      props: null,
+    });
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Value 1").length).toBeGreaterThan(0);
+    expect(
+      vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    ).toContain(MISSING_BASIS_MESSAGE);
+    // Nothing goes on its own afterwards either.
+    await pause(1_500);
+    expect(updateSectionProps).not.toHaveBeenCalled();
   });
 });
 

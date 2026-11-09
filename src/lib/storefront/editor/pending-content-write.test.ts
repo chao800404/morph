@@ -7,6 +7,7 @@ import {
   selectCurrentContentFields,
   acknowledgeContentFields,
   rebaseFieldBasis,
+  MISSING_BASIS_MESSAGE,
   type PendingContentEntry,
 } from "./pending-content-write";
 import * as pendingContentWrite from "./pending-content-write";
@@ -700,9 +701,9 @@ describe("a reorder staged as one change to its list", () => {
    * Codex review of #389/#390 (§5). A root list has no row above it, so the
    * basis is what refuses a swap composed before another writer's step the
    * editor has since read. With no basis recorded (no copy of the document
-   * held when the drag was staged), nothing here refuses it: it is sent at the
-   * snapshot's own draft generation, and only the server's check of that
-   * generation stands between it and the other writer's list.
+   * held when the drag was staged) it was pinned as sent at the snapshot's
+   * own generation, over the other writer's list (#390); it is now refused
+   * before it is sent, as made on no copy this editor can name.
    */
   describe("a root list swap over another writer's step the editor has read", () => {
     const stored = {
@@ -736,13 +737,118 @@ describe("a reorder staged as one change to its list", () => {
       ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
     });
 
-    it("with no basis recorded: not refused here, sent at the snapshot's generation", () => {
+    it("with no basis recorded: refused before it is sent, as not saved for want of a basis", () => {
       const entry = staged(undefined);
       expect(entry.fields!.items!.basisDraftGeneration).toBeUndefined();
-      const sent = selectCurrentContentFields(entry, 1, stored, theirs);
-      expect(sent.props).toEqual(swapped);
-      expect(sent.expectedDraftGeneration).toBe(4);
+      expect(() =>
+        selectCurrentContentFields(entry, 1, stored, theirs),
+      ).toThrow(
+        expect.objectContaining({
+          code: "TEMPLATE_DRAFT_CONFLICT",
+          missingBasis: true,
+          message: MISSING_BASIS_MESSAGE,
+        }),
+      );
     });
+
+    it("with no basis recorded, on a route document this editor created: checked as made on generation 1", () => {
+      const entry = staged(undefined);
+      // Every step since its creation was this editor's own: composed.
+      const own = { draftGeneration: 4, ownSince: 1, sections: [] };
+      expect(
+        selectCurrentContentFields(entry, 1, stored, own, {
+          missingBasis: 1,
+        }).expectedDraftGeneration,
+      ).toBe(4);
+      // Someone else's step since: refused, as any stale basis is.
+      expect(() =>
+        selectCurrentContentFields(entry, 1, stored, theirs, {
+          missingBasis: 1,
+        }),
+      ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+    });
+  });
+});
+
+/**
+ * Stage 1 of "refuse an existing-Document content write that has no version
+ * basis". The basis is the latest accepted snapshot generation at the time
+ * the author acted; a field staged with none is never composed onto a
+ * snapshot, and typing into it again cannot give it one.
+ */
+describe("a field staged with no version basis", () => {
+  const stored = { heading: "Theirs", subheading: "Sub" };
+  const theirs = { draftGeneration: 2, ownSince: 2, sections: [] };
+  const stage = (
+    pending: PendingContentEntry | undefined,
+    next: Record<string, unknown>,
+    inputPath: string,
+    basisDraftGeneration: number | undefined,
+  ) =>
+    stageContentFields({
+      pending,
+      sectionId: "hero",
+      stored,
+      next,
+      inputPath,
+      sourceForPath: () => 1,
+      basisDraftGeneration,
+    })!;
+
+  it("is refused before it is sent, with nothing composed", () => {
+    const entry = stage(undefined, { heading: "Mine" }, "heading", undefined);
+    expect(() =>
+      selectCurrentContentFields(entry, 1, stored, theirs),
+    ).toThrow(
+      expect.objectContaining({
+        code: "TEMPLATE_DRAFT_CONFLICT",
+        missingBasis: true,
+      }),
+    );
+  });
+
+  it("control: the same input with a basis inside the range is sent once at the snapshot's generation", () => {
+    const entry = stage(undefined, { heading: "Mine" }, "heading", 2);
+    const sent = selectCurrentContentFields(entry, 1, stored, theirs);
+    expect(sent.props).toEqual({ heading: "Mine" });
+    expect(sent.expectedDraftGeneration).toBe(2);
+  });
+
+  it("control: the same input with a stale basis is refused as out of date", () => {
+    const entry = stage(undefined, { heading: "Mine" }, "heading", 1);
+    expect(() =>
+      selectCurrentContentFields(entry, 1, stored, theirs),
+    ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+  });
+
+  it("keeps no basis when typed into again once a snapshot is held", () => {
+    const first = stage(undefined, { heading: "Mi" }, "heading", undefined);
+    // The editor has since read someone else's change at 2; the next
+    // keystroke is made while that copy is held.
+    const again = stage(first, { heading: "Mine" }, "heading", 2);
+    expect(again.fields!.heading!.basisDraftGeneration).toBeUndefined();
+    expect(() =>
+      selectCurrentContentFields(again, 1, stored, theirs),
+    ).toThrow(expect.objectContaining({ missingBasis: true }));
+  });
+
+  it("is given a basis only by the author's Load latest, keep mine", () => {
+    const entry = stage(undefined, { heading: "Mine" }, "heading", undefined);
+    const kept = rebaseFieldBasis(entry, 2);
+    expect(
+      selectCurrentContentFields(kept, 1, stored, theirs).props,
+    ).toEqual({ heading: "Mine" });
+  });
+
+  it("an entry with no per-field record is refused onto a snapshot", () => {
+    const legacy: PendingContentEntry = {
+      sectionId: "hero",
+      props: { heading: "Mine" },
+      expectedSourceGeneration: 1,
+    };
+    expect(() =>
+      selectCurrentContentFields(legacy, 1, stored, theirs),
+    ).toThrow(expect.objectContaining({ missingBasis: true }));
   });
 });
 

@@ -133,7 +133,11 @@ describe("a content write's snapshot", () => {
     expect(basisWithinOwnRange(snapshot, 5)).toBe(true);
     expect(basisWithinOwnRange(snapshot, 2)).toBe(false);
     expect(basisWithinOwnRange(snapshot, 6)).toBe(false);
-    expect(basisWithinOwnRange(snapshot, undefined)).toBe(true);
+    // An input with no recorded basis was made on no copy this editor can
+    // name: nothing proves it lies inside the range, so it is not composed
+    // (stage 1 of "refuse a write with no version basis"). Pinned true
+    // before: the hole the undefined-basis inventory found.
+    expect(basisWithinOwnRange(snapshot, undefined)).toBe(false);
   });
 });
 

@@ -14,8 +14,10 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { EditorStyleInspector } from "./editor-style-inspector";
+import { MISSING_BASIS_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
 import {
   HISTORY_NEWER_EDIT_MESSAGE,
+  HISTORY_RUN_PENDING_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
 import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
@@ -1322,5 +1324,176 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
       expectedDraftGeneration: 3,
     });
     expect(depth()).toBe("1");
+  });
+
+  /**
+   * #391 review P2: a first (non-history) Show / Hide pressed while a history
+   * run of the same section is out used to retire the section's history first
+   * (`invalidateSectionHistory`), deleting that run's open attempt: the run
+   * could land and the history not move, and Undo / Redo were gone. The
+   * toggle is now checked (run out, unanswered write held) before anything
+   * is retired or drawn; refused, the author is told and nothing changes.
+   */
+  describe("a Show / Hide pressed while a history run of the section is out", () => {
+    const showButton = () =>
+      screen.getAllByRole("button", { name: "Show section hero" })[0]!;
+
+    it("the Undo out, Show pressed: nothing else is sent, the Undo lands and the history moves once", async () => {
+      const notice = notices();
+      const shell = await hidden();
+      const releaseUndo = heldAnswer();
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await settle();
+      expect(sent(), "the undo is out").toHaveLength(2);
+
+      fireEvent.click(showButton());
+      await settle();
+      expect(previewHidden(), "the canvas waits for the undo").toBe(true);
+
+      releaseUndo();
+      await settle();
+      await reread(shell);
+      expect(server).toMatchObject({ enabled: true, generation: 3 });
+      expect(sent(), "the toggle sent nothing, then or after").toHaveLength(2);
+      expect(depth(), "moved once").toBe("0");
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+      expect(errors(notice)).toContain(HISTORY_RUN_PENDING_MESSAGE);
+      await settle();
+      expect(sent(), "nothing after it").toHaveLength(2);
+    });
+
+    it("the Undo out, Show pressed and refused: Redo and Undo still work afterwards", async () => {
+      notices();
+      const shell = await hidden();
+      const releaseUndo = heldAnswer();
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await settle();
+      fireEvent.click(showButton());
+      await settle();
+      releaseUndo();
+      await settle();
+      await reread(shell);
+
+      await redo();
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]).toMatchObject({
+        props: { enabled: false },
+        expectedDraftGeneration: 3,
+      });
+      expect(depth()).toBe("1");
+      await reread(shell);
+      await undo();
+      expect(sent()).toHaveLength(4);
+      expect(sent()[3]).toMatchObject({
+        props: { enabled: true },
+        expectedDraftGeneration: 4,
+      });
+      expect(depth()).toBe("0");
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+    });
+
+    it("the Undo unanswered, Show pressed: nothing is sent, the entry is kept and completes once on Check and save", async () => {
+      const notice = notices();
+      const shell = await hidden();
+      answerNext.push(lost);
+      await undo();
+      expect(unconfirmedCount()).toBe("1");
+
+      fireEvent.click(showButton());
+      await settle();
+      expect(sent(), "the toggle sends nothing").toHaveLength(2);
+      expect(errors(notice).length).toBeGreaterThan(0);
+
+      // It landed: the server holds the section shown, one generation on.
+      server.enabled = true;
+      server.generation = 3;
+      await checkAndSave();
+      expect(sent()).toHaveLength(2);
+      expect(depth(), "moved once").toBe("0");
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+      await reread(shell);
+      await redo();
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]).toMatchObject({ props: { enabled: false } });
+      expect(depth()).toBe("1");
+    });
+  });
+
+  /**
+   * Stage 1 of "refuse an existing-Document content write that has no version
+   * basis": the toggle's basis is the latest accepted snapshot generation at
+   * the click. With none (constructed here: every read the editor is given
+   * carries no valid draft generation, so it holds no snapshot), nothing is
+   * sent, nothing is drawn, the history is not retired, and the toggle is
+   * kept as not saved (Out of date, "Load latest, keep mine").
+   */
+  describe("a Show / Hide with no version basis", () => {
+    const saveStatus = () =>
+      document
+        .querySelector("[data-editor-save-status]")
+        ?.getAttribute("aria-label");
+
+    it("Hide pressed with no basis, another tab's change on the server: nothing sent, theirs kept, the canvas and history unchanged", async () => {
+      const notice = notices();
+      // Every read the editor is given carries no valid draft generation.
+      const unversioned = () =>
+        contextWith(
+          [{ id: "hero", enabled: server.enabled, heading: server.heading }],
+          // Not undefined: contextWith defaults an omitted one to 1.
+          null as unknown as number,
+        );
+      getThemeEditor.mockImplementation(async () => ({
+        success: true,
+        message: "ok",
+        data: unversioned(),
+      }));
+      renderShell(unversioned());
+      await flushFrames();
+      // Another tab's write the editor has not read.
+      server.heading = "Theirs";
+      server.generation = 2;
+
+      fireEvent.click(hideButton());
+      await settle();
+
+      expect(sent(), "no request").toHaveLength(0);
+      expect(server).toEqual({
+        heading: "Theirs",
+        enabled: true,
+        generation: 2,
+      });
+      expect(previewHidden(), "not drawn hidden").not.toBe(true);
+      expect(depth(), "history unchanged").toBe("0");
+      expect(saveStatus()).toBe("Out of date");
+      expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+      expect(unconfirmedCount()).toBeNull();
+      await settle();
+      expect(sent()).toHaveLength(0);
+    });
+
+    it("control: Hide pressed with the basis it was made on: written once, recorded once", async () => {
+      notices();
+      await hidden();
+      expect(sent()).toHaveLength(1);
+      expect(depth()).toBe("1");
+    });
+
+    it("control: Hide pressed on generation 1 after another tab's unread change: refused by the draft generation, theirs kept, nothing recorded", async () => {
+      notices();
+      renderShell(held());
+      await flushFrames();
+      server.heading = "Theirs";
+      server.generation = 2;
+      fireEvent.click(hideButton());
+      await settle();
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]).toMatchObject({ expectedDraftGeneration: 1 });
+      expect(server).toEqual({
+        heading: "Theirs",
+        enabled: true,
+        generation: 2,
+      });
+      expect(depth()).toBe("0");
+    });
   });
 });
