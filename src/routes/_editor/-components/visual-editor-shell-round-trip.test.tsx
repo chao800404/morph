@@ -3757,6 +3757,25 @@ function Home() {
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
+    await waitFor(() =>
+      expect(
+        messagesOfType("morph:storefront-preview-update-section-props").some(
+          (message) => {
+            const token = message.presentationToken as
+              | { documentBasis?: { draftGeneration?: number } }
+              | undefined;
+            return token?.documentBasis?.draftGeneration === 2;
+          },
+        ),
+      ).toBe(true),
+    );
+    // Keep mine first brings the latest merged page to the canvas. It does not
+    // send the re-based draft while the new presentation is unacknowledged.
+    expect(sent()).toHaveLength(before);
+    await flushFrames();
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
     await waitFor(() => expect(sent()).toHaveLength(before + 1));
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect(sent()).toHaveLength(before + 1);
