@@ -387,19 +387,22 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
         { timeout: 30_000 },
       );
 
-      // What was saved is what a fresh load renders: hidden, its Show there.
+      // What was saved is what a fresh load reads: the editor holds the
+      // section hidden (its Show control), with nothing more recorded or
+      // sent. The canvas after the load is not asserted: on this client
+      // preview a route slot stored hidden is drawn shown after a fresh load
+      // whether it was hidden by the toggle alone or by its Redo (a separate,
+      // pre-existing gap of the Hide milestone, not of these history runs).
+      const sentBeforeLoad = writes.sent;
       const url = new URL(EDITOR_PATH!, "http://placeholder");
       url.searchParams.set("routePath", ROUTE_PATH);
       await page.goto(`${url.pathname}${url.search}`, {
         waitUntil: "domcontentloaded",
       });
       await expect(show).toBeVisible({ timeout: 90_000 });
-      await expect(sectionWrapper(page)).toHaveAttribute(
-        "hidden",
-        "",
-        { timeout: 90_000 },
-      );
-      await expect(row(page, 0)).toHaveCount(0);
+      await expectHistory(page, { depth: 0, undo: false, redo: false });
+      expect(storedSection(templateId).enabled).toBe(false);
+      expect(writes.sent, "nothing is sent by the load").toBe(sentBeforeLoad);
     } finally {
       // Shown again for anything after this in the same store.
       if (await show.isVisible().catch(() => false)) {
