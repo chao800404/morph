@@ -346,7 +346,7 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
       return now;
     };
 
-    try {
+    {
       const hidden = await step(
         () => hide.click(),
         "Hide",
@@ -403,15 +403,8 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
       await expectHistory(page, { depth: 0, undo: false, redo: false });
       expect(storedSection(templateId).enabled).toBe(false);
       expect(writes.sent, "nothing is sent by the load").toBe(sentBeforeLoad);
-    } finally {
-      // Shown again for anything after this in the same store.
-      if (await show.isVisible().catch(() => false)) {
-        await show.click();
-        await expect(
-          page.getByRole("button", { name: `Hide section ${sectionType}` }),
-        ).toBeAttached({ timeout: 15_000 });
-      }
     }
+    // Left hidden: the slot is named per run, and afterAll removes its route.
   });
 });
 
