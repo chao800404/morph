@@ -7,14 +7,17 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { toast } from "sonner";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { EditorStyleInspector } from "./editor-style-inspector";
-import { VisualEditorShell } from "./visual-editor-shell";
+import {
+  HISTORY_NEWER_EDIT_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
 import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
@@ -824,5 +827,489 @@ describe("the Inspector's class list on a hidden section", () => {
     paste(input, "px-6");
     expect(onUpdateThemeFileStyle).toHaveBeenCalled();
     expect(onPropsChange).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The Undo and Redo of a "Hide section" / "Show section" entry are history
+ * runs of their own, as #388's content replays are: one awaited write each,
+ * carrying only the toggle, checked against the draft generation answered
+ * for the step it reverses or re-applies, recording nothing new, and moving
+ * history only once answered. A refusal leaves the history, the Document and
+ * the preview's hidden state as they were; a lost answer is held with its
+ * history run and decided by its own read-back.
+ *
+ * The server is modelled here: one section, its `heading` and `enabled`,
+ * and a draft generation its writes are checked against.
+ */
+describe("Show / Hide section Undo and Redo as history runs", () => {
+  let server: { heading: string; enabled: boolean; generation: number };
+  /** One-off answers, in order, before the server's own. */
+  let answerNext: Array<(data: Record<string, unknown>) => unknown> = [];
+  const conflictAnswer = {
+    success: false,
+    error: "TEMPLATE_DRAFT_CONFLICT",
+    message: "Template draft was modified concurrently.",
+  };
+  const held = () =>
+    contextWith(
+      [{ id: "hero", enabled: server.enabled, heading: server.heading }],
+      server.generation,
+    );
+  const apply = (data: Record<string, unknown>) => {
+    if (data.expectedDraftGeneration !== server.generation) {
+      return conflictAnswer;
+    }
+    const props = data.props as Record<string, unknown>;
+    if (typeof props.heading === "string") server.heading = props.heading;
+    if (typeof props.enabled === "boolean") server.enabled = props.enabled;
+    server.generation += 1;
+    return {
+      success: true,
+      data: {
+        draftGeneration: server.generation,
+        droppedProps: [],
+        document: held().templates[0]!.document,
+      },
+    };
+  };
+  /** The request is sent and no answer comes back. */
+  const lost = () => {
+    throw new Error("offline");
+  };
+  const refusal = () => ({
+    success: false,
+    error: "REFUSED_BY_MOCK",
+    message: "The mock refused the replay.",
+  });
+  /** The next write waits for `release` before it is answered. */
+  const heldAnswer = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    answerNext.push(async (data) => {
+      await gate;
+      return apply(data);
+    });
+    return release;
+  };
+
+  const sent = () =>
+    updateSectionProps.mock.calls.map(
+      (call) => call[0].data as Record<string, unknown>,
+    );
+  const depth = () =>
+    document
+      .querySelector("[data-editor-undo-depth]")
+      ?.getAttribute("data-editor-undo-depth") ?? null;
+  const historyButtons = () => ({
+    undo: !screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+    redo: !screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled"),
+  });
+  const unconfirmedCount = () =>
+    document
+      .querySelector("[data-editor-unconfirmed-saves]")
+      ?.getAttribute("data-editor-unconfirmed-saves") ?? null;
+  // Past the content write's 300 ms debounce and its answer.
+  const settle = () =>
+    act(() => new Promise((resolve) => setTimeout(resolve, 1_200)));
+  const press = async (name: "Undo" | "Redo") => {
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name }).hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name }));
+    await settle();
+  };
+  const undo = () => press("Undo");
+  const redo = () => press("Redo");
+  const notices = () => ({
+    error: vi.spyOn(toast, "error").mockImplementation(() => ""),
+  });
+  const errors = (notice: ReturnType<typeof notices>) =>
+    notice.error.mock.calls.map((call) => String(call[0]));
+  /** Whether the last thing the preview was told about the hero hides it. */
+  const previewHidden = () => {
+    const last = posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === "hero" &&
+          typeof message.enabled === "boolean",
+      )
+      .at(-1);
+    return last ? last.enabled === false : null;
+  };
+  const checkAndSave = async () => {
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Check and save" }),
+    );
+    await settle();
+  };
+
+  beforeEach(() => {
+    server = { heading: "Welcome", enabled: true, generation: 1 };
+    answerNext = [];
+    updateSectionProps.mockImplementation(async ({ data }) => {
+      const override = answerNext.shift();
+      return override ? override(data) : apply(data);
+    });
+    getThemeEditor.mockImplementation(async () => ({
+      success: true,
+      message: "ok",
+      data: held(),
+    }));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The route's read of the Theme: the editor is handed what the server holds. */
+  const reread = async (shell: ReturnType<typeof renderShell>) => {
+    shell.storedAs(held());
+    await flushFrames();
+  };
+
+  /** The hero hidden (draft 1 -> 2): one write, one "Hide section" entry. */
+  async function hidden() {
+    const shell = renderShell(held());
+    await flushFrames();
+    fireEvent.click(hideButton());
+    await settle();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      props: { enabled: false },
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: 1,
+    });
+    await reread(shell);
+    expect(server).toMatchObject({ enabled: false, generation: 2 });
+    expect(depth()).toBe("1");
+    expect(historyButtons()).toEqual({ undo: true, redo: false });
+    expect(previewHidden()).toBe(true);
+    return shell;
+  }
+
+  it("two rounds of Undo then Redo: one awaited write each, carrying only the toggle; history moves only once answered, and nothing new is recorded", async () => {
+    const notice = notices();
+    const shell = await hidden();
+
+    for (const round of [1, 2]) {
+      const before = sent().length;
+      const releaseUndo = heldAnswer();
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await settle();
+      expect(sent(), `round ${round}: the undo is out`).toHaveLength(
+        before + 1,
+      );
+      expect(sent().at(-1)).toMatchObject({
+        props: { enabled: true },
+        expectedDraftGeneration: before + 1,
+        expectedSourceGeneration: 1,
+      });
+      expect(Object.keys(sent().at(-1)!.props as object)).toEqual(["enabled"]);
+      expect(depth(), `round ${round}: not moved before its answer`).toBe("1");
+      expect(historyButtons().redo).toBe(false);
+      expect(
+        previewHidden(),
+        `round ${round}: the preview waits for the undo's answer`,
+      ).toBe(true);
+      releaseUndo();
+      await settle();
+      await reread(shell);
+      expect(server.enabled).toBe(true);
+      expect(depth(), `round ${round}: after undo`).toBe("0");
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+      expect(previewHidden()).toBe(false);
+
+      const releaseRedo = heldAnswer();
+      fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+      await settle();
+      expect(sent(), `round ${round}: the redo is out`).toHaveLength(
+        before + 2,
+      );
+      expect(sent().at(-1)).toMatchObject({
+        props: { enabled: false },
+        expectedDraftGeneration: before + 2,
+        expectedSourceGeneration: 1,
+      });
+      expect(Object.keys(sent().at(-1)!.props as object)).toEqual(["enabled"]);
+      expect(depth(), `round ${round}: not moved before its answer`).toBe("0");
+      expect(historyButtons().undo).toBe(false);
+      expect(previewHidden()).toBe(false);
+      releaseRedo();
+      await settle();
+      await reread(shell);
+      expect(server.enabled).toBe(false);
+      expect(depth(), `round ${round}: after redo`).toBe("1");
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+      expect(previewHidden()).toBe(true);
+    }
+    expect(notice.error).not.toHaveBeenCalled();
+    await settle();
+    expect(sent(), "nothing is sent after the last step").toHaveLength(5);
+  }, 45_000);
+
+  for (const [label, prepare] of [
+    [
+      "answered with a refusal",
+      () => {
+        answerNext.push(refusal);
+      },
+    ],
+    [
+      "refused by the draft generation (another tab moved the Document, unread)",
+      () => {
+        server.heading = "Theirs";
+        server.generation = 3;
+      },
+    ],
+  ] as const) {
+    it(`an Undo ${label}: history, the Document, entries and the preview's hidden state as they were`, async () => {
+      const notice = notices();
+      const shell = await hidden();
+      prepare();
+      const before = { ...server };
+
+      await undo();
+
+      expect(sent(), "the undo is sent once").toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        props: { enabled: true },
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+      });
+      expect(server, "the Document is unchanged").toEqual(before);
+      expect(depth(), "history did not move").toBe("1");
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+      expect(errors(notice)).toContainEqual(
+        expect.stringMatching(/^Could not undo/),
+      );
+      expect(unconfirmedCount()).toBeNull();
+      expect(previewHidden(), "the preview still hides it").toBe(true);
+      await settle();
+      expect(sent(), "nothing is sent after it").toHaveLength(2);
+      expect(depth(), "nothing new is recorded").toBe("1");
+      expect(previewHidden()).toBe(true);
+      void shell;
+    });
+  }
+
+  it("a refused Redo leaves history, the Document and the preview's hidden state as they were", async () => {
+    const notice = notices();
+    const shell = await hidden();
+    await undo();
+    await reread(shell);
+    expect(server).toMatchObject({ enabled: true, generation: 3 });
+    expect(previewHidden()).toBe(false);
+    answerNext.push(refusal);
+
+    await redo();
+
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]).toMatchObject({
+      props: { enabled: false },
+      expectedDraftGeneration: 3,
+    });
+    expect(server).toMatchObject({ enabled: true, generation: 3 });
+    expect(depth()).toBe("0");
+    expect(historyButtons()).toEqual({ undo: false, redo: true });
+    expect(errors(notice)).toContainEqual(
+      expect.stringMatching(/^Could not redo/),
+    );
+    expect(unconfirmedCount()).toBeNull();
+    expect(previewHidden(), "the preview still shows it").toBe(false);
+  });
+
+  for (const direction of ["undo", "redo"] as const) {
+    it(`its ${direction}, after another tab's change the editor has read: refused before sending, their change kept`, async () => {
+      const notice = notices();
+      const shell = await hidden();
+      if (direction === "redo") {
+        await undo();
+        await reread(shell);
+        expect(server).toMatchObject({ enabled: true, generation: 3 });
+      }
+      const buttons = historyButtons();
+      const depthBefore = depth();
+      const hiddenBefore = previewHidden();
+      // Another tab writes the heading at the next draft generation, and the
+      // editor reads it.
+      server.heading = "Theirs";
+      server.generation += 1;
+      await reread(shell);
+      const theirs = { ...server };
+      const before = sent().length;
+
+      await press(direction === "undo" ? "Undo" : "Redo");
+
+      expect(
+        sent(),
+        "nothing is sent over a step that was not this editor's own",
+      ).toHaveLength(before);
+      expect(server, "their change is kept").toEqual(theirs);
+      expect(depth(), "history did not move").toBe(depthBefore);
+      expect(historyButtons()).toEqual(buttons);
+      expect(errors(notice)).toContainEqual(
+        expect.stringMatching(
+          direction === "undo" ? /^Could not undo/ : /^Could not redo/,
+        ),
+      );
+      expect(unconfirmedCount()).toBeNull();
+      expect(previewHidden()).toBe(hiddenBefore);
+    });
+  }
+
+  it("input of the section still pending when Undo is pressed is sent first, as its own entry; that Undo then refuses as a newer edit is on top, and the toggle's Undo later carries only the toggle", async () => {
+    const notice = notices();
+    server.enabled = false;
+    const shell = renderShell(held());
+    await flushFrames();
+    // Shown (draft 1 -> 2): one "Show section" entry.
+    fireEvent.click(screen.getByRole("button", { name: "Show section hero" }));
+    await settle();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]!.props).toEqual({ enabled: true });
+    await reread(shell);
+    expect(depth()).toBe("1");
+
+    const field = await openHeadingField();
+    const button = screen.getByRole("button", { name: "Undo" });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    // Typed, and Undo pressed inside the 300 ms debounce.
+    fireEvent.input(field, { target: { value: "Typed" } });
+    fireEvent.blur(field);
+    fireEvent.click(button);
+    await settle();
+
+    expect(sent(), "the input only, no toggle after it").toHaveLength(2);
+    expect(sent()[1]!.props).toEqual({ heading: "Typed" });
+    expect(sent()[1]).toMatchObject({ expectedDraftGeneration: 2 });
+    expect(server, "the Show is not undone").toMatchObject({
+      heading: "Typed",
+      enabled: true,
+      generation: 3,
+    });
+    expect(depth(), "both entries kept").toBe("2");
+    expect(historyButtons()).toEqual({ undo: true, redo: false });
+    expect(errors(notice)).toContainEqual(
+      expect.stringContaining(HISTORY_NEWER_EDIT_MESSAGE),
+    );
+    expect(unconfirmedCount()).toBeNull();
+    expect(previewHidden()).toBe(false);
+    await settle();
+    expect(sent(), "nothing sent after it").toHaveLength(2);
+
+    // The input's entry first, then the Show's: the toggle alone.
+    await reread(shell);
+    await undo();
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]!.props).toEqual({ heading: "Welcome" });
+    expect(depth()).toBe("1");
+    await reread(shell);
+    await undo();
+    expect(sent()).toHaveLength(4);
+    expect(sent()[3]).toMatchObject({
+      props: { enabled: false },
+      expectedDraftGeneration: 4,
+    });
+    expect(Object.keys(sent()[3]!.props as object)).toEqual(["enabled"]);
+    expect(server).toMatchObject({
+      heading: "Welcome",
+      enabled: false,
+      generation: 5,
+    });
+    expect(depth()).toBe("0");
+    expect(historyButtons()).toEqual({ undo: false, redo: true });
+  });
+
+  /** The Hide's undo sent at draft 2, and no answer comes back. */
+  async function lostUndo() {
+    const notice = notices();
+    const shell = await hidden();
+    answerNext.push(lost);
+
+    await undo();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      props: { enabled: true },
+      expectedDraftGeneration: 2,
+      expectedSourceGeneration: 1,
+    });
+    expect(unconfirmedCount(), "one unconfirmed save").toBe("1");
+    expect(depth(), "history did not move").toBe("1");
+    expect(historyButtons()).toEqual({ undo: true, redo: false });
+    expect(errors(notice)).toContainEqual(
+      expect.stringMatching(/^Could not undo/),
+    );
+    await settle();
+    expect(sent(), "nothing is sent by itself").toHaveLength(2);
+    return shell;
+  }
+
+  it("an Undo with no answer, read back as landed: history moves once, nothing is sent again, Redo still there", async () => {
+    const shell = await lostUndo();
+    // It landed: the server holds the section shown, one generation on.
+    server.enabled = true;
+    server.generation = 3;
+
+    await checkAndSave();
+
+    expect(sent(), "nothing is sent again").toHaveLength(2);
+    expect(unconfirmedCount()).toBeNull();
+    expect(depth(), "moved once").toBe("0");
+    expect(historyButtons()).toEqual({ undo: false, redo: true });
+    await settle();
+    expect(depth(), "and only once").toBe("0");
+
+    await reread(shell);
+    await redo();
+
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]).toMatchObject({
+      props: { enabled: false },
+      expectedDraftGeneration: 3,
+      expectedSourceGeneration: 1,
+    });
+    expect(server).toMatchObject({ enabled: false, generation: 4 });
+    expect(depth()).toBe("1");
+    expect(historyButtons()).toEqual({ undo: true, redo: false });
+  });
+
+  it("an Undo with no answer, read back as not landed: sent once more, as first sent, only on Check and save; history moves once", async () => {
+    const shell = await lostUndo();
+    // Not landed: the server still holds it hidden, at the same generation.
+    expect(server).toMatchObject({ enabled: false, generation: 2 });
+    await settle();
+    expect(sent(), "nothing is sent by itself").toHaveLength(2);
+    expect(depth()).toBe("1");
+
+    await checkAndSave();
+
+    expect(sent(), "sent once more").toHaveLength(3);
+    expect(sent()[2]).toMatchObject({
+      props: { enabled: true },
+      expectedDraftGeneration: 2,
+      expectedSourceGeneration: 1,
+    });
+    expect(Object.keys(sent()[2]!.props as object)).toEqual(["enabled"]);
+    expect(server).toMatchObject({ enabled: true, generation: 3 });
+    expect(unconfirmedCount()).toBeNull();
+    expect(depth(), "moved once, nothing new recorded").toBe("0");
+    expect(historyButtons()).toEqual({ undo: false, redo: true });
+    await settle();
+    expect(sent(), "and nothing after it").toHaveLength(3);
+
+    await reread(shell);
+    await redo();
+    expect(sent()).toHaveLength(4);
+    expect(sent()[3]).toMatchObject({
+      props: { enabled: false },
+      expectedDraftGeneration: 3,
+    });
+    expect(depth()).toBe("1");
   });
 });
