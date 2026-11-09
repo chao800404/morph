@@ -2568,6 +2568,102 @@ describe("Style history writes and refusals", () => {
   });
 });
 
+describe("Style replay read-back confirmation", () => {
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+
+  beforeEach(() => {
+    useThemeWorkspaceStore.setState({ workspaces: {} });
+    stylePatchTarget.filePath = "src/components/Hero.tsx";
+    stylePatchTarget.elementName = "section";
+  });
+
+  async function applyAndSaveStyle(server: ReturnType<typeof controlledThemeFile>) {
+    renderShellWithHero(STYLE_SOURCE);
+    applyStylePatch();
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(localThemeFile()?.saveState).toBe("clean"));
+  }
+
+  const historyState = () => ({
+    undoAvailable: !screen
+      .getByRole("button", { name: "Undo" })
+      .hasAttribute("disabled"),
+    redoAvailable: !screen
+      .getByRole("button", { name: "Redo" })
+      .hasAttribute("disabled"),
+  });
+
+  it("confirms an unanswered landed Style Undo once, then starts a fresh Redo", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    server.outcomes.push("offline-after-landing");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+    );
+    expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+    );
+
+    expect({
+      history: historyState(),
+      writes: server.save.mock.calls.length,
+      serverContent: server.file().content,
+    }).toEqual({
+      history: { undoAvailable: false, redoAvailable: true },
+      writes: 2,
+      serverContent: STYLE_SOURCE,
+    });
+
+    // The next run is a new Redo; it must not replay either old Undo attempt.
+    fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(server.file().content).toBe(STYLE_AFTER));
+    expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+  });
+
+  it("confirms an unanswered landed Style Redo without writing it twice", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(historyState().redoAvailable).toBe(true));
+    server.outcomes.push("offline-after-landing");
+
+    fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_AFTER),
+    );
+    expect(server.save).toHaveBeenCalledTimes(3);
+
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+    );
+    expect({
+      history: historyState(),
+      writes: server.save.mock.calls.length,
+      serverContent: server.file().content,
+    }).toEqual({
+      history: { undoAvailable: true, redoAvailable: false },
+      writes: 3,
+      serverContent: STYLE_AFTER,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(server.file().content).toBe(STYLE_SOURCE));
+    expect(historyState()).toEqual({ undoAvailable: false, redoAvailable: true });
+  });
+});
+
 describe("Edit replay as the file-history control", () => {
   const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
   const editedSource = STYLE_SOURCE + "\n// saved through Code mode";
@@ -8400,4 +8496,5 @@ function Home() {
       });
     });
   });
+
 });
