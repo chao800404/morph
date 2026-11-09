@@ -606,6 +606,146 @@ describe("a content write composed on one snapshot", () => {
   });
 });
 
+/**
+ * A canvas reorder swaps two rows of one list. It is staged as one change to
+ * that list (`inputPath` is the list), not leaf by leaf: staged per leaf,
+ * every field of a moved row recorded the row now at its index, which in the
+ * stored copy is the other row, and the write was refused as out of date.
+ */
+describe("a reorder staged as one change to its list", () => {
+  const snapshot = { draftGeneration: 3, ownSince: 3, sections: [] };
+  const swap = (
+    stored: Record<string, unknown>,
+    next: Record<string, unknown>,
+    inputPath: string,
+  ) =>
+    stageContentFields({
+      sectionId: "hero",
+      stored,
+      next,
+      inputPath,
+      sourceForPath: () => 1,
+      basisDraftGeneration: 3,
+    })!;
+
+  it("sends a stored list in its new order", () => {
+    const stored = {
+      items: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B" },
+      ],
+    };
+    const swapped = {
+      items: [
+        { id: "b", title: "B" },
+        { id: "a", title: "A" },
+      ],
+    };
+    const entry = swap(stored, swapped, "items");
+    expect(Object.keys(entry.fields!)).toEqual(["items"]);
+    const sent = selectCurrentContentFields(entry, 1, stored, snapshot);
+    expect(sent.props).toEqual(swapped);
+    expect(sent.expectedDraftGeneration).toBe(3);
+  });
+
+  it("control: the same swap staged leaf by leaf is refused", () => {
+    const stored = {
+      items: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B" },
+      ],
+    };
+    const entry = stageContentFields({
+      sectionId: "hero",
+      stored,
+      next: {
+        items: [
+          { id: "b", title: "B" },
+          { id: "a", title: "A" },
+        ],
+      },
+      sourceForPath: () => 1,
+      basisDraftGeneration: 3,
+    })!;
+    expect(() =>
+      selectCurrentContentFields(entry, 1, stored, snapshot),
+    ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+  });
+
+  it("still refuses a nested list whose parent row is no longer at its index", () => {
+    const parent = (id: string, children: string[]) => ({
+      id,
+      children: children.map((child) => ({ id: child, title: child })),
+    });
+    const seen = { items: [parent("p", ["x", "y"]), parent("q", ["z"])] };
+    const entry = swap(
+      seen,
+      { items: [parent("p", ["y", "x"]), parent("q", ["z"])] },
+      "items.0.children",
+    );
+    expect(Object.keys(entry.fields!)).toEqual(["items.0.children"]);
+    // Someone else moved the parent rows before the write left.
+    const now = { items: [parent("q", ["z"]), parent("p", ["x", "y"])] };
+    expect(() => selectCurrentContentFields(entry, 1, now, snapshot)).toThrow(
+      expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }),
+    );
+    // With the parent where it was, only that nested list is sent.
+    const sent = selectCurrentContentFields(entry, 1, seen, snapshot);
+    expect(sent.props).toEqual({
+      items: [parent("p", ["y", "x"]), parent("q", ["z"])],
+    });
+  });
+
+  /**
+   * Codex review of #389/#390 (§5). A root list has no row above it, so the
+   * basis is what refuses a swap composed before another writer's step the
+   * editor has since read. With no basis recorded (no copy of the document
+   * held when the drag was staged), nothing here refuses it: it is sent at the
+   * snapshot's own draft generation, and only the server's check of that
+   * generation stands between it and the other writer's list.
+   */
+  describe("a root list swap over another writer's step the editor has read", () => {
+    const stored = {
+      items: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B" },
+      ],
+    };
+    const swapped = {
+      items: [
+        { id: "b", title: "B" },
+        { id: "a", title: "A" },
+      ],
+    };
+    // Another writer's step 3 -> 4, read by the editor: its own range now
+    // starts at 4.
+    const theirs = { draftGeneration: 4, ownSince: 4, sections: [] };
+    const staged = (basisDraftGeneration: number | undefined) =>
+      stageContentFields({
+        sectionId: "hero",
+        stored,
+        next: swapped,
+        inputPath: "items",
+        sourceForPath: () => 1,
+        basisDraftGeneration,
+      })!;
+
+    it("with the basis it was made on (3): refused before it is sent", () => {
+      expect(() =>
+        selectCurrentContentFields(staged(3), 1, stored, theirs),
+      ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+    });
+
+    it("with no basis recorded: not refused here, sent at the snapshot's generation", () => {
+      const entry = staged(undefined);
+      expect(entry.fields!.items!.basisDraftGeneration).toBeUndefined();
+      const sent = selectCurrentContentFields(entry, 1, stored, theirs);
+      expect(sent.props).toEqual(swapped);
+      expect(sent.expectedDraftGeneration).toBe(4);
+    });
+  });
+});
+
 describe("what undoing a saved content write puts back", () => {
   const rows = [{ id: "morph-a", title: "One" }];
 

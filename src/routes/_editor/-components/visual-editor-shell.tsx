@@ -384,7 +384,10 @@ import {
   resolveTemplateDraftGeneration,
 } from "@/lib/storefront/editor/template-draft-generation";
 import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
-import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
+import {
+  parseArrayItemFieldPath,
+  swapArrayItemsAtFieldPaths,
+} from "@/lib/storefront/editor/reorder-array-items";
 import { declaredUnstoredListRows } from "@/lib/storefront/editor/section-content-declaration";
 import {
   getFieldPathValue,
@@ -12095,6 +12098,9 @@ export function VisualEditorShell({
       nextProps: Record<string, unknown>,
       historySourceGeneration: number | undefined,
       attempt: EditorHistoryAttempt,
+      // A structural change staged as one field (a canvas reorder's list),
+      // as the step it replays was.
+      inputPath?: string,
     ): Promise<void> => {
       // A history record keeps its original version; it is never re-read.
       if (historySourceGeneration === undefined) {
@@ -12143,6 +12149,7 @@ export function VisualEditorShell({
           next: nextProps,
           stored,
           routePath: routePathForTemplate(templateId),
+          inputPath,
           basisDraftGeneration,
           sourceForPath: () => historySourceGeneration,
         });
@@ -12197,6 +12204,7 @@ export function VisualEditorShell({
           nextProps,
           options.historySourceGeneration,
           options.historyAttempt,
+          options.inputFieldPath,
         );
       }
       // 1. Instant 0ms visual sync to iframe canvas
@@ -12632,11 +12640,19 @@ export function VisualEditorShell({
         });
         return;
       }
+      // The list the two rows belong to (a nested list's own path).
+      const listPath = parseArrayItemFieldPath(draggedFieldPath)!.arrayPath;
       const reorderPending = stageContentFields({
         pending: priorPending,
         sectionId,
         stored: sectionPropsSnapshot(sectionId),
         next: { [arrayRoot]: result.value[arrayRoot] },
+        // One structural change to the list, not an edit of each moved row.
+        // Staged leaf by leaf, every field of a moved row would record the
+        // row now at its index — the other one in the stored copy — and the
+        // write would be refused as made on rows that moved. The rows that
+        // hold the list (a nested list's parent rows) are still checked.
+        inputPath: listPath,
         routePath: routePathForTemplate(templateId),
         sourceForPath: () => generation,
         basisDraftGeneration: contentBasisFor(templateId),
@@ -12661,6 +12677,9 @@ export function VisualEditorShell({
         };
       });
 
+      // An earlier unanswered write of this section, if any: only one this send
+      // leaves behind says the swap itself went out and got no answer.
+      const unansweredBefore = unconfirmedContentRef.current.get(key);
       try {
         const answer = await commitSectionPending(keyTemplateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
@@ -12670,16 +12689,12 @@ export function VisualEditorShell({
         // Document, where a later change to the Theme's defaults no longer
         // reaches them. The removal is the "Use code default" write.
         //
-        // That first drag's undo and redo are history runs of their own, as
-        // the first Add's are (#388): one awaited write each, checked against
-        // the draft generation answered for the step it reverses or
-        // re-applies (`historyStepBasis`), recording nothing new.
-        //
-        // A stored list's undo/redo is not yet a replay with its own awaited
-        // write and step basis (#388): its canvas reorder cannot send its
-        // first write on main (its per-row paths fail `rowsStillMatch`), so
-        // that undo/redo is unreachable and untested here. #390 fixes the
-        // reorder and moves it onto the replay path with its tests.
+        // Both directions are history runs of their own, as #388's content
+        // replays are: one awaited write each, checked against the draft
+        // generation answered for the step it reverses or re-applies
+        // (`historyStepBasis`), recording nothing new. A replay is staged on
+        // the stored copy held when it runs (`storedSectionPropsRef`), never
+        // on this render's, and as one change to the list, like the drag.
         const entryId = history.record(
           fenceSectionHistory(sectionId, templateId, {
             label: "Reorder · item",
@@ -12702,41 +12717,45 @@ export function VisualEditorShell({
                       : sourceSelectionFailure();
                   }
                 }
-              : () =>
+              : (attempt) =>
                   handleSectionPropsChange(
                     sectionId,
                     { [arrayRoot]: startProps[arrayRoot] },
-                    { historySourceGeneration: generation },
-                  ),
-            redo: unstoredRows
-              ? (attempt) =>
-                  handleSectionPropsChange(
-                    sectionId,
-                    { [arrayRoot]: result.value[arrayRoot] },
                     {
                       historySourceGeneration: generation,
                       historyAttempt: attempt,
+                      inputFieldPath: listPath,
                     },
-                  )
-              : () =>
-                  handleSectionPropsChange(
-                    sectionId,
-                    { [arrayRoot]: result.value[arrayRoot] },
-                    { historySourceGeneration: generation },
                   ),
+            redo: (attempt) =>
+              handleSectionPropsChange(
+                sectionId,
+                { [arrayRoot]: result.value[arrayRoot] },
+                {
+                  historySourceGeneration: generation,
+                  historyAttempt: attempt,
+                  inputFieldPath: listPath,
+                },
+              ),
           }),
         );
-        // The undo of the first drag goes onto the copy its write was
-        // answered with; an answer that reports none leaves it no basis, so
-        // that undo refuses.
-        if (unstoredRows) {
-          setHistoryStepBasis(
-            entryId,
-            "undo",
-            answeredDraftGenerationOf(answer),
-          );
-        }
+        // The undo goes onto the copy the drag's write was answered with; an
+        // answer that reports none leaves it no basis, so that undo refuses.
+        setHistoryStepBasis(entryId, "undo", answeredDraftGenerationOf(answer));
       } catch {
+        // Sent, and no answer: the swap may have landed. It stays pending and
+        // on the canvas like any content write, so "Try again" asks the server
+        // first and sends it once more only if it did not land. Dropping it
+        // here left nothing to send, and the swap was lost while the editor
+        // read as saved. A refusal is an answer, and is rolled back below.
+        const unanswered = unconfirmedContentRef.current.get(key);
+        if (
+          unanswered &&
+          unanswered !== unansweredBefore &&
+          pendingPropsMapRef.current.get(key) === reorderPending
+        ) {
+          return;
+        }
         const hiddenBefore = previewSectionIsHidden(sectionId);
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
           if (priorPending) pendingPropsMapRef.current.set(key, priorPending);
