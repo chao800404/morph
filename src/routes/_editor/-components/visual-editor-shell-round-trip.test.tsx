@@ -1,4 +1,9 @@
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  createLiveFrame,
+  frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
+} from "@/lib/test-utils/preview-frame-handshake";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -28,6 +33,7 @@ import { themePreviewServerQueries } from "../-queries/theme-preview-server.quer
 import {
   INLINE_TEXT_NOT_SAVED_MESSAGE,
   INLINE_TEXT_REFUSED_MESSAGE,
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
 import { STARTER_THEME_FILES as OBJPOS_STARTER_FILES } from "@/lib/storefront/starter-theme-files";
@@ -99,11 +105,14 @@ const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
 const liveFrame = createLiveFrame({
   origin: PREVIEW_ORIGIN,
   session: PREVIEW_SESSION,
+}, {
+  capabilities: ["selection-field-section", "section-presentation-ack-v1"],
 });
 
 const posted: Array<Record<string, unknown>> = [];
 
 beforeEach(() => {
+  modelCurrentBridge();
   posted.length = 0;
   // Code acceptance and observed query versions are intentionally distinct.
   // No scenario may inherit the previous test's observed source generation.
@@ -217,6 +226,41 @@ vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   postEditorToPreviewMessage: vi.fn(
     (_target: unknown, message: Record<string, unknown>) => {
       posted.push(message);
+      if (
+        message.type !== "morph:storefront-preview-update-section-props" ||
+        typeof message.presentationToken !== "object" ||
+        message.presentationToken === null
+      ) {
+        return;
+      }
+      const token = message.presentationToken as {
+        operationId?: unknown;
+      };
+      const frame = document.querySelector("iframe");
+      if (!frame?.contentWindow || typeof token.operationId !== "string") {
+        return;
+      }
+      // Model the bridge ack after its queued React DOM commit. The document
+      // identity is copied from the active frame, so a stale-document ack is
+      // rejected by the shell just as it is in the live transport.
+      const data = frameEnvelope({
+        type: "morph:storefront-preview-section-presentation-ack",
+        previewSession: PREVIEW_SESSION,
+        operationId: token.operationId,
+        token: message.presentationToken,
+        status: "applied",
+      });
+      queueMicrotask(() => {
+        act(() =>
+          window.dispatchEvent(
+            new MessageEvent("message", {
+              data,
+              origin: PREVIEW_ORIGIN,
+              source: frame.contentWindow,
+            }),
+          ),
+        );
+      });
     },
   ),
 }));
@@ -305,7 +349,7 @@ function readyQueryClient() {
 }
 
 function renderShell(client = readyQueryClient()) {
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={context}
@@ -314,22 +358,47 @@ function renderShell(client = readyQueryClient()) {
       />
     </QueryClientProvider>,
   );
+  if (document.querySelector("iframe")) liveFrame.ready();
+  return rendered;
 }
 
 /** A message from the framed preview, addressed so the transport accepts it. */
-function fromPreview(data: Record<string, unknown>) {
-  liveFrame.before(data);
+function fromPreview(
+  data: Record<string, unknown>,
+  options: Readonly<{ preserveSelectionRevision?: boolean }> = {},
+) {
+  const latestSelectionRevision = posted.reduce((latest, message) => {
+    const revision = message.selectionRevision;
+    return typeof revision === "number" ? Math.max(latest, revision) : latest;
+  }, 0);
+  const latestStyleRevision = posted.reduce((latest, message) => {
+    const revision = message.styleRevision;
+    return typeof revision === "number" ? Math.max(latest, revision) : latest;
+  }, 0);
+  const currentReport =
+    data.type === "morph:storefront-preview-select-section" &&
+    data.styleRevision === 0 &&
+    latestStyleRevision > 0
+      ? { ...data, styleRevision: latestStyleRevision }
+      : data;
+  const response =
+    currentReport.type === "morph:storefront-preview-select-section" &&
+    !options.preserveSelectionRevision &&
+    !(typeof currentReport.selectionRevision === "number" && currentReport.selectionRevision > 0)
+      ? { ...currentReport, selectionRevision: latestSelectionRevision + 1 }
+      : currentReport;
+  liveFrame.before(response);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...response, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
     );
   });
-  liveFrame.after(data);
+  liveFrame.after(response);
 }
 
 const messagesOfType = (type: string) =>
@@ -832,6 +901,7 @@ describe("a list both writers changed", () => {
         />
       </QueryClientProvider>,
     );
+    if (document.querySelector("iframe")) liveFrame.ready();
 
     // The author edits B's title on the canvas.
     const rowNode = {
@@ -1002,12 +1072,13 @@ describe("bringing the canvas to a selection", () => {
     posted.length = 0;
     act(() => {
       row.closest("button")?.click();
+      row.closest("button")?.click();
     });
 
     const revision = messagesOfType(
       "morph:storefront-preview-set-selection-mode",
-    )[0]!.selectionRevision as number;
-    expect(revision).toBeGreaterThan(0);
+    ).at(-1)!.selectionRevision as number;
+    expect(revision).toBeGreaterThan(1);
 
     // Every nullable field is present as an explicit `null`: the protocol reads
     // an omitted key as the wrong shape, not as an absent value.
@@ -1041,7 +1112,7 @@ describe("bringing the canvas to a selection", () => {
     const resting = canvasY();
     expect(resting).not.toBeNull();
 
-    fromPreview(answer(revision - 1));
+    fromPreview(answer(revision - 1), { preserveSelectionRevision: true });
     await flushFrames();
     const afterStale = canvasY();
 
@@ -1115,7 +1186,7 @@ function renderShellWithHero(
       latestPublishedRevision: null,
     } as never,
   );
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={editorContext}
@@ -1128,6 +1199,8 @@ function renderShellWithHero(
       />
     </QueryClientProvider>,
   );
+  if (document.querySelector("iframe")) liveFrame.ready();
+  return rendered;
 }
 
 /**
@@ -1236,7 +1309,7 @@ describe("source refusal recovery contract", () => {
   }
 
   async function openFields() {
-    renderShellWithHero(source, "hero", editorContext);
+    renderShellWithHero(source, "hero", editorContext, undefined, 0);
     await selectHeading();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await screen.findByDisplayValue("Welcome");
@@ -1363,7 +1436,11 @@ describe("source refusal recovery contract", () => {
 
     // The new frame's existing full-source handshake confirms the snapshot.
     // This controlled bridge event is not a browser/HMR acceptance test.
-    fromPreview({ type: "morph:storefront-preview-ready" });
+    getThemeEditor.mockResolvedValueOnce(
+      editorHolding({ heading: "Welcome", subheading: "Summary" }, 1),
+    );
+    reloadFrameDocument();
+    liveFrame.ready();
     await waitFor(() =>
       expect(
         messagesOfType("morph:storefront-preview-update-theme-files").length,
@@ -1579,11 +1656,13 @@ describe("source refusal recovery contract", () => {
     expect(screen.getByDisplayValue("Unanswered heading")).toBeTruthy();
   });
 
-  it("blocks input without a selection baseline before calling the server", async () => {
+  it("uses a preview-confirmed source even if Code has not accepted it", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
-    await openFields();
-    // A newly reported selection cannot capture a version from a workspace
-    // that has not accepted one; do not substitute the current Theme version.
+    renderShellWithHero(source, "hero", editorContext);
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await screen.findByDisplayValue("Welcome");
+    // The preview has confirmed the current Theme source even though this
+    // workspace still has no accepted source generation.
     act(() =>
       useThemeWorkspaceStore.getState().setBaseSourceGeneration(0, scope),
     );
@@ -1592,13 +1671,17 @@ describe("source refusal recovery contract", () => {
     ).toBe(0);
     await reselect();
     input("Welcome", "No baseline heading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(request(0).expectedSourceGeneration).toBe(1);
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(message, {
         id: "selection-source-conflict",
       }),
     );
-    expect(updateSectionProps).not.toHaveBeenCalled();
     expect(screen.getByDisplayValue("No baseline heading")).toBeTruthy();
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(0);
   });
 
   it("keeps an old undo record blocked even after the field is freshly selected", async () => {
@@ -1964,9 +2047,12 @@ describe("an inline edit of text the Theme changed", () => {
   it("is not saved when another tab's save, at a newer generation, changed the field", async () => {
     saved();
     const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    const warning = vi.spyOn(toast, "warning").mockImplementation(() => "");
     const client = readyQueryClient();
     const view = renderShell(client);
     await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await screen.findByDisplayValue("Welcome");
 
     // Another tab's save, read back at the generation it produced.
     view.rerender(
@@ -1990,15 +2076,18 @@ describe("an inline edit of text the Theme changed", () => {
       expect.anything(),
     );
 
-    // The control: an edit begun from the newer stored value is saved, on
-    // the generation that read brought.
+    // Reading the newer Document alone does not mean this frame has shown it.
+    // With no acknowledgement for that generation, the edit stays local and
+    // visibly unsaved until the page is presented again.
     sendInlineCommit("Theirs, edited", "Theirs");
-    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
-    const sent = updateSectionProps.mock.calls[0]![0] as {
-      data: { props: Record<string, unknown>; expectedDraftGeneration: number };
-    };
-    expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
-    expect(sent.data.expectedDraftGeneration).toBe(2);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith(
+      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+      expect.anything(),
+    );
+    expect(screen.getByDisplayValue("Theirs, edited")).toBeTruthy();
+    expect(saveStatus()).not.toBe("Saved");
   });
 
   it("is not saved when it names a field other than the one selected", async () => {
@@ -2272,6 +2361,10 @@ function Home() {
     );
     document.body.replaceChildren();
     expect(item).toBeTruthy();
+    const currentStyleRevision = posted.reduce((latest, message) => {
+      const revision = message.styleRevision;
+      return typeof revision === "number" ? Math.max(latest, revision) : latest;
+    }, 0);
     return {
       type: "morph:storefront-preview-select-section",
       sectionId: item!.sectionId,
@@ -2290,7 +2383,7 @@ function Home() {
       itemId: item!.itemId,
       contentUnavailable: item!.contentUnavailable,
       ...objposSelectionMetadata(item!),
-      styleRevision: 0,
+      styleRevision: currentStyleRevision,
       selectionRevision: 1,
       className: item!.element.getAttribute("class") ?? "",
       isSection: item!.element === item!.section,
@@ -2357,7 +2450,9 @@ function Home() {
         />
       </QueryClientProvider>
     );
-    const { rerender } = render(shell(editorContext));
+    const rendered = render(shell(editorContext));
+    if (document.querySelector("iframe")) liveFrame.ready();
+    const { rerender } = rendered;
     return {
       client,
       editorContext,
@@ -3089,6 +3184,16 @@ function Home() {
       await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
       await waitFor(() => expect(saveState()).toBe("saved"));
       expect(read.sentWhenRead).toBe(1);
+      expect(
+        messagesOfType("morph:storefront-preview-update-section-props").some(
+          (message) => {
+            const token = message.presentationToken as
+              | { documentBasis?: { draftGeneration?: number } }
+              | undefined;
+            return token?.documentBasis?.draftGeneration === 2;
+          },
+        ),
+      ).toBe(true);
       vi.useFakeTimers({
         toFake: ["setTimeout", "clearTimeout"],
         shouldAdvanceTime: true,
@@ -4189,6 +4294,7 @@ function Home() {
       </QueryClientProvider>
     );
     const { rerender } = render(shell(editorContext));
+    if (document.querySelector("iframe")) liveFrame.ready();
     return {
       receive: (next: StorefrontThemeEditorDTO) => rerender(shell(next)),
     };
