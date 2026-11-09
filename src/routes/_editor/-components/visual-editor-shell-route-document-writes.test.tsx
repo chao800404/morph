@@ -1815,7 +1815,13 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       });
     });
 
-    it("failed after a lost ensure answer (no mapping): nothing is sent or ensured, the step stops; Try again sends once, then the step runs", async () => {
+    // Stage 1 of "refuse a write with no version basis": after a lost ensure
+    // answer, the next ensure finds the document existing, so this editor
+    // cannot prove it created it, and generation 1 alone is no proof. Try
+    // again no longer sends at generation 1: it is refused before sending,
+    // kept, and "Load latest, keep mine" sends it once. (Before, Try again
+    // sent it at generation 1 with no basis.)
+    it("failed after a lost ensure answer (no mapping): nothing is sent or ensured, the step stops; Try again refuses for want of a basis, Keep mine sends once, then the step runs", async () => {
       loseNextEnsureAnswer();
       await openOn(headingReport);
       await type("Default heading", "Value 1");
@@ -1831,9 +1837,15 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       expect(server.route).toEqual({ generation: 1, props: null });
 
       pressTryAgain();
-      await waitFor(() => expect(sent()).toHaveLength(1));
+      await waitFor(() => expect(saveStatus()).toBe("Out of date"));
       await pause();
       expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      expect(server.route).toEqual({ generation: 1, props: null });
+
+      pressKeepMine();
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await pause();
       expect(sent()).toHaveLength(1);
       expect(sent()[0]).toMatchObject({
         templateId: ROUTE_DOC_ID,
@@ -1905,7 +1917,12 @@ describe("B: a lost ensure answer, then the author goes on", () => {
     await refusedOverTheirs("Value 1");
   });
 
-  it("mirror: with no outside change, typing again sends once at generation 1 and it is stored", async () => {
+  // Stage 1 of "refuse a write with no version basis": with the ensure's
+  // answer lost, the document is found existing next time, not proven
+  // created here; typing again is refused before sending even with no
+  // outside change, and Keep mine sends it once at generation 1. (Before,
+  // typing again sent it at generation 1 with no basis.)
+  it("mirror: with no outside change, typing again is refused for want of a basis; Keep mine sends once at generation 1 and it is stored", async () => {
     loseNextEnsureAnswer();
     await openOn(headingReport);
     await type("Default heading", "Value 1");
@@ -1915,6 +1932,13 @@ describe("B: a lost ensure answer, then the author goes on", () => {
     await pause(1_500);
 
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(server.route).toEqual({ generation: 1, props: null });
+
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toMatchObject({
       templateId: ROUTE_DOC_ID,
@@ -2112,13 +2136,24 @@ describe("D: steps that flush first stop on held content", () => {
 });
 
 describe("E: generation 1 is not proof this tab created the document", () => {
-  it("E1: another tab created it and left it as created: this tab's write goes once at generation 1 and is stored", async () => {
+  // Stage 1 of "refuse a write with no version basis": an existing
+  // generation-1 document this editor did not create is no exception. The
+  // write is refused before it is sent and kept; Keep mine sends it once.
+  // (Before, it went once at generation 1 with no basis.)
+  it("E1: another tab created it and left it as created: this tab's write is refused for want of a basis, kept; Keep mine sends once at generation 1", async () => {
     await openOn(headingReport);
     server.route = { generation: 1, props: null };
     await type("Default heading", "Value 1");
     await pause();
 
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(screen.getAllByDisplayValue("Value 1").length).toBeGreaterThan(0);
+
+    pressKeepMine();
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toMatchObject({
       templateId: ROUTE_DOC_ID,

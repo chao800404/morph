@@ -1281,6 +1281,11 @@ export const storefrontThemeDal = {
    * Idempotent. Two editors opening the same route race to create it; the
    * partial unique index on (theme, route_path) lets exactly one insert land,
    * and the other reads back the one that did.
+   *
+   * `createdByThisCall` is true only when this call's insert created the
+   * row: never for a row found existing, nor for the one a lost race reads
+   * back. The editor writes with no copy of a route document only onto one
+   * it created itself; generation 1 alone does not say so.
    */
   async ensureRouteTemplate(data: {
     storefrontId: string;
@@ -1289,6 +1294,7 @@ export const storefrontThemeDal = {
   }): Promise<
     | Readonly<{
         ok: true;
+        createdByThisCall: boolean;
         template: Readonly<{
           id: string;
           routePath: string;
@@ -1364,6 +1370,8 @@ export const storefrontThemeDal = {
       return row
         ? {
             ok: true as const,
+            // Found, not inserted by this call (also after a lost race).
+            createdByThisCall: false,
             template: {
               id: row.id,
               routePath: target.routePath,
@@ -1400,6 +1408,7 @@ export const storefrontThemeDal = {
     }
     return {
       ok: true,
+      createdByThisCall: true,
       template: {
         id,
         routePath: target.routePath,

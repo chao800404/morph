@@ -137,15 +137,18 @@ export function stageContentFields(args: {
     // the author kept typing on their own text, not on that copy. Only an
     // answered write (the field leaves the pending set) or the author's
     // "keep mine" (`rebaseFieldBasis`) moves it.
+    //
+    // An input made with no basis (no copy of the document was held when the
+    // author acted) keeps none: a later keystroke made while a copy is held
+    // does not give the field that copy as its basis. Unknown is the
+    // earliest copy of all.
     const earlier = Object.entries(fields)
       .filter(([old]) => old === path || old.startsWith(`${path}.`))
-      .map(([, field]) => field.basisDraftGeneration)
-      .filter((basis): basis is number => basis !== undefined);
-    if (args.basisDraftGeneration !== undefined) {
-      earlier.push(args.basisDraftGeneration);
-    }
-    const basisDraftGeneration =
-      earlier.length > 0 ? Math.min(...earlier) : undefined;
+      .map(([, field]) => field.basisDraftGeneration);
+    earlier.push(args.basisDraftGeneration);
+    const basisDraftGeneration = earlier.some((basis) => basis === undefined)
+      ? undefined
+      : Math.min(...(earlier as number[]));
     // A structural change owns the whole field, not stale descendant edits.
     for (const old of Object.keys(fields)) {
       if (old.startsWith(`${path}.`)) delete fields[old];
@@ -210,8 +213,10 @@ export function selectCurrentContentFields(
   snapshot?: ContentSnapshot,
   options?: {
     /**
-     * The copy a field with no recorded basis counts as made on. Unset, such
-     * a field is not checked against the snapshot's own range.
+     * The copy a field with no recorded basis counts as made on: only input
+     * made before its route document existed, on a document this editor
+     * confirmed creating (generation 1). Unset, such a field is refused
+     * (`missingBasisFailure`): nothing names the copy it was made on.
      */
     missingBasis?: number;
   },
@@ -221,9 +226,13 @@ export function selectCurrentContentFields(
   if (!entry.fields) {
     if (entry.expectedSourceGeneration !== generation)
       throw sourceSelectionFailure();
-    return snapshot
-      ? { ...entry, expectedDraftGeneration: snapshot.draftGeneration }
-      : entry;
+    if (!snapshot) return entry;
+    // No per-field record, so no basis: composed onto a copy only as the
+    // route-document exception allows.
+    if (options?.missingBasis === undefined) throw missingBasisFailure();
+    if (!basisWithinOwnRange(snapshot, options.missingBasis))
+      throw draftConflictFailure();
+    return { ...entry, expectedDraftGeneration: snapshot.draftGeneration };
   }
   const fields = Object.fromEntries(
     Object.entries(entry.fields).filter(
@@ -262,11 +271,12 @@ export function selectCurrentContentFields(
         stored[root] === undefined
           ? { ...stored, [root]: entry.props[root] }
           : stored;
+      const basis = field.basisDraftGeneration ?? options?.missingBasis;
+      // Made with no basis: refused before anything is sent, never checked
+      // against (or sent at) whatever copy is held now.
+      if (basis === undefined) throw missingBasisFailure();
       if (
-        !basisWithinOwnRange(
-          snapshot,
-          field.basisDraftGeneration ?? options?.missingBasis,
-        ) ||
+        !basisWithinOwnRange(snapshot, basis) ||
         !rowsStillMatch(base, path, field.rows)
       ) {
         throw draftConflictFailure();
@@ -310,6 +320,37 @@ export function draftConflictFailure(): PendingContentFailure {
       "This section changed elsewhere since you edited it. Your changes are kept.",
     ),
     { code: TEMPLATE_DRAFT_CONFLICT },
+  );
+}
+
+/**
+ * Said when a content write was made with no version basis: the editor held
+ * no copy of the document when the author acted (the latest accepted
+ * snapshot generation then), so it cannot say which version was edited.
+ */
+export const MISSING_BASIS_MESSAGE =
+  "Not saved: the editor could not confirm which version of this page you edited. Load the latest, reselect, and try again.";
+
+/**
+ * A content write made with no version basis, refused before it is sent.
+ * Reported as out of date (`TEMPLATE_DRAFT_CONFLICT`), so the input is kept
+ * and the existing "Load latest, keep mine" is the author's way on; marked
+ * `missingBasis` so the author is told why.
+ */
+export function missingBasisFailure(): PendingContentFailure & {
+  missingBasis: true;
+} {
+  return Object.assign(new Error(MISSING_BASIS_MESSAGE), {
+    code: TEMPLATE_DRAFT_CONFLICT,
+    missingBasis: true as const,
+  });
+}
+
+export function isMissingBasisFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { missingBasis?: unknown }).missingBasis === true
   );
 }
 

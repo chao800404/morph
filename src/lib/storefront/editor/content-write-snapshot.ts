@@ -199,12 +199,19 @@ export function newestAcceptedCopy(
   return { from: "snapshot", snapshot };
 }
 
-/** Whether an input made on the copy at `basis` may be composed on `snapshot`. */
+/**
+ * Whether an input made on the copy at `basis` may be composed on `snapshot`.
+ *
+ * With no basis the input was made on no copy this editor can name, so
+ * nothing shows that every step since was its own: never. (The basis is the
+ * latest accepted snapshot generation when the author acted, not a
+ * display-attested one.)
+ */
 export function basisWithinOwnRange(
   snapshot: ContentSnapshot,
   basis: number | undefined,
 ): boolean {
-  if (basis === undefined) return true;
+  if (basis === undefined) return false;
   return basis >= snapshot.ownSince && basis <= snapshot.draftGeneration;
 }
 

@@ -249,6 +249,13 @@ export type InspectorPropsChangeOptions = {
    * may be older than the one the editor holds by the time it is staged.
    */
   basisDraftGeneration?: number;
+  /**
+   * The input began on a copy the Inspector could not name (it was entered
+   * while the editor held no copy of the document, or while such an update
+   * was held back): the shell must not fill a basis in from the copy it
+   * holds now, and the write is refused for want of one.
+   */
+  basisUnknown?: boolean;
 };
 
 /**
@@ -317,6 +324,11 @@ type EditorStyleInspectorProps = {
   onResetContentFields?: (
     sectionId: string,
     fieldKeys: string[],
+    /** The copy the panel showed when it was pressed, taken at the press. */
+    options?: Readonly<{
+      basisDraftGeneration?: number;
+      basisUnknown?: boolean;
+    }>,
   ) => Promise<{ success: boolean; message?: string }>;
   selection?: EditorSelectionDescriptor | null;
   /**
@@ -939,9 +951,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     element: HTMLElement;
     value: string;
     basis: number | undefined;
+    /**
+     * Entered while the shell named no copy (`contentBasis` gave none), or
+     * while an update entered that way was still held back: what is typed
+     * here was made on no copy anyone can name.
+     */
+    basisUnknown: boolean;
   } | null>(null);
   /** The copy shown when the first update still held back was read. */
   const heldBackBasisRef = useRef<number | undefined>(undefined);
+  /** That first held-back update was read in an input entered on no copy. */
+  const heldBackUnknownRef = useRef(false);
   const [shownEpochs, setShownEpochs] = useState<
     Readonly<Record<string, number>>
   >({});
@@ -955,13 +975,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     );
     if (pending.length === 0) {
       heldBackBasisRef.current = undefined;
+      heldBackUnknownRef.current = false;
       return;
     }
     if (contentFocusRef.current) {
       heldBackBasisRef.current ??= contentFocusRef.current.basis;
+      if (contentFocusRef.current.basisUnknown) {
+        heldBackUnknownRef.current = true;
+      }
       return;
     }
     heldBackBasisRef.current = undefined;
+    heldBackUnknownRef.current = false;
     setShownEpochs((current) => {
       const next = { ...current };
       for (const [key, epoch] of pending) next[key] = epoch;
@@ -975,11 +1000,41 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
   const handleContentFocus = (event: React.FocusEvent<HTMLElement>) => {
     if (!isContentInput(event.target)) return;
+    const now = contentBasis?.();
     contentFocusRef.current = {
       element: event.target,
       value: (event.target as HTMLInputElement | HTMLTextAreaElement).value,
-      basis: earlierBasis(contentBasis?.(), heldBackBasisRef.current),
+      basis: earlierBasis(now, heldBackBasisRef.current),
+      // Only a shell that names copies can name none.
+      basisUnknown:
+        heldBackUnknownRef.current ||
+        (contentBasis !== undefined && now === undefined),
     };
+  };
+  /**
+   * The copy a press is made on, taken at the press (pointer down comes
+   * before the input it leaves blurs and forgets its copy): the focused
+   * input's, else the latest accepted snapshot generation now.
+   */
+  const pressBasisRef = useRef<{
+    basisDraftGeneration?: number;
+    basisUnknown?: boolean;
+  } | null>(null);
+  const pressBasisNow = () => {
+    const focus = contentFocusRef.current;
+    if (focus) {
+      return focus.basisUnknown
+        ? { basisUnknown: true }
+        : { basisDraftGeneration: focus.basis };
+    }
+    if (heldBackUnknownRef.current) return { basisUnknown: true };
+    const basis = earlierBasis(contentBasis?.(), heldBackBasisRef.current);
+    return basis === undefined && contentBasis !== undefined
+      ? { basisUnknown: true }
+      : { basisDraftGeneration: basis };
+  };
+  const capturePressBasis = () => {
+    pressBasisRef.current = pressBasisNow();
   };
   const handleContentBlur = (event: React.FocusEvent<HTMLElement>) => {
     if (contentFocusRef.current?.element !== event.target) return;
@@ -1017,6 +1072,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       // Every write names the field it is for; one the code sets is not sent.
       const root = options?.inputFieldPath?.split(".")[0];
       if (propsSetInCode === "any" || (root && isSetInCode(root))) return;
+      // Typed in an input entered on no copy: said so, never given the
+      // copy the shell holds now.
+      if (contentFocusRef.current?.basisUnknown) {
+        emitPropsChange(next, { ...options, basisUnknown: true });
+        return;
+      }
       const basis = earlierBasis(
         options?.basisDraftGeneration,
         contentFocusRef.current?.basis,
@@ -1689,7 +1750,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       return undefined;
     }
     return () => {
-      void onResetContentFields(section.id, [fieldKey]).then(
+      // The copy it was pressed on: taken at pointer down, or now for a
+      // press from the keyboard. Never left for the shell to fill in later.
+      const press = pressBasisRef.current ?? pressBasisNow();
+      pressBasisRef.current = null;
+      void onResetContentFields(section.id, [fieldKey], press).then(
         (result) => {
           if (!result.success) return;
           const { [fieldKey]: _removed, ...rest } = localPropsRef.current;
@@ -2907,6 +2972,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       className="min-w-0 space-y-3 p-3 text-xs"
       onFocus={handleContentFocus}
       onBlur={handleContentBlur}
+      // Before the input a press leaves blurs: the copy it was made on.
+      onPointerDownCapture={capturePressBasis}
     >
       {/* Component Header & Code Bridge */}
       <div className="space-y-2 rounded-xl border bg-muted/40 p-3">

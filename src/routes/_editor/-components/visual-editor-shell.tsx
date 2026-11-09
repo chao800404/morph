@@ -28,6 +28,9 @@ import {
   sentContentWrite,
   rebaseFieldBasis,
   draftConflictFailure,
+  isMissingBasisFailure,
+  MISSING_BASIS_MESSAGE,
+  missingBasisFailure,
   ROUTE_DOCUMENT_CREATED_GENERATION,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
@@ -597,6 +600,13 @@ export const HISTORY_MOVED_MESSAGE =
 export const HISTORY_NEWER_EDIT_MESSAGE =
   "an edit still waiting to be saved was saved first and is now the latest step. Undo or redo again from there.";
 /**
+ * Said when Show / Hide is pressed while an Undo or Redo of the same section
+ * is still out (or held unanswered): pressing it would retire the history
+ * that run moves, so nothing is changed.
+ */
+export const HISTORY_RUN_PENDING_MESSAGE =
+  "Not saved: an Undo or Redo of this section is still saving. Try again once it has finished.";
+/**
  * Said when the canvas of a Theme whose framework is not TanStack Start is
  * clicked or edited: its frame cannot say which page it shows, so nothing it
  * sends is taken, now or later. Waiting does not help; the panel and Code
@@ -950,8 +960,17 @@ type ContentResetOptions = Readonly<{
    * sent only onto a copy every step since was this editor's own
    * (`basisWithinOwnRange`); anything else is someone else's change, and
    * the undo is refused as out of date rather than written over it.
+   *
+   * For the author's own "Use code default": the copy the Inspector showed
+   * when it was pressed (captured at the press), checked the same way.
    */
   basisDraftGeneration?: number;
+  /**
+   * The press was made on a copy the Inspector could not name (its input
+   * was entered while no copy was held): no basis is filled in from the
+   * copy held now, and the removal is refused.
+   */
+  basisUnknown?: boolean;
   /** The history run sending it: what a lost answer later confirms. */
   attempt?: EditorHistoryAttempt;
   /**
@@ -2101,6 +2120,50 @@ export function VisualEditorShell({
   /** Route documents created in this session, by the placeholder they replaced. */
   const routeTemplateIdsRef = useRef<Map<string, string>>(new Map());
   /**
+   * The route documents this editor's own ensure created (the server said
+   * `createdByThisCall`), by real id. Input made while such a route had no
+   * document has no basis; it may go onto the document only if it is one of
+   * these, as made on generation 1. One found existing, or read back after a
+   * lost race, is not, whatever its generation.
+   */
+  const routeDocumentsCreatedHereRef = useRef<Set<string>>(new Set());
+  /**
+   * The basis of an input the Inspector says began on a copy it could not
+   * name. Only on a route document this editor's ensure created can that
+   * be named: the input began before the document existed, so it was made on
+   * the document as created (generation 1), and is checked from there. On
+   * any other document: none, and the write is refused for want of one.
+   */
+  const unnamedCopyBasis = useCallback(
+    (templateId: string): number | undefined =>
+      routeDocumentsCreatedHereRef.current.has(
+        routeTemplateIdsRef.current.get(templateId) ?? templateId,
+      )
+        ? ROUTE_DOCUMENT_CREATED_GENERATION
+        : undefined,
+    [],
+  );
+  /**
+   * Sections with a history run (Undo / Redo) out now, by count. A first
+   * Show / Hide of such a section is refused: it would retire the history
+   * that run moves (`invalidateSectionHistory`).
+   */
+  const replayingSectionsRef = useRef<Map<string, number>>(new Map());
+  const whileReplaying = useCallback(
+    async <T,>(sectionId: string, run: () => Promise<T>): Promise<T> => {
+      const counts = replayingSectionsRef.current;
+      counts.set(sectionId, (counts.get(sectionId) ?? 0) + 1);
+      try {
+        return await run();
+      } finally {
+        const left = (counts.get(sectionId) ?? 1) - 1;
+        if (left > 0) counts.set(sectionId, left);
+        else counts.delete(sectionId);
+      }
+    },
+    [],
+  );
+  /**
    * The page's document as the Inspector keys its inputs. A route with no
    * document of its own is written under its placeholder until its first
    * write creates one; the document the server answered that write's ensure
@@ -2166,7 +2229,9 @@ export function VisualEditorShell({
           if (now === null || now !== resolve(recordedTemplateId)) {
             throw new Error(HISTORY_OTHER_PAGE_MESSAGE);
           }
-          return action(attempt);
+          // Counted as out for its section until it settles, so a first
+          // Show / Hide of the section does not retire it meanwhile.
+          return whileReplaying(sectionId, async () => action(attempt));
         };
       return {
         label: entry.label,
@@ -2175,7 +2240,7 @@ export function VisualEditorShell({
         redo: fenced(entry.redo),
       };
     },
-    [],
+    [whileReplaying],
   );
 
   /**
@@ -2253,6 +2318,13 @@ export function VisualEditorShell({
             if (!ensured.success) return ensured;
             templateId = ensured.data.id;
             routeTemplateIdsRef.current.set(queueKey, templateId);
+            // Only this call's own insert is proof the editor created it.
+            if (
+              (ensured.data as { createdByThisCall?: unknown })
+                .createdByThisCall === true
+            ) {
+              routeDocumentsCreatedHereRef.current.add(templateId);
+            }
             if (!templateDraftGenerationRef.current.has(templateId)) {
               templateDraftGenerationRef.current.set(
                 templateId,
@@ -2603,6 +2675,11 @@ export function VisualEditorShell({
         // it (generation 1, checked above): an answer at 2 then shows the step
         // 1 -> 2 was this write's.
         let composedOnCreatedDocument = false;
+        // The route-document exception: input made before the document
+        // existed counts as made on generation 1 only on a document this
+        // editor's own ensure created (`routeDocumentsCreatedHereRef`). Set
+        // once the document's id is known, before the write is composed.
+        let onDocumentCreatedHere = false;
         const result = await commitPendingContent({
           key,
           pending: pendingPropsMapRef.current,
@@ -2619,7 +2696,7 @@ export function VisualEditorShell({
                     ? snapshotSectionProps(writeSnapshot, entry.sectionId)
                     : storedSectionPropsRef.current(entry.sectionId, tid),
                   writeSnapshot,
-                  madeBeforeDocument
+                  onDocumentCreatedHere
                     ? { missingBasis: ROUTE_DOCUMENT_CREATED_GENERATION }
                     : undefined,
                 ),
@@ -2649,18 +2726,21 @@ export function VisualEditorShell({
                 if (replay && !replay.resend && !writeSnapshot) {
                   throw draftConflictFailure();
                 }
-                // With no copy of the document held, the only one such input
-                // can go onto is the document as created. A route document
-                // already past that (written by someone, or found existing
-                // after an answer was lost) has not been read here: refused
-                // as out of date, never sent over what it holds.
-                if (
-                  !replay?.resend &&
+                onDocumentCreatedHere =
                   madeBeforeDocument &&
-                  !writeSnapshot &&
-                  generation !== ROUTE_DOCUMENT_CREATED_GENERATION
-                ) {
-                  throw draftConflictFailure();
+                  routeDocumentsCreatedHereRef.current.has(templateId);
+                if (!replay?.resend && !writeSnapshot) {
+                  // No copy of an existing document held: nothing names the
+                  // version this input was made on. Refused before anything
+                  // is sent, never sent at the generation the queue holds.
+                  if (!onDocumentCreatedHere) throw missingBasisFailure();
+                  // The only copy such input can go onto is the document as
+                  // this editor created it. One already past that (written
+                  // by someone since) has not been read here: refused as
+                  // out of date, never sent over what it holds.
+                  if (generation !== ROUTE_DOCUMENT_CREATED_GENERATION) {
+                    throw draftConflictFailure();
+                  }
                 }
                 composedOnCreatedDocument =
                   !replay?.resend && madeBeforeDocument && !writeSnapshot;
@@ -2894,6 +2974,12 @@ export function VisualEditorShell({
         // The payload is retained either way; what differs is what the author
         // can do about it, so a conflict is recorded rather than only reported.
         if ((error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT) {
+          // Made with no version basis: nothing was sent. The author is told
+          // why; "Load latest, keep mine" is how it goes on, never a resend
+          // of its own with a newer basis.
+          if (isMissingBasisFailure(error)) {
+            toast.error(MISSING_BASIS_MESSAGE, { id: "content-missing-basis" });
+          }
           setContentConflicts((current) => ({ ...current, [key]: tid }));
         } else if (
           (error as { code?: string }).code === UNANSWERED_EARLIER_SAVE_CODE
@@ -11780,7 +11866,6 @@ export function VisualEditorShell({
       const recordHistory = options.recordHistory ?? true;
       const historyGeneration = options.historyGeneration;
       const restore = { ...options.restore };
-      const basisDraftGeneration = options.basisDraftGeneration;
       reportAuthenticatedUserActivity();
       if (!isDocumentWriteTarget(sectionId, templateIdForSection)) {
         return { success: false, message: "Nothing to reset here." };
@@ -11792,6 +11877,30 @@ export function VisualEditorShell({
         : templateIdForSection(sectionId);
       if (!templateId || fieldKeys.length === 0) {
         return { success: false, message: "Nothing to reset here." };
+      }
+      // The author's own press (not a history run, not a resend): made on
+      // the copy the Inspector showed when it was pressed, or, if it named
+      // none, on the latest accepted snapshot now, at the press. Never
+      // filled in later, when the removal is sent.
+      const authorPress = !resend && !options.attempt;
+      const basisDraftGeneration = authorPress
+        ? options.basisUnknown
+          ? unnamedCopyBasis(templateId)
+          : earlierBasis(
+              options.basisDraftGeneration,
+              // `contentBasisFor`, which is declared below this handler.
+              contentSnapshotsRef.current.get(
+                routeTemplateIdsRef.current.get(templateId) ?? templateId,
+              )?.draftGeneration,
+            )
+        : options.basisDraftGeneration;
+      // With no basis it is not sent, unless the input was made before the
+      // route had a document at all (decided when the document is known).
+      const madeBeforeDocument =
+        routePathFromTemplatePlaceholder(templateId) !== null;
+      if (authorPress && basisDraftGeneration === undefined && !madeBeforeDocument) {
+        toast.error(MISSING_BASIS_MESSAGE, { id: "content-missing-basis" });
+        return { success: false, message: MISSING_BASIS_MESSAGE };
       }
       const generations = fieldKeys.map(
         (path) =>
@@ -11916,6 +12025,16 @@ export function VisualEditorShell({
               throw draftConflictFailure();
             }
             expectedDraftGeneration = snapshot.draftGeneration;
+          } else if (
+            !madeBeforeDocument ||
+            !routeDocumentsCreatedHereRef.current.has(resolvedTemplateId) ||
+            contentSnapshotsRef.current.has(resolvedTemplateId) ||
+            generation !== ROUTE_DOCUMENT_CREATED_GENERATION
+          ) {
+            // No basis: only onto a route document this editor's ensure
+            // created, as created (generation 1, no copy read since). Never
+            // at whatever generation the queue holds now.
+            throw missingBasisFailure();
           }
           reportSent(expectedDraftGeneration);
           const sent =
@@ -11967,7 +12086,13 @@ export function VisualEditorShell({
             throw error;
           },
         },
-      )) as {
+      ).catch((error: unknown) => {
+        // Refused before it was sent for want of a basis: nothing left, the
+        // value stays, and the author is told why.
+        if (!isMissingBasisFailure(error)) throw error;
+        toast.error(MISSING_BASIS_MESSAGE, { id: "content-missing-basis" });
+        return { success: false, message: MISSING_BASIS_MESSAGE };
+      })) as {
         success: boolean;
         message?: string;
         error?: string;
@@ -12023,6 +12148,7 @@ export function VisualEditorShell({
       historyStepBasis,
       setHistoryStepBasis,
       noteHistoryStepAnswered,
+      unnamedCopyBasis,
     ],
   );
   resetContentFieldsRef.current = handleResetContentFields;
@@ -12288,11 +12414,16 @@ export function VisualEditorShell({
         routePath: routePathForTemplate(templateId),
         inputPath: options?.inputFieldPath,
         // The copy the author was looking at when they began this input, if
-        // the Inspector knows it is older than the one the editor holds now.
-        basisDraftGeneration: earlierBasis(
-          options?.basisDraftGeneration,
-          contentBasisFor(templateId),
-        ),
+        // the Inspector knows it is older than the one the editor holds now;
+        // otherwise the latest accepted snapshot generation now, at the
+        // input. None when the Inspector says the input began on a copy it
+        // could not name: not filled in from the copy held now.
+        basisDraftGeneration: options?.basisUnknown
+          ? unnamedCopyBasis(templateId)
+          : earlierBasis(
+              options?.basisDraftGeneration,
+              contentBasisFor(templateId),
+            ),
         sourceForPath: (path) =>
           options?.historySourceGeneration !== undefined
             ? options.historySourceGeneration
@@ -12336,6 +12467,7 @@ export function VisualEditorShell({
       currentContentSourceGeneration,
       provenFieldGeneration,
       replaySectionProps,
+      unnamedCopyBasis,
     ],
   );
 
@@ -12530,7 +12662,20 @@ export function VisualEditorShell({
       targetFieldPath: string,
     ) => {
       if (isPageStandInId(sectionId)) return;
-      invalidateSectionHistory(sectionId);
+      // The basis, taken as the drop arrives (the shell is not told when a
+      // drag starts): the latest accepted snapshot generation of the
+      // section's document now. With none, for a document that exists, the
+      // swap is not sent (the write's own check refuses it) and the section's
+      // history is not retired for it.
+      const templateIdAtDrop = templateIdForSection(sectionId);
+      const basisAtDrop = templateIdAtDrop
+        ? contentBasisFor(templateIdAtDrop)
+        : undefined;
+      const noBasisAtDrop =
+        templateIdAtDrop !== null &&
+        basisAtDrop === undefined &&
+        routePathFromTemplatePlaceholder(templateIdAtDrop) === null;
+      if (!noBasisAtDrop) invalidateSectionHistory(sectionId);
       if (!activeTemplate) return;
       // The section as this page shows it: a slot its source proves is one
       // even before anything is stored for it. Read only — the stored copy
@@ -12660,7 +12805,8 @@ export function VisualEditorShell({
         inputPath: listPath,
         routePath: routePathForTemplate(templateId),
         sourceForPath: () => generation,
-        basisDraftGeneration: contentBasisFor(templateId),
+        // Taken as the drop arrived, never re-read here.
+        basisDraftGeneration: basisAtDrop,
       });
       if (!reorderPending) return;
       if (!pendingPropsBaselineRef.current.has(key)) {
@@ -12747,7 +12893,11 @@ export function VisualEditorShell({
         // The undo goes onto the copy the drag's write was answered with; an
         // answer that reports none leaves it no basis, so that undo refuses.
         setHistoryStepBasis(entryId, "undo", answeredDraftGenerationOf(answer));
-      } catch {
+      } catch (error) {
+        // Not sent for want of a basis: the swap is kept, pending and on the
+        // canvas, as not saved (Out of date), for the author's "Load latest,
+        // keep mine". Nothing was answered, so there is nothing to roll back.
+        if (isMissingBasisFailure(error)) return;
         // Sent, and no answer: the swap may have landed. It stays pending and
         // on the canvas like any content write, so "Try again" asks the server
         // first and sends it once more only if it did not land. Dropping it
@@ -12794,6 +12944,8 @@ export function VisualEditorShell({
       effectiveThemeFiles,
       historyStepBasis,
       setHistoryStepBasis,
+      contentBasisFor,
+      contentKeyFor,
     ],
   );
 
@@ -12815,6 +12967,31 @@ export function VisualEditorShell({
     async (sectionId: string, enabled: boolean) => {
       // A page stand-in is not a section: there is nothing to hide or show.
       if (isPageStandInId(sectionId)) return;
+      // The basis, taken at the click: the latest accepted snapshot
+      // generation of the section's document now.
+      const templateIdAtClick = templateIdForSection(sectionId);
+      const basisAtClick = templateIdAtClick
+        ? contentBasisFor(templateIdAtClick)
+        : undefined;
+      // Everything below is checked before the history is retired or the
+      // canvas is told anything (#391 review P2).
+      //
+      // An Undo / Redo of this section still out, or held unanswered with
+      // the run it completes: retiring the section's history now would
+      // delete that run, and it could land with the history unmoved.
+      if (templateIdAtClick) {
+        const heldKey = contentKeyFor(templateIdAtClick, sectionId);
+        if (
+          replayingSectionsRef.current.has(sectionId) ||
+          (unconfirmedContentRef.current.has(heldKey) &&
+            unconfirmedResetLinksRef.current.get(heldKey)?.kind === "history")
+        ) {
+          toast.error(HISTORY_RUN_PENDING_MESSAGE, {
+            id: "history-run-pending",
+          });
+          return;
+        }
+      }
       const generation = freshContentSelectionGeneration();
       if (
         generation === null ||
@@ -12827,9 +13004,16 @@ export function VisualEditorShell({
         });
         return;
       }
-      invalidateSectionHistory(sectionId);
+      // With no basis, for a document that exists: not sent (the write's own
+      // check refuses it, and keeps the toggle as not saved), and neither the
+      // history nor the canvas is changed for it.
+      const noBasisAtClick =
+        templateIdAtClick !== null &&
+        basisAtClick === undefined &&
+        routePathFromTemplatePlaceholder(templateIdAtClick) === null;
+      if (!noBasisAtClick) invalidateSectionHistory(sectionId);
 
-      const templateId = templateIdForSection(sectionId);
+      const templateId = templateIdAtClick;
       if (!templateId) {
         // Nothing stores it, so nothing holds an intent: the canvas toggles.
         syncPreviewSectionProps(sectionId, undefined, enabled);
@@ -12852,7 +13036,8 @@ export function VisualEditorShell({
         next: { enabled },
         routePath: routePathForTemplate(templateId),
         sourceForPath: () => generation,
-        basisDraftGeneration: contentBasisFor(templateId),
+        // Taken at the click, never re-read here.
+        basisDraftGeneration: basisAtClick,
       });
       if (!togglePending) {
         reconcilePreviewSection(sectionId);
@@ -12868,8 +13053,9 @@ export function VisualEditorShell({
       // 1. Instant 0ms visual toggle on canvas, posted once this toggle is
       // the intent the editor holds and before anything is awaited: a hide as
       // `{ enabled: false }`, a show with the section's values in the same
-      // message (`reconcilePreviewSection`).
-      reconcilePreviewSection(sectionId);
+      // message (`reconcilePreviewSection`). Not for a toggle with no basis:
+      // it is refused below before anything is sent, and stays as not saved.
+      if (!noBasisAtClick) reconcilePreviewSection(sectionId);
 
       let answer: unknown;
       try {
@@ -12922,6 +13108,8 @@ export function VisualEditorShell({
       currentContentSourceGeneration,
       freshContentSelectionGeneration,
       reconcilePreviewSection,
+      contentBasisFor,
+      contentKeyFor,
     ],
   );
 

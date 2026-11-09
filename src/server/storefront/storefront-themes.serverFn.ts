@@ -386,8 +386,13 @@ export const ensureStorefrontThemeRouteTemplate = createServerFn({
     if (!input.success) return input;
     try {
       const result = await storefrontThemeDal.ensureRouteTemplate(input.data);
+      // Whether this call created the document is passed on: the editor
+      // writes with no copy of it only onto one it created itself.
       return result.ok
-        ? ok("Route document ready", result.template)
+        ? ok("Route document ready", {
+            ...result.template,
+            createdByThisCall: result.createdByThisCall,
+          })
         : fail(result.reason, { error: "ROUTE_TEMPLATE_UNAVAILABLE" });
     } catch (error) {
       return failure(

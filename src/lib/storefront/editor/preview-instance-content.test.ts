@@ -118,8 +118,13 @@ describe("instanceReplaySection", () => {
       { id: "b", title: "B" },
       { id: "a", title: "A" },
     ];
+    // Made on the snapshot's own copy (10), so only the row decides: a field
+    // with no basis is not put on the canvas at all now (stage 1 of "refuse
+    // a write with no version basis"; `basisWithinOwnRange(_, undefined)` is
+    // false), which would hide what this case is about.
     const typedInA = field("A typed", {
       rows: [{ rowPath: "items.0", id: "a" }],
+      basisDraftGeneration: 10,
     });
     expect(
       replay({
