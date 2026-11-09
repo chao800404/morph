@@ -6,6 +6,7 @@ import {
   stageContentFields,
   selectCurrentContentFields,
   acknowledgeContentFields,
+  discardPendingContentPath,
   rebaseFieldBasis,
   MISSING_BASIS_MESSAGE,
   type PendingContentEntry,
@@ -204,6 +205,91 @@ describe("per-field source recovery", () => {
       heading: "Confirmed heading",
     });
     expect(save).toHaveBeenCalledOnce();
+  });
+});
+
+describe("discarding one conflicted content list", () => {
+  const field = (value: unknown, basisDraftGeneration: number) => ({
+    value,
+    sourceGeneration: 3,
+    basisDraftGeneration,
+  });
+
+  it("drops only the selected list paths and overlays every sibling draft on the fresh document", () => {
+    const incoming = {
+      heading: "Remote heading",
+      items: [{ id: "remote", title: "Remote row" }],
+      related: [{ id: "related-base", title: "Related base" }],
+    };
+    const oldBaseline = {
+      heading: "Old heading",
+      items: [{ id: "old", title: "Old row" }],
+      related: [{ id: "related-base", title: "Related base" }],
+    };
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      expectedDraftGeneration: 4,
+      expectedSourceGeneration: 3,
+      props: {
+        heading: "Mine heading",
+        items: [{ id: "old", title: "Mine row" }],
+        related: [{ id: "related-mine", title: "Mine related" }],
+      },
+      fields: {
+        heading: field("Mine heading", 4),
+        "items.0.title": field("Mine row", 4),
+        related: field(
+          [{ id: "related-mine", title: "Mine related" }],
+          4,
+        ),
+      },
+    };
+
+    const result = discardPendingContentPath({
+      entry,
+      baseline: oldBaseline,
+      incoming,
+      fieldPath: "items",
+    });
+
+    expect(result.pending).toMatchObject({
+      expectedDraftGeneration: 4,
+      expectedSourceGeneration: 3,
+      props: {
+        heading: "Mine heading",
+        items: incoming.items,
+        related: [{ id: "related-mine", title: "Mine related" }],
+      },
+    });
+    expect(Object.keys(result.pending!.fields!)).toEqual([
+      "heading",
+      "related",
+    ]);
+    expect(result.pending!.fields!.heading).toEqual(field("Mine heading", 4));
+    expect(result.baseline).toEqual({
+      ...oldBaseline,
+      items: incoming.items,
+    });
+  });
+
+  it("returns no pending entry when the selected list was the only draft", () => {
+    const incoming = { items: [{ id: "remote", title: "Remote row" }] };
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: { items: [{ id: "mine", title: "Mine row" }] },
+      fields: {
+        items: field([{ id: "mine", title: "Mine row" }], 4),
+      },
+    };
+
+    expect(
+      discardPendingContentPath({
+        entry,
+        baseline: { items: [{ id: "old", title: "Old row" }] },
+        incoming,
+        fieldPath: "items",
+      }),
+    ).toEqual({ pending: null, baseline: incoming });
   });
 });
 
