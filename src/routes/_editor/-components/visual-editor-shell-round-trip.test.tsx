@@ -885,13 +885,17 @@ describe("a list both writers changed", () => {
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(saveStatus()).toBe("Out of date");
 
-    // The way out names the list, and asks before anything is discarded.
+    // The list itself names the unsaved conflict and opens a list-only
+    // confirmation. A toolbar action that discards the whole section can
+    // also erase unrelated fields the author still has pending.
+    expect(await screen.findByText("Not saved")).toBeTruthy();
     act(() => {
-      screen.getByRole("button", { name: "Discard mine…" }).click();
+      screen.getByRole("button", { name: /discard unsaved changes to items/i }).click();
     });
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog.textContent).toMatch(/items in hero/);
-    expect(dialog.textContent).toMatch(/cannot be undone/);
+    expect(dialog.textContent).toMatch(/Discard changes to .*items/);
+    expect(dialog.textContent).toMatch(/only your unsaved changes to this list/);
+    expect(dialog.textContent).toMatch(/Other fields and lists will stay/);
 
     // Declined, nothing changes: the draft is still there to decide about.
     act(() => {
