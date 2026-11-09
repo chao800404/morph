@@ -7,6 +7,7 @@ import {
   selectCurrentContentFields,
   acknowledgeContentFields,
   discardPendingContentPath,
+  contentEntryTouchesPath,
   rebaseFieldBasis,
   MISSING_BASIS_MESSAGE,
   type PendingContentEntry,
@@ -209,6 +210,28 @@ describe("per-field source recovery", () => {
 });
 
 describe("discarding one conflicted content list", () => {
+  it("matches frozen list actions, nested row fields, and resets only within that list", () => {
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: { heading: "Mine", items: [{ id: "row", title: "Mine row" }] },
+      fields: {
+        heading: { value: "Mine", sourceGeneration: 3, basisDraftGeneration: 4 },
+        "items.0.title": {
+          value: "Mine row",
+          sourceGeneration: 3,
+          basisDraftGeneration: 4,
+        },
+      },
+      listActionPaths: ["items"],
+      resetProps: ["items"],
+    };
+
+    expect(contentEntryTouchesPath(entry, "items")).toBe(true);
+    expect(contentEntryTouchesPath(entry, "heading")).toBe(true);
+    expect(contentEntryTouchesPath(entry, "related")).toBe(false);
+    expect(contentEntryTouchesPath(entry, "items..title")).toBe(false);
+  });
+
   const field = (value: unknown, basisDraftGeneration: number) => ({
     value,
     sourceGeneration: 3,
