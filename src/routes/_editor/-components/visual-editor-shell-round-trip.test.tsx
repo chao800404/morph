@@ -2662,6 +2662,64 @@ describe("Style replay read-back confirmation", () => {
     await waitFor(() => expect(server.file().content).toBe(STYLE_SOURCE));
     expect(historyState()).toEqual({ undoAvailable: false, redoAvailable: true });
   });
+
+  it.each(["file", "source"] as const)(
+    "does not resend an unanswered Style Undo after the %s basis moves",
+    async (moved) => {
+      const server = controlledThemeFile(STYLE_SOURCE);
+      await applyAndSaveStyle(server);
+      server.outcomes.push("offline");
+
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await waitFor(() =>
+        expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+      );
+      if (moved === "file") server.externalWrite(STYLE_REMOTE);
+      else server.externalSourceWrite();
+
+      fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+      await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(server.list).toHaveBeenCalledTimes(2));
+
+      expect(server.save).toHaveBeenCalledTimes(2);
+      expect(server.file().content).toBe(
+        moved === "file" ? STYLE_REMOTE : STYLE_AFTER,
+      );
+      expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+      if (moved === "file") {
+        expect(localThemeFile()?.conflict?.remoteContent).toBe(STYLE_REMOTE);
+      } else {
+        expect(localThemeFile()?.sourceConflict).toBe(true);
+        expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE);
+      }
+    },
+  );
+
+  it("keeps an unanswered Style replay linked when recovery read-back fails", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    server.outcomes.push("offline-after-landing");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+    );
+    server.list.mockRejectedValueOnce(new Error("Read-back unavailable"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(server.list).toHaveBeenCalledTimes(2));
+
+    expect({
+      writes: server.save.mock.calls.length,
+      unconfirmed: localThemeFile()?.unconfirmedContent,
+      history: historyState(),
+    }).toEqual({
+      writes: 2,
+      unconfirmed: STYLE_SOURCE,
+      history: { undoAvailable: true, redoAvailable: false },
+    });
+  });
 });
 
 describe("Edit replay as the file-history control", () => {
