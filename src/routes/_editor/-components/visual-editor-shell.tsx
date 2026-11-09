@@ -12026,13 +12026,18 @@ export function VisualEditorShell({
     ],
   );
   resetContentFieldsRef.current = handleResetContentFields;
-  previewResetRef.current = (sectionId, restore, reset) =>
+  previewResetRef.current = (sectionId, restore, reset) => {
+    // `enabled` is the section's visibility, not one of its values: a replay
+    // of a Show / Hide step tells the preview so through the visibility
+    // reconcile its answer runs (`reconcileAfterRemoval`), never as a prop.
+    const { enabled: _visibility, ...values } = restore;
     syncPreviewSectionProps(
       sectionId,
-      parsePreviewSectionProps(restore) ?? {},
+      parsePreviewSectionProps(values) ?? {},
       undefined,
       reset,
     );
+  };
 
   /**
    * The draft generation of the document an input is being made on now: the
@@ -12806,34 +12811,23 @@ export function VisualEditorShell({
     };
   }, [handleSwapSectionArrayItems]);
 
-  /** Lets a recorded toggle call back without pinning a stale closure. */
-  const handleSectionToggleEnabledRef = useRef<
-    | ((
-        sectionId: string,
-        enabled: boolean,
-        historyGeneration?: number,
-      ) => Promise<void>)
-    | null
-  >(null);
-
   const handleSectionToggleEnabled = useCallback(
-    async (sectionId: string, enabled: boolean, historyGeneration?: number) => {
+    async (sectionId: string, enabled: boolean) => {
       // A page stand-in is not a section: there is nothing to hide or show.
       if (isPageStandInId(sectionId)) return;
-      const generation = historyGeneration ?? freshContentSelectionGeneration();
+      const generation = freshContentSelectionGeneration();
       if (
         generation === null ||
         !Number.isSafeInteger(generation) ||
         generation < 1 ||
         generation !== currentContentSourceGeneration()
       ) {
-        if (historyGeneration !== undefined) throw sourceSelectionFailure();
         toast.error(RESELECT_CONTENT_MESSAGE, {
           id: "selection-source-conflict",
         });
         return;
       }
-      if (historyGeneration === undefined) invalidateSectionHistory(sectionId);
+      invalidateSectionHistory(sectionId);
 
       const templateId = templateIdForSection(sectionId);
       if (!templateId) {
@@ -12877,34 +12871,45 @@ export function VisualEditorShell({
       // message (`reconcilePreviewSection`).
       reconcilePreviewSection(sectionId);
 
+      let answer: unknown;
       try {
-        await commitSectionPending(keyTemplateId, key, false);
-      } catch (error) {
-        if (historyGeneration !== undefined) throw error;
+        answer = await commitSectionPending(keyTemplateId, key, false);
+      } catch {
         return;
       }
-      if (historyGeneration === undefined) {
-        history.record(
-          fenceSectionHistory(sectionId, templateId, {
-            label: enabled ? "Show section" : "Hide section",
-            undo: () =>
-              handleSectionToggleEnabledRef.current?.(
-                sectionId,
-                !enabled,
-                generation,
-              ),
-            redo: () =>
-              handleSectionToggleEnabledRef.current?.(
-                sectionId,
-                enabled,
-                generation,
-              ),
-          }),
-        );
-      }
+      // Undo and Redo are history runs of their own, as #388's content
+      // replays are (`replaySectionProps`): one awaited write each, carrying
+      // only `enabled`, sent after any input of the section still pending
+      // and refused if that input recorded a newer step; checked against the
+      // draft generation answered for the step it reverses or re-applies
+      // (`historyStepBasis`), never the copy held now; recording nothing new;
+      // and, unanswered, held with its run and decided by its own read-back.
+      // The preview is told the visibility once the write is answered.
+      const entryId = history.record(
+        fenceSectionHistory(sectionId, templateId, {
+          label: enabled ? "Show section" : "Hide section",
+          undo: (attempt) =>
+            handleSectionPropsChange(
+              sectionId,
+              { enabled: !enabled },
+              { historySourceGeneration: generation, historyAttempt: attempt },
+            ),
+          redo: (attempt) =>
+            handleSectionPropsChange(
+              sectionId,
+              { enabled },
+              { historySourceGeneration: generation, historyAttempt: attempt },
+            ),
+        }),
+      );
+      // The undo goes onto the copy the toggle's write was answered with; an
+      // answer that reports none leaves it no basis, so that undo refuses.
+      setHistoryStepBasis(entryId, "undo", answeredDraftGenerationOf(answer));
     },
     [
       history,
+      handleSectionPropsChange,
+      setHistoryStepBasis,
       invalidateSectionHistory,
       sectionPropsSnapshot,
       commitSectionPending,
@@ -12920,7 +12925,6 @@ export function VisualEditorShell({
     ],
   );
 
-  handleSectionToggleEnabledRef.current = handleSectionToggleEnabled;
 
   /**
    * Stores the author's own name for one section placement.

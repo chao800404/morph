@@ -1048,6 +1048,17 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
       expect(previewHidden()).toBe(true);
     }
     expect(notice.error).not.toHaveBeenCalled();
+    // Visibility reaches the preview as `enabled`, never as one of its props.
+    expect(
+      posted.filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === "hero" &&
+          typeof message.props === "object" &&
+          message.props !== null &&
+          "enabled" in (message.props as object),
+      ),
+    ).toEqual([]);
     await settle();
     expect(sent(), "nothing is sent after the last step").toHaveLength(5);
   }, 45_000);
