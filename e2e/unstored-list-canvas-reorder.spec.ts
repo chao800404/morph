@@ -279,7 +279,164 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
     await expect(row(page, 0).locator("h3")).toHaveText(titles[1]!);
     await expect(row(page, 1).locator("h3")).toHaveText(titles[0]!);
   });
+
+  /**
+   * The Undo and Redo of a "Hide section" entry are history runs of their
+   * own, as the reorder's are: one write each, carrying only the section's
+   * visibility, read back from the run's own D1 file with one draft
+   * generation per step, and what a fresh load renders.
+   */
+  test("Hide the section, Undo and Redo it: one write each, carrying only the visibility, one draft generation per step", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const writes = countContentWrites(page);
+    const bodies: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        isServerFunctionCall(request.url(), "updateStorefrontThemeSectionProps")
+      ) {
+        bodies.push(request.postData() ?? "");
+      }
+    });
+    await openRoute(page);
+    const templateId = await routeTemplateId(page);
+    const start = storedSection(templateId);
+    expect(start.enabled, "shown at the start").toBe(true);
+    await expectHistory(page, { depth: 0, undo: false, redo: false });
+
+    // The Hide control of the slot's own row in the tree, as an author
+    // reaches it with the section selected.
+    await selectRow(page, 0);
+    const node = page.locator(`[data-editor-tree-node-id^="${SLOT}:"]`).first();
+    await node.hover();
+    const hide = node.getByRole("button", { name: /^Hide section / });
+    const sectionType = ((await hide.getAttribute("aria-label")) ?? "").replace(
+      /^Hide section /,
+      "",
+    );
+    expect(sectionType).not.toBe("");
+    const show = page.getByRole("button", {
+      name: `Show section ${sectionType}`,
+    });
+    /** One step: its one write, carrying only `enabled`, and D1 after it. */
+    const step = async (
+      run: () => Promise<void>,
+      label: string,
+      enabled: boolean,
+      generation: number,
+    ) => {
+      const before = writes.sent;
+      const sentBefore = bodies.length;
+      const answer = nextContentWrite(page);
+      await run();
+      expect(await answer, `the ${label}'s write`).toBe("saved");
+      await page.waitForTimeout(1_500);
+      expect(writes.sent - before, `the ${label}'s writes`).toBe(1);
+      const body = bodies[sentBefore] ?? "";
+      expect(body, `the ${label} carries the visibility`).toContain("enabled");
+      expect(body, `the ${label} carries no list`).not.toContain(FIRST);
+      expect(body, `the ${label} carries no list`).not.toContain(SECOND);
+      const now = storedSection(templateId);
+      expect(now.enabled, `stored after the ${label}`).toBe(enabled);
+      expect(now.draftGeneration, `one generation for the ${label}`).toBe(
+        generation,
+      );
+      return now;
+    };
+
+    try {
+      const hidden = await step(
+        () => hide.click(),
+        "Hide",
+        false,
+        start.draftGeneration + 1,
+      );
+      await expectHistory(page, { depth: 1, undo: true, redo: false });
+      await expect(sectionWrapper(page)).toHaveAttribute(
+        "data-morph-section-hidden",
+        "",
+        { timeout: 30_000 },
+      );
+      await expect(show).toBeVisible();
+
+      const undone = await step(
+        () => undoButton(page).click(),
+        "Undo",
+        true,
+        hidden.draftGeneration + 1,
+      );
+      await expectHistory(page, { depth: 0, undo: false, redo: true });
+      await expect(row(page, 0)).toBeVisible({ timeout: 30_000 });
+      await expect(sectionWrapper(page)).not.toHaveAttribute(
+        "data-morph-section-hidden",
+        "",
+      );
+
+      await step(
+        () => redoButton(page).click(),
+        "Redo",
+        false,
+        undone.draftGeneration + 1,
+      );
+      await expectHistory(page, { depth: 1, undo: true, redo: false });
+      await expect(sectionWrapper(page)).toHaveAttribute(
+        "data-morph-section-hidden",
+        "",
+        { timeout: 30_000 },
+      );
+
+      // What was saved is what a fresh load renders: hidden, its Show there.
+      const url = new URL(EDITOR_PATH!, "http://placeholder");
+      url.searchParams.set("routePath", ROUTE_PATH);
+      await page.goto(`${url.pathname}${url.search}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await expect(show).toBeVisible({ timeout: 90_000 });
+      await expect(sectionWrapper(page)).toHaveAttribute(
+        "data-morph-section-hidden",
+        "",
+        { timeout: 90_000 },
+      );
+      await expect(row(page, 0)).toHaveCount(0);
+    } finally {
+      // Shown again for anything after this in the same store.
+      if (await show.isVisible().catch(() => false)) {
+        await show.click();
+        await expect(
+          page.getByRole("button", { name: `Hide section ${sectionType}` }),
+        ).toBeAttached({ timeout: 15_000 });
+      }
+    }
+  });
 });
+
+const sectionWrapper = (page: Page) =>
+  previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`);
+
+/**
+ * Whether the route Document holds the slot shown, and its draft
+ * generation, as D1 holds them (a slot it does not store yet is shown).
+ */
+function storedSection(templateId: string) {
+  const rows = queryLocalD1<{ document: string; draft_generation: number }>(
+    `SELECT CASE WHEN t.draft_revision_id IS NULL THEN t.document ELSE r.document END AS document,
+       t.draft_generation AS draft_generation
+     FROM storefront_theme_templates t LEFT JOIN storefront_theme_template_revisions r
+       ON r.id = t.draft_revision_id AND r.template_id = t.id
+     WHERE t.id = '${templateId}' AND t.deleted_at IS NULL`,
+  );
+  expect(rows, "one stored route Document").toHaveLength(1);
+  const document = JSON.parse(String(rows[0]!.document)) as {
+    sections?: Array<{ id: string; enabled?: boolean }>;
+  };
+  const section = document.sections?.find((entry) => entry.id === SLOT);
+  return {
+    enabled: section?.enabled !== false,
+    draftGeneration: Number(rows[0]!.draft_generation),
+  };
+}
 
 const undoButton = (page: Page) =>
   page.locator('button[aria-label="Undo"][data-editor-undo-depth]');
