@@ -108,6 +108,10 @@ const liveFrame = createLiveFrame({
 }, {
   capabilities: ["selection-field-section", "section-presentation-ack-v1"],
 });
+const bridgeWithoutPresentationAck = createLiveFrame(
+  { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+  { capabilities: ["selection-field-section"] },
+);
 
 const posted: Array<Record<string, unknown>> = [];
 
@@ -348,7 +352,7 @@ function readyQueryClient() {
   return client;
 }
 
-function renderShell(client = readyQueryClient()) {
+function renderShell(client = readyQueryClient(), frame = liveFrame) {
   const rendered = render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
@@ -358,7 +362,7 @@ function renderShell(client = readyQueryClient()) {
       />
     </QueryClientProvider>,
   );
-  if (document.querySelector("iframe")) liveFrame.ready();
+  if (document.querySelector("iframe")) frame.ready();
   return rendered;
 }
 
@@ -642,6 +646,30 @@ describe("the selection round trip", () => {
  * anyone looking at the catch — this pins both shapes it arrives in.
  */
 describe("a content save that fails", () => {
+  it("keeps Document edits unsaved when the bridge cannot acknowledge presentation", async () => {
+    const warning = vi.spyOn(toast, "warning").mockImplementation(() => "");
+    renderShell(readyQueryClient(), bridgeWithoutPresentationAck);
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Welcome");
+    fireEvent.input(field, { target: { value: "Held without ack" } });
+    fireEvent.blur(field);
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith(
+      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+      expect.anything(),
+    );
+    expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
+    expect(saveStatus()).not.toBe("Saved");
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(warning).toHaveBeenCalledTimes(2));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
+  });
+
   it("says so when the server refuses the write", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
     updateSectionProps.mockResolvedValue({
