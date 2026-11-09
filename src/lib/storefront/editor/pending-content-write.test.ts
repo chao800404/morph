@@ -8,6 +8,7 @@ import {
   acknowledgeContentFields,
   discardPendingContentPath,
   contentEntryTouchesPath,
+  hasUnconfirmedContentForList,
   rebaseFieldBasis,
   MISSING_BASIS_MESSAGE,
   type PendingContentEntry,
@@ -230,6 +231,41 @@ describe("discarding one conflicted content list", () => {
     expect(contentEntryTouchesPath(entry, "heading")).toBe(true);
     expect(contentEntryTouchesPath(entry, "related")).toBe(false);
     expect(contentEntryTouchesPath(entry, "items..title")).toBe(false);
+  });
+
+  it("blocks discarding a list with an unanswered write under an aliased document id", () => {
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: { items: [{ id: "row", title: "Mine" }] },
+      fields: {
+        "items.0.title": {
+          value: "Mine",
+          sourceGeneration: 3,
+          basisDraftGeneration: 4,
+        },
+      },
+    };
+    const entries = new Map([[
+      "route-placeholder:hero",
+      entry,
+    ]]);
+    const sameTemplateOwner = (left: string, right: string) =>
+      [left, right].every((id) =>
+        ["route-placeholder", "template-real"].includes(id),
+      );
+    const matchesList = (sectionId: string, fieldPath: string) =>
+      hasUnconfirmedContentForList({
+        entries,
+        sectionId,
+        fieldPath,
+        templateId: "template-real",
+        templateIdForKey: (key) => key.slice(0, key.lastIndexOf(":")),
+        sameTemplateOwner,
+      });
+
+    expect(matchesList("hero", "items")).toBe(true);
+    expect(matchesList("hero", "related")).toBe(false);
+    expect(matchesList("footer", "items")).toBe(false);
   });
 
   const field = (value: unknown, basisDraftGeneration: number) => ({
