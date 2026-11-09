@@ -230,6 +230,8 @@ export type InspectorPropsChangeOptions = {
   historyAttempt?: EditorHistoryAttempt;
   /** Which control changed; the other props are only a display snapshot. */
   inputFieldPath?: string;
+  /** The declared list changed by an explicit Add/Remove action. */
+  listActionPath?: string;
   /** Selected row whose explicit action changes its list or creates an id. */
   selectionFieldPath?: string;
   /**
@@ -270,6 +272,22 @@ export type InspectorInlineTextCommit = Readonly<{
   sectionId: string;
   fieldPath: string;
   value: string;
+}>;
+
+export type InspectorListWriteStatus = Readonly<{
+  notSaved: boolean;
+  conflict: boolean;
+  unknown: boolean;
+  kind?: "blocked-before-send" | "server-refused" | "outcome-unknown";
+  savedChange: boolean;
+  busy: boolean;
+}>;
+
+export type InspectorListReset = Readonly<{
+  sectionId: string;
+  fieldPath: string;
+  value: unknown;
+  epoch: number;
 }>;
 
 type EditorStyleInspectorProps = {
@@ -374,6 +392,9 @@ type EditorStyleInspectorProps = {
     next: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  listWriteStatuses?: Readonly<Record<string, InspectorListWriteStatus>>;
+  listReset?: InspectorListReset | null;
+  onDiscardListConflict?: (sectionId: string, fieldPath: string) => void;
   /**
    * The draft generation of the document this section's content is being
    * shown from, as the editor holds it now. Read when a content input is
@@ -884,6 +905,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onPropsChange: emitPropsChange,
+  listWriteStatuses,
+  listReset,
+  onDiscardListConflict,
   contentBasis,
   inlineTextCommit = null,
   onJumpToCode,
@@ -936,6 +960,23 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     sectionId: section.id,
     sectionProps: section.props,
   });
+  const appliedListResetEpochRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      !listReset ||
+      listReset.sectionId !== section.id ||
+      appliedListResetEpochRef.current === listReset.epoch
+    )
+      return;
+    appliedListResetEpochRef.current = listReset.epoch;
+    const next = setFieldPathValue(
+      localPropsRef.current,
+      listReset.fieldPath,
+      listReset.value,
+    );
+    localPropsRef.current = next;
+    setLocalProps(next);
+  }, [listReset, localPropsRef, section.id, setLocalProps]);
 
   /**
    * The content input the author is in, with what it showed and the copy it
@@ -2883,7 +2924,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
               inputFieldPath: activeFieldPath?.split(".")[0],
               selectionFieldPath: activeFieldPath ?? undefined,
             };
-      onPropsChange(next, options);
+      onPropsChange(next, { ...options, listActionPath: listKey });
     },
     [
       activeFieldPath,
@@ -3428,6 +3469,39 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                 >
                                   No entries yet.
                                 </p>
+                              ) : null}
+                              {listWriteStatuses?.[fieldKey]?.notSaved ? (
+                                <div
+                                  role="status"
+                                  data-list-not-saved={fieldKey}
+                                  className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs text-destructive"
+                                >
+                                  <p className="font-medium">Not saved</p>
+                                  <p className="mt-0.5 text-muted-foreground">
+                                    {listWriteStatuses[fieldKey]?.kind === "outcome-unknown"
+                                      ? "The result is not confirmed. Use Check and save before deciding what to keep."
+                                      : listWriteStatuses[fieldKey]?.kind === "blocked-before-send"
+                                        ? "This change was blocked before it was sent. Reselect the list before trying again."
+                                        : "The server did not save this list. Use the recovery controls above to continue."}
+                                  </p>
+                                  {listWriteStatuses[fieldKey]?.conflict ? (
+                                    <button
+                                      type="button"
+                                      disabled={
+                                        listWriteStatuses[fieldKey]?.busy
+                                      }
+                                      className="mt-1 underline underline-offset-2"
+                                      onClick={() =>
+                                        onDiscardListConflict?.(
+                                          section.id,
+                                          fieldKey,
+                                        )
+                                      }
+                                    >
+                                      Discard unsaved changes to {label}
+                                    </button>
+                                  ) : null}
+                                </div>
                               ) : null}
                               {visibleRows.map(({ row, index }) => (
                                 <div

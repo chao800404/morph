@@ -42,6 +42,8 @@ export type PendingContentEntry = {
   expectedDraftGeneration?: number;
   /** Immutable per-field input snapshots; not upgraded by selection or retry. */
   fields?: Readonly<Record<string, PendingFieldEdit>>;
+  /** Array paths changed by an Inspector Add/Remove action, for local recovery UI. */
+  listActionPaths?: readonly string[];
   /**
    * Keys the write removes from the section ("Use code default", or the
    * undo of a write that first stored them), sent as `resetProps`. Present
@@ -65,6 +67,44 @@ export function sentContentWrite(
     ...(entry.resetProps !== undefined
       ? { resetProps: Object.freeze([...entry.resetProps]) }
       : {}),
+    ...(entry.listActionPaths !== undefined
+      ? { listActionPaths: Object.freeze([...entry.listActionPaths]) }
+      : {}),
+  });
+}
+
+/** Whether a frozen content write includes a path or one of its descendants. */
+export function contentEntryTouchesPath(
+  entry: PendingContentEntry,
+  path: string,
+): boolean {
+  if (!path || path.split(".").some((segment) => !segment)) return false;
+  const touches = (candidate: string) =>
+    candidate === path || candidate.startsWith(`${path}.`);
+  return [
+    ...(entry.listActionPaths ?? []),
+    ...Object.keys(entry.fields ?? {}),
+    ...(entry.resetProps ?? []),
+  ].some(touches);
+}
+
+/** Whether one unanswered write belongs to the selected document and list. */
+export function hasUnconfirmedContentForList(args: {
+  entries: Iterable<readonly [string, PendingContentEntry]>;
+  sectionId: string;
+  fieldPath: string;
+  templateId: string;
+  templateIdForKey: (key: string, sectionId: string) => string | null;
+  sameTemplateOwner: (left: string, right: string) => boolean;
+}): boolean {
+  return Array.from(args.entries).some(([key, entry]) => {
+    if (entry.sectionId !== args.sectionId) return false;
+    const entryTemplateId = args.templateIdForKey(key, entry.sectionId);
+    return (
+      entryTemplateId !== null &&
+      args.sameTemplateOwner(entryTemplateId, args.templateId) &&
+      contentEntryTouchesPath(entry, args.fieldPath)
+    );
   });
 }
 
@@ -115,6 +155,8 @@ export function stageContentFields(args: {
   sourceForPath: (path: string) => number | null;
   /** The draft generation of the document the author was editing. */
   basisDraftGeneration?: number;
+  /** The list changed by an explicit Add/Remove control action. */
+  listActionPath?: string;
 }): PendingContentEntry | null {
   const held = { ...args.stored, ...args.pending?.props };
   // The rows as the author's input saw them: the input itself, over what was
@@ -178,6 +220,16 @@ export function stageContentFields(args: {
     routePath: args.routePath,
     props: { ...args.pending?.props, ...args.next },
     fields,
+    ...(args.pending?.listActionPaths || args.listActionPath
+      ? {
+          listActionPaths: [
+            ...new Set([
+              ...(args.pending?.listActionPaths ?? []),
+              ...(args.listActionPath ? [args.listActionPath] : []),
+            ]),
+          ],
+        }
+      : {}),
   };
 }
 
@@ -417,7 +469,21 @@ export function discardPendingContentPath(args: {
   for (const [path, field] of Object.entries(fields)) {
     props = setFieldPathValue(props, path, field.value);
   }
-  return { pending: { ...entry, fields, props }, baseline };
+  return {
+    pending: {
+      ...entry,
+      fields,
+      props,
+      ...(entry.listActionPaths
+        ? {
+            listActionPaths: entry.listActionPaths.filter(
+              (path) => !overlapsDiscardedPath(path),
+            ),
+          }
+        : {}),
+    },
+    baseline,
+  };
 }
 
 function replaceFieldPath(
@@ -477,6 +543,16 @@ export function acknowledgeContentFields(
       props: Object.fromEntries(
         [...roots].map((root) => [root, now.props[root]]),
       ),
+      ...(now.listActionPaths
+        ? {
+            listActionPaths: now.listActionPaths.filter((path) =>
+              Object.keys(remaining).some(
+                (fieldPath) =>
+                  fieldPath === path || fieldPath.startsWith(`${path}.`),
+              ),
+            ),
+          }
+        : {}),
     });
   }
   return true;
