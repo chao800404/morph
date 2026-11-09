@@ -1309,7 +1309,7 @@ describe("source refusal recovery contract", () => {
   }
 
   async function openFields() {
-    renderShellWithHero(source, "hero", editorContext, undefined, 0);
+    renderShellWithHero(source, "hero", editorContext);
     await selectHeading();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await screen.findByDisplayValue("Welcome");
