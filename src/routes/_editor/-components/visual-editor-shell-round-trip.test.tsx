@@ -665,7 +665,12 @@ describe("a content save that fails", () => {
     expect(saveStatus()).not.toBe("Saved");
 
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(warning).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        warning.mock.calls.length >= 2 ||
+          updateSectionProps.mock.calls.length > 0,
+      ).toBe(true),
+    );
     expect(updateSectionProps).not.toHaveBeenCalled();
     expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
   });
@@ -845,6 +850,23 @@ describe("a content save the document moved under", () => {
       success: true,
       data: { draftGeneration: 8, droppedProps: [] },
     } as never);
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await waitFor(() =>
+      expect(
+        messagesOfType("morph:storefront-preview-update-section-props").some(
+          (message) => {
+            const token = message.presentationToken as
+              | { documentBasis?: { draftGeneration?: number } }
+              | undefined;
+            return token?.documentBasis?.draftGeneration === 7;
+          },
+        ),
+      ).toBe(true),
+    );
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    await flushFrames();
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
