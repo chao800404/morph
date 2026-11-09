@@ -5484,6 +5484,107 @@ function Home() {
         await reread(editor.receive);
         return editor;
       }
+      describe("an unanswered ordinary content write", () => {
+        const depth = () =>
+          document
+            .querySelector("[data-editor-undo-depth]")
+            ?.getAttribute("data-editor-undo-depth") ?? null;
+        const historyButtons = () => ({
+          undo: !screen
+            .getByRole("button", { name: "Undo" })
+            .hasAttribute("disabled"),
+          redo: !screen
+            .getByRole("button", { name: "Redo" })
+            .hasAttribute("disabled"),
+        });
+
+        async function lostOrdinaryWrite() {
+          stored = { ...STORED };
+          const editor = await openSection({ ...STORED });
+          answerNext.push(lost);
+          await type("Hello", "New");
+          await settle();
+          expect(sent()).toHaveLength(1);
+          expect(unconfirmedCount()).toBe("1");
+          expect(saveStatus()).toBe("Save failed");
+          return editor;
+        }
+
+        it("keeps tracking when the first readback does not show the write", async () => {
+          await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+
+          await checkAndSave();
+
+          expect(sent(), "the unanswered payload is not resent").toHaveLength(1);
+          expect(unconfirmedCount(), "the request is still unresolved").toBe("1");
+          expect(saveStatus(), "it is not reported as saved").toBe("Save failed");
+          expect(depth(), "no history entry exists yet").toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: false });
+        });
+
+        it("confirms a later landing once without resending the frozen payload", async () => {
+          const { receive } = await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+
+          await checkAndSave();
+
+          expect(unconfirmedCount(), "first readback keeps tracking").toBe("1");
+          expect(sent()).toHaveLength(1);
+
+          // The original request can finish after this read. Its later copy is
+          // confirmed by a second read; the editor must not send it again.
+          serverHolds({ heading: "New" }, 2);
+          await checkAndSave();
+
+          expect(sent(), "a late landing is never resent").toHaveLength(1);
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth(), "the saved edit is recorded once").toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+
+          await reread(receive);
+          await undo();
+
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "Hello" },
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "Hello" });
+          expect(depth()).toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+
+        it("leaves tracking and local state unchanged when readback fails", async () => {
+          await lostOrdinaryWrite();
+          getThemeEditor.mockRejectedValueOnce(new Error("offline"));
+          const before = { ...stored };
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(1);
+          expect(unconfirmedCount()).toBe("1");
+          expect(stored).toEqual(before);
+          expect(saveStatus()).toBe("Save failed");
+          expect(depth()).toBe("0");
+          expect(historyButtons()).toEqual({ undo: false, redo: false });
+        });
+
+        it("keeps the answered-write history behavior as a control", async () => {
+          stored = { ...STORED };
+          await openSection({ ...STORED });
+
+          await type("Hello", "New");
+          await settle();
+
+          expect(sent()).toHaveLength(1);
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+      });
+
       /**
        * Replay integrity (red before the fix where the replay records a
        * second "Content" entry): a successful Undo or Redo moves only the
