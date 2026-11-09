@@ -786,6 +786,7 @@ describe("a list both writers changed", () => {
               {
                 id: "hero",
                 type: "hero",
+                componentRef: stylePatchTarget.filePath,
                 props: { heading: "Welcome", items: rows("A", "B") },
               },
             ],
@@ -827,14 +828,17 @@ describe("a list both writers changed", () => {
       storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
       remote as never,
     );
-    render(
-      <QueryClientProvider client={client}>
-        <VisualEditorShell
-          context={listContext}
-          search={baseSearch}
-          onSearchChange={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderShellWithHero(
+      `export const contentFields = {
+        heading: { type: "text", label: "Heading" },
+        items: { type: "array", label: "Items", fields: { title: { type: "text", label: "Title" } } },
+      } as const;
+      export function Hero({ heading = "Welcome", items = [] }) {
+        return <section><h1>{heading}</h1>{items.map((item) => <p key={item.id}>{item.title}</p>)}</section>;
+      }`,
+      "hero",
+      listContext,
+      client,
     );
 
     // The author edits B's title on the canvas.
@@ -888,6 +892,12 @@ describe("a list both writers changed", () => {
     // The list itself names the unsaved conflict and opens a list-only
     // confirmation. A toolbar action that discards the whole section can
     // also erase unrelated fields the author still has pending.
+    // A row selection only exposes the row's own fields. The list controls
+    // belong to the section entry, selected through the real Sections panel.
+    fireEvent.click(screen.getByTitle("Select hero; drag to reorder"));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
     expect(await screen.findByText("Not saved")).toBeTruthy();
     act(() => {
       screen.getByRole("button", { name: /discard unsaved changes to items/i }).click();
@@ -903,16 +913,24 @@ describe("a list both writers changed", () => {
     });
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(saveStatus()).toBe("Out of date");
-    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: /discard unsaved changes to items/i,
+      }),
+    ).toBeTruthy();
 
     // Confirmed while the latest version cannot be read: nothing is
     // discarded, since dropping the draft would leave the author with neither.
     getThemeEditor.mockRejectedValueOnce(new Error("offline"));
     act(() => {
-      screen.getByRole("button", { name: "Discard mine…" }).click();
+      screen.getByRole("button", {
+        name: /discard unsaved changes to items/i,
+      }).click();
     });
     act(() => {
-      screen.getByRole("button", { name: "Discard and load latest" }).click();
+      screen.getByRole("button", {
+        name: "Discard list changes and load latest",
+      }).click();
     });
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(
@@ -939,16 +957,20 @@ describe("a list both writers changed", () => {
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     act(() => {
-      screen.getByRole("button", { name: "Discard mine…" }).click();
+      screen.getByRole("button", {
+        name: /discard unsaved changes to items/i,
+      }).click();
     });
     act(() => {
-      screen.getByRole("button", { name: "Discard and load latest" }).click();
+      screen.getByRole("button", {
+        name: "Discard list changes and load latest",
+      }).click();
     });
     await waitFor(() =>
       expect(
         (
           screen.getByRole("button", {
-            name: "Discard mine…",
+            name: "Discard list changes and load latest",
           }) as HTMLButtonElement
         ).disabled,
       ).toBe(true),
@@ -978,13 +1000,21 @@ describe("a list both writers changed", () => {
     // written: the latest version is what the editor now holds.
     getThemeEditor.mockResolvedValue(remote);
     act(() => {
-      screen.getByRole("button", { name: "Discard mine…" }).click();
+      screen.getByRole("button", {
+        name: /discard unsaved changes to items/i,
+      }).click();
     });
     act(() => {
-      screen.getByRole("button", { name: "Discard and load latest" }).click();
+      screen.getByRole("button", {
+        name: "Discard list changes and load latest",
+      }).click();
     });
     await waitFor(() => expect(saveStatus()).not.toBe("Out of date"));
-    expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: /discard unsaved changes to items/i,
+      }),
+    ).toBeNull();
     expect(updateSectionProps).toHaveBeenCalledTimes(sentBeforeDiscard);
   });
 });
@@ -1918,6 +1948,19 @@ describe("an inline edit of text the Theme changed", () => {
       INLINE_TEXT_NOT_SAVED_MESSAGE,
       expect.anything(),
     );
+    const retained = screen.getByRole("textbox", {
+      name: "Copy text that was not saved",
+    }) as HTMLTextAreaElement;
+    expect(retained.value).toBe("TRANSFORMED:WELCOME!");
+    expect(screen.getByText("Not saved — reselect then type.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /discard/i })).toBeNull();
+
+    // Reselecting only restores the normal editor selection; it never submits
+    // the preserved text. The author must type it again explicitly.
+    await selectHeading();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(retained.value).toBe("TRANSFORMED:WELCOME!");
   });
 
   it("is saved when the text was the stored value", async () => {
@@ -5347,6 +5390,30 @@ function Home() {
       expect(rows[2]![0]).toMatch(/^morph-/);
       expect([one!.id, two!.id]).not.toContain(rows[2]![0]);
       accepted(notice);
+    });
+
+    it("marks a server-refused Add as not saved while retaining the list draft", async () => {
+      updateSectionProps.mockResolvedValueOnce({
+        success: false,
+        error: "TEMPLATE_DRAFT_CONFLICT",
+        message: "Template draft was modified concurrently.",
+      } as never);
+      await openSection({});
+
+      await addEntry();
+
+      expect(sent()).toHaveLength(1);
+      expect(stored).not.toHaveProperty("items");
+      expect(panelTitles()).toHaveLength(3);
+      expect(await screen.findByText("Not saved")).toBeTruthy();
+      expect(
+        screen.getByText(
+          "The server did not save this list. Use the recovery controls above to continue.",
+        ),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Load latest, keep mine" }),
+      ).toBeTruthy();
     });
 
     it("control: on a stored list, Remove drops the row at the pressed index with the other's id unchanged", async () => {
