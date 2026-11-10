@@ -3204,9 +3204,10 @@ function Home() {
     }
   });
 
-  // (b) A read that does not show the write cannot prove the original request
-  // was cancelled. Keep it tracked and do not send the frozen payload again.
-  it("keeps a lost answer tracked when read-back does not show the write", async () => {
+  // (b) A read that does not show the write classifies it as not landed. Per
+  // the content recovery rule, retry once at the original generation: CAS
+  // ensures the original request and this resend cannot both succeed.
+  it("resends a lost answer once at its original generation when read-back does not show it", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
     const report = await reportImage(fixture, 1);
@@ -3222,11 +3223,15 @@ function Home() {
 
       fireEvent.click(screen.getByRole("button", { name: "Try again" }));
       await waitFor(() => expect(read.sentWhenRead).toBe(1));
-      await pause();
-      expect(sent()).toHaveLength(1);
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await waitFor(() => expect(saveState()).toBe("saved"));
+      expect(sent()[1]!.expectedDraftGeneration).toBe(1);
+      expect(itemsOf(sent()[1]!)).toEqual([
+        ["row-a", "First", "30% center"],
+        ["row-b", "Second", "top"],
+      ]);
       expect(read.sentWhenRead).toBe(1);
-      expect(saveStatus()).toBe("Save failed");
-      expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     } finally {
       if (priorRead) getThemeEditor.mockImplementation(priorRead);
       else getThemeEditor.mockReset();
