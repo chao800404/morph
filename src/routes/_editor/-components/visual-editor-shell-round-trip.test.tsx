@@ -5560,6 +5560,97 @@ function Home() {
           expect(historyButtons()).toEqual({ undo: false, redo: true });
         });
 
+        it("turns a moved unanswered write into a recoverable conflict", async () => {
+          await lostOrdinaryWrite();
+          serverHolds({ heading: "Theirs" }, 2);
+
+          await checkAndSave();
+
+          expect(sent(), "the old payload is not resent").toHaveLength(1);
+          expect(unconfirmedCount(), "the moved request no longer holds the session").toBeNull();
+          expect(saveStatus()).toBe("Out of date");
+          expect(screen.getByRole("button", { name: "Load latest, keep mine" })).toBeTruthy();
+          expect(screen.getAllByDisplayValue("New").length).toBeGreaterThan(0);
+
+          fireEvent.click(screen.getByRole("button", { name: "Load latest, keep mine" }));
+          await waitFor(() => expect(sent()).toHaveLength(2));
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(unconfirmedCount()).toBeNull();
+        });
+
+        it("resends a not-landed ordinary write once at its original basis", async () => {
+          await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+
+        it("keeps tracking when the late original wins the compare-and-swap race", async () => {
+          await lostOrdinaryWrite();
+          const original = sent()[0]!;
+          serverHolds({ ...STORED }, 1);
+          answerNext.push((retry) => {
+            const originalAnswer = apply(original);
+            expect(originalAnswer).toMatchObject({ success: true });
+            return apply(retry);
+          });
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(draftGeneration).toBe(2);
+          expect(unconfirmedCount(), "the original outcome still needs read-back").toBe("1");
+          expect(depth()).toBe("0");
+
+          serverHolds({ heading: "New" }, 2);
+          await checkAndSave();
+
+          expect(sent(), "the late original is never sent a third time").toHaveLength(2);
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth(), "the landed edit is recorded once").toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+
+        it("two simultaneous retries settle one landed write and record one history entry", async () => {
+          await lostOrdinaryWrite();
+          serverHolds({ heading: "New" }, 2);
+          const retry = screen.getByRole("button", { name: "Try again" });
+          const checkAndSave = screen.getByRole("button", {
+            name: "Check and save",
+          });
+
+          act(() => {
+            retry.click();
+            checkAndSave.click();
+          });
+          await waitFor(() => expect(unconfirmedCount()).toBeNull());
+
+          expect(sent()).toHaveLength(1);
+          expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+
         it("leaves tracking and local state unchanged when readback fails", async () => {
           await lostOrdinaryWrite();
           getThemeEditor.mockRejectedValueOnce(new Error("offline"));
@@ -7282,6 +7373,22 @@ function Home() {
         await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
         expect(sent()).toHaveLength(1);
         expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+      });
+
+      it("does not record a generic Content history entry when read-back confirms a reorder", async () => {
+        const { one, two } = await dragWithLostAnswer();
+        expect(
+          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+        ).toBe(true);
+        getThemeEditor.mockResolvedValue(readBack({ items: [two, one] }, 2));
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Try again" })).toBeNull());
+        expect(sent()).toHaveLength(1);
+        expect(
+          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+        ).toBe(true);
       });
     });
   });
