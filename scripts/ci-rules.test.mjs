@@ -42,10 +42,15 @@ test("every listed rule file exists, so a misspelt path cannot drop out silently
 test("the list covers the checker, its targets and itself", () => {
   for (const file of [
     "scripts/check-container-acceptance.mjs",
+    "scripts/check-container-run-handover.mjs",
+    "scripts/check-container-run-handover.test.mjs",
     "scripts/container-acceptance-targets/b1-publish-rollback.mjs",
+    "scripts/container-run-handover.mjs",
     "scripts/ci-rules.mjs",
     "scripts/ci-required-checks.mjs",
+    "scripts/ci-workflow.test.mjs",
     ".github/workflows/ci.yml",
+    "scripts/run-editor-e2e.test.mjs",
   ]) {
     assert.ok(isRulePath(file, CI_RULE_PATHS), file);
   }

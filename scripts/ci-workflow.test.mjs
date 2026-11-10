@@ -163,6 +163,35 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   );
   assert.deepEqual([...wired, ...deferred].sort(), targetNames);
 
+  const requiredOrder = [
+    "- name: Run M1 container lifecycle acceptance",
+    "- name: Preserve lifecycle acceptance report",
+    "- name: Require lifecycle container acceptance",
+    "- name: Require lifecycle runner handover",
+    "- name: Run preview access container acceptance",
+    "- name: Require exact preview access target",
+  ].map((name) => container.indexOf(name));
+  assert.ok(requiredOrder.every((index) => index >= 0), "all sequential gates must exist");
+  assert.ok(
+    requiredOrder.every((index, position) =>
+      position === 0 || requiredOrder[position - 1] < index,
+    ),
+    "preview access must start only after the lifecycle report and handover gates",
+  );
+  assert.match(
+    container,
+    /MORPH_E2E_HANDOVER_RECORD: \$\{\{ runner\.temp \}\}\/stage3\/lifecycle-handover\.json/,
+  );
+  assert.match(
+    container,
+    /MORPH_E2E_HANDOVER_RECORD: \$\{\{ runner\.temp \}\}\/stage3\/preview-access-handover\.json/,
+  );
+  assert.match(
+    container,
+    /cp test-results\/container-acceptance\.json "\$RUNNER_TEMP\/stage3\/lifecycle\/container-acceptance\.json"/,
+  );
+  assert.match(container, /\$\{\{ runner\.temp \}\}\/stage3\//);
+
   const wiredFiles = [];
   for (const name of wired) {
     const { TARGET } = await import(

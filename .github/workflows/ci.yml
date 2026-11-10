@@ -851,6 +851,10 @@ jobs:
           done
           echo "::warning::Container diagnostics did not start; the run goes on without them."
 
+      - name: Mark lifecycle container window start
+        run: |
+          printf '{"name":"lifecycle-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+
       - name: Run M1 container lifecycle acceptance
         env:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
@@ -858,7 +862,56 @@ jobs:
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_THEME_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/container-acceptance.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/lifecycle-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
         run: node scripts/run-editor-e2e.mjs e2e/m1-container-lifecycle-acceptance.spec.ts
+
+      - name: Mark lifecycle container window end
+        if: always()
+        run: |
+          printf '{"name":"lifecycle-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+
+      # Playwright empties test-results when the next runner starts. Keep the
+      # first report outside it before authorizing the second invocation.
+      - name: Preserve lifecycle acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/lifecycle"
+          if [ -f test-results/container-acceptance.json ]; then
+            cp test-results/container-acceptance.json "$RUNNER_TEMP/stage3/lifecycle/container-acceptance.json"
+          else
+            echo "::warning::Lifecycle acceptance report was not produced."
+          fi
+
+      - name: Require lifecycle container acceptance
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/lifecycle/container-acceptance.json"
+
+      - name: Require lifecycle runner handover
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/lifecycle-handover.json" e2e/m1-container-lifecycle-acceptance.spec.ts
+
+      - name: Mark preview access container window start
+        run: |
+          printf '{"name":"preview-access-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+
+      - name: Run preview access container acceptance
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/preview-access-container.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/preview-access-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/run-editor-e2e.mjs e2e/preview-access-container.spec.ts
+
+      - name: Mark preview access container window end
+        if: always()
+        run: |
+          printf '{"name":"preview-access-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+
+      - name: Require exact preview access target
+        run: node scripts/check-container-acceptance.mjs test-results/preview-access-container.json scripts/container-acceptance-targets/preview-access-container.mjs
 
       - name: Stop container diagnostics
         if: always()
@@ -924,14 +977,13 @@ jobs:
             exit 1
           fi
 
-      - name: Require M1 container acceptance test to have passed with zero skip and zero retry
-        run: node scripts/check-container-acceptance.mjs test-results/container-acceptance.json
-
       - name: Upload results and failure traces
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: editor-e2e-container-attempt-${{ github.run_attempt }}
-          path: test-results/
+          path: |
+            test-results/
+            ${{ runner.temp }}/stage3/
           retention-days: 7
           if-no-files-found: error
