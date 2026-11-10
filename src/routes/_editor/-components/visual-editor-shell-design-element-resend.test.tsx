@@ -34,7 +34,6 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
-  HISTORY_REPLAY_NOT_SAVED_MESSAGE,
   PENDING_DESIGN_WRITE_HELD_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";

@@ -6677,7 +6677,6 @@ export function VisualEditorShell({
                           workspaceScope,
                         );
                       }
-                      unconfirmedStyleHistoryRef.current.delete(filePath);
                       throw new Error(
                         "The Theme file or source changed during Style history recovery. The original replay was not sent again.",
                       );
