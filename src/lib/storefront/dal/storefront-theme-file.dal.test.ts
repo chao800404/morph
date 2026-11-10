@@ -101,7 +101,8 @@ beforeEach(() => {
       deleted_at text,
       encoding text DEFAULT 'utf8' NOT NULL,
       blob_digest text,
-      size_bytes integer
+      size_bytes integer,
+      last_write_attempt_id text
     );
     CREATE TABLE storefront_theme_revisions (
       id text PRIMARY KEY NOT NULL,
@@ -172,6 +173,48 @@ afterEach(() => {
 });
 
 describe("storefront theme file DAL", () => {
+    it("persists a write-attempt receipt and clears it on a later ordinary save", async () => {
+    const writeAttemptId = "00000000-0000-4000-8000-000000000001";
+    const saved = await storefrontThemeFileDal.saveFile(
+      "storefront-a",
+      "theme-a",
+      "src/components/Hero.tsx",
+      "export const Hero = () => null;",
+      "text/typescript",
+      {
+        expectedSourceGeneration: 1,
+        expectMissing: true,
+        writeAttemptId,
+      },
+    );
+
+    expect(saved.lastWriteAttemptId).toBe(writeAttemptId);
+    expect(
+      (
+        await storefrontThemeFileDal.getFileByPath(
+          "storefront-a",
+          "theme-a",
+          "src/components/Hero.tsx",
+        )
+      )?.lastWriteAttemptId,
+    ).toBe(writeAttemptId);
+
+    const [updated] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/components/Hero.tsx",
+          content: "export const Hero = () => <main />;",
+          expectedFileId: saved.id,
+          expectedVersion: saved.version,
+        },
+      ],
+      { expectedSourceGeneration: 2 },
+    );
+    expect(updated?.lastWriteAttemptId).toBeNull();
+  });
+
   it("increments source_generation on saveFilesBatch", async () => {
     expect(
       await storefrontThemeFileDal.getSourceGeneration(

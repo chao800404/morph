@@ -1242,6 +1242,7 @@ function controlledThemeFile(initialContent: string) {
     mimeType: "text/typescript",
     isEntry: false,
     version: 1,
+    lastWriteAttemptId: null as string | null,
     sourceGeneration: 1,
     createdAt: "2026-08-20T00:00:00.000Z",
     updatedAt: "2026-08-20T00:00:00.000Z",
@@ -1252,7 +1253,11 @@ function controlledThemeFile(initialContent: string) {
   const events: string[] = [];
   const outcomes: ThemeFileOutcome[] = [];
   const save = vi.fn(async (...args: unknown[]) => {
-    const data = (args[0] as { data?: { content?: unknown } } | undefined)?.data;
+    const data = (
+      args[0] as {
+        data?: { content?: unknown; writeAttemptId?: unknown };
+      } | undefined
+    )?.data;
     if (typeof data?.content !== "string") {
       throw new Error("Theme-file test write had no content");
     }
@@ -1282,6 +1287,8 @@ function controlledThemeFile(initialContent: string) {
       ...current,
       content,
       version: current.version + 1,
+      lastWriteAttemptId:
+        typeof data?.writeAttemptId === "string" ? data.writeAttemptId : null,
       sourceGeneration: current.sourceGeneration + 1,
     };
     if (outcome === "offline-after-landing") {
@@ -1315,6 +1322,7 @@ function controlledThemeFile(initialContent: string) {
       ...current,
       content,
       version: current.version + 1,
+      lastWriteAttemptId: null,
       sourceGeneration: current.sourceGeneration + 1,
     };
   };
@@ -2608,6 +2616,15 @@ describe("Style replay read-back confirmation", () => {
       expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
     );
 
+    const undoWrite = server.save.mock.calls[1]?.[0] as
+      | { data?: { writeAttemptId?: string } }
+      | undefined;
+    expect(undoWrite?.data?.writeAttemptId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(server.file().lastWriteAttemptId).toBe(
+      undoWrite?.data?.writeAttemptId,
+    );
     expect({
       history: historyState(),
       writes: server.save.mock.calls.length,
@@ -2644,6 +2661,15 @@ describe("Style replay read-back confirmation", () => {
     await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+    );
+    const redoWrite = server.save.mock.calls[2]?.[0] as
+      | { data?: { writeAttemptId?: string } }
+      | undefined;
+    expect(redoWrite?.data?.writeAttemptId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(server.file().lastWriteAttemptId).toBe(
+      redoWrite?.data?.writeAttemptId,
     );
     expect({
       history: historyState(),
@@ -2693,7 +2719,7 @@ describe("Style replay read-back confirmation", () => {
     },
   );
 
-  it("uses the Theme file version contract to confirm an unanswered Style Undo", async () => {
+  it("does not confirm an unanswered Style Undo from matching content and version deltas without its receipt", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
     await applyAndSaveStyle(server);
     server.outcomes.push("offline");
@@ -2704,28 +2730,25 @@ describe("Style replay read-back confirmation", () => {
     );
     expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
 
-    // A single file and source-generation advance is the chosen Theme write
-    // contract. The server content alone is not used as the replay proof.
-    server.externalWrite(STYLE_REMOTE);
+    // Another editor can write the exact intended Undo text and produce the
+    // same one-step file/source generation deltas. Only the persisted receipt
+    // can attribute that write to this history attempt.
+    server.externalWrite(STYLE_SOURCE);
     fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
 
     await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
     );
-    expect({
-      history: historyState(),
-      writes: server.save.mock.calls.length,
-      serverContent: server.file().content,
-      serverVersion: server.file().version,
-      sourceGeneration: server.file().sourceGeneration,
-    }).toEqual({
-      history: { undoAvailable: false, redoAvailable: true },
-      writes: 2,
-      serverContent: STYLE_REMOTE,
-      serverVersion: 3,
+    expect(server.save).toHaveBeenCalledTimes(2);
+    expect(server.file()).toMatchObject({
+      content: STYLE_SOURCE,
+      version: 3,
       sourceGeneration: 3,
+      lastWriteAttemptId: null,
     });
+    expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+    expect(localThemeFile()?.conflict?.remoteContent).toBe(STYLE_SOURCE);
   });
 
   it("keeps an unanswered Style replay linked when recovery read-back fails", async () => {
