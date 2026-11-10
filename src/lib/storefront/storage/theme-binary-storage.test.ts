@@ -175,6 +175,7 @@ beforeEach(() => {
       mime_type text,
       is_entry integer DEFAULT 0,
       version integer DEFAULT 1,
+      last_write_attempt_id text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       deleted_at text

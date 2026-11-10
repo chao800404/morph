@@ -1300,8 +1300,7 @@ function controlledThemeFile(initialContent: string) {
   });
   const read = vi.fn(async () => {
     events.push("read");
-    const file = { ...current };
-    delete file.sourceGeneration;
+    const { sourceGeneration: _sourceGeneration, ...file } = current;
     return { success: true, data: file };
   });
   const list = vi.fn(async () => {
@@ -1338,6 +1337,7 @@ function controlledThemeFile(initialContent: string) {
       mimeType: "text/typescript",
       isEntry: false,
       version: 1,
+      lastWriteAttemptId: null,
       createdAt: "2026-08-20T00:00:00.000Z",
       updatedAt: "2026-08-20T00:00:00.000Z",
     };
