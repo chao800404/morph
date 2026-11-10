@@ -166,8 +166,9 @@ export class UnconfirmedThemeFileWriteError extends Error {
  * overwriting someone else, but cannot say whether the first one landed, so
  * the server is asked what it holds before anything is sent again.
  *
- * - The server holds exactly the content that was sent: it landed, and that
- *   version is recorded (`markLanded`) so the next save is made against it.
+ * - The server holds the sent content, or a caller-provided proof says the
+ *   operation landed: that version is recorded (`markLanded`) so the next
+ *   save is made against it.
  * - It holds something else, or no file: either it did not land, or someone
  *   saved over it since. Both are left to the ordinary save, whose version
  *   check turns the second into a conflict rather than an overwrite.
@@ -179,14 +180,20 @@ export class UnconfirmedThemeFileWriteError extends Error {
 export async function confirmLostSave<TLatest extends { content: string }>({
   unconfirmedContent,
   readLatest,
+  isLanded,
   markLanded,
 }: {
   unconfirmedContent: string;
   readLatest: () => Promise<TLatest | null>;
+  /** Domain-specific causal proof, when content equality is not sufficient. */
+  isLanded?: (latest: TLatest) => boolean;
   markLanded: (latest: TLatest) => void;
 }): Promise<"landed" | "not-landed"> {
   const latest = await readLatest();
-  if (latest && latest.content === unconfirmedContent) {
+  if (
+    latest &&
+    (isLanded ? isLanded(latest) : latest.content === unconfirmedContent)
+  ) {
     markLanded(latest);
     return "landed";
   }
