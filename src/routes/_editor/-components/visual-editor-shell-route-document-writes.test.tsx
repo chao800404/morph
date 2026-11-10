@@ -36,6 +36,7 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import {
   answerLatestRouteRequest,
   createLiveFrame,
+  frameEnvelope,
 } from "@/lib/test-utils/preview-frame-handshake";
 import {
   livePreviewPlatformFiles,
@@ -581,7 +582,7 @@ function dispatchFromFrame(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -595,7 +596,7 @@ async function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -697,6 +698,7 @@ async function select(report: Record<string, unknown>) {
 /** Types into the first field showing `shown`, and leaves it. */
 async function type(shown: string, value: string) {
   const field = (await screen.findAllByDisplayValue(shown))[0]!;
+  await waitFor(() => expect(field.matches(":disabled")).toBe(false));
   fireEvent.input(field, { target: { value } });
   fireEvent.blur(field);
 }
@@ -713,6 +715,18 @@ const saveStatus = () =>
   document
     .querySelector("[data-editor-save-status]")
     ?.getAttribute("aria-label");
+async function waitForPresentationReady() {
+  await waitFor(() => {
+    expect(
+      screen.queryByText("Preview syncing. Content writes are paused."),
+    ).toBeNull();
+    expect(
+      screen.queryByText(
+        "Preview syncing. Content writes are paused until every section confirms its current preview was applied.",
+      ),
+    ).toBeNull();
+  });
+}
 
 /**
  * A read of the Theme arrives while a write is still out. The editor's own
@@ -989,6 +1003,7 @@ describe("the selection when the page takes up the route document it created", (
     expect(liveTyped("Value 1")).toHaveLength(1);
     await readWhileOut();
     await expectAdopted();
+    await waitForPresentationReady();
 
     // No click, no Inspector reopened: the author goes on typing.
     typeInCard(0, "Value 2");
@@ -1093,6 +1108,7 @@ describe("the second edit on a route document this editor just created", () => {
     // edit is staged and queued under it, not under the placeholder.
     await readWhileOut();
     await expectAdopted();
+    await waitForPresentationReady();
 
     typeInCard(0, "Value 2");
     await pause();
@@ -1127,6 +1143,7 @@ describe("G1: someone else's change to the new document", () => {
     expect(sent()).toHaveLength(1);
     expect(server.route!.generation).toBe(2);
     await expectAdopted();
+    await waitForPresentationReady();
   }
 
   it("refuses the second edit when an outside change at generation 4 is read before it leaves", async () => {
@@ -1175,6 +1192,7 @@ describe("G1: someone else's change to the new document", () => {
     await waitFor(() => expect(sent()).toHaveLength(1));
     await readWhileOut();
     await expectAdopted();
+    await waitForPresentationReady();
     typeInCard(0, "Value 2");
     await pause();
     expect(sent()).toHaveLength(1);
@@ -1225,6 +1243,7 @@ describe("G2: a result that is not known", () => {
     await waitFor(() => expect(sent()).toHaveLength(1));
     await readWhileOut();
     await expectAdopted();
+    await waitForPresentationReady();
     typeInCard(0, "Value 2");
     await pause();
     expect(sent()).toHaveLength(1);
@@ -1273,7 +1292,7 @@ describe("G3: row identity on the new document", () => {
    * selected, so the Inspector still shows the rows' titles, row b's as
    * saved.
    */
-  function typeInSelectedRow(value: string) {
+  async function typeInSelectedRow(value: string) {
     expect(cardFields().map((field) => field.value)).toEqual([
       "One",
       "Two edited",
@@ -1303,7 +1322,7 @@ describe("G3: row identity on the new document", () => {
   it("refuses an edit to row b when the rows are read back reordered before it leaves", async () => {
     await firstRowWriteLanded();
     holdDebounce();
-    typeInSelectedRow("Two again");
+    await typeInSelectedRow("Two again");
     await outsideWriteRead((route) => {
       const items = route.props!.items as unknown[];
       route.props = { ...route.props, items: [items[1], items[0]] };
@@ -1319,7 +1338,7 @@ describe("G3: row identity on the new document", () => {
   it("mirror: with the rows unchanged the edit goes to row b, by the answered ids", async () => {
     const { one, two } = await firstRowWriteLanded();
     holdDebounce();
-    typeInSelectedRow("Two again");
+    await typeInSelectedRow("Two again");
     await releaseDebounce();
 
     expect(sent()).toHaveLength(2);
@@ -1335,12 +1354,13 @@ describe("G3: row identity on the new document", () => {
 });
 
 describe("the pre-step flush across the placeholder and the real id", () => {
-  it("sends content still keyed by the placeholder before the step, and the step goes on", async () => {
+  it("does not flush placeholder-keyed content across route adoption before a fresh preview proof", async () => {
     await openOn(headingReport);
     holdReads();
     const first = holdNextWrite();
     await type("Default heading", "Value 1");
     await waitFor(() => expect(sent()).toHaveLength(1));
+    await waitForPresentationReady();
     // Typed while the page is still on the placeholder: kept under it. Its
     // debounce never runs here; only the flush can send it.
     expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
@@ -1353,10 +1373,13 @@ describe("the pre-step flush across the placeholder and the real id", () => {
     });
     await releaseReads();
     await expectAdopted();
+    await waitForPresentationReady();
 
     fireEvent.click(screen.getByRole("button", { name: "Rename the card" }));
     await pause(300);
-    // The flush waits on the first write, queued under the placeholder.
+    // The input was produced while the frame still represented the
+    // placeholder document. Route adoption invalidates that presentation
+    // proof, so a section action must not flush it under the real id.
     expect(sent()).toHaveLength(1);
     expect(renameSection).not.toHaveBeenCalled();
     await act(async () => {
@@ -1364,19 +1387,20 @@ describe("the pre-step flush across the placeholder and the real id", () => {
     });
     await waitFor(() => expect(renameOutcome.settled).toBeDefined());
 
-    expect(renameOutcome.settled).toEqual({ ok: true });
-    expect(sent()).toHaveLength(2);
-    expect(sent()[1]).toMatchObject({
-      templateId: ROUTE_DOC_ID,
-      expectedDraftGeneration: 2,
-      props: { heading: "Value 2" },
+    expect(renameOutcome.settled).toEqual({
+      ok: false,
+      message:
+        "Not saved: preview syncing. Your change is kept; save it again after the preview finishes syncing.",
     });
-    expect(renameSection).toHaveBeenCalledTimes(1);
-    expect(renameSection.mock.calls[0]![0].data).toMatchObject({
-      templateId: ROUTE_DOC_ID,
-      sectionId: SLOT,
-      expectedDraftGeneration: 3,
-    });
+    expect(sent()).toHaveLength(1);
+    expect(renameSection).not.toHaveBeenCalled();
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]?.value).toBe("Value 2");
+    await pause();
+    // Neither the released answer nor the preview becoming ready retries the
+    // stale input on the author's behalf.
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
   });
 
   /** The first write, under the placeholder, is refused or fails. */
@@ -1467,8 +1491,6 @@ describe("the pre-step flush across the placeholder and the real id", () => {
 
 const CONFLICT_HELD = heldContentMessage({ hasListConflict: false });
 const FAILED_HELD = "Content changed while saving. Retry before continuing.";
-const COMPOSE_REFUSED =
-  "This section changed elsewhere since you edited it. Your changes are kept.";
 
 /** Every request the server was asked for, by kind. */
 const calls = () => ({
@@ -1592,6 +1614,11 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       expect(server.route!.generation).toBe(3);
 
       pressKeepMine();
+      await pause();
+      if (sent().length === 1) {
+        await waitForPresentationReady();
+        pressKeepMine();
+      }
       await waitFor(() => expect(sent()).toHaveLength(2));
       await pause();
       expect(sent()).toHaveLength(2);
@@ -1774,6 +1801,12 @@ describe("A: the pre-step flush holds refused and failed content under every id"
 
       pressKeepMine();
       await releaseReads();
+      await expectAdopted();
+      await waitForPresentationReady();
+      // The readback moved the page to a newer Document. Keep mine rebases
+      // the draft, then waits until that Document is presented before the
+      // author confirms the write again.
+      if (sent().length === 1) pressKeepMine();
       await waitFor(() => expect(sent()).toHaveLength(2));
       await pause();
       expect(sent()).toHaveLength(2);
@@ -1968,12 +2001,12 @@ describe("B: a lost ensure answer, then the author goes on", () => {
   });
 });
 
-describe("C: placeholder-keyed content sent after an outside change", () => {
+describe("C: placeholder-keyed content during an outside document change", () => {
   /**
    * The first write lands (generation 2) while the read after it is held, so
    * the page stays on the placeholder and the next input is keyed by it. Its
    * answer is taken only once that read returns (the content mutation's
-   * success awaits the Theme read), so the input has no recorded basis.
+   * success awaits the Theme read), so the input has no accepted source basis.
    */
   async function landedOnPlaceholder() {
     await openOn(headingReport);
@@ -1987,46 +2020,33 @@ describe("C: placeholder-keyed content sent after an outside change", () => {
   const theirsAt4 = () => {
     server.route = { generation: 4, props: { heading: "Theirs" } };
   };
-  function expectRefusedOverTheirs() {
+  function expectUnsentOverTheirs() {
     expect(sent()).toHaveLength(1);
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
     expect(server.route).toEqual({
       generation: 4,
       props: { heading: "Theirs" },
     });
-    expect(saveStatus()).toBe("Out of date");
-    expect(
-      screen.getByRole("button", { name: "Load latest, keep mine" }),
-    ).toBeTruthy();
   }
 
-  it("typed while the first answer waits on its read, sent by the debounce: refused, kept, out of date; Keep mine sends once", async () => {
+  it("does not send placeholder-keyed input after the outside document is read while its preview is syncing", async () => {
     await landedOnPlaceholder();
     holdDebounce();
     typeInCard(0, "Value 2");
     theirsAt4();
     await releaseReadsUntil(4);
     await releaseDebounce();
-    expectRefusedOverTheirs();
+    expectUnsentOverTheirs();
+    expect(saveStatus()).toBe("Unsaved");
+    expect(cardFields()[0]?.value).toBe("Value 2");
+    await expectAdopted();
+    await waitForPresentationReady();
     await pause();
-    expectRefusedOverTheirs();
-
-    // Kept: the author's explicit recovery sends what they typed, once. (The
-    // field itself shows the stored value after adoption, the separate
-    // stale-field-display issue, Q3.)
-    pressKeepMine();
-    await waitFor(() => expect(sent()).toHaveLength(2));
-    await pause();
-    expect(sent()).toHaveLength(2);
-    expect(sent()[1]).toMatchObject({
-      templateId: ROUTE_DOC_ID,
-      expectedDraftGeneration: 4,
-      props: { heading: "Value 2" },
-    });
-    expect(storedHeading()).toBe("Value 2");
+    expectUnsentOverTheirs();
+    expect(cardFields()[0]?.value).toBe("Value 2");
   });
 
-  it("typed while the first answer waits on its read, sent by the pre-step flush: refused, the step stops, kept", async () => {
+  it("stops a pre-step flush for placeholder input whose preview is still syncing", async () => {
     await landedOnPlaceholder();
     holdDebounce();
     typeInCard(0, "Value 2");
@@ -2037,13 +2057,18 @@ describe("C: placeholder-keyed content sent after an outside change", () => {
 
     const outcome = await rename();
     expect(outcome.ok).toBe(false);
-    expect(outcome.message).toBe(COMPOSE_REFUSED);
+    expect(outcome.message).toBe(
+      "Not saved: preview syncing. Your change is kept; save it again after the preview finishes syncing.",
+    );
     await pause();
     expect(renameSection).not.toHaveBeenCalled();
-    expectRefusedOverTheirs();
+    expectUnsentOverTheirs();
+    await waitForPresentationReady();
+    await pause();
+    expectUnsentOverTheirs();
   });
 
-  it("typed before the first answer (no basis recorded), sent by the debounce: refused, kept, out of date", async () => {
+  it("keeps no-basis placeholder input unsent after a newer document is read", async () => {
     await openOn(headingReport);
     holdReads();
     const first = holdNextWrite();
@@ -2059,7 +2084,12 @@ describe("C: placeholder-keyed content sent after an outside change", () => {
     theirsAt4();
     await releaseReadsUntil(4);
     await releaseDebounce();
-    expectRefusedOverTheirs();
+    expectUnsentOverTheirs();
+    expect(saveStatus()).toBe("Unsaved");
+    await expectAdopted();
+    await waitForPresentationReady();
+    await pause();
+    expectUnsentOverTheirs();
   });
 });
 
@@ -2303,7 +2333,7 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     expect(server.route!.generation).toBe(3);
   });
 
-  it("F2b: placeholder-keyed input typed after the creating write's answer while the read its ensure started is still out, with NO outside change, is sent at 2 (not refused as made on 1)", async () => {
+  it("F2b: placeholder-keyed input stays unsent until the accepted route document is presented", async () => {
     // The read the first write's ensure started is slower than the write:
     // the first copy this tab holds is the one the write's answer brought,
     // at 2, and the input is typed on the placeholder before that read
@@ -2317,6 +2347,7 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     expect(sent()).toHaveLength(1);
     expect(server.route!.generation).toBe(2);
     expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+    await waitForPresentationReady();
     holdDebounce();
     typeInCard(0, "Value 2");
     // Held by the debounce: the second edit has not left yet.
@@ -2330,20 +2361,36 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
 
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
     expect(saveStatus()).not.toBe("Out of date");
+    await expectAdopted();
+    await waitForPresentationReady();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    // The previous value remains in the input; only a new edit made against
+    // the confirmed route Document can be written.
+    expect(cardFields()[0]?.value).toBe("Value 2");
+    await waitFor(() => expect(cardFields()[0]?.disabled).toBe(false));
+    typeInCard(0, "Value 2 confirmed");
+    await pause();
     expect(sent()).toHaveLength(2);
     expect(sent()[1]).toMatchObject({
       templateId: ROUTE_DOC_ID,
       expectedDraftGeneration: 2,
-      props: { heading: "Value 2" },
+      props: { heading: "Value 2 confirmed" },
     });
-    expect(storedHeading()).toBe("Value 2");
+    expect(storedHeading()).toBe("Value 2 confirmed");
     expect(server.route).toEqual({
       generation: 3,
-      props: { heading: "Value 2" },
+      props: { heading: "Value 2 confirmed" },
     });
   });
 
-  it("F3: after Keep mine on a placeholder-keyed refusal, the rebased basis decides: sent once at the latest generation", async () => {
+  it("F3: no-basis placeholder input stays unsent after a newer copy is presented", async () => {
     await openOn(headingReport);
     holdReads();
     const first = holdNextWrite();
@@ -2359,22 +2406,30 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     await releaseReadsUntil(4);
     await releaseDebounce();
     expect(sent()).toHaveLength(1);
-    expect(saveStatus()).toBe("Out of date");
-
-    pressKeepMine();
-    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(saveStatus()).toBe("Unsaved");
+    expect(server.route).toEqual({
+      generation: 4,
+      props: { heading: "Theirs" },
+    });
+    await expectAdopted();
+    await waitForPresentationReady();
     await pause();
-    expect(sent()).toHaveLength(2);
-    expect(sent()[1]).toMatchObject({
-      templateId: ROUTE_DOC_ID,
-      expectedDraftGeneration: 4,
-      props: { heading: "Value 2" },
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({
+      generation: 4,
+      props: { heading: "Theirs" },
+    });
+    expect(cardFields()[0]?.value).toBe("Value 2");
+    // The source basis was unknown when this draft began. Presenting a newer
+    // copy does not silently rebase it or create a new write opportunity.
+    await waitFor(() => expect(cardFields()[0]?.disabled).toBe(false));
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({
+      generation: 4,
+      props: { heading: "Theirs" },
     });
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
-    expect(server.route).toMatchObject({
-      generation: 5,
-      props: { heading: "Value 2" },
-    });
   });
 });
 
@@ -2505,7 +2560,8 @@ describe("Q3: the field the author types in, across the page taking up its route
   /** Row b's title, among the rows' titles the row selection shows. */
   const rowB = () => cardFields()[1] as HTMLInputElement | undefined;
 
-  function typeKeeping(field: HTMLInputElement, value: string) {
+  async function typeKeeping(field: HTMLInputElement, value: string) {
+    await waitFor(() => expect(field.disabled).toBe(false));
     act(() => {
       field.focus();
     });
@@ -2523,8 +2579,8 @@ describe("Q3: the field the author types in, across the page taking up its route
    * no longer rebuilds the input; they do not show the first edit of rows
    * without ids keeps it.
    */
-  function beginInRowB(value: string): HTMLInputElement {
-    typeKeeping(rowB()!, value);
+  async function beginInRowB(value: string): Promise<HTMLInputElement> {
+    await typeKeeping(rowB()!, value);
     const field = rowB()!;
     act(() => {
       field.focus();
@@ -2545,22 +2601,25 @@ describe("Q3: the field the author types in, across the page taking up its route
     ]);
   }
 
-  it("row b while the first write is unanswered: the same input keeps text, focus and caret; the appended text is stored", async () => {
+  it("row b keeps the same input through route adoption, then appends on the confirmed preview", async () => {
     await openOn(secondRowReport);
     const first = holdNextWrite();
     expect(rowB()!.value).toBe("Two");
-    const field = beginInRowB("Two edited");
+    const field = await beginInRowB("Two edited");
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expectSameField(field, "Two edited");
 
-    typeKeeping(field, `${field.value} more`);
     await act(async () => {
       first.release();
     });
+    await expectAdopted();
+    await waitForPresentationReady();
+    expectSameField(field, "Two edited");
+
+    await typeKeeping(field, `${field.value} more`);
     await waitFor(() => expect(sent()).toHaveLength(2));
     await pause();
-    await expectAdopted();
 
     expectSameField(field, "Two edited more");
     expect(rowsOf(sent()[1]!).map(([, title]) => title)).toEqual([
@@ -2576,12 +2635,12 @@ describe("Q3: the field the author types in, across the page taking up its route
 
   it("row b after the first answer landed: the same input keeps text, focus and caret; the appended text is stored", async () => {
     await openOn(secondRowReport);
-    const field = beginInRowB("Two edited");
+    const field = await beginInRowB("Two edited");
     await pause();
     await expectAdopted();
     expectSameField(field, "Two edited");
 
-    typeKeeping(field, `${field.value} more`);
+    await typeKeeping(field, `${field.value} more`);
     await pause();
     expectSameField(field, "Two edited more");
     expect(
@@ -2591,16 +2650,18 @@ describe("Q3: the field the author types in, across the page taking up its route
     ).toEqual(["One", "Two edited more"]);
   });
 
-  it("the heading (saved on leaving the field) while the first write is unanswered: it shows the author's text, and appending builds on it", async () => {
+  it("keeps the heading draft across route adoption, then saves a fresh edit on the confirmed preview", async () => {
     await openOn(headingReport);
     const first = holdNextWrite();
     await type("Default heading", "Value 1");
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
+    await waitForPresentationReady();
     const field = cardFields()[0] as HTMLTextAreaElement;
     expect(field.value).toBe("Value 1");
 
     // The author goes back into the field and appends to what is shown.
+    await waitFor(() => expect(field.disabled).toBe(false));
     act(() => {
       field.focus();
     });
@@ -2609,33 +2670,52 @@ describe("Q3: the field the author types in, across the page taking up its route
     await act(async () => {
       first.release();
     });
+    await expectAdopted();
+    await waitForPresentationReady();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
+    expect(field.value).toBe("Value 1 more");
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    // The text entered against the placeholder was not auto-saved. Once the
+    // route Document is presented, a new edit carries a current proof.
+    await waitFor(() => expect(field.disabled).toBe(false));
+    act(() => {
+      field.focus();
+    });
+    fireEvent.input(field, { target: { value: `${field.value} again` } });
+    fireEvent.blur(field);
     await waitFor(() => expect(sent()).toHaveLength(2));
     await pause();
-    await expectAdopted();
 
-    expect(sent()[1]!.props.heading).toBe("Value 1 more");
+    expect(sent()[1]!.props.heading).toBe("Value 1 more again");
     expect(
       sent().filter((write) =>
         String(write.props.heading).startsWith("Default heading"),
       ),
     ).toHaveLength(0);
-    expect(storedHeading()).toBe("Value 1 more");
-    expect((cardFields()[0] as HTMLTextAreaElement).value).toBe("Value 1 more");
+    expect(storedHeading()).toBe("Value 1 more again");
+    expect((cardFields()[0] as HTMLTextAreaElement).value).toBe(
+      "Value 1 more again",
+    );
   });
 
   it("synthetic composition events (jsdom, not a real IME): a composition open across the page taking up the document ends in the same input and is stored", async () => {
     await openOn(secondRowReport);
     const first = holdNextWrite();
-    const field = beginInRowB("Two edited");
+    const field = await beginInRowB("Two edited");
     await waitFor(() => expect(sent()).toHaveLength(1));
 
     fireEvent.compositionStart(field);
-    fireEvent.input(field, { target: { value: "Two edited 新" } });
     await act(async () => {
       first.release();
     });
-    await pause();
     await expectAdopted();
+    await waitForPresentationReady();
     expect(field.isConnected).toBe(true);
     expect(rowB()).toBe(field);
     expect(document.activeElement).toBe(field);

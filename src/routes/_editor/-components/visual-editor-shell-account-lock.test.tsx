@@ -10,7 +10,10 @@ import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-s
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { VisualEditorShell } from "./visual-editor-shell";
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  createLiveFrame,
+  frameEnvelope,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * The editor when the account, or its access to the Theme, changes under it.
@@ -163,7 +166,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -180,6 +183,7 @@ const tick = (ms = 20) =>
 /** Renders, selects the heading and types into it, the clock frozen. */
 async function editHeading(value = "Hello") {
   const shell = renderShell();
+  liveFrame.ready();
   fromPreview({
     type: "morph:storefront-preview-structure",
     nodes: [heroNode],

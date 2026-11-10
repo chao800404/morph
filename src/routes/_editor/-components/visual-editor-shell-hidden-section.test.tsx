@@ -14,13 +14,15 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { EditorStyleInspector } from "./editor-style-inspector";
-import { MISSING_BASIS_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
 import {
   HISTORY_NEWER_EDIT_MESSAGE,
   HISTORY_RUN_PENDING_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  createLiveFrame,
+  frameEnvelope,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * A hidden section is not selectable (content binding contract §6), and that
@@ -131,7 +133,9 @@ function contextWith(
 }
 
 const SHOWN = contextWith([{ id: "hero", enabled: true, heading: "Welcome" }]);
-const HIDDEN = contextWith([{ id: "hero", enabled: false, heading: "Welcome" }]);
+const HIDDEN = contextWith([
+  { id: "hero", enabled: false, heading: "Welcome" },
+]);
 
 const search = {
   template: "index",
@@ -202,13 +206,11 @@ function renderShell(initial: StorefrontThemeEditorDTO = SHOWN) {
   const client = readyClient();
   let currentContext = initial;
   let currentSearch = search;
-  const onSearchChange = vi.fn(
-    (next: Partial<StorefrontThemeEditorSearch>) => {
-      currentSearch = { ...currentSearch, ...next };
-      if (!currentSearch.section) delete currentSearch.section;
-      queueMicrotask(() => act(() => view.rerender(tree())));
-    },
-  );
+  const onSearchChange = vi.fn((next: Partial<StorefrontThemeEditorSearch>) => {
+    currentSearch = { ...currentSearch, ...next };
+    if (!currentSearch.section) delete currentSearch.section;
+    queueMicrotask(() => act(() => view.rerender(tree())));
+  });
   const tree = () => (
     <QueryClientProvider client={client}>
       <VisualEditorShell
@@ -219,6 +221,7 @@ function renderShell(initial: StorefrontThemeEditorDTO = SHOWN) {
     </QueryClientProvider>
   );
   const view = render(tree());
+  liveFrame.ready();
   return {
     onSearchChange,
     storedAs: (context: StorefrontThemeEditorDTO) => {
@@ -234,7 +237,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -305,6 +308,19 @@ async function openHeadingField(sectionId = "hero", value = "Welcome") {
   return screen.findByDisplayValue(value);
 }
 
+async function waitForPresentationReady() {
+  await waitFor(() => {
+    expect(
+      screen.queryByText("Preview syncing. Content writes are paused."),
+    ).toBeNull();
+    expect(
+      screen.queryByText(
+        "Preview syncing. Content writes are paused until every section confirms its current preview was applied.",
+      ),
+    ).toBeNull();
+  });
+}
+
 const hideButton = () =>
   screen.getAllByRole("button", { name: "Hide section hero" })[0]!;
 
@@ -363,6 +379,7 @@ describe("a hidden section's selection", () => {
     // Typed, and left the way a click on the Hide control leaves it.
     fireEvent.input(field, { target: { value: "Typed before hiding" } });
     fireEvent.blur(field);
+    await waitForPresentationReady();
 
     fireEvent.click(hideButton());
     await waitFor(() =>
@@ -372,7 +389,9 @@ describe("a hidden section's selection", () => {
         ),
       ).toBe(true),
     );
-    const sent = updateSectionProps.mock.calls.map((_, index) => request(index));
+    const sent = updateSectionProps.mock.calls.map((_, index) =>
+      request(index),
+    );
     expect(sent.map((entry) => entry.props.heading)).toContain(
       "Typed before hiding",
     );
@@ -434,12 +453,16 @@ describe("a hidden section's selection", () => {
     const shell = renderShell(both(true));
     await openHeadingField();
     // The heading itself is selected, not only its section.
-    expect(screen.getByRole("heading", { level: 4, name: "heading" })).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { level: 4, name: "heading" }),
+    ).toBeTruthy();
 
     shell.storedAs(both(false));
     await flushFrames();
     expect(screen.getByDisplayValue("Welcome")).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 4, name: "heading" })).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { level: 4, name: "heading" }),
+    ).toBeTruthy();
     expect(shell.onSearchChange).not.toHaveBeenCalledWith({ section: "" });
   });
 
@@ -495,7 +518,7 @@ describe("a hidden section's selection", () => {
 describe("a hidden section's other entries", () => {
   const selectRow = async () => {
     await flushFrames();
-    fireEvent.click(screen.getByTitle("Select hero; drag to reorder"));
+    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[0]!);
     await flushFrames();
   };
   const openContentTab = async () => {
@@ -517,7 +540,9 @@ describe("a hidden section's other entries", () => {
     renderShell(HIDDEN);
     await selectRow();
     await openContentTab();
-    expect(screen.getByRole("button", { name: "Show section hero" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Show section hero" }),
+    ).toBeTruthy();
     expect(screen.queryByDisplayValue("Welcome")).toBeNull();
     expect(await tryToEdit()).toBe(false);
     expect(updateSectionProps).not.toHaveBeenCalled();
@@ -558,43 +583,6 @@ describe("a hidden section's Document-backed style controls", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Styles$/ }));
     await flushFrames();
   };
-  async function reportImage(sectionId: string) {
-    const revision =
-      Math.max(
-        canvasRevision,
-        ...posted.map((m) =>
-          typeof m.selectionRevision === "number" ? m.selectionRevision : 0,
-        ),
-      ) + 1;
-    canvasRevision = revision;
-    fromPreview({
-      type: "morph:storefront-preview-select-section",
-      sectionId,
-      componentType: "hero",
-      kind: "image",
-      nodeId: "image",
-      sourceFilePath: HERO_PATH,
-      sourceLocation: null,
-      elementKey: "image",
-      fieldKey: "imageSrc",
-      field: "imageSrc",
-      fieldPath: "imageSrc",
-      descendantFields: [],
-      tagName: "img",
-      role: null,
-      inputType: null,
-      styleRevision: 0,
-      className: "",
-      isSection: false,
-      inspectorOverride: null,
-      computedStyle: null,
-      parentComputedStyle: null,
-      sectionComputedStyle: null,
-      selectionRevision: revision,
-    });
-    await flushFrames();
-  }
-
   const pickObjectPosition = async (label: string) => {
     const trigger = screen.getByRole("combobox", { name: "Object position" });
     fireEvent.keyDown(trigger, { key: "Enter" });
@@ -607,7 +595,7 @@ describe("a hidden section's Document-backed style controls", () => {
     await new Promise((resolve) => setTimeout(resolve, 1_200));
   };
 
-  it("the image position of a hidden section is disabled and sends nothing; another section's unsaved edit stays", async () => {
+  it("a hidden section row has no image target; another section's unsaved edit stays", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     // Another section's edit that got no answer: kept, waiting on Try again.
     updateSectionProps.mockRejectedValue(new Error("offline"));
@@ -625,13 +613,14 @@ describe("a hidden section's Document-backed style controls", () => {
       expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy(),
     );
 
-    await reportImage("hero");
+    await flushFrames();
+    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[0]!);
+    await flushFrames();
     await openStyles();
-    const trigger = screen.getByRole("combobox", { name: "Object position" });
-    expect(trigger.hasAttribute("data-disabled")).toBe(true);
-    await pickObjectPosition("Top");
+    expect(
+      screen.queryByRole("combobox", { name: "Object position" }),
+    ).toBeNull();
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
-    expect(trigger.textContent).not.toContain("Top");
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
@@ -744,10 +733,7 @@ describe("the Inspector's class list on a hidden section", () => {
     createdAt: "2026-08-20T00:00:00.000Z",
     updatedAt: "2026-08-20T00:00:00.000Z",
   };
-  function renderInspector(args: {
-    refused: boolean;
-    withFile: boolean;
-  }) {
+  function renderInspector(args: { refused: boolean; withFile: boolean }) {
     const onPropsChange = vi.fn();
     const onUpdateThemeFileStyle = vi.fn();
     render(
@@ -807,8 +793,11 @@ describe("the Inspector's class list on a hidden section", () => {
       });
       expect(input.disabled).toBe(refused);
       expect(
-        (screen.getByRole("button", { name: "Remove py-4" }) as HTMLButtonElement)
-          .disabled,
+        (
+          screen.getByRole("button", {
+            name: "Remove py-4",
+          }) as HTMLButtonElement
+        ).disabled,
       ).toBe(refused);
       // A browser delivers no paste to a disabled input; dispatched anyway,
       // it still reaches no Document write.
@@ -906,8 +895,12 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
       .querySelector("[data-editor-undo-depth]")
       ?.getAttribute("data-editor-undo-depth") ?? null;
   const historyButtons = () => ({
-    undo: !screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
-    redo: !screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled"),
+    undo: !screen
+      .getByRole("button", { name: "Undo" })
+      .hasAttribute("disabled"),
+    redo: !screen
+      .getByRole("button", { name: "Redo" })
+      .hasAttribute("disabled"),
   });
   const unconfirmedCount = () =>
     document
@@ -1194,6 +1187,7 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
     // Typed, and Undo pressed inside the 300 ms debounce.
     fireEvent.input(field, { target: { value: "Typed" } });
     fireEvent.blur(field);
+    await waitForPresentationReady();
     fireEvent.click(button);
     await settle();
 
@@ -1425,7 +1419,7 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
    * the click. With none (constructed here: every read the editor is given
    * carries no valid draft generation, so it holds no snapshot), nothing is
    * sent, nothing is drawn, the history is not retired, and the toggle is
-   * kept as not saved (Out of date, "Load latest, keep mine").
+   * not sent while the presented Document generation is unknown.
    */
   describe("a Show / Hide with no version basis", () => {
     const saveStatus = () =>
@@ -1434,7 +1428,6 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
         ?.getAttribute("aria-label");
 
     it("Hide pressed with no basis, another tab's change on the server: nothing sent, theirs kept, the canvas and history unchanged", async () => {
-      const notice = notices();
       // Every read the editor is given carries no valid draft generation.
       const unversioned = () =>
         contextWith(
@@ -1464,8 +1457,7 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
       });
       expect(previewHidden(), "not drawn hidden").not.toBe(true);
       expect(depth(), "history unchanged").toBe("0");
-      expect(saveStatus()).toBe("Out of date");
-      expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+      expect(saveStatus()).toBe("Unpublished");
       expect(unconfirmedCount()).toBeNull();
       await settle();
       expect(sent()).toHaveLength(0);

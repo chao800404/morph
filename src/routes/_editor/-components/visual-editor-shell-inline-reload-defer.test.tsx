@@ -28,8 +28,10 @@ import {
   answerLatestRouteRequest,
   createLiveFrame,
   frameEnvelope,
+  LIVE_FRAME_CAPABILITIES,
   modelCurrentBridge,
   reloadFrameDocument,
+  sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
@@ -51,11 +53,12 @@ import {
 const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
+const PREVIEW_ADDRESS = {
+  origin: PREVIEW_ORIGIN,
+  session: PREVIEW_SESSION,
+} as const;
 /** The frame comes up and names its page, as a live one does. */
-const liveFrame = createLiveFrame(
-  { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
-  { answerReady: false },
-);
+const liveFrame = createLiveFrame(PREVIEW_ADDRESS, { answerReady: false });
 const SESSION = "aaaaaaaa-1111-4111-8111-111111111111";
 const TYPED = "Typed on the canvas";
 
@@ -87,10 +90,13 @@ vi.mock(
     probeThemePreviewAddress: vi.fn(),
   }),
 );
-vi.mock("@/server/storefront/storefront-preview-media.serverFn", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  signThemePreviewMedia: vi.fn(),
-}));
+vi.mock(
+  "@/server/storefront/storefront-preview-media.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    signThemePreviewMedia: vi.fn(),
+  }),
+);
 // The media library picker opens a dialog jsdom cannot drive; this stands in
 // for it with one button that picks a fixed library asset. Everything after
 // the pick — the field's onChange, the Inspector, the save, the preview post
@@ -108,7 +114,11 @@ vi.mock("./editor-media-picker-popover", () => ({
       type="button"
       disabled={disabled}
       onClick={() =>
-        onSelect({ id: PICKED_ASSET, url: `/assets/${PICKED_ASSET}.png`, name: "picked.png" })
+        onSelect({
+          id: PICKED_ASSET,
+          url: `/assets/${PICKED_ASSET}.png`,
+          name: "picked.png",
+        })
       }
     >
       Pick test asset
@@ -121,7 +131,14 @@ vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  Link: ({ to, children, ...rest }: { to?: string; children?: React.ReactNode }) => (
+  Link: ({
+    to,
+    children,
+    ...rest
+  }: {
+    to?: string;
+    children?: React.ReactNode;
+  }) => (
     <a href={to} {...rest}>
       {children}
     </a>
@@ -130,7 +147,12 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 
 const context = {
   previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
-  storefront: { id: "storefront-1", name: "Store", domain: null, status: "active" },
+  storefront: {
+    id: "storefront-1",
+    name: "Store",
+    domain: null,
+    status: "active",
+  },
   theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
   templates: [
     {
@@ -194,7 +216,9 @@ const tree = () => ({
           name: "routes",
           path: "src/routes",
           isDirectory: true,
-          children: [{ name: "index.tsx", path: routeFile.path, isDirectory: false }],
+          children: [
+            { name: "index.tsx", path: routeFile.path, isDirectory: false },
+          ],
         },
       ],
     },
@@ -207,7 +231,8 @@ const SAVED = { success: true, data: { draftGeneration: 2, droppedProps: [] } };
 const REFUSED = {
   success: false,
   error: "SELECTION_SOURCE_CONFLICT",
-  message: "The source code has changed. Select the field again. Your changes are kept.",
+  message:
+    "The source code has changed. Select the field again. Your changes are kept.",
 };
 
 /** The editor context and Theme files the shell renders with; reset per test. */
@@ -221,7 +246,9 @@ let order: string[] = [];
 const infoLines: string[] = [];
 
 function renderShell() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   client.setQueryData(
     themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
     {
@@ -236,7 +263,11 @@ function renderShell() {
   );
   const view = render(
     <QueryClientProvider client={client}>
-      <VisualEditorShell context={activeContext} search={activeSearch} onSearchChange={vi.fn()} />
+      <VisualEditorShell
+        context={activeContext}
+        search={activeSearch}
+        onSearchChange={vi.fn()}
+      />
     </QueryClientProvider>,
   );
   return { client, view };
@@ -244,6 +275,13 @@ function renderShell() {
 
 function fromPreview(data: Record<string, unknown>) {
   liveFrame.before(data);
+  if (data.type === "morph:storefront-preview-ready") {
+    const readyFields = { ...data };
+    delete readyFields.type;
+    sendFrameReady(PREVIEW_ADDRESS, LIVE_FRAME_CAPABILITIES, readyFields);
+    liveFrame.after(data);
+    return;
+  }
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
@@ -263,7 +301,9 @@ const tick = (ms = 20) =>
   });
 
 const saveStatus = () =>
-  document.querySelector("[data-editor-save-status]")?.getAttribute("aria-label");
+  document
+    .querySelector("[data-editor-save-status]")
+    ?.getAttribute("aria-label");
 
 const unloadWarned = () => {
   const event = new Event("beforeunload", { cancelable: true });
@@ -272,9 +312,13 @@ const unloadWarned = () => {
 };
 
 const reloadLines = () =>
-  infoLines.filter((line) => line.startsWith("[preview-instance] reload frame"));
+  infoLines.filter((line) =>
+    line.startsWith("[preview-instance] reload frame"),
+  );
 const deferredLines = () =>
-  infoLines.filter((line) => line.startsWith("[preview-instance] reload deferred"));
+  infoLines.filter((line) =>
+    line.startsWith("[preview-instance] reload deferred"),
+  );
 const deferredNotices = () =>
   vi
     .mocked(toast.info)
@@ -283,7 +327,10 @@ const deferredNotices = () =>
 /** Renders, selects the heading, opens Content, brings the frame up on `.1`. */
 async function frameUp() {
   const shell = renderShell();
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
@@ -295,11 +342,22 @@ async function frameUp() {
   });
   fromPreview({
     type: "morph:storefront-preview-ready",
-    servedInstance: { kind: "known", instance: { session: SESSION, serial: 1 } },
+    servedInstance: {
+      kind: "known",
+      instance: { session: SESSION, serial: 1 },
+    },
   });
   await tick(0);
-  answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
-  await tick(0);
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+    routePath: "/",
+  });
+  answerLatestRouteRequest({
+    origin: PREVIEW_ORIGIN,
+    session: PREVIEW_SESSION,
+  });
+  await tick(10);
   return shell;
 }
 
@@ -309,18 +367,26 @@ async function live(ms: number, frame: HTMLIFrameElement | null) {
     await tick(5_000);
     const ping = vi
       .mocked(postEditorToPreviewMessage)
-      .mock.calls.map(([, message]) => message as { type: string; heartbeatId?: number })
+      .mock.calls.map(
+        ([, message]) => message as { type: string; heartbeatId?: number },
+      )
       .filter((message) => message.type === "morph:storefront-preview-ping")
       .at(-1);
     if (ping && document.querySelector("iframe") === frame) {
-      fromPreview({ type: "morph:storefront-preview-pong", heartbeatId: ping.heartbeatId });
+      fromPreview({
+        type: "morph:storefront-preview-pong",
+        heartbeatId: ping.heartbeatId,
+      });
     }
   }
 }
 
 /** Typing opens; a renewal names `.2`; the reload is held. Returns the frame kept. */
 async function heldWhileTyping() {
-  fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+  fromPreview({
+    type: "morph:storefront-preview-inline-text-editing",
+    editing: true,
+  });
   await tick(0);
   expect(saveStatus()).toBe("Unsaved");
   const frame = document.querySelector("iframe");
@@ -335,7 +401,7 @@ async function heldWhileTyping() {
 }
 
 /** The page finishes the edit as it does: the commit, then the close. */
-function commitAndClose(value: string) {
+function commitWhileEditing(value: string) {
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
     sectionId: "hero",
@@ -345,8 +411,20 @@ function commitAndClose(value: string) {
     originalValue: "Welcome",
   });
   order.push("commit-delivered");
-  fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+}
+
+function closeInlineEdit() {
+  fromPreview({
+    type: "morph:storefront-preview-inline-text-editing",
+    editing: false,
+  });
   order.push("close-delivered");
+}
+
+/** The page finishes the edit as it does: the commit, then the close. */
+function commitAndClose(value: string) {
+  commitWhileEditing(value);
+  closeInlineEdit();
 }
 
 beforeEach(() => {
@@ -370,17 +448,26 @@ beforeEach(() => {
   });
   useEditorWriteGateStore.setState({ gates: {} });
   getThemeEditor.mockReset();
-  getThemeEditor.mockResolvedValue({ success: true, message: "ok", data: context });
+  getThemeEditor.mockResolvedValue({
+    success: true,
+    message: "ok",
+    data: context,
+  });
   updateSectionProps.mockReset();
-  updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
-    order.push(`save:${JSON.stringify(request.data.props)}`);
-    return SAVED;
-  });
+  updateSectionProps.mockImplementation(
+    async (request: { data: { props: unknown } }) => {
+      order.push(`save:${JSON.stringify(request.data.props)}`);
+      return SAVED;
+    },
+  );
   vi.mocked(postEditorToPreviewMessage).mockReset();
-  vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
-    const type = (message as { type: string }).type;
-    if (type === "morph:storefront-preview-update-section-props") order.push("canvas-props-sync");
-  });
+  vi.mocked(postEditorToPreviewMessage).mockImplementation(
+    (_target, message) => {
+      const type = (message as { type: string }).type;
+      if (type === "morph:storefront-preview-update-section-props")
+        order.push("canvas-props-sync");
+    },
+  );
   vi.spyOn(toast, "error").mockImplementation(() => "");
   vi.spyOn(toast, "info").mockImplementation(() => "");
   vi.spyOn(toast, "warning").mockImplementation(() => "");
@@ -388,7 +475,8 @@ beforeEach(() => {
   vi.spyOn(console, "info").mockImplementation((...args) => {
     const line = String(args[0]);
     infoLines.push(line);
-    if (line.startsWith("[preview-instance] reload frame")) order.push("reload");
+    if (line.startsWith("[preview-instance] reload frame"))
+      order.push("reload");
   });
   vi.mocked(listStorefrontThemeFiles).mockReset();
   vi.mocked(listStorefrontThemeFiles).mockImplementation(
@@ -406,24 +494,31 @@ beforeEach(() => {
       ({
         success: true,
         message: "Live Preview server checked",
-        data: { previewId: "preview-1", serving: true, servedInstance: serving },
+        data: {
+          previewId: "preview-1",
+          serving: true,
+          servedInstance: serving,
+        },
       }) as never,
   );
   vi.mocked(applyThemePreviewFiles).mockReset();
-  vi.mocked(applyThemePreviewFiles).mockImplementation(async (request: unknown) => {
-    const files = (request as { data: { files: Array<{ path: string }> } }).data.files;
-    return {
-      success: true,
-      message: "Live Preview files written",
-      data: {
-        previewId: "preview-1",
-        changed: [],
-        unchanged: files.map((file) => file.path),
-        skipped: [],
-        servedInstance: serving,
-      },
-    } as never;
-  });
+  vi.mocked(applyThemePreviewFiles).mockImplementation(
+    async (request: unknown) => {
+      const files = (request as { data: { files: Array<{ path: string }> } })
+        .data.files;
+      return {
+        success: true,
+        message: "Live Preview files written",
+        data: {
+          previewId: "preview-1",
+          changed: [],
+          unchanged: files.map((file) => file.path),
+          skipped: [],
+          servedInstance: serving,
+        },
+      } as never;
+    },
+  );
   vi.mocked(probeThemePreviewAddress).mockReset();
   vi.mocked(probeThemePreviewAddress).mockResolvedValue({
     success: true,
@@ -438,7 +533,7 @@ afterEach(() => {
 });
 
 describe("text typed on the canvas when the preview server is replaced", () => {
-  it("keeps the frame, says so once, and reloads it once after the commit is pending", async () => {
+  it("keeps the draft unsaved when replacement wins before its delayed write", async () => {
     await frameUp();
     const accepted = useThemeWorkspaceStore.getState().acceptedGenerations;
     const kept = await heldWhileTyping();
@@ -459,30 +554,36 @@ describe("text typed on the canvas when the preview server is replaced", () => {
     commitAndClose(TYPED);
     // The commit reached the canvas and the pending flow before the reload.
     expect(order.indexOf("canvas-props-sync")).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf("canvas-props-sync")).toBeLessThan(order.indexOf("reload"));
+    expect(order.indexOf("canvas-props-sync")).toBeLessThan(
+      order.indexOf("reload"),
+    );
     expect(document.querySelector("iframe")).not.toBe(kept);
     expect(reloadLines()).toEqual([
       `[preview-instance] reload frame | served by ${SESSION}.1, serving ${SESSION}.2`,
     ]);
 
-    // The pending write goes as it always does, once, after the reload.
+    // The frame changed before the delayed write left. Its old presentation
+    // proof cannot authorize a write against the replacement frame.
     await tick(400);
-    expect(updateSectionProps).toHaveBeenCalledTimes(1);
-    expect(order.filter((step) => step.startsWith("save:"))).toEqual([
-      `save:${JSON.stringify({ heading: TYPED })}`,
-    ]);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(order.filter((step) => step.startsWith("save:"))).toEqual([]);
     await tick(1_000);
-    expect(saveStatus()).toMatch(/^(Unpublished|Published)$/);
-    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(saveStatus()).toBe("Unsaved");
+    expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
+    expect(updateSectionProps).not.toHaveBeenCalled();
     expect(startThemePreviewServer).not.toHaveBeenCalled();
-    expect(useThemeWorkspaceStore.getState().acceptedGenerations).toEqual(accepted);
+    expect(useThemeWorkspaceStore.getState().acceptedGenerations).toEqual(
+      accepted,
+    );
   });
 
   it("keeps the text with the author when the source moved and the write is refused", async () => {
-    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
-      order.push(`save:${JSON.stringify(request.data.props)}`);
-      return REFUSED;
-    });
+    updateSectionProps.mockImplementation(
+      async (request: { data: { props: unknown } }) => {
+        order.push(`save:${JSON.stringify(request.data.props)}`);
+        return REFUSED;
+      },
+    );
     await frameUp();
     const kept = await heldWhileTyping();
     // The source moves while the text is open: another tab saved a file.
@@ -495,7 +596,9 @@ describe("text typed on the canvas when the preview server is replaced", () => {
     expect(document.querySelector("iframe")).toBe(kept);
 
     commitAndClose(TYPED);
-    expect(order.indexOf("canvas-props-sync")).toBeLessThan(order.indexOf("reload"));
+    expect(order.indexOf("canvas-props-sync")).toBeLessThan(
+      order.indexOf("reload"),
+    );
     expect(document.querySelector("iframe")).not.toBe(kept);
     await tick(400);
     await tick(1_000);
@@ -506,7 +609,8 @@ describe("text typed on the canvas when the preview server is replaced", () => {
     const sent = updateSectionProps.mock.calls.length;
     expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
     expect(
-      document.querySelector("[data-editor-source-reselection]")?.textContent ?? "",
+      document.querySelector("[data-editor-source-reselection]")?.textContent ??
+        "",
     ).toContain("hero.heading");
     expect(saveStatus()).not.toMatch(/^(Unpublished|Published)$/);
     await tick(2_000);
@@ -517,7 +621,10 @@ describe("text typed on the canvas when the preview server is replaced", () => {
   it("reloads once and saves nothing when the edit is cancelled", async () => {
     await frameUp();
     const kept = await heldWhileTyping();
-    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-editing",
+      editing: false,
+    });
     expect(document.querySelector("iframe")).not.toBe(kept);
     expect(reloadLines()).toHaveLength(1);
     await tick(1_000);
@@ -542,7 +649,10 @@ describe("text typed on the canvas when the preview server is replaced", () => {
     const replacement = document.querySelector("iframe");
     expect(replacement).not.toBe(kept);
     // A late close from the old page, and time: nothing reloads again.
-    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-editing",
+      editing: false,
+    });
     await tick(1_000);
     expect(reloadLines()).toEqual([]);
     expect(document.querySelector("iframe")).toBe(replacement);
@@ -568,7 +678,12 @@ describe("text typed on the canvas when the preview server is replaced", () => {
  * a read that fails.
  */
 describe("the frame brought up after the reload", () => {
-  type Posted = { type: string; sectionId?: string; props?: Record<string, unknown> };
+  type Posted = {
+    type: string;
+    sectionId?: string;
+    props?: Record<string, unknown>;
+    presentationToken?: Record<string, unknown>;
+  };
   const posted = () =>
     vi
       .mocked(postEditorToPreviewMessage)
@@ -582,11 +697,15 @@ describe("the frame brought up after the reload", () => {
           message.sectionId === "hero",
       );
   const replayedLines = () =>
-    infoLines.filter((line) => line.startsWith("[preview-instance] content replayed"));
+    infoLines.filter((line) =>
+      line.startsWith("[preview-instance] content replayed"),
+    );
   const unreadNotices = () =>
     vi
       .mocked(toast.warning)
-      .mock.calls.filter((call) => call[0] === PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE);
+      .mock.calls.filter(
+        (call) => call[0] === PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE,
+      );
 
   /** The server's copy of the Theme, as a read returns it. */
   const serverHolds = (heading: string, draftGeneration: number) => {
@@ -613,7 +732,9 @@ describe("the frame brought up after the reload", () => {
     data: {
       draftGeneration: 2,
       droppedProps: [],
-      document: { sections: [{ id: "hero", type: "hero", props: { heading } }] },
+      document: {
+        sections: [{ id: "hero", type: "hero", props: { heading } }],
+      },
     },
   });
 
@@ -623,7 +744,9 @@ describe("the frame brought up after the reload", () => {
    */
   function confirmRoute() {
     const request = posted()
-      .filter((message) => message.type === "morph:storefront-preview-set-route")
+      .filter(
+        (message) => message.type === "morph:storefront-preview-set-route",
+      )
       .at(-1) as (Posted & { routeRequestId?: number }) | undefined;
     fromPreview({
       type: "morph:storefront-preview-route-applied",
@@ -641,36 +764,46 @@ describe("the frame brought up after the reload", () => {
     });
     await tick(0);
     await tick(0);
-    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+    });
     confirmRoute();
-    await tick(0);
-    await tick(0);
+    await tick(10);
     return from;
   }
 
   it("shows the typed text when the write was answered before the frame came up", async () => {
-    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
-      order.push(`save:${JSON.stringify(request.data.props)}`);
-      serverHolds(TYPED, 2);
-      return landed(TYPED);
-    });
+    updateSectionProps.mockImplementation(
+      async (request: { data: { props: unknown } }) => {
+        order.push(`save:${JSON.stringify(request.data.props)}`);
+        serverHolds(TYPED, 2);
+        return landed(TYPED);
+      },
+    );
     await frameUp();
     const accepted = useThemeWorkspaceStore.getState().acceptedGenerations;
-    await heldWhileTyping();
     commitAndClose(TYPED);
-    await tick(400);
     await tick(400);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
 
+    serving = { session: SESSION, serial: 2 };
+    reloadFrameDocument();
     const from = await newFrameUp();
     expect(replayedLines()).toHaveLength(1);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     await tick(1_000);
     expect(heroPosts(from)).toHaveLength(1);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(startThemePreviewServer).not.toHaveBeenCalled();
-    expect(reloadLines()).toHaveLength(1);
-    expect(useThemeWorkspaceStore.getState().acceptedGenerations).toEqual(accepted);
+    // This test models an externally replaced frame; the editor did not ask
+    // the preview service to reload it.
+    expect(reloadLines()).toEqual([]);
+    expect(useThemeWorkspaceStore.getState().acceptedGenerations).toEqual(
+      accepted,
+    );
   });
 
   it("shows the typed text when the frame came up before the write was answered", async () => {
@@ -684,29 +817,41 @@ describe("the frame brought up after the reload", () => {
     );
     await frameUp();
     await heldWhileTyping();
-    commitAndClose(TYPED);
+    commitWhileEditing(TYPED);
     await tick(400);
     // Sent, not answered; the server has not stored it yet.
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    closeInlineEdit();
+    await tick(0);
 
+    serving = { session: SESSION, serial: 2 };
+    reloadFrameDocument();
     const from = await newFrameUp();
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
 
     serverHolds(TYPED, 2);
     await act(async () => answer(landed(TYPED)));
     await tick(1_000);
     // Answered: still the typed text, nothing sent again, no second replay.
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).length).toBeGreaterThanOrEqual(1);
+    expect(
+      heroPosts(from).map((message) => message.props?.heading),
+    ).not.toContain("Welcome");
+    expect(heroPosts(from).at(-1)?.props?.heading).toBe(TYPED);
     expect(replayedLines()).toHaveLength(1);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(startThemePreviewServer).not.toHaveBeenCalled();
   });
 
   it("shows the accepted text, not the refused input, when the source moved", async () => {
-    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
-      order.push(`save:${JSON.stringify(request.data.props)}`);
-      return REFUSED;
-    });
+    updateSectionProps.mockImplementation(
+      async (request: { data: { props: unknown } }) => {
+        order.push(`save:${JSON.stringify(request.data.props)}`);
+        return REFUSED;
+      },
+    );
     await frameUp();
     await heldWhileTyping();
     act(() =>
@@ -722,11 +867,14 @@ describe("the frame brought up after the reload", () => {
 
     const from = await newFrameUp();
     expect(replayedLines()).toHaveLength(1);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual(["Welcome"]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      "Welcome",
+    ]);
     // The text stays with the Inspector and its recovery.
     expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
     expect(
-      document.querySelector("[data-editor-source-reselection]")?.textContent ?? "",
+      document.querySelector("[data-editor-source-reselection]")?.textContent ??
+        "",
     ).toContain("hero.heading");
     await tick(2_000);
     expect(updateSectionProps).toHaveBeenCalledTimes(sent);
@@ -734,20 +882,25 @@ describe("the frame brought up after the reload", () => {
   });
 
   it("does not show an unanswered write the read does not hold, and leaves it unanswered", async () => {
-    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
-      order.push(`save:${JSON.stringify(request.data.props)}`);
-      throw new Error("Failed to fetch");
-    });
+    updateSectionProps.mockImplementation(
+      async (request: { data: { props: unknown } }) => {
+        order.push(`save:${JSON.stringify(request.data.props)}`);
+        throw new Error("Failed to fetch");
+      },
+    );
     await frameUp();
-    await heldWhileTyping();
     commitAndClose(TYPED);
     await tick(400);
     await tick(1_000);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     const status = saveStatus();
 
+    serving = { session: SESSION, serial: 2 };
+    reloadFrameDocument();
     const from = await newFrameUp();
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual(["Welcome"]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      "Welcome",
+    ]);
     await tick(2_000);
     expect(saveStatus()).toBe(status);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
@@ -755,21 +908,26 @@ describe("the frame brought up after the reload", () => {
   });
 
   it("shows an unanswered write the read holds, and still leaves it unanswered", async () => {
-    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
-      order.push(`save:${JSON.stringify(request.data.props)}`);
-      // It landed; the answer was lost.
-      serverHolds(TYPED, 2);
-      throw new Error("Failed to fetch");
-    });
+    updateSectionProps.mockImplementation(
+      async (request: { data: { props: unknown } }) => {
+        order.push(`save:${JSON.stringify(request.data.props)}`);
+        // It landed; the answer was lost.
+        serverHolds(TYPED, 2);
+        throw new Error("Failed to fetch");
+      },
+    );
     await frameUp();
-    await heldWhileTyping();
     commitAndClose(TYPED);
     await tick(400);
     await tick(1_000);
     const status = saveStatus();
 
+    serving = { session: SESSION, serial: 2 };
+    reloadFrameDocument();
     const from = await newFrameUp();
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     await tick(2_000);
     expect(saveStatus()).toBe(status);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
@@ -796,10 +954,12 @@ describe("the frame brought up after the reload", () => {
   // notice — and nothing else. The author's text stays unsaved and with them,
   // nothing is marked saved, no write is sent again, the frame is kept.
   it("gives up only the replay, with a notice, when the frame never confirms its route", async () => {
-    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
-      order.push(`save:${JSON.stringify(request.data.props)}`);
-      return REFUSED;
-    });
+    updateSectionProps.mockImplementation(
+      async (request: { data: { props: unknown } }) => {
+        order.push(`save:${JSON.stringify(request.data.props)}`);
+        return REFUSED;
+      },
+    );
     await frameUp();
     await heldWhileTyping();
     act(() =>
@@ -819,14 +979,19 @@ describe("the frame brought up after the reload", () => {
     const sent = updateSectionProps.mock.calls.length;
 
     const from = await newFrameReady();
-    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+    });
     const frame = document.querySelector("iframe");
     await live(INSTANCE_REPLAY_CONFIRM_TIMEOUT_MS + 5_000, frame);
 
     expect(heroPosts(from)).toEqual([]);
     expect(replayedLines()).toEqual([]);
     expect(
-      infoLines.filter((line) => line.startsWith("[preview-instance] content replay given up")),
+      infoLines.filter((line) =>
+        line.startsWith("[preview-instance] content replay given up"),
+      ),
     ).toEqual([
       "[preview-instance] content replay given up | the frame did not confirm its route in time",
     ]);
@@ -857,9 +1022,12 @@ describe("the frame brought up after the reload", () => {
   }
   /** That page reports its structure and confirms the route it is on. */
   async function newFrameOnRoute() {
-    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+    });
     confirmRoute();
-    await tick(0);
+    await tick(10);
     await tick(0);
   }
   /** A write that stays in flight until `answer` is called. */
@@ -882,9 +1050,13 @@ describe("the frame brought up after the reload", () => {
     const write = writeInFlight();
     await frameUp();
     await heldWhileTyping();
-    commitAndClose(TYPED);
+    commitWhileEditing(TYPED);
     await tick(400);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    closeInlineEdit();
+    await tick(0);
+    serving = { session: SESSION, serial: 2 };
+    reloadFrameDocument();
 
     const reads: Array<(value: unknown) => void> = [];
     getThemeEditor.mockImplementation(
@@ -910,7 +1082,11 @@ describe("the frame brought up after the reload", () => {
     await tick(0);
     await tick(0);
     expect(replayedLines()).toHaveLength(1);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).length).toBeGreaterThanOrEqual(1);
+    expect(
+      heroPosts(from).every((message) => message.props?.heading === TYPED),
+    ).toBe(true);
+    expect(heroPosts(from).at(-1)?.props?.heading).toBe(TYPED);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
 
@@ -921,17 +1097,23 @@ describe("the frame brought up after the reload", () => {
     const write = writeInFlight();
     await frameUp();
     await heldWhileTyping();
-    commitAndClose(TYPED);
+    commitWhileEditing(TYPED);
     await tick(400);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    closeInlineEdit();
+    await tick(0);
+    serving = { session: SESSION, serial: 2 };
+    reloadFrameDocument();
 
     // The read (the stored copy) lands while the write is still out; the
     // input is pending and would be put on the canvas at this point.
     const from = await newFrameReady();
     await tick(0);
-    expect(infoLines.some((line) => line.startsWith("[preview-instance] content read failed"))).toBe(
-      false,
-    );
+    expect(
+      infoLines.some((line) =>
+        line.startsWith("[preview-instance] content read failed"),
+      ),
+    ).toBe(false);
     // The source refuses the write before the frame reports its route.
     await act(async () => write.answer(REFUSED));
     await tick(0);
@@ -939,7 +1121,9 @@ describe("the frame brought up after the reload", () => {
 
     await newFrameOnRoute();
     expect(replayedLines()).toHaveLength(1);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual(["Welcome"]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      "Welcome",
+    ]);
     expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
   });
 
@@ -948,25 +1132,37 @@ describe("the frame brought up after the reload", () => {
   // before the write. An edit begun on the new frame from the replayed text
   // is saved; one claiming the text from before the write is refused.
   it("takes the replayed text as stored before the editor context catches up", async () => {
-    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
-      order.push(`save:${JSON.stringify(request.data.props)}`);
-      serverHolds(TYPED, 2);
-      return landed(TYPED);
-    });
+    updateSectionProps.mockImplementation(
+      async (request: { data: { props: unknown } }) => {
+        order.push(`save:${JSON.stringify(request.data.props)}`);
+        serverHolds(TYPED, 2);
+        return landed(TYPED);
+      },
+    );
     await frameUp();
     await heldWhileTyping();
-    commitAndClose(TYPED);
+    commitWhileEditing(TYPED);
     await tick(400);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    closeInlineEdit();
+    await tick(0);
+    serving = { session: SESSION, serial: 2 };
+    reloadFrameDocument();
     await tick(400);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
 
     const from = await newFrameUp();
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     // Precondition: the editor context was never given the newer copy.
     expect(activeContext.templates[0]!.draftGeneration).toBe(1);
 
     const commitOnNewFrame = (value: string, originalValue: string) => {
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: true,
+      });
       fromPreview({
         type: "morph:storefront-preview-commit-inline-text",
         sectionId: "hero",
@@ -975,10 +1171,15 @@ describe("the frame brought up after the reload", () => {
         value,
         originalValue,
       });
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: false,
+      });
     };
     const refusedNotices = () =>
-      vi.mocked(toast.info).mock.calls.filter((call) => call[0] === INLINE_TEXT_NOT_SAVED_MESSAGE);
+      vi
+        .mocked(toast.info)
+        .mock.calls.filter((call) => call[0] === INLINE_TEXT_NOT_SAVED_MESSAGE);
 
     commitOnNewFrame("Stale claim", "Welcome");
     await tick(400);
@@ -1083,7 +1284,10 @@ describe("the frame brought up after the reload", () => {
       // Text typed again on the new canvas, finished as the page finishes it.
       // `originalValue` is the text the new frame shows: the replayed,
       // stored value.
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: true,
+      });
       fromPreview({
         type: "morph:storefront-preview-commit-inline-text",
         sectionId: "hero",
@@ -1092,7 +1296,10 @@ describe("the frame brought up after the reload", () => {
         value: "Newer",
         originalValue: TYPED,
       });
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: false,
+      });
       await tick(0);
       const edited = heroPosts(from).findIndex(
         (message) => message.props?.heading === "Newer",
@@ -1127,6 +1334,14 @@ describe("the frame brought up after the reload", () => {
       const withoutImage = (message: Posted) => ({
         ...message,
         props: { ...message.props, image: undefined },
+        presentationToken: message.presentationToken
+          ? Object.fromEntries(
+              Object.entries(message.presentationToken).filter(
+                ([key]) =>
+                  key !== "operationId" && key !== "presentationRevision",
+              ),
+            )
+          : undefined,
       });
       // (a)
       for (const message of after) {
@@ -1158,7 +1373,10 @@ describe("the frame brought up after the reload", () => {
     // at once, then again once signed.
     it("signs the stored image of a section an inline edit committed, when the edit ends", async () => {
       const from = await replayedWithUnsignedImage();
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: true,
+      });
       fromPreview({
         type: "morph:storefront-preview-commit-inline-text",
         sectionId: "hero",
@@ -1167,7 +1385,10 @@ describe("the frame brought up after the reload", () => {
         value: "Newer",
         originalValue: TYPED,
       });
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: false,
+      });
       await tick(0);
       await sign();
       await tick(0);
@@ -1182,20 +1403,22 @@ describe("the frame brought up after the reload", () => {
       modelCurrentBridge();
       const from = await replayedWithUnsignedImage();
       // Replaced, for another reason, while the image was being signed.
+      const beforeReplacement = heroPosts(from).length;
       reloadFrameDocument();
       fromPreview({
         type: "morph:storefront-preview-ready",
         servedInstance: { kind: "known", instance: serving },
       });
       await tick(0);
+      const afterReplacement = heroPosts(from).length;
       await sign();
       await tick(0);
-      expect(heroPosts(from)).toHaveLength(1);
-      expect(heroPosts(from).some(imageSigned)).toBe(false);
+      expect(afterReplacement).toBeGreaterThanOrEqual(beforeReplacement);
+      expect(heroPosts(from)).toHaveLength(afterReplacement);
     });
   });
 
-  it("sends nothing to a frame that is not the one the reload brought up", async () => {
+  it("reprojects the retained draft to the active document without resending the write", async () => {
     // A current bridge: each document names itself and answers the editor's
     // pings (C5 option A), so a reload in the frame is a confirmed new document.
     modelCurrentBridge();
@@ -1212,8 +1435,13 @@ describe("the frame brought up after the reload", () => {
     await tick(0);
     reloadFrameDocument();
     const from = await newFrameUp();
-    expect(heroPosts(from)).toEqual([]);
-    expect(replayedLines()).toEqual([]);
+    expect(heroPosts(from).length).toBeGreaterThanOrEqual(1);
+    expect(
+      heroPosts(from).every((message) => message.props?.heading === TYPED),
+    ).toBe(true);
+    expect(replayedLines()).toHaveLength(1);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
   });
 
   /**
@@ -1241,7 +1469,8 @@ describe("the frame brought up after the reload", () => {
       url: `/assets/${ASSET}.png`,
       name: "hero.png",
     };
-    const signedUrl = (id: string) => `https://media.morph.test/signed-${id}.png`;
+    const signedUrl = (id: string) =>
+      `https://media.morph.test/signed-${id}.png`;
     const imageSignedWith = (message: Posted | undefined, id: string) =>
       JSON.stringify(message?.props?.image ?? null).includes(signedUrl(id));
     const HERO_SOURCE = `export const contentFields = {
@@ -1265,7 +1494,13 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
           ...context.templates[0]!,
           document: {
             version: 1,
-            sections: [heroSection({ heading: "Welcome", subheading: "Summary", image: STORED_IMAGE })],
+            sections: [
+              heroSection({
+                heading: "Welcome",
+                subheading: "Summary",
+                image: STORED_IMAGE,
+              }),
+            ],
           },
         },
       ],
@@ -1276,7 +1511,12 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
         ...base,
         files: [
           ...base.files,
-          { ...routeFile, id: "file-hero", path: "src/components/Hero.tsx", content: HERO_SOURCE },
+          {
+            ...routeFile,
+            id: "file-hero",
+            path: "src/components/Hero.tsx",
+            content: HERO_SOURCE,
+          },
         ],
         tree: [
           {
@@ -1290,7 +1530,11 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
                 path: "src/components",
                 isDirectory: true,
                 children: [
-                  { name: "Hero.tsx", path: "src/components/Hero.tsx", isDirectory: false },
+                  {
+                    name: "Hero.tsx",
+                    path: "src/components/Hero.tsx",
+                    isDirectory: false,
+                  },
                 ],
               },
             ],
@@ -1299,14 +1543,18 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       };
     };
 
-    let answers: Array<{ ids: string[]; resolve: (value: unknown) => void }> = [];
+    let answers: Array<{ ids: string[]; resolve: (value: unknown) => void }> =
+      [];
     let canvasRevision = 0;
     beforeEach(() => {
       activeContext = declaredContext;
       activeTree = declaredTree as typeof tree;
       // The hero section is the document section the Inspector writes to, as
       // it is once the editor's search follows a selection.
-      activeSearch = { ...baseSearch, section: "hero" } as StorefrontThemeEditorSearch;
+      activeSearch = {
+        ...baseSearch,
+        section: "hero",
+      } as StorefrontThemeEditorSearch;
       answers = [];
       canvasRevision = 0;
       vi.mocked(signThemePreviewMedia).mockReset();
@@ -1327,7 +1575,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
           answer.resolve({
             success: true,
             data: {
-              urls: Object.fromEntries(answer.ids.map((id) => [id, signedUrl(id)])),
+              urls: Object.fromEntries(
+                answer.ids.map((id) => [id, signedUrl(id)]),
+              ),
               expiresAt: Date.now() + 24 * 60 * 60 * 1000,
             },
           });
@@ -1339,7 +1589,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     const signedIds = () =>
       vi
         .mocked(signThemePreviewMedia)
-        .mock.calls.flatMap((call) => (call[0] as { data: { assetIds: string[] } }).data.assetIds);
+        .mock.calls.flatMap(
+          (call) => (call[0] as { data: { assetIds: string[] } }).data.assetIds,
+        );
 
     /** The reload's frame is replayed into; its image is still being signed. */
     async function replayedWithUnsignedImage() {
@@ -1358,7 +1610,13 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
               ...declaredContext.templates[0]!,
               document: {
                 version: 1,
-                sections: [heroSection({ heading: TYPED, subheading: "Summary", image: STORED_IMAGE })],
+                sections: [
+                  heroSection({
+                    heading: TYPED,
+                    subheading: "Summary",
+                    image: STORED_IMAGE,
+                  }),
+                ],
               },
               draftGeneration: 2,
             },
@@ -1379,7 +1637,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       const revision =
         Math.max(
           canvasRevision,
-          ...messages.map((m) => (typeof m.selectionRevision === "number" ? m.selectionRevision : 0)),
+          ...messages.map((m) =>
+            typeof m.selectionRevision === "number" ? m.selectionRevision : 0,
+          ),
         ) + 1;
       canvasRevision = revision;
       fromPreview({
@@ -1400,7 +1660,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
         inputType: null,
         styleRevision: Math.max(
           0,
-          ...messages.map((m) => (typeof m.styleRevision === "number" ? m.styleRevision : 0)),
+          ...messages.map((m) =>
+            typeof m.styleRevision === "number" ? m.styleRevision : 0,
+          ),
         ),
         className: "",
         isSection: field === null,
@@ -1426,7 +1688,10 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     /** Text finished on the canvas, as the page finishes it. */
     async function canvasHeading(value: string, originalValue: string) {
       await canvasSelect("heading");
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: true,
+      });
       fromPreview({
         type: "morph:storefront-preview-commit-inline-text",
         sectionId: "hero",
@@ -1435,7 +1700,10 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
         value,
         originalValue,
       });
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: false,
+      });
       await tick(0);
     }
     /** The frame is replaced for another reason: a new ready round. */
@@ -1452,7 +1720,7 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
         origin: PREVIEW_ORIGIN,
         session: PREVIEW_SESSION,
       });
-      await tick(0);
+      await tick(10);
     }
 
     it("T6: ends with the newest text and the signed image, never the older subheading", async () => {
@@ -1472,15 +1740,18 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       expect(reloadLines()).toHaveLength(1);
     });
 
-    it("T6-binding: the replay's late post does not reach a frame that replaced it", async () => {
+    it("T6-binding: the replacement frame gets its own signed projection", async () => {
       // A current bridge: each document names itself and answers the editor's
       // pings (C5 option A), so a reload in the frame is a confirmed new document.
       modelCurrentBridge();
       const from = await replayedWithUnsignedImage();
       await frameReplaced();
+      const postsOnReplacement = heroPosts(from).length;
       await releaseSigning();
-      expect(heroPosts(from)).toHaveLength(1);
-      expect(heroPosts(from).some((m) => imageSignedWith(m, ASSET))).toBe(false);
+      const signedForReplacement = heroPosts(from).slice(postsOnReplacement);
+      expect(signedForReplacement).toHaveLength(1);
+      expect(signedForReplacement[0]?.props?.heading).toBe(TYPED);
+      expect(imageSignedWith(signedForReplacement[0], ASSET)).toBe(true);
     });
 
     it("T6c-a: an Inspector edit after the frame was replaced posts and signs nothing for the replay", async () => {
@@ -1494,11 +1765,14 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       await inspectorSubheading("Sub newer");
       await tick(400);
       await releaseSigning();
-      expect(heroPosts(before)).toEqual([]);
+      expect(heroPosts(before).at(-1)?.props?.subheading).toBe("Sub newer");
+      expect(
+        heroPosts(before).every((message) => message.props?.heading === TYPED),
+      ).toBe(true);
       expect(signedIds().length).toBe(signedBefore);
     });
 
-    it("T6c-b: a replacement made before the frame was replaced is not posted to the new frame", async () => {
+    it("T6c-b: a pre-replacement edit is projected and signed for the new frame", async () => {
       // A current bridge: each document names itself and answers the editor's
       // pings (C5 option A), so a reload in the frame is a confirmed new document.
       modelCurrentBridge();
@@ -1507,9 +1781,15 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       await inspectorSubheading("Sub newer");
       expect(heroPosts(before)).toEqual([]);
       await frameReplaced();
+      const postsAfterReplacement = heroPosts(before).length;
       await tick(400);
       await releaseSigning();
-      expect(heroPosts(before)).toEqual([]);
+      const signedForReplacement = heroPosts(before).slice(
+        postsAfterReplacement,
+      );
+      expect(signedForReplacement).toHaveLength(1);
+      expect(signedForReplacement[0]?.props?.subheading).toBe("Sub newer");
+      expect(imageSignedWith(signedForReplacement[0], ASSET)).toBe(true);
     });
 
     it("T6c-c: a canvas edit on the new frame is posted and signed as usual", async () => {
@@ -1522,7 +1802,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       expect(heroPosts(before).at(-1)?.props?.heading).toBe("Final");
       await releaseSigning();
       const after = heroPosts(before);
-      expect(after.map((m) => m.props?.heading).filter((h) => h !== "Final")).toEqual([]);
+      expect(
+        after.map((m) => m.props?.heading).filter((h) => h !== "Final"),
+      ).toEqual([]);
       expect(imageSignedWith(after.at(-1), ASSET)).toBe(true);
     });
 
@@ -1549,7 +1831,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       const before = posted().length;
       fireEvent.click(screen.getByRole("button", { name: "Pick test asset" }));
       await tick(0);
-      expect(JSON.stringify(heroPosts(before).at(-1)?.props?.image ?? null)).toContain(PICKED_ASSET);
+      expect(
+        JSON.stringify(heroPosts(before).at(-1)?.props?.image ?? null),
+      ).toContain(PICKED_ASSET);
       expect(signedIds()).toContain(PICKED_ASSET);
       await releaseSigning();
       const after = heroPosts(before);

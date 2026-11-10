@@ -14,8 +14,10 @@ import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-t
 import { themePreviewContentModuleSource } from "@/lib/storefront/compiler/theme-preview-content";
 import { createInlineTextEditor } from "@/lib/storefront/editor/inline-text-editor";
 import {
+  answerFramePings,
   answerLatestRouteRequest,
   createLiveFrame,
+  frameEnvelope,
   sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
@@ -24,7 +26,10 @@ import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-me
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import { VisualEditorShell } from "./visual-editor-shell";
+import {
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
 
 /**
  * A hidden section's stored values never reach the preview page from the
@@ -291,13 +296,11 @@ function renderShell() {
   const client = readyClient();
   let currentContext = contextOf();
   let currentSearch = search;
-  const onSearchChange = vi.fn(
-    (next: Partial<StorefrontThemeEditorSearch>) => {
-      currentSearch = { ...currentSearch, ...next };
-      if (!currentSearch.section) delete currentSearch.section;
-      queueMicrotask(() => act(() => view.rerender(tree())));
-    },
-  );
+  const onSearchChange = vi.fn((next: Partial<StorefrontThemeEditorSearch>) => {
+    currentSearch = { ...currentSearch, ...next };
+    if (!currentSearch.section) delete currentSearch.section;
+    queueMicrotask(() => act(() => view.rerender(tree())));
+  });
   const tree = () => (
     <QueryClientProvider client={client}>
       <VisualEditorShell
@@ -308,6 +311,7 @@ function renderShell() {
     </QueryClientProvider>
   );
   const view = render(tree());
+  bringFrameUp();
   return {
     client,
     /** The route above the shell reads the server again. */
@@ -323,7 +327,7 @@ function dispatchFromFrame(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -365,6 +369,10 @@ async function flushFrames() {
       requestAnimationFrame(() => resolve()),
     );
   });
+  // Section presentations are acknowledged only after the mock frame's DOM
+  // commit, just as the live bridge does. Drain any editor posts after the
+  // render work above so tests cannot click during the syncing barrier.
+  answerFramePings(FRAME);
 }
 
 let canvasRevision = 0;
@@ -430,11 +438,11 @@ type Posted = {
   props?: Record<string, unknown>;
   enabled?: boolean;
   resetKeys?: string[];
+  presentationToken?: { operationId: string };
 };
 const heroPosts = (from = 0) =>
   (posted.slice(from) as Posted[]).filter(
-    (message) =>
-      message.type === SECTION_PROPS && message.sectionId === "hero",
+    (message) => message.type === SECTION_PROPS && message.sectionId === "hero",
   );
 function lastIndexWhere<T>(items: readonly T[], test: (item: T) => boolean) {
   for (let at = items.length - 1; at >= 0; at -= 1) {
@@ -457,20 +465,27 @@ const valuePosts = (from: number) =>
   );
 const writes = () =>
   updateSectionProps.mock.calls.map(
-    (call) => (call[0] as { data: { props: Record<string, unknown> } }).data.props,
+    (call) =>
+      (call[0] as { data: { props: Record<string, unknown> } }).data.props,
   );
 const imageSigned = (message: Posted | undefined) =>
   JSON.stringify(message?.props?.image ?? null).includes(SIGNED_URL);
 
 /** The frame's content object, driven by the editor's posts in a given order. */
-function frameAfter(messages: readonly Posted[], initial = { slots: {}, hiddenSlots: [] as string[] }) {
+function frameAfter(
+  messages: readonly Posted[],
+  initial = { slots: {}, hiddenSlots: [] as string[] },
+) {
   const moduleSource = themePreviewContentModuleSource();
   const body = moduleSource
     .slice(
       moduleSource.indexOf("export function updatePreviewContent"),
       moduleSource.indexOf("// Below `updatePreviewContent`"),
     )
-    .replace("export function updatePreviewContent", "function updatePreviewContent");
+    .replace(
+      "export function updatePreviewContent",
+      "function updatePreviewContent",
+    );
   const content = JSON.parse(JSON.stringify(initial)) as {
     slots: Record<string, unknown>;
     hiddenSlots: string[];
@@ -480,7 +495,12 @@ function frameAfter(messages: readonly Posted[], initial = { slots: {}, hiddenSl
     `${body}\nfunction currentPreviewContent() { return content; }\nreturn updatePreviewContent;`,
   )(content) as (...args: unknown[]) => void;
   for (const message of messages) {
-    update(message.sectionId, message.props, message.enabled, message.resetKeys);
+    update(
+      message.sectionId,
+      message.props,
+      message.enabled,
+      message.resetKeys,
+    );
   }
   return content;
 }
@@ -504,7 +524,8 @@ beforeEach(() => {
   useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
   updateSectionProps.mockReset();
   updateSectionProps.mockImplementation(async (request: unknown) => {
-    if (holdWrites) await new Promise<void>((resolve) => heldWrites.push(resolve));
+    if (holdWrites)
+      await new Promise<void>((resolve) => heldWrites.push(resolve));
     const { sectionId, props, resetProps } = (
       request as {
         data: {
@@ -576,12 +597,15 @@ describe("an edit to a section that is being hidden", () => {
     const after = heroPosts(hideAt + 1);
     expect(after.length).toBeGreaterThan(0);
     for (const message of after) {
-      expect(message).toEqual({
+      expect(message).toMatchObject({
         type: SECTION_PROPS,
         sectionId: "hero",
         props: undefined,
         enabled: false,
       });
+      expect(message.presentationToken).toEqual(
+        expect.objectContaining({ operationId: expect.any(String) }),
+      );
     }
 
     // B1: the save is not stripped. Once the hide is answered the edit goes,
@@ -692,9 +716,11 @@ describe("a late post after a hide", () => {
     holdSigning = true;
     const shell = renderShell();
     await flushFrames();
+    await waitFor(() => expect(showButton().matches(":disabled")).toBe(false));
+    const beforeShow = posted.length;
     fireEvent.click(showButton());
     // Precondition: the show carried values, and its image is being signed.
-    const [shown] = heroPosts();
+    const [shown] = heroPosts(beforeShow);
     expect(shown?.props).toMatchObject({ heading: "Welcome" });
     expect(imageSigned(shown)).toBe(false);
     await waitFor(() => expect(signThemePreviewMedia).toHaveBeenCalled());
@@ -724,9 +750,16 @@ describe("a late post after a hide", () => {
       sectionId: "hero",
       props: { ...shown!.props, image: { ...STORED_IMAGE, url: SIGNED_URL } },
     };
-    const hideInSent = lastIndexWhere(sent, (message) => message.enabled === false);
+    const hideInSent = lastIndexWhere(
+      sent,
+      (message) => message.enabled === false,
+    );
     for (let at = hideInSent + 1; at <= sent.length; at += 1) {
-      const content = frameAfter([...sent.slice(0, at), late, ...sent.slice(at)]);
+      const content = frameAfter([
+        ...sent.slice(0, at),
+        late,
+        ...sent.slice(at),
+      ]);
       expect(content.slots).toEqual({});
       expect(content.hiddenSlots).toEqual(["hero"]);
     }
@@ -849,11 +882,13 @@ describe("a refused hide the author discards", () => {
       <QueryClientProvider client={client}>
         <VisualEditorShell
           context={listContext(rows("A", "B"), 1)}
-          search={{
-            template: "index",
-            templateId: "template-1",
-            viewport: "desktop",
-          } as StorefrontThemeEditorSearch}
+          search={
+            {
+              template: "index",
+              templateId: "template-1",
+              viewport: "desktop",
+            } as StorefrontThemeEditorSearch
+          }
           onSearchChange={vi.fn()}
         />
       </QueryClientProvider>,
@@ -893,12 +928,15 @@ describe("a refused hide the author discards", () => {
       value: "B edited",
       originalValue: "B",
     });
+    await flushFrames();
+    await waitFor(() => expect(hideButton().matches(":disabled")).toBe(false));
     fireEvent.click(hideButton());
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
     expect(writes()[0]).toMatchObject({ enabled: false });
     expect(writes()[0]).toHaveProperty("items");
     const hideAt = lastHideAt();
     expect(hideAt).toBeGreaterThanOrEqual(0);
+    expect(posted[hideAt]).toMatchObject({ enabled: false, props: undefined });
 
     // Refused: the hide stays pending, so nothing shows the section yet.
     act(() => {
@@ -919,9 +957,11 @@ describe("a refused hide the author discards", () => {
 
     const beforeDiscard = posted.length;
     act(() => {
-      screen.getByRole("button", {
-        name: /Discard unsaved changes to items/i,
-      }).click();
+      screen
+        .getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        })
+        .click();
     });
     act(() => {
       screen
@@ -989,11 +1029,13 @@ describe("a refused hide the author discards", () => {
       <QueryClientProvider client={client}>
         <VisualEditorShell
           context={listContext(rows("A", "B"), 1)}
-          search={{
-            template: "index",
-            templateId: "template-1",
-            viewport: "desktop",
-          } as StorefrontThemeEditorSearch}
+          search={
+            {
+              template: "index",
+              templateId: "template-1",
+              viewport: "desktop",
+            } as StorefrontThemeEditorSearch
+          }
           onSearchChange={vi.fn()}
         />
       </QueryClientProvider>,
@@ -1060,9 +1102,11 @@ describe("a refused hide the author discards", () => {
 
     const beforeDiscard = posted.length;
     act(() => {
-      screen.getByRole("button", {
-        name: /Discard unsaved changes to items/i,
-      }).click();
+      screen
+        .getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        })
+        .click();
     });
     act(() => {
       screen
@@ -1080,7 +1124,9 @@ describe("a refused hide the author discards", () => {
     // The preview is told the version the discard leaves: hidden, and none
     // of the older copy's values on the way.
     const afterDiscard = heroPosts(beforeDiscard);
-    expect(afterDiscard.filter((message) => message.enabled === true)).toEqual([]);
+    expect(afterDiscard.filter((message) => message.enabled === true)).toEqual(
+      [],
+    );
     expect(valuePosts(beforeDiscard)).toEqual([]);
     expect(afterDiscard.at(-1)).toMatchObject({ enabled: false });
     expect(frameAfter(heroPosts()).slots).not.toHaveProperty("hero");
@@ -1113,22 +1159,28 @@ function canvasPage() {
       <section data-storefront-section-id="hero">
         <h1>
           {((slots.hero as Record<string, unknown> | undefined)?.heading as
-            | string
-            | undefined) ?? "Welcome"}
+            string | undefined) ?? "Welcome"}
         </h1>
       </section>
     );
   const editor = createInlineTextEditor({
     onCommit: (commit) =>
-      fromPreview({ type: "morph:storefront-preview-commit-inline-text", ...commit }),
+      fromPreview({
+        type: "morph:storefront-preview-commit-inline-text",
+        ...commit,
+      }),
     onEditingChange: (editing) =>
-      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing }),
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing,
+      }),
     onLayoutChanged: () => {},
     storedValue: (target) =>
       target.sectionId && target.fieldPath
-        ? (content.slots[target.sectionId] as Record<string, unknown> | undefined)?.[
-            target.fieldPath
-          ]
+        ? (
+            content.slots[target.sectionId] as
+              Record<string, unknown> | undefined
+          )?.[target.fieldPath]
         : undefined,
   });
   return {
@@ -1179,7 +1231,7 @@ async function selectHeadingRow() {
 }
 
 describe("text typed on the canvas while a show is answered", () => {
-  it("keeps the un-blurred text through the show's acknowledgement, stores it on blur, and the editor and frame agree", async () => {
+  it("keeps the text when the show advances its basis before the edit can be saved", async () => {
     const STORED = "Stored heading";
     const TYPED = "Typed on the canvas";
     serverHolding(false);
@@ -1188,6 +1240,7 @@ describe("text typed on the canvas while a show is answered", () => {
     server.sections[0]!.props.heading = STORED;
     holdWrites = true;
     const shell = renderShell();
+    const warning = vi.spyOn(toast, "warning").mockImplementation(() => "");
     await flushFrames();
     const page = canvasPage();
     try {
@@ -1268,14 +1321,19 @@ describe("text typed on the canvas while a show is answered", () => {
         props: { heading: TYPED },
       });
       expect(released[0]?.resetKeys).toBeUndefined();
-      await waitFor(
-        () => expect(updateSectionProps).toHaveBeenCalledTimes(2),
-        { timeout: 3_000 },
+      await waitFor(() =>
+        expect(warning).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+          expect.any(Object),
+        ),
       );
-      expect(writes()[1]).toEqual({ heading: TYPED });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(updateSectionProps).toHaveBeenCalledTimes(1);
       expect(
         info.mock.calls.filter(
-          (call) => (call[1] as { id?: string } | undefined)?.id === "inline-text-refused",
+          (call) =>
+            (call[1] as { id?: string } | undefined)?.id ===
+            "inline-text-refused",
         ),
       ).toEqual([]);
       await flushFrames();
@@ -1283,7 +1341,7 @@ describe("text typed on the canvas while a show is answered", () => {
       // Stored, and the editor, the frame and the canvas agree on it.
       expect(server.sections[0]).toMatchObject({
         enabled: true,
-        props: { ...STORED_PROPS, heading: TYPED },
+        props: { ...STORED_PROPS, heading: STORED },
       });
       const after = page.render();
       expect(after.hiddenSlots).toEqual([]);

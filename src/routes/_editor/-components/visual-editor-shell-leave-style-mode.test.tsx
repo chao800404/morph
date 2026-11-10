@@ -16,7 +16,10 @@ import {
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  createLiveFrame,
+  frameEnvelope,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * Two edits #192 covered only below the shell: a style edit followed at once
@@ -269,6 +272,7 @@ function renderShell() {
       />
     </QueryClientProvider>,
   );
+  liveFrame.ready();
   /** Asks the shell, as the router's blocker does, and records the answer. */
   const navigate = (kind: EditorLeaveKind) => {
     const outcome: { blocked?: boolean } = {};
@@ -286,7 +290,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),

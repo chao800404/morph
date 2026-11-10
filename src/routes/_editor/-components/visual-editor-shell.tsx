@@ -2757,6 +2757,12 @@ export function VisualEditorShell({
     ) => {
       if (!proof) return false;
       const frame = previewFrameRecordRef.current;
+      const proofTemplateId = proof.token.templateId;
+      const resolveTemplateId = (id: string) =>
+        routeTemplateIdsRef.current.get(id) ?? id;
+      const sameTemplate =
+        templateId === undefined ||
+        resolveTemplateId(proofTemplateId) === resolveTemplateId(templateId);
       return Boolean(
         frame &&
         frame.previewKey === previewKeyRef.current &&
@@ -2768,7 +2774,7 @@ export function VisualEditorShell({
         proof.token.workspaceKey ===
           `${context.storefront.id}:${context.theme.id}` &&
         proof.token.routePath === (currentSearchRoutePathRef.current ?? "/") &&
-        (templateId === undefined || proof.token.templateId === templateId) &&
+        sameTemplate &&
         (sectionId === undefined || proof.token.sectionId === sectionId),
       );
     },
@@ -2850,7 +2856,6 @@ export function VisualEditorShell({
             presentationBlocked: true,
           });
         }
-        setDraftSaveState("error");
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });
@@ -2858,7 +2863,6 @@ export function VisualEditorShell({
       }
       if (heldBeforePresentationCheck?.presentationBlocked) {
         if (!confirmed) {
-          setDraftSaveState("error");
           throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
         }
         pendingPropsMapRef.current.set(key, {
@@ -3632,7 +3636,6 @@ export function VisualEditorShell({
         previewVisibilityRef.current.reconcile(sectionId);
       }
       if (rebasedKeys.length > 0) {
-        setDraftSaveState("error");
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });
@@ -3655,7 +3658,6 @@ export function VisualEditorShell({
         for (const sectionId of sectionModelRef.current.bindings.keys()) {
           previewVisibilityRef.current.reconcile(sectionId);
         }
-        setDraftSaveState("error");
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });
@@ -11790,7 +11792,8 @@ export function VisualEditorShell({
             Number.isSafeInteger(draftGeneration) &&
             draftGeneration > 0
               ? ({ kind: "existing", draftGeneration } as const)
-              : routeDocumentsCreatedHereRef.current.has(createdTemplateId)
+              : routePathFromTemplatePlaceholder(createdTemplateId) !== null ||
+                  routeDocumentsCreatedHereRef.current.has(createdTemplateId)
                 ? ({
                     kind: "new-document",
                     createEpoch: createdTemplateId,
@@ -11967,7 +11970,8 @@ export function VisualEditorShell({
         draftGeneration > 0
           ? ({ kind: "existing", draftGeneration } as const)
           : createdTemplateId &&
-              routeDocumentsCreatedHereRef.current.has(createdTemplateId)
+              (routePathFromTemplatePlaceholder(createdTemplateId) !== null ||
+                routeDocumentsCreatedHereRef.current.has(createdTemplateId))
             ? ({
                 kind: "new-document",
                 createEpoch: createdTemplateId,
@@ -12143,6 +12147,15 @@ export function VisualEditorShell({
     },
     [previewMediaCache, postPreviewSectionProps],
   );
+  const cancelAwaitingSignedPost = useCallback((sectionId: string) => {
+    const waiting = awaitingSignedPostRef.current.get(sectionId);
+    if (!waiting) return;
+    const revisions = previewPropsRevisionRef.current;
+    if (revisions.get(sectionId) === waiting.revision) {
+      revisions.set(sectionId, waiting.revision + 1);
+    }
+    awaitingSignedPostRef.current.delete(sectionId);
+  }, []);
   // C5: a post an inline edit held, sent once the edit ended, through the
   // poster it was held by — so the hidden check, the selection-field gates and
   // the transport checks are asked now, not when it was held. A committed
@@ -12621,7 +12634,6 @@ export function VisualEditorShell({
           )
         : null;
       if (!presentationProof) {
-        setDraftSaveState("error");
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });
@@ -13117,6 +13129,11 @@ export function VisualEditorShell({
           )
         : null;
       const presentationReadyAtInput = presentationProof !== null;
+      if (!presentationReadyAtInput) {
+        // A newer edit that cannot be presented yet must still prevent an
+        // older media-signing callback from restoring stale section props.
+        cancelAwaitingSignedPost(sectionId);
+      }
       // A history run's write: its own, awaited, and shown once answered.
       if (options?.historyAttempt) {
         if (!presentationReadyAtInput) {
@@ -13249,7 +13266,6 @@ export function VisualEditorShell({
           : { ...staged, presentationBlocked: true },
       );
       if (!presentationReadyAtInput) {
-        setDraftSaveState("error");
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });
@@ -13273,6 +13289,7 @@ export function VisualEditorShell({
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       supersedeAwaitingSignedPost,
+      cancelAwaitingSignedPost,
       templateIdForSection,
       routePathForTemplate,
       updatePropsMutation,
@@ -13648,7 +13665,6 @@ export function VisualEditorShell({
       }
       pendingPropsMapRef.current.set(key, stagedReorder);
       if (!presentationProof) {
-        setDraftSaveState("error");
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });
@@ -13739,7 +13755,6 @@ export function VisualEditorShell({
           error instanceof Error &&
           error.message === PREVIEW_PRESENTATION_SYNCING_MESSAGE
         ) {
-          setDraftSaveState("error");
           toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
             id: "preview-presentation-syncing",
           });
@@ -13899,7 +13914,6 @@ export function VisualEditorShell({
             presentationBlocked: true,
           });
         }
-        setDraftSaveState("error");
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });

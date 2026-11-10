@@ -720,15 +720,12 @@ describe("a content save that fails", () => {
     expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
     expect(saveStatus()).not.toBe("Saved");
 
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() =>
-      expect(
-        warning.mock.calls.length >= 2 ||
-          updateSectionProps.mock.calls.length > 0,
-      ).toBe(true),
-    );
+    expect(saveStatus()).toBe("Unsaved");
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     expect(updateSectionProps).not.toHaveBeenCalled();
     expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
   });
 
   it("says so when the server refuses the write", async () => {
@@ -4431,7 +4428,7 @@ function Home() {
     // The editor knows the remote generation, but the canvas has not
     // acknowledged that presentation yet, so this is held locally instead of
     // being sent for a server-side OCC refusal.
-    expect(saveStatus()).toBe("Save failed");
+    expect(saveStatus()).toBe("Unsaved");
     expect(screen.getAllByDisplayValue("Mine again").length).toBeGreaterThan(0);
   });
 
@@ -8398,7 +8395,7 @@ function Home() {
 
         expect(sent(), "no request").toHaveLength(0);
         expect(stored, "their heading kept").toEqual({ heading: "Theirs" });
-        expect(saveStatus()).toBe("Save failed");
+        expect(saveStatus()).toBe("Unsaved");
         expect(screen.getAllByDisplayValue("Mine").length).toBeGreaterThan(0);
         expect(depth(), "history unchanged").toBe("0");
         expect(unconfirmedCount()).toBeNull();
@@ -8520,7 +8517,7 @@ function Home() {
 
         expect(sent(), "no request").toHaveLength(0);
         expect(stored).toEqual({ items: theirRows() });
-        expect(saveStatus()).toBe("Save failed");
+        expect(saveStatus()).toBe("Unsaved");
         expect(canvasRows(), "no unacknowledged swap is applied").toBeNull();
         expect(depth(), "history unchanged").toBe("0");
         expect(unconfirmedCount()).toBeNull();

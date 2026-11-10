@@ -1,5 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
@@ -54,23 +61,38 @@ const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
 const posted: Array<Record<string, unknown>> = [];
 const updateSectionProps = vi.hoisted(() => vi.fn());
 
-vi.mock("@/server/storefront/storefront-themes.serverFn", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  updateStorefrontThemeSectionProps: updateSectionProps,
-}));
-vi.mock("@/server/storefront/storefront-preview-media.serverFn", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  signThemePreviewMedia: vi.fn(),
-}));
+vi.mock(
+  "@/server/storefront/storefront-themes.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    updateStorefrontThemeSectionProps: updateSectionProps,
+  }),
+);
+vi.mock(
+  "@/server/storefront/storefront-preview-media.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    signThemePreviewMedia: vi.fn(),
+  }),
+);
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  postEditorToPreviewMessage: vi.fn((_target: unknown, message: Record<string, unknown>) => {
-    posted.push(message);
-  }),
+  postEditorToPreviewMessage: vi.fn(
+    (_target: unknown, message: Record<string, unknown>) => {
+      posted.push(message);
+    },
+  ),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  Link: ({ to, children, ...rest }: { to?: string; children?: React.ReactNode }) => (
+  Link: ({
+    to,
+    children,
+    ...rest
+  }: {
+    to?: string;
+    children?: React.ReactNode;
+  }) => (
     <a href={to} {...rest}>
       {children}
     </a>
@@ -88,7 +110,12 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
 
 const context = {
   previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
-  storefront: { id: "storefront-1", name: "Store", domain: null, status: "active" },
+  storefront: {
+    id: "storefront-1",
+    name: "Store",
+    domain: null,
+    status: "active",
+  },
   theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
   templates: [
     {
@@ -102,7 +129,11 @@ const context = {
             id: "hero",
             type: "hero",
             enabled: true,
-            props: { heading: "Welcome", subheading: "Summary", image: STORED_IMAGE },
+            props: {
+              heading: "Welcome",
+              subheading: "Summary",
+              image: STORED_IMAGE,
+            },
           },
         ],
       },
@@ -137,48 +168,66 @@ const heroNode = {
 };
 
 function renderEditor() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey, {
-    success: true,
-    message: "Live Preview server ready",
-    data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
-  } as never);
-  client.setQueryData(storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey, {
-    files: [
-      {
-        id: "file-hero",
-        storefrontId: "storefront-1",
-        themeId: "theme-1",
-        path: "src/components/Hero.tsx",
-        content: source,
-        mimeType: "text/typescript",
-        isEntry: false,
-        version: 1,
-        createdAt: "2026-10-15T00:00:00.000Z",
-        updatedAt: "2026-10-15T00:00:00.000Z",
-      },
-    ],
-    tree: [
-      {
-        name: "src",
-        path: "src",
-        isDirectory: true,
-        children: [
-          {
-            name: "components",
-            path: "src/components",
-            isDirectory: true,
-            children: [{ name: "Hero.tsx", path: "src/components/Hero.tsx", isDirectory: false }],
-          },
-        ],
-      },
-    ],
-    sourceGeneration: 1,
-    latestPublishedRevision: null,
-  } as never);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  client.setQueryData(
+    themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
+    {
+      success: true,
+      message: "Live Preview server ready",
+      data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
+    } as never,
+  );
+  client.setQueryData(
+    storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+    {
+      files: [
+        {
+          id: "file-hero",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          path: "src/components/Hero.tsx",
+          content: source,
+          mimeType: "text/typescript",
+          isEntry: false,
+          version: 1,
+          createdAt: "2026-10-15T00:00:00.000Z",
+          updatedAt: "2026-10-15T00:00:00.000Z",
+        },
+      ],
+      tree: [
+        {
+          name: "src",
+          path: "src",
+          isDirectory: true,
+          children: [
+            {
+              name: "components",
+              path: "src/components",
+              isDirectory: true,
+              children: [
+                {
+                  name: "Hero.tsx",
+                  path: "src/components/Hero.tsx",
+                  isDirectory: false,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      sourceGeneration: 1,
+      latestPublishedRevision: null,
+    } as never,
+  );
   const view = render(
     <QueryClientProvider client={client}>
-      <VisualEditorShell context={context} search={search} onSearchChange={vi.fn()} />
+      <VisualEditorShell
+        context={context}
+        search={search}
+        onSearchChange={vi.fn()}
+      />
     </QueryClientProvider>,
   );
   liveFrame.ready();
@@ -200,7 +249,11 @@ function fromPreview(data: Record<string, unknown>) {
   liveFrame.after(data);
 }
 
-type Posted = { type: string; sectionId?: string; props?: Record<string, unknown> };
+type Posted = {
+  type: string;
+  sectionId?: string;
+  props?: Record<string, unknown>;
+};
 const sectionPosts = (from = 0) =>
   (posted.slice(from) as Posted[]).filter(
     (message) =>
@@ -208,15 +261,19 @@ const sectionPosts = (from = 0) =>
       message.sectionId === "hero",
   );
 const headingOf = (message: Posted | undefined) => message?.props?.heading;
-const subheadingOf = (message: Posted | undefined) => message?.props?.subheading;
+const subheadingOf = (message: Posted | undefined) =>
+  message?.props?.subheading;
 const imageSigned = (message: Posted | undefined) =>
   JSON.stringify(message?.props?.image ?? null).includes(SIGNED_URL);
 const savedProps = () =>
   updateSectionProps.mock.calls.map(
-    (call) => (call[0] as { data: { props: Record<string, unknown> } }).data.props,
+    (call) =>
+      (call[0] as { data: { props: Record<string, unknown> } }).data.props,
   );
 const saveState = () =>
-  document.querySelector("[data-editor-save-status]")?.getAttribute("data-save-state");
+  document
+    .querySelector("[data-editor-save-status]")
+    ?.getAttribute("data-save-state");
 
 /** Signing that answers only when told to. */
 let releaseSigning: () => Promise<void> = async () => {};
@@ -230,7 +287,10 @@ function signingHeld() {
       for (const answer of answers.splice(0)) {
         answer({
           success: true,
-          data: { urls: { [ASSET]: SIGNED_URL }, expiresAt: Date.now() + 86_400_000 },
+          data: {
+            urls: { [ASSET]: SIGNED_URL },
+            expiresAt: Date.now() + 86_400_000,
+          },
         });
       }
     });
@@ -250,7 +310,10 @@ const settle = () =>
 /** Selects the heading and opens the Inspector's content fields. */
 async function openHeading() {
   renderEditor();
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
@@ -269,7 +332,9 @@ async function canvasSelect(field: "heading" | null) {
   const revision =
     Math.max(
       canvasRevision,
-      ...posted.map((m) => (typeof m.selectionRevision === "number" ? m.selectionRevision : 0)),
+      ...posted.map((m) =>
+        typeof m.selectionRevision === "number" ? m.selectionRevision : 0,
+      ),
     ) + 1;
   canvasRevision = revision;
   fromPreview({
@@ -290,7 +355,9 @@ async function canvasSelect(field: "heading" | null) {
     inputType: null,
     styleRevision: Math.max(
       0,
-      ...posted.map((m) => (typeof m.styleRevision === "number" ? m.styleRevision : 0)),
+      ...posted.map((m) =>
+        typeof m.styleRevision === "number" ? m.styleRevision : 0,
+      ),
     ),
     className: "",
     isSection: field === null,
@@ -328,9 +395,7 @@ async function inspectorEdit(from: string, to: string) {
   );
   const field = await screen.findByDisplayValue(from);
   await settle();
-  await waitFor(() =>
-    expect((field as HTMLInputElement).disabled).toBe(false),
-  );
+  await waitFor(() => expect((field as HTMLInputElement).disabled).toBe(false));
   fireEvent.focus(field);
   fireEvent.input(field, { target: { value: to } });
   fireEvent.blur(field);
@@ -346,7 +411,10 @@ async function saveSettles() {
 }
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout"],
+    shouldAdvanceTime: true,
+  });
   posted.length = 0;
   canvasRevision = 0;
   useThemeWorkspaceStore.setState({
@@ -362,7 +430,10 @@ beforeEach(() => {
   updateSectionProps.mockReset();
   updateSectionProps.mockImplementation(async () => {
     generation += 1;
-    return { success: true, data: { draftGeneration: generation, droppedProps: [] } };
+    return {
+      success: true,
+      data: { draftGeneration: generation, droppedProps: [] },
+    };
   });
   vi.mocked(signThemePreviewMedia).mockReset();
 });
@@ -401,11 +472,16 @@ describe("an Inspector text edit while the section's media is being signed", () 
     await saveSettles();
     await waitFor(() => expect(saveState()).toBe("saved"));
     expect(savedProps()).toHaveLength(1);
-    expect(savedProps()[0]).toMatchObject({ heading: "Edited", subheading: "Sub newer" });
-    expect(useThemeWorkspaceStore.getState().acceptedGenerations).toEqual(accepted);
+    expect(savedProps()[0]).toMatchObject({
+      heading: "Edited",
+      subheading: "Sub newer",
+    });
+    expect(useThemeWorkspaceStore.getState().acceptedGenerations).toEqual(
+      accepted,
+    );
   });
 
-  it("T2: with the media already signed, an Inspector text edit posts no section content", async () => {
+  it("T2: with the media already signed, an Inspector edit presents the updated section without signing again", async () => {
     await openHeading();
     signingHeld();
     await canvasEdit("Edited", "Welcome");
@@ -414,23 +490,35 @@ describe("an Inspector text edit while the section's media is being signed", () 
     expect(imageSigned(sectionPosts().at(-1))).toBe(true);
 
     const before = posted.length;
+    const signCallsBefore = vi.mocked(signThemePreviewMedia).mock.calls.length;
     await inspectorEdit("Summary", "Sub newer");
     await saveSettles();
     await releaseSigning();
-    expect(sectionPosts(before)).toEqual([]);
+    const after = sectionPosts(before);
+    expect(after).toHaveLength(1);
+    expect(subheadingOf(after[0])).toBe("Sub newer");
+    expect(imageSigned(after[0])).toBe(true);
+    expect(vi.mocked(signThemePreviewMedia).mock.calls).toHaveLength(
+      signCallsBefore,
+    );
     await waitFor(() => expect(saveState()).toBe("saved"));
     expect(savedProps().at(-1)).toMatchObject({ subheading: "Sub newer" });
   });
 
-  it("T2b: with media in the section but no post waiting on signing, an Inspector text edit posts and signs nothing", async () => {
+  it("T2b: an Inspector edit presents its current props and signs media that is still pending", async () => {
     await openHeading();
     signingHeld();
     const before = posted.length;
     await inspectorEdit("Summary", "Sub newer");
     await saveSettles();
     await releaseSigning();
-    expect(sectionPosts(before)).toEqual([]);
-    expect(signThemePreviewMedia).not.toHaveBeenCalled();
+    const after = sectionPosts(before);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((post) => subheadingOf(post) === "Sub newer")).toBe(
+      true,
+    );
+    expect(imageSigned(after.at(-1))).toBe(true);
+    expect(signThemePreviewMedia).toHaveBeenCalled();
     await waitFor(() => expect(saveState()).toBe("saved"));
     expect(savedProps()).toHaveLength(1);
     expect(savedProps()[0]).toMatchObject({ subheading: "Sub newer" });
@@ -461,7 +549,8 @@ describe("an Inspector text edit while the section's media is being signed", () 
     expect(savedProps()).toEqual([]);
   });
 
-  it("T4: a later canvas edit still supersedes an Inspector edit's pending post", async () => {
+  it("T4: a canvas edit raced by presentation sync stays unsaved and cancels the older signed post", async () => {
+    const warn = vi.spyOn(toast, "warning").mockImplementation(() => "");
     await openHeading();
     signingHeld();
     await canvasEdit("Edited", "Welcome");
@@ -470,14 +559,18 @@ describe("an Inspector text edit while the section's media is being signed", () 
     // Before the debounced save leaves: the held copy is "Edited".
     await canvasSelect("heading");
     await canvasEdit("Final", "Edited");
-    expect(headingOf(sectionPosts(before).at(-1))).toBe("Final");
-    expect(subheadingOf(sectionPosts(before).at(-1))).toBe("Sub newer");
+    expect(warn.mock.calls.map(([message]) => String(message))).toContain(
+      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+    );
+    expect(screen.getByDisplayValue("Final")).toBeTruthy();
+    expect(saveState()).toBe("unsaved");
+    expect(savedProps()).toEqual([]);
     await saveSettles();
     await releaseSigning();
 
     const after = sectionPosts(before);
-    expect(after.map(headingOf).filter((heading) => heading !== "Final")).toEqual([]);
-    expect(after.map(subheadingOf).filter((sub) => sub !== "Sub newer")).toEqual([]);
-    expect(imageSigned(after.at(-1))).toBe(true);
+    expect(after).toEqual([]);
+    expect(screen.getByDisplayValue("Final")).toBeTruthy();
+    expect(savedProps()).toEqual([]);
   });
 });

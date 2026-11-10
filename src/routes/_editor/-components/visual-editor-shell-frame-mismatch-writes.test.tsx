@@ -34,8 +34,10 @@ import {
 import {
   answerFramePings,
   frameEnvelope,
+  LIVE_FRAME_CAPABILITIES,
   modelCurrentBridge,
   reloadFrameDocument,
+  sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
@@ -491,13 +493,16 @@ async function settled(
 ) {
   const harness = renderRouted(initial, initialContext, files);
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
-  fromPreview({
-    type: "morph:storefront-preview-ready",
-    servedInstance: {
-      kind: "known",
-      instance: { session: SESSION, serial: 1 },
+  sendFrameReady(
+    { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+    LIVE_FRAME_CAPABILITIES,
+    {
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
     },
-  });
+  );
   // Precondition: the frame was sent the route on screen. Wait for that
   // request itself, with its id, rather than reading the log one tick after
   // ready: under load the request can arrive later, and an absent request
@@ -515,7 +520,9 @@ async function settled(
   });
   applied(request!.routeRequestId, expected);
   report(expected);
-  await tick(0);
+  // The live bridge acknowledges each section only after its DOM commit;
+  // drain that ack pump before an interaction whose proof must be current.
+  await tick(10);
   return harness;
 }
 
@@ -723,13 +730,16 @@ async function frameReloadedUnnamed() {
   const harness = await settled(pageSearch("/b"));
   enableSelection();
   reloadFrameDocument();
-  fromPreview({
-    type: "morph:storefront-preview-ready",
-    servedInstance: {
-      kind: "known",
-      instance: { session: SESSION, serial: 1 },
+  sendFrameReady(
+    { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+    LIVE_FRAME_CAPABILITIES,
+    {
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
     },
-  });
+  );
   await tick(0);
   // Precondition: the new round's request went out, unanswered, unreported.
   expect(latestRequest()?.routePath).toBe("/b");
@@ -1080,6 +1090,10 @@ export default function Layout({ children }) {
         ],
       });
     });
+    // The list preview must apply the staged values before the drag captures
+    // its presentation proof; keep the ordinary save debounce pending.
+    await tick(0);
+    expect(updateSectionProps).not.toHaveBeenCalled();
     // Reorder before the pending edit's ordinary debounce sends it. The view
     // owns the virtual slot; the raw Document must not fabricate it on read.
     ENTRIES["commit-array-item-reorder"]!.send();
@@ -1316,13 +1330,16 @@ describe("every frame message that writes or moves the Inspector", () => {
     renderRouted(pageSearch("/b"));
     await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
     enableSelection();
-    fromPreview({
-      type: "morph:storefront-preview-ready",
-      servedInstance: {
-        kind: "known",
-        instance: { session: SESSION, serial: 1 },
+    sendFrameReady(
+      { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+      LIVE_FRAME_CAPABILITIES,
+      {
+        servedInstance: {
+          kind: "known",
+          instance: { session: SESSION, serial: 1 },
+        },
       },
-    });
+    );
     await tick(0);
     applied(latestRequest()?.routeRequestId, null);
     await tick(0);

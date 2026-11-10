@@ -15,6 +15,7 @@ import {
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
 import {
+  answerFramePings,
   createLiveFrame,
   frameEnvelope,
   modelCurrentBridge,
@@ -62,7 +63,14 @@ vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  Link: ({ to, children, ...rest }: { to?: string; children?: React.ReactNode }) => (
+  Link: ({
+    to,
+    children,
+    ...rest
+  }: {
+    to?: string;
+    children?: React.ReactNode;
+  }) => (
     <a href={to} {...rest}>
       {children}
     </a>
@@ -71,7 +79,12 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 
 const context = {
   previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
-  storefront: { id: "storefront-1", name: "Store", domain: null, status: "active" },
+  storefront: {
+    id: "storefront-1",
+    name: "Store",
+    domain: null,
+    status: "active",
+  },
   theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
   templates: [
     {
@@ -146,7 +159,10 @@ const savedEcho = async ({
 }: {
   data: { props: Record<string, unknown>; expectedDraftGeneration: number };
 }) =>
-  savedWith(String(data.props.heading ?? "Welcome"), data.expectedDraftGeneration);
+  savedWith(
+    String(data.props.heading ?? "Welcome"),
+    data.expectedDraftGeneration,
+  );
 
 function editorHolding(props: Record<string, unknown>) {
   return {
@@ -157,7 +173,10 @@ function editorHolding(props: Record<string, unknown>) {
       templates: [
         {
           ...context.templates[0],
-          document: { version: 1, sections: [{ id: "hero", type: "hero", props }] },
+          document: {
+            version: 1,
+            sections: [{ id: "hero", type: "hero", props }],
+          },
         },
       ],
     },
@@ -191,6 +210,7 @@ function renderShell(
     </QueryClientProvider>
   );
   const { rerender } = render(shellAt(baseSearch));
+  liveFrame.ready();
   /** The router having moved to `search`, as it does once a navigation goes. */
   const moveTo = (
     search: StorefrontThemeEditorSearch,
@@ -223,7 +243,10 @@ function fromPreview(data: Record<string, unknown>) {
 }
 
 async function selectHeading() {
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
@@ -250,14 +273,18 @@ function typeHeading(
 const tick = (ms = 20) =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
+    answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
   });
 
 const saveStatus = () =>
-  document.querySelector("[data-editor-save-status]")?.getAttribute("aria-label");
+  document
+    .querySelector("[data-editor-save-status]")
+    ?.getAttribute("aria-label");
 
 const sentHeadings = () =>
   updateSectionProps.mock.calls.map(
-    ([request]) => (request as { data: { props: { heading?: string } } }).data.props.heading,
+    ([request]) =>
+      (request as { data: { props: { heading?: string } } }).data.props.heading,
   );
 
 /** Renders, selects the heading, and types into it with the clock frozen. */
@@ -422,7 +449,9 @@ describe("navigating before the debounce fired", () => {
     );
 
     act(() => {
-      screen.getByRole("button", { name: "Switch, keep draft unsaved" }).click();
+      screen
+        .getByRole("button", { name: "Switch, keep draft unsaved" })
+        .click();
     });
     await tick(1_000);
     expect(outcome.blocked).toBe(false);
@@ -518,14 +547,18 @@ describe("a held draft when nothing is waiting to be sent", () => {
     );
 
     act(() => {
-      screen.getByRole("button", { name: "Switch, keep draft unsaved" }).click();
+      screen
+        .getByRole("button", { name: "Switch, keep draft unsaved" })
+        .click();
     });
     await tick(1_000);
     // Switched, and still not resent: the draft waits for the rebase.
     expect(outcome.blocked).toBe(false);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(saveStatus()).toBe("Out of date");
-    expect(screen.getByRole("button", { name: "Load latest, keep mine" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
   });
 
   it("stops a page switch on a write whose outcome is unknown, without resending it", async () => {
@@ -610,25 +643,36 @@ describe("a draft kept across a page switch", () => {
       message: "Template draft was modified concurrently.",
       error: "TEMPLATE_DRAFT_CONFLICT",
     });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     // A as another writer left it, for the rebase to read.
-    client.setQueryData(storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey, {
-      success: true,
-      data: {
-        ...twoPages,
-        templates: [
-          {
-            ...twoPages.templates[0],
-            draftGeneration: 5,
-            document: {
-              version: 1,
-              sections: [{ id: "hero", type: "hero", props: { heading: "Theirs", cta: "New" } }],
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      {
+        success: true,
+        data: {
+          ...twoPages,
+          templates: [
+            {
+              ...twoPages.templates[0],
+              draftGeneration: 5,
+              document: {
+                version: 1,
+                sections: [
+                  {
+                    id: "hero",
+                    type: "hero",
+                    props: { heading: "Theirs", cta: "New" },
+                  },
+                ],
+              },
             },
-          },
-          twoPages.templates[1],
-        ],
-      },
-    } as never);
+            twoPages.templates[1],
+          ],
+        },
+      } as never,
+    );
     const { navigate, moveTo } = renderShell(twoPages, client);
     await selectHeading();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -641,7 +685,9 @@ describe("a draft kept across a page switch", () => {
     const toB = navigate("switch-page");
     await tick();
     act(() => {
-      screen.getByRole("button", { name: "Switch, keep draft unsaved" }).click();
+      screen
+        .getByRole("button", { name: "Switch, keep draft unsaved" })
+        .click();
     });
     await tick();
     expect(toB.blocked).toBe(false);
@@ -652,15 +698,33 @@ describe("a draft kept across a page switch", () => {
     const requests = () =>
       updateSectionProps.mock.calls.map(
         ([request]) =>
-          (request as { data: { templateId: string; sectionId: string; props: Record<string, unknown> } }).data,
+          (
+            request as {
+              data: {
+                templateId: string;
+                sectionId: string;
+                props: Record<string, unknown>;
+              };
+            }
+          ).data,
       );
-    expect(requests().map((request) => request.templateId)).toEqual(["template-1"]);
+    expect(requests().map((request) => request.templateId)).toEqual([
+      "template-1",
+    ]);
     expect(saveStatus()).toBe("Out of date");
 
     // Back to A, and the update resends A's draft, rebased, to A.
     moveTo(baseSearch);
     await tick();
     updateSectionProps.mockResolvedValue(SAVED);
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await tick();
+    await tick();
+    // Read-back rebases the retained draft, then waits for the current frame
+    // to acknowledge every section before another explicit write attempt.
+    expect(requests()).toHaveLength(1);
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
@@ -676,7 +740,9 @@ describe("a draft kept across a page switch", () => {
       props: { heading: "Hello" },
     });
     expect(requests()[1]!.props).toEqual({ heading: "Hello" });
-    expect(requests().some((request) => request.templateId === "template-2")).toBe(false);
+    expect(
+      requests().some((request) => request.templateId === "template-2"),
+    ).toBe(false);
   });
 });
 
@@ -688,14 +754,20 @@ describe("text still open for typing on the canvas", () => {
         ([, message]) =>
           message as { type: string; commit?: boolean; requestId?: number },
       )
-      .filter((message) => message.type === "morph:storefront-preview-finish-inline-text");
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-finish-inline-text",
+      );
 
   /** Opens an inline edit on the heading, as the preview reports one. */
   async function openInlineEdit() {
     const shell = renderShell();
     await selectHeading();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-editing",
+      editing: true,
+    });
     await tick(0);
     return shell;
   }
@@ -723,7 +795,9 @@ describe("text still open for typing on the canvas", () => {
     expect(finishRequests()).toEqual([]);
 
     act(() => {
-      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+      screen
+        .getByRole("button", { name: "Finish editing and continue" })
+        .click();
     });
     await tick(0);
     expect(finishRequests()).toMatchObject([
@@ -734,7 +808,10 @@ describe("text still open for typing on the canvas", () => {
     // The preview answers as it does: the commit naming the request, then
     // the close.
     typeHeading("Typed on the canvas", "Welcome", requestId);
-    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-editing",
+      editing: false,
+    });
     await tick();
 
     // Not cancelled by its own commit, and sent at once.
@@ -753,7 +830,9 @@ describe("text still open for typing on the canvas", () => {
     const outcome = shell.navigate("leave-editor");
     await tick();
     act(() => {
-      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+      screen
+        .getByRole("button", { name: "Finish editing and continue" })
+        .click();
     });
     await tick(0);
     return { ...shell, outcome, requestId: finishRequests()[0]!.requestId! };
@@ -786,22 +865,32 @@ describe("text still open for typing on the canvas", () => {
           ...context.templates[0],
           document: {
             version: 1,
-            sections: [{ id: "hero", type: "hero", props: { heading: "Saved before" } }],
+            sections: [
+              { id: "hero", type: "hero", props: { heading: "Saved before" } },
+            ],
           },
         },
       ],
     } as unknown as StorefrontThemeEditorDTO);
     await tick();
-    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-editing",
+      editing: true,
+    });
     await tick(0);
     const outcome = shell.navigate("leave-editor");
     await tick();
     act(() => {
-      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+      screen
+        .getByRole("button", { name: "Finish editing and continue" })
+        .click();
     });
     await tick(0);
 
-    fromPreview({ type: "morph:storefront-preview-history-shortcut", direction: "undo" });
+    fromPreview({
+      type: "morph:storefront-preview-history-shortcut",
+      direction: "undo",
+    });
     await tick(0);
 
     expect(outcome.blocked).toBe(true);
@@ -824,7 +913,10 @@ describe("text still open for typing on the canvas", () => {
     const write = deferred<unknown>();
     const { outcome, requestId } = await finishing(write.promise);
     typeHeading("Typed on the canvas", "Welcome", requestId);
-    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-editing",
+      editing: false,
+    });
     await tick();
     // Saving now, the edit over.
     expect(sentHeadings()).toEqual(["Typed on the canvas"]);
@@ -860,7 +952,9 @@ describe("text still open for typing on the canvas", () => {
     const outcome = navigate("leave-editor");
     await tick();
     act(() => {
-      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+      screen
+        .getByRole("button", { name: "Finish editing and continue" })
+        .click();
     });
     await tick(0);
     // The preview reloads (a new address) before it answers: the typed text
@@ -890,7 +984,9 @@ describe("text still open for typing on the canvas", () => {
     const outcome = navigate("switch-page");
     await tick();
     act(() => {
-      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+      screen
+        .getByRole("button", { name: "Finish editing and continue" })
+        .click();
     });
     // The preview never answers.
     await tick(2_000);
@@ -958,7 +1054,9 @@ describe("a list conflict the update stopped on", () => {
       data: withRows(rows("C", "A", "B"), 7),
     };
     getThemeEditor.mockResolvedValue(latest);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     client.setQueryData(
       storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
       latest as never,
@@ -1019,11 +1117,17 @@ describe("a list conflict the update stopped on", () => {
     // Leaving would lose the draft, so navigation is stopped and the dialog
     // tells the author to stay or reload when this Inspector has no list card.
     const leaving = navigate("leave-editor");
-    const leaveDialog = await screen.findByRole("alertdialog", {}, { timeout: 5000 });
+    const leaveDialog = await screen.findByRole(
+      "alertdialog",
+      {},
+      { timeout: 5000 },
+    );
     expect(leaveDialog.textContent).toContain(
       "list-specific discard control if the Inspector exposes one",
     );
-    expect(leaveDialog.textContent).toContain("otherwise stay here with the draft");
+    expect(leaveDialog.textContent).toContain(
+      "otherwise stay here with the draft",
+    );
     act(() => {
       screen.getByRole("button", { name: "Stay here" }).click();
     });
@@ -1039,13 +1143,19 @@ describe("a list conflict the update stopped on", () => {
     // draft, and goes only once the author says to keep it unsaved. The
     // draft stays in this tab with its way out, and nothing is sent.
     const switching = navigate("switch-page");
-    const switchDialog = await screen.findByRole("alertdialog", {}, { timeout: 5000 });
+    const switchDialog = await screen.findByRole(
+      "alertdialog",
+      {},
+      { timeout: 5000 },
+    );
     expect(switching.blocked).toBeUndefined();
     expect(switchDialog.textContent).toContain(
       "list-specific discard control if the Inspector exposes one",
     );
     act(() => {
-      screen.getByRole("button", { name: "Switch, keep draft unsaved" }).click();
+      screen
+        .getByRole("button", { name: "Switch, keep draft unsaved" })
+        .click();
     });
     await waitFor(() => expect(switching.blocked).toBe(false));
     expect(saveStatus()).toBe("Out of date");
@@ -1084,7 +1194,10 @@ describe("an inline edit open when the Theme's data is fetched again", () => {
   it("is neither ended nor sent when the same document arrives again", async () => {
     updateSectionProps.mockResolvedValue(SAVED);
     const { moveTo } = readyShell();
-    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-editing",
+      editing: true,
+    });
     await act(async () => {});
     expect(saveStatus()).toBe("Unsaved");
 
@@ -1094,7 +1207,9 @@ describe("an inline edit open when the Theme's data is fetched again", () => {
 
     // The page was asked for nothing: what is typed there stays there.
     expect(routeSyncs()).toHaveLength(1);
-    expect(sentToPreview("morph:storefront-preview-finish-inline-text")).toEqual([]);
+    expect(
+      sentToPreview("morph:storefront-preview-finish-inline-text"),
+    ).toEqual([]);
     expect(updateSectionProps).not.toHaveBeenCalled();
     expect(saveStatus()).toBe("Unsaved");
   });
@@ -1107,7 +1222,12 @@ describe("an inline edit open when the Theme's data is fetched again", () => {
       ...context,
       templates: [
         ...context.templates,
-        { ...context.templates[0], id: "template-2", type: "product", name: "Product" },
+        {
+          ...context.templates[0],
+          id: "template-2",
+          type: "product",
+          name: "Product",
+        },
       ],
     } as unknown as StorefrontThemeEditorDTO;
     const { moveTo } = readyShell(twoDocuments);
@@ -1117,10 +1237,16 @@ describe("an inline edit open when the Theme's data is fetched again", () => {
     expect(routeSyncs()).toHaveLength(2);
     expect(routeSyncs()[1]).toMatchObject({ routePath: "/about" });
 
-    moveTo({ ...baseSearch, template: "product", templateId: "template-2" }, twoDocuments);
+    moveTo(
+      { ...baseSearch, template: "product", templateId: "template-2" },
+      twoDocuments,
+    );
     await act(async () => {});
     expect(routeSyncs()).toHaveLength(3);
-    expect(routeSyncs()[2]).toMatchObject({ templateId: "template-2", routePath: null });
+    expect(routeSyncs()[2]).toMatchObject({
+      templateId: "template-2",
+      routePath: null,
+    });
 
     // The frame was rebuilt and said so: it has no route until it is told.
     reloadFrameDocument();

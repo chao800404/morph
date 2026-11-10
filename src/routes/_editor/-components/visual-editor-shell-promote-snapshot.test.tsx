@@ -1,19 +1,32 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import {
+  answerFramePings,
   answerLatestRouteRequest,
   createLiveFrame,
+  frameEnvelope,
   sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import { INLINE_TEXT_NOT_SAVED_MESSAGE, VisualEditorShell } from "./visual-editor-shell";
+import {
+  INLINE_TEXT_NOT_SAVED_MESSAGE,
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
 
 /**
  * A text promotion's answer and the editor's accepted copy.
@@ -42,21 +55,33 @@ const updateSectionProps = vi.hoisted(() => vi.fn());
 const getThemeEditor = vi.hoisted(() => vi.fn());
 const promoteText = vi.hoisted(() => vi.fn());
 
-vi.mock("@/server/storefront/storefront-themes.serverFn", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  updateStorefrontThemeSectionProps: updateSectionProps,
-  getStorefrontThemeEditor: getThemeEditor,
-  promoteStorefrontThemeText: promoteText,
-}));
+vi.mock(
+  "@/server/storefront/storefront-themes.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    updateStorefrontThemeSectionProps: updateSectionProps,
+    getStorefrontThemeEditor: getThemeEditor,
+    promoteStorefrontThemeText: promoteText,
+  }),
+);
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  postEditorToPreviewMessage: vi.fn((_target: unknown, message: Record<string, unknown>) => {
-    posted.push(message);
-  }),
+  postEditorToPreviewMessage: vi.fn(
+    (_target: unknown, message: Record<string, unknown>) => {
+      posted.push(message);
+    },
+  ),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  Link: ({ to, children, ...rest }: { to?: string; children?: React.ReactNode }) => (
+  Link: ({
+    to,
+    children,
+    ...rest
+  }: {
+    to?: string;
+    children?: React.ReactNode;
+  }) => (
     <a href={to} {...rest}>
       {children}
     </a>
@@ -64,7 +89,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 /** The real panel, with the promotion request the round-trip tests also use. */
 vi.mock("./editor-assistant-panel", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./editor-assistant-panel")>();
+  const actual =
+    await importOriginal<typeof import("./editor-assistant-panel")>();
   const RealPanel = actual.EditorAssistantPanel;
   return {
     ...actual,
@@ -103,10 +129,18 @@ const heroDocument = (props: HeroProps) => ({
   version: 1,
   sections: [{ id: "hero", type: "hero", enabled: true, props: { ...props } }],
 });
-const contextAt = (props: HeroProps, draftGeneration: number): StorefrontThemeEditorDTO =>
+const contextAt = (
+  props: HeroProps,
+  draftGeneration: number,
+): StorefrontThemeEditorDTO =>
   ({
     previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
-    storefront: { id: "storefront-1", name: "Store", domain: null, status: "active" },
+    storefront: {
+      id: "storefront-1",
+      name: "Store",
+      domain: null,
+      status: "active",
+    },
     theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
     templates: [
       {
@@ -145,52 +179,66 @@ const heroNode = {
 };
 
 const client = () => {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey, {
-    success: true,
-    message: "Live Preview server ready",
-    data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
-  } as never);
-  queryClient.setQueryData(storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey, {
-    files: [
-      {
-        id: "file-hero",
-        storefrontId: "storefront-1",
-        themeId: "theme-1",
-        path: HERO_PATH,
-        content: source,
-        mimeType: "text/typescript",
-        isEntry: false,
-        version: 1,
-        createdAt: "2026-10-17T00:00:00.000Z",
-        updatedAt: "2026-10-17T00:00:00.000Z",
-      },
-    ],
-    tree: [
-      {
-        name: "src",
-        path: "src",
-        isDirectory: true,
-        children: [
-          {
-            name: "components",
-            path: "src/components",
-            isDirectory: true,
-            children: [{ name: "Hero.tsx", path: HERO_PATH, isDirectory: false }],
-          },
-        ],
-      },
-    ],
-    sourceGeneration: 1,
-    latestPublishedRevision: null,
-  } as never);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  queryClient.setQueryData(
+    themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
+    {
+      success: true,
+      message: "Live Preview server ready",
+      data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
+    } as never,
+  );
+  queryClient.setQueryData(
+    storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+    {
+      files: [
+        {
+          id: "file-hero",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          path: HERO_PATH,
+          content: source,
+          mimeType: "text/typescript",
+          isEntry: false,
+          version: 1,
+          createdAt: "2026-10-17T00:00:00.000Z",
+          updatedAt: "2026-10-17T00:00:00.000Z",
+        },
+      ],
+      tree: [
+        {
+          name: "src",
+          path: "src",
+          isDirectory: true,
+          children: [
+            {
+              name: "components",
+              path: "src/components",
+              isDirectory: true,
+              children: [
+                { name: "Hero.tsx", path: HERO_PATH, isDirectory: false },
+              ],
+            },
+          ],
+        },
+      ],
+      sourceGeneration: 1,
+      latestPublishedRevision: null,
+    } as never,
+  );
   return queryClient;
 };
 
 function renderEditor(context: StorefrontThemeEditorDTO) {
   render(
     <QueryClientProvider client={client()}>
-      <VisualEditorShell context={context} search={search} onSearchChange={vi.fn()} />
+      <VisualEditorShell
+        context={context}
+        search={search}
+        onSearchChange={vi.fn()}
+      />
     </QueryClientProvider>,
   );
 }
@@ -200,12 +248,13 @@ function dispatchFromFrame(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
     );
   });
+  answerFramePings(FRAME);
 }
 
 /**
@@ -238,6 +287,9 @@ const settle = () =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
+    // Let the modeled current bridge acknowledge post-commit presentation.
+    await vi.advanceTimersByTimeAsync(10);
+    answerFramePings(FRAME);
   });
 const saveSettles = async () => {
   await act(async () => {
@@ -254,7 +306,9 @@ async function canvasSelectSection() {
   const revision =
     Math.max(
       canvasRevision,
-      ...posted.map((m) => (typeof m.selectionRevision === "number" ? m.selectionRevision : 0)),
+      ...posted.map((m) =>
+        typeof m.selectionRevision === "number" ? m.selectionRevision : 0,
+      ),
     ) + 1;
   canvasRevision = revision;
   fromPreview({
@@ -275,7 +329,9 @@ async function canvasSelectSection() {
     inputType: null,
     styleRevision: Math.max(
       0,
-      ...posted.map((m) => (typeof m.styleRevision === "number" ? m.styleRevision : 0)),
+      ...posted.map((m) =>
+        typeof m.styleRevision === "number" ? m.styleRevision : 0,
+      ),
     ),
     className: "",
     isSection: true,
@@ -289,7 +345,10 @@ async function canvasSelectSection() {
 }
 
 async function inspectorSavesSubheading(from: string, value: string) {
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   await canvasSelectSection();
   const contentTab = screen.queryByRole("button", { name: /^Content$/ });
   if (contentTab) fireEvent.click(contentTab);
@@ -302,7 +361,10 @@ async function inspectorSavesSubheading(from: string, value: string) {
 }
 
 async function selectHeading() {
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
@@ -312,17 +374,32 @@ async function selectHeading() {
 
 async function promoteHeading() {
   await selectHeading();
-  fireEvent.click(screen.getByRole("button", { name: "Promote the selected text" }));
+  const frameBeforePromotion = document.querySelector("iframe")?.contentWindow;
+  fireEvent.click(
+    screen.getByRole("button", { name: "Promote the selected text" }),
+  );
   await waitFor(() => expect(promoteText).toHaveBeenCalledTimes(1));
   await waitFor(() =>
-    expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(2),
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(2),
   );
   await settle();
+  const frameAfterPromotion = document.querySelector("iframe")?.contentWindow;
+  if (frameAfterPromotion && frameAfterPromotion !== frameBeforePromotion) {
+    // A replacement frame has to complete its own route replay and DOM acks.
+    framesUp.add(frameAfterPromotion);
+    liveFrame.ready();
+    await settle();
+  }
 }
 
 async function canvasCommitsHeading(value: string, originalValue: string) {
   await selectHeading();
-  fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+  fromPreview({
+    type: "morph:storefront-preview-inline-text-editing",
+    editing: true,
+  });
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
     sectionId: "hero",
@@ -331,41 +408,63 @@ async function canvasCommitsHeading(value: string, originalValue: string) {
     value,
     originalValue,
   });
-  fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+  fromPreview({
+    type: "morph:storefront-preview-inline-text-editing",
+    editing: false,
+  });
   await saveSettles();
 }
 
 const headingWrites = () =>
   updateSectionProps.mock.calls
-    .map((call) => (call[0] as { data: { props: HeroProps; expectedDraftGeneration: number } }).data)
+    .map(
+      (call) =>
+        (
+          call[0] as {
+            data: { props: HeroProps; expectedDraftGeneration: number };
+          }
+        ).data,
+    )
     .filter((data) => "heading" in data.props);
 const refusedNotices = () =>
-  vi.mocked(toast.info).mock.calls.filter((call) => call[0] === INLINE_TEXT_NOT_SAVED_MESSAGE);
+  vi
+    .mocked(toast.info)
+    .mock.calls.filter((call) => call[0] === INLINE_TEXT_NOT_SAVED_MESSAGE);
 
 /** The server's copy of the hero. */
 let server: { props: HeroProps; generation: number };
 
 function promoteAnswers() {
-  promoteText.mockImplementation(async ({ data }: { data: { expectedDraftGeneration: number } }) => {
-    server = {
-      props: { ...server.props, heading: "Welcome" },
-      generation: data.expectedDraftGeneration + 1,
-    };
-    return {
-      success: true,
-      data: {
-        fieldName: "heading",
-        sourceGeneration: 2,
-        draftGeneration: server.generation,
-        file: { path: HERO_PATH, content: source, version: 2, updatedAt: "2026-10-17T00:00:01.000Z" },
-        document: heroDocument(server.props),
-      },
-    };
-  });
+  promoteText.mockImplementation(
+    async ({ data }: { data: { expectedDraftGeneration: number } }) => {
+      server = {
+        props: { ...server.props, heading: "Welcome" },
+        generation: data.expectedDraftGeneration + 1,
+      };
+      return {
+        success: true,
+        data: {
+          fieldName: "heading",
+          sourceGeneration: 2,
+          draftGeneration: server.generation,
+          file: {
+            path: HERO_PATH,
+            content: source,
+            version: 2,
+            updatedAt: "2026-10-17T00:00:01.000Z",
+          },
+          document: heroDocument(server.props),
+        },
+      };
+    },
+  );
 }
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout"],
+    shouldAdvanceTime: true,
+  });
   posted.length = 0;
   canvasRevision = 0;
   useThemeWorkspaceStore.setState({
@@ -379,13 +478,22 @@ beforeEach(() => {
   useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
   server = { props: { subheading: "Summary" }, generation: 1 };
   updateSectionProps.mockReset();
-  updateSectionProps.mockImplementation(async ({ data }: { data: { props: HeroProps } }) => {
-    server = { props: { ...server.props, ...data.props }, generation: server.generation + 1 };
-    return {
-      success: true,
-      data: { draftGeneration: server.generation, droppedProps: [], document: heroDocument(server.props) },
-    };
-  });
+  updateSectionProps.mockImplementation(
+    async ({ data }: { data: { props: HeroProps } }) => {
+      server = {
+        props: { ...server.props, ...data.props },
+        generation: server.generation + 1,
+      };
+      return {
+        success: true,
+        data: {
+          draftGeneration: server.generation,
+          droppedProps: [],
+          document: heroDocument(server.props),
+        },
+      };
+    },
+  );
   getThemeEditor.mockReset();
   getThemeEditor.mockImplementation(async () => ({
     success: true,
@@ -415,11 +523,26 @@ describe("a promotion's answer, before the context caught up", () => {
 
     await canvasCommitsHeading("Canvas heading", "Welcome");
     expect(refusedNotices()).toEqual([]);
+    expect(
+      vi.mocked(toast.warning).mock.calls.map(([message]) => String(message)),
+    ).toContain(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+    expect(headingWrites()).toEqual([]);
+
+    // The first edit raced the new frame's full-page replay. It is kept but
+    // not retried automatically; an explicit edit after that replay is shown
+    // is saved on the promoted Document.
+    await canvasCommitsHeading("Canvas heading retried", "Canvas heading");
     // Written at the promotion's generation, on the document it returned.
     expect(headingWrites()).toEqual([
-      expect.objectContaining({ props: expect.objectContaining({ heading: "Canvas heading" }), expectedDraftGeneration: 2 }),
+      expect.objectContaining({
+        props: expect.objectContaining({ heading: "Canvas heading retried" }),
+        expectedDraftGeneration: 2,
+      }),
     ]);
-    expect(server).toEqual({ props: { subheading: "Summary", heading: "Canvas heading" }, generation: 3 });
+    expect(server).toEqual({
+      props: { subheading: "Summary", heading: "Canvas heading retried" },
+      generation: 3,
+    });
   });
 });
 
@@ -428,16 +551,33 @@ describe("a promotion's answer that is not the successor of the copy held", () =
     // A write answered with its generation but without its document moves
     // the observed generation and leaves the copy where it was (the R2 case
     // in visual-editor-shell-inline-guard-accepted-copy.test.tsx).
-    updateSectionProps.mockImplementation(async ({ data }: { data: { props: HeroProps } }) => {
-      server = { props: { ...server.props, ...data.props }, generation: server.generation + 1 };
-      return { success: true, data: { draftGeneration: server.generation, droppedProps: [] } };
-    });
+    updateSectionProps.mockImplementation(
+      async ({ data }: { data: { props: HeroProps } }) => {
+        server = {
+          props: { ...server.props, ...data.props },
+          generation: server.generation + 1,
+        };
+        return {
+          success: true,
+          data: { draftGeneration: server.generation, droppedProps: [] },
+        };
+      },
+    );
     renderEditor(contextAt({ subheading: "Summary" }, 1));
     await inspectorSavesSubheading("Summary", "Inspector subheading");
     await promoteHeading();
     // Sent at 2, the generation the first write reported; the copy is at 1.
     expect(promoteText.mock.calls[0]![0].data.expectedDraftGeneration).toBe(2);
 
+    await canvasCommitsHeading("Canvas heading", "Welcome");
+    expect(refusedNotices()).toEqual([]);
+    expect(headingWrites()).toEqual([]);
+    expect(
+      vi.mocked(toast.warning).mock.calls.map(([message]) => String(message)),
+    ).toContain(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+
+    // Once the promoted preview is current, the next explicit input reaches
+    // the stored-value guard and refuses the non-successor promotion.
     await canvasCommitsHeading("Canvas heading", "Welcome");
     expect(refusedNotices()).toHaveLength(1);
     expect(headingWrites()).toEqual([]);
