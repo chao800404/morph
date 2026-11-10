@@ -1000,7 +1000,9 @@ describe("a list conflict the update stopped on", () => {
     });
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Discard mine…" }),
+        screen.getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
       ).toBeTruthy(),
     );
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
@@ -1016,7 +1018,11 @@ describe("a list conflict the update stopped on", () => {
     });
     await waitFor(() => expect(leaving.blocked).toBe(true));
     expect(saveStatus()).toBe("Out of date");
-    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }),
+    ).toBeTruthy();
 
     // Another page of the same editor asks first, as it does for every held
     // draft, and goes only once the author says to keep it unsaved. The
@@ -1030,7 +1036,11 @@ describe("a list conflict the update stopped on", () => {
     });
     await waitFor(() => expect(switching.blocked).toBe(false));
     expect(saveStatus()).toBe("Out of date");
-    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }),
+    ).toBeTruthy();
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
 });

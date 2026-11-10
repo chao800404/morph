@@ -896,19 +896,31 @@ describe("a refused hide the author discards", () => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy(),
+      expect(
+        screen.getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
     );
     expect(valuePosts(hideAt + 1)).toEqual([]);
 
     const beforeDiscard = posted.length;
     act(() => {
-      screen.getByRole("button", { name: "Discard mine…" }).click();
+      screen.getByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }).click();
     });
     act(() => {
-      screen.getByRole("button", { name: "Discard and load latest" }).click();
+      screen
+        .getByRole("button", { name: "Discard list changes and load latest" })
+        .click();
     });
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull(),
+      expect(
+        screen.queryByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeNull(),
     );
     // Nothing was written, and the preview was told the section is shown,
     // with the version the editor now holds.
@@ -1017,7 +1029,11 @@ describe("a refused hide the author discards", () => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy(),
+      expect(
+        screen.getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
     );
 
     // Between the conflict and the discard, another tab hides the section:
@@ -1030,13 +1046,21 @@ describe("a refused hide the author discards", () => {
 
     const beforeDiscard = posted.length;
     act(() => {
-      screen.getByRole("button", { name: "Discard mine…" }).click();
+      screen.getByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }).click();
     });
     act(() => {
-      screen.getByRole("button", { name: "Discard and load latest" }).click();
+      screen
+        .getByRole("button", { name: "Discard list changes and load latest" })
+        .click();
     });
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull(),
+      expect(
+        screen.queryByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeNull(),
     );
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     // The preview is told the version the discard leaves: hidden, and none

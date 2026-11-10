@@ -3109,6 +3109,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(onPropsChange).toHaveBeenCalledTimes(1);
       expect(onPropsChange.mock.calls[0]![1]).toEqual({
         inputFieldPath: "items",
+        listActionPath: "items",
         selectionFieldPath: "items.1.title",
       });
     });
@@ -3121,6 +3122,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(onPropsChange).toHaveBeenCalledTimes(1);
       expect(onPropsChange.mock.calls[0]![1]).toEqual({
         inputFieldPath: "items",
+        listActionPath: "items",
         selectionFieldPath: "items.1.title",
       });
     });
@@ -3164,6 +3166,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(Object.keys(sent)).toEqual(["links"]);
       expect(options).toEqual({
         inputFieldPath: "links",
+        listActionPath: "links",
         selectionFieldPath: "links.1.label",
       });
     });
