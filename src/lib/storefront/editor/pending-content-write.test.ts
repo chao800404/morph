@@ -1083,6 +1083,25 @@ describe("classifyUnconfirmedContent: version first, then content", () => {
 });
 
 describe("sentContentWrite: what was sent stays as sent", () => {
+  it("freezes the actual send generation when a route entry had no draft basis", () => {
+    const entry: PendingContentEntry = {
+      sectionId: "route-section",
+      routePath: "/contact",
+      props: { heading: "Hello" },
+      expectedSourceGeneration: 1,
+    };
+
+    const sent = pendingContentWrite.sentContentWrite(entry, 1, false);
+
+    expect(sent).toMatchObject({
+      sectionId: "route-section",
+      routePath: "/contact",
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: 1,
+      recordHistory: false,
+    });
+  });
+
   it("is not changed by later changes to the entry it was made from", () => {
     const props: Record<string, unknown> = { heading: "Hello" };
     const resetProps = ["items"];
