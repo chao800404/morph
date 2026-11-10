@@ -304,11 +304,14 @@ function readyQueryClient() {
   return client;
 }
 
-function renderShell(client = readyQueryClient()) {
+function renderShell(
+  client = readyQueryClient(),
+  editorContext: StorefrontThemeEditorDTO = context,
+) {
   return render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={context}
+        context={editorContext}
         search={baseSearch}
         onSearchChange={vi.fn()}
       />
@@ -365,10 +368,11 @@ function sendInlineCommit(
     fieldKey: "heading",
     fieldPath: "heading",
   },
+  sectionId = "hero",
 ) {
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
-    sectionId: "hero",
+    sectionId,
     ...field,
     value,
     originalValue,
@@ -601,6 +605,81 @@ describe("a content save that fails", () => {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("releases other section writes after a moved unanswered write becomes a conflict", async () => {
+    const secondNode = {
+      ...heroNode,
+      id: "second:node:heading",
+      sectionId: "second",
+      target: {
+        ...heroNode.target,
+        sectionId: "second",
+        nodeId: "second:node:heading",
+      },
+    };
+    const twoSectionContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0]!,
+          document: {
+            version: 1,
+            sections: [
+              ...context.templates[0]!.document.sections,
+              { id: "second", type: "hero", props: { heading: "Second" } },
+            ],
+          },
+        },
+      ],
+    } as StorefrontThemeEditorDTO;
+    const movedRead = {
+      ...twoSectionContext,
+      templates: [
+        {
+          ...twoSectionContext.templates[0]!,
+          draftGeneration: 2,
+          document: {
+            version: 1,
+            sections: [
+              { id: "hero", type: "hero", props: { heading: "Theirs" } },
+              { id: "second", type: "hero", props: { heading: "Second" } },
+            ],
+          },
+        },
+      ],
+    } as StorefrontThemeEditorDTO;
+    updateSectionProps
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({
+        success: true,
+        data: { draftGeneration: 3, droppedProps: [] },
+      } as never);
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: movedRead,
+    });
+    renderShell(readyQueryClient(), twoSectionContext);
+
+    await commitInlineText("Mine", "Welcome");
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Load latest, keep mine" })).toBeTruthy();
+
+    fromPreview({ type: "morph:storefront-preview-structure", nodes: [secondNode] });
+    const row = await screen.findByText("h1");
+    act(() => row.closest("button")?.click());
+    sendInlineCommit("Second edited", "Second", undefined, "second");
+
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(updateSectionProps.mock.calls[1]![0].data).toMatchObject({
+      sectionId: "second",
+      props: { heading: "Second edited" },
+      expectedDraftGeneration: 2,
+    });
   });
 
   it("keeps an unanswered write tracked when the readback does not show it", async () => {
