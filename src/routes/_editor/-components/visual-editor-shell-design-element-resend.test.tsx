@@ -1299,7 +1299,7 @@ describe("undo and redo of a Design element edit (decision A, Q2)", () => {
     undoKey();
     await waitFor(() =>
       expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
-        `Could not undo: ${HISTORY_REPLAY_NOT_SAVED_MESSAGE}`,
+        "Could not undo: The Theme source changed. Resolve the source conflict before retrying.",
       ),
     );
     expect(workspaceFile()?.sourceConflict).toBe(true);
