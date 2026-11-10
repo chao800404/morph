@@ -3390,7 +3390,7 @@ export function VisualEditorShell({
           },
         }));
         toast.error(
-          `${conflictedLists.join(", ")} also changed elsewhere since you edited ${conflictedLists.length === 1 ? "it" : "them"}, so your version was not written over theirs. Use "Discard mine" to load the latest version, then make your change again.`,
+          `${conflictedLists.join(", ")} also changed elsewhere since you edited ${conflictedLists.length === 1 ? "it" : "them"}, so your version was not written over theirs. Select its section and use the list-specific discard control if the Inspector exposes one; otherwise stay here with the draft or reload to discard all unsaved changes.`,
         );
         continue;
       }
@@ -13377,6 +13377,12 @@ export function VisualEditorShell({
     });
   }, []);
 
+  const acknowledgeListReset = useCallback((epoch: number) => {
+    setListReset((current) =>
+      current?.epoch === epoch ? null : current,
+    );
+  }, []);
+
   /** Load the latest Document and discard only the confirmed list path. */
   const discardListConflict = useCallback(async () => {
     const target = discardDialogTarget;
@@ -13497,6 +13503,11 @@ export function VisualEditorShell({
       value: incoming[target.fieldPath],
       epoch: (current?.epoch ?? 0) + 1,
     }));
+    // The confirmed read is now the preview's accepted copy too. Reconcile
+    // through the shared visibility-aware poster so a hidden section carries
+    // no values and a shown section displays the latest list plus any sibling
+    // pending fields retained by the path-scoped discard.
+    reconcilePreviewSection(target.sectionId);
     setDiscardDialogTarget(null);
   }, [
     acceptReadTemplates,
@@ -13505,6 +13516,7 @@ export function VisualEditorShell({
     discardDialogTarget,
     queryClient,
     hasUnconfirmedContentForList,
+    reconcilePreviewSection,
     sameTemplateOwner,
   ]);
 
@@ -16141,8 +16153,7 @@ export function VisualEditorShell({
               const templateId = templateIdOfPendingContentKey(key, sectionId);
               return (
                 templateId !== null &&
-                (routeTemplateIdsRef.current.get(templateId) ?? templateId) ===
-                  ownerId
+                sameTemplateOwner(templateId, ownerId)
               );
             };
             const statuses: Record<string, InspectorListWriteStatus> = {};
@@ -16169,10 +16180,7 @@ export function VisualEditorShell({
             };
             for (const entry of Object.values(listConflicts)) {
               if (entry.sectionId !== sectionId) continue;
-              const entryTemplateId =
-                routeTemplateIdsRef.current.get(entry.templateId) ??
-                entry.templateId;
-              if (entryTemplateId !== ownerId) continue;
+              if (!sameTemplateOwner(entry.templateId, ownerId)) continue;
               for (const path of entry.lists)
                 mark(path, { notSaved: true, conflict: true });
             }
@@ -16202,7 +16210,8 @@ export function VisualEditorShell({
               if (entry.sectionId !== sectionId || !matchesOwner(key)) continue;
               const paths = new Set(entry.listActionPaths ?? []);
               for (const fieldPath of Object.keys(entry.fields ?? {})) {
-                if (fieldPath.includes(".")) paths.add(fieldPath.split(".")[0]!);
+                const root = fieldPath.split(".")[0];
+                if (root) paths.add(root);
               }
               for (const path of entry.resetProps ?? []) paths.add(path);
               for (const path of paths)
@@ -16219,6 +16228,7 @@ export function VisualEditorShell({
             return statuses;
           })()}
           listReset={listReset}
+          onListResetApplied={acknowledgeListReset}
           onDiscardListConflict={openListDiscard}
           activeComputedStyleRevision={activeComputedStyleRevision}
           activeViewport={search.viewport}

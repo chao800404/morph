@@ -394,6 +394,7 @@ type EditorStyleInspectorProps = {
   ) => void;
   listWriteStatuses?: Readonly<Record<string, InspectorListWriteStatus>>;
   listReset?: InspectorListReset | null;
+  onListResetApplied?: (epoch: number) => void;
   onDiscardListConflict?: (sectionId: string, fieldPath: string) => void;
   /**
    * The draft generation of the document this section's content is being
@@ -907,6 +908,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onPropsChange: emitPropsChange,
   listWriteStatuses,
   listReset,
+  onListResetApplied,
   onDiscardListConflict,
   contentBasis,
   inlineTextCommit = null,
@@ -976,7 +978,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     );
     localPropsRef.current = next;
     setLocalProps(next);
-  }, [listReset, localPropsRef, section.id, setLocalProps]);
+    onListResetApplied?.(listReset.epoch);
+  }, [listReset, localPropsRef, onListResetApplied, section.id, setLocalProps]);
 
   /**
    * The content input the author is in, with what it showed and the copy it

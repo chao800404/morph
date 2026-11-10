@@ -87,8 +87,15 @@ export function contentEntryTouchesPath(
   path: string,
 ): boolean {
   if (!path || path.split(".").some((segment) => !segment)) return false;
-  const touches = (candidate: string) =>
-    candidate === path || candidate.startsWith(`${path}.`);
+  const touches = (candidate: string) => {
+    if (!candidate || candidate.split(".").some((segment) => !segment))
+      return false;
+    return (
+      candidate === path ||
+      candidate.startsWith(`${path}.`) ||
+      path.startsWith(`${candidate}.`)
+    );
+  };
   return [
     ...(entry.listActionPaths ?? []),
     ...Object.keys(entry.fields ?? {}),
@@ -473,7 +480,7 @@ export function discardPendingContentPath(args: {
   );
   if (Object.keys(fields).length === 0) return { pending: null, baseline };
 
-  let props: Record<string, unknown> = { ...incoming };
+  let props = replaceFieldPath({ ...entry.props }, incoming, fieldPath);
   for (const [path, field] of Object.entries(fields)) {
     props = setFieldPathValue(props, path, field.value);
   }
