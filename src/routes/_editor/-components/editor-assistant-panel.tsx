@@ -26,6 +26,8 @@ import {
   EditorStyleInspector,
   InspectorCodeDefaultContext,
   type InspectorInlineTextCommit,
+  type InspectorListReset,
+  type InspectorListWriteStatus,
   type InspectorPropsChangeOptions,
 } from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
@@ -135,6 +137,11 @@ type EditorAssistantPanelProps = {
   contentBasisForSection?: (sectionId: string) => number | undefined;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
   inlineTextCommit?: InspectorInlineTextCommit | null;
+  /** Per-list recovery status for the Inspector's Content tab. */
+  listWriteStatuses?: Readonly<Record<string, InspectorListWriteStatus>>;
+  /** Replaces one Inspector list with the exact value read from the server. */
+  listReset?: InspectorListReset | null;
+  onDiscardListConflict?: (sectionId: string, fieldPath: string) => void;
   onCodeComponentPropsChange?: (
     filePath: string,
     nextProps: Record<string, unknown>,
@@ -263,6 +270,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onSectionPropsChange,
   contentBasisForSection,
   inlineTextCommit,
+  listWriteStatuses,
+  listReset,
+  onDiscardListConflict,
   onCodeComponentPropsChange,
   onJumpToCode,
   onTabChange,
@@ -591,6 +601,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 onRepairThemeLinkBinding={onRepairThemeLinkBinding}
                 onSwitchThemeLinkElement={onSwitchThemeLinkElement}
                 onPropsChange={handleInspectorPropsChange}
+                listWriteStatuses={listWriteStatuses}
+                listReset={listReset}
+                onDiscardListConflict={onDiscardListConflict}
                 contentBasis={inspectorContentBasis}
                 inlineTextCommit={inlineTextCommit}
                 onJumpToCode={onJumpToCode}

@@ -42,6 +42,8 @@ export type PendingContentEntry = {
   expectedDraftGeneration?: number;
   /** Immutable per-field input snapshots; not upgraded by selection or retry. */
   fields?: Readonly<Record<string, PendingFieldEdit>>;
+  /** Array paths changed by an Inspector Add/Remove action, for local recovery UI. */
+  listActionPaths?: readonly string[];
   /**
    * Keys the write removes from the section ("Use code default", or the
    * undo of a write that first stored them), sent as `resetProps`. Present
@@ -65,6 +67,44 @@ export function sentContentWrite(
     ...(entry.resetProps !== undefined
       ? { resetProps: Object.freeze([...entry.resetProps]) }
       : {}),
+    ...(entry.listActionPaths !== undefined
+      ? { listActionPaths: Object.freeze([...entry.listActionPaths]) }
+      : {}),
+  });
+}
+
+/** Whether a frozen content write includes a path or one of its descendants. */
+export function contentEntryTouchesPath(
+  entry: PendingContentEntry,
+  path: string,
+): boolean {
+  if (!path || path.split(".").some((segment) => !segment)) return false;
+  const touches = (candidate: string) =>
+    candidate === path || candidate.startsWith(`${path}.`);
+  return [
+    ...(entry.listActionPaths ?? []),
+    ...Object.keys(entry.fields ?? {}),
+    ...(entry.resetProps ?? []),
+  ].some(touches);
+}
+
+/** Whether one unanswered write belongs to the selected document and list. */
+export function hasUnconfirmedContentForList(args: {
+  entries: Iterable<readonly [string, PendingContentEntry]>;
+  sectionId: string;
+  fieldPath: string;
+  templateId: string;
+  templateIdForKey: (key: string, sectionId: string) => string | null;
+  sameTemplateOwner: (left: string, right: string) => boolean;
+}): boolean {
+  return Array.from(args.entries).some(([key, entry]) => {
+    if (entry.sectionId !== args.sectionId) return false;
+    const entryTemplateId = args.templateIdForKey(key, entry.sectionId);
+    return (
+      entryTemplateId !== null &&
+      args.sameTemplateOwner(entryTemplateId, args.templateId) &&
+      contentEntryTouchesPath(entry, args.fieldPath)
+    );
   });
 }
 
@@ -115,6 +155,8 @@ export function stageContentFields(args: {
   sourceForPath: (path: string) => number | null;
   /** The draft generation of the document the author was editing. */
   basisDraftGeneration?: number;
+  /** The list changed by an explicit Add/Remove control action. */
+  listActionPath?: string;
 }): PendingContentEntry | null {
   const held = { ...args.stored, ...args.pending?.props };
   // The rows as the author's input saw them: the input itself, over what was
@@ -178,6 +220,16 @@ export function stageContentFields(args: {
     routePath: args.routePath,
     props: { ...args.pending?.props, ...args.next },
     fields,
+    ...(args.pending?.listActionPaths || args.listActionPath
+      ? {
+          listActionPaths: [
+            ...new Set([
+              ...(args.pending?.listActionPaths ?? []),
+              ...(args.listActionPath ? [args.listActionPath] : []),
+            ]),
+          ],
+        }
+      : {}),
   };
 }
 
@@ -375,6 +427,92 @@ export function rebaseFieldBasis(
   };
 }
 
+/** Drop one conflicted list while keeping all sibling pending field snapshots. */
+export function discardPendingContentPath(args: {
+  entry: PendingContentEntry;
+  baseline: Record<string, unknown> | undefined;
+  incoming: Record<string, unknown>;
+  fieldPath: string;
+}): {
+  pending: PendingContentEntry | null;
+  baseline: Record<string, unknown>;
+} {
+  const { entry, incoming, fieldPath } = args;
+  if (!fieldPath || fieldPath.split(".").some((segment) => !segment)) {
+    throw new Error("A content field path is required to discard a list.");
+  }
+
+  const overlapsDiscardedPath = (path: string) =>
+    path === fieldPath || path.startsWith(`${fieldPath}.`);
+  const baseline = replaceFieldPath(args.baseline ?? {}, incoming, fieldPath);
+
+  if (!entry.fields) {
+    const props = { ...entry.props };
+    deleteFieldPath(props, fieldPath);
+    const incomingValue = getFieldPathValue(incoming, fieldPath);
+    if (incomingValue !== undefined)
+      Object.assign(props, setFieldPathValue({}, fieldPath, incomingValue));
+    return {
+      pending: Object.keys(props).length > 0 ? { ...entry, props } : null,
+      baseline,
+    };
+  }
+
+  const fields = Object.fromEntries(
+    Object.entries(entry.fields).filter(
+      ([path]) => !overlapsDiscardedPath(path),
+    ),
+  );
+  if (Object.keys(fields).length === 0) return { pending: null, baseline };
+
+  let props: Record<string, unknown> = { ...incoming };
+  for (const [path, field] of Object.entries(fields)) {
+    props = setFieldPathValue(props, path, field.value);
+  }
+  return {
+    pending: {
+      ...entry,
+      fields,
+      props,
+      ...(entry.listActionPaths
+        ? {
+            listActionPaths: entry.listActionPaths.filter(
+              (path) => !overlapsDiscardedPath(path),
+            ),
+          }
+        : {}),
+    },
+    baseline,
+  };
+}
+
+function replaceFieldPath(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  path: string,
+): Record<string, unknown> {
+  const next = { ...target };
+  const sourceValue = getFieldPathValue(source, path);
+  if (sourceValue === undefined) deleteFieldPath(next, path);
+  else return setFieldPathValue(next, path, sourceValue);
+  return next;
+}
+
+function deleteFieldPath(target: Record<string, unknown>, path: string): void {
+  const segments = path.split(".");
+  let current: unknown = target;
+  for (const segment of segments.slice(0, -1)) {
+    if (current === null || typeof current !== "object") return;
+    const key = /^\d+$/.test(segment) ? Number(segment) : segment;
+    current = (current as Record<string | number, unknown>)[key];
+  }
+  if (current === null || typeof current !== "object") return;
+  const last = segments.at(-1)!;
+  const key = /^\d+$/.test(last) ? Number(last) : last;
+  if (Array.isArray(current) && typeof key === "number") current.splice(key, 1);
+  else delete (current as Record<string | number, unknown>)[key];
+}
+
 /**
  * The draft generation a route document has when it is created. Input made
  * while its route had no document counts as made on that copy: composed
@@ -405,6 +543,16 @@ export function acknowledgeContentFields(
       props: Object.fromEntries(
         [...roots].map((root) => [root, now.props[root]]),
       ),
+      ...(now.listActionPaths
+        ? {
+            listActionPaths: now.listActionPaths.filter((path) =>
+              Object.keys(remaining).some(
+                (fieldPath) =>
+                  fieldPath === path || fieldPath.startsWith(`${path}.`),
+              ),
+            ),
+          }
+        : {}),
     });
   }
   return true;
