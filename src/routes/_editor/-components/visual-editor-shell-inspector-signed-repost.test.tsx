@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
@@ -7,8 +8,14 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-media.serverFn";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import { VisualEditorShell } from "./visual-editor-shell";
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
+import {
+  createLiveFrame,
+  frameEnvelope,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * An Inspector text edit while a section's content is still waiting on media
@@ -169,11 +176,13 @@ function renderEditor() {
     sourceGeneration: 1,
     latestPublishedRevision: null,
   } as never);
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <VisualEditorShell context={context} search={search} onSearchChange={vi.fn()} />
     </QueryClientProvider>,
   );
+  liveFrame.ready();
+  return view;
 }
 
 function fromPreview(data: Record<string, unknown>) {
@@ -182,7 +191,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -233,6 +242,9 @@ const settle = () =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
+    // Drain the modeled bridge's post-commit acknowledgement pump before the
+    // next interaction changes the expected section presentation.
+    await vi.advanceTimersByTimeAsync(10);
   });
 
 /** Selects the heading and opens the Inspector's content fields. */
@@ -245,6 +257,7 @@ async function openHeading() {
   });
   fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
   await screen.findByDisplayValue("Welcome");
+  await settle();
 }
 
 /**
@@ -306,7 +319,18 @@ async function canvasEdit(value: string, originalValue: string) {
 /** Text typed into a declared Inspector field that is not the selected one. */
 async function inspectorEdit(from: string, to: string) {
   if (!screen.queryByDisplayValue(from)) await canvasSelect(null);
+  await waitFor(() =>
+    expect(
+      screen.queryByText(
+        "Preview syncing. Content writes are paused until every section confirms its current preview was applied.",
+      ),
+    ).toBeNull(),
+  );
   const field = await screen.findByDisplayValue(from);
+  await settle();
+  await waitFor(() =>
+    expect((field as HTMLInputElement).disabled).toBe(false),
+  );
   fireEvent.focus(field);
   fireEvent.input(field, { target: { value: to } });
   fireEvent.blur(field);
@@ -351,8 +375,8 @@ afterEach(async () => {
 
 describe("an Inspector text edit while the section's media is being signed", () => {
   it("T1: the late signed post does not put the older text back; the newest text and the signed image reach the canvas", async () => {
-    signingHeld();
     await openHeading();
+    signingHeld();
     const accepted = useThemeWorkspaceStore.getState().acceptedGenerations;
     await canvasEdit("Edited", "Welcome");
     expect(headingOf(sectionPosts().at(-1))).toBe("Edited");
@@ -382,8 +406,8 @@ describe("an Inspector text edit while the section's media is being signed", () 
   });
 
   it("T2: with the media already signed, an Inspector text edit posts no section content", async () => {
-    signingHeld();
     await openHeading();
+    signingHeld();
     await canvasEdit("Edited", "Welcome");
     await releaseSigning();
     // Signed and shown: the second post carried the signed image.
@@ -399,8 +423,8 @@ describe("an Inspector text edit while the section's media is being signed", () 
   });
 
   it("T2b: with media in the section but no post waiting on signing, an Inspector text edit posts and signs nothing", async () => {
-    signingHeld();
     await openHeading();
+    signingHeld();
     const before = posted.length;
     await inspectorEdit("Summary", "Sub newer");
     await saveSettles();
@@ -412,25 +436,34 @@ describe("an Inspector text edit while the section's media is being signed", () 
     expect(savedProps()[0]).toMatchObject({ subheading: "Sub newer" });
   });
 
-  it("T3: several Inspector edits while signing end in one post, with the last text", async () => {
-    signingHeld();
+  it("T3: an edit raced by presentation sync stays unsaved and cancels its older signed post", async () => {
+    const warn = vi.spyOn(toast, "warning").mockImplementation(() => "");
     await openHeading();
+    signingHeld();
     await canvasEdit("Edited", "Welcome");
     const before = posted.length;
     await inspectorEdit("Summary", "Sub newer");
+    const warnsAfterFirst = warn.mock.calls.map(([message]) => String(message));
     await inspectorEdit("Sub newer", "Sub newest");
     await saveSettles();
+    expect(warnsAfterFirst).not.toContain(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+    expect(warn.mock.calls.map(([message]) => String(message))).toContain(
+      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+    );
+    expect(screen.getByDisplayValue("Sub newest")).toBeTruthy();
+    expect(savedProps()).toEqual([]);
+    expect(saveState()).toBe("unsaved");
+
     await releaseSigning();
 
-    const after = sectionPosts(before);
-    expect(after).toHaveLength(1);
-    expect(subheadingOf(after[0])).toBe("Sub newest");
-    expect(imageSigned(after[0])).toBe(true);
+    expect(sectionPosts(before).map(subheadingOf)).not.toContain("Sub newer");
+    expect(screen.getByDisplayValue("Sub newest")).toBeTruthy();
+    expect(savedProps()).toEqual([]);
   });
 
   it("T4: a later canvas edit still supersedes an Inspector edit's pending post", async () => {
-    signingHeld();
     await openHeading();
+    signingHeld();
     await canvasEdit("Edited", "Welcome");
     await inspectorEdit("Summary", "Sub newer");
     const before = posted.length;
