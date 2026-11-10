@@ -644,8 +644,18 @@ describe("a content save that fails", () => {
           document: {
             version: 1,
             sections: [
-              { id: "hero", type: "hero", props: { heading: "Theirs" } },
-              { id: "second", type: "hero", props: { heading: "Second" } },
+              {
+                id: "hero",
+                type: "hero",
+                enabled: true,
+                props: { heading: "Theirs" },
+              },
+              {
+                id: "second",
+                type: "hero",
+                enabled: true,
+                props: { heading: "Second" },
+              },
             ],
           },
         },
