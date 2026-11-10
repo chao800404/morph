@@ -4072,10 +4072,13 @@ function Home() {
 
     expect(sent()).toHaveLength(1);
     expectOnlySelectedRowWritten();
-    // The read found a different document, but cannot prove the unanswered
-    // request will never land. It stays unknown and is not resent.
-    expect(saveStatus()).toBe("Save failed");
-    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    // The read found a newer document, so the frozen selected-row basis has
+    // moved. The original CAS can no longer land; keep the choice as a
+    // recoverable conflict instead of holding the whole session unknown.
+    expect(saveStatus()).toBe("Out of date");
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
   });
 });
 
@@ -5594,15 +5597,21 @@ function Home() {
           return editor;
         }
 
-        it("keeps tracking when the first readback does not show the write", async () => {
+        it("resends once at the frozen basis and keeps tracking if that resend gets no answer", async () => {
           await lostOrdinaryWrite();
           serverHolds({ ...STORED }, 1);
+          // A same-generation read proves only that the original did not land
+          // before this read. The explicit resend can also lose its answer.
+          answerNext.push(lost);
 
           await checkAndSave();
 
-          expect(sent(), "the unanswered payload is not resent").toHaveLength(
-            1,
-          );
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+            expectedSourceGeneration: 1,
+          });
           expect(unconfirmedCount(), "the request is still unresolved").toBe(
             "1",
           );
@@ -5613,21 +5622,18 @@ function Home() {
           expect(historyButtons()).toEqual({ undo: false, redo: false });
         });
 
-        it("confirms a later landing once without resending the frozen payload", async () => {
+        it("records a successful same-basis resend once and undoes it from its answer", async () => {
           const { receive } = await lostOrdinaryWrite();
           serverHolds({ ...STORED }, 1);
 
           await checkAndSave();
 
-          expect(unconfirmedCount(), "first readback keeps tracking").toBe("1");
-          expect(sent()).toHaveLength(1);
-
-          // The original request can finish after this read. Its later copy is
-          // confirmed by a second read; the editor must not send it again.
-          serverHolds({ heading: "New" }, 2);
-          await checkAndSave();
-
-          expect(sent(), "a late landing is never resent").toHaveLength(1);
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+            expectedSourceGeneration: 1,
+          });
           expect(unconfirmedCount()).toBeNull();
           expect(depth(), "the saved edit is recorded once").toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
@@ -5635,8 +5641,8 @@ function Home() {
           await reread(receive);
           await undo();
 
-          expect(sent()).toHaveLength(2);
-          expect(sent()[1]).toMatchObject({
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
             props: { heading: "Hello" },
             expectedDraftGeneration: 2,
             expectedSourceGeneration: 1,
@@ -7448,18 +7454,23 @@ function Home() {
         expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
       });
 
-      it("keeps the unanswered swap tracked when read-back does not show it", async () => {
+      it("resends once at the original basis and keeps tracking if the resend gets no answer", async () => {
         const { warning } = notices();
         const { one, two } = await dragWithLostAnswer();
         // The server still holds the list in its first order.
         getThemeEditor.mockResolvedValue(readBack({ items: [one, two] }, 1));
+        updateSectionProps.mockRejectedValueOnce(new Error("offline"));
 
         act(() => {
           screen.getByRole("button", { name: "Try again" }).click();
         });
 
         await new Promise((resolve) => setTimeout(resolve, 1_200));
-        expect(sent()).toHaveLength(1);
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1]).toMatchObject({
+          props: { items: [two, one] },
+          expectedDraftGeneration: 1,
+        });
         expect(saveStatus()).toBe("Save failed");
         expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
         expect(warning).not.toHaveBeenCalled();
