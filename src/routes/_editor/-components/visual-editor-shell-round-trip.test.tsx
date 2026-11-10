@@ -3167,9 +3167,9 @@ function Home() {
     }
   });
 
-  // (b) It did not land; the connection dropped. The read-back shows the rows
-  // as they were, and only then is the choice sent again.
-  it("reads a lost answer back before sending again when the write did not land", async () => {
+  // (b) A read that does not show the write cannot prove the original request
+  // was cancelled. Keep it tracked and do not send the frozen payload again.
+  it("keeps a lost answer tracked when read-back does not show the write", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
     const report = await reportImage(fixture, 1);
@@ -3184,15 +3184,12 @@ function Home() {
       await chooseWithLostAnswer(trigger);
 
       fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-      await waitFor(() => expect(sent()).toHaveLength(2));
-      // Read back while only the lost request had gone out.
+      await waitFor(() => expect(read.sentWhenRead).toBe(1));
+      await pause();
+      expect(sent()).toHaveLength(1);
       expect(read.sentWhenRead).toBe(1);
-      expect(sent()[1]!.expectedSourceGeneration).toBe(1);
-      expect(sent()[1]!.expectedDraftGeneration).toBe(1);
-      expect(itemsOf(sent()[1]!)).toEqual([
-        ["row-a", "First", "30% center"],
-        ["row-b", "Second", "top"],
-      ]);
+      expect(saveStatus()).toBe("Save failed");
+      expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
     } finally {
       if (priorRead) getThemeEditor.mockImplementation(priorRead);
       else getThemeEditor.mockReset();
@@ -4038,7 +4035,10 @@ function Home() {
 
     expect(sent()).toHaveLength(1);
     expectOnlySelectedRowWritten();
-    expect(saveStatus()).toBe("Out of date");
+    // The read found a different document, but cannot prove the unanswered
+    // request will never land. It stays unknown and is not resent.
+    expect(saveStatus()).toBe("Save failed");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 });
 
@@ -7301,7 +7301,7 @@ function Home() {
         expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
       });
 
-      it("sends the swap once more when the server does not hold it", async () => {
+      it("keeps the unanswered swap tracked when read-back does not show it", async () => {
         const { warning } = notices();
         const { one, two } = await dragWithLostAnswer();
         // The server still holds the list in its first order.
@@ -7311,16 +7311,10 @@ function Home() {
           screen.getByRole("button", { name: "Try again" }).click();
         });
 
-        await waitFor(() => expect(sent()).toHaveLength(2));
-        expect(getThemeEditor.mock.invocationCallOrder[0]!).toBeLessThan(
-          updateSectionProps.mock.invocationCallOrder[1]!,
-        );
-        expect(sent()[1]!.expectedDraftGeneration).toBe(1);
-        expect(rowsSent(sent()[1]!)).toEqual([
-          [two.id, "Two"],
-          [one.id, "One"],
-        ]);
-        await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+        expect(sent()).toHaveLength(1);
+        expect(saveStatus()).toBe("Save failed");
+        expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
         expect(warning).not.toHaveBeenCalled();
       });
 
