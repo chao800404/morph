@@ -205,11 +205,13 @@ describe("telling a list change from an id repair, three ways", () => {
 });
 
 describe("what an author whose content is held is told", () => {
-  it("points a list conflict at the way out that resolves it", () => {
+  it("points a list conflict at its available recovery control and names the fallback", () => {
     // "Keep mine" will not save a list both sides changed; naming it would
     // send the author round in a circle.
     const message = heldContentMessage({ hasListConflict: true });
-    expect(message).toMatch(/Discard mine/);
+    expect(message).toMatch(/list-specific discard control/);
+    expect(message).toMatch(/otherwise stay here with the draft/);
+    expect(message).not.toMatch(/Discard mine/);
     expect(message).not.toMatch(/keep your changes before continuing/);
   });
 
@@ -244,7 +246,7 @@ describe("why a step that saves one document first stopped", () => {
     ).toBe(CONFLICT);
   });
 
-  it("points a list conflict here at Discard mine, not another document's list conflict", () => {
+  it("points a list conflict here at its recovery control, not another document's list conflict", () => {
     expect(
       heldFlushMessage({
         heldKeys: ["doc-a:hero", "doc-a:cards"],

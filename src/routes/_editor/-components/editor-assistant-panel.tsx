@@ -143,6 +143,7 @@ type EditorAssistantPanelProps = {
   listWriteStatuses?: Readonly<Record<string, InspectorListWriteStatus>>;
   /** Replaces one Inspector list with the exact value read from the server. */
   listReset?: InspectorListReset | null;
+  onListResetApplied?: (epoch: number) => void;
   onDiscardListConflict?: (sectionId: string, fieldPath: string) => void;
   onCodeComponentPropsChange?: (
     filePath: string,
@@ -274,6 +275,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   inlineTextCommit,
   listWriteStatuses,
   listReset,
+  onListResetApplied,
   onDiscardListConflict,
   onCodeComponentPropsChange,
   onJumpToCode,
@@ -616,6 +618,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 onPropsChange={handleInspectorPropsChange}
                 listWriteStatuses={listWriteStatuses}
                 listReset={listReset}
+                onListResetApplied={onListResetApplied}
                 onDiscardListConflict={onDiscardListConflict}
                 contentBasis={inspectorContentBasis}
                 inlineTextCommit={inlineTextCommit}

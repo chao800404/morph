@@ -45,6 +45,8 @@ export type PendingContentEntry = {
    * write is prepared: the generation and the stored copy come from one read.
    */
   expectedDraftGeneration?: number;
+  /** Whether confirmation should add the generic Content history entry. */
+  recordHistory?: boolean;
   /** Immutable per-field input snapshots; not upgraded by selection or retry. */
   fields?: Readonly<Record<string, PendingFieldEdit>>;
   /** Array paths changed by an Inspector Add/Remove action, for local recovery UI. */
@@ -65,9 +67,15 @@ export type PendingContentEntry = {
  */
 export function sentContentWrite(
   entry: PendingContentEntry,
+  expectedDraftGeneration?: number,
+  recordHistory?: boolean,
 ): Readonly<PendingContentEntry> {
   return Object.freeze({
     ...entry,
+    ...(expectedDraftGeneration !== undefined
+      ? { expectedDraftGeneration }
+      : {}),
+    ...(recordHistory !== undefined ? { recordHistory } : {}),
     props: Object.freeze({ ...entry.props }),
     ...(entry.resetProps !== undefined
       ? { resetProps: Object.freeze([...entry.resetProps]) }
@@ -84,8 +92,15 @@ export function contentEntryTouchesPath(
   path: string,
 ): boolean {
   if (!path || path.split(".").some((segment) => !segment)) return false;
-  const touches = (candidate: string) =>
-    candidate === path || candidate.startsWith(`${path}.`);
+  const touches = (candidate: string) => {
+    if (!candidate || candidate.split(".").some((segment) => !segment))
+      return false;
+    return (
+      candidate === path ||
+      candidate.startsWith(`${path}.`) ||
+      path.startsWith(`${candidate}.`)
+    );
+  };
   return [
     ...(entry.listActionPaths ?? []),
     ...Object.keys(entry.fields ?? {}),
@@ -470,7 +485,7 @@ export function discardPendingContentPath(args: {
   );
   if (Object.keys(fields).length === 0) return { pending: null, baseline };
 
-  let props: Record<string, unknown> = { ...incoming };
+  let props = replaceFieldPath({ ...entry.props }, incoming, fieldPath);
   for (const [path, field] of Object.entries(fields)) {
     props = setFieldPathValue(props, path, field.value);
   }
@@ -584,6 +599,7 @@ export async function commitPendingContent<
   save,
   saveWhenSent,
   onSaved,
+  acknowledgeOwn = false,
   failureCode,
   select,
   own,
@@ -611,6 +627,8 @@ export async function commitPendingContent<
     entry: PendingContentEntry,
     baseline: Record<string, unknown> | undefined,
   ) => void;
+  /** A frozen ordinary write is resent as `own`, but still acknowledges its input. */
+  acknowledgeOwn?: boolean;
   /**
    * The server's code for a rejected write, when it gave one.
    *
@@ -665,12 +683,27 @@ export async function commitPendingContent<
     throw failure;
   }
   if (own) {
-    // Nothing pending was this write's. Input typed since is undone, once
-    // saved, to what this write stored.
-    if (pending.has(key)) {
-      baselines.set(key, { ...baselines.get(key), ...entry.props });
+    if (acknowledgeOwn) {
+      if (acknowledgeContentFields(pending, key, entry)) {
+        if (!pending.has(key)) baselines.delete(key);
+        else baselines.set(key, { ...baseline, ...entry.props });
+      } else {
+        const now = pending.get(key);
+        if (!now || sameContent(now.props, entry.props)) {
+          pending.delete(key);
+          baselines.delete(key);
+        } else {
+          baselines.set(key, { ...baseline, ...entry.props });
+        }
+      }
     } else {
-      baselines.delete(key);
+      // A history replay is not the section's pending input. Input typed
+      // while it was out is preserved, with its baseline moved past the replay.
+      if (pending.has(key)) {
+        baselines.set(key, { ...baselines.get(key), ...entry.props });
+      } else {
+        baselines.delete(key);
+      }
     }
     onSaved?.(entry, baseline);
     return result;

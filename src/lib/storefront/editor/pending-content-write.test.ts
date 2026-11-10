@@ -228,9 +228,23 @@ describe("discarding one conflicted content list", () => {
     };
 
     expect(contentEntryTouchesPath(entry, "items")).toBe(true);
+    expect(contentEntryTouchesPath(entry, "items.0.related")).toBe(true);
     expect(contentEntryTouchesPath(entry, "heading")).toBe(true);
     expect(contentEntryTouchesPath(entry, "related")).toBe(false);
     expect(contentEntryTouchesPath(entry, "items..title")).toBe(false);
+
+    const wholeListEntry: PendingContentEntry = {
+      sectionId: "hero",
+      props: { items: [{ id: "row", title: "Mine row" }] },
+      fields: {
+        items: {
+          value: [{ id: "row", title: "Mine row" }],
+          sourceGeneration: 3,
+          basisDraftGeneration: 4,
+        },
+      },
+    };
+    expect(contentEntryTouchesPath(wholeListEntry, "items.0.title")).toBe(true);
   });
 
   it("blocks discarding a list with an unanswered write under an aliased document id", () => {
@@ -279,11 +293,13 @@ describe("discarding one conflicted content list", () => {
       heading: "Remote heading",
       items: [{ id: "remote", title: "Remote row" }],
       related: [{ id: "related-base", title: "Related base" }],
+      untouched: [{ id: "remote-untouched", title: "Remote but not edited" }],
     };
     const oldBaseline = {
       heading: "Old heading",
       items: [{ id: "old", title: "Old row" }],
       related: [{ id: "related-base", title: "Related base" }],
+      untouched: [{ id: "old-untouched", title: "Old value" }],
     };
     const entry: PendingContentEntry = {
       sectionId: "hero",
@@ -320,6 +336,7 @@ describe("discarding one conflicted content list", () => {
         related: [{ id: "related-mine", title: "Mine related" }],
       },
     });
+    expect(result.pending!.props).not.toHaveProperty("untouched");
     expect(Object.keys(result.pending!.fields!)).toEqual([
       "heading",
       "related",
@@ -1228,6 +1245,25 @@ describe("classifyUnconfirmedContent: version first, then content", () => {
 });
 
 describe("sentContentWrite: what was sent stays as sent", () => {
+  it("freezes the actual send generation when a route entry had no draft basis", () => {
+    const entry: PendingContentEntry = {
+      sectionId: "route-section",
+      routePath: "/contact",
+      props: { heading: "Hello" },
+      expectedSourceGeneration: 1,
+    };
+
+    const sent = pendingContentWrite.sentContentWrite(entry, 1, false);
+
+    expect(sent).toMatchObject({
+      sectionId: "route-section",
+      routePath: "/contact",
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: 1,
+      recordHistory: false,
+    });
+  });
+
   it("is not changed by later changes to the entry it was made from", () => {
     const props: Record<string, unknown> = { heading: "Hello" };
     const resetProps = ["items"];

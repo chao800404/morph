@@ -764,6 +764,29 @@ describe("EditorStyleInspector selection content", () => {
     const lastSent = (spy: ReturnType<typeof vi.fn>) =>
       spy.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
 
+    it("acknowledges a list reset after applying its epoch", () => {
+      const onListResetApplied = vi.fn();
+      render(
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", { heading: "Heading", items: [] })}
+          selection={sectionSelection}
+          listReset={{
+            sectionId: "section-1",
+            fieldPath: "items",
+            value: [{ title: "Server row" }],
+            epoch: 17,
+          }}
+          onListResetApplied={onListResetApplied}
+          onPropsChange={vi.fn()}
+        />,
+      );
+
+      // The shell clears this one-shot reset, so a later Inspector mount
+      // cannot reapply it over a newer Add/Remove draft.
+      expect(onListResetApplied).toHaveBeenCalledWith(17);
+    });
+
     it("does not send back a field the server changed elsewhere", () => {
       const onPropsChange = vi.fn();
       const view = (props: Record<string, unknown>) => (
@@ -3109,6 +3132,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(onPropsChange).toHaveBeenCalledTimes(1);
       expect(onPropsChange.mock.calls[0]![1]).toEqual({
         inputFieldPath: "items",
+        listActionPath: "items",
         selectionFieldPath: "items.1.title",
       });
     });
@@ -3121,6 +3145,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(onPropsChange).toHaveBeenCalledTimes(1);
       expect(onPropsChange.mock.calls[0]![1]).toEqual({
         inputFieldPath: "items",
+        listActionPath: "items",
         selectionFieldPath: "items.1.title",
       });
     });
@@ -3164,6 +3189,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(Object.keys(sent)).toEqual(["links"]);
       expect(options).toEqual({
         inputFieldPath: "links",
+        listActionPath: "links",
         selectionFieldPath: "links.1.label",
       });
     });

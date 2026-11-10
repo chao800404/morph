@@ -92,7 +92,9 @@ export function conflictingListKeys({
  * One answer for every place that asks. A list both sides changed is not
  * saved by "Load latest, keep mine" — that is the point of stopping it — so
  * pointing the author at that button would send them round in a circle; the
- * way out for it is "Discard mine", or staying with the draft kept.
+ * way out for it is the list-specific discard control when the Inspector
+ * exposes one; otherwise the draft has to stay here or be discarded by
+ * reloading the editor.
  */
 export function heldContentMessage({
   hasListConflict,
@@ -101,7 +103,7 @@ export function heldContentMessage({
   hasListConflict: boolean;
 }): string {
   return hasListConflict
-    ? "A list you edited was also changed elsewhere, so your version cannot be saved over it. Your changes are kept; use Discard mine to load the latest version, then make your change again."
+    ? "A list you edited was also changed elsewhere, so your version cannot be saved over it. Your changes are kept. Select its section and use the list-specific discard control if the Inspector exposes one; otherwise stay here with the draft or reload to discard all unsaved changes."
     : "Content is out of date with the document. Load the latest version and keep your changes before continuing.";
 }
 

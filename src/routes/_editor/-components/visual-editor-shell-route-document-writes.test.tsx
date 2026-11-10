@@ -1,4 +1,8 @@
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
 import {
   act,
   cleanup,
@@ -165,7 +169,8 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
               (error: unknown) => {
                 promoteOutcome.settled = {
                   status: "threw",
-                  message: error instanceof Error ? error.message : String(error),
+                  message:
+                    error instanceof Error ? error.message : String(error),
                 };
               },
             );
@@ -228,7 +233,8 @@ vi.mock("./editor-sections-panel", async (importOriginal) => {
               (error: unknown) => {
                 renameOutcome.settled = {
                   ok: false,
-                  message: error instanceof Error ? error.message : String(error),
+                  message:
+                    error instanceof Error ? error.message : String(error),
                 };
               },
             );
@@ -409,7 +415,8 @@ function applyWrite(data: WriteRequest) {
       message: `No document ${data.templateId}`,
     };
   }
-  if (data.expectedDraftGeneration !== route.generation) return conflictAnswer();
+  if (data.expectedDraftGeneration !== route.generation)
+    return conflictAnswer();
   route.props = { ...(route.props ?? {}), ...data.props };
   route.generation += 1;
   return savedAnswer(route);
@@ -484,8 +491,7 @@ function Host({ initial }: { initial: StorefrontThemeEditorSearch }) {
   const [search, setSearch] = useState(initial);
   host.go = (next) => setSearch((previous) => ({ ...previous, ...next }));
   const data = query.data as
-    | { success: boolean; data?: StorefrontThemeEditorDTO }
-    | undefined;
+    { success: boolean; data?: StorefrontThemeEditorDTO } | undefined;
   const editorContext = data?.success ? data.data : undefined;
   const normalized = useMemo(
     () =>
@@ -620,7 +626,9 @@ async function canvasReport(selector: string, index: number) {
     path: ROUTE_PATH,
   });
   const root = mountLivePreview(html);
-  const item = resolveSelectable(root.querySelectorAll(selector)[index] ?? null);
+  const item = resolveSelectable(
+    root.querySelectorAll(selector)[index] ?? null,
+  );
   document.body.replaceChildren();
   if (!item) throw new Error(`canvasReport: nothing selectable at ${selector}`);
   return {
@@ -632,7 +640,9 @@ async function canvasReport(selector: string, index: number) {
     elementKey: item.elementKey,
     fieldKey: item.fieldKey,
     field:
-      item.descendantFields.length > 0 ? null : (item.fieldKey ?? item.elementKey),
+      item.descendantFields.length > 0
+        ? null
+        : (item.fieldKey ?? item.elementKey),
     descendantFields: item.descendantFields,
     itemId: item.itemId,
     contentUnavailable: item.contentUnavailable,
@@ -1061,9 +1071,7 @@ describe("the frame's route when the page takes up the route document it created
     await flushFrames();
     expect(ensureRouteTemplate).not.toHaveBeenCalled();
 
-    await waitFor(() =>
-      expect(routeRequests().length).toBeGreaterThan(before),
-    );
+    await waitFor(() => expect(routeRequests().length).toBeGreaterThan(before));
     expect(routeRequests().at(-1)).toMatchObject({
       templateId: ROUTE_DOC_ID,
       routePath: ROUTE_PATH,
@@ -1284,7 +1292,9 @@ describe("G3: row identity on the new document", () => {
     expect(typeof one?.id).toBe("string");
     expect(typeof two?.id).toBe("string");
     expect(
-      (server.route!.props!.items as Array<{ id: string }>).map((row) => row.id),
+      (server.route!.props!.items as Array<{ id: string }>).map(
+        (row) => row.id,
+      ),
     ).toEqual([one!.id, two!.id]);
     await expectAdopted();
     return { one: one!, two: two! };
@@ -1699,7 +1709,7 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       });
     });
 
-    it("failed with no answer, real-keyed: the step stops on the hold; Try again reads first, sends once, then the step runs", async () => {
+    it("failed with no answer, real-keyed: a not-landed write is resent once before the step proceeds", async () => {
       await firstWriteLanded();
       const second = holdNextWrite();
       typeInCard(0, "Value 2");
@@ -1721,10 +1731,12 @@ describe("A: the pre-step flush holds refused and failed content under every id"
 
       const readsBefore = getThemeEditor.mock.calls.length;
       pressTryAgain();
-      await waitFor(() => expect(sent()).toHaveLength(3));
+      await waitFor(() =>
+        expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore),
+      );
       await pause();
-      // Asked the server first (the settle read), then sent once.
-      expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore);
+      // Same-generation readback proves it had not landed at that instant;
+      // retry sends the exact frozen payload once, at the original basis.
       expect(sent()).toHaveLength(3);
       expect(sent()[2]).toMatchObject({
         templateId: ROUTE_DOC_ID,
@@ -1732,9 +1744,12 @@ describe("A: the pre-step flush holds refused and failed content under every id"
         props: { heading: "Value 2" },
       });
       expect(storedHeading()).toBe("Value 2");
-
       expect(await rename()).toEqual({ ok: true });
       expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection.mock.calls[0]![0].data).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 3,
+      });
     });
   });
 
@@ -1880,7 +1895,10 @@ describe("B: a lost ensure answer, then the author goes on", () => {
   async function refusedOverTheirs(kept: string) {
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
     expect(updateSectionProps).not.toHaveBeenCalled();
-    expect(server.route).toEqual({ generation: 3, props: { heading: "Theirs" } });
+    expect(server.route).toEqual({
+      generation: 3,
+      props: { heading: "Theirs" },
+    });
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(
       screen.getByRole("button", { name: "Load latest, keep mine" }),
@@ -1972,7 +1990,10 @@ describe("C: placeholder-keyed content sent after an outside change", () => {
   function expectRefusedOverTheirs() {
     expect(sent()).toHaveLength(1);
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
-    expect(server.route).toEqual({ generation: 4, props: { heading: "Theirs" } });
+    expect(server.route).toEqual({
+      generation: 4,
+      props: { heading: "Theirs" },
+    });
     expect(saveStatus()).toBe("Out of date");
     expect(
       screen.getByRole("button", { name: "Load latest, keep mine" }),
@@ -2101,7 +2122,9 @@ describe("D: steps that flush first stop on held content", () => {
     expect(prepareInitialDraft).not.toHaveBeenCalled();
     expect(storedHeading()).toBe("Theirs");
     // Said, with the reason it was held.
-    expect(toast.error).toHaveBeenCalledWith(`Cannot publish: ${CONFLICT_HELD}`);
+    expect(toast.error).toHaveBeenCalledWith(
+      `Cannot publish: ${CONFLICT_HELD}`,
+    );
     // Kept: the explicit recovery sends the typed text once; the publish
     // does not go on by itself.
     pressKeepMine();
@@ -2174,7 +2197,10 @@ describe("E: generation 1 is not proof this tab created the document", () => {
 
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
     expect(updateSectionProps).not.toHaveBeenCalled();
-    expect(server.route).toEqual({ generation: 2, props: { heading: "Theirs" } });
+    expect(server.route).toEqual({
+      generation: 2,
+      props: { heading: "Theirs" },
+    });
     expect(saveStatus()).toBe("Out of date");
 
     pressKeepMine();
@@ -2213,7 +2239,9 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     await pause();
 
     expect(ensureRouteTemplate).not.toHaveBeenCalled();
-    expect(sent().map((write) => write.expectedDraftGeneration)).toEqual([3, 4]);
+    expect(sent().map((write) => write.expectedDraftGeneration)).toEqual([
+      3, 4,
+    ]);
     expect(sent().map((write) => write.props.heading)).toEqual([
       "Value 1",
       "Value 2",
@@ -2238,7 +2266,10 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
 
     expect(ensureRouteTemplate).not.toHaveBeenCalled();
     expect(sent()).toHaveLength(1);
-    expect(server.route).toEqual({ generation: 7, props: { heading: "Theirs" } });
+    expect(server.route).toEqual({
+      generation: 7,
+      props: { heading: "Theirs" },
+    });
     expect(saveStatus()).toBe("Out of date");
     expect(screen.getAllByDisplayValue("Value 2").length).toBeGreaterThan(0);
   });
@@ -2290,7 +2321,10 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     typeInCard(0, "Value 2");
     // Held by the debounce: the second edit has not left yet.
     expect(sent()).toHaveLength(1);
-    expect(server.route).toEqual({ generation: 2, props: { heading: "Value 1" } });
+    expect(server.route).toEqual({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
     await releaseReadsUntil(2);
     await releaseDebounce();
 
@@ -2303,7 +2337,10 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
       props: { heading: "Value 2" },
     });
     expect(storedHeading()).toBe("Value 2");
-    expect(server.route).toEqual({ generation: 3, props: { heading: "Value 2" } });
+    expect(server.route).toEqual({
+      generation: 3,
+      props: { heading: "Value 2" },
+    });
   });
 
   it("F3: after Keep mine on a placeholder-keyed refusal, the rebased basis decides: sent once at the latest generation", async () => {
@@ -2673,7 +2710,10 @@ describe("only an answered write with a valid document makes the first copy", ()
         const saved = applyWrite(data) as ReturnType<typeof savedAnswer>;
         return {
           ...saved,
-          data: { draftGeneration: saved.data.draftGeneration, droppedProps: [] },
+          data: {
+            draftGeneration: saved.data.draftGeneration,
+            droppedProps: [],
+          },
         };
       },
     );
@@ -2681,13 +2721,19 @@ describe("only an answered write with a valid document makes the first copy", ()
     await type("Default heading", "Value 1");
     await pause();
     sentOnceOntoCreatedDocument();
-    expect(server.route).toEqual({ generation: 2, props: { heading: "Value 1" } });
+    expect(server.route).toEqual({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
     expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
 
     typeInCard(0, "Value 2");
     await pause();
     expect(sent(), "no copy at 2 to send the next edit on").toHaveLength(1);
-    expect(server.route).toEqual({ generation: 2, props: { heading: "Value 1" } });
+    expect(server.route).toEqual({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
     expect(sourceBaseline()).toEqual(before);
   });
 
