@@ -173,17 +173,26 @@ afterEach(() => {
 });
 
 describe("storefront theme file DAL", () => {
-    it("persists a write-attempt receipt and clears it on a later ordinary save", async () => {
-    const writeAttemptId = "00000000-0000-4000-8000-000000000001";
-    const saved = await storefrontThemeFileDal.saveFile(
+  it("persists a write-attempt receipt and clears it on a later ordinary save", async () => {
+    const created = await storefrontThemeFileDal.saveFile(
       "storefront-a",
       "theme-a",
       "src/components/Hero.tsx",
       "export const Hero = () => null;",
       "text/typescript",
+      { expectedSourceGeneration: 1, expectMissing: true },
+    );
+    const writeAttemptId = "00000000-0000-4000-8000-000000000001";
+    const saved = await storefrontThemeFileDal.saveFile(
+      "storefront-a",
+      "theme-a",
+      "src/components/Hero.tsx",
+      "export const Hero = () => <main />;",
+      "text/typescript",
       {
-        expectedSourceGeneration: 1,
-        expectMissing: true,
+        expectedSourceGeneration: 2,
+        expectedFileId: created.id,
+        expectedVersion: created.version,
         writeAttemptId,
       },
     );
@@ -210,9 +219,9 @@ describe("storefront theme file DAL", () => {
           expectedVersion: saved.version,
         },
       ],
-      { expectedSourceGeneration: 2 },
+      { expectedSourceGeneration: 3 },
     );
-    expect(updated?.lastWriteAttemptId).toBeNull();
+    expect(updated?.lastWriteAttemptId).toBeUndefined();
   });
 
   it("increments source_generation on saveFilesBatch", async () => {

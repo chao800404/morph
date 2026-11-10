@@ -1300,7 +1300,9 @@ function controlledThemeFile(initialContent: string) {
   });
   const read = vi.fn(async () => {
     events.push("read");
-    return { success: true, data: { ...current } };
+    const file = { ...current };
+    delete file.sourceGeneration;
+    return { success: true, data: file };
   });
   const list = vi.fn(async () => {
     events.push("snapshot");
@@ -2738,7 +2740,7 @@ describe("Style replay read-back confirmation", () => {
 
     await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+      expect(localThemeFile()?.conflict?.remoteContent).toBe(STYLE_SOURCE),
     );
     expect(server.save).toHaveBeenCalledTimes(2);
     expect(server.file()).toMatchObject({
