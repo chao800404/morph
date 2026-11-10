@@ -707,16 +707,18 @@ describe("a content save that fails", () => {
     });
 
     await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
-    // A negative read does not cancel the request that got no answer. Keep it
-    // tracked and do not send the frozen payload again.
+    // The same-generation read proves the write did not land. Retry that
+    // frozen payload once at its original generation; CAS makes a late
+    // original request lose if this resend wins.
     expect(getThemeEditor).toHaveBeenCalled();
-    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(updateSectionProps.mock.calls[1]![0].data).toMatchObject({
+      props: { heading: "Hello" },
+      expectedDraftGeneration: 1,
+    });
     expect(
-      document
-        .querySelector("[data-editor-unconfirmed-saves]")
-        ?.getAttribute("data-editor-unconfirmed-saves"),
-    ).toBe("1");
-    expect(saveStatus()).toBe("Save failed");
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+    ).toBeNull();
   });
 
   it("does not send again a write that landed when its answer was lost", async () => {
