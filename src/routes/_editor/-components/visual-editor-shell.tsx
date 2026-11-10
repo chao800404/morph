@@ -2775,7 +2775,10 @@ export function VisualEditorShell({
     [context.storefront.id, context.theme.id],
   );
   const captureCurrentSectionPresentationProof = useCallback(
-    (templateId: string, sectionId: string): SectionPresentationProof | null => {
+    (
+      templateId: string,
+      sectionId: string,
+    ): SectionPresentationProof | null => {
       if (!sectionPresentationReadyRef.current) return null;
       const frame = previewFrameRecordRef.current;
       if (
@@ -3293,7 +3296,9 @@ export function VisualEditorShell({
       acceptReadTemplates(fresh.data.templates, firstReadOwnBases);
       const readAdvancedDocument = fresh.data.templates.some((template) => {
         const before = priorDraftGenerations.get(template.id);
-        const after = contentSnapshotsRef.current.get(template.id)?.draftGeneration;
+        const after = contentSnapshotsRef.current.get(
+          template.id,
+        )?.draftGeneration;
         return after !== undefined && after !== before;
       });
       for (const [key, sent] of unconfirmed) {
@@ -3528,7 +3533,9 @@ export function VisualEditorShell({
     acceptReadTemplates(freshTemplates);
     const readAdvancedDocument = freshTemplates.some((template) => {
       const before = priorDraftGenerations.get(template.id);
-      const after = contentSnapshotsRef.current.get(template.id)?.draftGeneration;
+      const after = contentSnapshotsRef.current.get(
+        template.id,
+      )?.draftGeneration;
       return after !== undefined && after !== before;
     });
     const rebasedKeys: Array<{ key: string; templateId: string }> = [];
@@ -3643,11 +3650,7 @@ export function VisualEditorShell({
       );
       if (
         !proof ||
-        !isSectionPresentationProofCurrent(
-          proof,
-          templateId,
-          pending.sectionId,
-        )
+        !isSectionPresentationProofCurrent(proof, templateId, pending.sectionId)
       ) {
         for (const sectionId of sectionModelRef.current.bindings.keys()) {
           previewVisibilityRef.current.reconcile(sectionId);
@@ -11727,6 +11730,31 @@ export function VisualEditorShell({
     layoutTemplate,
     routePath: search.routePath ?? "/",
   });
+  const acceptedPresentationGeneration = useCallback(
+    (
+      snapshot: { draftGeneration: number } | undefined,
+      ownerTemplate: { draftGeneration?: number } | undefined,
+    ) => {
+      const snapshotGeneration = snapshot?.draftGeneration;
+      const contextGeneration = ownerTemplate?.draftGeneration;
+      const validContextGeneration =
+        typeof contextGeneration === "number" &&
+        Number.isSafeInteger(contextGeneration) &&
+        contextGeneration > 0;
+      // The editor context can receive another tab's newer Document before a
+      // later write/read-back refreshes our retained snapshot. Presentation
+      // attestations must name the copy currently shown by the Inspector.
+      if (
+        validContextGeneration &&
+        (snapshotGeneration === undefined ||
+          contextGeneration >= snapshotGeneration)
+      ) {
+        return contextGeneration;
+      }
+      return snapshotGeneration ?? contextGeneration;
+    },
+    [],
+  );
   presentationContextRef.current = {
     workspaceKey: `${context.storefront.id}:${context.theme.id}`,
     templates: context.templates,
@@ -11751,9 +11779,10 @@ export function VisualEditorShell({
                 : undefined);
           const snapshotKey =
             routeTemplateIdsRef.current.get(templateId) ?? templateId;
-          const draftGeneration =
-            contentSnapshotsRef.current.get(snapshotKey)?.draftGeneration ??
-            template?.draftGeneration;
+          const draftGeneration = acceptedPresentationGeneration(
+            contentSnapshotsRef.current.get(snapshotKey),
+            template,
+          );
           const createdTemplateId =
             routeTemplateIdsRef.current.get(templateId) ?? templateId;
           const documentBasis =
@@ -11778,7 +11807,7 @@ export function VisualEditorShell({
           };
         },
       );
-    }, []);
+    }, [acceptedPresentationGeneration]);
   const isSectionPresentationPageReady = useCallback(() => {
     const frame = previewFrameRecordRef.current;
     if (
@@ -11925,8 +11954,10 @@ export function VisualEditorShell({
               ? layoutTemplate
               : undefined))
         : undefined;
-      const draftGeneration =
-        snapshot?.draftGeneration ?? ownerTemplate?.draftGeneration;
+      const draftGeneration = acceptedPresentationGeneration(
+        snapshot,
+        ownerTemplate,
+      );
       const createdTemplateId = templateId
         ? (routeTemplateIdsRef.current.get(templateId) ?? templateId)
         : null;
@@ -12004,6 +12035,7 @@ export function VisualEditorShell({
     },
     [
       activeTemplate,
+      acceptedPresentationGeneration,
       context.storefront.id,
       context.templates,
       context.theme.id,
@@ -14050,7 +14082,9 @@ export function VisualEditorShell({
       }),
     [sameTemplateOwner],
   );
-  const hasSavedListChange = (target: NonNullable<typeof discardDialogTarget>) =>
+  const hasSavedListChange = (
+    target: NonNullable<typeof discardDialogTarget>,
+  ) =>
     Object.entries(savedListChanges).some(([key, paths]) => {
       const templateId = templateIdOfPendingContentKey(key, target.sectionId);
       return (
@@ -14060,26 +14094,27 @@ export function VisualEditorShell({
       );
     });
 
-  const openListDiscard = useCallback((sectionId: string, fieldPath: string) => {
-    if (discardingRef.current) return;
-    const conflict = Object.entries(listConflictsRef.current).find(
-      ([, entry]) =>
-        entry.sectionId === sectionId && entry.lists.includes(fieldPath),
-    );
-    if (!conflict) return;
-    const [key, entry] = conflict;
-    setDiscardDialogTarget({
-      key,
-      templateId: entry.templateId,
-      sectionId,
-      fieldPath,
-    });
-  }, []);
+  const openListDiscard = useCallback(
+    (sectionId: string, fieldPath: string) => {
+      if (discardingRef.current) return;
+      const conflict = Object.entries(listConflictsRef.current).find(
+        ([, entry]) =>
+          entry.sectionId === sectionId && entry.lists.includes(fieldPath),
+      );
+      if (!conflict) return;
+      const [key, entry] = conflict;
+      setDiscardDialogTarget({
+        key,
+        templateId: entry.templateId,
+        sectionId,
+        fieldPath,
+      });
+    },
+    [],
+  );
 
   const acknowledgeListReset = useCallback((epoch: number) => {
-    setListReset((current) =>
-      current?.epoch === epoch ? null : current,
-    );
+    setListReset((current) => (current?.epoch === epoch ? null : current));
   }, []);
 
   /** Load the latest Document and discard only the confirmed list path. */
@@ -14089,8 +14124,16 @@ export function VisualEditorShell({
     const conflict = listConflictsRef.current[target.key];
     const confirmed = pendingPropsMapRef.current.get(target.key);
     if (!conflict?.lists.includes(target.fieldPath) || !confirmed) return;
-    if (hasUnconfirmedContentForList(target.templateId, target.sectionId, target.fieldPath)) return;
-    const ownerId = routeTemplateIdsRef.current.get(target.templateId) ?? target.templateId;
+    if (
+      hasUnconfirmedContentForList(
+        target.templateId,
+        target.sectionId,
+        target.fieldPath,
+      )
+    )
+      return;
+    const ownerId =
+      routeTemplateIdsRef.current.get(target.templateId) ?? target.templateId;
 
     discardingRef.current = true;
     setDiscarding(true);
@@ -14183,7 +14226,8 @@ export function VisualEditorShell({
       for (const [key, paths] of Object.entries(current)) {
         const templateId = templateIdOfPendingContentKey(key, target.sectionId);
         const kept =
-          templateId !== null && sameTemplateOwner(templateId, target.templateId)
+          templateId !== null &&
+          sameTemplateOwner(templateId, target.templateId)
             ? paths.filter((path) => path !== target.fieldPath)
             : paths;
         if (kept.length > 0) next[key] = kept;
@@ -15715,7 +15759,6 @@ export function VisualEditorShell({
                       </AlertDialogTitle>
                       <AlertDialogDescription>
                         Someone else changed {discardDialogTarget?.fieldPath} in{" "}
-                        {" "}
                         {discardDialogTarget?.sectionId}. This discards only
                         your unsaved changes to this list and loads its latest
                         version. Other fields and lists will stay.
@@ -15729,7 +15772,11 @@ export function VisualEditorShell({
                           discardDialogTarget.sectionId,
                           discardDialogTarget.fieldPath,
                         ) ? (
-                          <> Check and save first; this list has an unconfirmed write.</>
+                          <>
+                            {" "}
+                            Check and save first; this list has an unconfirmed
+                            write.
+                          </>
                         ) : null}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
@@ -15740,11 +15787,11 @@ export function VisualEditorShell({
                           discarding ||
                           Boolean(
                             discardDialogTarget &&
-                              hasUnconfirmedContentForList(
-                                discardDialogTarget.templateId,
-                                discardDialogTarget.sectionId,
-                                discardDialogTarget.fieldPath,
-                              ),
+                            hasUnconfirmedContentForList(
+                              discardDialogTarget.templateId,
+                              discardDialogTarget.sectionId,
+                              discardDialogTarget.fieldPath,
+                            ),
                           )
                         }
                         onClick={(event) => {
@@ -16862,8 +16909,7 @@ export function VisualEditorShell({
             const matchesOwner = (key: string) => {
               const templateId = templateIdOfPendingContentKey(key, sectionId);
               return (
-                templateId !== null &&
-                sameTemplateOwner(templateId, ownerId)
+                templateId !== null && sameTemplateOwner(templateId, ownerId)
               );
             };
             const statuses: Record<string, InspectorListWriteStatus> = {};
@@ -16895,16 +16941,14 @@ export function VisualEditorShell({
                 mark(path, { notSaved: true, conflict: true });
             }
             for (const [key, entry] of pendingPropsMapRef.current) {
-              if (
-                entry.sectionId !== sectionId ||
-                !matchesOwner(key)
-              )
-                continue;
+              if (entry.sectionId !== sectionId || !matchesOwner(key)) continue;
               const serverRefused =
                 Boolean(contentConflicts[key]) ||
                 failedContentKeysRef.current.has(key);
               for (const path of entry.listActionPaths ?? []) {
-                const blockedBeforeSend = Object.entries(entry.fields ?? {}).some(
+                const blockedBeforeSend = Object.entries(
+                  entry.fields ?? {},
+                ).some(
                   ([fieldPath, field]) =>
                     (fieldPath === path || fieldPath.startsWith(`${path}.`)) &&
                     field.rejected,

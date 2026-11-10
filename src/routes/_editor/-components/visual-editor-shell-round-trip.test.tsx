@@ -41,9 +41,7 @@ import {
   identifyUnstoredListRows,
   normalizeDocumentRowIds,
 } from "@/lib/storefront/editor/normalize-row-ids";
-import {
-  RESELECT_CONTENT_MESSAGE,
-} from "@/lib/storefront/editor/pending-content-write";
+import { RESELECT_CONTENT_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
 import {
   resolveSelectable as objposResolveSelectable,
   selectionMetadata as objposSelectionMetadata,
@@ -101,22 +99,83 @@ const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
 /** The frame comes up and names its page, as a live one does. */
-const liveFrame = createLiveFrame({
-  origin: PREVIEW_ORIGIN,
-  session: PREVIEW_SESSION,
-}, {
-  capabilities: ["selection-field-section", "section-presentation-ack-v1"],
-});
+const liveFrame = createLiveFrame(
+  {
+    origin: PREVIEW_ORIGIN,
+    session: PREVIEW_SESSION,
+  },
+  {
+    capabilities: ["selection-field-section", "section-presentation-ack-v1"],
+  },
+);
 const bridgeWithoutPresentationAck = createLiveFrame(
   { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
   { capabilities: ["selection-field-section"] },
 );
 
-const posted: Array<Record<string, unknown>> = [];
+const { posted, latestPostedStyleRevision, postPreviewMessage } = vi.hoisted(
+  () => ({
+    posted: [] as Array<Record<string, unknown>>,
+    latestPostedStyleRevision: { value: 0 },
+    postPreviewMessage: vi.fn(),
+  }),
+);
+
+const recordPreviewMessage = (
+  _target: unknown,
+  message: Record<string, unknown>,
+) => {
+  posted.push(message);
+  if (
+    typeof message.styleRevision === "number" &&
+    Number.isSafeInteger(message.styleRevision)
+  ) {
+    latestPostedStyleRevision.value = Math.max(
+      latestPostedStyleRevision.value,
+      message.styleRevision,
+    );
+  }
+  if (
+    message.type !== "morph:storefront-preview-update-section-props" ||
+    typeof message.presentationToken !== "object" ||
+    message.presentationToken === null
+  ) {
+    return;
+  }
+  const token = message.presentationToken as { operationId?: unknown };
+  const frame = document.querySelector("iframe");
+  if (!frame?.contentWindow || typeof token.operationId !== "string") {
+    return;
+  }
+  // Model the bridge ack after its queued React DOM commit. The document
+  // identity is copied from the active frame, so a stale-document ack is
+  // rejected by the shell just as it is in the live transport.
+  const data = frameEnvelope({
+    type: "morph:storefront-preview-section-presentation-ack",
+    previewSession: PREVIEW_SESSION,
+    operationId: token.operationId,
+    token: message.presentationToken,
+    status: "applied",
+  });
+  queueMicrotask(() => {
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data,
+          origin: PREVIEW_ORIGIN,
+          source: frame.contentWindow,
+        }),
+      ),
+    );
+  });
+};
 
 beforeEach(() => {
   modelCurrentBridge();
   posted.length = 0;
+  latestPostedStyleRevision.value = 0;
+  postPreviewMessage.mockClear();
+  postPreviewMessage.mockImplementation(recordPreviewMessage);
   // Code acceptance and observed query versions are intentionally distinct.
   // No scenario may inherit the previous test's observed source generation.
   useThemeWorkspaceStore.setState({
@@ -153,33 +212,33 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
     EditorAssistantPanel: (props: ComponentProps<typeof RealPanel>) => {
       return (
         <>
-        <RealPanel {...props} />
-        <button
-          type="button"
-          onClick={() =>
-            props.onUpdateThemeFileStyle?.(
-              stylePatchTarget.filePath,
-              stylePatchTarget.elementName,
-              (prevClasses) => `${prevClasses} p-8`,
-            )
-          }
-        >
-          Apply a style patch
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            void props.onPromoteText?.({
-              sectionId: "hero",
-              componentSourcePath: "src/components/Hero.tsx",
-              targetKey: "heading",
-              fieldName: "heading",
-              value: "Welcome",
-            })
-          }
-        >
-          Promote the selected text
-        </button>
+          <RealPanel {...props} />
+          <button
+            type="button"
+            onClick={() =>
+              props.onUpdateThemeFileStyle?.(
+                stylePatchTarget.filePath,
+                stylePatchTarget.elementName,
+                (prevClasses) => `${prevClasses} p-8`,
+              )
+            }
+          >
+            Apply a style patch
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              void props.onPromoteText?.({
+                sectionId: "hero",
+                componentSourcePath: "src/components/Hero.tsx",
+                targetKey: "heading",
+                fieldName: "heading",
+                value: "Welcome",
+              })
+            }
+          >
+            Promote the selected text
+          </button>
         </>
       );
     },
@@ -228,52 +287,12 @@ vi.mock(
 
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  postEditorToPreviewMessage: vi.fn(
-    (_target: unknown, message: Record<string, unknown>) => {
-      posted.push(message);
-      if (
-        message.type !== "morph:storefront-preview-update-section-props" ||
-        typeof message.presentationToken !== "object" ||
-        message.presentationToken === null
-      ) {
-        return;
-      }
-      const token = message.presentationToken as {
-        operationId?: unknown;
-      };
-      const frame = document.querySelector("iframe");
-      if (!frame?.contentWindow || typeof token.operationId !== "string") {
-        return;
-      }
-      // Model the bridge ack after its queued React DOM commit. The document
-      // identity is copied from the active frame, so a stale-document ack is
-      // rejected by the shell just as it is in the live transport.
-      const data = frameEnvelope({
-        type: "morph:storefront-preview-section-presentation-ack",
-        previewSession: PREVIEW_SESSION,
-        operationId: token.operationId,
-        token: message.presentationToken,
-        status: "applied",
-      });
-      queueMicrotask(() => {
-        act(() =>
-          window.dispatchEvent(
-            new MessageEvent("message", {
-              data,
-              origin: PREVIEW_ORIGIN,
-              source: frame.contentWindow,
-            }),
-          ),
-        );
-      });
-    },
-  ),
+  postEditorToPreviewMessage: postPreviewMessage,
 }));
 
 vi.mock("./use-live-preview-message-bridge", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("./use-live-preview-message-bridge")>();
-  const protocol = await import("@/lib/storefront/editor/preview-protocol");
   const { useCallback } = await import("react");
   return {
     ...actual,
@@ -286,7 +305,7 @@ vi.mock("./use-live-preview-message-bridge", async (importOriginal) => {
           target: Parameters<typeof bridge.postMessage>[0],
           message: Parameters<typeof bridge.postMessage>[1],
         ) => {
-          return protocol.postEditorToPreviewMessage(target, message, args[0]);
+          postPreviewMessage(target, message);
         },
         [args[0]],
       );
@@ -413,10 +432,10 @@ function fromPreview(
   const latestStyleRevision = posted.reduce((latest, message) => {
     const revision = message.styleRevision;
     return typeof revision === "number" ? Math.max(latest, revision) : latest;
-  }, 0);
+  }, latestPostedStyleRevision.value);
   const currentReport =
     data.type === "morph:storefront-preview-select-section"
-      ? { ...data, styleRevision: Math.max(latestStyleRevision, 1) }
+      ? { ...data, styleRevision: latestStyleRevision }
       : data;
   const response =
     currentReport.type === "morph:storefront-preview-select-section" &&
@@ -991,8 +1010,7 @@ describe("a content save the document moved under", () => {
         messagesOfType("morph:storefront-preview-update-section-props").some(
           (message) => {
             const token = message.presentationToken as
-              | { documentBasis?: { draftGeneration?: number } }
-              | undefined;
+              { documentBasis?: { draftGeneration?: number } } | undefined;
             return token?.documentBasis?.draftGeneration === 7;
           },
         ),
@@ -1187,11 +1205,15 @@ describe("a list both writers changed", () => {
     expect(await screen.findByText("Not saved")).toBeTruthy();
 
     act(() => {
-      screen.getByRole("button", { name: /discard unsaved changes to items/i }).click();
+      screen
+        .getByRole("button", { name: /discard unsaved changes to items/i })
+        .click();
     });
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog.textContent).toMatch(/Discard changes to .*items/);
-    expect(dialog.textContent).toMatch(/only your unsaved changes to this list/);
+    expect(dialog.textContent).toMatch(
+      /only your unsaved changes to this list/,
+    );
     expect(dialog.textContent).toMatch(/Other fields and lists will stay/);
 
     // Declined, nothing changes: the draft is still there to decide about.
@@ -1210,14 +1232,18 @@ describe("a list both writers changed", () => {
     // discarded, since dropping the draft would leave the author with neither.
     getThemeEditor.mockRejectedValueOnce(new Error("offline"));
     act(() => {
-      screen.getByRole("button", {
-        name: /discard unsaved changes to items/i,
-      }).click();
+      screen
+        .getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        })
+        .click();
     });
     act(() => {
-      screen.getByRole("button", {
-        name: "Discard list changes and load latest",
-      }).click();
+      screen
+        .getByRole("button", {
+          name: "Discard list changes and load latest",
+        })
+        .click();
     });
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(
@@ -1244,14 +1270,18 @@ describe("a list both writers changed", () => {
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     act(() => {
-      screen.getByRole("button", {
-        name: /discard unsaved changes to items/i,
-      }).click();
+      screen
+        .getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        })
+        .click();
     });
     act(() => {
-      screen.getByRole("button", {
-        name: "Discard list changes and load latest",
-      }).click();
+      screen
+        .getByRole("button", {
+          name: "Discard list changes and load latest",
+        })
+        .click();
     });
     await waitFor(() =>
       expect(
@@ -1287,14 +1317,18 @@ describe("a list both writers changed", () => {
     // written: the latest version is what the editor now holds.
     getThemeEditor.mockResolvedValue(remote);
     act(() => {
-      screen.getByRole("button", {
-        name: /discard unsaved changes to items/i,
-      }).click();
+      screen
+        .getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        })
+        .click();
     });
     act(() => {
-      screen.getByRole("button", {
-        name: "Discard list changes and load latest",
-      }).click();
+      screen
+        .getByRole("button", {
+          name: "Discard list changes and load latest",
+        })
+        .click();
     });
     await waitFor(() => expect(saveStatus()).not.toBe("Out of date"));
     expect(
@@ -1336,8 +1370,11 @@ describe("a list both writers changed", () => {
       expect(updateSectionProps).toHaveBeenCalledTimes(beforeAdd + 1),
     );
     expect(
-      (listContext.templates[0]!.document.sections[0]!.props as { items: unknown[] })
-        .items,
+      (
+        listContext.templates[0]!.document.sections[0]!.props as {
+          items: unknown[];
+        }
+      ).items,
     ).toHaveLength(4);
 
     fireEvent.click(screen.getByRole("button", { name: "Other" }));
@@ -1453,9 +1490,11 @@ describe("a list both writers changed", () => {
     await flushFrames();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await flushFrames();
-    const addEntries = () => screen.getAllByRole("button", { name: "Add entry" });
+    const addEntries = () =>
+      screen.getAllByRole("button", { name: "Add entry" });
     expect(addEntries()).toHaveLength(2);
     fireEvent.click(addEntries()[0]!);
+    await flushFrames();
     fireEvent.click(addEntries()[1]!);
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
@@ -1464,7 +1503,9 @@ describe("a list both writers changed", () => {
       success: true,
       data: { draftGeneration: 8, droppedProps: [] },
     } as never);
-    act(() => screen.getByRole("button", { name: "Load latest, keep mine" }).click());
+    act(() =>
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+    );
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(
         expect.stringMatching(/items, related also changed elsewhere/),
@@ -1566,16 +1607,20 @@ describe("a list both writers changed", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await flushFrames();
     act(() =>
-      screen.getByRole("button", {
-        name: /discard unsaved changes to items/i,
-      }).click(),
+      screen
+        .getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        })
+        .click(),
     );
     await screen.findByRole("alertdialog");
     getThemeEditor.mockResolvedValueOnce(remoteOtherChanged);
     act(() =>
-      screen.getByRole("button", {
-        name: "Discard list changes and load latest",
-      }).click(),
+      screen
+        .getByRole("button", {
+          name: "Discard list changes and load latest",
+        })
+        .click(),
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(
@@ -1617,6 +1662,7 @@ describe("bringing the canvas to a selection", () => {
 
     fromPreview({
       type: "morph:storefront-preview-structure",
+      routePath: "/",
       nodes: [heroNode],
     });
     const row = await screen.findByText("h1");
@@ -2647,8 +2693,7 @@ describe("an inline edit of text the Theme changed", () => {
         messagesOfType("morph:storefront-preview-update-section-props").some(
           (message) => {
             const token = message.presentationToken as
-              | { documentBasis?: { draftGeneration?: number } }
-              | undefined;
+              { documentBasis?: { draftGeneration?: number } } | undefined;
             return token?.documentBasis?.draftGeneration === 2;
           },
         ),
@@ -3763,8 +3808,7 @@ function Home() {
         messagesOfType("morph:storefront-preview-update-section-props").some(
           (message) => {
             const token = message.presentationToken as
-              | { documentBasis?: { draftGeneration?: number } }
-              | undefined;
+              { documentBasis?: { draftGeneration?: number } } | undefined;
             return token?.documentBasis?.draftGeneration === 2;
           },
         ),
@@ -4341,8 +4385,7 @@ function Home() {
           messagesOfType("morph:storefront-preview-update-section-props").some(
             (message) => {
               const token = message.presentationToken as
-                | { documentBasis?: { draftGeneration?: number } }
-                | undefined;
+                { documentBasis?: { draftGeneration?: number } } | undefined;
               return token?.documentBasis?.draftGeneration === 2;
             },
           ),
@@ -4369,8 +4412,7 @@ function Home() {
   it("does not write over someone else's change read while the author's edit waits, when the field is typed into again before it leaves", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
-    const { editorContext, receive, field } =
-      await openHeading(fixture);
+    const { editorContext, receive, field } = await openHeading(fixture);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     fireEvent.input(field, { target: { value: "Mine" } });
     fireEvent.blur(field);
@@ -4450,8 +4492,7 @@ function Home() {
   it("keeps an IME composition in the field going when someone else's change is read", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
-    const { editorContext, receive, field } =
-      await openHeading(fixture);
+    const { editorContext, receive, field } = await openHeading(fixture);
     act(() => {
       field.focus();
     });
@@ -8373,14 +8414,14 @@ function Home() {
         const notice = notices();
         readsCarryGeneration = false;
         const { receive } = await openHeading(NO_GENERATION);
-        const field = (await screen.findAllByDisplayValue("Hello"))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         expect(field.disabled).toBe(true);
         expect(
           screen
             .getAllByRole("status")
-            .some((status) =>
-              status.textContent?.includes("Preview syncing"),
-            ),
+            .some((status) => status.textContent?.includes("Preview syncing")),
         ).toBe(true);
         theyWrite({ heading: "Theirs" });
         act(() => {
@@ -8557,7 +8598,9 @@ function Home() {
           { heading: "Hello" },
           NO_GENERATION,
         );
-        const field = (await screen.findAllByDisplayValue("Hello"))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         expect(field.disabled).toBe(true);
         theyWrite({ heading: "Theirs" });
         act(() => {
@@ -8601,9 +8644,7 @@ function Home() {
         expect(
           screen
             .getAllByRole("status")
-            .some((status) =>
-              status.textContent?.includes("Preview syncing"),
-            ),
+            .some((status) => status.textContent?.includes("Preview syncing")),
         ).toBe(true);
         expect(sent(), "no request").toHaveLength(0);
         expect(stored).toEqual({ heading: "Theirs" });
