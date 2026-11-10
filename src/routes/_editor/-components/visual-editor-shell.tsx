@@ -1907,6 +1907,7 @@ export function VisualEditorShell({
         draftGeneration?: number;
         document?: { sections?: readonly SnapshotSection[] } | null;
       }>,
+      firstReadOwnBases?: ReadonlyMap<string, number>,
     ) => {
       for (const template of templates) {
         const sections = template.document?.sections;
@@ -1915,6 +1916,7 @@ export function VisualEditorShell({
           contentSnapshotsRef.current.get(template.id),
           { draftGeneration: template.draftGeneration, sections },
           ownDraftSteps(template.id),
+          firstReadOwnBases?.get(template.id),
         );
         if (next) contentSnapshotsRef.current.set(template.id, next);
       }
@@ -3066,6 +3068,7 @@ export function VisualEditorShell({
         previewVisibilityRef.current.isHidden(sent.sectionId),
       ]),
     );
+    const firstReadOwnBases = new Map<string, number>();
     // An unanswered write found to have landed is our own step, but only
     // when the document is exactly one generation past the one it was sent
     // at: anything more means someone else wrote too, and is theirs.
@@ -3086,9 +3089,18 @@ export function VisualEditorShell({
           sent.expectedDraftGeneration,
           template.draftGeneration,
         );
+        if (!contentSnapshotsRef.current.has(realId)) {
+          const prior = firstReadOwnBases.get(realId);
+          firstReadOwnBases.set(
+            realId,
+            prior === undefined
+              ? sent.expectedDraftGeneration
+              : Math.min(prior, sent.expectedDraftGeneration),
+          );
+        }
       }
     }
-    acceptReadTemplates(fresh.data.templates);
+    acceptReadTemplates(fresh.data.templates, firstReadOwnBases);
     for (const [key, sent] of unconfirmed) {
       const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
       if (!templateId) continue;
