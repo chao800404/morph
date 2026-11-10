@@ -706,11 +706,11 @@ const HISTORY_REPLAY_FILE_CONFLICT_MESSAGE =
   "The file changed while its save was unanswered. Resolve the file conflict before retrying.";
 
 const HISTORY_REPLAY_REFUSAL_MESSAGES = {
-  superseded: "A newer Theme file write replaced this history change. Try again.",
+  superseded:
+    "A newer Theme file write replaced this history change. Try again.",
   "source-conflict":
     "The Theme source changed. Resolve the source conflict before retrying.",
-  "auth-paused":
-    "Theme file saving is paused. Restore access before retrying.",
+  "auth-paused": "Theme file saving is paused. Restore access before retrying.",
 } as const;
 
 /**
@@ -1957,7 +1957,10 @@ export function VisualEditorShell({
    * basis for the direction pressed refuses (`historyStepBasis`).
    */
   const historyStepBasesRef = useRef<
-    Map<number, Readonly<{ direction: "undo" | "redo"; draftGeneration: number }>>
+    Map<
+      number,
+      Readonly<{ direction: "undo" | "redo"; draftGeneration: number }>
+    >
   >(new Map());
   /**
    * Pending keys shown out of date because an unanswered reset or replay was
@@ -1967,7 +1970,11 @@ export function VisualEditorShell({
   const movedResetKeysRef = useRef<Set<string>>(new Set());
   /** Set beside the preview poster, below; read when a reset is confirmed. */
   const previewResetRef = useRef<
-    (sectionId: string, restore: Record<string, unknown>, reset: string[]) => void
+    (
+      sectionId: string,
+      restore: Record<string, unknown>,
+      reset: string[],
+    ) => void
   >(() => {});
   const [unconfirmedContentCount, setUnconfirmedContentCount] = useState(0);
   const syncUnconfirmedContentCount = useCallback(
@@ -2775,93 +2782,94 @@ export function VisualEditorShell({
                 });
               },
               {
-              onResult: (result) => {
-                const answered = sentEntry as PendingContentEntry | undefined;
-                const hiddenBefore = answered
-                  ? previewVisibilityRef.current.isHidden(answered.sectionId)
-                  : undefined;
-                // Answered, either way: nothing is left to find out.
-                if (unconfirmedContentRef.current.delete(key)) {
-                  syncUnconfirmedContentCount();
-                }
-                const data = (
-                  result as {
-                    success: boolean;
-                    data?: {
-                      draftGeneration?: unknown;
-                      document?: { sections?: readonly SnapshotSection[] };
-                    };
+                onResult: (result) => {
+                  const answered = sentEntry as PendingContentEntry | undefined;
+                  const hiddenBefore = answered
+                    ? previewVisibilityRef.current.isHidden(answered.sectionId)
+                    : undefined;
+                  // Answered, either way: nothing is left to find out.
+                  if (unconfirmedContentRef.current.delete(key)) {
+                    syncUnconfirmedContentCount();
                   }
-                ).data;
-                // The document our write produced, with its generation: the
-                // next write composes on it, not on a read from before it.
-                // Accepted here, before the write's pending input is
-                // acknowledged, so this editor's copy is never older than
-                // what it has just stopped holding as pending.
-                if (
-                  result.success &&
-                  typeof data?.draftGeneration === "number" &&
-                  Number.isSafeInteger(data.draftGeneration)
-                ) {
-                  answeredDraftGeneration = data.draftGeneration;
-                }
-                if (result.success && data) {
-                  const next = acceptAnsweredWrite(
-                    contentSnapshotsRef.current.get(sentTemplateId),
-                    {
-                      sentAt: sentDraftGeneration,
-                      draftGeneration: data.draftGeneration,
-                      sections: data.document?.sections,
-                    },
-                    composedOnCreatedDocument
-                      ? { ownStepFrom: ROUTE_DOCUMENT_CREATED_GENERATION }
-                      : undefined,
-                  );
-                  if (next) contentSnapshotsRef.current.set(sentTemplateId, next);
-                }
-                // A visibility this write carried is answered: the preview
-                // is told what the editor holds now, which a newer toggle
-                // still pending decides over this answer.
-                if (answered) {
-                  reconcileAfterRemoval(
-                    answered.sectionId,
-                    answered,
-                    hiddenBefore,
-                  );
-                }
-                return result;
-              },
-              onError: (error: unknown): never => {
-                // Sent, and no answer came back: it may have landed. A
-                // refusal answered for an earlier sign-in is an answer.
-                if (
-                  sentEntry &&
-                  !isEditorWritePaused(error) &&
-                  !isEditorWriteRefusedEarlier(error) &&
-                  (error as { code?: string }).code !==
-                    "SELECTION_SOURCE_CONFLICT"
-                ) {
-                  if (replay) {
-                    // A history run's write: held as sent, frozen, with the
-                    // run it completes, and decided by its own read-back.
-                    unconfirmedContentRef.current.set(
-                      key,
-                      sentContentWrite(sentEntry),
+                  const data = (
+                    result as {
+                      success: boolean;
+                      data?: {
+                        draftGeneration?: unknown;
+                        document?: { sections?: readonly SnapshotSection[] };
+                      };
+                    }
+                  ).data;
+                  // The document our write produced, with its generation: the
+                  // next write composes on it, not on a read from before it.
+                  // Accepted here, before the write's pending input is
+                  // acknowledged, so this editor's copy is never older than
+                  // what it has just stopped holding as pending.
+                  if (
+                    result.success &&
+                    typeof data?.draftGeneration === "number" &&
+                    Number.isSafeInteger(data.draftGeneration)
+                  ) {
+                    answeredDraftGeneration = data.draftGeneration;
+                  }
+                  if (result.success && data) {
+                    const next = acceptAnsweredWrite(
+                      contentSnapshotsRef.current.get(sentTemplateId),
+                      {
+                        sentAt: sentDraftGeneration,
+                        draftGeneration: data.draftGeneration,
+                        sections: data.document?.sections,
+                      },
+                      composedOnCreatedDocument
+                        ? { ownStepFrom: ROUTE_DOCUMENT_CREATED_GENERATION }
+                        : undefined,
                     );
-                    unconfirmedResetLinksRef.current.set(key, replay.link);
-                  } else {
-                    unconfirmedContentRef.current.set(key, sentEntry);
+                    if (next)
+                      contentSnapshotsRef.current.set(sentTemplateId, next);
                   }
-                  syncUnconfirmedContentCount();
-                } else if (replay?.resend && isEditorWritePaused(error)) {
-                  // Paused before it left: still not landed, still the
-                  // author's to send again once writes resume.
-                  unconfirmedContentRef.current.set(key, replay.entry);
-                  unconfirmedResetLinksRef.current.set(key, replay.link);
-                  syncUnconfirmedContentCount();
-                }
-                throw error;
-              },
+                  // A visibility this write carried is answered: the preview
+                  // is told what the editor holds now, which a newer toggle
+                  // still pending decides over this answer.
+                  if (answered) {
+                    reconcileAfterRemoval(
+                      answered.sectionId,
+                      answered,
+                      hiddenBefore,
+                    );
+                  }
+                  return result;
+                },
+                onError: (error: unknown): never => {
+                  // Sent, and no answer came back: it may have landed. A
+                  // refusal answered for an earlier sign-in is an answer.
+                  if (
+                    sentEntry &&
+                    !isEditorWritePaused(error) &&
+                    !isEditorWriteRefusedEarlier(error) &&
+                    (error as { code?: string }).code !==
+                      "SELECTION_SOURCE_CONFLICT"
+                  ) {
+                    if (replay) {
+                      // A history run's write: held as sent, frozen, with the
+                      // run it completes, and decided by its own read-back.
+                      unconfirmedContentRef.current.set(
+                        key,
+                        sentContentWrite(sentEntry),
+                      );
+                      unconfirmedResetLinksRef.current.set(key, replay.link);
+                    } else {
+                      unconfirmedContentRef.current.set(key, sentEntry);
+                    }
+                    syncUnconfirmedContentCount();
+                  } else if (replay?.resend && isEditorWritePaused(error)) {
+                    // Paused before it left: still not landed, still the
+                    // author's to send again once writes resume.
+                    unconfirmedContentRef.current.set(key, replay.entry);
+                    unconfirmedResetLinksRef.current.set(key, replay.link);
+                    syncUnconfirmedContentCount();
+                  }
+                  throw error;
+                },
               },
             ),
           onSaved: recordHistory
@@ -3067,7 +3075,9 @@ export function VisualEditorShell({
       const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
       if (!templateId || sent.expectedDraftGeneration === undefined) continue;
       const realId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
-      const template = fresh.data.templates.find((entry) => entry.id === realId);
+      const template = fresh.data.templates.find(
+        (entry) => entry.id === realId,
+      );
       const section = template?.document.sections.find(
         (entry) => entry.id === sent.sectionId,
       );
@@ -3252,7 +3262,8 @@ export function VisualEditorShell({
       const pending = pendingPropsMapRef.current.get(key);
       // Recorded under the id it was sent by: a route placeholder is read
       // back as the document this session created from it.
-      const documentId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const documentId =
+        routeTemplateIdsRef.current.get(templateId) ?? templateId;
       const template = freshTemplates.find((entry) => entry.id === documentId);
       // Out of date only because an unanswered reset was read back as moved:
       // the latest version is now read, and nothing of the author's is
@@ -3644,28 +3655,31 @@ export function VisualEditorShell({
     },
     [stepCanvasDeferral],
   );
-  const reportInlineEdit = useCallback((editing: boolean, finished = true) => {
-    inlineEditOpenRef.current = editing;
-    setInlineEditOpen(editing);
-    if (editing) {
-      stepCanvasDeferral({ type: "editing", editing: true });
-      return;
-    }
-    // What the edit held goes to the canvas first, in order, before anything
-    // below can replace the frame; an edit that was lost discards it.
-    stepCanvasDeferral(
-      finished ? { type: "editing", editing: false } : { type: "lost" },
-    );
-    // The edit is over: a commit arriving now answers nothing.
-    inlineFinishRequestRef.current = null;
-    for (const ended of inlineEditEndedRef.current) ended(finished);
-    inlineEditEndedRef.current.clear();
-    // A content refresh held back while it was open can be shown now.
-    previewContentSyncRef.current?.editEnded();
-    // So can a frame reload held for the same reason. Any commit of the edit
-    // arrived before this (the page sends it first) and is already pending.
-    previewInstanceWatchRef.current?.editEnded();
-  }, [stepCanvasDeferral]);
+  const reportInlineEdit = useCallback(
+    (editing: boolean, finished = true) => {
+      inlineEditOpenRef.current = editing;
+      setInlineEditOpen(editing);
+      if (editing) {
+        stepCanvasDeferral({ type: "editing", editing: true });
+        return;
+      }
+      // What the edit held goes to the canvas first, in order, before anything
+      // below can replace the frame; an edit that was lost discards it.
+      stepCanvasDeferral(
+        finished ? { type: "editing", editing: false } : { type: "lost" },
+      );
+      // The edit is over: a commit arriving now answers nothing.
+      inlineFinishRequestRef.current = null;
+      for (const ended of inlineEditEndedRef.current) ended(finished);
+      inlineEditEndedRef.current.clear();
+      // A content refresh held back while it was open can be shown now.
+      previewContentSyncRef.current?.editEnded();
+      // So can a frame reload held for the same reason. Any commit of the edit
+      // arrived before this (the page sends it first) and is already pending.
+      previewInstanceWatchRef.current?.editEnded();
+    },
+    [stepCanvasDeferral],
+  );
   // A new preview document has no edit open, whatever the last one said.
   // An edit that was open went with the old one, unfinished: a frame
   // replaced while the author is finishing it must not read as finished.
@@ -5254,8 +5268,21 @@ export function VisualEditorShell({
     serverVersion: number | null;
     sourceGeneration: number;
   };
+  type UnconfirmedStyleHistoryReplay = Readonly<{
+    attempt: EditorHistoryAttempt;
+    writeAttemptId: string;
+    content: string;
+    serverExists: boolean;
+    serverFileId: string | null;
+    serverVersion: number | null;
+    sourceGeneration: number;
+  }>;
   const pausedStyleHistoryRef = useRef(
     new Map<string, PausedStyleHistoryIntent[]>(),
+  );
+  /** A lost Style Undo/Redo answer, linked to the exact history run and file basis. */
+  const unconfirmedStyleHistoryRef = useRef(
+    new Map<string, UnconfirmedStyleHistoryReplay>(),
   );
   const recordPausedStyleHistoryRef = useRef<
     ((intent: PausedStyleHistoryIntent) => void) | null
@@ -5310,9 +5337,9 @@ export function VisualEditorShell({
    * ready again: what it now shows cannot be confirmed, so nothing was taken
    * from it, and the author is asked to reload. Null otherwise.
    */
-  const [olderBridgeReloaded, setOlderBridgeReloaded] = useState<
-    string | null
-  >(null);
+  const [olderBridgeReloaded, setOlderBridgeReloaded] = useState<string | null>(
+    null,
+  );
   useEffect(() => {
     setOlderBridgeReloaded(null);
   }, [previewKey]);
@@ -6415,6 +6442,9 @@ export function VisualEditorShell({
     contentDiff,
   );
 
+  type SavedThemeFile = StorefrontThemeFileDTO & {
+    sourceGeneration?: number | null;
+  };
   const saveThemeFileSequentially = useCallback(
     async (
       filePath: string,
@@ -6436,15 +6466,30 @@ export function VisualEditorShell({
             designElement: DesignElementOperation;
           }
         | { operation: "design-structure" },
+      historyAttempt?: EditorHistoryAttempt,
     ): Promise<
-      | { status: "saved"; file: StorefrontThemeFileDTO }
+      | { status: "saved"; file: SavedThemeFile }
       | { status: "superseded" }
       | { status: "source-conflict" }
       | { status: "auth-paused" }
       | { status: "file-conflict" }
     > => {
+      if (historyAttempt && isEditablePublicTextPath(filePath)) {
+        throw new Error(
+          "Style history replay receipts are only supported for Theme source files.",
+        );
+      }
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
+      const previousReplay = historyAttempt
+        ? unconfirmedStyleHistoryRef.current.get(filePath)
+        : undefined;
+      const writeAttemptId = historyAttempt
+        ? previousReplay?.attempt.entryId === historyAttempt.entryId &&
+          previousReplay.attempt.direction === historyAttempt.direction
+          ? previousReplay.writeAttemptId
+          : crypto.randomUUID()
+        : undefined;
 
       return saveQueueRef.current.enqueue({
         queueKey: themeOpKey,
@@ -6452,7 +6497,7 @@ export function VisualEditorShell({
         revision: targetRevision,
         superseded: () => ({ status: "superseded" }) as const,
         task: async (): Promise<
-          | { status: "saved"; file: StorefrontThemeFileDTO }
+          | { status: "saved"; file: SavedThemeFile }
           | { status: "superseded" }
           | { status: "source-conflict" }
           | { status: "auth-paused" }
@@ -6492,14 +6537,16 @@ export function VisualEditorShell({
             // sent again; see `confirmLostSave`. With no answer this throws,
             // and the file stays as it is.
             if (current.unconfirmedContent !== undefined) {
-              const confirmed: { file?: StorefrontThemeFileDTO } = {};
+              const confirmed: { file?: SavedThemeFile } = {};
+              let styleReplayLanded = false;
               let latestDuringRecovery:
-                | StorefrontThemeFileDTO
-                | null
-                | undefined;
+                StorefrontThemeFileDTO | null | undefined;
               let sourceGenerationDuringRecovery: number | undefined;
+              const styleReplay =
+                unconfirmedStyleHistoryRef.current.get(filePath);
               await confirmLostSave({
                 unconfirmedContent: current.unconfirmedContent,
+                ...(styleReplay ? { isLanded: () => styleReplayLanded } : {}),
                 readLatest: async () => {
                   const latestFile = await getStorefrontThemeFile({
                     data: {
@@ -6549,15 +6596,93 @@ export function VisualEditorShell({
                   const sameFileRead = file
                     ? snapshotFile?.id === file.id &&
                       snapshotFile.version === file.version &&
-                      snapshotFile.content === file.content
+                      snapshotFile.lastWriteAttemptId ===
+                        file.lastWriteAttemptId
                     : snapshotFile === undefined;
                   if (!sameFileRead) {
                     throw new Error(
                       "Theme file changed during save recovery read-back.",
                     );
                   }
-                  sourceGenerationDuringRecovery =
-                    latest.data.sourceGeneration;
+                  sourceGenerationDuringRecovery = latest.data.sourceGeneration;
+                  if (styleReplay) {
+                    const exactLandedVersion = styleReplay.serverExists
+                      ? Boolean(
+                          file &&
+                          file.id === styleReplay.serverFileId &&
+                          styleReplay.serverVersion !== null &&
+                          file.version === styleReplay.serverVersion + 1,
+                        )
+                      : Boolean(file && file.version === 1);
+                    const landed = Boolean(
+                      file &&
+                      file.lastWriteAttemptId === styleReplay.writeAttemptId &&
+                      exactLandedVersion &&
+                      sourceGenerationDuringRecovery ===
+                        styleReplay.sourceGeneration + 1,
+                    );
+                    styleReplayLanded = landed;
+                    const sameFileAtOriginalVersion = styleReplay.serverExists
+                      ? Boolean(
+                          file &&
+                          file.id === styleReplay.serverFileId &&
+                          file.version === styleReplay.serverVersion,
+                        )
+                      : file === null;
+                    const notLanded =
+                      sameFileAtOriginalVersion &&
+                      sourceGenerationDuringRecovery ===
+                        styleReplay.sourceGeneration;
+                    if (!landed && !notLanded) {
+                      const sameFileAtLandedVersion = file
+                        ? styleReplay.serverExists
+                          ? file.id === styleReplay.serverFileId &&
+                            styleReplay.serverVersion !== null &&
+                            file.version === styleReplay.serverVersion + 1 &&
+                            file.lastWriteAttemptId ===
+                              styleReplay.writeAttemptId
+                          : file.version === 1 &&
+                            file.lastWriteAttemptId ===
+                              styleReplay.writeAttemptId
+                        : false;
+                      if (
+                        (sameFileAtOriginalVersion ||
+                          sameFileAtLandedVersion) &&
+                        sourceGenerationDuringRecovery !==
+                          styleReplay.sourceGeneration
+                      ) {
+                        useThemeWorkspaceStore
+                          .getState()
+                          .markSourceConflict(filePath, workspaceScope);
+                      } else {
+                        markWorkspaceConflict(
+                          filePath,
+                          file
+                            ? {
+                                kind: current.serverExists
+                                  ? "modified"
+                                  : "created",
+                                remoteExists: true,
+                                remoteFileId: file.id,
+                                remoteVersion: file.version,
+                                remoteContent: file.content,
+                              }
+                            : {
+                                kind: "deleted",
+                                remoteExists: false,
+                                remoteFileId: null,
+                                remoteVersion: null,
+                                remoteContent: null,
+                              },
+                          workspaceScope,
+                        );
+                      }
+                      unconfirmedStyleHistoryRef.current.delete(filePath);
+                      throw new Error(
+                        "The Theme file or source changed during Style history recovery. The original replay was not sent again.",
+                      );
+                    }
+                  }
                   latestDuringRecovery = file;
                   return latestDuringRecovery;
                 },
@@ -6570,10 +6695,35 @@ export function VisualEditorShell({
                   );
                 },
               });
+              if (styleReplay && confirmed.file) {
+                if (
+                  styleReplay.content !== contentToSave ||
+                  confirmed.file.lastWriteAttemptId !==
+                    styleReplay.writeAttemptId
+                ) {
+                  throw new Error(
+                    "The Style history replay receipt did not match the original write.",
+                  );
+                }
+                pendingDesignWritesRef.current.landed(filePath, targetRevision);
+                return {
+                  status: "saved",
+                  file: {
+                    ...confirmed.file,
+                    sourceGeneration: sourceGenerationDuringRecovery,
+                  },
+                };
+              }
               // What would be sent is what the server already holds.
               if (confirmed.file?.content === contentToSave) {
                 pendingDesignWritesRef.current.landed(filePath, targetRevision);
-                return { status: "saved", file: confirmed.file };
+                return {
+                  status: "saved",
+                  file: {
+                    ...confirmed.file,
+                    sourceGeneration: sourceGenerationDuringRecovery,
+                  },
+                };
               }
               if (!confirmed.file && latestDuringRecovery !== undefined) {
                 const latest = latestDuringRecovery;
@@ -6581,7 +6731,7 @@ export function VisualEditorShell({
                   ? current.serverExists === true &&
                     current.serverFileId === latest.id &&
                     current.serverVersion === latest.version &&
-                    current.serverContent === latest.content
+                    (styleReplay || current.serverContent === latest.content)
                   : current.serverExists !== true;
                 const acceptedGeneration = useThemeWorkspaceStore
                   .getState()
@@ -6608,9 +6758,7 @@ export function VisualEditorShell({
                   );
                   return { status: "file-conflict" };
                 }
-                if (
-                  sourceGenerationDuringRecovery !== acceptedGeneration
-                ) {
+                if (sourceGenerationDuringRecovery !== acceptedGeneration) {
                   useThemeWorkspaceStore
                     .getState()
                     .markSourceConflict(filePath, workspaceScope);
@@ -6623,7 +6771,7 @@ export function VisualEditorShell({
                     sourceGenerationDuringRecovery,
                   );
                 }
-                if (latest?.content === contentToSave) {
+                if (!styleReplay && latest?.content === contentToSave) {
                   pendingDesignWritesRef.current.landed(
                     filePath,
                     targetRevision,
@@ -6667,6 +6815,7 @@ export function VisualEditorShell({
                         content: contentToSave,
                         ...themeFileWritePrecondition(current),
                         expectedSourceGeneration: acceptedGeneration,
+                        ...(writeAttemptId ? { writeAttemptId } : {}),
                         ...(operationSave ?? {}),
                       },
                     }),
@@ -6691,6 +6840,17 @@ export function VisualEditorShell({
                 useThemeWorkspaceStore
                   .getState()
                   .markUnconfirmed(filePath, contentToSave, workspaceScope);
+                if (historyAttempt) {
+                  unconfirmedStyleHistoryRef.current.set(filePath, {
+                    attempt: historyAttempt,
+                    content: contentToSave,
+                    serverExists: current.serverExists,
+                    serverFileId: current.serverFileId,
+                    serverVersion: current.serverVersion,
+                    writeAttemptId: writeAttemptId!,
+                    sourceGeneration: acceptedGeneration,
+                  });
+                }
                 throw new UnconfirmedThemeFileWriteError(error);
               }
               // Not sent, or refused for who is asking: the edit stays in the
@@ -6888,6 +7048,7 @@ export function VisualEditorShell({
           codeDefault?: CodeDefaultWriteProof;
           designElement?: DesignElementOperation;
           historyReplay?: boolean;
+          historyAttempt?: EditorHistoryAttempt;
           structureEdit?: boolean;
         },
       ) => Promise<unknown>)
@@ -6935,6 +7096,8 @@ export function VisualEditorShell({
          * is the author's and is kept.)
          */
         historyReplay?: boolean;
+        /** The exact Style history run whose unknown write is being sent. */
+        historyAttempt?: EditorHistoryAttempt;
       },
     ) => {
       // What this write is. Named by the caller, or else the pending Design
@@ -6976,9 +7139,10 @@ export function VisualEditorShell({
       const priorLocal =
         useThemeWorkspaceStore
           .getState()
-          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
-          filePath
-        ]?.localContent ??
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath]?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content ??
         null;
       const before = options?.fromHistory ? null : priorLocal;
@@ -7074,6 +7238,7 @@ export function VisualEditorShell({
               : origin?.kind === "structure-edit"
                 ? { operation: "design-structure" }
                 : undefined,
+          options?.historyAttempt,
         );
       } catch (error) {
         // A Design element edit the server refused is taken back, in the
@@ -7239,7 +7404,10 @@ export function VisualEditorShell({
 
   const recordPausedStyleHistory = useCallback(
     (intent: PausedStyleHistoryIntent) => {
-      const replayStyle = async (content: string) => {
+      const replayStyle = async (
+        content: string,
+        attempt: EditorHistoryAttempt,
+      ) => {
         const files = useThemeWorkspaceStore
           .getState()
           .getWorkspaceFiles(
@@ -7249,6 +7417,16 @@ export function VisualEditorShell({
         const hasOnlyThisUnconfirmedFile =
           files[intent.path]?.unconfirmedContent !== undefined &&
           unconfirmedPaths(files).every((path) => path === intent.path);
+        const previous = unconfirmedStyleHistoryRef.current.get(intent.path);
+        if (
+          previous?.attempt.entryId === attempt.entryId &&
+          previous.attempt.direction === attempt.direction
+        ) {
+          unconfirmedStyleHistoryRef.current.set(intent.path, {
+            ...previous,
+            attempt,
+          });
+        }
         const save = handleUnifiedSaveFileRef.current;
         if (!save) throw new Error("Theme file history is not ready.");
         const saved = await save(intent.path, content, {
@@ -7256,9 +7434,14 @@ export function VisualEditorShell({
           historyReplay: true,
           renderDocument: true,
           confirmed: hasOnlyThisUnconfirmedFile,
+          historyAttempt: attempt,
         });
         if (saved === null || saved === undefined) {
           throw new Error("The Style change was not saved.");
+        }
+        const pending = unconfirmedStyleHistoryRef.current.get(intent.path);
+        if (pending?.attempt.attemptId === attempt.attemptId) {
+          unconfirmedStyleHistoryRef.current.delete(intent.path);
         }
         return saved;
       };
@@ -7266,13 +7449,13 @@ export function VisualEditorShell({
       history.record({
         label: intent.label,
         scope: themeFileHistoryScope(intent.path),
-        undo: () => {
+        undo: (attempt) => {
           resetPreviewSelectionStyle();
-          return replayStyle(intent.before);
+          return replayStyle(intent.before, attempt);
         },
-        redo: () => {
+        redo: (attempt) => {
           resetPreviewSelectionStyle();
-          return replayStyle(intent.after);
+          return replayStyle(intent.after, attempt);
         },
       });
     },
@@ -7288,7 +7471,7 @@ export function VisualEditorShell({
         pausedStyleHistoryRef.current.delete(filePath);
         return;
       }
-      const saved = result as Partial<StorefrontThemeFileDTO>;
+      const saved = result as Partial<SavedThemeFile>;
       const first = pending[0];
       const last = pending[pending.length - 1];
       const sameBaseline = pending.every(
@@ -7326,6 +7509,79 @@ export function VisualEditorShell({
       pausedStyleHistoryRef.current.delete(filePath);
     },
     [workspaceScope],
+  );
+
+  const settleUnconfirmedStyleHistoryReplay = useCallback(
+    (filePath: string, result: unknown) => {
+      const pending = unconfirmedStyleHistoryRef.current.get(filePath);
+      if (!pending) return;
+      if (result === null || typeof result !== "object") {
+        const current = useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath];
+        if (current?.unconfirmedContent === undefined) {
+          unconfirmedStyleHistoryRef.current.delete(filePath);
+        }
+        return;
+      }
+      const saved = result as Partial<SavedThemeFile>;
+      const landed = Boolean(
+        saved.path === filePath &&
+        saved.lastWriteAttemptId === pending.writeAttemptId &&
+        typeof saved.sourceGeneration === "number" &&
+        saved.sourceGeneration === pending.sourceGeneration + 1 &&
+        (pending.serverExists
+          ? saved.id === pending.serverFileId &&
+            pending.serverVersion !== null &&
+            saved.version === pending.serverVersion + 1
+          : typeof saved.id === "string" && saved.version === 1),
+      );
+      unconfirmedStyleHistoryRef.current.delete(filePath);
+      if (!landed) {
+        if (
+          pending.serverExists &&
+          saved.id === pending.serverFileId &&
+          saved.version === (pending.serverVersion ?? -1)
+        ) {
+          useThemeWorkspaceStore
+            .getState()
+            .markSourceConflict(filePath, workspaceScope);
+        } else {
+          markWorkspaceConflict(
+            filePath,
+            saved.id && typeof saved.version === "number"
+              ? {
+                  kind: pending.serverExists ? "modified" : "created",
+                  remoteExists: true,
+                  remoteFileId: saved.id,
+                  remoteVersion: saved.version,
+                  remoteContent: saved.content ?? "",
+                }
+              : {
+                  kind: "deleted",
+                  remoteExists: false,
+                  remoteFileId: null,
+                  remoteVersion: null,
+                  remoteContent: null,
+                },
+            workspaceScope,
+          );
+        }
+        toast.error(
+          "The Theme file or source changed while confirming Style history. The history step was not completed.",
+        );
+        return;
+      }
+      history.confirm(
+        pending.attempt.entryId,
+        pending.attempt.direction,
+        pending.attempt.attemptId,
+      );
+    },
+    [history, markWorkspaceConflict, workspaceScope],
   );
 
   const handleRepairThemeLinkBinding = useCallback(
@@ -8911,6 +9167,7 @@ export function VisualEditorShell({
             ...pendingDesignSaveOptions(path, content),
           });
           settlePausedStyleHistoryWrite(path, content, saved);
+          settleUnconfirmedStyleHistoryReplay(path, saved);
         } catch (error) {
           const remainsUnconfirmed =
             readFiles()[path]?.unconfirmedContent !== undefined;
@@ -8919,6 +9176,7 @@ export function VisualEditorShell({
             !remainsUnconfirmed
           ) {
             pausedStyleHistoryRef.current.delete(path);
+            unconfirmedStyleHistoryRef.current.delete(path);
           }
           throw error;
         }
@@ -8939,6 +9197,7 @@ export function VisualEditorShell({
     pendingDesignWritesToLeave,
     retryFailedContent,
     settlePausedStyleHistoryWrite,
+    settleUnconfirmedStyleHistoryReplay,
     workspaceScope,
   ]);
 
@@ -9593,12 +9852,17 @@ export function VisualEditorShell({
           serverFileId:
             styleWorkspaceFile?.serverFileId ?? styleServerFile?.id ?? null,
           serverVersion:
-            styleWorkspaceFile?.serverVersion ?? styleServerFile?.version ?? null,
+            styleWorkspaceFile?.serverVersion ??
+            styleServerFile?.version ??
+            null,
           sourceGeneration: useThemeWorkspaceStore
             .getState()
             .getAcceptedSourceGeneration(workspaceScope),
         };
-        const replayStyle = (content: string) => {
+        const replayStyle = async (
+          content: string,
+          attempt: EditorHistoryAttempt,
+        ) => {
           const files = useThemeWorkspaceStore
             .getState()
             .getWorkspaceFiles(
@@ -9608,14 +9872,33 @@ export function VisualEditorShell({
           const hasOnlyThisUnconfirmedFile =
             files[stylePath]?.unconfirmedContent !== undefined &&
             unconfirmedPaths(files).every((path) => path === stylePath);
-          return handleUnifiedSaveFile(stylePath, content, {
+          const previous = unconfirmedStyleHistoryRef.current.get(stylePath);
+          if (
+            previous?.attempt.entryId === attempt.entryId &&
+            previous.attempt.direction === attempt.direction
+          ) {
+            unconfirmedStyleHistoryRef.current.set(stylePath, {
+              ...previous,
+              attempt,
+            });
+          }
+          const saved = await handleUnifiedSaveFile(stylePath, content, {
             fromHistory: true,
             historyReplay: true,
             renderDocument: true,
             // A person pressing this file's Style Undo/Redo explicitly resumes
             // its unanswered write. Other files remain behind the normal hold.
             confirmed: hasOnlyThisUnconfirmedFile,
+            historyAttempt: attempt,
           });
+          if (saved === null || saved === undefined) {
+            throw new Error("The Style change was not saved.");
+          }
+          const pending = unconfirmedStyleHistoryRef.current.get(stylePath);
+          if (pending?.attempt.attemptId === attempt.attemptId) {
+            unconfirmedStyleHistoryRef.current.delete(stylePath);
+          }
+          return saved;
         };
         scheduleDeferredWrite({
           writes: pendingSaveWritesRef.current,
@@ -9625,13 +9908,13 @@ export function VisualEditorShell({
             history.record({
               label: `Style · ${elementName}`,
               scope: themeFileHistoryScope(stylePath),
-              undo: () => {
+              undo: (attempt) => {
                 resetPreviewSelectionStyle();
-                return replayStyle(styleBefore);
+                return replayStyle(styleBefore, attempt);
               },
-              redo: () => {
+              redo: (attempt) => {
                 resetPreviewSelectionStyle();
-                return replayStyle(styleAfter);
+                return replayStyle(styleAfter, attempt);
               },
             }),
           discard: (id) => history.discard(id),
@@ -10546,7 +10829,11 @@ export function VisualEditorShell({
           themeFiles: effectiveThemeFilesRef.current,
         });
         if (target) {
-          handleJumpToCodeRef.current(target.filePath, target.line, target.column);
+          handleJumpToCodeRef.current(
+            target.filePath,
+            target.line,
+            target.column,
+          );
         } else {
           toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
             id: "source-location-stale",
@@ -11609,7 +11896,10 @@ export function VisualEditorShell({
    * (`supersedeAwaitingSignedPost`); nothing else reads it.
    */
   const awaitingSignedPostRef = useRef(
-    new Map<string, Readonly<{ revision: number; stillCurrent?: () => boolean }>>(),
+    new Map<
+      string,
+      Readonly<{ revision: number; stillCurrent?: () => boolean }>
+    >(),
   );
   const postPreviewSectionProps = useCallback(
     (
@@ -12246,7 +12536,11 @@ export function VisualEditorShell({
       // route had a document at all (decided when the document is known).
       const madeBeforeDocument =
         routePathFromTemplatePlaceholder(templateId) !== null;
-      if (authorPress && basisDraftGeneration === undefined && !madeBeforeDocument) {
+      if (
+        authorPress &&
+        basisDraftGeneration === undefined &&
+        !madeBeforeDocument
+      ) {
         toast.error(MISSING_BASIS_MESSAGE, { id: "content-missing-basis" });
         return { success: false, message: MISSING_BASIS_MESSAGE };
       }
@@ -12417,8 +12711,7 @@ export function VisualEditorShell({
               sentEntry &&
               !isEditorWritePaused(error) &&
               !isEditorWriteRefusedEarlier(error) &&
-              (error as { code?: string }).code !==
-                "SELECTION_SOURCE_CONFLICT"
+              (error as { code?: string }).code !== "SELECTION_SOURCE_CONFLICT"
             ) {
               unconfirmedContentRef.current.set(key, sentEntry);
               if (link) unconfirmedResetLinksRef.current.set(key, link);
@@ -12841,8 +13134,9 @@ export function VisualEditorShell({
     pendingProps: (sectionId) => {
       if (!activeTemplate) return undefined;
       const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
-      return pendingPropsMapRef.current.get(contentKeyFor(templateId, sectionId))
-        ?.props;
+      return pendingPropsMapRef.current.get(
+        contentKeyFor(templateId, sectionId),
+      )?.props;
     },
   };
   useEffect(() => {
@@ -12912,9 +13206,12 @@ export function VisualEditorShell({
       // the copy from before that write. The snapshot is read only when it
       // is strictly newer (`newestAcceptedCopy`), so a later read of someone
       // else's change still refuses.
-      const ownerId = routeTemplateIdsRef.current.get(
-        templateIdForSection(message.sectionId) ?? activeTemplate.id,
-      ) ?? templateIdForSection(message.sectionId) ?? activeTemplate.id;
+      const ownerId =
+        routeTemplateIdsRef.current.get(
+          templateIdForSection(message.sectionId) ?? activeTemplate.id,
+        ) ??
+        templateIdForSection(message.sectionId) ??
+        activeTemplate.id;
       const newest = newestAcceptedCopy({
         templateId: ownerId,
         snapshots: contentSnapshotsRef.current,
@@ -13461,7 +13758,6 @@ export function VisualEditorShell({
     ],
   );
 
-
   /**
    * Stores the author's own name for one section placement.
    *
@@ -13729,7 +14025,10 @@ export function VisualEditorShell({
 
   const handleSwapPreviewSections = useCallback(
     async (draggedSectionId: string, targetSectionId: string) => {
-      if (isPageStandInId(draggedSectionId) || isPageStandInId(targetSectionId)) {
+      if (
+        isPageStandInId(draggedSectionId) ||
+        isPageStandInId(targetSectionId)
+      ) {
         return;
       }
       // This page's own sections in the order it shows them, slots its source
@@ -15438,7 +15737,9 @@ export function VisualEditorShell({
             reviewRequest={starterReviewRequest}
             storefrontId={workspaceScope.storefrontId}
             themeId={workspaceScope.themeId}
-            unsavedCount={unsavedWorkspaceFileCount + pendingSourceConflicts.length}
+            unsavedCount={
+              unsavedWorkspaceFileCount + pendingSourceConflicts.length
+            }
             onApplied={async () => {
               await Promise.all([
                 queryClient.invalidateQueries({
