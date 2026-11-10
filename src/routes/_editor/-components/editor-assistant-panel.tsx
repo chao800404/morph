@@ -49,6 +49,8 @@ type EditorAssistantPanelProps = {
    * makes it read the section afresh instead of sending that copy again.
    */
   contentResetEpoch?: number;
+  /** Current page-wide iframe apply barrier for Document writes. */
+  documentPresentationReady?: boolean;
   /**
    * Which document the Inspector's inputs hold content of, for keying them:
    * the active template's id unless the shell says the page's document is
@@ -277,6 +279,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onJumpToCode,
   onTabChange,
   contentResetEpoch = 0,
+  documentPresentationReady = true,
   inspectorDocumentKey,
   selectionSourceCurrent = false,
 }: EditorAssistantPanelProps) {
@@ -566,6 +569,15 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           hidden={!isInspectorTab}
           aria-hidden={!isInspectorTab}
         >
+          {tab === "content" && !documentPresentationReady ? (
+            <p
+              role="status"
+              className="mx-3 mt-3 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+            >
+              Preview syncing. Content writes are paused until every section
+              confirms its current preview was applied.
+            </p>
+          ) : null}
           {inspectorSection && !(contentRefused && tab === "content") ? (
             <InspectorCodeDefaultContext.Provider
               value={
@@ -580,6 +592,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 resourceKey={`${context.storefront.id}:${context.theme.id}:${inspectorDocumentKey ?? activeTemplate?.id ?? ""}:${contentStore}:${contentResetEpoch}`}
                 rowIdTemplateId={activeTemplate?.id}
                 view={tab === "content" ? "content" : "styles"}
+                disabled={tab === "content" && !documentPresentationReady}
                 section={inspectorSection}
                 contentStore={contentStore}
                 sourceDefaultRefusal={

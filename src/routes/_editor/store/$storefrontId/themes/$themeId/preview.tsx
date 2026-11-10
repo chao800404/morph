@@ -9,7 +9,10 @@ import {
 } from "../../../../-components/editor-template";
 
 /** A page with no document of its own yet: its route's slots, no values. */
-const EMPTY_PAGE_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
+const EMPTY_PAGE_DOCUMENT: StorefrontPageDocument = {
+  version: 1,
+  sections: [],
+};
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   deriveThemeLayoutSections,
@@ -22,7 +25,6 @@ import { LoaderCircle } from "lucide-react";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -53,13 +55,13 @@ import {
   selectionStylePreviewNeedsOverlayUpdate,
 } from "@/lib/storefront/editor/selection-style-preview";
 import {
-  applyPreviewSectionProps,
   parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
-  type PreviewSectionProps,
   type PreviewSelectionRestoreTarget,
 } from "@/lib/storefront/editor/preview-protocol";
 import { CLIENT_ONLY_PREVIEW_CAPABILITIES } from "@/lib/storefront/editor/preview-capabilities";
+import { usePreviewDocument } from "@/lib/storefront/editor/use-preview-document";
+export { usePreviewDocument };
 import {
   isCompatibleReorderTarget,
   reorderCommitFor,
@@ -497,78 +499,6 @@ function usePreviewThemeFiles(storefrontId: string, themeId: string) {
     styleRevision,
     acknowledgeStyleRevision,
   };
-}
-
-function usePreviewDocument(document: StorefrontPageDocument | undefined) {
-  const [previewDocument, setPreviewDocument] = useState(document);
-
-  useLayoutEffect(() => {
-    setPreviewDocument(document);
-  }, [document]);
-
-  useEffect(() => {
-    const handlePreviewMessages = (event: MessageEvent<unknown>) => {
-      const message = parseEditorToPreviewWindowEvent(event);
-      if (!message) return;
-
-      if (
-        message.type === "morph:storefront-preview-set-section-order" &&
-        Array.isArray(message.sectionIds) &&
-        message.sectionIds.every((id) => typeof id === "string")
-      ) {
-        const sectionIds = message.sectionIds as string[];
-        setPreviewDocument((current) => {
-          if (!current || sectionIds.length !== current.sections.length) {
-            return current;
-          }
-
-          const sectionsById = new Map(
-            current.sections.map((section) => [section.id, section]),
-          );
-          const reorderedSections = sectionIds.flatMap((sectionId) => {
-            const section = sectionsById.get(sectionId);
-            return section ? [section] : [];
-          });
-          if (reorderedSections.length !== current.sections.length) {
-            return current;
-          }
-
-          return { ...current, sections: reorderedSections };
-        });
-      }
-
-      if (
-        message.type === "morph:storefront-preview-update-section-props" &&
-        typeof message.sectionId === "string"
-      ) {
-        const { sectionId, props, enabled, resetKeys } = message;
-
-        setPreviewDocument((current) => {
-          if (!current) return current;
-          const applied = applyPreviewSectionProps(current, {
-            sectionId,
-            props: props as PreviewSectionProps | undefined,
-            enabled: typeof enabled === "boolean" ? enabled : undefined,
-            resetKeys,
-          });
-          if (!applied.matched) {
-            // The editor and the preview disagree about what is on this page.
-            // Saying so is the difference between a bug that is found and one
-            // that presents as "the canvas just does not update".
-            console.warn(
-              `[morph] Live content update for section "${sectionId}" was dropped: the previewed page has no such section.`,
-            );
-          }
-          return applied.document;
-        });
-      }
-    };
-
-    window.addEventListener("message", handlePreviewMessages);
-    return () => window.removeEventListener("message", handlePreviewMessages);
-  }, []);
-
-  return previewDocument;
 }
 
 /** Exported for its tests (`preview-route-selection-field.test.tsx`). */

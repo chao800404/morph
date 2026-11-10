@@ -157,6 +157,7 @@ export type EditorSectionsPanelProps = {
     sectionIds: string[],
   ) => Promise<SectionReorderResult | void>;
   onToggleSectionEnabled?: (sectionId: string, enabled: boolean) => void;
+  documentPresentationReady?: boolean;
   editableNodes?: readonly PreviewEditableNode[];
   activeSelection?: EditorSelectionDescriptor | null;
   onSelectEditableNode?: (target: PreviewSelectionRestoreTarget) => void;
@@ -359,6 +360,7 @@ function SortableSectionRow({
   onRequestDelete,
   onRequestRename,
   deleteDisabled,
+  toggleDisabled = false,
   rootNode,
   rootNodeSelected,
   missingComponentPath,
@@ -381,6 +383,7 @@ function SortableSectionRow({
   /** Absent while the editor has no writable template to store the name in. */
   onRequestRename?: () => void;
   deleteDisabled?: boolean;
+  toggleDisabled?: boolean;
   /**
    * The real DOM root represented by this row, when there is one.
    *
@@ -484,9 +487,11 @@ function SortableSectionRow({
               <SidebarMenuAction
                 type="button"
                 showOnHover
+                disabled={toggleDisabled}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
+                  if (toggleDisabled) return;
                   onToggleEnabled();
                 }}
                 className={cn(
@@ -850,6 +855,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onSaveStateChange,
   onReorderSections,
   onToggleSectionEnabled,
+  documentPresentationReady = true,
   editableNodes,
   activeSelection,
   onSelectEditableNode,
@@ -1410,6 +1416,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
             <Layers3 className="size-4 text-muted-foreground" />
             <h2 className="text-sm font-medium">Pages &amp; Sections</h2>
           </SidebarHeader>
+          {!documentPresentationReady ? (
+            <div
+              role="status"
+              className="border-b px-3 py-2 text-xs text-muted-foreground"
+            >
+              Preview syncing. Content writes are paused.
+            </div>
+          ) : null}
 
           {themeRoutes.length > 0 ? (
             <EditorPagesSearch
@@ -1763,7 +1777,11 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                                 activeSelection,
                               ),
                             )}
-                            disabled={reorderMutation.isPending}
+                            disabled={
+                              reorderMutation.isPending ||
+                              !documentPresentationReady
+                            }
+                            toggleDisabled={!documentPresentationReady}
                             expanded={expanded}
                             hasChildren={normalized.hasChildren}
                             onSelect={() =>

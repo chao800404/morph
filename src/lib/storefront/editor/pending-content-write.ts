@@ -3,6 +3,7 @@ import {
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
 } from "../theme-write-errors";
+import type { SectionPresentationProof } from "./preview-protocol";
 import {
   basisWithinOwnRange,
   rowIdentitiesAt,
@@ -31,6 +32,10 @@ export type PendingFieldEdit = Readonly<{
 export type PendingContentEntry = {
   sectionId: string;
   props: Record<string, unknown>;
+  /** A preview race kept this author input local; only an explicit save may retry it. */
+  presentationBlocked?: boolean;
+  /** The committed preview projection this input was made on. */
+  presentationProof?: SectionPresentationProof;
   /** The route the edit was made on; absent for the layout. */
   routePath?: string;
   /** Captured with the edit, never replaced by a later workspace refetch. */

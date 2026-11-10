@@ -164,7 +164,77 @@ function latestRouteRequest() {
  */
 export const LIVE_FRAME_CAPABILITIES: readonly string[] = [
   "selection-field-section",
+  "section-presentation-ack-v1",
 ];
+
+const presentationAckBridges = new WeakSet<Window>();
+
+/**
+ * A current Theme bridge reports its DOM commit after the editor posts a
+ * section presentation. The editor's mocked transport records that post;
+ * this adapter answers it on the next microtask as the frame would after its
+ * React layout commit.
+ */
+function modelPresentationAcks(
+  frame: Window,
+  address: PreviewFrameAddress,
+) {
+  if (presentationAckBridges.has(frame)) return;
+  presentationAckBridges.add(frame);
+
+  const poster = vi.mocked(postEditorToPreviewMessage);
+  const original = poster.getMockImplementation();
+  const wrapper = (
+    target: Parameters<typeof postEditorToPreviewMessage>[0],
+    message: Parameters<typeof postEditorToPreviewMessage>[1],
+    channel: Parameters<typeof postEditorToPreviewMessage>[2],
+  ) => {
+    original?.(target, message, channel);
+    const posted = message as {
+      type?: unknown;
+      presentationToken?: {
+        operationId?: unknown;
+      };
+    };
+    const token = posted.presentationToken;
+    if (
+      target !== frame ||
+      posted.type !== "morph:storefront-preview-update-section-props" ||
+      !token ||
+      typeof token.operationId !== "string"
+    ) {
+      return;
+    }
+
+    const documentAtPost = bridgeOf(frame)?.active;
+    queueMicrotask(() => {
+      act(() =>
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: {
+              type: "morph:storefront-preview-section-presentation-ack",
+              operationId: token.operationId,
+              token,
+              status: "applied",
+              previewSession: address.session,
+              ...(documentAtPost
+                ? { previewDocument: documentAtPost }
+                : {}),
+            },
+            origin: address.origin,
+            source: frame,
+          }),
+        ),
+      );
+    });
+  };
+  poster.mockImplementation(wrapper);
+  onTestFinished(() => {
+    if (poster.getMockImplementation() !== wrapper) return;
+    poster.mockImplementation(original ?? (() => undefined));
+    presentationAckBridges.delete(frame);
+  });
+}
 
 /** The frame says it is ready, naming what it can do. */
 export function sendFrameReady(
@@ -231,7 +301,12 @@ export function createLiveFrame(
     ready() {
       const frame = frameWindow();
       if (frame) up.add(frame);
-      sendFrameReady(address, options.capabilities ?? LIVE_FRAME_CAPABILITIES);
+      const capabilities = options.capabilities ?? LIVE_FRAME_CAPABILITIES;
+      if (capabilities.includes("section-presentation-ack-v1")) {
+        modelCurrentBridge();
+        if (frame) modelPresentationAcks(frame, address);
+      }
+      sendFrameReady(address, capabilities);
       send(address, {
         type: "morph:storefront-preview-structure",
         nodes: [],

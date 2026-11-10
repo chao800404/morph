@@ -42,7 +42,6 @@ import {
   normalizeDocumentRowIds,
 } from "@/lib/storefront/editor/normalize-row-ids";
 import {
-  MISSING_BASIS_MESSAGE,
   RESELECT_CONTENT_MESSAGE,
 } from "@/lib/storefront/editor/pending-content-write";
 import {
@@ -269,6 +268,31 @@ vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ),
 }));
 
+vi.mock("./use-live-preview-message-bridge", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./use-live-preview-message-bridge")>();
+  const protocol = await import("@/lib/storefront/editor/preview-protocol");
+  const { useCallback } = await import("react");
+  return {
+    ...actual,
+    useLivePreviewMessageBridge: (
+      ...args: Parameters<typeof actual.useLivePreviewMessageBridge>
+    ) => {
+      const bridge = actual.useLivePreviewMessageBridge(...args);
+      const postMessage = useCallback(
+        (
+          target: Parameters<typeof bridge.postMessage>[0],
+          message: Parameters<typeof bridge.postMessage>[1],
+        ) => {
+          return protocol.postEditorToPreviewMessage(target, message, args[0]);
+        },
+        [args[0]],
+      );
+      return { ...bridge, postMessage };
+    },
+  };
+});
+
 // The shell's breadcrumb uses `Link`. A real router would make this a test
 // about routing.
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -352,13 +376,17 @@ function readyQueryClient() {
   return client;
 }
 
-function renderShell(client = readyQueryClient(), frame = liveFrame) {
+function renderShell(
+  client = readyQueryClient(),
+  frame = liveFrame,
+  onSearchChange = vi.fn(),
+) {
   const rendered = render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={context}
         search={baseSearch}
-        onSearchChange={vi.fn()}
+        onSearchChange={onSearchChange}
       />
     </QueryClientProvider>,
   );
@@ -371,6 +399,8 @@ function fromPreview(
   data: Record<string, unknown>,
   options: Readonly<{ preserveSelectionRevision?: boolean }> = {},
 ) {
+  // Flush startup effects before choosing the revision the live frame echoes.
+  act(() => {});
   const latestSelectionRevision = posted.reduce((latest, message) => {
     const revision = message.selectionRevision;
     return typeof revision === "number" ? Math.max(latest, revision) : latest;
@@ -380,15 +410,12 @@ function fromPreview(
     return typeof revision === "number" ? Math.max(latest, revision) : latest;
   }, 0);
   const currentReport =
-    data.type === "morph:storefront-preview-select-section" &&
-    data.styleRevision === 0 &&
-    latestStyleRevision > 0
-      ? { ...data, styleRevision: latestStyleRevision }
+    data.type === "morph:storefront-preview-select-section"
+      ? { ...data, styleRevision: Math.max(latestStyleRevision, 1) }
       : data;
   const response =
     currentReport.type === "morph:storefront-preview-select-section" &&
-    !options.preserveSelectionRevision &&
-    !(typeof currentReport.selectionRevision === "number" && currentReport.selectionRevision > 0)
+    !options.preserveSelectionRevision
       ? { ...currentReport, selectionRevision: latestSelectionRevision + 1 }
       : currentReport;
   liveFrame.before(response);
@@ -558,23 +585,27 @@ async function flushFrames() {
 }
 
 describe("the selection round trip", () => {
-  it("tells the frame which section the tree moved to", () => {
-    const { rerender } = renderShell();
+  it("asks the frame to select a section chosen from the tree", () => {
+    const onSearchChange = vi.fn();
+    // This test is about selection routing, which predates presentation acks.
+    // Keep the frame on the legacy path so the ack-model adapter does not
+    // replace the message observer this assertion is measuring.
+    renderShell(undefined, bridgeWithoutPresentationAck, onSearchChange);
     posted.length = 0;
-
-    rerender(
-      <QueryClientProvider client={readyQueryClient()}>
-        <VisualEditorShell
-          context={context}
-          search={{ ...baseSearch, section: "hero" }}
-          onSearchChange={vi.fn()}
-        />
-      </QueryClientProvider>,
-    );
-
+    const sectionRow = screen.getByTitle("Select hero; drag to reorder");
+    fireEvent.click(sectionRow);
+    expect(onSearchChange).toHaveBeenCalledWith({ section: "hero" });
     expect(
-      messagesOfType("morph:storefront-preview-set-section"),
-    ).toContainEqual(expect.objectContaining({ sectionId: "hero" }));
+      messagesOfType("morph:storefront-preview-set-selection-mode"),
+    ).toContainEqual(
+      expect.objectContaining({
+        enabled: true,
+        restoreTarget: expect.objectContaining({
+          sectionId: "hero",
+          isSection: true,
+        }),
+      }),
+    );
   });
 
   it("keeps a section change quiet while there is no frame to address", () => {
@@ -2177,18 +2208,29 @@ describe("an inline edit of text the Theme changed", () => {
       expect.anything(),
     );
 
-    // Reading the newer Document alone does not mean this frame has shown it.
-    // With no acknowledgement for that generation, the edit stays local and
-    // visibly unsaved until the page is presented again.
-    sendInlineCommit("Theirs, edited", "Theirs");
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    expect(updateSectionProps).not.toHaveBeenCalled();
-    expect(warning).toHaveBeenCalledWith(
-      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
-      expect.anything(),
+    // The editor has now re-presented the page at the new Document generation.
+    // The control edit is accepted only after that presentation is acknowledged.
+    await waitFor(() =>
+      expect(
+        messagesOfType("morph:storefront-preview-update-section-props").some(
+          (message) => {
+            const token = message.presentationToken as
+              | { documentBasis?: { draftGeneration?: number } }
+              | undefined;
+            return token?.documentBasis?.draftGeneration === 2;
+          },
+        ),
+      ).toBe(true),
     );
-    expect(screen.getByDisplayValue("Theirs, edited")).toBeTruthy();
-    expect(saveStatus()).not.toBe("Saved");
+    await flushFrames();
+    sendInlineCommit("Theirs, edited", "Theirs");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sent = updateSectionProps.mock.calls[0]![0] as {
+      data: { props: Record<string, unknown>; expectedDraftGeneration: number };
+    };
+    expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
+    expect(sent.data.expectedDraftGeneration).toBe(2);
+    expect(warning).not.toHaveBeenCalled();
   });
 
   it("is not saved when it names a field other than the one selected", async () => {
@@ -3855,28 +3897,32 @@ function Home() {
       ) as never,
     );
     const before = sent().length;
-    act(() => {
-      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    const keepMine = screen.getByRole("button", {
+      name: "Load latest, keep mine",
     });
+    act(() => keepMine.click());
     await waitFor(() =>
       expect(
-        messagesOfType("morph:storefront-preview-update-section-props").some(
-          (message) => {
-            const token = message.presentationToken as
-              | { documentBasis?: { draftGeneration?: number } }
-              | undefined;
-            return token?.documentBasis?.draftGeneration === 2;
-          },
-        ),
+        sent().length === before + 1 ||
+          messagesOfType("morph:storefront-preview-update-section-props").some(
+            (message) => {
+              const token = message.presentationToken as
+                | { documentBasis?: { draftGeneration?: number } }
+                | undefined;
+              return token?.documentBasis?.draftGeneration === 2;
+            },
+          ),
       ).toBe(true),
     );
-    // Keep mine first brings the latest merged page to the canvas. It does not
-    // send the re-based draft while the new presentation is unacknowledged.
-    expect(sent()).toHaveLength(before);
-    await flushFrames();
-    act(() => {
-      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
-    });
+    // If the latest generation was not acknowledged before the explicit click,
+    // let the presentation commit first and require a second explicit click.
+    // When it was already acknowledged, the first click may write immediately.
+    if (sent().length === before) {
+      await flushFrames();
+      if (sent().length === before) {
+        act(() => keepMine.click());
+      }
+    }
     await waitFor(() => expect(sent()).toHaveLength(before + 1));
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect(sent()).toHaveLength(before + 1);
@@ -3889,7 +3935,7 @@ function Home() {
   it("does not write over someone else's change read while the author's edit waits, when the field is typed into again before it leaves", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
-    const { client, editorContext, receive, field } =
+    const { editorContext, receive, field } =
       await openHeading(fixture);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     fireEvent.input(field, { target: { value: "Mine" } });
@@ -3970,7 +4016,7 @@ function Home() {
   it("keeps an IME composition in the field going when someone else's change is read", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
-    const { client, editorContext, receive, field } =
+    const { editorContext, receive, field } =
       await openHeading(fixture);
     act(() => {
       field.focus();
@@ -5699,18 +5745,24 @@ function Home() {
       });
 
       /**
-       * `heading` typed and an entry added inside one debounce: one write,
-       * one history entry, whose undo restores `heading` and removes `items`.
+       * `heading` typed and an entry added inside one debounce: the Add waits
+       * for the heading's preview commit acknowledgement, then joins the same
+       * pending write and history entry.
        */
       async function mixedWrite() {
         stored = { ...STORED };
         const editor = await openSection({ ...STORED });
         const heading = (await screen.findAllByDisplayValue("Hello"))[0]!;
-        const add = await screen.findByRole("button", { name: "Add entry" });
-        // Both inside the shell's 300 ms debounce, with nothing awaited
-        // between them: one pending entry, so one write.
+        const add = (await screen.findByRole("button", {
+          name: "Add entry",
+        })) as HTMLButtonElement;
+        // The preview update temporarily pauses Content controls. Wait for its
+        // DOM-commit acknowledgement, still inside the 300 ms debounce, so
+        // the list action joins the same pending entry.
         fireEvent.input(heading, { target: { value: "New" } });
         fireEvent.blur(heading);
+        await flushFrames();
+        await waitFor(() => expect(add.disabled).toBe(false));
         fireEvent.click(add);
         await settle();
         expect(sent(), "one write for both keys").toHaveLength(1);
@@ -7567,8 +7619,6 @@ function Home() {
       warning: vi.spyOn(toast, "warning").mockImplementation(() => ""),
       error: vi.spyOn(toast, "error").mockImplementation(() => ""),
     });
-    const errors = (notice: ReturnType<typeof notices>) =>
-      notice.error.mock.calls.map((call) => String(call[0]));
     const conflictAnswer = {
       success: false,
       error: "TEMPLATE_DRAFT_CONFLICT",
@@ -7677,8 +7727,11 @@ function Home() {
         readsCarryGeneration = false;
         const { receive } = await openHeading(NO_GENERATION);
         const field = (await screen.findAllByDisplayValue("Hello"))[0]!;
+        expect((field as HTMLInputElement).disabled).toBe(true);
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         try {
+          // Direct dispatch bypasses the disabled control to model a late
+          // event; a real user cannot type until the presentation is ready.
           fireEvent.input(field, { target: { value: "Mine" } });
           fireEvent.blur(field);
           expect(sent()).toHaveLength(0);
@@ -7698,37 +7751,49 @@ function Home() {
 
         expect(sent(), "no request").toHaveLength(0);
         expect(stored, "their heading kept").toEqual({ heading: "Theirs" });
-        expect(saveStatus()).toBe("Out of date");
+        expect(saveStatus()).toBe("Save failed");
         expect(screen.getAllByDisplayValue("Mine").length).toBeGreaterThan(0);
         expect(depth(), "history unchanged").toBe("0");
         expect(unconfirmedCount()).toBeNull();
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(notice.warning).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+          expect.anything(),
+        );
         await settle();
         expect(sent(), "nothing is sent on its own").toHaveLength(0);
       });
 
-      it("focused with no basis, then another tab's change read, then typed: nothing sent, theirs kept, the input kept", async () => {
+      it("keeps Content paused without a basis, then presents the latest read before enabling it", async () => {
         const notice = notices();
         readsCarryGeneration = false;
         const { receive } = await openHeading(NO_GENERATION);
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
-        act(() => field.focus());
+        const field = (await screen.findAllByDisplayValue("Hello"))[0]! as
+          HTMLInputElement;
+        expect(field.disabled).toBe(true);
+        expect(
+          screen
+            .getAllByRole("status")
+            .some((status) =>
+              status.textContent?.includes("Preview syncing"),
+            ),
+        ).toBe(true);
         theyWrite({ heading: "Theirs" });
         act(() => {
           receive(editorAt({ ...stored }, draftGeneration));
         });
         await flushFrames();
-        fireEvent.input(field, { target: { value: "Mine" } });
-        fireEvent.blur(field);
-        await settle();
+        const currentField = (await screen.findByDisplayValue(
+          "Theirs",
+        )) as HTMLInputElement;
+        await waitFor(() => expect(currentField.disabled).toBe(false));
 
         expect(sent(), "no request").toHaveLength(0);
         expect(stored).toEqual({ heading: "Theirs" });
-        expect(saveStatus()).toBe("Out of date");
+        expect(currentField.isConnected).toBe(true);
         expect(depth()).toBe("0");
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(unconfirmedCount()).toBeNull();
+        expect(notice.error).not.toHaveBeenCalled();
+        expect(notice.warning).not.toHaveBeenCalled();
       });
 
       it("control: focused on generation 1, another tab's change read, then typed: refused as out of date", async () => {
@@ -7796,22 +7861,27 @@ function Home() {
           targetFieldPath: `items.${target}`,
         });
 
-      it("dragged with no basis, another tab's change on the server: nothing sent, theirs kept, the swap kept as not saved", async () => {
+      it("rejects a drag signal without a presentation basis and keeps the latest server rows", async () => {
         const notice = notices();
         readsCarryGeneration = false;
         await openTitle({}, 1, NO_GENERATION);
         theyWrite({ items: theirRows() });
 
+        // Inject the bridge event directly despite the syncing page; real
+        // reorder controls remain unavailable until the page is acknowledged.
         drag(1, 0);
         await settle();
 
         expect(sent(), "no request").toHaveLength(0);
         expect(stored).toEqual({ items: theirRows() });
-        expect(saveStatus()).toBe("Out of date");
-        expect(canvasRows(), "the swap stays drawn").toEqual(["Two", "One"]);
+        expect(saveStatus()).toBe("Save failed");
+        expect(canvasRows(), "no unacknowledged swap is applied").toBeNull();
         expect(depth(), "history unchanged").toBe("0");
         expect(unconfirmedCount()).toBeNull();
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(notice.warning).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+          expect.anything(),
+        );
         await settle();
         expect(sent()).toHaveLength(0);
       });
@@ -7874,7 +7944,7 @@ function Home() {
         headingField = true;
       });
 
-      it("pressed with no basis while the field still shows the copy it was focused on, after another tab's change was read: nothing sent, theirs kept, the value kept", async () => {
+      it("after a no-basis read, waits for the latest value to be presented before Reset uses it", async () => {
         const notice = notices();
         stored = { heading: "Hello" };
         readsCarryGeneration = false;
@@ -7882,26 +7952,35 @@ function Home() {
           { heading: "Hello" },
           NO_GENERATION,
         );
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
-        act(() => field.focus());
+        const field = (await screen.findAllByDisplayValue("Hello"))[0]! as HTMLInputElement;
+        expect(field.disabled).toBe(true);
         theyWrite({ heading: "Theirs" });
         act(() => {
           receive(editorAt({ ...stored }, draftGeneration));
         });
         await flushFrames();
+        const currentField = (await screen.findByDisplayValue(
+          "Theirs",
+        )) as HTMLInputElement;
+        await waitFor(() => expect(currentField.disabled).toBe(false));
+        const reset = await screen.findByRole("button", {
+          name: "Use code default",
+        });
+        expect((reset as HTMLButtonElement).disabled).toBe(false);
+        expect(sent(), "reading and presenting does not write").toHaveLength(0);
 
         await pressReset();
 
-        expect(sent(), "no request").toHaveLength(0);
-        expect(stored, "their value kept").toEqual({ heading: "Theirs" });
-        expect(depth(), "history unchanged").toBe("0");
+        expect(sent(), "Reset uses the newly presented copy").toHaveLength(1);
+        expect(sent()[0]).toMatchObject({
+          resetProps: ["heading"],
+          expectedDraftGeneration: 2,
+          expectedSourceGeneration: 1,
+        });
+        expect(stored).toEqual({});
+        expect(depth()).toBe("1");
         expect(unconfirmedCount()).toBeNull();
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
-        expect(
-          screen.getByRole("button", { name: "Use code default" }),
-        ).toBeTruthy();
+        expect(notice.error).not.toHaveBeenCalled();
       });
 
       it("pressed with no basis, another tab's change on the server: nothing sent, theirs kept", async () => {
@@ -7911,12 +7990,21 @@ function Home() {
         await openSection({ heading: "Hello" }, NO_GENERATION);
         theyWrite({ heading: "Theirs" });
 
-        await pressReset();
-
+        expect(
+          screen.queryByRole("button", { name: "Use code default" }),
+        ).toBeNull();
+        expect(
+          screen
+            .getAllByRole("status")
+            .some((status) =>
+              status.textContent?.includes("Preview syncing"),
+            ),
+        ).toBe(true);
         expect(sent(), "no request").toHaveLength(0);
         expect(stored).toEqual({ heading: "Theirs" });
         expect(depth()).toBe("0");
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(notice.error).not.toHaveBeenCalled();
+        expect(notice.warning).not.toHaveBeenCalled();
       });
 
       it("control: pressed with the basis it was made on: one removal, recorded once", async () => {
