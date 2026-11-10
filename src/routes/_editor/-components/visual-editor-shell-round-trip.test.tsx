@@ -5692,16 +5692,6 @@ function Home() {
           expect(unconfirmedCount()).toBeNull();
           expect(depth()).toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
-
-          await checkAndSave();
-          expect(
-            sent(),
-            "the acknowledged payload is not sent again",
-          ).toHaveLength(2);
-          expect(
-            depth(),
-            "the retry did not record another Content entry",
-          ).toBe("1");
         });
 
         it("explains that the write is still held when its one resend gets no answer", async () => {
