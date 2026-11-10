@@ -1346,6 +1346,12 @@ function controlledThemeFile(initialContent: string) {
       sourceGeneration: current.sourceGeneration + 1,
     };
   };
+  const replaceFileIdKeepingReceipt = () => {
+    current = { ...current, id: `${current.id}-replacement` };
+  };
+  const advanceFileVersionKeepingReceipt = () => {
+    current = { ...current, version: current.version + 1 };
+  };
 
   themeFileServerControl.save = save;
   themeFileServerControl.read = read;
@@ -1358,6 +1364,8 @@ function controlledThemeFile(initialContent: string) {
     events,
     externalWrite,
     externalSourceWrite,
+    replaceFileIdKeepingReceipt,
+    advanceFileVersionKeepingReceipt,
     file: () => ({ ...current }),
   };
 }
@@ -2720,6 +2728,85 @@ describe("Style replay read-back confirmation", () => {
       }
     },
   );
+
+  it.each(["file id", "file version"] as const)(
+    "refuses to confirm an unanswered landed Style Undo when its receipt has a different %s",
+    async (changed) => {
+      const server = controlledThemeFile(STYLE_SOURCE);
+      await applyAndSaveStyle(server);
+      server.outcomes.push("offline-after-landing");
+
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await waitFor(() =>
+        expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+      );
+      const writeAttemptId = server.file().lastWriteAttemptId;
+      expect(writeAttemptId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
+
+      // Keep the causal receipt and source generation fixed while changing
+      // exactly one file identity/version field, isolating that guard.
+      if (changed === "file id") server.replaceFileIdKeepingReceipt();
+      else server.advanceFileVersionKeepingReceipt();
+      const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+
+      fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+      await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(error).toHaveBeenCalled());
+
+      expect({
+        writes: server.save.mock.calls.length,
+        receipt: server.file().lastWriteAttemptId,
+        sourceGeneration: server.file().sourceGeneration,
+        history: historyState(),
+      }).toEqual({
+        writes: 2,
+        receipt: writeAttemptId,
+        sourceGeneration: 3,
+        history: { undoAvailable: true, redoAvailable: false },
+      });
+      expect(localThemeFile()?.conflict).toBeDefined();
+    },
+  );
+
+  it("does not confirm an unanswered landed Style Undo after another file advances the source", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    server.outcomes.push("offline-after-landing");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+    );
+    const writeAttemptId = server.file().lastWriteAttemptId;
+    server.externalSourceWrite();
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(server.list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(error).toHaveBeenCalled());
+
+    expect({
+      writes: server.save.mock.calls.length,
+      file: server.file(),
+      history: historyState(),
+      sourceConflict: localThemeFile()?.sourceConflict,
+    }).toMatchObject({
+      writes: 2,
+      file: {
+        id: "file-hero",
+        version: 3,
+        sourceGeneration: 4,
+        lastWriteAttemptId: writeAttemptId,
+        content: STYLE_SOURCE,
+      },
+      history: { undoAvailable: true, redoAvailable: false },
+      sourceConflict: true,
+    });
+    expect(localThemeFile()?.conflict).toBeUndefined();
+  });
 
   it("does not confirm an unanswered Style Undo from matching content and version deltas without its receipt", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
