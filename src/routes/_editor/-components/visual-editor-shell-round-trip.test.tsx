@@ -2793,6 +2793,7 @@ describe("Style replay read-back confirmation", () => {
       file: server.file(),
       history: historyState(),
       sourceConflict: localThemeFile()?.sourceConflict,
+      unconfirmed: localThemeFile()?.unconfirmedContent,
     }).toMatchObject({
       writes: 2,
       file: {
@@ -2804,8 +2805,34 @@ describe("Style replay read-back confirmation", () => {
       },
       history: { undoAvailable: true, redoAvailable: false },
       sourceConflict: true,
+      unconfirmed: STYLE_SOURCE,
     });
     expect(localThemeFile()?.conflict).toBeUndefined();
+
+    // The first refusal must retain the replay receipt record. A second
+    // explicit check cannot fall back to content equality and confirm it.
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(server.list).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(error).toHaveBeenCalledTimes(2));
+    expect({
+      writes: server.save.mock.calls.length,
+      history: historyState(),
+      sourceConflict: localThemeFile()?.sourceConflict,
+      unconfirmed: localThemeFile()?.unconfirmedContent,
+      file: server.file(),
+    }).toMatchObject({
+      writes: 2,
+      history: { undoAvailable: true, redoAvailable: false },
+      sourceConflict: true,
+      unconfirmed: STYLE_SOURCE,
+      file: {
+        version: 3,
+        sourceGeneration: 4,
+        lastWriteAttemptId: writeAttemptId,
+        content: STYLE_SOURCE,
+      },
+    });
   });
 
   it("does not confirm an unanswered Style Undo from matching content and version deltas without its receipt", async () => {
