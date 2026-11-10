@@ -667,9 +667,14 @@ describe("a content save that fails", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Load latest, keep mine" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
 
-    fromPreview({ type: "morph:storefront-preview-structure", nodes: [secondNode] });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [secondNode],
+    });
     const row = await screen.findByText("h1");
     act(() => row.closest("button")?.click());
     sendInlineCommit("Second edited", "Second", undefined, "second");
@@ -3083,10 +3088,10 @@ function Home() {
       "expected the write to be refused:SELECTION_SOURCE_CONFLICT; it was refused:INTERNAL_ERROR",
     );
     // Refused, where a save was expected.
-    updateSectionProps.mockImplementationOnce(async () => REFUSED_AT_OLD_SOURCE);
-    await expect(
-      chooseAndAwaitWrite(trigger, "Top", "saved"),
-    ).rejects.toThrow(
+    updateSectionProps.mockImplementationOnce(
+      async () => REFUSED_AT_OLD_SOURCE,
+    );
+    await expect(chooseAndAwaitWrite(trigger, "Top", "saved")).rejects.toThrow(
       "expected the write to be saved; it was refused:SELECTION_SOURCE_CONFLICT",
     );
     expect(sent()).toHaveLength(3);
@@ -4491,9 +4496,9 @@ function Home() {
       return active as HTMLInputElement;
     };
     async function enter(shown: string, caret: number) {
-      const input = (await screen.findAllByDisplayValue(
-        shown,
-      ))[0]! as HTMLInputElement;
+      const input = (
+        await screen.findAllByDisplayValue(shown)
+      )[0]! as HTMLInputElement;
       act(() => input.focus());
       input.setSelectionRange(caret, caret);
       return input;
@@ -4590,9 +4595,9 @@ function Home() {
       vi.spyOn(toast, "error").mockImplementation(() => "");
       const [one, two] = identified();
       await openTitle({}, 0);
-      const other = (await screen.findAllByDisplayValue(
-        "Two",
-      ))[0]! as HTMLInputElement;
+      const other = (
+        await screen.findAllByDisplayValue("Two")
+      )[0]! as HTMLInputElement;
       const otherCard = rowCardOf(other);
       expect(otherCard).toBeTruthy();
 
@@ -4634,9 +4639,7 @@ function Home() {
       fireEvent.compositionStart(input);
       press(input, "あ");
       await flushFrames();
-      expect(input.isConnected, "the same input during composition").toBe(
-        true,
-      );
+      expect(input.isConnected, "the same input during composition").toBe(true);
       expect(document.activeElement).toBe(input);
       act(() => {
         input.value = "Two亜";
@@ -4645,9 +4648,7 @@ function Home() {
       fireEvent.input(input);
       fireEvent.compositionEnd(input, { data: "亜" });
       await flushFrames();
-      expect(input.isConnected, "the same input after composition").toBe(
-        true,
-      );
+      expect(input.isConnected, "the same input after composition").toBe(true);
       expect(document.activeElement).toBe(input);
       expect(input.selectionStart).toBe(4);
       act(() => input.blur());
@@ -5599,9 +5600,15 @@ function Home() {
 
           await checkAndSave();
 
-          expect(sent(), "the unanswered payload is not resent").toHaveLength(1);
-          expect(unconfirmedCount(), "the request is still unresolved").toBe("1");
-          expect(saveStatus(), "it is not reported as saved").toBe("Save failed");
+          expect(sent(), "the unanswered payload is not resent").toHaveLength(
+            1,
+          );
+          expect(unconfirmedCount(), "the request is still unresolved").toBe(
+            "1",
+          );
+          expect(saveStatus(), "it is not reported as saved").toBe(
+            "Save failed",
+          );
           expect(depth(), "no history entry exists yet").toBe("0");
           expect(historyButtons()).toEqual({ undo: false, redo: false });
         });
@@ -5646,12 +5653,19 @@ function Home() {
           await checkAndSave();
 
           expect(sent(), "the old payload is not resent").toHaveLength(1);
-          expect(unconfirmedCount(), "the moved request no longer holds the session").toBeNull();
+          expect(
+            unconfirmedCount(),
+            "the moved request no longer holds the session",
+          ).toBeNull();
           expect(saveStatus()).toBe("Out of date");
-          expect(screen.getByRole("button", { name: "Load latest, keep mine" })).toBeTruthy();
+          expect(
+            screen.getByRole("button", { name: "Load latest, keep mine" }),
+          ).toBeTruthy();
           expect(screen.getAllByDisplayValue("New").length).toBeGreaterThan(0);
 
-          fireEvent.click(screen.getByRole("button", { name: "Load latest, keep mine" }));
+          fireEvent.click(
+            screen.getByRole("button", { name: "Load latest, keep mine" }),
+          );
           await waitFor(() => expect(sent()).toHaveLength(2));
           expect(sent()[1]).toMatchObject({
             props: { heading: "New" },
@@ -5680,6 +5694,21 @@ function Home() {
           expect(historyButtons()).toEqual({ undo: true, redo: false });
         });
 
+        it("explains that the write is still held when its one resend gets no answer", async () => {
+          const notice = notices();
+          await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+          answerNext.push(lost);
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount()).toBe("1");
+          expect(errors(notice)).toContain(
+            "An earlier save is still unresolved. Check again before trying other changes.",
+          );
+        });
+
         it("keeps tracking when the late original wins the compare-and-swap race", async () => {
           await lostOrdinaryWrite();
           const original = sent()[0]!;
@@ -5699,13 +5728,19 @@ function Home() {
           });
           expect(stored).toEqual({ heading: "New" });
           expect(draftGeneration).toBe(2);
-          expect(unconfirmedCount(), "the original outcome still needs read-back").toBe("1");
+          expect(
+            unconfirmedCount(),
+            "the original outcome still needs read-back",
+          ).toBe("1");
           expect(depth()).toBe("0");
 
           serverHolds({ heading: "New" }, 2);
           await checkAndSave();
 
-          expect(sent(), "the late original is never sent a third time").toHaveLength(2);
+          expect(
+            sent(),
+            "the late original is never sent a third time",
+          ).toHaveLength(2);
           expect(unconfirmedCount()).toBeNull();
           expect(depth(), "the landed edit is recorded once").toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
@@ -5828,9 +5863,9 @@ function Home() {
             expect(sent(), `round ${round}: redo sent once`).toHaveLength(
               round * 2 + 1,
             );
-            expect((sent().at(-1)!.props as { items: unknown[] }).items).toEqual(
-              first,
-            );
+            expect(
+              (sent().at(-1)!.props as { items: unknown[] }).items,
+            ).toEqual(first);
             expect(stored.items).toEqual(first);
             expect(depth(), `round ${round}: after redo`).toBe("1");
             expect(historyButtons()).toEqual({ undo: true, redo: false });
@@ -6072,9 +6107,9 @@ function Home() {
           expect(stored).toEqual({ heading: "Newer" });
           expect(depth()).toBe("2");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
-          expect(sent().every((data) => data.expectedSourceGeneration === 1)).toBe(
-            true,
-          );
+          expect(
+            sent().every((data) => data.expectedSourceGeneration === 1),
+          ).toBe(true);
         });
 
         // The same rule on the reset path (the undo of a first Add).
@@ -7463,7 +7498,11 @@ function Home() {
 
         fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-        await waitFor(() => expect(screen.queryByRole("button", { name: "Try again" })).toBeNull());
+        await waitFor(() =>
+          expect(
+            screen.queryByRole("button", { name: "Try again" }),
+          ).toBeNull(),
+        );
         expect(sent()).toHaveLength(1);
         expect(
           screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
@@ -7647,9 +7686,9 @@ function Home() {
         const notice = notices();
         readsCarryGeneration = false;
         const { receive } = await openHeading(NO_GENERATION);
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         act(() => field.focus());
         theyWrite({ heading: "Theirs" });
         act(() => {
@@ -7670,9 +7709,9 @@ function Home() {
       it("control: focused on generation 1, another tab's change read, then typed: refused as out of date", async () => {
         notices();
         const { receive } = await openHeading(1);
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         act(() => field.focus());
         theyWrite({ heading: "Theirs" });
         act(() => {
@@ -7818,9 +7857,9 @@ function Home() {
           { heading: "Hello" },
           NO_GENERATION,
         );
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         act(() => field.focus());
         theyWrite({ heading: "Theirs" });
         act(() => {
@@ -7873,9 +7912,9 @@ function Home() {
         notices();
         stored = { heading: "Hello" };
         const { receive } = await openSection({ heading: "Hello" });
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         act(() => field.focus());
         theyWrite({ heading: "Theirs" });
         act(() => {
