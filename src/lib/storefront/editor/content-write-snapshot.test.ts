@@ -69,6 +69,27 @@ describe("a content write's snapshot", () => {
     ).toEqual(at(5, "Five", 2));
   });
 
+  it("recovers a known own step when read-back is the first snapshot", () => {
+    const firstRead = acceptReadSnapshot(
+      undefined,
+      { draftGeneration: 2, sections: sections("Landed") },
+      new Map([[1, 2]]),
+      1,
+    );
+    expect(firstRead).toEqual(at(2, "Landed", 1));
+    expect(basisWithinOwnRange(firstRead!, 1)).toBe(true);
+  });
+
+  it("does not infer an own range for an unclassified first read", () => {
+    const firstRead = acceptReadSnapshot(
+      undefined,
+      { draftGeneration: 2, sections: sections("Unattributed") },
+      new Map([[1, 2]]),
+    );
+    expect(firstRead).toEqual(at(2, "Unattributed"));
+    expect(basisWithinOwnRange(firstRead!, 1)).toBe(false);
+  });
+
   it("starts its own range again when a read brings someone else's change", () => {
     const current = at(3, "Three", 1);
     // Our write took 3 to 4; the read is at 6.

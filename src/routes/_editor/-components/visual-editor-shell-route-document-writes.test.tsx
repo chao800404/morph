@@ -1699,7 +1699,7 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       });
     });
 
-    it("failed with no answer, real-keyed: the step stops on the hold; Try again reads first, sends once, then the step runs", async () => {
+    it("failed with no answer, real-keyed: read-back that does not show it keeps the step held", async () => {
       await firstWriteLanded();
       const second = holdNextWrite();
       typeInCard(0, "Value 2");
@@ -1721,20 +1721,19 @@ describe("A: the pre-step flush holds refused and failed content under every id"
 
       const readsBefore = getThemeEditor.mock.calls.length;
       pressTryAgain();
-      await waitFor(() => expect(sent()).toHaveLength(3));
+      await waitFor(() =>
+        expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore),
+      );
       await pause();
-      // Asked the server first (the settle read), then sent once.
-      expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore);
-      expect(sent()).toHaveLength(3);
-      expect(sent()[2]).toMatchObject({
-        templateId: ROUTE_DOC_ID,
-        expectedDraftGeneration: 2,
-        props: { heading: "Value 2" },
+      // No read can establish that the original request was cancelled.
+      expect(sent()).toHaveLength(2);
+      expect(storedHeading()).toBe("Value 1");
+      expect(saveStatus()).toBe("Save failed");
+      expect(await rename()).toEqual({
+        ok: false,
+        message: UNCONFIRMED_SAVE_HOLD,
       });
-      expect(storedHeading()).toBe("Value 2");
-
-      expect(await rename()).toEqual({ ok: true });
-      expect(renameSection).toHaveBeenCalledTimes(1);
+      expect(renameSection).not.toHaveBeenCalled();
     });
   });
 
