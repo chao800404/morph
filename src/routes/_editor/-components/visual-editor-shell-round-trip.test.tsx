@@ -1252,6 +1252,8 @@ function controlledThemeFile(initialContent: string) {
     | undefined;
   const events: string[] = [];
   const outcomes: ThemeFileOutcome[] = [];
+  let nextReadGate: Promise<void> | null = null;
+  let releaseHeldRead: (() => void) | null = null;
   const save = vi.fn(async (...args: unknown[]) => {
     const data = (
       args[0] as {
@@ -1299,6 +1301,9 @@ function controlledThemeFile(initialContent: string) {
     return { success: true, data: { ...current } };
   });
   const read = vi.fn(async () => {
+    const gate = nextReadGate;
+    nextReadGate = null;
+    if (gate) await gate;
     events.push("read");
     const { sourceGeneration: _sourceGeneration, ...file } = current;
     return { success: true, data: file };
@@ -1362,6 +1367,15 @@ function controlledThemeFile(initialContent: string) {
     list,
     outcomes,
     events,
+    holdNextRead: () => {
+      nextReadGate = new Promise<void>((resolve) => {
+        releaseHeldRead = resolve;
+      });
+      return () => {
+        releaseHeldRead?.();
+        releaseHeldRead = null;
+      };
+    },
     externalWrite,
     externalSourceWrite,
     replaceFileIdKeepingReceipt,
@@ -2650,6 +2664,41 @@ describe("Style replay read-back confirmation", () => {
     await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(server.file().content).toBe(STYLE_AFTER));
     expect(historyState()).toEqual({ undoAvailable: true, redoAvailable: false });
+  });
+
+  it("hides Check and save while confirming an unanswered Style Undo", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    server.outcomes.push("offline-after-landing");
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+    );
+
+    const releaseRead = server.holdNextRead();
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    try {
+      await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+      expect(
+        screen.queryByRole("button", { name: "Check and save" }),
+      ).toBeNull();
+    } finally {
+      releaseRead();
+    }
+
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+    );
+    await waitFor(() =>
+      expect(historyState()).toEqual({
+        undoAvailable: false,
+        redoAvailable: true,
+      }),
+    );
+    expect(server.read).toHaveBeenCalledTimes(1);
+    expect(server.save).toHaveBeenCalledTimes(2);
+    expect(server.file().content).toBe(STYLE_SOURCE);
   });
 
   it("confirms an unanswered landed Style Redo without writing it twice", async () => {
