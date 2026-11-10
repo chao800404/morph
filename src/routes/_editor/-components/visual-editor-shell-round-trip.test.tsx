@@ -138,8 +138,9 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
   const RealPanel = actual.EditorAssistantPanel;
   return {
     ...actual,
-    EditorAssistantPanel: (props: ComponentProps<typeof RealPanel>) => (
-      <>
+    EditorAssistantPanel: (props: ComponentProps<typeof RealPanel>) => {
+      return (
+        <>
         <RealPanel {...props} />
         <button
           type="button"
@@ -167,8 +168,9 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
         >
           Promote the selected text
         </button>
-      </>
-    ),
+        </>
+      );
+    },
   };
 });
 
@@ -869,6 +871,7 @@ describe("a list both writers changed", () => {
             sections: [
               {
                 id: "hero",
+                name: "Featured",
                 type: "hero",
                 componentRef: stylePatchTarget.filePath,
                 props: {
@@ -878,6 +881,7 @@ describe("a list both writers changed", () => {
               },
               {
                 id: "other",
+                name: "Other",
                 type: "hero",
                 componentRef: stylePatchTarget.filePath,
                 props: {
@@ -911,6 +915,7 @@ describe("a list both writers changed", () => {
               sections: [
                 {
                   id: "hero",
+                  name: "Featured",
                   type: "hero",
                   props: {
                     heading: "Welcome",
@@ -919,6 +924,7 @@ describe("a list both writers changed", () => {
                 },
                 {
                   id: "other",
+                  name: "Other",
                   type: "hero",
                   props: {
                     heading: "Other",
@@ -994,7 +1000,12 @@ describe("a list both writers changed", () => {
       ),
     );
     expect(error).toHaveBeenCalledWith(
-      expect.stringMatching(/Use the list-specific discard control/),
+      // A generic Discard mine action no longer exists; the path-specific
+      // control is available only when the selected Inspector exposes the
+      // declared array field, with a stay/reload fallback otherwise.
+      expect.stringMatching(
+        /list-specific discard control if the Inspector exposes one/,
+      ),
     );
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(saveStatus()).toBe("Out of date");
@@ -1004,9 +1015,9 @@ describe("a list both writers changed", () => {
     // also erase unrelated fields the author still has pending.
     // A row selection only exposes the row's own fields. The list controls
     // belong to the section entry, selected through the real Sections panel.
-    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Other" }));
     await flushFrames();
-    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Featured" }));
     await flushFrames();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await flushFrames();
@@ -1137,6 +1148,21 @@ describe("a list both writers changed", () => {
       success: true,
       data: { draftGeneration: 8, droppedProps: [] },
     } as never);
+    updateSectionProps.mockImplementation(async ({ data }) => {
+      // Model the successful Add reaching the document returned on the next
+      // section selection. Otherwise this test would only observe the stale
+      // loader fixture, not whether an old discard reset overwrote the save.
+      const persistedSection = listContext.templates[0]!.document.sections.find(
+        (candidate) => candidate.id === data.sectionId,
+      );
+      if (persistedSection) {
+        Object.assign(persistedSection.props, data.props);
+      }
+      return {
+        success: true,
+        data: { draftGeneration: 8, droppedProps: [] },
+      };
+    });
     const removeButtons = () =>
       screen.getAllByRole("button", { name: "Remove" });
     expect(removeButtons()).toHaveLength(3);
@@ -1146,15 +1172,19 @@ describe("a list both writers changed", () => {
     await waitFor(() =>
       expect(updateSectionProps).toHaveBeenCalledTimes(beforeAdd + 1),
     );
+    expect(
+      (listContext.templates[0]!.document.sections[0]!.props as { items: unknown[] })
+        .items,
+    ).toHaveLength(4);
 
-    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Other" }));
     await flushFrames();
-    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Featured" }));
     await flushFrames();
     expect(removeButtons()).toHaveLength(4);
   });
 
-  it("keeps another section's conflict marker when discarding one list", async () => {
+  it("keeps a sibling-list and another section's conflict marker when discarding one list", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
     const rows = (...titles: string[]) =>
       titles.map((title) => ({ id: title.toLowerCase(), title }));
@@ -1168,12 +1198,18 @@ describe("a list both writers changed", () => {
             sections: [
               {
                 id: "hero",
+                name: "Featured",
                 type: "hero",
                 componentRef: stylePatchTarget.filePath,
-                props: { heading: "Welcome", items: rows("A", "B") },
+                props: {
+                  heading: "Welcome",
+                  items: rows("A", "B"),
+                  related: rows("R"),
+                },
               },
               {
                 id: "other",
+                name: "Other",
                 type: "hero",
                 componentRef: stylePatchTarget.filePath,
                 props: {
@@ -1200,11 +1236,17 @@ describe("a list both writers changed", () => {
               sections: [
                 {
                   id: "hero",
+                  name: "Featured",
                   type: "hero",
-                  props: { heading: "Welcome", items: rows("C", "A", "B") },
+                  props: {
+                    heading: "Welcome",
+                    items: rows("C", "A", "B"),
+                    related: rows("S", "R"),
+                  },
                 },
                 {
                   id: "other",
+                  name: "Other",
                   type: "hero",
                   props: {
                     heading: "Other",
@@ -1242,29 +1284,16 @@ describe("a list both writers changed", () => {
       client,
     );
 
-    const rowNode = {
-      ...heroNode,
-      id: "hero:node:row-title",
-      label: "Title",
-      target: {
-        sectionId: "hero",
-        nodeId: "hero:node:row-title",
-        fieldKey: "title",
-        fieldPath: "items.1.title",
-        itemId: "b",
-        isSection: false,
-      },
-    };
-    fromPreview({
-      type: "morph:storefront-preview-structure",
-      nodes: [rowNode],
-    });
-    const row = await screen.findByText("h1");
-    act(() => row.closest("button")?.click());
-    sendInlineCommit("B edited", "B", {
-      fieldKey: "title",
-      fieldPath: "items.1.title",
-    });
+    // Both lists on Featured are changed locally before the one section write.
+    // The server then returns two independent list conflicts in that entry.
+    fireEvent.click(screen.getByRole("button", { name: "Featured" }));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
+    const addEntries = () => screen.getAllByRole("button", { name: "Add entry" });
+    expect(addEntries()).toHaveLength(2);
+    fireEvent.click(addEntries()[0]!);
+    fireEvent.click(addEntries()[1]!);
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
 
@@ -1275,11 +1304,16 @@ describe("a list both writers changed", () => {
     act(() => screen.getByRole("button", { name: "Load latest, keep mine" }).click());
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(
-        expect.stringMatching(/items also changed elsewhere/),
+        expect.stringMatching(/items, related also changed elsewhere/),
       ),
     );
+    expect(
+      screen.getByRole("button", {
+        name: /discard unsaved changes to related/i,
+      }),
+    ).toBeTruthy();
 
-    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Other" }));
     await flushFrames();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await flushFrames();
@@ -1296,11 +1330,17 @@ describe("a list both writers changed", () => {
               sections: [
                 {
                   id: "hero",
+                  name: "Featured",
                   type: "hero",
-                  props: { heading: "Welcome", items: rows("C", "A", "B") },
+                  props: {
+                    heading: "Welcome",
+                    items: rows("C", "A", "B"),
+                    related: rows("S", "R"),
+                  },
                 },
                 {
                   id: "other",
+                  name: "Other",
                   type: "hero",
                   props: {
                     heading: "Other",
@@ -1358,7 +1398,7 @@ describe("a list both writers changed", () => {
       }),
     ).toBeTruthy();
 
-    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Featured" }));
     await flushFrames();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await flushFrames();
@@ -1375,8 +1415,16 @@ describe("a list both writers changed", () => {
       }).click(),
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(
+      document.querySelector('[data-list-not-saved="related"]'),
+    ).not.toBeNull();
+    expect(
+      screen.getByRole("button", {
+        name: /discard unsaved changes to related/i,
+      }),
+    ).toBeTruthy();
 
-    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Other" }));
     await flushFrames();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await flushFrames();

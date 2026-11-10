@@ -148,6 +148,15 @@ const source = `export const contentFields = {
 export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
   return <section><h1 data-morph-node="heading">{heading}</h1><p>{subheading}</p>{image ? <img src={image.url} alt="" /> : null}</section>;
 }`;
+const listSource = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+  subheading: { type: "text", label: "Subheading" },
+  image: { type: "image", label: "Image" },
+  items: { type: "array", label: "Items", fields: { title: { type: "text", label: "Title" } } }
+};
+export function Hero({ heading = "Welcome", subheading = "Summary", image, items = [] }) {
+  return <section><h1 data-morph-node="heading">{heading}</h1><p>{subheading}</p>{image ? <img src={image.url} alt="" /> : null}{items.map((item) => <p key={item.id}>{item.title}</p>)}</section>;
+}`;
 
 /** The document the server holds, which every content write merges into. */
 type ServerSection = {
@@ -224,7 +233,7 @@ const search = {
   section: "hero",
 } as StorefrontThemeEditorSearch;
 
-function readyClient() {
+function readyClient(componentSource = source) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -245,7 +254,7 @@ function readyClient() {
           storefrontId: "storefront-1",
           themeId: "theme-1",
           path: HERO_PATH,
-          content: source,
+          content: componentSource,
           mimeType: "text/typescript",
           isEntry: false,
           version: 1,
@@ -796,7 +805,7 @@ describe("a late post after a hide", () => {
 });
 
 describe("a refused hide the author discards", () => {
-  it("T6: Discard mine posts the section shown again, with the latest version's values", async () => {
+  it("T6: discarding the list keeps the separate hide intent and posts no values", async () => {
     const rows = (...titles: string[]) =>
       titles.map((title) => ({ id: title.toLowerCase(), title }));
     const listContext = (
@@ -831,7 +840,7 @@ describe("a refused hide the author discards", () => {
     };
     getThemeEditor.mockReset();
     getThemeEditor.mockResolvedValue(remote);
-    const client = readyClient();
+    const client = readyClient(listSource);
     client.setQueryData(
       storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
       remote as never,
@@ -895,6 +904,10 @@ describe("a refused hide the author discards", () => {
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
+    fireEvent.click(screen.getByTitle("Select hero; drag to reorder"));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
     await waitFor(() =>
       expect(
         screen.getByRole("button", {
@@ -922,19 +935,16 @@ describe("a refused hide the author discards", () => {
         }),
       ).toBeNull(),
     );
-    // Nothing was written, and the preview was told the section is shown,
-    // with the version the editor now holds.
+    // Nothing was written. Discarding `items` leaves the separate pending
+    // `enabled: false` intent intact; hidden sections stay hidden and receive
+    // no values, even though the latest server copy is currently shown.
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     const reconciled = heroPosts(beforeDiscard).at(-1);
-    expect(reconciled?.enabled).toBe(true);
-    expect(
-      (reconciled?.props?.items as Array<{ title: string }> | undefined)?.map(
-        (item) => item.title,
-      ),
-    ).toEqual(["C", "A", "B"]);
+    expect(reconciled?.enabled).toBe(false);
+    expect(reconciled?.props).toBeUndefined();
   });
 
-  it("T6b: Discard mine after another tab hid the section posts it hidden, with no values", async () => {
+  it("T6b: discarding the list after another tab hid the section keeps it hidden, with no values", async () => {
     const rows = (...titles: string[]) =>
       titles.map((title) => ({ id: title.toLowerCase(), title }));
     const listContext = (
@@ -970,7 +980,7 @@ describe("a refused hide the author discards", () => {
     };
     getThemeEditor.mockReset();
     getThemeEditor.mockResolvedValue(remote);
-    const client = readyClient();
+    const client = readyClient(listSource);
     client.setQueryData(
       storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
       remote as never,
@@ -1028,6 +1038,10 @@ describe("a refused hide the author discards", () => {
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
+    fireEvent.click(screen.getByTitle("Select hero; drag to reorder"));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
     await waitFor(() =>
       expect(
         screen.getByRole("button", {
