@@ -5746,8 +5746,14 @@ function Home() {
           expect(historyButtons()).toEqual({ undo: true, redo: false });
         });
 
-        it("two simultaneous retries settle one landed write and record one history entry", async () => {
+        it("two simultaneous recovery actions settle one landed write while newer input remains pending", async () => {
           await lostOrdinaryWrite();
+          await type("New", "Newer");
+          await settle();
+          expect(
+            sent(),
+            "new input stays behind the unknown write",
+          ).toHaveLength(1);
           serverHolds({ heading: "New" }, 2);
           const retry = screen.getByRole("button", { name: "Try again" });
           const checkAndSave = screen.getByRole("button", {
@@ -5758,10 +5764,17 @@ function Home() {
             retry.click();
             checkAndSave.click();
           });
-          await waitFor(() => expect(unconfirmedCount()).toBeNull());
+          await waitFor(() => expect(sent()).toHaveLength(2));
 
-          expect(sent()).toHaveLength(1);
-          expect(depth()).toBe("1");
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "Newer" },
+            expectedDraftGeneration: 2,
+          });
+          expect(unconfirmedCount()).toBeNull();
+          expect(
+            depth(),
+            "the landed write and newer input are each recorded once",
+          ).toBe("2");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
         });
 
