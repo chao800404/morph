@@ -16,7 +16,14 @@ vi.mock("./preview-protocol", async (importOriginal) => ({
 
 const initialDocument = {
   version: 1,
-  sections: [{ id: "hero", enabled: true, props: { heading: "Before" } }],
+  sections: [
+    {
+      id: "hero",
+      type: "hero",
+      enabled: true,
+      props: { heading: "Before" },
+    },
+  ],
 } as StorefrontPageDocument;
 
 const presentationToken = {
@@ -120,5 +127,54 @@ describe("preview document presentation acknowledgement", () => {
         reason: "section-missing",
       }),
     );
+  });
+
+  it("does not report an applied token when a newer section update supersedes it before commit", async () => {
+    render(<PreviewDocument document={initialDocument} />);
+    const newerToken = {
+      ...presentationToken,
+      presentationRevision: 10,
+      operationId: "section-presentation-10",
+    };
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "morph:storefront-preview-update-section-props",
+            sectionId: "hero",
+            props: { heading: "Superseded" },
+            presentationToken,
+          },
+        }),
+      );
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "morph:storefront-preview-update-section-props",
+            sectionId: "hero",
+            props: { heading: "Latest" },
+            presentationToken: newerToken,
+          },
+        }),
+      );
+    });
+
+    expect(screen.getByTestId("rendered-heading").textContent).toBe("Latest");
+    expect(protocol.post.mock.calls).toHaveLength(2);
+    expect(protocol.post.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        operationId: presentationToken.operationId,
+        status: "not-applied",
+        reason: "superseded",
+      }),
+    );
+    expect(protocol.post.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        operationId: newerToken.operationId,
+        status: "applied",
+      }),
+    );
+    expect(headingAtAck).toBe("Latest");
   });
 });
