@@ -220,6 +220,7 @@ export const saveThemeFileInputSchema = z
     expectedVersion: z.number().int().min(1).optional(),
     expectMissing: z.boolean().optional().default(false),
     expectedSourceGeneration: z.number().int().min(1),
+    writeAttemptId: z.string().uuid().optional(),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
     operation: z

@@ -57,7 +57,10 @@ import {
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { planConfirmedPublicUrlRewrite } from "@/lib/storefront/service/public-url-rewrite-batch";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
-import { isEditablePublicTextPath, projectPublicTextFile } from "@/lib/storefront/editor/public-text-file";
+import {
+  isEditablePublicTextPath,
+  projectPublicTextFile,
+} from "@/lib/storefront/editor/public-text-file";
 import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
 import { isThemeAuthoringRefusedPath } from "@/lib/storefront/compiler/theme-start-toolchain";
 import { proveAndPatchSourceDefault } from "@/lib/storefront/editor/source-default-control";
@@ -137,6 +140,7 @@ async function saveDesignElementOperation(
     expectedFileId?: string;
     expectedVersion?: number;
     expectedSourceGeneration: number;
+    writeAttemptId?: string;
     createRevision?: boolean;
     revisionMessage?: string;
   },
@@ -193,6 +197,7 @@ async function saveDesignElementOperation(
         expectedVersion: stored.version,
         expectMissing: false,
         expectedSourceGeneration: snapshot.sourceGeneration,
+        writeAttemptId: data.writeAttemptId,
         createRevision: data.createRevision,
         revisionMessage: data.revisionMessage,
         createdBy: context.user?.id,
@@ -254,6 +259,7 @@ async function saveDesignStructureWrite(
     expectedVersion?: number;
     expectMissing?: boolean;
     expectedSourceGeneration: number;
+    writeAttemptId?: string;
     createRevision?: boolean;
     revisionMessage?: string;
   },
@@ -289,6 +295,7 @@ async function saveDesignStructureWrite(
         expectedVersion: data.expectedVersion,
         expectMissing: data.expectMissing,
         expectedSourceGeneration: snapshot.sourceGeneration,
+        writeAttemptId: data.writeAttemptId,
         createRevision: data.createRevision,
         revisionMessage: data.revisionMessage,
         createdBy: context.user?.id,
@@ -804,7 +811,11 @@ export const getStorefrontThemeFile = createServerFn({ method: "POST" })
 
     try {
       if (isEditablePublicTextPath(data.path)) {
-        const binary = await themeSourceStore.getBinaryFileByPath(data.storefrontId, data.themeId, data.path);
+        const binary = await themeSourceStore.getBinaryFileByPath(
+          data.storefrontId,
+          data.themeId,
+          data.path,
+        );
         if (!binary) return fail("File not found", { error: "NOT_FOUND" });
         if (binary.sizeBytes > THEME_PUBLIC_LIMITS.maxFileBytes) {
           return fail("Public text file is too large", { error: "GET_FAILED" });
@@ -930,6 +941,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
             expectedVersion: data.expectedVersion,
             expectMissing: false,
             expectedSourceGeneration: data.expectedSourceGeneration,
+            writeAttemptId: data.writeAttemptId,
             createRevision: data.createRevision,
             revisionMessage:
               data.revisionMessage ??
@@ -993,6 +1005,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
           expectedVersion: data.expectedVersion,
           expectMissing: data.expectMissing,
           expectedSourceGeneration: data.expectedSourceGeneration,
+          writeAttemptId: data.writeAttemptId,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,
