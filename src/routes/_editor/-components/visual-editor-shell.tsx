@@ -1014,7 +1014,7 @@ type ContentReplay = Readonly<{
   /** The replay's own staged input, apart from the section's pending one. */
   entry: PendingContentEntry;
   /** What a lost answer completes once it is found to have landed. */
-  link: ContentResetLink;
+  link: ContentResetLink | null;
   /**
    * The author's recovery of a replay read back as not landed: `entry` is
    * the frozen write as first sent, and is sent again exactly so, at its own
@@ -1940,11 +1940,15 @@ export function VisualEditorShell({
    * one a history run sent (a content replay), what it completes once read
    * back as landed. Same key as its record. A record with a link here, or
    * with `resetProps`, is decided by `classifyUnconfirmedContent` and sent
-   * again only as first sent (`resendUnconfirmedResets`).
+   * again only as first sent (`resendUnconfirmedWrites`).
    */
   const unconfirmedResetLinksRef = useRef<Map<string, ContentResetLink>>(
     new Map(),
   );
+  /** One read-back pass at a time; overlapping Try again actions share it. */
+  const settlingUnconfirmedContentRef = useRef<Promise<void> | null>(null);
+  /** Prevents a second recovery action sending pending content during a resend. */
+  const retryingFailedContentRef = useRef(false);
   /**
    * History entries whose unanswered write was read back as moved: refused
    * from then on in this session (`HISTORY_MOVED_MESSAGE`), never resent.
@@ -1960,7 +1964,10 @@ export function VisualEditorShell({
    * basis for the direction pressed refuses (`historyStepBasis`).
    */
   const historyStepBasesRef = useRef<
-    Map<number, Readonly<{ direction: "undo" | "redo"; draftGeneration: number }>>
+    Map<
+      number,
+      Readonly<{ direction: "undo" | "redo"; draftGeneration: number }>
+    >
   >(new Map());
   /**
    * Pending keys shown out of date because an unanswered reset or replay was
@@ -1970,7 +1977,11 @@ export function VisualEditorShell({
   const movedResetKeysRef = useRef<Set<string>>(new Set());
   /** Set beside the preview poster, below; read when a reset is confirmed. */
   const previewResetRef = useRef<
-    (sectionId: string, restore: Record<string, unknown>, reset: string[]) => void
+    (
+      sectionId: string,
+      restore: Record<string, unknown>,
+      reset: string[],
+    ) => void
   >(() => {});
   const [unconfirmedContentCount, setUnconfirmedContentCount] = useState(0);
   const syncUnconfirmedContentCount = useCallback(
@@ -2576,11 +2587,10 @@ export function VisualEditorShell({
               return;
             }
             if (Object.keys(restore).length > 0) {
-              return contentChangeRef.current?.(
-                entry.sectionId,
-                restore,
-                { historySourceGeneration, historyAttempt: attempt },
-              );
+              return contentChangeRef.current?.(entry.sectionId, restore, {
+                historySourceGeneration,
+                historyAttempt: attempt,
+              });
             }
             noteHistoryStepAnswered(attempt, basisDraftGeneration);
           },
@@ -2593,12 +2603,7 @@ export function VisualEditorShell({
       );
       setHistoryStepBasis(entryId, "undo", answeredDraftGeneration);
     },
-    [
-      history,
-      historyStepBasis,
-      noteHistoryStepAnswered,
-      setHistoryStepBasis,
-    ],
+    [history, historyStepBasis, noteHistoryStepAnswered, setHistoryStepBasis],
   );
 
   /**
@@ -2767,6 +2772,7 @@ export function VisualEditorShell({
           pending: pendingPropsMapRef.current,
           baselines: pendingPropsBaselineRef.current,
           own: replay?.entry,
+          acknowledgeOwn: Boolean(replay?.resend && replay.link === null),
           failureCode: (result) => result.error,
           select: (entry) =>
             replay?.resend
@@ -2845,96 +2851,104 @@ export function VisualEditorShell({
                 });
               },
               {
-              onResult: (result) => {
-                const answered = sentEntry as PendingContentEntry | undefined;
-                const hiddenBefore = answered
-                  ? previewVisibilityRef.current.isHidden(answered.sectionId)
-                  : undefined;
-                // Answered, either way: nothing is left to find out.
-                if (unconfirmedContentRef.current.delete(key)) {
-                  syncUnconfirmedContentCount();
-                }
-                const data = (
-                  result as {
-                    success: boolean;
-                    data?: {
-                      draftGeneration?: unknown;
-                      document?: { sections?: readonly SnapshotSection[] };
-                    };
+                onResult: (result) => {
+                  const answered = sentEntry as PendingContentEntry | undefined;
+                  const hiddenBefore = answered
+                    ? previewVisibilityRef.current.isHidden(answered.sectionId)
+                    : undefined;
+                  // Answered, either way: nothing is left to find out.
+                  if (unconfirmedContentRef.current.delete(key)) {
+                    syncUnconfirmedContentCount();
                   }
-                ).data;
-                // The document our write produced, with its generation: the
-                // next write composes on it, not on a read from before it.
-                // Accepted here, before the write's pending input is
-                // acknowledged, so this editor's copy is never older than
-                // what it has just stopped holding as pending.
-                if (
-                  result.success &&
-                  typeof data?.draftGeneration === "number" &&
-                  Number.isSafeInteger(data.draftGeneration)
-                ) {
-                  answeredDraftGeneration = data.draftGeneration;
-                }
-                if (result.success && data) {
-                  const next = acceptAnsweredWrite(
-                    contentSnapshotsRef.current.get(sentTemplateId),
-                    {
-                      sentAt: sentDraftGeneration,
-                      draftGeneration: data.draftGeneration,
-                      sections: data.document?.sections,
-                    },
-                    composedOnCreatedDocument
-                      ? { ownStepFrom: ROUTE_DOCUMENT_CREATED_GENERATION }
-                      : undefined,
-                  );
-                  if (next) contentSnapshotsRef.current.set(sentTemplateId, next);
-                }
-                // A visibility this write carried is answered: the preview
-                // is told what the editor holds now, which a newer toggle
-                // still pending decides over this answer.
-                if (answered) {
-                  reconcileAfterRemoval(
-                    answered.sectionId,
-                    answered,
-                    hiddenBefore,
-                  );
-                }
-                return result;
-              },
-              onError: (error: unknown): never => {
-                // Sent, and no answer came back: it may have landed. A
-                // refusal answered for an earlier sign-in is an answer.
-                if (
-                  sentEntry &&
-                  !isEditorWritePaused(error) &&
-                  !isEditorWriteRefusedEarlier(error) &&
-                  (error as { code?: string }).code !==
-                    "SELECTION_SOURCE_CONFLICT"
-                ) {
-                  if (replay) {
-                    // A history run's write: held as sent, frozen, with the
-                    // run it completes, and decided by its own read-back.
-                    unconfirmedContentRef.current.set(
-                      key,
-                      sentContentWrite(sentEntry),
+                  const data = (
+                    result as {
+                      success: boolean;
+                      data?: {
+                        draftGeneration?: unknown;
+                        document?: { sections?: readonly SnapshotSection[] };
+                      };
+                    }
+                  ).data;
+                  // The document our write produced, with its generation: the
+                  // next write composes on it, not on a read from before it.
+                  // Accepted here, before the write's pending input is
+                  // acknowledged, so this editor's copy is never older than
+                  // what it has just stopped holding as pending.
+                  if (
+                    result.success &&
+                    typeof data?.draftGeneration === "number" &&
+                    Number.isSafeInteger(data.draftGeneration)
+                  ) {
+                    answeredDraftGeneration = data.draftGeneration;
+                  }
+                  if (result.success && data) {
+                    const next = acceptAnsweredWrite(
+                      contentSnapshotsRef.current.get(sentTemplateId),
+                      {
+                        sentAt: sentDraftGeneration,
+                        draftGeneration: data.draftGeneration,
+                        sections: data.document?.sections,
+                      },
+                      composedOnCreatedDocument
+                        ? { ownStepFrom: ROUTE_DOCUMENT_CREATED_GENERATION }
+                        : undefined,
                     );
-                    unconfirmedResetLinksRef.current.set(key, replay.link);
-                  } else {
-                    unconfirmedContentRef.current.set(
-                      key,
-                      sentContentWrite(sentEntry),
+                    if (next)
+                      contentSnapshotsRef.current.set(sentTemplateId, next);
+                  }
+                  // A visibility this write carried is answered: the preview
+                  // is told what the editor holds now, which a newer toggle
+                  // still pending decides over this answer.
+                  if (answered) {
+                    reconcileAfterRemoval(
+                      answered.sectionId,
+                      answered,
+                      hiddenBefore,
                     );
                   }
-                  syncUnconfirmedContentCount();
-                } else if (replay?.resend && isEditorWritePaused(error)) {
-                  // Paused before it left: still not landed, still the
-                  // author's to send again once writes resume.
-                  unconfirmedContentRef.current.set(key, replay.entry);
-                  unconfirmedResetLinksRef.current.set(key, replay.link);
-                  syncUnconfirmedContentCount();
-                }
-                throw error;
-              },
+                  return result;
+                },
+                onError: (error: unknown): never => {
+                  // Sent, and no answer came back: it may have landed. A
+                  // refusal answered for an earlier sign-in is an answer.
+                  if (
+                    sentEntry &&
+                    !isEditorWritePaused(error) &&
+                    !isEditorWriteRefusedEarlier(error) &&
+                    (error as { code?: string }).code !==
+                      "SELECTION_SOURCE_CONFLICT"
+                  ) {
+                    const frozen = sentContentWrite(
+                      sentEntry,
+                      sentDraftGeneration,
+                      recordHistory,
+                    );
+                    if (replay) {
+                      // A history run's write: held as sent, frozen, with the
+                      // run it completes, and decided by its own read-back.
+                      unconfirmedContentRef.current.set(key, frozen);
+                      if (replay.link) {
+                        unconfirmedResetLinksRef.current.set(key, replay.link);
+                      } else {
+                        unconfirmedResetLinksRef.current.delete(key);
+                      }
+                    } else {
+                      unconfirmedContentRef.current.set(key, frozen);
+                    }
+                    syncUnconfirmedContentCount();
+                  } else if (replay?.resend && isEditorWritePaused(error)) {
+                    // Paused before it left: still not landed, still the
+                    // author's to send again once writes resume.
+                    unconfirmedContentRef.current.set(key, replay.entry);
+                    if (replay.link) {
+                      unconfirmedResetLinksRef.current.set(key, replay.link);
+                    } else {
+                      unconfirmedResetLinksRef.current.delete(key);
+                    }
+                    syncUnconfirmedContentCount();
+                  }
+                  throw error;
+                },
               },
             ),
           onSaved: recordHistory
@@ -2961,7 +2975,7 @@ export function VisualEditorShell({
           if (replay.resend) {
             // The step a held replay was for happened now: completed once.
             completeResetLink(replay.link, answeredDraftGeneration);
-          } else if (replay.link.kind === "history") {
+          } else if (replay.link?.kind === "history") {
             // Answered: the entry's next step goes onto the copy this made.
             noteHistoryStepAnswered(
               replay.link.attempt,
@@ -2981,16 +2995,17 @@ export function VisualEditorShell({
           });
         }
         if (replay) {
-          // A held replay sent again and refused as out of date: the
-          // Document moved after all; never sent again, and its entry
-          // refuses from now on. A first send refused is the history run's
-          // to report ("Could not undo"): nothing of the author's is pending
-          // under it to keep, rebase or retry, so no conflict is recorded.
-          if (
-            replay.resend &&
-            (error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT
-          ) {
-            markResetMoved(key, tid, replay.link);
+          // A resend refusal says nothing conclusive about the original
+          // unanswered request: it may have won the same-generation CAS just
+          // before this retry. Keep its frozen record for one more read-back.
+          if (replay.resend) {
+            unconfirmedContentRef.current.set(key, replay.entry);
+            if (replay.link) {
+              unconfirmedResetLinksRef.current.set(key, replay.link);
+            } else {
+              unconfirmedResetLinksRef.current.delete(key);
+            }
+            syncUnconfirmedContentCount();
           }
           throw error;
         }
@@ -3042,169 +3057,199 @@ export function VisualEditorShell({
    * landed, before anything is sent again.
    *
    * By draft generation first, then content (`classifyUnconfirmedContent`).
-   * An ordinary write is resolved only when the read proves it landed. A
-   * read that does not show it cannot prove the original request was
-   * cancelled, so its frozen request remains tracked and is never resent.
-   * Read failure decides nothing and mutates no local state.
+   * A landed write is acknowledged, a moved write becomes a recoverable
+   * conflict, and a same-generation non-landing may be resent once at its
+   * frozen basis. Read failure decides nothing and mutates no local state.
    *
    * Throws, deciding nothing, when the server cannot be asked.
    */
 
-  const settleUnconfirmedContent = useCallback(async () => {
-    const unconfirmed = Array.from(unconfirmedContentRef.current);
-    if (unconfirmed.length === 0) return;
-    const fresh = await queryClient.fetchQuery({
-      ...storefrontThemeQueries.detail(context.storefront.id, context.theme.id),
-      staleTime: 0,
-    });
-    if (!fresh.success) {
-      throw new Error(
-        fresh.message ?? "Could not check whether your changes were saved.",
-      );
+  const settleUnconfirmedContent = useCallback(() => {
+    if (settlingUnconfirmedContentRef.current) {
+      return settlingUnconfirmedContentRef.current;
     }
-    const hiddenBefore = new Map(
-      unconfirmed.map(([key, sent]) => [
-        key,
-        previewVisibilityRef.current.isHidden(sent.sectionId),
-      ]),
-    );
-    const firstReadOwnBases = new Map<string, number>();
-    // An unanswered write found to have landed is our own step, but only
-    // when the document is exactly one generation past the one it was sent
-    // at: anything more means someone else wrote too, and is theirs.
-    for (const [key, sent] of unconfirmed) {
-      const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
-      if (!templateId || sent.expectedDraftGeneration === undefined) continue;
-      const realId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
-      const template = fresh.data.templates.find((entry) => entry.id === realId);
-      const section = template?.document.sections.find(
-        (entry) => entry.id === sent.sectionId,
-      );
-      if (
-        template &&
-        template.draftGeneration === sent.expectedDraftGeneration + 1 &&
-        sectionContentLanded(sent, section)
-      ) {
-        ownDraftSteps(realId).set(
-          sent.expectedDraftGeneration,
-          template.draftGeneration,
+    const unconfirmed = Array.from(unconfirmedContentRef.current);
+    if (unconfirmed.length === 0) return Promise.resolve();
+    const settling = (async () => {
+      const fresh = await queryClient.fetchQuery({
+        ...storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ),
+        staleTime: 0,
+      });
+      if (!fresh.success) {
+        throw new Error(
+          fresh.message ?? "Could not check whether your changes were saved.",
         );
-        if (!contentSnapshotsRef.current.has(realId)) {
-          const prior = firstReadOwnBases.get(realId);
-          firstReadOwnBases.set(
-            realId,
-            prior === undefined
-              ? sent.expectedDraftGeneration
-              : Math.min(prior, sent.expectedDraftGeneration),
+      }
+      const hiddenBefore = new Map(
+        unconfirmed.map(([key, sent]) => [
+          key,
+          previewVisibilityRef.current.isHidden(sent.sectionId),
+        ]),
+      );
+      const firstReadOwnBases = new Map<string, number>();
+      const resolved: Array<[string, PendingContentEntry]> = [];
+      // An unanswered write found to have landed is our own step, but only
+      // when the document is exactly one generation past the one it was sent
+      // at: anything more means someone else wrote too, and is theirs.
+      for (const [key, sent] of unconfirmed) {
+        if (unconfirmedContentRef.current.get(key) !== sent) continue;
+        const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
+        if (!templateId || sent.expectedDraftGeneration === undefined) continue;
+        const realId =
+          routeTemplateIdsRef.current.get(templateId) ?? templateId;
+        const template = fresh.data.templates.find(
+          (entry) => entry.id === realId,
+        );
+        const section = template?.document.sections.find(
+          (entry) => entry.id === sent.sectionId,
+        );
+        if (
+          template &&
+          template.draftGeneration === sent.expectedDraftGeneration + 1 &&
+          sectionContentLanded(sent, section)
+        ) {
+          ownDraftSteps(realId).set(
+            sent.expectedDraftGeneration,
+            template.draftGeneration,
           );
+          if (!contentSnapshotsRef.current.has(realId)) {
+            const prior = firstReadOwnBases.get(realId);
+            firstReadOwnBases.set(
+              realId,
+              prior === undefined
+                ? sent.expectedDraftGeneration
+                : Math.min(prior, sent.expectedDraftGeneration),
+            );
+          }
         }
       }
-    }
-    acceptReadTemplates(fresh.data.templates, firstReadOwnBases);
-    for (const [key, sent] of unconfirmed) {
-      const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
-      if (!templateId) continue;
-      // A route document may have been created by the write itself.
-      const routePath = routePathFromTemplatePlaceholder(templateId);
-      const realId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
-      const template =
-        fresh.data.templates.find((entry) => entry.id === realId) ??
-        (routePath !== null
-          ? fresh.data.templates.find((entry) => entry.routePath === routePath)
-          : undefined);
-      const section = template?.document.sections.find(
-        (entry) => entry.id === sent.sectionId,
-      );
-      // A write that removes keys, or a history run's replay: decided version
-      // first, then content, by its own rule, and never merged with pending
-      // input of the section.
-      if (
-        Object.prototype.hasOwnProperty.call(sent, "resetProps") ||
-        unconfirmedResetLinksRef.current.has(key)
-      ) {
+      acceptReadTemplates(fresh.data.templates, firstReadOwnBases);
+      for (const [key, sent] of unconfirmed) {
+        // Another recovery may have settled or replaced this exact write while
+        // this read was in flight. Only its current owner may move history.
+        if (unconfirmedContentRef.current.get(key) !== sent) continue;
+        const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
+        if (!templateId) continue;
+        // A route document may have been created by the write itself.
+        const routePath = routePathFromTemplatePlaceholder(templateId);
+        const realId =
+          routeTemplateIdsRef.current.get(templateId) ?? templateId;
+        const template =
+          fresh.data.templates.find((entry) => entry.id === realId) ??
+          (routePath !== null
+            ? fresh.data.templates.find(
+                (entry) => entry.routePath === routePath,
+              )
+            : undefined);
+        const section = template?.document.sections.find(
+          (entry) => entry.id === sent.sectionId,
+        );
+        // A write that removes keys, or a history run's replay: decided version
+        // first, then content, by its own rule, and never merged with pending
+        // input of the section.
+        if (
+          Object.prototype.hasOwnProperty.call(sent, "resetProps") ||
+          unconfirmedResetLinksRef.current.has(key)
+        ) {
+          const outcome = classifyUnconfirmedContent(sent, {
+            ok: true,
+            template: template
+              ? { draftGeneration: template.draftGeneration, section }
+              : undefined,
+          });
+          // Kept, retryable: sent again only by the author's recovery, as
+          // first sent (`resendUnconfirmedWrites`).
+          if (outcome === "not-landed") continue;
+          const link = unconfirmedResetLinksRef.current.get(key);
+          unconfirmedContentRef.current.delete(key);
+          unconfirmedResetLinksRef.current.delete(key);
+          resolved.push([key, sent]);
+          if (outcome === "landed") {
+            previewResetRef.current(sent.sectionId, { ...sent.props }, [
+              ...(sent.resetProps ?? []),
+            ]);
+            // Landed exactly one generation on (`classifyUnconfirmedContent`):
+            // that copy is the next step's basis.
+            completeResetLink(link, template?.draftGeneration);
+          } else {
+            markResetMoved(key, templateId, link);
+          }
+          continue;
+        }
         const outcome = classifyUnconfirmedContent(sent, {
           ok: true,
           template: template
             ? { draftGeneration: template.draftGeneration, section }
             : undefined,
         });
-        // Kept, retryable: sent again only by the author's recovery, as
-        // first sent (`resendUnconfirmedResets`).
+        // The transport error does not cancel the original server request. A
+        // same-generation read proves it did not land, so one explicit resend
+        // at this frozen basis is safe. A moved basis can no longer accept the
+        // original request and becomes a recoverable conflict.
         if (outcome === "not-landed") continue;
-        const link = unconfirmedResetLinksRef.current.get(key);
+        if (outcome === "moved") {
+          const link = unconfirmedResetLinksRef.current.get(key) ?? null;
+          unconfirmedContentRef.current.delete(key);
+          unconfirmedResetLinksRef.current.delete(key);
+          resolved.push([key, sent]);
+          markResetMoved(key, templateId, link);
+          continue;
+        }
+        if (outcome !== "landed") continue;
         unconfirmedContentRef.current.delete(key);
         unconfirmedResetLinksRef.current.delete(key);
-        if (outcome === "landed") {
-          previewResetRef.current(sent.sectionId, { ...sent.props }, [
-            ...(sent.resetProps ?? []),
-          ]);
-          // Landed exactly one generation on (`classifyUnconfirmedContent`):
-          // that copy is the next step's basis.
-          completeResetLink(link, template?.draftGeneration);
+        resolved.push([key, sent]);
+        const baseline = pendingPropsBaselineRef.current.get(key);
+        if (acknowledgeContentFields(pendingPropsMapRef.current, key, sent)) {
+          if (!pendingPropsMapRef.current.has(key))
+            pendingPropsBaselineRef.current.delete(key);
+          else
+            pendingPropsBaselineRef.current.set(key, {
+              ...pendingPropsBaselineRef.current.get(key),
+              ...sent.props,
+            });
         } else {
-          markResetMoved(key, templateId, link);
+          const now = pendingPropsMapRef.current.get(key);
+          // Compared by content, not by reference: the same values can be
+          // pending again under a new entry (a field re-emits on blur), and the
+          // server holding them leaves nothing to send.
+          if (!now || now === sent || sectionContentLanded(now, section)) {
+            pendingPropsMapRef.current.delete(key);
+            pendingPropsBaselineRef.current.delete(key);
+          } else {
+            // A newer edit stays pending, on top of what landed.
+            pendingPropsBaselineRef.current.set(key, {
+              ...pendingPropsBaselineRef.current.get(key),
+              ...sent.props,
+            });
+          }
         }
-        continue;
-      }
-      const outcome = classifyUnconfirmedContent(sent, {
-        ok: true,
-        template: template
-          ? { draftGeneration: template.draftGeneration, section }
-          : undefined,
-      });
-      // The transport error does not cancel the original server request.
-      // Neither a read that has not seen it nor a moved/ambiguous copy can
-      // release the write guard or authorize a replay of its frozen payload.
-      if (outcome !== "landed") continue;
-      if (sent.listActionPaths && sent.listActionPaths.length > 0) {
-        setSavedListChanges((current) => ({
-          ...current,
-          [key]: [
-            ...new Set([
-              ...(current[key] ?? []),
-              ...sent.listActionPaths!,
-            ]),
-          ],
-        }));
-      }
-      unconfirmedContentRef.current.delete(key);
-      const baseline = pendingPropsBaselineRef.current.get(key);
-      if (acknowledgeContentFields(pendingPropsMapRef.current, key, sent)) {
-        if (!pendingPropsMapRef.current.has(key))
-          pendingPropsBaselineRef.current.delete(key);
-        else
-          pendingPropsBaselineRef.current.set(key, {
-            ...pendingPropsBaselineRef.current.get(key),
-            ...sent.props,
-          });
-      } else {
-        const now = pendingPropsMapRef.current.get(key);
-        // Compared by content, not by reference: the same values can be
-        // pending again under a new entry (a field re-emits on blur), and the
-        // server holding them leaves nothing to send.
-        if (!now || now === sent || sectionContentLanded(now, section)) {
-          pendingPropsMapRef.current.delete(key);
-          pendingPropsBaselineRef.current.delete(key);
-        } else {
-          // A newer edit stays pending, on top of what landed.
-          pendingPropsBaselineRef.current.set(key, {
-            ...pendingPropsBaselineRef.current.get(key),
-            ...sent.props,
-          });
+        if (sent.recordHistory !== false) {
+          recordSavedContentHistory(
+            templateId,
+            sent,
+            baseline,
+            template?.draftGeneration,
+          );
         }
       }
-      recordSavedContentHistory(
-        templateId,
-        sent,
-        baseline,
-        template?.draftGeneration,
-      );
-    }
-    // Each answer found: the preview is told the visibility it leaves.
-    for (const [key, sent] of unconfirmed) {
-      reconcileAfterRemoval(sent.sectionId, sent, hiddenBefore.get(key));
-    }
-    syncUnconfirmedContentCount();
+      // Each answer found: the preview is told the visibility it leaves.
+      for (const [key, sent] of resolved) {
+        reconcileAfterRemoval(sent.sectionId, sent, hiddenBefore.get(key));
+      }
+      syncUnconfirmedContentCount();
+    })();
+    let tracked!: Promise<void>;
+    tracked = settling.finally(() => {
+      if (settlingUnconfirmedContentRef.current === tracked) {
+        settlingUnconfirmedContentRef.current = null;
+      }
+    });
+    settlingUnconfirmedContentRef.current = tracked;
+    return tracked;
   }, [
     acceptReadTemplates,
     completeResetLink,
@@ -3219,32 +3264,36 @@ export function VisualEditorShell({
   ]);
 
   /**
-   * Sends again, once each, only resets and history replays a read-back found
-   * not landed: exactly as first sent, at the draft and source generations
-   * they were sent at, so a document that moved meanwhile refuses them.
-   * Ordinary content writes remain tracked after an inconclusive read because
-   * that read cannot cancel the unanswered original request. A replay with no
-   * answer is held again by the write itself; answered, it completes its link
-   * once and records nothing.
+   * Sends every unanswered write found not landed once, exactly as first sent
+   * and at its original draft and source generations. A document that moved
+   * meanwhile refuses it. If a replay gets no answer, it is held again with
+   * its link; an ordinary write keeps its history policy and acknowledges its
+   * frozen pending fields only when the resend is answered.
    */
-  const resendUnconfirmedResets = useCallback(async () => {
+  const resendUnconfirmedWrites = useCallback(async () => {
     for (const [key, sent] of Array.from(unconfirmedContentRef.current)) {
+      if (unconfirmedContentRef.current.get(key) !== sent) continue;
       const isReset = Object.prototype.hasOwnProperty.call(sent, "resetProps");
       const link = unconfirmedResetLinksRef.current.get(key) ?? null;
       if (!isReset) {
-        // A history replay (a plain content write has no link): sent again
-        // through the content write path, as first sent.
-        if (!link) continue;
+        // An ordinary write or history replay: sent through the content
+        // write path with its own frozen generation and history policy.
         const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
         if (!templateId) continue;
         unconfirmedContentRef.current.delete(key);
         unconfirmedResetLinksRef.current.delete(key);
         syncUnconfirmedContentCount();
-        await commitSectionPending(templateId, key, false, true, {
-          entry: sent,
-          link,
-          resend: true,
-        }).catch(() => {
+        await commitSectionPending(
+          templateId,
+          key,
+          sent.recordHistory !== false,
+          true,
+          {
+            entry: sent,
+            link,
+            resend: true,
+          },
+        ).catch(() => {
           // Reported by the mutation; held again if it was not answered.
         });
         continue;
@@ -3299,7 +3348,8 @@ export function VisualEditorShell({
       const pending = pendingPropsMapRef.current.get(key);
       // Recorded under the id it was sent by: a route placeholder is read
       // back as the document this session created from it.
-      const documentId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const documentId =
+        routeTemplateIdsRef.current.get(templateId) ?? templateId;
       const template = freshTemplates.find((entry) => entry.id === documentId);
       // Out of date only because an unanswered reset was read back as moved:
       // the latest version is now read, and nothing of the author's is
@@ -3396,36 +3446,53 @@ export function VisualEditorShell({
    * go through the update, not a resend.
    */
   const retryFailedContent = useCallback(async () => {
-    try {
-      await settleUnconfirmedContent();
-    } catch (error) {
+    if (retryingFailedContentRef.current) {
       toast.error(
-        error instanceof Error
-          ? error.message
-          : "Could not check whether your changes were saved.",
+        "A content save check is already in progress. Wait for it to finish.",
       );
       return;
     }
-    // Resets go first: they were sent before anything held behind them.
-    await resendUnconfirmedResets();
-    // One went unanswered again: nothing more is sent until it is checked.
-    if (unconfirmedContentRef.current.size > 0) return;
-    for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
-      if (key in contentConflictsRef.current) continue;
-      const templateId = templateIdOfPendingContentKey(key, entry.sectionId);
-      if (!templateId) continue;
-      await commitSectionPending(templateId, key, true, true).catch(() => {
-        // Reported by the mutation, and still pending if it failed again.
-      });
+    retryingFailedContentRef.current = true;
+    try {
+      try {
+        await settleUnconfirmedContent();
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Could not check whether your changes were saved.",
+        );
+        return;
+      }
+      // Resend unanswered writes before anything held behind them.
+      await resendUnconfirmedWrites();
+      // A resent write still lacks an answer: explain the hold and stop before
+      // any pending section can be sent out of order.
+      if (unconfirmedContentRef.current.size > 0) {
+        toast.error(
+          "An earlier save is still unresolved. Check again before trying other changes.",
+        );
+        return;
+      }
+      for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
+        if (key in contentConflictsRef.current) continue;
+        const templateId = templateIdOfPendingContentKey(key, entry.sectionId);
+        if (!templateId) continue;
+        await commitSectionPending(templateId, key, true, true).catch(() => {
+          // Reported by the mutation, and still pending if it failed again.
+        });
+      }
+      // Everything landed or was sent: nothing is left to try again.
+      if (
+        pendingPropsMapRef.current.size === 0 &&
+        unconfirmedContentRef.current.size === 0
+      ) {
+        setDraftSaveState("idle");
+      }
+    } finally {
+      retryingFailedContentRef.current = false;
     }
-    // Everything landed or was sent: nothing is left to try again.
-    if (
-      pendingPropsMapRef.current.size === 0 &&
-      unconfirmedContentRef.current.size === 0
-    ) {
-      setDraftSaveState("idle");
-    }
-  }, [commitSectionPending, resendUnconfirmedResets, settleUnconfirmedContent]);
+  }, [commitSectionPending, resendUnconfirmedWrites, settleUnconfirmedContent]);
 
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
@@ -3691,28 +3758,31 @@ export function VisualEditorShell({
     },
     [stepCanvasDeferral],
   );
-  const reportInlineEdit = useCallback((editing: boolean, finished = true) => {
-    inlineEditOpenRef.current = editing;
-    setInlineEditOpen(editing);
-    if (editing) {
-      stepCanvasDeferral({ type: "editing", editing: true });
-      return;
-    }
-    // What the edit held goes to the canvas first, in order, before anything
-    // below can replace the frame; an edit that was lost discards it.
-    stepCanvasDeferral(
-      finished ? { type: "editing", editing: false } : { type: "lost" },
-    );
-    // The edit is over: a commit arriving now answers nothing.
-    inlineFinishRequestRef.current = null;
-    for (const ended of inlineEditEndedRef.current) ended(finished);
-    inlineEditEndedRef.current.clear();
-    // A content refresh held back while it was open can be shown now.
-    previewContentSyncRef.current?.editEnded();
-    // So can a frame reload held for the same reason. Any commit of the edit
-    // arrived before this (the page sends it first) and is already pending.
-    previewInstanceWatchRef.current?.editEnded();
-  }, [stepCanvasDeferral]);
+  const reportInlineEdit = useCallback(
+    (editing: boolean, finished = true) => {
+      inlineEditOpenRef.current = editing;
+      setInlineEditOpen(editing);
+      if (editing) {
+        stepCanvasDeferral({ type: "editing", editing: true });
+        return;
+      }
+      // What the edit held goes to the canvas first, in order, before anything
+      // below can replace the frame; an edit that was lost discards it.
+      stepCanvasDeferral(
+        finished ? { type: "editing", editing: false } : { type: "lost" },
+      );
+      // The edit is over: a commit arriving now answers nothing.
+      inlineFinishRequestRef.current = null;
+      for (const ended of inlineEditEndedRef.current) ended(finished);
+      inlineEditEndedRef.current.clear();
+      // A content refresh held back while it was open can be shown now.
+      previewContentSyncRef.current?.editEnded();
+      // So can a frame reload held for the same reason. Any commit of the edit
+      // arrived before this (the page sends it first) and is already pending.
+      previewInstanceWatchRef.current?.editEnded();
+    },
+    [stepCanvasDeferral],
+  );
   // A new preview document has no edit open, whatever the last one said.
   // An edit that was open went with the old one, unfinished: a frame
   // replaced while the author is finishing it must not read as finished.
@@ -5333,9 +5403,9 @@ export function VisualEditorShell({
    * ready again: what it now shows cannot be confirmed, so nothing was taken
    * from it, and the author is asked to reload. Null otherwise.
    */
-  const [olderBridgeReloaded, setOlderBridgeReloaded] = useState<
-    string | null
-  >(null);
+  const [olderBridgeReloaded, setOlderBridgeReloaded] = useState<string | null>(
+    null,
+  );
   useEffect(() => {
     setOlderBridgeReloaded(null);
   }, [previewKey]);
@@ -6892,9 +6962,10 @@ export function VisualEditorShell({
       const priorLocal =
         useThemeWorkspaceStore
           .getState()
-          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
-          filePath
-        ]?.localContent ??
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[filePath]?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content ??
         null;
       const before = options?.fromHistory ? null : priorLocal;
@@ -8640,7 +8711,7 @@ export function VisualEditorShell({
         );
       }
       await settleUnconfirmedContent();
-      await resendUnconfirmedResets();
+      await resendUnconfirmedWrites();
       for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
         // A reset unanswered again holds everything behind it.
         if (unconfirmedContentRef.current.size > 0) break;
@@ -8663,7 +8734,7 @@ export function VisualEditorShell({
     markWorkspaceSaved,
     pendingDesignSaveOptions,
     pendingDesignWritesToLeave,
-    resendUnconfirmedResets,
+    resendUnconfirmedWrites,
     settleUnconfirmedContent,
     workspaceScope,
     writeGate.epoch,
@@ -10264,7 +10335,11 @@ export function VisualEditorShell({
           themeFiles: effectiveThemeFilesRef.current,
         });
         if (target) {
-          handleJumpToCodeRef.current(target.filePath, target.line, target.column);
+          handleJumpToCodeRef.current(
+            target.filePath,
+            target.line,
+            target.column,
+          );
         } else {
           toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
             id: "source-location-stale",
@@ -11327,7 +11402,10 @@ export function VisualEditorShell({
    * (`supersedeAwaitingSignedPost`); nothing else reads it.
    */
   const awaitingSignedPostRef = useRef(
-    new Map<string, Readonly<{ revision: number; stillCurrent?: () => boolean }>>(),
+    new Map<
+      string,
+      Readonly<{ revision: number; stillCurrent?: () => boolean }>
+    >(),
   );
   const postPreviewSectionProps = useCallback(
     (
@@ -11964,7 +12042,11 @@ export function VisualEditorShell({
       // route had a document at all (decided when the document is known).
       const madeBeforeDocument =
         routePathFromTemplatePlaceholder(templateId) !== null;
-      if (authorPress && basisDraftGeneration === undefined && !madeBeforeDocument) {
+      if (
+        authorPress &&
+        basisDraftGeneration === undefined &&
+        !madeBeforeDocument
+      ) {
         toast.error(MISSING_BASIS_MESSAGE, { id: "content-missing-basis" });
         return { success: false, message: MISSING_BASIS_MESSAGE };
       }
@@ -12135,8 +12217,7 @@ export function VisualEditorShell({
               sentEntry &&
               !isEditorWritePaused(error) &&
               !isEditorWriteRefusedEarlier(error) &&
-              (error as { code?: string }).code !==
-                "SELECTION_SOURCE_CONFLICT"
+              (error as { code?: string }).code !== "SELECTION_SOURCE_CONFLICT"
             ) {
               unconfirmedContentRef.current.set(key, sentEntry);
               if (link) unconfirmedResetLinksRef.current.set(key, link);
@@ -12560,8 +12641,9 @@ export function VisualEditorShell({
     pendingProps: (sectionId) => {
       if (!activeTemplate) return undefined;
       const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
-      return pendingPropsMapRef.current.get(contentKeyFor(templateId, sectionId))
-        ?.props;
+      return pendingPropsMapRef.current.get(
+        contentKeyFor(templateId, sectionId),
+      )?.props;
     },
   };
   useEffect(() => {
@@ -12631,9 +12713,12 @@ export function VisualEditorShell({
       // the copy from before that write. The snapshot is read only when it
       // is strictly newer (`newestAcceptedCopy`), so a later read of someone
       // else's change still refuses.
-      const ownerId = routeTemplateIdsRef.current.get(
-        templateIdForSection(message.sectionId) ?? activeTemplate.id,
-      ) ?? templateIdForSection(message.sectionId) ?? activeTemplate.id;
+      const ownerId =
+        routeTemplateIdsRef.current.get(
+          templateIdForSection(message.sectionId) ?? activeTemplate.id,
+        ) ??
+        templateIdForSection(message.sectionId) ??
+        activeTemplate.id;
       const newest = newestAcceptedCopy({
         templateId: ownerId,
         snapshots: contentSnapshotsRef.current,
@@ -13187,7 +13272,6 @@ export function VisualEditorShell({
     ],
   );
 
-
   /**
    * Stores the author's own name for one section placement.
    *
@@ -13526,7 +13610,10 @@ export function VisualEditorShell({
 
   const handleSwapPreviewSections = useCallback(
     async (draggedSectionId: string, targetSectionId: string) => {
-      if (isPageStandInId(draggedSectionId) || isPageStandInId(targetSectionId)) {
+      if (
+        isPageStandInId(draggedSectionId) ||
+        isPageStandInId(targetSectionId)
+      ) {
         return;
       }
       // This page's own sections in the order it shows them, slots its source
@@ -15264,7 +15351,9 @@ export function VisualEditorShell({
             reviewRequest={starterReviewRequest}
             storefrontId={workspaceScope.storefrontId}
             themeId={workspaceScope.themeId}
-            unsavedCount={unsavedWorkspaceFileCount + pendingSourceConflicts.length}
+            unsavedCount={
+              unsavedWorkspaceFileCount + pendingSourceConflicts.length
+            }
             onApplied={async () => {
               await Promise.all([
                 queryClient.invalidateQueries({

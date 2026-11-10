@@ -304,11 +304,14 @@ function readyQueryClient() {
   return client;
 }
 
-function renderShell(client = readyQueryClient()) {
+function renderShell(
+  client = readyQueryClient(),
+  editorContext: StorefrontThemeEditorDTO = context,
+) {
   return render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={context}
+        context={editorContext}
         search={baseSearch}
         onSearchChange={vi.fn()}
       />
@@ -365,10 +368,11 @@ function sendInlineCommit(
     fieldKey: "heading",
     fieldPath: "heading",
   },
+  sectionId = "hero",
 ) {
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
-    sectionId: "hero",
+    sectionId,
     ...field,
     value,
     originalValue,
@@ -601,6 +605,86 @@ describe("a content save that fails", () => {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("releases other section writes after a moved unanswered write becomes a conflict", async () => {
+    const secondNode = {
+      ...heroNode,
+      id: "second:node:heading",
+      sectionId: "second",
+      target: {
+        ...heroNode.target,
+        sectionId: "second",
+        nodeId: "second:node:heading",
+      },
+    };
+    const twoSectionContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0]!,
+          document: {
+            version: 1,
+            sections: [
+              ...context.templates[0]!.document.sections,
+              { id: "second", type: "hero", props: { heading: "Second" } },
+            ],
+          },
+        },
+      ],
+    } as StorefrontThemeEditorDTO;
+    const movedRead = {
+      ...twoSectionContext,
+      templates: [
+        {
+          ...twoSectionContext.templates[0]!,
+          draftGeneration: 2,
+          document: {
+            version: 1,
+            sections: [
+              { id: "hero", type: "hero", props: { heading: "Theirs" } },
+              { id: "second", type: "hero", props: { heading: "Second" } },
+            ],
+          },
+        },
+      ],
+    } as StorefrontThemeEditorDTO;
+    updateSectionProps
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({
+        success: true,
+        data: { draftGeneration: 3, droppedProps: [] },
+      } as never);
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: movedRead,
+    });
+    renderShell(readyQueryClient(), twoSectionContext);
+
+    await commitInlineText("Mine", "Welcome");
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
+
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [secondNode],
+    });
+    const row = await screen.findByText("h1");
+    act(() => row.closest("button")?.click());
+    sendInlineCommit("Second edited", "Second", undefined, "second");
+
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(updateSectionProps.mock.calls[1]![0].data).toMatchObject({
+      sectionId: "second",
+      props: { heading: "Second edited" },
+      expectedDraftGeneration: 2,
+    });
   });
 
   it("keeps an unanswered write tracked when the readback does not show it", async () => {
@@ -3051,10 +3135,10 @@ function Home() {
       "expected the write to be refused:SELECTION_SOURCE_CONFLICT; it was refused:INTERNAL_ERROR",
     );
     // Refused, where a save was expected.
-    updateSectionProps.mockImplementationOnce(async () => REFUSED_AT_OLD_SOURCE);
-    await expect(
-      chooseAndAwaitWrite(trigger, "Top", "saved"),
-    ).rejects.toThrow(
+    updateSectionProps.mockImplementationOnce(
+      async () => REFUSED_AT_OLD_SOURCE,
+    );
+    await expect(chooseAndAwaitWrite(trigger, "Top", "saved")).rejects.toThrow(
       "expected the write to be saved; it was refused:SELECTION_SOURCE_CONFLICT",
     );
     expect(sent()).toHaveLength(3);
@@ -4035,10 +4119,13 @@ function Home() {
 
     expect(sent()).toHaveLength(1);
     expectOnlySelectedRowWritten();
-    // The read found a different document, but cannot prove the unanswered
-    // request will never land. It stays unknown and is not resent.
-    expect(saveStatus()).toBe("Save failed");
-    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    // The read found a newer document, so the frozen selected-row basis has
+    // moved. The original CAS can no longer land; keep the choice as a
+    // recoverable conflict instead of holding the whole session unknown.
+    expect(saveStatus()).toBe("Out of date");
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
   });
 });
 
@@ -4459,9 +4546,9 @@ function Home() {
       return active as HTMLInputElement;
     };
     async function enter(shown: string, caret: number) {
-      const input = (await screen.findAllByDisplayValue(
-        shown,
-      ))[0]! as HTMLInputElement;
+      const input = (
+        await screen.findAllByDisplayValue(shown)
+      )[0]! as HTMLInputElement;
       act(() => input.focus());
       input.setSelectionRange(caret, caret);
       return input;
@@ -4558,9 +4645,9 @@ function Home() {
       vi.spyOn(toast, "error").mockImplementation(() => "");
       const [one, two] = identified();
       await openTitle({}, 0);
-      const other = (await screen.findAllByDisplayValue(
-        "Two",
-      ))[0]! as HTMLInputElement;
+      const other = (
+        await screen.findAllByDisplayValue("Two")
+      )[0]! as HTMLInputElement;
       const otherCard = rowCardOf(other);
       expect(otherCard).toBeTruthy();
 
@@ -4602,9 +4689,7 @@ function Home() {
       fireEvent.compositionStart(input);
       press(input, "あ");
       await flushFrames();
-      expect(input.isConnected, "the same input during composition").toBe(
-        true,
-      );
+      expect(input.isConnected, "the same input during composition").toBe(true);
       expect(document.activeElement).toBe(input);
       act(() => {
         input.value = "Two亜";
@@ -4613,9 +4698,7 @@ function Home() {
       fireEvent.input(input);
       fireEvent.compositionEnd(input, { data: "亜" });
       await flushFrames();
-      expect(input.isConnected, "the same input after composition").toBe(
-        true,
-      );
+      expect(input.isConnected, "the same input after composition").toBe(true);
       expect(document.activeElement).toBe(input);
       expect(input.selectionStart).toBe(4);
       act(() => input.blur());
@@ -5585,34 +5668,43 @@ function Home() {
           return editor;
         }
 
-        it("keeps tracking when the first readback does not show the write", async () => {
+        it("resends once at the frozen basis and keeps tracking if that resend gets no answer", async () => {
           await lostOrdinaryWrite();
           serverHolds({ ...STORED }, 1);
+          // A same-generation read proves only that the original did not land
+          // before this read. The explicit resend can also lose its answer.
+          answerNext.push(lost);
 
           await checkAndSave();
 
-          expect(sent(), "the unanswered payload is not resent").toHaveLength(1);
-          expect(unconfirmedCount(), "the request is still unresolved").toBe("1");
-          expect(saveStatus(), "it is not reported as saved").toBe("Save failed");
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+            expectedSourceGeneration: 1,
+          });
+          expect(unconfirmedCount(), "the request is still unresolved").toBe(
+            "1",
+          );
+          expect(saveStatus(), "it is not reported as saved").toBe(
+            "Save failed",
+          );
           expect(depth(), "no history entry exists yet").toBe("0");
           expect(historyButtons()).toEqual({ undo: false, redo: false });
         });
 
-        it("confirms a later landing once without resending the frozen payload", async () => {
+        it("records a successful same-basis resend once and undoes it from its answer", async () => {
           const { receive } = await lostOrdinaryWrite();
           serverHolds({ ...STORED }, 1);
 
           await checkAndSave();
 
-          expect(unconfirmedCount(), "first readback keeps tracking").toBe("1");
-          expect(sent()).toHaveLength(1);
-
-          // The original request can finish after this read. Its later copy is
-          // confirmed by a second read; the editor must not send it again.
-          serverHolds({ heading: "New" }, 2);
-          await checkAndSave();
-
-          expect(sent(), "a late landing is never resent").toHaveLength(1);
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+            expectedSourceGeneration: 1,
+          });
           expect(unconfirmedCount()).toBeNull();
           expect(depth(), "the saved edit is recorded once").toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
@@ -5620,8 +5712,8 @@ function Home() {
           await reread(receive);
           await undo();
 
-          expect(sent()).toHaveLength(2);
-          expect(sent()[1]).toMatchObject({
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
             props: { heading: "Hello" },
             expectedDraftGeneration: 2,
             expectedSourceGeneration: 1,
@@ -5629,6 +5721,138 @@ function Home() {
           expect(stored).toEqual({ heading: "Hello" });
           expect(depth()).toBe("0");
           expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+
+        it("turns a moved unanswered write into a recoverable conflict", async () => {
+          await lostOrdinaryWrite();
+          serverHolds({ heading: "Theirs" }, 2);
+
+          await checkAndSave();
+
+          expect(sent(), "the old payload is not resent").toHaveLength(1);
+          expect(
+            unconfirmedCount(),
+            "the moved request no longer holds the session",
+          ).toBeNull();
+          expect(saveStatus()).toBe("Out of date");
+          expect(
+            screen.getByRole("button", { name: "Load latest, keep mine" }),
+          ).toBeTruthy();
+          expect(screen.getAllByDisplayValue("New").length).toBeGreaterThan(0);
+
+          fireEvent.click(
+            screen.getByRole("button", { name: "Load latest, keep mine" }),
+          );
+          await waitFor(() => expect(sent()).toHaveLength(2));
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(unconfirmedCount()).toBeNull();
+        });
+
+        it("resends a not-landed ordinary write once at its original basis", async () => {
+          await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+            expectedSourceGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth()).toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+
+        it("explains that the write is still held when its one resend gets no answer", async () => {
+          const notice = notices();
+          await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+          answerNext.push(lost);
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount()).toBe("1");
+          expect(errors(notice)).toContain(
+            "An earlier save is still unresolved. Check again before trying other changes.",
+          );
+        });
+
+        it("keeps tracking when the late original wins the compare-and-swap race", async () => {
+          await lostOrdinaryWrite();
+          const original = sent()[0]!;
+          serverHolds({ ...STORED }, 1);
+          answerNext.push((retry) => {
+            const originalAnswer = apply(original);
+            expect(originalAnswer).toMatchObject({ success: true });
+            return apply(retry);
+          });
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(draftGeneration).toBe(2);
+          expect(
+            unconfirmedCount(),
+            "the original outcome still needs read-back",
+          ).toBe("1");
+          expect(depth()).toBe("0");
+
+          serverHolds({ heading: "New" }, 2);
+          await checkAndSave();
+
+          expect(
+            sent(),
+            "the late original is never sent a third time",
+          ).toHaveLength(2);
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth(), "the landed edit is recorded once").toBe("1");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+        });
+
+        it("two simultaneous recovery actions settle one landed write while newer input remains pending", async () => {
+          await lostOrdinaryWrite();
+          await type("New", "Newer");
+          await settle();
+          expect(
+            sent(),
+            "new input stays behind the unknown write",
+          ).toHaveLength(1);
+          serverHolds({ heading: "New" }, 2);
+          const retry = screen.getByRole("button", { name: "Try again" });
+          const checkAndSave = screen.getByRole("button", {
+            name: "Check and save",
+          });
+
+          act(() => {
+            retry.click();
+            checkAndSave.click();
+          });
+          await waitFor(() => expect(sent()).toHaveLength(2));
+
+          expect(sent()[1]).toMatchObject({
+            props: { heading: "Newer" },
+            expectedDraftGeneration: 2,
+          });
+          expect(unconfirmedCount()).toBeNull();
+          expect(
+            depth(),
+            "the landed write and newer input are each recorded once",
+          ).toBe("2");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
         });
 
         it("leaves tracking and local state unchanged when readback fails", async () => {
@@ -5729,9 +5953,9 @@ function Home() {
             expect(sent(), `round ${round}: redo sent once`).toHaveLength(
               round * 2 + 1,
             );
-            expect((sent().at(-1)!.props as { items: unknown[] }).items).toEqual(
-              first,
-            );
+            expect(
+              (sent().at(-1)!.props as { items: unknown[] }).items,
+            ).toEqual(first);
             expect(stored.items).toEqual(first);
             expect(depth(), `round ${round}: after redo`).toBe("1");
             expect(historyButtons()).toEqual({ undo: true, redo: false });
@@ -5973,9 +6197,9 @@ function Home() {
           expect(stored).toEqual({ heading: "Newer" });
           expect(depth()).toBe("2");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
-          expect(sent().every((data) => data.expectedSourceGeneration === 1)).toBe(
-            true,
-          );
+          expect(
+            sent().every((data) => data.expectedSourceGeneration === 1),
+          ).toBe(true);
         });
 
         // The same rule on the reset path (the undo of a first Add).
@@ -7301,18 +7525,23 @@ function Home() {
         expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
       });
 
-      it("keeps the unanswered swap tracked when read-back does not show it", async () => {
+      it("resends once at the original basis and keeps tracking if the resend gets no answer", async () => {
         const { warning } = notices();
         const { one, two } = await dragWithLostAnswer();
         // The server still holds the list in its first order.
         getThemeEditor.mockResolvedValue(readBack({ items: [one, two] }, 1));
+        updateSectionProps.mockRejectedValueOnce(new Error("offline"));
 
         act(() => {
           screen.getByRole("button", { name: "Try again" }).click();
         });
 
         await new Promise((resolve) => setTimeout(resolve, 1_200));
-        expect(sent()).toHaveLength(1);
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1]).toMatchObject({
+          props: { items: [two, one] },
+          expectedDraftGeneration: 1,
+        });
         expect(saveStatus()).toBe("Save failed");
         expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
         expect(warning).not.toHaveBeenCalled();
@@ -7353,6 +7582,26 @@ function Home() {
         await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
         expect(sent()).toHaveLength(1);
         expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+      });
+
+      it("does not record a generic Content history entry when read-back confirms a reorder", async () => {
+        const { one, two } = await dragWithLostAnswer();
+        expect(
+          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+        ).toBe(true);
+        getThemeEditor.mockResolvedValue(readBack({ items: [two, one] }, 2));
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+        await waitFor(() =>
+          expect(
+            screen.queryByRole("button", { name: "Try again" }),
+          ).toBeNull(),
+        );
+        expect(sent()).toHaveLength(1);
+        expect(
+          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+        ).toBe(true);
       });
     });
   });
@@ -7532,9 +7781,9 @@ function Home() {
         const notice = notices();
         readsCarryGeneration = false;
         const { receive } = await openHeading(NO_GENERATION);
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         act(() => field.focus());
         theyWrite({ heading: "Theirs" });
         act(() => {
@@ -7555,9 +7804,9 @@ function Home() {
       it("control: focused on generation 1, another tab's change read, then typed: refused as out of date", async () => {
         notices();
         const { receive } = await openHeading(1);
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         act(() => field.focus());
         theyWrite({ heading: "Theirs" });
         act(() => {
@@ -7703,9 +7952,9 @@ function Home() {
           { heading: "Hello" },
           NO_GENERATION,
         );
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         act(() => field.focus());
         theyWrite({ heading: "Theirs" });
         act(() => {
@@ -7758,9 +8007,9 @@ function Home() {
         notices();
         stored = { heading: "Hello" };
         const { receive } = await openSection({ heading: "Hello" });
-        const field = (await screen.findAllByDisplayValue(
-          "Hello",
-        ))[0]! as HTMLInputElement;
+        const field = (
+          await screen.findAllByDisplayValue("Hello")
+        )[0]! as HTMLInputElement;
         act(() => field.focus());
         theyWrite({ heading: "Theirs" });
         act(() => {
