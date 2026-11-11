@@ -22,6 +22,7 @@ import {
   rulesFingerprint,
   unionRules,
 } from "./ci-rules.mjs";
+import { jobBlock, withoutComments } from "./ci-workflow.mjs";
 
 const REPO_ROOT = new URL("../", import.meta.url);
 const A = "a".repeat(40);
@@ -51,17 +52,73 @@ test("the list covers the checker, its targets and itself", () => {
     "scripts/ci-workflow.test.mjs",
     ".github/workflows/ci.yml",
     "scripts/run-editor-e2e.test.mjs",
+    "scripts/run-container-e2e-isolated.mjs",
+    "scripts/run-container-e2e-isolated.test.mjs",
+    // Was pinned as not a rule. Since Stage 3 the test of every script the
+    // container acceptance job runs is a rule (see the test below), and the
+    // job runs the acceptance checker.
+    "scripts/check-container-acceptance.test.mjs",
   ]) {
     assert.ok(isRulePath(file, CI_RULE_PATHS), file);
   }
   for (const file of [
-    "scripts/check-container-acceptance.test.mjs",
+    // A test of a rule script the container job does not run stays off.
+    "scripts/check-e2e-shards.test.mjs",
     "scripts/container-acceptance-targets",
     "scripts/ci-rules.mjs.bak",
     "e2e/m1-container-lifecycle-acceptance.spec.ts",
   ]) {
     assert.ok(!isRulePath(file, CI_RULE_PATHS), file);
   }
+});
+
+test("every script the container acceptance job runs is a rule or excluded with a reason, and so is its test", () => {
+  // The job's steps decide its result through these scripts: the launcher
+  // maps the runner's exit and signals to the step's exit code, the runner
+  // and the checkers decide pass or fail. One left off the list could be made
+  // to exit 0 without the rules fingerprint moving.
+  const workflow = readFileSync(
+    new URL(".github/workflows/ci.yml", REPO_ROOT),
+    "utf8",
+  );
+  const job = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  const run = new Set(
+    job
+      .split("\n")
+      .filter((line) => /\bnode\s/.test(line))
+      .flatMap((line) =>
+        [...line.matchAll(/\bscripts\/[A-Za-z0-9_./-]+\.mjs\b/g)].map(
+          (match) => match[0],
+        ),
+      ),
+  );
+  for (const file of [
+    "scripts/run-container-e2e-isolated.mjs",
+    "scripts/run-editor-e2e.mjs",
+    "scripts/check-container-acceptance.mjs",
+    "scripts/check-container-run-handover.mjs",
+  ]) {
+    assert.ok(run.has(file), `the parser must see ${file} in the job`);
+  }
+  assert.deepEqual(
+    [...run].filter(
+      (file) => !isRulePath(file, CI_RULE_PATHS) && !(file in NOT_CI_RULES),
+    ),
+    [],
+  );
+  // Each such script's own test pins what passing means for it.
+  const testsOff = [];
+  for (const file of run) {
+    if (!isRulePath(file, CI_RULE_PATHS)) continue;
+    const sibling = file.replace(/\.mjs$/, ".test.mjs");
+    if (
+      existsSync(new URL(sibling, REPO_ROOT)) &&
+      !isRulePath(sibling, CI_RULE_PATHS)
+    ) {
+      testsOff.push(sibling);
+    }
+  }
+  assert.deepEqual(testsOff, []);
 });
 
 test("unionRules keeps both lists and refuses a non-path", () => {

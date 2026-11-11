@@ -221,3 +221,78 @@ setInterval(() => {}, 1000);`,
   );
   assert.equal(await readFile(files.signal, "utf8"), "SIGINT");
 });
+
+test("SIGTERM is forwarded into the runner session", async (t) => {
+  const dir = await scratch(t);
+  const files = await writeRunner(
+    dir,
+    `process.on("SIGTERM", () => {
+  writeFileSync(signalPath, "SIGTERM");
+  process.exit(143);
+});
+setInterval(() => {}, 1000);`,
+  );
+  const run = runIsolated(files.filename, [
+    files.identity,
+    files.signal,
+    files.residualPid,
+  ]);
+  await waitForFile(files.identity, run.child);
+  run.child.kill("SIGTERM");
+  const result = await run.exit;
+  assert.equal(
+    result.code,
+    143,
+    JSON.stringify({ ...result, ...run.output() }),
+  );
+  assert.equal(await readFile(files.signal, "utf8"), "SIGTERM");
+  assert.doesNotMatch(run.output().stderr, /killing runner group/);
+});
+
+test("a runner group that ignores SIGTERM is killed, the whole group, and the step fails", async (t) => {
+  const dir = await scratch(t);
+  // The runner and a child of its own both ignore SIGTERM, so only the
+  // launcher's escalation to SIGKILL on the group can end them.
+  const files = await writeRunner(
+    dir,
+    `process.on("SIGTERM", () => writeFileSync(signalPath, "SIGTERM ignored"));
+const residual = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });
+writeFileSync(residualPidPath, String(residual.pid));
+setInterval(() => {}, 1000);`,
+  );
+  const run = runIsolated(files.filename, [
+    files.identity,
+    files.signal,
+    files.residualPid,
+  ]);
+  const identity = JSON.parse(await waitForFile(files.identity, run.child));
+  await waitForFile(files.residualPid, run.child);
+  t.after(() => {
+    try {
+      process.kill(-identity.pgid, "SIGKILL");
+    } catch {
+      // Already gone, which is what the test expects.
+    }
+  });
+  const sent = Date.now();
+  run.child.kill("SIGTERM");
+  const result = await run.exit;
+  const elapsed = Date.now() - sent;
+  const { stderr } = run.output();
+  assert.notEqual(result.code, 0, JSON.stringify({ ...result, stderr }));
+  assert.equal(result.signal, null, "the launcher itself exits, it is not killed");
+  assert.match(stderr, /forwarded SIGTERM/);
+  assert.match(stderr, /runner did not exit after SIGTERM; killing runner group/);
+  assert.equal(await readFile(files.signal, "utf8"), "SIGTERM ignored");
+  assert.ok(elapsed >= 1_500, `escalated after ${elapsed} ms`);
+  let groupState = "alive";
+  for (let attempt = 0; attempt < 100 && groupState === "alive"; attempt += 1) {
+    try {
+      process.kill(-identity.pgid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } catch (error) {
+      groupState = error.code === "ESRCH" ? "gone" : String(error.code);
+    }
+  }
+  assert.equal(groupState, "gone", "nothing of the runner group may survive");
+});

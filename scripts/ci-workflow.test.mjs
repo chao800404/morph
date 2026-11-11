@@ -189,9 +189,11 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
     container,
     /MORPH_E2E_HANDOVER_RECORD: \$\{\{ runner\.temp \}\}\/stage3\/preview-access-handover\.json/,
   );
+  // Task 38 item 2: the whole lifecycle test-results is kept, not only the
+  // report (its sidecar logs and traces go when the next run starts).
   assert.match(
     container,
-    /cp test-results\/container-acceptance\.json "\$RUNNER_TEMP\/stage3\/lifecycle\/container-acceptance\.json"/,
+    /cp -R test-results\/\. "\$RUNNER_TEMP\/stage3\/lifecycle\/"/,
   );
   assert.match(container, /\$\{\{ runner\.temp \}\}\/stage3\//);
 
@@ -228,6 +230,68 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
       `${file} must be run exactly once by the container job`,
     );
   }
+});
+
+/**
+ * One step of a job block: from its `- name:` line to the next step's.
+ * @param {string} job
+ * @param {string} name
+ */
+function stepBlock(job, name) {
+  const start = job.indexOf(`      - name: ${name}\n`);
+  assert.ok(start >= 0, `step ${name} must exist`);
+  const next = job.indexOf("\n      - name: ", start + 1);
+  return next < 0 ? job.slice(start) : job.slice(start, next + 1);
+}
+
+test("Stage 3 checks a handover only after its run, against the run's lock, and keeps both runs' evidence", () => {
+  const container = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  const lockFile = (/** @type {string} */ block) =>
+    /^ {10}MORPH_E2E_LOCK_FILE: (.+)$/m.exec(block)?.[1];
+
+  for (const [runName, id, checkName] of [
+    ["Run M1 container lifecycle acceptance", "lifecycle_run", "Require lifecycle runner handover"],
+    ["Run preview access container acceptance", "preview_access_run", "Require preview access runner handover"],
+  ]) {
+    const run = stepBlock(container, runName);
+    const check = stepBlock(container, checkName);
+    assert.match(run, new RegExp(`^ {8}id: ${id}$`, "m"), runName);
+    // A skipped run has no record; checking it only adds an ENOENT failure.
+    assert.match(
+      check,
+      new RegExp(`^ {8}if: always\\(\\) && steps\\.${id}\\.outcome != 'skipped'$`, "m"),
+      checkName,
+    );
+    assert.ok(lockFile(run), `${runName} must name its lock file`);
+    assert.equal(lockFile(check), lockFile(run), `${checkName} must check the run's lock`);
+  }
+
+  const preserve = stepBlock(container, "Preserve lifecycle acceptance report");
+  assert.match(preserve, /^ {8}if: always\(\)$/m);
+  assert.match(preserve, /cp -R test-results\/\. "\$RUNNER_TEMP\/stage3\/lifecycle\/"/);
+
+  // An unset step outcome is "", which `??` would print as is.
+  const record = stepBlock(container, "Record Stage 3 runner identities and handover results");
+  assert.doesNotMatch(record, /\?\? "not-run"/);
+  assert.equal((record.match(/outcome \|\| "not-run"/g) ?? []).length, 2);
+
+  // test-results stays the artifact's root, as on main; Stage 3 goes inside it.
+  const keep = stepBlock(container, "Keep Stage 3 records with the results");
+  assert.match(keep, /^ {8}if: always\(\)$/m);
+  assert.match(keep, /cp -R "\$RUNNER_TEMP\/stage3\/\." test-results\/stage3\//);
+  const upload = stepBlock(container, "Upload results and failure traces");
+  assert.match(upload, /^ {10}path: test-results\/$/m);
+  assert.doesNotMatch(upload, /runner\.temp/);
+  assert.ok(container.indexOf(keep) < container.indexOf(upload));
+  assert.ok(
+    container.indexOf(
+      stepBlock(
+        container,
+        "Require the run's container veths to have had no IPv6 link-local address",
+      ),
+    ) < container.indexOf(keep),
+    "Stage 3 records are copied after the last step that writes test-results",
+  );
 });
 
 test("every job that installs Chromium first puts the primary Ubuntu archive ahead of the Azure mirror", () => {
