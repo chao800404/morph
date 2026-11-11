@@ -3711,6 +3711,7 @@ describe("Style replay resend and stored-replay ownership", () => {
         scope.themeId,
       )[kept];
       const generationBefore = workspace().getAcceptedSourceGeneration(scope);
+      const info = vi.spyOn(toast, "info").mockImplementation(() => "");
 
       const dialog = await openLoadLatest();
       expect(listed(dialog, "Files to replace")).toEqual([
@@ -3744,6 +3745,12 @@ describe("Style replay resend and stored-replay ownership", () => {
         generation: generationBefore,
         writes: 2,
       });
+      // Task 39 round 5 (R5-3): a file kept when the dialog opened is named
+      // in the summary too.
+      await waitFor(() => expect(info).toHaveBeenCalled());
+      const summary = info.mock.calls.map(([m]) => String(m)).join(" | ");
+      expect(summary).toContain(`Loaded the latest version of ${hero()}`);
+      expect(summary).toContain(`Kept: ${kept}`);
     },
   );
 
@@ -3920,6 +3927,70 @@ describe("Style replay resend and stored-replay ownership", () => {
     expect(infoSaying(info)).toContain("on its way");
   });
 
+  // Task 39 round 5 (R5-1): an edit waiting on its debounce is a save on its
+  // way too. Replacing the file under it would let the debounced save send
+  // its older text over the loaded one at the newest basis.
+  it("keeps a file with a debounced Style edit made after Replace is confirmed but before the load runs", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    // The Theme's copy differs from what the edit will write.
+    server.replaceContentKeepingReceipt(STYLE_REMOTE);
+    const other = "src/components/Queued.tsx";
+    server.addOtherFile(other, "export const Q = 1;");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .markSaved({ ...server.otherFile(other)! }, scope),
+    );
+    const saveFile = await captureCodeFileSave();
+    // Back to Design, where the Style edit is made; the captured save stays.
+    act(() => {
+      screen.getByRole("button", { name: /^Design$/ }).click();
+    });
+    await screen.findByRole("button", { name: "Apply a style patch" });
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+
+    const dialog = await openLoadLatest();
+    const release = server.holdNextSave();
+    let first: Promise<unknown> = Promise.resolve();
+    act(() => {
+      first = saveFile(other, "export const Q = 2;", { confirmed: true }).catch(
+        () => {},
+      );
+    });
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
+    // A Style edit of Hero while the load waits behind the held save: it is
+    // debounced, not yet in the save queue.
+    applyStylePatch();
+    await waitFor(() =>
+      expect(workspaceFileAt(hero())?.saveState).toBe("debouncing"),
+    );
+    release();
+    await act(async () => {
+      await first;
+    });
+    // The debounced edit goes as the author's, over the file it was made on;
+    // nothing replaced it in between, so the tab holds what it saved.
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(4));
+    await waitFor(() =>
+      expect({
+        local: workspaceFileAt(hero())?.localContent,
+        saveState: workspaceFileAt(hero())?.saveState,
+        server: server.file().content,
+      }).toEqual({
+        local: STYLE_AFTER,
+        saveState: "clean",
+        server: STYLE_AFTER,
+      }),
+    );
+    await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
+    expect(infoSaying(info)).toContain(hero());
+    expect(infoSaying(info)).toContain("on its way");
+  });
+
   it("re-checks at confirm: a file that became unconfirmed after the dialog opened is kept and named", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
     await loseUndoThenAdvanceSource(server);
@@ -3997,7 +4068,10 @@ describe("Style replay resend and stored-replay ownership", () => {
     });
   });
 
-  it("names a file the Theme does not have as removed, in the dialog and after", async () => {
+  // Task 39 round 5 (R5-2), replacing round 4's "removed" expectation for a
+  // file never saved to the Theme: it was never on the server, so it is not
+  // "deleted on the server", and Load the latest leaves it alone.
+  it("keeps a local file never saved to the Theme out of Load the latest, saying so", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
     await loseUndoThenAdvanceSource(server);
     const draft = "src/components/Draft.tsx";
@@ -4006,22 +4080,23 @@ describe("Style replay resend and stored-replay ownership", () => {
       workspace.updateLocalContent(draft, "export const Draft = 1;", scope);
       workspace.markSourceConflict(draft, scope);
     });
+    const draftBefore = workspaceFileAt(draft);
     const info = vi.spyOn(toast, "info").mockImplementation(() => "");
 
     const dialog = await openLoadLatest();
     expect(listed(dialog, "Files to replace")).toEqual([hero()]);
-    expect(listed(dialog, "Files to remove")).toEqual([
-      expect.stringContaining(draft),
-    ]);
-    expect(listed(dialog, "Files to remove")[0]).toContain(
-      "deleted on the server",
-    );
+    expect(within(dialog).queryByRole("list", { name: "Files to remove" })).toBeNull();
+    const keptLines = listed(dialog, "Files kept");
+    expect(keptLines).toHaveLength(1);
+    expect(keptLines[0]).toContain(draft);
+    expect(keptLines[0]).toContain("never saved to the Theme");
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Replace with the latest" }),
     );
-    await waitFor(() => expect(workspaceFileAt(draft)).toBeUndefined());
-    await waitFor(() => expect(infoSaying(info)).toContain("Removed"));
+    await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
     expect(infoSaying(info)).toContain(draft);
+    expect(infoSaying(info)).not.toContain("Removed");
+    expect(workspaceFileAt(draft)).toEqual(draftBefore);
     expect(workspaceFileAt(hero())?.localContent).toBe(STYLE_AFTER);
   });
 
