@@ -370,6 +370,45 @@ describe("discarding one conflicted content list", () => {
     ).toEqual({ pending: null, baseline: incoming });
   });
 
+  // Task 41 31-A follow-up: a draft staged without per-field snapshots keeps
+  // the whole props. Once its only change (the list) is discarded, what is
+  // left is the latest version itself, not a change of the author's: keeping
+  // it pending left the section out of date and held its next write.
+  it("returns no pending entry when a whole-props draft holds no change after the discard", () => {
+    const incoming = {
+      heading: "Welcome",
+      items: [{ id: "z", title: "Z" }],
+    };
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: {
+        heading: "Welcome",
+        items: [{ id: "c", title: "C" }, { id: "new" }],
+      },
+      listActionPaths: ["items"],
+    };
+    const result = discardPendingContentPath({
+      entry,
+      baseline: { heading: "Welcome", items: [{ id: "c", title: "C" }] },
+      incoming,
+      fieldPath: "items",
+    });
+    expect(result.pending).toBeNull();
+    expect(result.baseline).toEqual(incoming);
+
+    // A sibling change of the author's is still theirs to save.
+    const withHeading = discardPendingContentPath({
+      entry: { ...entry, props: { ...entry.props, heading: "Mine" } },
+      baseline: { heading: "Welcome", items: [{ id: "c", title: "C" }] },
+      incoming,
+      fieldPath: "items",
+    });
+    expect(withHeading.pending?.props).toMatchObject({
+      heading: "Mine",
+      items: incoming.items,
+    });
+  });
+
   // Task 41 31-F: a nested list is a path, not a top-level key.
   describe("a nested list", () => {
     const nested = "items.0.related";
