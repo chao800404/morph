@@ -14057,6 +14057,11 @@ export function VisualEditorShell({
         hiddenBefore.get(key),
       );
     }
+    // Current at once, as `markResetMoved` writes it: a step that reads the
+    // held conflicts before the next render does not see the discarded ones.
+    const remainingConflicts = { ...contentConflictsRef.current };
+    for (const key of discarded) delete remainingConflicts[key];
+    contentConflictsRef.current = remainingConflicts;
     setContentConflicts((current) => {
       const next = { ...current };
       for (const key of discarded) delete next[key];
@@ -14224,6 +14229,12 @@ export function VisualEditorShell({
       return next;
     });
     if (!result.pending) {
+      // Current at once, as `markResetMoved` writes it.
+      if (target.key in contentConflictsRef.current) {
+        const remaining = { ...contentConflictsRef.current };
+        delete remaining[target.key];
+        contentConflictsRef.current = remaining;
+      }
       setContentConflicts((current) => {
         if (!(target.key in current)) return current;
         const next = { ...current };
