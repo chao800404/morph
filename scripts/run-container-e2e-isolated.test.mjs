@@ -237,7 +237,15 @@ setInterval(() => {}, 1000);`,
     files.signal,
     files.residualPid,
   ]);
-  await waitForFile(files.identity, run.child);
+  const identity = JSON.parse(await waitForFile(files.identity, run.child));
+  // A launcher that does not forward SIGTERM dies and leaves the runner.
+  t.after(() => {
+    try {
+      process.kill(-identity.pgid, "SIGKILL");
+    } catch {
+      // Already gone, which is what the test expects.
+    }
+  });
   run.child.kill("SIGTERM");
   const result = await run.exit;
   assert.equal(
