@@ -222,7 +222,7 @@ setInterval(() => {}, 1000);`,
   assert.equal(await readFile(files.signal, "utf8"), "SIGINT");
 });
 
-test("SIGTERM is forwarded into the runner session", async (t) => {
+test("SIGTERM is forwarded into the runner session", { timeout: 15_000 }, async (t) => {
   const dir = await scratch(t);
   const files = await writeRunner(
     dir,
@@ -249,7 +249,8 @@ setInterval(() => {}, 1000);`,
   assert.doesNotMatch(run.output().stderr, /killing runner group/);
 });
 
-test("a runner group that ignores SIGTERM is killed, the whole group, and the step fails", async (t) => {
+// Bounded, so a launcher that never escalates fails here instead of hanging.
+test("a runner group that ignores SIGTERM is killed, the whole group, and the step fails", { timeout: 15_000 }, async (t) => {
   const dir = await scratch(t);
   // The runner and a child of its own both ignore SIGTERM, so only the
   // launcher's escalation to SIGKILL on the group can end them.
