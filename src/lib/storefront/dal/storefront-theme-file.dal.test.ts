@@ -483,6 +483,7 @@ describe("storefront theme file DAL", () => {
     // hand-written stand-in for `storefront_theme_files`.
     const migrationDb = new Database(":memory:");
     const refused: string[] = [];
+    const refusedSql: string[] = [];
     try {
       const files = readdirSync("drizzle")
         .filter((file) => file.endsWith(".sql"))
@@ -491,22 +492,29 @@ describe("storefront theme file DAL", () => {
       for (const file of files) {
         if (file >= "0083") break;
         const sql = readFileSync(`drizzle/${file}`, "utf8");
-        for (const statement of sql.split("--> statement-breakpoint")) {
-          if (!statement.replace(/--.*$/gm, "").trim()) continue;
+        const statements = sql.split("--> statement-breakpoint");
+        statements.forEach((statement, index) => {
+          if (!statement.replace(/--.*$/gm, "").trim()) return;
           try {
             migrationDb.exec(statement);
           } catch {
-            refused.push(file);
+            refused.push(`${file}#${index}`);
+            refusedSql.push(statement);
           }
-        }
+        });
       }
       // better-sqlite3 is built without double-quoted string literals, which
-      // two old `users` table rebuilds use. Neither touches theme files; any
-      // other refusal fails here instead of being skipped silently.
+      // two old `users` table rebuild copies use. Each refused statement is
+      // named exactly (file and statement index); any other refusal, or a
+      // second one in the same file, fails here instead of being skipped.
       expect(refused).toEqual([
-        "0005_curly_blazing_skull.sql",
-        "0007_concerned_vapor.sql",
+        "0005_curly_blazing_skull.sql#13",
+        "0007_concerned_vapor.sql#2",
       ]);
+      for (const statement of refusedSql) {
+        expect(statement).toMatch(/INSERT INTO `__new_users`/);
+        expect(statement).not.toMatch(/storefront_theme_files/);
+      }
 
       migrationDb.exec(`
         INSERT INTO storefronts (id, sales_channel_id, name, created_at, updated_at)
