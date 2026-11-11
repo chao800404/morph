@@ -1731,6 +1731,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       fields: declaredOrDefaultContentFields,
       propsSetInCode,
       fieldPath: fieldKey,
+      sectionHidden: documentWritesRefused,
     });
   /** A list's Not saved notice, with its own discard for a writer conflict. */
   const renderListWriteNotice = (fieldKey: string): React.ReactNode => {
@@ -3362,6 +3363,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   hasEditableContent &&
                   (visibleModules.has("content") ||
                     visibleModules.has("media")) &&
+                  // A collapsed group draws no card (R3-3).
+                  sectionsExpanded.content &&
                   declaredFieldKeysRendered.has(fieldKey)
                 ),
             )

@@ -1201,21 +1201,40 @@ type ListDiscardControl = (
   sectionId: string,
   fieldPath: string,
 ) => string | null;
+/** Whether a held section belongs to a document of the page shown. */
+type HeldSectionOwnedHere = (
+  entry: Readonly<{ templateId: string; sectionId: string }>,
+) => boolean;
 
 /**
- * The held list conflicts "Discard mine…" is the way out for: those with a
- * list that has no discard control of its own (the user's rule, Task 41 31-B).
+ * The held list conflicts this page's "Discard mine…" is the way out for:
+ * this page's own (its route document and its layout documents), with a list
+ * that has no discard control of its own (the user's rule, Task 41 31-B).
+ * Another page's are discarded from that page (Task 41 R3-1).
  */
 function genericListConflictKeysOf(
   conflicts: HeldListConflicts,
   control: ListDiscardControl,
+  ownedHere: HeldSectionOwnedHere,
 ): string[] {
   return Object.entries(conflicts)
-    .filter(([, entry]) =>
-      entry.lists.some(
-        (path) => control(entry.templateId, entry.sectionId, path) === null,
-      ),
+    .filter(
+      ([, entry]) =>
+        ownedHere(entry) &&
+        entry.lists.some(
+          (path) => control(entry.templateId, entry.sectionId, path) === null,
+        ),
     )
+    .map(([key]) => key);
+}
+
+/** The held list conflicts of other pages, discarded from their own page. */
+function otherPageListConflictKeysOf(
+  conflicts: HeldListConflicts,
+  ownedHere: HeldSectionOwnedHere,
+): string[] {
+  return Object.entries(conflicts)
+    .filter(([, entry]) => !ownedHere(entry))
     .map(([key]) => key);
 }
 
@@ -1223,17 +1242,22 @@ function genericListConflictKeysOf(
 function listExitsOf(
   conflicts: HeldListConflicts,
   control: ListDiscardControl,
-): { pathScoped: boolean; generic: boolean } {
-  const entries = Object.values(conflicts);
+  ownedHere: HeldSectionOwnedHere,
+): { pathScoped: boolean; generic: boolean; otherPage: boolean } {
+  const here = Object.values(conflicts).filter(ownedHere);
   const has = (scoped: boolean) =>
-    entries.some((entry) =>
+    here.some((entry) =>
       entry.lists.some(
         (path) =>
           (control(entry.templateId, entry.sectionId, path) !== null) ===
           scoped,
       ),
     );
-  return { pathScoped: has(true), generic: has(false) };
+  return {
+    pathScoped: has(true),
+    generic: has(false),
+    otherPage: here.length < Object.keys(conflicts).length,
+  };
 }
 
 export function VisualEditorShell({
@@ -1391,6 +1415,8 @@ export function VisualEditorShell({
     (templateId: string, sectionId: string, fieldPath: string) => string | null
   >(() => null);
   const sectionLabelRef = useRef<(sectionId: string) => string>((id) => id);
+  /** Whether a held section is this page's (`listOwnedHere`). */
+  const listOwnedHereRef = useRef<HeldSectionOwnedHere>(() => true);
   const [discardDialogTarget, setDiscardDialogTarget] = useState<{
     key: string;
     templateId: string;
@@ -2099,6 +2125,10 @@ export function VisualEditorShell({
   const unconfirmedRecordersRef = useRef<
     Map<string, (answeredDraftGeneration: unknown) => void>
   >(new Map());
+  /** The copy each unanswered write was composed on, by key (R3-4). */
+  const unconfirmedBasesRef = useRef<Map<string, Record<string, unknown>>>(
+    new Map(),
+  );
   /**
    * How many times each section's history was retired
    * (`invalidateSectionHistory`). A recorder taken at send time records
@@ -3153,6 +3183,23 @@ export function VisualEditorShell({
                       sentDraftGeneration,
                       recordHistory,
                     );
+                    // The copy it was composed on, kept with it: what a
+                    // later read-back compares its lists with (R3-4). A
+                    // resend keeps the one from its first send.
+                    if (!replay?.resend) {
+                      unconfirmedBasesRef.current.set(
+                        key,
+                        writeSnapshot
+                          ? snapshotSectionProps(
+                              writeSnapshot,
+                              sentEntry.sectionId,
+                            )
+                          : storedSectionPropsRef.current(
+                              sentEntry.sectionId,
+                              sentTemplateId,
+                            ),
+                      );
+                    }
                     if (replay) {
                       // A history run's write: held as sent, frozen, with the
                       // run it completes, and decided by its own read-back.
@@ -3211,20 +3258,36 @@ export function VisualEditorShell({
             // A resent ordinary write records what its first answer would
             // have: its own entry, once.
             replay.record?.(answeredDraftGeneration);
-            // Its outcome was unknown, and this answer confirms it landed.
+            // Its outcome was unknown, and this answer confirms it landed,
+            // compared with the copy it was first composed on (R3-4).
             if (result) {
               noteSavedListChange(
                 key,
                 replay.entry,
-                pendingPropsBaselineRef.current.get(key),
+                unconfirmedBasesRef.current.get(key) ??
+                  pendingPropsBaselineRef.current.get(key),
+              );
+              unconfirmedBasesRef.current.delete(key);
+            }
+          } else {
+            if (replay.link?.kind === "history") {
+              // Answered: the entry's next step goes onto the copy this made.
+              noteHistoryStepAnswered(
+                replay.link.attempt,
+                answeredDraftGeneration,
               );
             }
-          } else if (replay.link?.kind === "history") {
-            // Answered: the entry's next step goes onto the copy this made.
-            noteHistoryStepAnswered(
-              replay.link.attempt,
-              answeredDraftGeneration,
-            );
+            // A history step or a field reset of a list, answered, is newer
+            // than any earlier record of it (R3-5).
+            if (result) {
+              supersedeSavedListChange(
+                key,
+                replay.entry,
+                writeSnapshot
+                  ? snapshotSectionProps(writeSnapshot, replay.entry.sectionId)
+                  : undefined,
+              );
+            }
           }
           return result;
         }
@@ -3495,12 +3558,15 @@ export function VisualEditorShell({
             if (outcome === "landed") {
               // Unknown, now found landed: a reset or history step of a list
               // is recorded as an ordinary write is (R2-3). Its basis is the
-              // editor's copy from before it, for the lists it removed.
+              // copy it was composed on, captured when it was sent (R3-4),
+              // for the lists it removed.
               noteSavedListChange(
                 key,
                 sent,
-                storedSectionPropsRef.current(sent.sectionId, templateId),
+                unconfirmedBasesRef.current.get(key) ??
+                  storedSectionPropsRef.current(sent.sectionId, templateId),
               );
+              unconfirmedBasesRef.current.delete(key);
               previewResetRef.current(sent.sectionId, { ...sent.props }, [
                 ...(sent.resetProps ?? []),
               ]);
@@ -3537,7 +3603,12 @@ export function VisualEditorShell({
           const baseline = pendingPropsBaselineRef.current.get(key);
           // Unknown, now found landed: the one place a read-back confirms an
           // ordinary write (the refusedAt read-back included).
-          noteSavedListChange(key, sent, baseline);
+          noteSavedListChange(
+            key,
+            sent,
+            unconfirmedBasesRef.current.get(key) ?? baseline,
+          );
+          unconfirmedBasesRef.current.delete(key);
           if (acknowledgeContentFields(pendingPropsMapRef.current, key, sent)) {
             if (!pendingPropsMapRef.current.has(key))
               pendingPropsBaselineRef.current.delete(key);
@@ -3865,10 +3936,19 @@ export function VisualEditorShell({
         const controls = conflictedLists.map((path) =>
           listDiscardControlRef.current(templateId, pending.sectionId, path),
         );
-        const sectionLabel = sectionLabelRef.current(pending.sectionId);
+        const ownedHere = listOwnedHereRef.current({
+          templateId,
+          sectionId: pending.sectionId,
+        });
+        // This page's label only for this page's section (R3-1).
+        const sectionLabel = ownedHere
+          ? sectionLabelRef.current(pending.sectionId)
+          : (section?.name ?? pending.sectionId);
         const what = `${conflictedLists.join(", ")} also changed elsewhere since you edited ${conflictedLists.length === 1 ? "it" : "them"}, so your version was not written over theirs. Your changes are kept.`;
         toast.error(
-          controls.every((label) => label !== null)
+          !ownedHere
+            ? `${what} That list is in ${sectionLabel} on another page (${template.name ?? template.id}). Open that page to discard your changes to it there.`
+            : controls.every((label) => label !== null)
             ? `${what} Select ${sectionLabel} and use ${controls
                 .map((label) => `"Discard unsaved changes to ${label}"`)
                 .join(
@@ -4073,6 +4153,11 @@ export function VisualEditorShell({
             genericListConflictKeys: genericListConflictKeysOf(
               listConflictsRef.current,
               listDiscardControlRef.current,
+              listOwnedHereRef.current,
+            ),
+            otherPageListConflictKeys: otherPageListConflictKeysOf(
+              listConflictsRef.current,
+              listOwnedHereRef.current,
             ),
           }),
         );
@@ -8914,6 +8999,7 @@ export function VisualEditorShell({
                   listExits: listExitsOf(
                     listConflictsRef.current,
                     listDiscardControlRef.current,
+                    listOwnedHereRef.current,
                   ),
                 })
               : Object.keys(contentConflictsRef.current).length > 0
@@ -12930,6 +13016,11 @@ export function VisualEditorShell({
               genericListConflictKeys: genericListConflictKeysOf(
                 listConflictsRef.current,
                 listDiscardControlRef.current,
+                listOwnedHereRef.current,
+              ),
+              otherPageListConflictKeys: otherPageListConflictKeysOf(
+                listConflictsRef.current,
+                listOwnedHereRef.current,
               ),
             }),
           );
@@ -13955,62 +14046,78 @@ export function VisualEditorShell({
   const sectionLabel = (sectionId: string) =>
     activeDocumentSections.find((section) => section.id === sectionId)?.name ||
     sectionId;
+  /**
+   * Whether a held section is this page's: the document this page binds the
+   * section id to (its route document, or a layout document it renders) is
+   * the held entry's document. Section ids are unique only within a document.
+   */
+  const listOwnedHere: HeldSectionOwnedHere = (entry) => {
+    const here = templateIdForSection(entry.sectionId);
+    return (
+      here !== null &&
+      sameSectionTarget(entry, { templateId: here, sectionId: entry.sectionId })
+    );
+  };
   const listDiscardControl: ListDiscardControl = (
     templateId,
     sectionId,
     fieldPath,
   ) => {
-    // Another page's list: its Content panel is not this one.
-    if (!activeTemplate || !sameTemplateOwner(templateId, activeTemplate.id))
-      return null;
+    // The copy the Content panel reads the section from: none here means the
+    // panel is in source mode.
     const section = activeDocumentSections.find(
       (candidate) => candidate.id === sectionId,
     );
-    // No stored copy here (the panel is in source mode), or hidden (the panel
-    // refuses its Content).
-    if (!section || section.enabled === false) return null;
-    const cacheKey = `${section.type}\u0000${section.componentRef ?? ""}\u0000${activeThemeRoute?.sourcePath ?? ""}\u0000${sectionId}`;
-    let cached = declarationCache.get(cacheKey);
-    if (!cached) {
-      const componentFile = getComponentFilePath(
-        section.type,
-        effectiveThemeFiles,
-        section.componentRef ?? undefined,
-      );
-      cached = {
-        declaration: resolveSectionContentDeclaration(effectiveThemeFiles, {
-          componentRef: section.componentRef,
-          componentPath: componentFile,
-          sectionComponentPath: componentFile,
-        }),
-        // What the page's code sets of this section, read as the panel reads
-        // it (`slotPropsSetInCode`).
-        propsSetInCode: slotPropsSetInCode(
+    let cached: ReturnType<typeof declarationCache.get> = undefined;
+    if (section) {
+      const cacheKey = `${section.type}\u0000${section.componentRef ?? ""}\u0000${activeThemeRoute?.sourcePath ?? ""}\u0000${sectionId}`;
+      cached = declarationCache.get(cacheKey);
+      if (!cached) {
+        const componentFile = getComponentFilePath(
+          section.type,
           effectiveThemeFiles,
-          activeThemeRoute?.sourcePath ?? null,
-          sectionId,
-        ),
-      };
-      declarationCache.set(cacheKey, cached);
+          section.componentRef ?? undefined,
+        );
+        cached = {
+          declaration: resolveSectionContentDeclaration(effectiveThemeFiles, {
+            componentRef: section.componentRef,
+            componentPath: componentFile,
+            sectionComponentPath: componentFile,
+          }),
+          // What the page's code sets of this section, read as the panel
+          // reads it (`slotPropsSetInCode`).
+          propsSetInCode: slotPropsSetInCode(
+            effectiveThemeFiles,
+            activeThemeRoute?.sourcePath ?? null,
+            sectionId,
+          ),
+        };
+        declarationCache.set(cacheKey, cached);
+      }
     }
-    // The panel's own rule (`listOwnDiscardLabel`, Task 41 R2-2): a declared
-    // list the page's code does not set, in a stored section. The panel draws
-    // this control for a held list whatever the selection, so null here is
-    // exactly where "Discard mine…" is the way out instead.
+    // The panel's own rule, every check in it (`listOwnDiscardLabel`, Task
+    // 41 R2-2/R3-2): this page's section, not hidden, stored, a declared
+    // list with a resolved row shape that the page's code does not set. The
+    // panel draws this control for a held list whatever the selection, so
+    // null here is exactly where "Discard mine…" is the way out instead.
     return listOwnDiscardLabel({
-      contentStore: "document",
-      fields: cached.declaration.capability?.fields ?? {},
-      propsSetInCode: cached.propsSetInCode,
+      contentStore: section ? "document" : "source",
+      fields: cached?.declaration.capability?.fields ?? {},
+      propsSetInCode: cached?.propsSetInCode ?? null,
       fieldPath,
+      ownedHere: listOwnedHere({ templateId, sectionId }),
+      sectionHidden: section?.enabled === false,
     });
   };
   listDiscardControlRef.current = listDiscardControl;
+  listOwnedHereRef.current = listOwnedHere;
   sectionLabelRef.current = sectionLabel;
 
   /** The held list conflicts "Discard mine…" is offered for. */
   const genericListConflictKeys = genericListConflictKeysOf(
     listConflicts,
     listDiscardControl,
+    listOwnedHere,
   );
   const sectionDiscardScopes = genericListConflictKeys.flatMap((key) => {
     const entry = listConflicts[key];
@@ -14078,6 +14185,7 @@ export function VisualEditorShell({
     const keys = genericListConflictKeysOf(
       listConflictsRef.current,
       listDiscardControlRef.current,
+      listOwnedHereRef.current,
     );
     const entries = keys.flatMap((key) => {
       const entry = listConflictsRef.current[key];

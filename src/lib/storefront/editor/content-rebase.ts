@@ -107,20 +107,31 @@ export function heldContentMessage({
    * Which ways out the held lists have: a list-only discard beside the list
    * (`pathScoped`), and/or "Discard mine…" for a section whose list has none.
    */
-  listExits?: Readonly<{ pathScoped: boolean; generic: boolean }>;
+  listExits?: Readonly<{
+    pathScoped: boolean;
+    generic: boolean;
+    /** A held list is on another page, and is discarded from there (R3-1). */
+    otherPage?: boolean;
+  }>;
 }): string {
   if (!hasListConflict) {
     return "Content is out of date with the document. Load the latest version and keep your changes before continuing.";
   }
   const lead =
     "A list you edited was also changed elsewhere, so your version cannot be saved over it. Your changes are kept.";
+  const elsewhere = listExits.otherPage
+    ? listExits.pathScoped || listExits.generic
+      ? " A list on another page is held too: open that page to discard it there."
+      : " That list is on another page. Open that page to discard your changes to it there."
+    : "";
   if (listExits.generic && listExits.pathScoped) {
-    return `${lead} Select its section and use Discard unsaved changes beside the list in the Content panel to discard only your changes to that list, or use Discard mine… in the toolbar for a section whose list has no such control; it discards all of your unsaved changes to that section and loads the latest version.`;
+    return `${lead} Select its section and use Discard unsaved changes beside the list in the Content panel to discard only your changes to that list, or use Discard mine… in the toolbar for a section whose list has no such control; it discards all of your unsaved changes to that section and loads the latest version.${elsewhere}`;
   }
   if (listExits.generic) {
-    return `${lead} Use Discard mine… in the toolbar; it discards all of your unsaved changes to that section and loads the latest version.`;
+    return `${lead} Use Discard mine… in the toolbar; it discards all of your unsaved changes to that section and loads the latest version.${elsewhere}`;
   }
-  return `${lead} Select its section and use Discard unsaved changes beside the list in the Content panel; it discards only your changes to that list and loads its latest version.`;
+  if (!listExits.pathScoped && listExits.otherPage) return `${lead}${elsewhere}`;
+  return `${lead} Select its section and use Discard unsaved changes beside the list in the Content panel; it discards only your changes to that list and loads its latest version.${elsewhere}`;
 }
 
 /** Content held after its save failed: the author tries again. */
@@ -139,6 +150,7 @@ export function heldFlushMessage({
   conflicts,
   listConflicts,
   genericListConflictKeys = [],
+  otherPageListConflictKeys = [],
 }: {
   /** The keys of this document's content still held after the flush. */
   heldKeys: readonly string[];
@@ -146,6 +158,8 @@ export function heldFlushMessage({
   listConflicts: Readonly<Record<string, unknown>>;
   /** List conflicts with no list-only discard: "Discard mine…" is theirs. */
   genericListConflictKeys?: readonly string[];
+  /** List conflicts of another page, discarded from that page. */
+  otherPageListConflictKeys?: readonly string[];
 }): string {
   const refused = heldKeys.filter(
     (key) => key in conflicts || key in listConflicts,
@@ -156,9 +170,14 @@ export function heldFlushMessage({
     hasListConflict: heldLists.length > 0,
     listExits: {
       pathScoped: heldLists.some(
-        (key) => !genericListConflictKeys.includes(key),
+        (key) =>
+          !genericListConflictKeys.includes(key) &&
+          !otherPageListConflictKeys.includes(key),
       ),
       generic: heldLists.some((key) => genericListConflictKeys.includes(key)),
+      otherPage: heldLists.some((key) =>
+        otherPageListConflictKeys.includes(key),
+      ),
     },
   });
 }

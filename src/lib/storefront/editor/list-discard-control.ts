@@ -11,7 +11,11 @@ import {
   deriveThemeDocumentLayoutPath,
   readSlotPropsSetInCode,
 } from "../compiler/theme-route-sections";
-import type { ThemeContentFieldDefinition } from "../theme-content-capabilities";
+import {
+  arrayRowFields,
+  isArrayContentField,
+  type ThemeContentFieldDefinition,
+} from "../theme-content-capabilities";
 
 /**
  * Field keys the Content panel draws with dedicated controls rather than as
@@ -54,21 +58,38 @@ export function slotPropsSetInCode(
 
 /**
  * The label of a list's own discard control, or null where the Content panel
- * draws none for it: not stored in the Document (source mode), not declared
- * as a list, drawn by a dedicated control, or set by the page's code (the
- * "any" spread included).
+ * draws none for it: a section of another page's document (`ownedHere`
+ * false; the page's layout documents count as its own), a hidden section
+ * (the panel refuses its Content), not stored in the Document (source mode),
+ * not declared as a list, a list whose row shape never resolved (drawn as
+ * "cannot be edited"), drawn by a dedicated control, or set by the page's
+ * code (the "any" spread included).
  */
 export function listOwnDiscardLabel(args: {
   contentStore: "document" | "source";
   fields: Readonly<Record<string, ThemeContentFieldDefinition>>;
   propsSetInCode: SlotPropsSetInCode;
   fieldPath: string;
+  /** Whether the section belongs to a document of the page shown. */
+  ownedHere?: boolean;
+  /** Whether the section is hidden, so the panel refuses its Content. */
+  sectionHidden?: boolean;
 }): string | null {
-  const { contentStore, fields, propsSetInCode, fieldPath } = args;
+  const {
+    contentStore,
+    fields,
+    propsSetInCode,
+    fieldPath,
+    ownedHere = true,
+    sectionHidden = false,
+  } = args;
+  if (!ownedHere || sectionHidden) return null;
   if (contentStore !== "document") return null;
   if (propsSetInCode === "any" || propsSetInCode?.has(fieldPath)) return null;
   if (SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldPath)) return null;
   const definition = fields[fieldPath];
-  if (definition?.type !== "array") return null;
+  if (!isArrayContentField(definition) || !arrayRowFields(definition)) {
+    return null;
+  }
   return definition.label ?? fieldPath.replace(/[-_]/g, " ");
 }
