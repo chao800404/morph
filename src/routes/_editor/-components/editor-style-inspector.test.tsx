@@ -3143,6 +3143,19 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
     expect(onDiscard).toHaveBeenCalledWith("section-1", "items");
   });
 
+  // Task 41 R3-3: the list's own discard stays reachable with the Content
+  // group collapsed. (A list whose row shape never resolved has no own
+  // discard by the shared rule; see list-discard-control.test.ts.)
+  it("keeps a held list's discard while the Content group is collapsed (R3-3)", () => {
+    const onDiscard = renderHeldList();
+    fireEvent.click(screen.getByRole("button", { name: /Content & Fields/ }));
+    expect(screen.queryByRole("button", { name: "Add entry" })).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Discard unsaved changes to Entries" }),
+    );
+    expect(onDiscard).toHaveBeenCalledWith("section-1", "items");
+  });
+
   it("sends nothing by drawing the lists", () => {
     const onPropsChange = renderEntries();
     expect(screen.getByDisplayValue("Two")).toBeTruthy();

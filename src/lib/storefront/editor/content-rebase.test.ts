@@ -231,6 +231,17 @@ describe("what an author whose content is held is told", () => {
     expect(message).not.toMatch(/if the Inspector exposes one/);
   });
 
+  // Task 41 R3-1: a list held on another page is discarded from its page.
+  it("names the other page for a list held there", () => {
+    const message = heldContentMessage({
+      hasListConflict: true,
+      listExits: { pathScoped: false, generic: false, otherPage: true },
+    });
+    expect(message).toMatch(/on another page/);
+    expect(message).toMatch(/Open that page to discard/);
+    expect(message).not.toMatch(/Discard mine… in the toolbar/);
+  });
+
   it("names both exits when held lists have different ones", () => {
     const message = heldContentMessage({
       hasListConflict: true,

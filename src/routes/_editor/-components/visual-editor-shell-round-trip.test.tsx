@@ -2003,6 +2003,197 @@ describe("a list both writers changed", () => {
     expect(updateSectionProps).toHaveBeenCalledTimes(2);
   });
 
+  // Task 41 R3-1: "Discard mine…" acts only on this page's documents. A list
+  // held on another page is discarded from that page, by its own control.
+  it("does not offer another page's held list in this page's Discard mine", async () => {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const page = (
+      id: string,
+      type: string,
+      name: string,
+      items: unknown,
+      generation: number,
+    ) => ({
+      ...context.templates[0],
+      id,
+      type,
+      name,
+      draftGeneration: generation,
+      document: {
+        version: 1,
+        sections: [
+          {
+            id: "hero",
+            name: "Featured",
+            type: "hero",
+            enabled: true,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Welcome", items },
+          },
+        ],
+      },
+    });
+    const pages = (home: unknown, homeGeneration: number) =>
+      ({
+        ...context,
+        templates: [
+          page("template-1", "index", "Home", home, homeGeneration),
+          page("template-2", "page", "About", rows("A", "B"), 1),
+        ],
+      }) as unknown as StorefrontThemeEditorDTO;
+    const { source } = declaredListFixture();
+    const client = readyQueryClient();
+    const start = pages(rows("A", "B"), 1);
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const view = renderShellWithHero(source, "hero", start, client);
+    const show = (search: StorefrontThemeEditorSearch) =>
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <VisualEditorShell
+            context={start}
+            search={search}
+            onSearchChange={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+
+    // Home's Add, refused, then read against Home's latest: a list conflict.
+    await openSection("Featured");
+    updateSectionProps.mockResolvedValueOnce({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    const latest = {
+      success: true,
+      message: "ok",
+      data: pages(rows("C", "A", "B"), 7),
+    };
+    getThemeEditor.mockResolvedValue(latest as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      latest as never,
+    );
+    act(() =>
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /discard unsaved changes to items/i }),
+      ).toBeTruthy(),
+    );
+
+    // On About, with a hero of its own: nothing of Home's is offered here.
+    show({
+      ...baseSearch,
+      template: "page",
+      templateId: "template-2",
+      section: "hero",
+    } as StorefrontThemeEditorSearch);
+    await flushFrames();
+    await openSection("Featured");
+    expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /discard unsaved changes to items/i }),
+    ).toBeNull();
+
+    // Back on Home, its own discard is the way out, and nothing was sent.
+    show({ ...baseSearch, section: "hero" });
+    await flushFrames();
+    await openSection("Featured");
+    expect(
+      screen.getByRole("button", { name: /discard unsaved changes to items/i }),
+    ).toBeTruthy();
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
+
+  // Task 41 R3-2: a hidden section's held list has exactly one exit.
+  it("offers only Discard mine for a held list of a section that is hidden now", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const view = renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+    const latest = remoteWith(rows("C", "A", "B"), 7);
+    latest.data.templates[0]!.document.sections[0]!.enabled = false;
+    await conflictOnAdd(client, latest, 0);
+
+    // The route's data catches up: the section is hidden now.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={latest.data as unknown as StorefrontThemeEditorDTO}
+          search={{ ...baseSearch, section: "hero" }}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    await flushFrames();
+    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /discard unsaved changes to/i }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Styles$/ }));
+    await flushFrames();
+    expect(
+      screen.queryByRole("button", { name: /discard unsaved changes to/i }),
+    ).toBeNull();
+  });
+
+  // Task 41 R3-5: an answered history step of the list is newer than the
+  // landed write it reverts; the discard no longer claims it as saved.
+  it("does not say a saved change is not undone once its step was undone", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const sentItems = updateSectionProps.mock.calls[0]![0].data.props.items;
+    getThemeEditor.mockResolvedValue(remoteWith(sentItems, 2) as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remoteWith(sentItems, 2) as never,
+    );
+    act(() => screen.getByRole("button", { name: "Try again" }).click());
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    const undo = screen.getByRole("button", { name: "Undo" }) as HTMLButtonElement;
+    await waitFor(() => expect(undo.disabled).toBe(false));
+
+    // Undone, and answered: the list is back as it was.
+    updateSectionProps.mockImplementationOnce(async ({ data }) => ({
+      success: true,
+      data: {
+        draftGeneration: data.expectedDraftGeneration + 1,
+        droppedProps: [],
+        document: {
+          version: 1,
+          sections: listContext.templates[0]!.document.sections.map(
+            (section) =>
+              section.id === data.sectionId
+                ? { ...section, props: { ...section.props, ...data.props } }
+                : section,
+          ),
+        },
+      },
+    }));
+    fireEvent.click(undo);
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+    );
+
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 2);
+    const text = await discardItems();
+    expect(text).not.toMatch(/A saved change is not undone/);
+  });
+
   it("does not say a saved change is not undone when nothing of the list was saved", async () => {
     const { rows, listContext, remoteWith, client, source } =
       declaredListFixture();

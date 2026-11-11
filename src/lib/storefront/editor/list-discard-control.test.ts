@@ -62,6 +62,37 @@ describe("whether a list has its own discard control", () => {
     expect(at("items", "source")).toBeNull();
   });
 
+  // Task 41 R3-2: the shell's checks live in the one rule too.
+  it("has none for a hidden section or a section another page owns", () => {
+    const at = (extra: { sectionHidden?: boolean; ownedHere?: boolean }) =>
+      listOwnDiscardLabel({
+        contentStore: "document",
+        fields,
+        propsSetInCode: null,
+        fieldPath: "items",
+        ...extra,
+      });
+    expect(at({ sectionHidden: true })).toBeNull();
+    expect(at({ ownedHere: false })).toBeNull();
+    // A section of the page's layout document is owned by the page too: the
+    // caller says so (`ownedHere`), and the list keeps its own control.
+    expect(at({ ownedHere: true, sectionHidden: false })).toBe("Entries");
+  });
+
+  // Task 41 R3-3: the panel draws a list whose row shape never resolved as
+  // "cannot be edited", with no card and so no discard of its own: Discard
+  // mine is its exit.
+  it("has none for a declared list whose row shape is unresolved", () => {
+    expect(
+      listOwnDiscardLabel({
+        contentStore: "document",
+        fields: { items: { type: "array", label: "Cards" } } as never,
+        propsSetInCode: null,
+        fieldPath: "items",
+      }),
+    ).toBeNull();
+  });
+
   it("reads what the page's code sets as the Content panel does", () => {
     // No route source and no layout: nothing is set in code.
     expect(slotPropsSetInCode([], null, "hero")).toBeNull();
