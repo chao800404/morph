@@ -81,7 +81,7 @@ export function EditorSourceConflictNotice({
           disabled={saving}
           onClick={onLoadLatest}
         >
-          Load the latest
+          Load the latest…
         </Button>
       ) : null}
       <Button

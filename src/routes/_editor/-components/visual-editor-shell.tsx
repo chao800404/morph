@@ -729,6 +729,40 @@ function liveStyleReplay<T extends { content: string }>(
 }
 
 /**
+ * What "Load the latest" would do to the files a source conflict lists:
+ * which are replaced by the server's copy, and which are kept, and why.
+ */
+type LoadLatestPlan = Readonly<{
+  replace: readonly string[];
+  kept: ReadonlyArray<Readonly<{ path: string; reason: string }>>;
+}>;
+
+function planLoadLatest(
+  files: Parameters<typeof sourceConflictPaths>[0],
+): LoadLatestPlan {
+  const replace: string[] = [];
+  const kept: Array<{ path: string; reason: string }> = [];
+  for (const path of sourceConflictPaths(files)) {
+    const file = files[path];
+    if (file?.unconfirmedContent !== undefined) {
+      kept.push({
+        path,
+        reason:
+          "its last save got no answer; use Check and save to find out whether it was stored",
+      });
+    } else if (file?.conflict) {
+      kept.push({
+        path,
+        reason: "it also changed elsewhere; resolve its conflict in Code",
+      });
+    } else {
+      replace.push(path);
+    }
+  }
+  return { replace, kept };
+}
+
+/**
  * Whose a stored Style replay is, for one save of its file:
  * - `same-run`: the same history entry and direction running again;
  * - `check-and-save`: the author's explicit save of exactly its text, with
@@ -8576,8 +8610,15 @@ export function VisualEditorShell({
    * retired (as Reload Remote does). A file whose last save is still
    * unanswered, or that has a file conflict, is left to its own path; the
    * newer generation is accepted only once no source conflict remains.
+   *
+   * Asked first (`loadLatestPlan`, shown in a confirmation): only the files
+   * the author confirmed are replaced, and only while they still may be.
    */
-  const loadLatestForSourceConflicts = useCallback(async () => {
+  const [loadLatestPlan, setLoadLatestPlan] =
+    useState<LoadLatestPlan | null>(null);
+  const loadLatestForSourceConflicts = useCallback(async (
+    confirmedPaths: readonly string[],
+  ) => {
     const store = () => useThemeWorkspaceStore.getState();
     setIsSavingSourceConflicts(true);
     try {
@@ -8609,15 +8650,14 @@ export function VisualEditorShell({
         );
         return;
       }
-      const files = store().getWorkspaceFiles(
-        workspaceScope.storefrontId,
-        workspaceScope.themeId,
-      );
-      for (const path of sourceConflictPaths(files)) {
-        const local = files[path];
-        if (!local || local.unconfirmedContent !== undefined || local.conflict) {
-          continue;
-        }
+      const replaceable = planLoadLatest(
+        store().getWorkspaceFiles(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        ),
+      ).replace;
+      for (const path of confirmedPaths) {
+        if (!replaceable.includes(path)) continue;
         const latest = read.files.find((file) => file.path === path);
         store().loadServerFile(
           path,
@@ -15906,8 +15946,83 @@ export function VisualEditorShell({
             paths={pendingSourceConflicts}
             saving={isSavingSourceConflicts}
             onSave={() => void saveSourceConflicts()}
-            onLoadLatest={() => void loadLatestForSourceConflicts()}
+            onLoadLatest={() =>
+              setLoadLatestPlan(
+                planLoadLatest(
+                  useThemeWorkspaceStore
+                    .getState()
+                    .getWorkspaceFiles(
+                      workspaceScope.storefrontId,
+                      workspaceScope.themeId,
+                    ),
+                ),
+              )
+            }
           />
+          {/* Asks first, and says exactly what is replaced and what is kept:
+              the button can replace several files from a general notice. */}
+          <AlertDialog
+            open={loadLatestPlan !== null}
+            onOpenChange={(open) => {
+              if (!open) setLoadLatestPlan(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Replace your changes with the latest version?
+                </AlertDialogTitle>
+                <AlertDialogDescription asChild>
+                  <div className="space-y-2">
+                    {loadLatestPlan && loadLatestPlan.replace.length > 0 ? (
+                      <>
+                        <p>
+                          These files are replaced by the copy the Theme holds
+                          now. Your unsaved text in them, and their Undo/Redo
+                          history, are discarded. This cannot be undone.
+                        </p>
+                        <ul
+                          className="list-disc pl-5"
+                          aria-label="Files to replace"
+                        >
+                          {loadLatestPlan.replace.map((path) => (
+                            <li key={path}>{path}</li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : (
+                      <p>No file can be replaced right now.</p>
+                    )}
+                    {loadLatestPlan && loadLatestPlan.kept.length > 0 ? (
+                      <>
+                        <p>These files are kept as they are:</p>
+                        <ul className="list-disc pl-5" aria-label="Files kept">
+                          {loadLatestPlan.kept.map(({ path, reason }) => (
+                            <li key={path}>
+                              {path}: {reason}.
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : null}
+                  </div>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep my changes</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={!loadLatestPlan || loadLatestPlan.replace.length === 0}
+                  onClick={() => {
+                    const paths = loadLatestPlan?.replace ?? [];
+                    setLoadLatestPlan(null);
+                    void loadLatestForSourceConflicts(paths);
+                  }}
+                >
+                  Replace with the latest
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           <EditorStarterUpgradeNotice
             status={context.starterUpgrade}
             reviewRequest={starterReviewRequest}
