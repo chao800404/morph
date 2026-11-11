@@ -125,6 +125,39 @@ export function contentEntryStatusPaths(entry: PendingContentEntry): string[] {
   return [...paths].filter((path) => contentEntryTouchesPath(entry, path));
 }
 
+/**
+ * The top-level lists a write actually changed: its list actions, the lists
+ * its staged fields are in (a field is staged only when it changed), and,
+ * for a write staged without per-field snapshots, the lists that differ
+ * from the copy it was made on. Never every array the write carries, and,
+ * with no copy to compare with, only what the write itself names.
+ */
+export function changedListPaths(
+  entry: PendingContentEntry,
+  basis?: Readonly<Record<string, unknown>>,
+): string[] {
+  const lists = new Set<string>();
+  for (const path of entry.listActionPaths ?? []) {
+    const root = path.split(".")[0];
+    if (root) lists.add(root);
+  }
+  for (const path of Object.keys(entry.fields ?? {})) {
+    const root = path.split(".")[0];
+    if (root && Array.isArray(entry.props[root])) lists.add(root);
+  }
+  if (!entry.fields && basis) {
+    for (const [root, value] of Object.entries(entry.props)) {
+      if (Array.isArray(value) && !sameContent(value, basis[root])) {
+        lists.add(root);
+      }
+    }
+  }
+  for (const root of entry.resetProps ?? []) {
+    if (basis && Array.isArray(basis[root])) lists.add(root);
+  }
+  return [...lists];
+}
+
 /** The latest value of a list, at its (possibly nested) path, that a discard resets it to. */
 export function discardedListValue(
   incoming: Record<string, unknown>,

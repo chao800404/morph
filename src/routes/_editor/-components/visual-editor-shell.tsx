@@ -35,10 +35,16 @@ import {
   discardPendingContentPath,
   discardedListValue,
   contentEntryStatusPaths,
+  changedListPaths,
   hasUnconfirmedContentForList as hasUnconfirmedListWrite,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { resolveSectionContentDeclaration } from "@/lib/storefront/editor/section-content-declaration";
+import {
+  listOwnDiscardLabel,
+  slotPropsSetInCode,
+  type SlotPropsSetInCode,
+} from "@/lib/storefront/editor/list-discard-control";
 import {
   ListDiscardDialog,
   SectionDiscardDialog,
@@ -1400,40 +1406,62 @@ export function VisualEditorShell({
   // Bumped by "Discard mine": the Inspector's own copy of a discarded section
   // is replaced by the latest one, so nothing typed before is sent again.
   const [contentResetEpoch, setContentResetEpoch] = useState(0);
-  const [listReset, setListReset] = useState<InspectorListReset | null>(null);
+  // Keyed by its document as well as its section: section ids are unique
+  // only within a document (Task 41 R2-1).
+  const [listReset, setListReset] = useState<
+    (InspectorListReset & { templateId: string }) | null
+  >(null);
   // Never restarts: an acknowledged reset clears `listReset`, and a counter
   // derived from it would hand the next discard an epoch the mounted
   // Inspector has already applied, so it would be skipped (Task 41 31-A).
   const listResetEpochRef = useRef(0);
   /**
-   * Lists (by pending-content key) a write of this session was confirmed to
-   * have saved: answered, found landed by a read-back, or by an answered
-   * resend. A later discard of the list loads the latest version but does
-   * not undo such a write, and its dialog says so.
+   * Lists (by pending-content key) whose write had an unknown outcome and
+   * was later confirmed landed: by a read-back, or by an answered resend
+   * (the brief's rule, Task 41 R2-3). The author never saw that write
+   * answered, so a later discard of the list says it does not undo it. An
+   * ordinary answered write is not recorded, and supersedes a record of
+   * the lists it changed.
    */
   const [savedListChanges, setSavedListChanges] = useState<
     Record<string, string[]>
   >({});
   const noteSavedListChange = useCallback(
-    (key: string, entry: PendingContentEntry | undefined) => {
-      if (!entry) return;
-      const lists = new Set(entry.listActionPaths ?? []);
-      for (const path of Object.keys(entry.fields ?? {})) {
-        const root = path.split(".")[0];
-        if (root && Array.isArray(entry.props[root])) lists.add(root);
-      }
-      if (!entry.fields) {
-        for (const [root, value] of Object.entries(entry.props)) {
-          if (Array.isArray(value)) lists.add(root);
-        }
-      }
-      if (lists.size === 0) return;
+    (
+      key: string,
+      entry: PendingContentEntry | undefined,
+      basis?: Readonly<Record<string, unknown>>,
+    ) => {
+      const lists = entry ? changedListPaths(entry, basis) : [];
+      if (lists.length === 0) return;
       setSavedListChanges((current) => {
         const known = current[key] ?? [];
-        const added = [...lists].filter((path) => !known.includes(path));
+        const added = lists.filter((path) => !known.includes(path));
         return added.length === 0
           ? current
           : { ...current, [key]: [...known, ...added] };
+      });
+    },
+    [],
+  );
+  /** A newer confirmed write of these lists: the earlier record is superseded. */
+  const supersedeSavedListChange = useCallback(
+    (
+      key: string,
+      entry: PendingContentEntry | undefined,
+      basis?: Readonly<Record<string, unknown>>,
+    ) => {
+      const lists = entry ? changedListPaths(entry, basis) : [];
+      if (lists.length === 0) return;
+      setSavedListChanges((current) => {
+        const known = current[key];
+        if (!known) return current;
+        const kept = known.filter((path) => !lists.includes(path));
+        if (kept.length === known.length) return current;
+        const next = { ...current };
+        if (kept.length > 0) next[key] = kept;
+        else delete next[key];
+        return next;
       });
     },
     [],
@@ -2290,6 +2318,41 @@ export function VisualEditorShell({
 
   /** Route documents created in this session, by the placeholder they replaced. */
   const routeTemplateIdsRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Whether two template ids name the same document: the same id, a route
+   * placeholder and the document created for it, or two ids of one route.
+   */
+  const sameTemplateOwner = useCallback(
+    (left: string, right: string) => {
+      const leftOwner = routeTemplateIdsRef.current.get(left) ?? left;
+      const rightOwner = routeTemplateIdsRef.current.get(right) ?? right;
+      if (leftOwner === rightOwner) return true;
+      const routePathForId = (id: string) =>
+        routePathFromTemplatePlaceholder(id) ??
+        context.templates.find(
+          (template) =>
+            template.id === (routeTemplateIdsRef.current.get(id) ?? id),
+        )?.routePath ??
+        null;
+      const leftRoutePath = routePathForId(left);
+      return leftRoutePath !== null && leftRoutePath === routePathForId(right);
+    },
+    [context.templates],
+  );
+  /**
+   * The one notion of "the same section" (Task 41): the same section id in
+   * the same document, under any of the document's ids. Section ids are
+   * unique only within a document, so the id alone never decides.
+   */
+  const sameSectionTarget = useCallback(
+    (
+      left: Readonly<{ templateId: string; sectionId: string }>,
+      right: Readonly<{ templateId: string; sectionId: string }>,
+    ) =>
+      left.sectionId === right.sectionId &&
+      sameTemplateOwner(left.templateId, right.templateId),
+    [sameTemplateOwner],
+  );
   /**
    * The route documents this editor's own ensure created (the server said
    * `createdByThisCall`), by real id. Input made while such a route had no
@@ -3148,7 +3211,14 @@ export function VisualEditorShell({
             // A resent ordinary write records what its first answer would
             // have: its own entry, once.
             replay.record?.(answeredDraftGeneration);
-            if (result) noteSavedListChange(key, replay.entry);
+            // Its outcome was unknown, and this answer confirms it landed.
+            if (result) {
+              noteSavedListChange(
+                key,
+                replay.entry,
+                pendingPropsBaselineRef.current.get(key),
+              );
+            }
           } else if (replay.link?.kind === "history") {
             // Answered: the entry's next step goes onto the copy this made.
             noteHistoryStepAnswered(
@@ -3162,9 +3232,15 @@ export function VisualEditorShell({
         failedContentKeysRef.current.delete(key);
         if (result) {
           recordAnswered?.(answeredDraftGeneration);
-          noteSavedListChange(
+          // An ordinary answered write is just saved (not recorded), and is
+          // newer than any earlier record of the lists it changed.
+          const answered = sentEntry as PendingContentEntry | undefined;
+          supersedeSavedListChange(
             key,
-            sentEntry as PendingContentEntry | undefined,
+            answered,
+            writeSnapshot && answered
+              ? snapshotSectionProps(writeSnapshot, answered.sectionId)
+              : undefined,
           );
         }
         return result;
@@ -3227,6 +3303,7 @@ export function VisualEditorShell({
       noteHistoryStepAnswered,
       recordSavedContentHistory,
       noteSavedListChange,
+      supersedeSavedListChange,
     ],
   );
 
@@ -3409,6 +3486,14 @@ export function VisualEditorShell({
             unconfirmedRecordersRef.current.delete(key);
             resolved.push([key, sent]);
             if (outcome === "landed") {
+              // Unknown, now found landed: a reset or history step of a list
+              // is recorded as an ordinary write is (R2-3). Its basis is the
+              // editor's copy from before it, for the lists it removed.
+              noteSavedListChange(
+                key,
+                sent,
+                storedSectionPropsRef.current(sent.sectionId, templateId),
+              );
               previewResetRef.current(sent.sectionId, { ...sent.props }, [
                 ...(sent.resetProps ?? []),
               ]);
@@ -3442,8 +3527,10 @@ export function VisualEditorShell({
           unconfirmedResetLinksRef.current.delete(key);
           unconfirmedRecordersRef.current.delete(key);
           resolved.push([key, sent]);
-          noteSavedListChange(key, sent);
           const baseline = pendingPropsBaselineRef.current.get(key);
+          // Unknown, now found landed: the one place a read-back confirms an
+          // ordinary write (the refusedAt read-back included).
+          noteSavedListChange(key, sent, baseline);
           if (acknowledgeContentFields(pendingPropsMapRef.current, key, sent)) {
             if (!pendingPropsMapRef.current.has(key))
               pendingPropsBaselineRef.current.delete(key);
@@ -3862,22 +3949,15 @@ export function VisualEditorShell({
         );
         return;
       }
-      // The section of a document a key names, under any of the document's
-      // ids. The section id comes from the entry or the record that names
-      // it, never parsed out of the key.
-      const targetOf = (key: string, sectionId: string) => {
-        const templateId = templateIdOfPendingContentKey(key, sectionId);
-        return {
-          sectionId,
-          documentId: templateId
-            ? (routeTemplateIdsRef.current.get(templateId) ?? templateId)
-            : key,
-        };
-      };
-      const sameTarget = (
-        a: { sectionId: string; documentId: string },
-        b: { sectionId: string; documentId: string },
-      ) => a.sectionId === b.sectionId && a.documentId === b.documentId;
+      // The section of a document a key names. The section id comes from the
+      // entry or the record that names it, never parsed out of the key; the
+      // document is compared under any of its ids (`sameSectionTarget`, the
+      // editor's one notion of the same section).
+      const targetOf = (key: string, sectionId: string) => ({
+        sectionId,
+        templateId: templateIdOfPendingContentKey(key, sectionId) ?? key,
+      });
+      const sameTarget = sameSectionTarget;
       // A conflict is recorded under its key with its template id: the
       // section id is the rest of the key.
       const conflicted = Object.entries(contentConflictsRef.current).flatMap(
@@ -3920,7 +4000,12 @@ export function VisualEditorShell({
     } finally {
       retryingFailedContentRef.current = false;
     }
-  }, [commitSectionPending, resendUnconfirmedWrites, settleUnconfirmedContent]);
+  }, [
+    commitSectionPending,
+    resendUnconfirmedWrites,
+    sameSectionTarget,
+    settleUnconfirmedContent,
+  ]);
 
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
@@ -13812,23 +13897,6 @@ export function VisualEditorShell({
     [context.storefront.id, context.theme.id, queryClient],
   );
 
-  const sameTemplateOwner = useCallback(
-    (left: string, right: string) => {
-      const leftOwner = routeTemplateIdsRef.current.get(left) ?? left;
-      const rightOwner = routeTemplateIdsRef.current.get(right) ?? right;
-      if (leftOwner === rightOwner) return true;
-      const routePathForId = (id: string) =>
-        routePathFromTemplatePlaceholder(id) ??
-        context.templates.find(
-          (template) =>
-            template.id === (routeTemplateIdsRef.current.get(id) ?? id),
-        )?.routePath ??
-        null;
-      const leftRoutePath = routePathForId(left);
-      return leftRoutePath !== null && leftRoutePath === routePathForId(right);
-    },
-    [context.templates],
-  );
   const hasUnconfirmedContentForList = useCallback(
     (templateId: string, sectionId: string, fieldPath: string) =>
       hasUnconfirmedListWrite({
@@ -13859,7 +13927,14 @@ export function VisualEditorShell({
    * cached per file list.
    */
   const declarationCache = useMemo(
-    () => new Map<string, ReturnType<typeof resolveSectionContentDeclaration>>(),
+    () =>
+      new Map<
+        string,
+        {
+          declaration: ReturnType<typeof resolveSectionContentDeclaration>;
+          propsSetInCode: SlotPropsSetInCode;
+        }
+      >(),
     [effectiveThemeFiles],
   );
   const activeDocumentSections =
@@ -13885,25 +13960,40 @@ export function VisualEditorShell({
     // No stored copy here (the panel is in source mode), or hidden (the panel
     // refuses its Content).
     if (!section || section.enabled === false) return null;
-    const cacheKey = `${section.type}\u0000${section.componentRef ?? ""}`;
-    let declaration = declarationCache.get(cacheKey);
-    if (!declaration) {
+    const cacheKey = `${section.type}\u0000${section.componentRef ?? ""}\u0000${activeThemeRoute?.sourcePath ?? ""}\u0000${sectionId}`;
+    let cached = declarationCache.get(cacheKey);
+    if (!cached) {
       const componentFile = getComponentFilePath(
         section.type,
         effectiveThemeFiles,
         section.componentRef ?? undefined,
       );
-      declaration = resolveSectionContentDeclaration(effectiveThemeFiles, {
-        componentRef: section.componentRef,
-        componentPath: componentFile,
-        sectionComponentPath: componentFile,
-      });
-      declarationCache.set(cacheKey, declaration);
+      cached = {
+        declaration: resolveSectionContentDeclaration(effectiveThemeFiles, {
+          componentRef: section.componentRef,
+          componentPath: componentFile,
+          sectionComponentPath: componentFile,
+        }),
+        // What the page's code sets of this section, read as the panel reads
+        // it (`slotPropsSetInCode`).
+        propsSetInCode: slotPropsSetInCode(
+          effectiveThemeFiles,
+          activeThemeRoute?.sourcePath ?? null,
+          sectionId,
+        ),
+      };
+      declarationCache.set(cacheKey, cached);
     }
-    const definition = declaration.capability?.fields[fieldPath];
-    // Not declared as a list: the panel draws no list card to discard from.
-    if (definition?.type !== "array") return null;
-    return definition.label ?? fieldPath.replace(/[-_]/g, " ");
+    // The panel's own rule (`listOwnDiscardLabel`, Task 41 R2-2): a declared
+    // list the page's code does not set, in a stored section. The panel draws
+    // this control for a held list whatever the selection, so null here is
+    // exactly where "Discard mine…" is the way out instead.
+    return listOwnDiscardLabel({
+      contentStore: "document",
+      fields: cached.declaration.capability?.fields ?? {},
+      propsSetInCode: cached.propsSetInCode,
+      fieldPath,
+    });
   };
   listDiscardControlRef.current = listDiscardControl;
   sectionLabelRef.current = sectionLabel;
@@ -13984,19 +14074,34 @@ export function VisualEditorShell({
       const entry = listConflictsRef.current[key];
       return entry ? [[key, entry] as const] : [];
     });
-    if (entries.length === 0 || discardingRef.current) return;
+    if (discardingRef.current) return;
+    // Refused with its reason, never silently (Task 41 R2-6).
+    if (entries.length === 0) {
+      toast.error(
+        "Nothing here is held by a list both writers changed any more, so nothing was discarded.",
+      );
+      setSectionDiscardOpen(false);
+      return;
+    }
     // An unanswered write of one of these sections decides first.
     const unanswered = entries.some(([, entry]) =>
-      Array.from(unconfirmedContentRef.current).some(([key, sent]) => {
-        if (sent.sectionId !== entry.sectionId) return false;
-        const keyTemplateId = templateIdOfPendingContentKey(key, sent.sectionId);
-        return (
-          keyTemplateId !== null &&
-          sameTemplateOwner(keyTemplateId, entry.templateId)
-        );
-      }),
+      Array.from(unconfirmedContentRef.current).some(([key, sent]) =>
+        sameSectionTarget(
+          {
+            templateId:
+              templateIdOfPendingContentKey(key, sent.sectionId) ?? key,
+            sectionId: sent.sectionId,
+          },
+          entry,
+        ),
+      ),
     );
-    if (unanswered) return;
+    if (unanswered) {
+      toast.error(
+        "A save of this section has not been answered yet, so nothing was discarded. Use Try again to check it first.",
+      );
+      return;
+    }
     // What the author confirmed discarding, as it stood when they did. Every
     // edit stores a new draft object, so one that differs after the wait is
     // an edit made while the latest version was loading — not part of what
@@ -14035,6 +14140,15 @@ export function VisualEditorShell({
     if (editedMeanwhile) {
       toast.error(
         "You edited this section while the latest version was loading, so nothing was discarded. Choose Discard mine again to discard your changes as they are now.",
+      );
+      setSectionDiscardOpen(false);
+      return;
+    }
+    // Still what was confirmed: each section is still held by its conflict
+    // (Task 41 R2-7).
+    if (entries.some(([key]) => !(key in listConflictsRef.current))) {
+      toast.error(
+        "This section is no longer held by a list conflict, so nothing was discarded.",
       );
       setSectionDiscardOpen(false);
       return;
@@ -14122,24 +14236,36 @@ export function VisualEditorShell({
     previewSectionIsHidden,
     queryClient,
     reconcileAfterRemoval,
+    sameSectionTarget,
     sameTemplateOwner,
   ]);
 
-  const openListDiscard = useCallback((sectionId: string, fieldPath: string) => {
-    if (discardingRef.current) return;
-    const conflict = Object.entries(listConflictsRef.current).find(
-      ([, entry]) =>
-        entry.sectionId === sectionId && entry.lists.includes(fieldPath),
-    );
-    if (!conflict) return;
-    const [key, entry] = conflict;
-    setDiscardDialogTarget({
-      key,
-      templateId: entry.templateId,
-      sectionId,
-      fieldPath,
-    });
-  }, []);
+  /**
+   * Opens the list-only discard for the section the Content panel shows: the
+   * section of this page's document, never a same-id section of another page
+   * (section ids are unique only within a document; Task 41 R2-1).
+   */
+  const openListDiscard = useCallback(
+    (sectionId: string, fieldPath: string) => {
+      if (discardingRef.current) return;
+      const here = templateIdForSection(sectionId);
+      if (!here) return;
+      const conflict = Object.entries(listConflictsRef.current).find(
+        ([, entry]) =>
+          entry.lists.includes(fieldPath) &&
+          sameSectionTarget(entry, { templateId: here, sectionId }),
+      );
+      if (!conflict) return;
+      const [key, entry] = conflict;
+      setDiscardDialogTarget({
+        key,
+        templateId: entry.templateId,
+        sectionId,
+        fieldPath,
+      });
+    },
+    [sameSectionTarget, templateIdForSection],
+  );
 
   const acknowledgeListReset = useCallback((epoch: number) => {
     setListReset((current) =>
@@ -14153,8 +14279,26 @@ export function VisualEditorShell({
     if (!target || discardingRef.current) return;
     const conflict = listConflictsRef.current[target.key];
     const confirmed = pendingPropsMapRef.current.get(target.key);
-    if (!conflict?.lists.includes(target.fieldPath) || !confirmed) return;
-    if (hasUnconfirmedContentForList(target.templateId, target.sectionId, target.fieldPath)) return;
+    // Refused with its reason, never silently (Task 41 R2-6).
+    if (!conflict?.lists.includes(target.fieldPath) || !confirmed) {
+      toast.error(
+        "This list is no longer held by a conflict, so nothing was discarded.",
+      );
+      setDiscardDialogTarget(null);
+      return;
+    }
+    if (
+      hasUnconfirmedContentForList(
+        target.templateId,
+        target.sectionId,
+        target.fieldPath,
+      )
+    ) {
+      toast.error(
+        "A save of this list has not been answered yet, so nothing was discarded. Use Try again to check it first.",
+      );
+      return;
+    }
     const ownerId = routeTemplateIdsRef.current.get(target.templateId) ?? target.templateId;
 
     discardingRef.current = true;
@@ -14182,6 +14326,15 @@ export function VisualEditorShell({
     if (pendingPropsMapRef.current.get(target.key) !== confirmed) {
       toast.error(
         "You edited this list while the latest version was loading, so nothing was discarded. Confirm the discard again for the current list.",
+      );
+      setDiscardDialogTarget(null);
+      return;
+    }
+    // Still what was confirmed: the list is still held by its conflict
+    // (Task 41 R2-7).
+    if (!listConflictsRef.current[target.key]?.lists.includes(target.fieldPath)) {
+      toast.error(
+        "This list is no longer held by a conflict, so nothing was discarded.",
       );
       setDiscardDialogTarget(null);
       return;
@@ -14269,6 +14422,7 @@ export function VisualEditorShell({
     }
     listResetEpochRef.current += 1;
     setListReset({
+      templateId: template.id,
       sectionId: target.sectionId,
       fieldPath: target.fieldPath,
       // A path, not a top-level key: a nested list resets to its own value.
@@ -16993,7 +17147,23 @@ export function VisualEditorShell({
             }
             return statuses;
           })()}
-          listReset={listReset}
+          listReset={
+            listReset && {
+              ...listReset,
+              // Applied only to this page's section of that id; another
+              // page's reset is spent, never poured into it (R2-1).
+              ownedHere: (() => {
+                const here = templateIdForSection(listReset.sectionId);
+                return (
+                  here !== null &&
+                  sameSectionTarget(listReset, {
+                    templateId: here,
+                    sectionId: listReset.sectionId,
+                  })
+                );
+              })(),
+            }
+          }
           onListResetApplied={acknowledgeListReset}
           onDiscardListConflict={openListDiscard}
           activeComputedStyleRevision={activeComputedStyleRevision}

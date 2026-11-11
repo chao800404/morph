@@ -60,9 +60,10 @@ import {
 } from "@/lib/storefront/ast/tailwind-token-engine";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
-  deriveThemeDocumentLayoutPath,
-  readSlotPropsSetInCode,
-} from "@/lib/storefront/compiler/theme-route-sections";
+  listOwnDiscardLabel,
+  slotPropsSetInCode,
+  SPECIALIZED_CONTENT_FIELD_KEYS,
+} from "@/lib/storefront/editor/list-discard-control";
 import {
   isThemeLinkFieldBound,
   resolveLinkFieldKeysForRenderedField,
@@ -288,6 +289,13 @@ export type InspectorListReset = Readonly<{
   fieldPath: string;
   value: unknown;
   epoch: number;
+  /**
+   * Whether the reset's document owns the section this panel shows under
+   * that id. Section ids are unique only within a document: a reset for
+   * another page's section of the same id is spent here, never applied
+   * (Task 41 R2-1). Unset counts as owned.
+   */
+  ownedHere?: boolean;
 }>;
 
 type EditorStyleInspectorProps = {
@@ -532,19 +540,6 @@ const SPACING_LENGTH_STEPS = {
   vh: 1,
 } satisfies Record<NumericInspectorLengthUnit, number>;
 
-const SPECIALIZED_CONTENT_FIELD_KEYS = new Set([
-  "heading",
-  "description",
-  "body",
-  "label",
-  "eyebrow",
-  "actionLabel",
-  "actionHref",
-  "imageSrc",
-  "imageAlt",
-  "image",
-  "imagePosition",
-]);
 
 const DIRECT_CONTENT_FIELD_KEYS = [
   "eyebrow",
@@ -977,6 +972,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     appliedListResetEpochRef.current = listReset.epoch;
     if (
       listReset.sectionId === section.id &&
+      listReset.ownedHere !== false &&
       listReset.epoch !== listResetAtMountRef.current
     ) {
       const next = setFieldPathValue(
@@ -1105,16 +1101,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    * code sets it, and no write to it leaves here. `"any"` when a later spread
    * may set any of them.
    */
-  const propsSetInCode = useMemo(() => {
-    if (contentStore !== "document" || !themeFiles) return null;
-    const layoutPath = deriveThemeDocumentLayoutPath(themeFiles);
-    const paths = [routeSourcePath, layoutPath].filter(
-      (path): path is string => typeof path === "string" && path.length > 0,
-    );
-    return paths.length > 0
-      ? readSlotPropsSetInCode(themeFiles, paths, section.id)
-      : null;
-  }, [contentStore, routeSourcePath, section.id, themeFiles]);
+  // Read by the rule the shell also uses (`slotPropsSetInCode`), so both say
+  // the same about which lists have a discard of their own.
+  const propsSetInCode = useMemo(
+    () =>
+      contentStore !== "document" || !themeFiles
+        ? null
+        : slotPropsSetInCode(themeFiles, routeSourcePath, section.id),
+    [contentStore, routeSourcePath, section.id, themeFiles],
+  );
   const isSetInCode = useCallback(
     (fieldKey: string) =>
       propsSetInCode === "any" || (propsSetInCode?.has(fieldKey) ?? false),
@@ -1725,6 +1720,56 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
   const declaredContentFieldLabel = (fieldKey: string, fallback: string) =>
     resolvedContentFields[fieldKey]?.label ?? fallback;
+  /**
+   * The label of a held list's own discard control, by the rule the shell
+   * names it by (`listOwnDiscardLabel`), or null where there is none and the
+   * shell offers "Discard mine…" instead (Task 41 R2-2).
+   */
+  const ownListDiscardLabel = (fieldKey: string) =>
+    listOwnDiscardLabel({
+      contentStore,
+      fields: declaredOrDefaultContentFields,
+      propsSetInCode,
+      fieldPath: fieldKey,
+    });
+  /** A list's Not saved notice, with its own discard for a writer conflict. */
+  const renderListWriteNotice = (fieldKey: string): React.ReactNode => {
+    const status = listWriteStatuses?.[fieldKey];
+    if (!status?.notSaved) return null;
+    const discardLabel = status.conflict ? ownListDiscardLabel(fieldKey) : null;
+    return (
+      <div
+        role="status"
+        data-list-not-saved={fieldKey}
+        className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs text-destructive"
+      >
+        <p className="font-medium">Not saved</p>
+        <p className="mt-0.5 text-muted-foreground">
+          {status.kind === "outcome-unknown"
+            ? "The result is not confirmed. Use Check and save before deciding what to keep."
+            : discardLabel !== null
+              ? // "Load latest, keep mine" stops at a list both writers
+                // changed, so the way out named is the one beside it.
+                `Someone else changed this list too, so your version was not saved over theirs. Use Discard unsaved changes to ${discardLabel} below to load the latest list; Load latest, keep mine stops here again.`
+              : status.conflict
+                ? "Someone else changed this list too, so your version was not saved over theirs. Use Discard mine… in the toolbar to discard your unsaved changes to this section."
+                : status.kind === "blocked-before-send"
+                  ? "This change was blocked before it was sent. Reselect the list before trying again."
+                  : "The server did not save this list. Use the recovery controls above to continue."}
+        </p>
+        {discardLabel !== null ? (
+          <button
+            type="button"
+            disabled={status.busy}
+            className="mt-1 underline underline-offset-2"
+            onClick={() => onDiscardListConflict?.(section.id, fieldKey)}
+          >
+            Discard unsaved changes to {discardLabel}
+          </button>
+        ) : null}
+      </div>
+    );
+  };
   /**
    * The fields this selection reaches that are controlled by code, each with
    * its reason: drawn in place of the control they would otherwise have, so
@@ -3301,6 +3346,32 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       ) : null}
 
+      {view === "content"
+        ? // A list both writers changed keeps its own discard even when this
+          // selection draws no card for it (writing is blocked here, or the
+          // selected element does not reach the list): the shell named that
+          // control as the way out, so it is here whenever the section is
+          // (Task 41 R2-2).
+          Object.entries(listWriteStatuses ?? {})
+            .filter(
+              ([fieldKey, status]) =>
+                status.conflict &&
+                ownListDiscardLabel(fieldKey) !== null &&
+                !(
+                  !contentWritesBlocked &&
+                  hasEditableContent &&
+                  (visibleModules.has("content") ||
+                    visibleModules.has("media")) &&
+                  declaredFieldKeysRendered.has(fieldKey)
+                ),
+            )
+            .map(([fieldKey]) => (
+              <div key={`held-list:${fieldKey}`}>
+                {renderListWriteNotice(fieldKey)}
+              </div>
+            ))
+        : null}
+
       {view === "content" &&
       !contentWritesBlocked &&
       !hasEditableContent &&
@@ -3482,39 +3553,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                   No entries yet.
                                 </p>
                               ) : null}
-                              {listWriteStatuses?.[fieldKey]?.notSaved ? (
-                                <div
-                                  role="status"
-                                  data-list-not-saved={fieldKey}
-                                  className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs text-destructive"
-                                >
-                                  <p className="font-medium">Not saved</p>
-                                  <p className="mt-0.5 text-muted-foreground">
-                                    {listWriteStatuses[fieldKey]?.kind === "outcome-unknown"
-                                      ? "The result is not confirmed. Use Check and save before deciding what to keep."
-                                      : listWriteStatuses[fieldKey]?.kind === "blocked-before-send"
-                                        ? "This change was blocked before it was sent. Reselect the list before trying again."
-                                        : "The server did not save this list. Use the recovery controls above to continue."}
-                                  </p>
-                                  {listWriteStatuses[fieldKey]?.conflict ? (
-                                    <button
-                                      type="button"
-                                      disabled={
-                                        listWriteStatuses[fieldKey]?.busy
-                                      }
-                                      className="mt-1 underline underline-offset-2"
-                                      onClick={() =>
-                                        onDiscardListConflict?.(
-                                          section.id,
-                                          fieldKey,
-                                        )
-                                      }
-                                    >
-                                      Discard unsaved changes to {label}
-                                    </button>
-                                  ) : null}
-                                </div>
-                              ) : null}
+                              {renderListWriteNotice(fieldKey)}
                               {visibleRows.map(({ row, index }) => (
                                 <div
                                   key={
