@@ -8,6 +8,8 @@ import {
   acknowledgeContentFields,
   discardPendingContentPath,
   contentEntryTouchesPath,
+  contentEntryStatusPaths,
+  discardedListValue,
   hasUnconfirmedContentForList,
   rebaseFieldBasis,
   MISSING_BASIS_MESSAGE,
@@ -366,6 +368,68 @@ describe("discarding one conflicted content list", () => {
         fieldPath: "items",
       }),
     ).toEqual({ pending: null, baseline: incoming });
+  });
+
+  // Task 41 31-F: a nested list is a path, not a top-level key.
+  describe("a nested list", () => {
+    const nested = "items.0.related";
+    const unanswered: PendingContentEntry = {
+      sectionId: "hero",
+      props: {
+        items: [{ id: "row", related: [{ id: "r", title: "Mine" }] }],
+      },
+      fields: {
+        "items.0.related.0.title": field("Mine", 4),
+      },
+    };
+
+    it("resets to the latest value at its path", () => {
+      const incoming = {
+        items: [{ id: "row", related: [{ id: "s", title: "Theirs" }] }],
+      };
+      expect(discardedListValue(incoming, nested)).toEqual([
+        { id: "s", title: "Theirs" },
+      ]);
+      expect(discardedListValue(incoming, "items")).toBe(incoming.items);
+      expect(discardedListValue(incoming, "missing.0.list")).toBeUndefined();
+    });
+
+    it("is marked outcome-unknown exactly where the discard guard refuses", () => {
+      const marked = contentEntryStatusPaths(unanswered);
+      // The list itself, and every list holding it, are marked.
+      expect(marked).toEqual(
+        expect.arrayContaining(["items", "items.0", nested]),
+      );
+      for (const path of [
+        "items",
+        nested,
+        "items.0.related.0",
+        "related",
+        "heading",
+        "items.1.related",
+      ]) {
+        expect(
+          marked.includes(path),
+          `${path}: marker and guard use one overlap rule`,
+        ).toBe(contentEntryTouchesPath(unanswered, path));
+      }
+    });
+
+    it("marks every list a whole-list write or reset under it covers", () => {
+      const wholeList: PendingContentEntry = {
+        sectionId: "hero",
+        props: {},
+        listActionPaths: [nested],
+        resetProps: ["gallery"],
+      };
+      const marked = contentEntryStatusPaths(wholeList);
+      expect(marked).toEqual(
+        expect.arrayContaining(["items", "items.0", nested, "gallery"]),
+      );
+      for (const path of marked) {
+        expect(contentEntryTouchesPath(wholeList, path)).toBe(true);
+      }
+    });
   });
 });
 

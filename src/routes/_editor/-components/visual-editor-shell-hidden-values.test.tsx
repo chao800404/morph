@@ -944,6 +944,140 @@ describe("a refused hide the author discards", () => {
     expect(reconciled?.props).toBeUndefined();
   });
 
+  // Task 41 31-D: T6's hidden expectation is about a section being hidden.
+  // A shown section's discard still posts the latest list, as before Task 31.
+  it("T6c: discarding the list of a shown section posts the latest list", async () => {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const listContext = (
+      items: ReturnType<typeof rows>,
+      draftGeneration: number,
+    ) =>
+      contextOf(
+        {
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled: true,
+              props: { heading: "Welcome", items },
+            },
+          ],
+        },
+        draftGeneration,
+      );
+    updateSectionProps.mockReset();
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    const remote = {
+      success: true,
+      message: "ok",
+      data: listContext(rows("C", "A", "B"), 7),
+    };
+    getThemeEditor.mockReset();
+    getThemeEditor.mockResolvedValue(remote);
+    const client = readyClient(listSource);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remote as never,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={listContext(rows("A", "B"), 1)}
+          search={{
+            template: "index",
+            templateId: "template-1",
+            viewport: "desktop",
+          } as StorefrontThemeEditorSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [
+        {
+          id: "hero:node:row-title",
+          parentId: null,
+          sectionId: "hero",
+          label: "Title",
+          kind: "heading",
+          tagName: "h1",
+          target: {
+            sectionId: "hero",
+            nodeId: "hero:node:row-title",
+            fieldKey: "title",
+            fieldPath: "items.1.title",
+            itemId: "b",
+            isSection: false,
+          },
+        },
+      ],
+    });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+      value: "B edited",
+      originalValue: "B",
+    });
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    fireEvent.click(screen.getByTitle("Select hero; drag to reorder"));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
+    );
+
+    const beforeDiscard = posted.length;
+    act(() => {
+      screen.getByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }).click();
+    });
+    act(() => {
+      screen
+        .getByRole("button", { name: "Discard list changes and load latest" })
+        .click();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeNull(),
+    );
+    // Nothing was written, and the preview was told the section is shown,
+    // with the latest list the editor now holds.
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    const reconciled = heroPosts(beforeDiscard).at(-1);
+    expect(reconciled?.enabled).not.toBe(false);
+    expect(
+      (reconciled?.props?.items as Array<{ title: string }> | undefined)?.map(
+        (item) => item.title,
+      ),
+    ).toEqual(["C", "A", "B"]);
+  });
+
   it("T6b: discarding the list after another tab hid the section keeps it hidden, with no values", async () => {
     const rows = (...titles: string[]) =>
       titles.map((title) => ({ id: title.toLowerCase(), title }));

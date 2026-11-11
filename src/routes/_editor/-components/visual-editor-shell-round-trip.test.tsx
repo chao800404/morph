@@ -1119,14 +1119,18 @@ describe("a list both writers changed", () => {
         expect.stringMatching(/items also changed elsewhere/),
       ),
     );
+    // `items` is a declared list of a section on this page, so its own
+    // discard control is the way out, and the message names it without a
+    // hedge (Task 41 31-B). No generic Discard mine is offered for it.
     expect(error).toHaveBeenCalledWith(
-      // A generic Discard mine action no longer exists; the path-specific
-      // control is available only when the selected Inspector exposes the
-      // declared array field, with a stay/reload fallback otherwise.
-      expect.stringMatching(
-        /list-specific discard control if the Inspector exposes one/,
+      expect.stringContaining(
+        'Select Featured and use "Discard unsaved changes to items" beside the list in the Content panel',
       ),
     );
+    expect(error).not.toHaveBeenCalledWith(
+      expect.stringContaining("if the Inspector exposes one"),
+    );
+    expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(saveStatus()).toBe("Out of date");
 
@@ -1556,6 +1560,251 @@ describe("a list both writers changed", () => {
         name: /discard unsaved changes to related/i,
       }),
     ).toBeTruthy();
+  });
+
+  /**
+   * Task 41 (31-A, 31-C): one declared list, a second section to move the
+   * Inspector to, and a hidden one whose Content the panel refuses, which
+   * unmounts the Inspector.
+   */
+  function declaredListFixture() {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const template = (items: unknown, generation: number) => ({
+      ...context.templates[0],
+      draftGeneration: generation,
+      document: {
+        version: 1,
+        sections: [
+          {
+            id: "hero",
+            name: "Featured",
+            type: "hero",
+            enabled: true,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Welcome", items },
+          },
+          {
+            id: "other",
+            name: "Other",
+            type: "hero",
+            enabled: true,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Other", items: rows("X") },
+          },
+          {
+            id: "gone",
+            name: "Gone",
+            type: "hero",
+            enabled: false,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Gone", items: rows("G") },
+          },
+        ],
+      },
+    });
+    const listContext = {
+      ...context,
+      templates: [template(rows("A", "B"), 1)],
+    } as unknown as StorefrontThemeEditorDTO;
+    const remoteWith = (items: unknown, generation: number) => ({
+      success: true,
+      message: "ok",
+      data: { ...listContext, templates: [template(items, generation)] },
+    });
+    const source = `export const contentFields = {
+        heading: { type: "text", label: "Heading" },
+        items: { type: "array", label: "Items", fields: { title: { type: "text", label: "Title" } } },
+      } as const;
+      export function Hero({ heading = "Welcome", items = [] }) {
+        return <section><h1>{heading}</h1>{items.map((item) => <p key={item.id}>{item.title}</p>)}</section>;
+      }`;
+    return { rows, listContext, remoteWith, client: readyQueryClient(), source };
+  }
+
+  async function openSection(name: string | RegExp) {
+    fireEvent.click(screen.getByRole("button", { name }));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
+  }
+
+  /** Add, refused as moved, then Load latest, keep mine: a list conflict. */
+  async function conflictOnAdd(
+    client: QueryClient,
+    remote: unknown,
+    sentBefore: number,
+  ) {
+    updateSectionProps.mockResolvedValueOnce({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    getThemeEditor.mockResolvedValue(remote as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remote as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() =>
+      expect(updateSectionProps).toHaveBeenCalledTimes(sentBefore + 1),
+    );
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    act(() =>
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
+    );
+  }
+
+  /** Discards the items list through its own control; returns the dialog text. */
+  async function discardItems() {
+    act(() =>
+      screen
+        .getByRole("button", { name: /discard unsaved changes to items/i })
+        .click(),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    const text = dialog.textContent ?? "";
+    act(() =>
+      screen
+        .getByRole("button", { name: "Discard list changes and load latest" })
+        .click(),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    return text;
+  }
+
+  const removeButtons = () =>
+    screen.queryAllByRole("button", { name: "Remove" });
+
+  it("applies a second discard in the same session, with the Inspector mounted throughout", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+    expect(removeButtons()).toHaveLength(2);
+
+    // First conflict: the other writer added C in front.
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 0);
+    await discardItems();
+    await waitFor(() => expect(removeButtons()).toHaveLength(3));
+
+    // Second conflict on the same list: the other writer left only Z.
+    const sent = updateSectionProps.mock.calls.length;
+    await conflictOnAdd(client, remoteWith(rows("Z"), 9), sent);
+    await discardItems();
+    // The panel shows the latest list, not the author's discarded rows.
+    await waitFor(() => expect(removeButtons()).toHaveLength(1));
+
+    // And the next edit is made on it: Z plus the new row, never C, A, B.
+    updateSectionProps.mockResolvedValueOnce({
+      success: true,
+      data: { draftGeneration: 10, droppedProps: [] },
+    } as never);
+    const before = updateSectionProps.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() =>
+      expect(updateSectionProps).toHaveBeenCalledTimes(before + 1),
+    );
+    const last = updateSectionProps.mock.calls.at(-1)![0].data;
+    const items = last.props.items as Array<{ id?: string; title?: string }>;
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ id: "z", title: "Z" });
+    expect(last).toMatchObject({ expectedDraftGeneration: 9 });
+  });
+
+  it("keeps a row added after a discard across a real Inspector unmount and remount", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 0);
+    await discardItems();
+    await waitFor(() => expect(removeButtons()).toHaveLength(3));
+
+    // The Add lands, and the editor's document (what a fresh Inspector mount
+    // reads) holds it, as the route's data does once it is refetched.
+    updateSectionProps.mockImplementationOnce(async ({ data }) => {
+      const stored = listContext.templates[0]!.document.sections.find(
+        (candidate) => candidate.id === data.sectionId,
+      );
+      if (stored) Object.assign(stored.props, data.props);
+      return { success: true, data: { draftGeneration: 8, droppedProps: [] } };
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(removeButtons()).toHaveLength(4));
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+    );
+
+    // A hidden section opens no Content: the Inspector is unmounted.
+    const addBefore = screen.getByRole("button", { name: "Add entry" });
+    await openSection(/^Gone/);
+    expect(screen.queryByRole("button", { name: "Add entry" })).toBeNull();
+    await openSection("Featured");
+    const addAfter = screen.getByRole("button", { name: "Add entry" });
+    expect(addAfter, "a fresh mount").not.toBe(addBefore);
+    expect(removeButtons()).toHaveLength(4);
+  });
+
+  it("says a saved change is not undone when a landed list write precedes the discard", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+
+    // The first Add is answered, as the server answers, with the document
+    // it now holds: it landed and is saved.
+    updateSectionProps.mockImplementationOnce(async ({ data }) => ({
+      success: true,
+      data: {
+        draftGeneration: data.expectedDraftGeneration + 1,
+        droppedProps: [],
+        document: {
+          version: 1,
+          sections: listContext.templates[0]!.document.sections.map(
+            (section) =>
+              section.id === data.sectionId
+                ? { ...section, props: { ...section.props, ...data.props } }
+                : section,
+          ),
+        },
+      },
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+    );
+
+    // The second Add meets the other writer's change to the same list.
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B", "N"), 7), 1);
+    const text = await discardItems();
+    expect(text).toMatch(/A saved change is not undone/);
+    // Only the unsaved change was dropped; nothing was written to undo the
+    // saved one.
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not say a saved change is not undone when nothing of the list was saved", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 0);
+    const text = await discardItems();
+    expect(text).not.toMatch(/A saved change is not undone/);
   });
 });
 

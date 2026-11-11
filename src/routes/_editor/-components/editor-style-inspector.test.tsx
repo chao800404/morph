@@ -787,6 +787,113 @@ describe("EditorStyleInspector selection content", () => {
       expect(onListResetApplied).toHaveBeenCalledWith(17);
     });
 
+    // Task 41 31-A: a reset is for the panel showing its list when it is
+    // made. A panel mounted after it, or showing another section then, reads
+    // the latest props itself; applying the old reset later would put the
+    // list as it was at the discard back over newer input.
+    it("does not apply a list reset made before it was mounted", () => {
+      const onListResetApplied = vi.fn();
+      const onPropsChange = vi.fn();
+      render(
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", {
+            description: "Description",
+            items: [{ title: "Newer row" }],
+          })}
+          selection={sectionSelection}
+          listReset={{
+            sectionId: "section-1",
+            fieldPath: "items",
+            value: [{ title: "Reset row" }],
+            epoch: 4,
+          }}
+          onListResetApplied={onListResetApplied}
+          onPropsChange={onPropsChange}
+        />,
+      );
+      expect(onListResetApplied).toHaveBeenCalledWith(4);
+      const field = screen.getByDisplayValue("Description");
+      fireEvent.change(field, { target: { value: "Edited" } });
+      fireEvent.blur(field);
+      expect(lastSent(onPropsChange)?.items).toEqual([{ title: "Newer row" }]);
+    });
+
+    it("does not apply another section's list reset when it later shows that section", () => {
+      const onListResetApplied = vi.fn();
+      const onPropsChange = vi.fn();
+      const reset = {
+        sectionId: "section-1",
+        fieldPath: "items",
+        value: [{ title: "Reset row" }],
+        epoch: 5,
+      };
+      const view = (
+        id: string,
+        props: Record<string, unknown>,
+        listReset: typeof reset | null,
+      ) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith(id, props)}
+          selection={{ ...(sectionSelection as object), sectionId: id } as never}
+          listReset={listReset}
+          onListResetApplied={onListResetApplied}
+          onPropsChange={onPropsChange}
+        />
+      );
+      const { rerender } = render(
+        view("section-2", { description: "Other", items: [] }, null),
+      );
+      // Made while this panel shows another section: nothing here to reset.
+      rerender(view("section-2", { description: "Other", items: [] }, reset));
+      expect(onListResetApplied).toHaveBeenCalledWith(5);
+      rerender(
+        view(
+          "section-1",
+          { description: "Description", items: [{ title: "Newer row" }] },
+          reset,
+        ),
+      );
+      const field = screen.getByDisplayValue("Description");
+      fireEvent.change(field, { target: { value: "Edited" } });
+      fireEvent.blur(field);
+      expect(lastSent(onPropsChange)?.items).toEqual([{ title: "Newer row" }]);
+    });
+
+    it("applies each newer list reset while it stays mounted", () => {
+      const onListResetApplied = vi.fn();
+      const onPropsChange = vi.fn();
+      const view = (reset: { value: unknown; epoch: number } | null) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", {
+            description: "Description",
+            items: [{ title: "Mine" }],
+          })}
+          selection={sectionSelection}
+          listReset={
+            reset
+              ? { sectionId: "section-1", fieldPath: "items", ...reset }
+              : null
+          }
+          onListResetApplied={onListResetApplied}
+          onPropsChange={onPropsChange}
+        />
+      );
+      const { rerender } = render(view(null));
+      rerender(view({ value: [{ title: "First reset" }], epoch: 1 }));
+      rerender(view(null));
+      rerender(view({ value: [{ title: "Second reset" }], epoch: 2 }));
+      expect(onListResetApplied.mock.calls).toEqual([[1], [2]]);
+      const field = screen.getByDisplayValue("Description");
+      fireEvent.change(field, { target: { value: "Edited" } });
+      fireEvent.blur(field);
+      expect(lastSent(onPropsChange)?.items).toEqual([
+        { title: "Second reset" },
+      ]);
+    });
+
     it("does not send back a field the server changed elsewhere", () => {
       const onPropsChange = vi.fn();
       const view = (props: Record<string, unknown>) => (
