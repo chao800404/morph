@@ -1225,7 +1225,9 @@ type ThemeFileOutcome =
   | "source-conflict"
   | "server-refusal"
   | "offline"
-  | "offline-after-landing";
+  | "offline-after-landing"
+  /** Lands and answers success, but the answer names another receipt. */
+  | "saved-foreign-receipt";
 
 /**
  * A controllable Theme-file endpoint for the shell's real save/recovery path.
@@ -1297,6 +1299,13 @@ function controlledThemeFile(initialContent: string) {
       current = landed;
       throw new Error("The answer was lost after the file landed");
     }
+    if (outcome === "saved-foreign-receipt") {
+      current = landed;
+      return {
+        success: true,
+        data: { ...current, lastWriteAttemptId: "foreign-receipt" },
+      };
+    }
     current = landed;
     return { success: true, data: { ...current } };
   });
@@ -1357,6 +1366,10 @@ function controlledThemeFile(initialContent: string) {
   const advanceFileVersionKeepingReceipt = () => {
     current = { ...current, version: current.version + 1 };
   };
+  /** Other bytes under the same receipt, version and generation. */
+  const replaceContentKeepingReceipt = (content: string) => {
+    current = { ...current, content };
+  };
 
   themeFileServerControl.save = save;
   themeFileServerControl.read = read;
@@ -1380,6 +1393,7 @@ function controlledThemeFile(initialContent: string) {
     externalSourceWrite,
     replaceFileIdKeepingReceipt,
     advanceFileVersionKeepingReceipt,
+    replaceContentKeepingReceipt,
     file: () => ({ ...current }),
   };
 }
@@ -2772,8 +2786,13 @@ describe("Style replay read-back confirmation", () => {
       if (moved === "file") {
         expect(localThemeFile()?.conflict?.remoteContent).toBe(STYLE_REMOTE);
       } else {
+        // Task 39 round 2 (R2-1, the task 29 rule for unknown writes): a
+        // moved basis resolves the unknown write. It is no longer confirmable
+        // and no longer unconfirmed; the author's text stays as a pending
+        // source conflict. Previously it stayed unconfirmed for ever.
         expect(localThemeFile()?.sourceConflict).toBe(true);
-        expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE);
+        expect(localThemeFile()?.unconfirmedContent).toBeUndefined();
+        expect(localThemeFile()?.localContent).toBe(STYLE_SOURCE);
       }
     },
   );
@@ -2854,34 +2873,42 @@ describe("Style replay read-back confirmation", () => {
       },
       history: { undoAvailable: true, redoAvailable: false },
       sourceConflict: true,
-      unconfirmed: STYLE_SOURCE,
+      // Task 39 round 2 (R2-1): the moved replay is resolved, not kept
+      // unconfirmed (which looped: every check refused again).
+      unconfirmed: undefined,
     });
     expect(localThemeFile()?.conflict).toBeUndefined();
 
-    // The first refusal must retain the replay receipt record. A second
-    // explicit check cannot fall back to content equality and confirm it.
-    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
-    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(server.list).toHaveBeenCalledTimes(3));
-    await waitFor(() => expect(error).toHaveBeenCalledTimes(2));
+    // The replay record is gone, so nothing can later confirm the history
+    // step from it (by receipt or by content). The author's way on is a
+    // plain save at the newer basis: no receipt, no history confirmation.
+    expect(
+      screen.queryByRole("button", { name: "Check and save" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save my changes" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(localThemeFile()?.sourceConflict).toBeUndefined(),
+    );
+    const plain = (
+      server.save.mock.calls[2]?.[0] as {
+        data?: Record<string, unknown>;
+      }
+    ).data;
     expect({
-      writes: server.save.mock.calls.length,
+      writeAttemptId: plain?.writeAttemptId,
+      expectedVersion: plain?.expectedVersion,
+      expectedSourceGeneration: plain?.expectedSourceGeneration,
       history: historyState(),
-      sourceConflict: localThemeFile()?.sourceConflict,
-      unconfirmed: localThemeFile()?.unconfirmedContent,
       file: server.file(),
     }).toMatchObject({
-      writes: 2,
+      writeAttemptId: undefined,
+      expectedVersion: 3,
+      expectedSourceGeneration: 4,
       history: { undoAvailable: true, redoAvailable: false },
-      sourceConflict: true,
-      unconfirmed: STYLE_SOURCE,
-      file: {
-        version: 3,
-        sourceGeneration: 4,
-        lastWriteAttemptId: writeAttemptId,
-        content: STYLE_SOURCE,
-      },
+      file: { version: 4, lastWriteAttemptId: null, content: STYLE_SOURCE },
     });
+    expect(writeAttemptId).not.toBeNull();
   });
 
   it("does not confirm an unanswered Style Undo from matching content and version deltas without its receipt", async () => {
@@ -3375,6 +3402,277 @@ describe("Style replay resend and stored-replay ownership", () => {
         expect(server.save).toHaveBeenCalledTimes(expectedWrites + 1),
       );
       await waitFor(() => expect(server.file().content).toBe(STYLE_AFTER));
+    },
+  );
+
+  // Task 39 round 2.
+
+  async function loseUndoThenAdvanceSource(
+    server: ReturnType<typeof controlledThemeFile>,
+  ) {
+    renderShellWithHero(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    server.outcomes.push("offline");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+    );
+    const lost = sentWrite(server, 1);
+    // The author saved another Theme file meanwhile: the source moved on,
+    // this file did not.
+    server.externalSourceWrite();
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        error.mock.calls.some(([message]) =>
+          String(message).includes("can no longer be confirmed"),
+        ),
+      ).toBe(true),
+    );
+    expect({
+      writes: server.save.mock.calls.length,
+      history: historyState(),
+      unconfirmed: localThemeFile()?.unconfirmedContent,
+      sourceConflict: localThemeFile()?.sourceConflict,
+      conflict: localThemeFile()?.conflict,
+      local: localThemeFile()?.localContent,
+      file: server.file(),
+    }).toMatchObject({
+      writes: 2,
+      history: { undoAvailable: true, redoAvailable: false },
+      unconfirmed: undefined,
+      sourceConflict: true,
+      conflict: undefined,
+      local: STYLE_SOURCE,
+      file: { content: STYLE_AFTER, version: 2, sourceGeneration: 3 },
+    });
+    expect(
+      screen.queryByRole("button", { name: "Check and save" }),
+    ).toBeNull();
+    return { lost, error };
+  }
+
+  it("resolves a not-landed Style Undo whose source moved, and lets the author save it plainly at the newer basis", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    const { lost } = await loseUndoThenAdvanceSource(server);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save my changes" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(localThemeFile()?.sourceConflict).toBeUndefined(),
+    );
+    expect(basisOf(sentWrite(server, 2))).toEqual({
+      content: STYLE_SOURCE,
+      writeAttemptId: undefined,
+      expectedFileId: "file-hero",
+      expectedVersion: 2,
+      expectedSourceGeneration: 3,
+    });
+    expect({
+      history: historyState(),
+      file: server.file(),
+      saveState: localThemeFile()?.saveState,
+    }).toMatchObject({
+      // Nothing confirmed the Undo: its step is still open.
+      history: { undoAvailable: true, redoAvailable: false },
+      file: {
+        content: STYLE_SOURCE,
+        version: 3,
+        sourceGeneration: 4,
+        lastWriteAttemptId: null,
+      },
+      saveState: "clean",
+    });
+
+    // Undo and Redo of the file work again: a fresh run with its own receipt.
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(4));
+    await waitFor(() =>
+      expect(historyState()).toEqual({
+        undoAvailable: false,
+        redoAvailable: true,
+      }),
+    );
+    const rerun = sentWrite(server, 3);
+    expect(rerun.writeAttemptId).toMatch(UUID);
+    expect(rerun.writeAttemptId).not.toBe(lost.writeAttemptId);
+    expect(rerun.expectedVersion).toBe(3);
+    fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(server.file().content).toBe(STYLE_AFTER));
+    await waitFor(() =>
+      expect(historyState()).toEqual({
+        undoAvailable: true,
+        redoAvailable: false,
+      }),
+    );
+  });
+
+  it("resolves a not-landed Style Undo whose source moved, and lets the author load the latest instead", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load the latest" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.sourceConflict).toBeUndefined(),
+    );
+    expect({
+      writes: server.save.mock.calls.length,
+      local: localThemeFile()?.localContent,
+      server: localThemeFile()?.serverContent,
+      dirty: localThemeFile()?.dirty,
+      saveState: localThemeFile()?.saveState,
+      // The file's entries describe text that was just replaced.
+      history: historyState(),
+    }).toEqual({
+      writes: 2,
+      local: STYLE_AFTER,
+      server: STYLE_AFTER,
+      dirty: false,
+      saveState: "clean",
+      history: { undoAvailable: false, redoAvailable: false },
+    });
+
+    // A new edit goes at the newer basis.
+    applyStylePatch();
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    expect(basisOf(sentWrite(server, 2))).toMatchObject({
+      writeAttemptId: undefined,
+      expectedVersion: 2,
+      expectedSourceGeneration: 3,
+    });
+    await waitFor(() => expect(localThemeFile()?.saveState).toBe("clean"));
+  });
+
+  it("does not confirm a Check and save resend whose answer names another receipt", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    renderShellWithHero(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    server.outcomes.push("offline");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+    );
+    const lost = sentWrite(server, 1);
+
+    server.outcomes.push("saved-foreign-receipt");
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+    );
+    await waitFor(() => expect(historyState().undoAvailable).toBe(true));
+    expect(sentWrite(server, 2).writeAttemptId).toBe(lost.writeAttemptId);
+    expect({
+      history: historyState(),
+      conflict: localThemeFile()?.conflict,
+    }).toEqual({
+      history: { undoAvailable: true, redoAvailable: false },
+      conflict: undefined,
+    });
+
+    // The stored replay is not reused by the next run.
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(4));
+    const rerun = sentWrite(server, 3);
+    expect(rerun.writeAttemptId).toMatch(UUID);
+    expect(rerun.writeAttemptId).not.toBe(lost.writeAttemptId);
+  });
+
+  it("refuses an Edit entry's history run of the file before touching it while a Style replay is stored", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    renderShellWithHero(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    const saveFile = await captureCodeFileSave();
+    const codeText = STYLE_AFTER + "\n// typed in Code";
+    await act(async () => {
+      await saveFile(stylePatchTarget.filePath, codeText, { confirmed: true });
+    });
+    expect(server.save).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(server.file().content).toBe(STYLE_AFTER));
+    await waitFor(() => expect(historyState().redoAvailable).toBe(true));
+
+    server.outcomes.push("offline");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+    );
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+
+    // Redo is the Code edit's entry: a generic file history run.
+    fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+    await waitFor(() =>
+      expect(
+        error.mock.calls.some(
+          ([message]) =>
+            String(message).startsWith("Could not redo:") &&
+            String(message).includes("Use Check and save first"),
+        ),
+      ).toBe(true),
+    );
+    expect({
+      reads: server.read.mock.calls.length,
+      writes: server.save.mock.calls.length,
+      local: localThemeFile()?.localContent,
+      unconfirmed: localThemeFile()?.unconfirmedContent,
+      history: historyState(),
+    }).toEqual({
+      reads: 0,
+      writes: 4,
+      local: STYLE_SOURCE,
+      unconfirmed: STYLE_SOURCE,
+      history: { undoAvailable: true, redoAvailable: true },
+    });
+  });
+
+  it.each(["code save", "check and save"] as const)(
+    "does not settle a Style replay by receipt when the file holds other text (%s)",
+    async (via) => {
+      const server = controlledThemeFile(STYLE_SOURCE);
+      renderShellWithHero(STYLE_SOURCE);
+      await applyAndSaveStyle(server);
+      server.outcomes.push("offline-after-landing");
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await waitFor(() =>
+        expect(localThemeFile()?.unconfirmedContent).toBe(STYLE_SOURCE),
+      );
+      // Same receipt, version and generation; other bytes.
+      server.replaceContentKeepingReceipt(STYLE_REMOTE);
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+
+      if (via === "code save") {
+        const saveFile = await captureCodeFileSave();
+        await act(async () => {
+          await saveFile(stylePatchTarget.filePath, CODE_EDIT, {
+            confirmed: true,
+          }).catch(() => {});
+        });
+      } else {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Check and save" }),
+        );
+        await waitFor(() => expect(server.read).toHaveBeenCalledTimes(1));
+        await waitFor(() =>
+          expect(localThemeFile()?.conflict).toBeDefined(),
+        );
+      }
+
+      expect({
+        reads: server.read.mock.calls.length,
+        writes: server.save.mock.calls.length,
+        history: historyState(),
+        remote: localThemeFile()?.conflict?.remoteContent,
+      }).toEqual({
+        reads: 1,
+        writes: 2,
+        history: { undoAvailable: true, redoAvailable: false },
+        remote: STYLE_REMOTE,
+      });
     },
   );
 });
