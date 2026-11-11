@@ -57,10 +57,7 @@ import {
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { planConfirmedPublicUrlRewrite } from "@/lib/storefront/service/public-url-rewrite-batch";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
-import {
-  isEditablePublicTextPath,
-  projectPublicTextFile,
-} from "@/lib/storefront/editor/public-text-file";
+import { isEditablePublicTextPath, projectPublicTextFile } from "@/lib/storefront/editor/public-text-file";
 import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
 import { isThemeAuthoringRefusedPath } from "@/lib/storefront/compiler/theme-start-toolchain";
 import { proveAndPatchSourceDefault } from "@/lib/storefront/editor/source-default-control";
@@ -811,11 +808,7 @@ export const getStorefrontThemeFile = createServerFn({ method: "POST" })
 
     try {
       if (isEditablePublicTextPath(data.path)) {
-        const binary = await themeSourceStore.getBinaryFileByPath(
-          data.storefrontId,
-          data.themeId,
-          data.path,
-        );
+        const binary = await themeSourceStore.getBinaryFileByPath(data.storefrontId, data.themeId, data.path);
         if (!binary) return fail("File not found", { error: "NOT_FOUND" });
         if (binary.sizeBytes > THEME_PUBLIC_LIMITS.maxFileBytes) {
           return fail("Public text file is too large", { error: "GET_FAILED" });
