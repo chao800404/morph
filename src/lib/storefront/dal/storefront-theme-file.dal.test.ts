@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -472,6 +472,131 @@ describe("storefront theme file DAL", () => {
         content: "export const Hero = () => <main />;",
         last_write_attempt_id: null,
       });
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  it("applies migration 0083 on the real 0082 schema with rows, leaving rows and existing columns unchanged", () => {
+    // The schema 0083 meets in a deployed database: every migration before it,
+    // in the order wrangler applies `migrations_dir` (file name), not a
+    // hand-written stand-in for `storefront_theme_files`.
+    const migrationDb = new Database(":memory:");
+    const refused: string[] = [];
+    try {
+      const files = readdirSync("drizzle")
+        .filter((file) => file.endsWith(".sql"))
+        .sort();
+      expect(files).toContain("0082_preview_access_resolved_grant.sql");
+      for (const file of files) {
+        if (file >= "0083") break;
+        const sql = readFileSync(`drizzle/${file}`, "utf8");
+        for (const statement of sql.split("--> statement-breakpoint")) {
+          if (!statement.replace(/--.*$/gm, "").trim()) continue;
+          try {
+            migrationDb.exec(statement);
+          } catch {
+            refused.push(file);
+          }
+        }
+      }
+      // better-sqlite3 is built without double-quoted string literals, which
+      // two old `users` table rebuilds use. Neither touches theme files; any
+      // other refusal fails here instead of being skipped silently.
+      expect(refused).toEqual([
+        "0005_curly_blazing_skull.sql",
+        "0007_concerned_vapor.sql",
+      ]);
+
+      migrationDb.exec(`
+        INSERT INTO storefronts (id, sales_channel_id, name, created_at, updated_at)
+        VALUES ('storefront-m', 'channel-m', 'Store', '2026-01-01', '2026-01-01');
+        INSERT INTO storefront_themes (id, storefront_id, name, created_at, updated_at)
+        VALUES ('theme-m', 'storefront-m', 'Theme', '2026-01-01', '2026-01-01');
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, mime_type, is_entry,
+           created_at, updated_at, deleted_at, version)
+        VALUES
+          ('file-text', 'storefront-m', 'theme-m', 'src/components/Hero.tsx',
+           'export const Hero = () => <main />;', 'text/typescript', 1,
+           '2026-01-01', '2026-01-02', NULL, 7),
+          ('file-deleted', 'storefront-m', 'theme-m', 'src/old.tsx',
+           'export {};', 'text/typescript', 0,
+           '2026-01-01', '2026-01-03', '2026-01-04', 2);
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, mime_type, is_entry,
+           created_at, updated_at, version, encoding, blob_digest, size_bytes)
+        VALUES
+          ('file-binary', 'storefront-m', 'theme-m', 'public/logo.png', '',
+           'image/png', 0, '2026-01-01', '2026-01-05', 3, 'binary',
+           '${"a".repeat(64)}', 128);
+      `);
+
+      const columnsOf = () =>
+        (
+          migrationDb
+            .prepare("PRAGMA table_info(storefront_theme_files)")
+            .all() as Array<{
+            name: string;
+            type: string;
+            notnull: number;
+            dflt_value: unknown;
+            pk: number;
+          }>
+        ).map(({ name, type, notnull, dflt_value, pk }) => ({
+          name,
+          type,
+          notnull,
+          dflt_value,
+          pk,
+        }));
+      const schemaObjects = () =>
+        migrationDb
+          .prepare(
+            "SELECT type, name, sql FROM sqlite_master WHERE tbl_name = 'storefront_theme_files' AND type != 'table' ORDER BY name",
+          )
+          .all();
+      const rowsOf = (columns: readonly string[]) =>
+        migrationDb
+          .prepare(
+            `SELECT ${columns.map((c) => `"${c}"`).join(", ")} FROM storefront_theme_files ORDER BY id`,
+          )
+          .all();
+
+      const columnsBefore = columnsOf();
+      const namesBefore = columnsBefore.map((column) => column.name);
+      expect(namesBefore).not.toContain("last_write_attempt_id");
+      const rowsBefore = rowsOf(namesBefore);
+      const objectsBefore = schemaObjects();
+      expect(rowsBefore).toHaveLength(3);
+
+      migrationDb.exec(
+        readFileSync("drizzle/0083_style_replay_causal_receipt.sql", "utf8"),
+      );
+
+      expect(columnsOf()).toEqual([
+        ...columnsBefore,
+        {
+          name: "last_write_attempt_id",
+          type: "TEXT",
+          notnull: 0,
+          dflt_value: null,
+          pk: 0,
+        },
+      ]);
+      expect(rowsOf(namesBefore)).toEqual(rowsBefore);
+      expect(schemaObjects()).toEqual(objectsBefore);
+      expect(
+        migrationDb
+          .prepare(
+            "SELECT id, last_write_attempt_id FROM storefront_theme_files ORDER BY id",
+          )
+          .all(),
+      ).toEqual([
+        { id: "file-binary", last_write_attempt_id: null },
+        { id: "file-deleted", last_write_attempt_id: null },
+        { id: "file-text", last_write_attempt_id: null },
+      ]);
     } finally {
       migrationDb.close();
     }
