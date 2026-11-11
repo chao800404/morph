@@ -704,6 +704,58 @@ export const HISTORY_REPLAY_NOT_SAVED_MESSAGE =
   "the change is not saved yet. It stays in the history; try again once the file is saved.";
 const HISTORY_REPLAY_FILE_CONFLICT_MESSAGE =
   "The file changed while its save was unanswered. Resolve the file conflict before retrying.";
+const STYLE_REPLAY_OTHER_RUN_MESSAGE =
+  "an earlier Undo or Redo of this file got no answer. Use Check and save first; nothing was sent.";
+
+/**
+ * The stored Style replay of a file (a lost Undo/Redo answer), while it is
+ * still the file's unconfirmed write. Once the file holds no unconfirmed
+ * write, or another one, the stored replay describes nothing that is still
+ * unknown: it is dropped, so no later save or run inherits its receipt.
+ */
+function liveStyleReplay<T extends { content: string }>(
+  replays: Map<string, T>,
+  filePath: string,
+  unconfirmedContent: string | undefined,
+): T | undefined {
+  const stored = replays.get(filePath);
+  if (stored && stored.content !== unconfirmedContent) {
+    replays.delete(filePath);
+    return undefined;
+  }
+  return stored;
+}
+
+/**
+ * Whose a stored Style replay is, for one save of its file:
+ * - `same-run`: the same history entry and direction running again;
+ * - `check-and-save`: the author's explicit save of exactly its text, with
+ *   no history run (Check and save, Save my changes, a confirmed Code save
+ *   of those bytes): the same write, sent under its own receipt;
+ * - `other`: any other save of the file. It may settle the replay from
+ *   read-back evidence; it never sends under the replay's receipt.
+ * Another history run of the file is refused before anything is read or
+ * sent: its outcome would be judged against a write still unknown.
+ */
+function styleReplayRole(
+  stored: { attempt: EditorHistoryAttempt; content: string },
+  historyAttempt: EditorHistoryAttempt | undefined,
+  confirmed: boolean,
+  contentToSave: string,
+): "same-run" | "check-and-save" | "other" {
+  if (historyAttempt) {
+    if (
+      stored.attempt.entryId === historyAttempt.entryId &&
+      stored.attempt.direction === historyAttempt.direction
+    ) {
+      return "same-run";
+    }
+    throw new Error(STYLE_REPLAY_OTHER_RUN_MESSAGE);
+  }
+  return confirmed && contentToSave === stored.content
+    ? "check-and-save"
+    : "other";
+}
 
 const HISTORY_REPLAY_REFUSAL_MESSAGES = {
   superseded:
@@ -6481,15 +6533,6 @@ export function VisualEditorShell({
       }
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
-      const previousReplay = historyAttempt
-        ? unconfirmedStyleHistoryRef.current.get(filePath)
-        : undefined;
-      const writeAttemptId = historyAttempt
-        ? previousReplay?.attempt.entryId === historyAttempt.entryId &&
-          previousReplay.attempt.direction === historyAttempt.direction
-          ? previousReplay.writeAttemptId
-          : crypto.randomUUID()
-        : undefined;
 
       return saveQueueRef.current.enqueue({
         queueKey: themeOpKey,
@@ -6529,6 +6572,44 @@ export function VisualEditorShell({
             throw new Error(UNCONFIRMED_SAVE_HOLD);
           }
 
+          // Read here, in the queue, after every save ahead of this one has
+          // settled what it owned; see `styleReplayRole`.
+          const styleReplay = liveStyleReplay(
+            unconfirmedStyleHistoryRef.current,
+            filePath,
+            current.unconfirmedContent,
+          );
+          const replayRole = styleReplay
+            ? styleReplayRole(
+                styleReplay,
+                historyAttempt,
+                confirmed,
+                contentToSave,
+              )
+            : undefined;
+          const writeAttemptId =
+            styleReplay &&
+            (replayRole === "same-run" || replayRole === "check-and-save")
+              ? styleReplay.writeAttemptId
+              : historyAttempt
+                ? crypto.randomUUID()
+                : undefined;
+          /**
+           * Completes the stored replay's own history run, once, when this
+           * save is not that run (which completes itself) but the evidence
+           * says its write landed.
+           */
+          const confirmStoredReplay = (replay: UnconfirmedStyleHistoryReplay) => {
+            if (unconfirmedStyleHistoryRef.current.get(filePath) === replay) {
+              unconfirmedStyleHistoryRef.current.delete(filePath);
+            }
+            history.confirm(
+              replay.attempt.entryId,
+              replay.attempt.direction,
+              replay.attempt.attemptId,
+            );
+          };
+
           markWorkspaceSaving(filePath, workspaceScope);
 
           try {
@@ -6542,8 +6623,6 @@ export function VisualEditorShell({
               let latestDuringRecovery:
                 StorefrontThemeFileDTO | null | undefined;
               let sourceGenerationDuringRecovery: number | undefined;
-              const styleReplay =
-                unconfirmedStyleHistoryRef.current.get(filePath);
               await confirmLostSave({
                 unconfirmedContent: current.unconfirmedContent,
                 ...(styleReplay ? { isLanded: () => styleReplayLanded } : {}),
@@ -6696,7 +6775,8 @@ export function VisualEditorShell({
               });
               if (styleReplay && confirmed.file) {
                 if (
-                  styleReplay.content !== contentToSave ||
+                  (replayRole !== "other" &&
+                    styleReplay.content !== contentToSave) ||
                   confirmed.file.lastWriteAttemptId !==
                     styleReplay.writeAttemptId
                 ) {
@@ -6704,14 +6784,25 @@ export function VisualEditorShell({
                     "The Style history replay receipt did not match the original write.",
                   );
                 }
-                pendingDesignWritesRef.current.landed(filePath, targetRevision);
-                return {
-                  status: "saved",
-                  file: {
-                    ...confirmed.file,
-                    sourceGeneration: sourceGenerationDuringRecovery,
-                  },
-                };
+                // Landed, proven by its receipt. A history run of it
+                // completes itself when this returns; any other save
+                // completes that run here.
+                if (replayRole !== "same-run") confirmStoredReplay(styleReplay);
+                if (replayRole !== "other") {
+                  pendingDesignWritesRef.current.landed(
+                    filePath,
+                    targetRevision,
+                  );
+                  return {
+                    status: "saved",
+                    file: {
+                      ...confirmed.file,
+                      sourceGeneration: sourceGenerationDuringRecovery,
+                    },
+                  };
+                }
+                // Another save of the file: its own text goes next, as a
+                // plain save against the version the replay landed as.
               }
               // What would be sent is what the server already holds.
               if (confirmed.file?.content === contentToSave) {
@@ -6839,6 +6930,8 @@ export function VisualEditorShell({
                 useThemeWorkspaceStore
                   .getState()
                   .markUnconfirmed(filePath, contentToSave, workspaceScope);
+                // A Check and save resend lost again keeps its stored replay
+                // as it was: same run, same receipt, same basis.
                 if (historyAttempt) {
                   unconfirmedStyleHistoryRef.current.set(filePath, {
                     attempt: historyAttempt,
@@ -6940,6 +7033,16 @@ export function VisualEditorShell({
             }
 
             markWorkspaceSaved(res.data, workspaceScope);
+            // The resend of a replay proven not landed, answered: this very
+            // send carried the replay's receipt and basis, so the answer is
+            // the evidence for that history run.
+            if (
+              replayRole === "check-and-save" &&
+              styleReplay &&
+              res.data.lastWriteAttemptId === styleReplay.writeAttemptId
+            ) {
+              confirmStoredReplay(styleReplay);
+            }
             queryClient.setQueryData<ThemeFilesTreeQueryData | undefined>(
               storefrontThemeFileQueries.tree(
                 context.storefront.id,
@@ -6994,6 +7097,7 @@ export function VisualEditorShell({
       context.storefront.id,
       context.theme.id,
       getScopedOpKey,
+      history,
       markWorkspaceConflict,
       markWorkspaceError,
       markWorkspaceSaved,
@@ -7099,6 +7203,29 @@ export function VisualEditorShell({
         historyAttempt?: EditorHistoryAttempt;
       },
     ) => {
+      // Another history run of a file whose Style replay is still unknown is
+      // refused before the workspace or the frame shows its text; the queue
+      // asks the same again when the save runs.
+      if (options?.historyAttempt) {
+        const stored = liveStyleReplay(
+          unconfirmedStyleHistoryRef.current,
+          filePath,
+          useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            )[filePath]?.unconfirmedContent,
+        );
+        if (stored) {
+          styleReplayRole(
+            stored,
+            options.historyAttempt,
+            options.confirmed ?? false,
+            content,
+          );
+        }
+      }
       // What this write is. Named by the caller, or else the pending Design
       // write whose very text this is, sent again by whoever asks (Code, a
       // publish flush, a resend): the same write, judged the same way.
@@ -7508,79 +7635,6 @@ export function VisualEditorShell({
       pausedStyleHistoryRef.current.delete(filePath);
     },
     [workspaceScope],
-  );
-
-  const settleUnconfirmedStyleHistoryReplay = useCallback(
-    (filePath: string, result: unknown) => {
-      const pending = unconfirmedStyleHistoryRef.current.get(filePath);
-      if (!pending) return;
-      if (result === null || typeof result !== "object") {
-        const current = useThemeWorkspaceStore
-          .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[filePath];
-        if (current?.unconfirmedContent === undefined) {
-          unconfirmedStyleHistoryRef.current.delete(filePath);
-        }
-        return;
-      }
-      const saved = result as Partial<SavedThemeFile>;
-      const landed = Boolean(
-        saved.path === filePath &&
-        saved.lastWriteAttemptId === pending.writeAttemptId &&
-        typeof saved.sourceGeneration === "number" &&
-        saved.sourceGeneration === pending.sourceGeneration + 1 &&
-        (pending.serverExists
-          ? saved.id === pending.serverFileId &&
-            pending.serverVersion !== null &&
-            saved.version === pending.serverVersion + 1
-          : typeof saved.id === "string" && saved.version === 1),
-      );
-      unconfirmedStyleHistoryRef.current.delete(filePath);
-      if (!landed) {
-        if (
-          pending.serverExists &&
-          saved.id === pending.serverFileId &&
-          saved.version === (pending.serverVersion ?? -1)
-        ) {
-          useThemeWorkspaceStore
-            .getState()
-            .markSourceConflict(filePath, workspaceScope);
-        } else {
-          markWorkspaceConflict(
-            filePath,
-            saved.id && typeof saved.version === "number"
-              ? {
-                  kind: pending.serverExists ? "modified" : "created",
-                  remoteExists: true,
-                  remoteFileId: saved.id,
-                  remoteVersion: saved.version,
-                  remoteContent: saved.content ?? "",
-                }
-              : {
-                  kind: "deleted",
-                  remoteExists: false,
-                  remoteFileId: null,
-                  remoteVersion: null,
-                  remoteContent: null,
-                },
-            workspaceScope,
-          );
-        }
-        toast.error(
-          "The Theme file or source changed while confirming Style history. The history step was not completed.",
-        );
-        return;
-      }
-      history.confirm(
-        pending.attempt.entryId,
-        pending.attempt.direction,
-        pending.attempt.attemptId,
-      );
-    },
-    [history, markWorkspaceConflict, workspaceScope],
   );
 
   const handleRepairThemeLinkBinding = useCallback(
@@ -9166,7 +9220,6 @@ export function VisualEditorShell({
             ...pendingDesignSaveOptions(path, content),
           });
           settlePausedStyleHistoryWrite(path, content, saved);
-          settleUnconfirmedStyleHistoryReplay(path, saved);
         } catch (error) {
           const remainsUnconfirmed =
             readFiles()[path]?.unconfirmedContent !== undefined;
@@ -9196,7 +9249,6 @@ export function VisualEditorShell({
     pendingDesignWritesToLeave,
     retryFailedContent,
     settlePausedStyleHistoryWrite,
-    settleUnconfirmedStyleHistoryReplay,
     workspaceScope,
   ]);
 
