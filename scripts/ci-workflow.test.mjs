@@ -169,7 +169,10 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
     "- name: Require lifecycle container acceptance",
     "- name: Require lifecycle runner handover",
     "- name: Run preview access container acceptance",
+    "- name: Preserve preview access acceptance report",
     "- name: Require exact preview access target",
+    "- name: Require preview access runner handover",
+    "- name: Record Stage 3 runner identities and handover results",
   ].map((name) => container.indexOf(name));
   assert.ok(requiredOrder.every((index) => index >= 0), "all sequential gates must exist");
   assert.ok(
@@ -207,14 +210,16 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   assert.deepEqual(
     invokedSpecs.sort(),
     [
-      "e2e/m1-container-lifecycle-acceptance.spec.ts",
-      "e2e/preview-access-container.spec.ts",
+      "m1-container-lifecycle-acceptance.spec.ts",
+      "preview-access-container.spec.ts",
     ].sort(),
     "both Stage 3 targets must use the same isolated runner launcher",
   );
   assert.match(container, /Require preview access runner handover/);
   assert.match(container, /Record Stage 3 runner identities and handover results/);
-  assert.match(container, /ps -o pid,pgid,sid,comm/);
+  assert.match(container, /LIFECYCLE_HANDOVER_OUTCOME/);
+  assert.match(container, /PREVIEW_ACCESS_HANDOVER_OUTCOME/);
+  assert.match(container, /sid=\$\{runner\.sid\}/);
   assert.match(container, /stage3\/preview-access\/preview-access-container\.json/);
   for (const file of wiredFiles) {
     assert.equal(

@@ -70,7 +70,7 @@ test("accepts a complete handover only when every identity is gone", async () =>
 });
 
 test("parses the runner process group and session after the last comm parenthesis", () => {
-  const stat = "123 (runner name ) with close)) S 1 123 456 789 0 0";
+  const stat = "123 (runner name ) with close)) S 1 456 789 0 0";
   assert.equal(processGroupIdFromStat(stat), 456);
   assert.equal(processSessionIdFromStat(stat), 789);
 });
@@ -276,6 +276,7 @@ test("CLI checks real process and path state and uses the exact Docker and lock 
   const record = validRecord();
   record.runner.pid = deadPid;
   record.runner.pgid = deadPid;
+  record.runner.sid = deadPid;
   record.children = [];
   record.stateDir.path = stateDir;
   record.machineLock.path = lockFile;

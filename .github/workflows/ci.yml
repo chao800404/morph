@@ -865,7 +865,7 @@ jobs:
           MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/lifecycle-handover.json
           MORPH_E2E_LOCK: "1"
           MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
-        run: node scripts/run-editor-e2e.mjs e2e/m1-container-lifecycle-acceptance.spec.ts
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/m1-container-lifecycle-acceptance.spec.ts
 
       - name: Mark lifecycle container window end
         if: always()
@@ -888,6 +888,7 @@ jobs:
         run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/lifecycle/container-acceptance.json"
 
       - name: Require lifecycle runner handover
+        id: lifecycle_handover
         run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/lifecycle-handover.json" e2e/m1-container-lifecycle-acceptance.spec.ts
 
       - name: Mark preview access container window start
@@ -903,7 +904,17 @@ jobs:
           MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/preview-access-handover.json
           MORPH_E2E_LOCK: "1"
           MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
-        run: node scripts/run-editor-e2e.mjs e2e/preview-access-container.spec.ts
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/preview-access-container.spec.ts
+
+      - name: Preserve preview access acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/preview-access"
+          if [ -f test-results/preview-access-container.json ]; then
+            cp test-results/preview-access-container.json "$RUNNER_TEMP/stage3/preview-access/preview-access-container.json"
+          else
+            echo "::warning::Preview access acceptance report was not produced."
+          fi
 
       - name: Mark preview access container window end
         if: always()
@@ -912,6 +923,34 @@ jobs:
 
       - name: Require exact preview access target
         run: node scripts/check-container-acceptance.mjs test-results/preview-access-container.json scripts/container-acceptance-targets/preview-access-container.mjs
+
+      - name: Require preview access runner handover
+        id: preview_access_handover
+        if: always()
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/preview-access-handover.json" e2e/preview-access-container.spec.ts
+
+      - name: Record Stage 3 runner identities and handover results
+        if: always()
+        env:
+          LIFECYCLE_HANDOVER_OUTCOME: ${{ steps.lifecycle_handover.outcome }}
+          PREVIEW_ACCESS_HANDOVER_OUTCOME: ${{ steps.preview_access_handover.outcome }}
+        run: |
+          node --input-type=module - "$RUNNER_TEMP/stage3/lifecycle-handover.json" "$RUNNER_TEMP/stage3/preview-access-handover.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [lifecyclePath, previewPath] = process.argv.slice(2);
+          const entries = [
+            ["lifecycle", lifecyclePath, process.env.LIFECYCLE_HANDOVER_OUTCOME],
+            ["preview-access", previewPath, process.env.PREVIEW_ACCESS_HANDOVER_OUTCOME],
+          ];
+          for (const [name, filename, outcome] of entries) {
+            try {
+              const { runner, phase, invocationId } = JSON.parse(readFileSync(filename, "utf8"));
+              console.log(`${name} runner pid=${runner.pid} pgid=${runner.pgid} sid=${runner.sid} phase=${phase} invocation=${invocationId} handover=${outcome ?? "not-run"}`);
+            } catch (error) {
+              console.log(`${name} runner record unavailable; handover=${outcome ?? "not-run"}: ${error.message}`);
+            }
+          }
+          NODE
 
       - name: Stop container diagnostics
         if: always()

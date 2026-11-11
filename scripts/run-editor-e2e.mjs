@@ -58,6 +58,7 @@ import {
 } from "./e2e-machine-lock.mjs";
 import {
   ownProcessGroupId,
+  ownProcessSessionId,
   writeHandoverRecord,
 } from "./container-run-handover.mjs";
 
@@ -702,6 +703,7 @@ async function runTeardown() {
   const runnerIdentity = {
     pid: process.pid,
     pgid: ownProcessGroupId(),
+    sid: ownProcessSessionId(),
     startedAtUtc: RUNNER_STARTED_AT_UTC,
   };
   const stopResults = new Map();
@@ -849,6 +851,9 @@ async function runTeardown() {
     const complete =
       identityRecordedBeforeTeardown &&
       runnerIdentity.pgid !== null &&
+      runnerIdentity.sid !== null &&
+      runnerIdentity.pid === runnerIdentity.pgid &&
+      runnerIdentity.pid === runnerIdentity.sid &&
       childIdentities.every((child) => Number.isSafeInteger(child.pid) && child.pid > 1) &&
       stoppedAll &&
       containersGone &&
@@ -868,6 +873,9 @@ async function runTeardown() {
   const handoverComplete =
     identityRecordedBeforeTeardown &&
     runnerIdentity.pgid !== null &&
+    runnerIdentity.sid !== null &&
+    runnerIdentity.pid === runnerIdentity.pgid &&
+    runnerIdentity.pid === runnerIdentity.sid &&
     childIdentities.every((child) => Number.isSafeInteger(child.pid) && child.pid > 1) &&
     stoppedAll &&
     containersGone &&
