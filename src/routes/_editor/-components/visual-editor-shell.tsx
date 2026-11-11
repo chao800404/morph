@@ -3255,7 +3255,7 @@ export function VisualEditorShell({
         }
         if (replay) {
           // A refused resend is decided by `resendUnconfirmedWrites`
-          // (`settleRefusedResend`): held again only while its outcome is
+          // (`settleRefused`): held again only while its outcome is
           // unknown (unanswered or paused, held in `onError` above).
           if (replay.resend && !unconfirmedContentRef.current.has(key)) {
             setDraftSaveState("error");
@@ -3386,19 +3386,26 @@ export function VisualEditorShell({
       const movedReason = (key: string) =>
         refusedAt?.has(key) ? UNANSWERED_RESEND_REFUSED : undefined;
       const settling = (async () => {
-        const detail = storefrontThemeQueries.detail(
-          context.storefront.id,
-          context.theme.id,
-        );
-        // After a refusal, a read already in flight may have left before it:
-        // it is cancelled, so the answer used is one asked for now.
-        if (refusedAt) {
-          await queryClient.cancelQueries({ queryKey: detail.queryKey });
-        }
-        const fresh = await queryClient.fetchQuery({
-          ...detail,
-          staleTime: 0,
-        });
+        // After a refusal, a read of the shared query already in flight
+        // may have left before it, and would be the one answered here. This
+        // read is asked for now, apart from that query, which is left to
+        // answer its own awaiters (cancelling it would hand them the cache's
+        // older answer, or CancelledError). Its answer is not written to
+        // the cache; the snapshots take it below (`acceptReadTemplates`).
+        const fresh = refusedAt
+          ? await getStorefrontThemeEditor({
+              data: {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+              },
+            })
+          : await queryClient.fetchQuery({
+              ...storefrontThemeQueries.detail(
+                context.storefront.id,
+                context.theme.id,
+              ),
+              staleTime: 0,
+            });
         if (!fresh.success) {
           throw new Error(
             fresh.message ?? "Could not check whether your changes were saved.",
@@ -3633,7 +3640,12 @@ export function VisualEditorShell({
       code: string | undefined,
     ) => {
       if (unconfirmedContentRef.current.has(key)) return;
-      refused.set(key, sent.sectionId);
+      // A run's or a reset's own write is not the section's input: input
+      // typed meanwhile is the author's own and still goes in this press.
+      const isRun =
+        link !== null ||
+        Object.prototype.hasOwnProperty.call(sent, "resetProps");
+      if (!isRun) refused.set(key, sent.sectionId);
       const templateId =
         templateIdOfPendingContentKey(key, sent.sectionId) ?? key;
       if (code === TEMPLATE_DRAFT_CONFLICT) {
@@ -3653,9 +3665,6 @@ export function VisualEditorShell({
         );
         return;
       }
-      const isRun =
-        link !== null ||
-        Object.prototype.hasOwnProperty.call(sent, "resetProps");
       if (code === SELECTION_SOURCE_CONFLICT) {
         if (!isRun) {
           // The section's own input, as sent, needs reselection: its fields

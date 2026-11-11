@@ -5300,6 +5300,7 @@ function Home() {
     );
     const { rerender } = render(shell(editorContext));
     return {
+      client,
       receive: (next: StorefrontThemeEditorDTO) => rerender(shell(next)),
     };
   }
@@ -6818,6 +6819,70 @@ function Home() {
           expect(depth()).toBe("0");
         });
 
+        it("reads again after its resend's refusal without cancelling a read already in flight", async () => {
+          // Round 5 R5-1: a read of the Theme already out when the refusal
+          // comes back was asked before it. The answer that decides is one
+          // asked for after the refusal, and the earlier read's own awaiter
+          // still gets its answer (it is not cancelled).
+          const notice = notices();
+          const { client } = await lostOrdinaryWrite();
+          const original = sent()[0]!;
+          serverHolds({ ...STORED }, 1);
+          const live = async () => ({
+            success: true,
+            message: "ok",
+            data: editorAt({ ...stored }, draftGeneration),
+          });
+          let answerEarlier!: (value: unknown) => void;
+          let earlier: Promise<unknown> | undefined;
+          answerNext.push((retry) => {
+            getThemeEditor.mockImplementation(live);
+            getThemeEditor.mockImplementationOnce(
+              () =>
+                new Promise((resolve) => {
+                  answerEarlier = resolve;
+                }),
+            );
+            // Asked before the refusal, as the route's own reads are.
+            earlier = client.fetchQuery({
+              ...storefrontThemeQueries.detail("storefront-1", "theme-1"),
+              staleTime: 0,
+            });
+            // The late original lands; the resend is refused as out of date.
+            expect(apply(original)).toMatchObject({ success: true });
+            return apply(retry);
+          });
+
+          fireEvent.click(
+            await screen.findByRole("button", { name: "Check and save" }),
+          );
+          await waitFor(() => expect(unconfirmedCount()).toBeNull());
+          await settle();
+
+          expect(sent()).toHaveLength(2);
+          expect(stored).toEqual({ heading: "New" });
+          // Decided by the read after the refusal: landed, recorded once.
+          expect(depth(), "confirmed by the newer read").toBe("1");
+          expect(saveStatus()).not.toBe("Out of date");
+          expect(errors(notice)).not.toContainEqual(
+            expect.stringContaining("changed elsewhere"),
+          );
+          // The earlier read is answered as it was asked: not cancelled (a
+          // cancelled read hands its awaiter the cache's older answer, or
+          // CancelledError when there is none).
+          act(() =>
+            answerEarlier({
+              success: true,
+              message: "earlier read",
+              data: editorAt({ ...STORED }, 1),
+            }),
+          );
+          await expect(earlier).resolves.toMatchObject({
+            success: true,
+            message: "earlier read",
+          });
+        });
+
         it("keeps the write held when the read after its resend's refusal gets no answer", async () => {
           // Round 4 R4-5: the refusal proves the Document moved; whether the
           // original landed is still unknown until a read answers.
@@ -7604,6 +7669,31 @@ function Home() {
             undo: false,
             redo: true,
           });
+        });
+
+        it("a run's resend refused for another reason does not hold back input typed meanwhile in the same section", async () => {
+          // Round 5 R5-2: the refused write is the run's, not the input's.
+          // Input typed while the run was unanswered is the author's own and
+          // goes in the same press; nothing reads as a failed save of it.
+          const { added } = await lostResetUndo();
+          await type("Hello", "Typed later");
+          await settle();
+          expect(sent(), "the input is held behind the run").toHaveLength(2);
+          serverHolds({ ...STORED, items: added }, 2);
+          answerNext.push(() => ({
+            success: false,
+            error: "REFUSED_BY_MOCK",
+            message: "The mock refused the resend.",
+          }));
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(4);
+          expect(shape(sent()[2]!)).toEqual(resetUndo(2));
+          expect(sent()[3]!.props).toEqual({ heading: "Typed later" });
+          expect(stored).toMatchObject({ heading: "Typed later" });
+          expect(unconfirmedCount()).toBeNull();
+          expect(saveStatus()).not.toBe("Save failed");
         });
 
         it("read failed: nothing sent, the record and the history unchanged", async () => {
