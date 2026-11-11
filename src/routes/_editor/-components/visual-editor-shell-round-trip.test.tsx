@@ -3802,6 +3802,7 @@ describe("Style replay resend and stored-replay ownership", () => {
     );
     await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
     expect(infoSaying(info)).toContain(hero());
+    expect(infoSaying(info)).toContain("on its way");
   });
 
   it("keeps a file whose save is queued when Replace is confirmed; the queued save goes as the author's", async () => {
@@ -3861,6 +3862,62 @@ describe("Style replay resend and stored-replay ownership", () => {
     );
     await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
     expect(infoSaying(info)).toContain(hero());
+    expect(infoSaying(info)).toContain("on its way");
+  });
+
+  it("keeps a file whose save starts after Replace is confirmed but before the load runs", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    const other = "src/components/Queued.tsx";
+    server.addOtherFile(other, "export const Q = 1;");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .markSaved({ ...server.otherFile(other)! }, scope),
+    );
+    const saveFile = await captureCodeFileSave();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+
+    const dialog = await openLoadLatest();
+    const release = server.holdNextSave();
+    let first: Promise<unknown> = Promise.resolve();
+    let later: Promise<unknown> = Promise.resolve();
+    act(() => {
+      first = saveFile(other, "export const Q = 2;", { confirmed: true }).catch(
+        () => {},
+      );
+    });
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    // Hero has no save on its way yet: it is confirmed for replacing.
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    });
+    // Now the author saves Hero, before the load (held behind the first
+    // save, if it waits for it) has run.
+    act(() => {
+      later = saveFile(hero(), CODE_EDIT, { confirmed: true }).catch(() => {});
+    });
+    release();
+    await act(async () => {
+      await first;
+      await later;
+    });
+    await waitFor(() =>
+      expect({
+        local: workspaceFileAt(hero())?.localContent,
+        saveState: workspaceFileAt(hero())?.saveState,
+        file: server.file(),
+      }).toMatchObject({
+        local: CODE_EDIT,
+        saveState: "clean",
+        file: { content: CODE_EDIT },
+      }),
+    );
+    await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
+    expect(infoSaying(info)).toContain("on its way");
   });
 
   it("re-checks at confirm: a file that became unconfirmed after the dialog opened is kept and named", async () => {
