@@ -23,11 +23,17 @@ export const CI_RULES_FINGERPRINT_VERSION = 2;
  * they choose the runtime, transport, Playwright arguments, minimum run
  * count, the files a shard runs and the exit code, so they decide whether a
  * check really tested anything and whether a failure is kept.
+ *
+ * Every script the container acceptance job runs is on it, and so is that
+ * script's own `.test.mjs` when there is one: the test pins what passing
+ * means for it (ci-rules.test.mjs enforces both). Tests of rule scripts that
+ * job does not run are not rules. ci-workflow.test.mjs pins the job's wiring.
  */
 export const CI_RULE_PATHS = Object.freeze([
   ".github/workflows/ci.yml",
   "playwright.config.ts",
   "scripts/check-container-acceptance.mjs",
+  "scripts/check-container-acceptance.test.mjs",
   "scripts/check-container-run-handover.mjs",
   "scripts/check-container-run-handover.test.mjs",
   "scripts/check-e2e-shards.mjs",
@@ -41,6 +47,9 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/e2e-preview-runtime-guard.mjs",
   "scripts/editor-e2e-shards.mjs",
   "scripts/editor-e2e-start.mjs",
+  // Maps the runner's exit and signals to the container step's exit code.
+  "scripts/run-container-e2e-isolated.mjs",
+  "scripts/run-container-e2e-isolated.test.mjs",
   "scripts/run-editor-e2e.mjs",
   "scripts/run-editor-e2e.test.mjs",
   "scripts/run-start-preview-shard.mjs",
@@ -50,11 +59,13 @@ export const CI_RULE_PATHS = Object.freeze([
 ]);
 
 /**
- * Local modules a rule file imports that are not rules themselves, each with
- * the reason. A rule file's import must be on one list or the other, so a new
- * dependency is decided, not missed.
+ * Local modules a rule file imports, or scripts the container acceptance job
+ * runs, that are not rules themselves, each with the reason. Each must be on
+ * one list or the other, so a new dependency is decided, not missed.
  */
 export const NOT_CI_RULES = Object.freeze({
+  "scripts/container-diagnostics.mjs":
+    "records Docker events and preview request traces for diagnosis; no acceptance step reads it, so it can add a failure but never clear one",
   "scripts/e2e-machine-lock.mjs":
     "serialises local runs on one machine; it does not choose what runs or how it exits",
   "scripts/rebalance-e2e-shards.mjs":

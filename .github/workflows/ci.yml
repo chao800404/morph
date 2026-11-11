@@ -856,6 +856,7 @@ jobs:
           printf '{"name":"lifecycle-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
 
       - name: Run M1 container lifecycle acceptance
+        id: lifecycle_run
         env:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -873,14 +874,16 @@ jobs:
           printf '{"name":"lifecycle-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
 
       # Playwright empties test-results when the next runner starts. Keep the
-      # first report outside it before authorizing the second invocation.
+      # first run's results (report, sidecar and parser logs, traces) outside
+      # it before authorizing the second invocation.
       - name: Preserve lifecycle acceptance report
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/stage3/lifecycle"
-          if [ -f test-results/container-acceptance.json ]; then
-            cp test-results/container-acceptance.json "$RUNNER_TEMP/stage3/lifecycle/container-acceptance.json"
-          else
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/lifecycle/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/lifecycle/container-acceptance.json" ]; then
             echo "::warning::Lifecycle acceptance report was not produced."
           fi
 
@@ -889,6 +892,9 @@ jobs:
 
       - name: Require lifecycle runner handover
         id: lifecycle_handover
+        if: always() && steps.lifecycle_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
         run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/lifecycle-handover.json" e2e/m1-container-lifecycle-acceptance.spec.ts
 
       - name: Mark preview access container window start
@@ -896,6 +902,7 @@ jobs:
           printf '{"name":"preview-access-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
 
       - name: Run preview access container acceptance
+        id: preview_access_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
           MORPH_E2E_PREVIEW_RUNTIME: start
@@ -926,7 +933,9 @@ jobs:
 
       - name: Require preview access runner handover
         id: preview_access_handover
-        if: always()
+        if: always() && steps.preview_access_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
         run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/preview-access-handover.json" e2e/preview-access-container.spec.ts
 
       - name: Record Stage 3 runner identities and handover results
@@ -945,9 +954,9 @@ jobs:
           for (const [name, filename, outcome] of entries) {
             try {
               const { runner, phase, invocationId } = JSON.parse(readFileSync(filename, "utf8"));
-              console.log(`${name} runner pid=${runner.pid} pgid=${runner.pgid} sid=${runner.sid} phase=${phase} invocation=${invocationId} handover=${outcome ?? "not-run"}`);
+              console.log(`${name} runner pid=${runner.pid} pgid=${runner.pgid} sid=${runner.sid} phase=${phase} invocation=${invocationId} handover=${outcome || "not-run"}`);
             } catch (error) {
-              console.log(`${name} runner record unavailable; handover=${outcome ?? "not-run"}: ${error.message}`);
+              console.log(`${name} runner record unavailable; handover=${outcome || "not-run"}: ${error.message}`);
             }
           }
           NODE
@@ -1016,13 +1025,23 @@ jobs:
             exit 1
           fi
 
+      # Two upload paths root the artifact at their common ancestor, which
+      # moves test-results off the artifact root. Stage 3's records (both
+      # handover records, the lifecycle run's whole test-results, the preview
+      # access report) go inside it instead, under stage3/.
+      - name: Keep Stage 3 records with the results
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/stage3" ]; then
+            mkdir -p test-results/stage3
+            cp -R "$RUNNER_TEMP/stage3/." test-results/stage3/
+          fi
+
       - name: Upload results and failure traces
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: editor-e2e-container-attempt-${{ github.run_attempt }}
-          path: |
-            test-results/
-            ${{ runner.temp }}/stage3/
+          path: test-results/
           retention-days: 7
           if-no-files-found: error
