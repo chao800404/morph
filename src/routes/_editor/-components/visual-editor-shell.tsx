@@ -733,10 +733,11 @@ function liveStyleReplay<T extends { content: string }>(
  * which are replaced by the server's copy, and which are kept, and why.
  */
 type LoadLatestPlan = Readonly<{
-  /** Replaced by the server's copy. */
+  /**
+   * Replaced by the server's copy (or removed, when the read finds the
+   * server no longer holds a file it once held: deleted on the server).
+   */
   replace: readonly string[];
-  /** Removed: the Theme has no such file (deleted on the server). */
-  remove: readonly string[];
   kept: ReadonlyArray<Readonly<{ path: string; reason: string }>>;
 }>;
 
@@ -750,13 +751,14 @@ const LOAD_LATEST_KEPT_SETTLED =
   "it was saved or changed meanwhile, so it was left as it is";
 const LOAD_LATEST_KEPT_UNREADABLE =
   "its latest text could not be read; try again";
+const LOAD_LATEST_KEPT_NEVER_SAVED =
+  "never saved to the Theme; save or delete it yourself";
 
 function planLoadLatest(
   files: Parameters<typeof sourceConflictPaths>[0],
   saveOnItsWay: (path: string) => boolean,
 ): LoadLatestPlan {
   const replace: string[] = [];
-  const remove: string[] = [];
   const kept: Array<{ path: string; reason: string }> = [];
   for (const path of sourceConflictPaths(files)) {
     const file = files[path];
@@ -764,15 +766,23 @@ function planLoadLatest(
       kept.push({ path, reason: LOAD_LATEST_KEPT_UNCONFIRMED });
     } else if (file?.conflict) {
       kept.push({ path, reason: LOAD_LATEST_KEPT_CONFLICT });
-    } else if (file?.saveState === "saving" || saveOnItsWay(path)) {
+    } else if (
+      // Running, queued, or waiting on its debounce: an edit already made
+      // that a save will still send.
+      file?.saveState === "saving" ||
+      file?.saveState === "debouncing" ||
+      saveOnItsWay(path)
+    ) {
       kept.push({ path, reason: LOAD_LATEST_KEPT_SAVING });
     } else if (file && !file.serverExists) {
-      remove.push(path);
+      // Created in this tab and never stored: there is no Theme copy of it to
+      // load, and it was never deleted on the server either.
+      kept.push({ path, reason: LOAD_LATEST_KEPT_NEVER_SAVED });
     } else {
       replace.push(path);
     }
   }
-  return { replace, remove, kept };
+  return { replace, kept };
 }
 
 /** What Load the latest did, said once it is done. */
@@ -8670,15 +8680,20 @@ export function VisualEditorShell({
    */
   const [loadLatestPlan, setLoadLatestPlan] =
     useState<LoadLatestPlan | null>(null);
+  /** Loads queued or running; the notice's buttons wait for them. */
+  const [loadsInProgress, setLoadsInProgress] = useState(0);
+  const loadSequenceRef = useRef(0);
   const planLoadLatestNow = useCallback(
     () =>
       planLoadLatest(
         useThemeWorkspaceStore
           .getState()
           .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId),
-        (path) => savesOnTheirWayRef.current.has(path),
+        (path) =>
+          savesOnTheirWayRef.current.has(path) ||
+          pendingSaveWritesRef.current.has(getScopedOpKey(path)),
       ),
-    [workspaceScope],
+    [getScopedOpKey, workspaceScope],
   );
   const loadLatestForSourceConflicts = useCallback(
     async (confirmed: LoadLatestPlan) => {
@@ -8693,14 +8708,16 @@ export function VisualEditorShell({
       const kept: Array<{ path: string; reason: string }> = [
         ...confirmed.kept,
       ];
-      const wanted = [...confirmed.replace, ...confirmed.remove];
+      const wanted = [...confirmed.replace];
       if (wanted.length === 0) {
         toast.info(describeLoadLatest({ replaced, removed, kept }));
         return;
       }
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
-      const loadKey = `${themeOpKey}:load-latest`;
-      setIsSavingSourceConflicts(true);
+      // Each load its own key: a second one queues behind, never supersedes.
+      loadSequenceRef.current += 1;
+      const loadKey = `${themeOpKey}:load-latest:${loadSequenceRef.current}`;
+      setLoadsInProgress((count) => count + 1);
       try {
         const done = await saveQueueRef.current.enqueue({
           queueKey: themeOpKey,
@@ -8745,7 +8762,7 @@ export function VisualEditorShell({
                 kept.push(keptNow);
                 continue;
               }
-              if (!now.replace.includes(path) && !now.remove.includes(path)) {
+              if (!now.replace.includes(path)) {
                 kept.push({ path, reason: LOAD_LATEST_KEPT_SETTLED });
                 continue;
               }
@@ -8815,7 +8832,7 @@ export function VisualEditorShell({
         });
         if (done) toast.info(describeLoadLatest({ replaced, removed, kept }));
       } finally {
-        setIsSavingSourceConflicts(false);
+        setLoadsInProgress((count) => count - 1);
       }
     },
     [history, planLoadLatestNow, postPreviewThemeFiles, queryClient, workspaceScope],
@@ -16070,7 +16087,7 @@ export function VisualEditorShell({
           />
           <EditorSourceConflictNotice
             paths={pendingSourceConflicts}
-            saving={isSavingSourceConflicts}
+            saving={isSavingSourceConflicts || loadsInProgress > 0}
             onSave={() => void saveSourceConflicts()}
             onLoadLatest={() => setLoadLatestPlan(planLoadLatestNow())}
           />
@@ -16106,28 +16123,7 @@ export function VisualEditorShell({
                         </ul>
                       </>
                     ) : null}
-                    {loadLatestPlan && loadLatestPlan.remove.length > 0 ? (
-                      <>
-                        <p>
-                          These files are removed from this tab, with your
-                          unsaved text in them and their Undo/Redo history:
-                        </p>
-                        <ul
-                          className="list-disc pl-5"
-                          aria-label="Files to remove"
-                        >
-                          {loadLatestPlan.remove.map((path) => (
-                            <li key={path}>
-                              {path}: the Theme has no such file (deleted on
-                              the server).
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    ) : null}
-                    {loadLatestPlan &&
-                    loadLatestPlan.replace.length === 0 &&
-                    loadLatestPlan.remove.length === 0 ? (
+                    {loadLatestPlan && loadLatestPlan.replace.length === 0 ? (
                       <p>No file can be replaced right now.</p>
                     ) : null}
                     {loadLatestPlan && loadLatestPlan.kept.length > 0 ? (
@@ -16149,10 +16145,7 @@ export function VisualEditorShell({
                 <AlertDialogCancel>Keep my changes</AlertDialogCancel>
                 <AlertDialogAction
                   disabled={
-                    !loadLatestPlan ||
-                    loadLatestPlan.replace.length +
-                      loadLatestPlan.remove.length ===
-                      0
+                    !loadLatestPlan || loadLatestPlan.replace.length === 0
                   }
                   onClick={() => {
                     if (!loadLatestPlan) return;
@@ -16164,13 +16157,11 @@ export function VisualEditorShell({
                       replace: shown.replace.filter((path) =>
                         now.replace.includes(path),
                       ),
-                      remove: shown.remove.filter((path) =>
-                        now.remove.includes(path),
-                      ),
-                      kept: [...shown.replace, ...shown.remove].flatMap(
-                        (path) =>
-                          now.replace.includes(path) ||
-                          now.remove.includes(path)
+                      kept: [
+                        // Kept when the dialog opened, and said so there.
+                        ...shown.kept,
+                        ...shown.replace.flatMap((path) =>
+                          now.replace.includes(path)
                             ? []
                             : [
                                 now.kept.find(
@@ -16180,7 +16171,8 @@ export function VisualEditorShell({
                                   reason: LOAD_LATEST_KEPT_SETTLED,
                                 },
                               ],
-                      ),
+                        ),
+                      ],
                     };
                     setLoadLatestPlan(null);
                     void loadLatestForSourceConflicts(confirmed);
