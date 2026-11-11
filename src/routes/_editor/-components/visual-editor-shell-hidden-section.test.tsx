@@ -1407,6 +1407,87 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
       expect(depth()).toBe("0");
       expect(historyButtons()).toEqual({ undo: false, redo: true });
     });
+
+    // Round 3 R3-4: the Hide's own entry is recorded only into the section
+    // history it was sent under. A toggle pressed meanwhile retires that
+    // history first (as it does after an answered Hide), so a Hide confirmed
+    // later records nothing there: the depth is what the answered path
+    // gives. While the Hide is unanswered the row still offers Hide (the
+    // stored Document shows the section), so that is the press here.
+    const showButton = () =>
+      screen.getAllByRole("button", { name: "Show section hero" })[0]!;
+
+    it("a toggle pressed before Try again retires the history: the Hide confirmed later records nothing into it", async () => {
+      await lostHide();
+      fireEvent.click(hideButton());
+      await settle();
+      expect(sent(), "nothing more is sent while it is held").toHaveLength(1);
+
+      await checkAndSave();
+
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        props: { enabled: false },
+        expectedDraftGeneration: 1,
+      });
+      expect(server).toMatchObject({ enabled: false, generation: 2 });
+      // Answered path: Hide recorded, then the second press retires it.
+      expect(depth(), "as the answered path: nothing on the stack").toBe("0");
+    });
+
+    it("Try again before Show: the Hide is recorded, then Show retires it and records its own", async () => {
+      const shell = await lostHide();
+
+      await checkAndSave();
+      expect(depth()).toBe("1");
+
+      await reread(shell);
+      fireEvent.click(showButton());
+      await settle();
+
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]).toMatchObject({ props: { enabled: true } });
+      expect(depth(), "as the answered path: one entry").toBe("1");
+      expect(
+        screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
+      ).toBe("Undo Show section");
+    });
+  });
+
+  it("an Undo with no answer, not landed, its resend refused for another reason: a failed save, sent again by the next Try again, and the run moves once", async () => {
+    // Round 3 R3-5: a refused resend of a history run's write is not
+    // silently forgotten: a failed save with the reason, kept with its run.
+    await lostUndo();
+    answerNext.push(refusal);
+
+    await checkAndSave();
+
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]).toMatchObject({
+      props: { enabled: true },
+      expectedDraftGeneration: 2,
+    });
+    expect(unconfirmedCount()).toBeNull();
+    expect(
+      vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    ).toContain("The mock refused the replay.");
+    expect(
+      screen.getByRole("button", { name: "Try again" }),
+      "a failed save the author can send again",
+    ).toBeTruthy();
+    expect(depth(), "the run has not moved").toBe("1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await settle();
+
+    expect(sent()).toHaveLength(4);
+    expect(sent()[3]).toMatchObject({
+      props: { enabled: true },
+      expectedDraftGeneration: 2,
+    });
+    expect(server).toMatchObject({ enabled: true, generation: 3 });
+    expect(depth(), "moved once").toBe("0");
+    expect(historyButtons()).toEqual({ undo: false, redo: true });
   });
 
   /**
