@@ -1,4 +1,25 @@
 // @ts-check
+/**
+ * Runs a container E2E runner in a session of its own (`setsid --wait`), so
+ * the handover check can require PID = PGID = SID and an empty group, and
+ * returns the runner's exit code as the step's.
+ *
+ *   exec node scripts/run-container-e2e-isolated.mjs <runner-script> [...args]
+ *
+ * Cancellation budget. On cancel the GitHub Actions runner sends this step
+ * process SIGINT, then SIGTERM 7.5 s later, then kills the process tree 2.5 s
+ * after that. Both signals are forwarded to the runner's group; 1.8 s after
+ * SIGTERM this launcher sends the group SIGKILL. So the runner gets about
+ * 9.3 s after SIGINT for its own teardown before SIGKILL, ahead of the
+ * platform's 10 s tree kill. A teardown cut short there leaves:
+ * - the machine lock's guardian, which the runner started detached (its own
+ *   session, so not in the killed group). It sees the runner gone, stops the
+ *   child groups the runner registered (TERM, then KILL) and removes the
+ *   containers with the runner's prefix, then releases the lock.
+ * - the handover record at phase identity-recorded, which the handover check
+ *   refuses, so a cut-short run never authorizes a following invocation.
+ * The timeouts are not lengthened: the 10 s platform kill bounds them anyway.
+ */
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
