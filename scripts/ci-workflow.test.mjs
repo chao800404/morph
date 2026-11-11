@@ -201,9 +201,21 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   }
   const invokedSpecs = [
     ...container.matchAll(
-      /node scripts\/run-editor-e2e\.mjs e2e\/([^\s]+)/g,
+      /exec node scripts\/run-container-e2e-isolated\.mjs scripts\/run-editor-e2e\.mjs e2e\/([^\s]+)/g,
     ),
   ].map((match) => match[1]);
+  assert.deepEqual(
+    invokedSpecs.sort(),
+    [
+      "e2e/m1-container-lifecycle-acceptance.spec.ts",
+      "e2e/preview-access-container.spec.ts",
+    ].sort(),
+    "both Stage 3 targets must use the same isolated runner launcher",
+  );
+  assert.match(container, /Require preview access runner handover/);
+  assert.match(container, /Record Stage 3 runner identities and handover results/);
+  assert.match(container, /ps -o pid,pgid,sid,comm/);
+  assert.match(container, /stage3\/preview-access\/preview-access-container\.json/);
   for (const file of wiredFiles) {
     assert.equal(
       invokedSpecs.filter((spec) => spec === file).length,
