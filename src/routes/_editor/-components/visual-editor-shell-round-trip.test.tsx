@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { forwardRef, type ComponentProps } from "react";
 import { toast } from "sonner";
@@ -2980,6 +2981,7 @@ describe("Style replay resend and stored-replay ownership", () => {
   const UUID =
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const CODE_EDIT = STYLE_SOURCE + "\n// typed in Code";
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
 
   beforeEach(() => {
     useThemeWorkspaceStore.setState({ workspaces: {} });
@@ -3514,7 +3516,13 @@ describe("Style replay resend and stored-replay ownership", () => {
     const server = controlledThemeFile(STYLE_SOURCE);
     await loseUndoThenAdvanceSource(server);
 
-    fireEvent.click(screen.getByRole("button", { name: "Load the latest" }));
+    const dialog = await openLoadLatest();
+    expect(listed(dialog, "Files to replace")).toEqual([
+      stylePatchTarget.filePath,
+    ]);
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
     await waitFor(() =>
       expect(localThemeFile()?.sourceConflict).toBeUndefined(),
     );
@@ -3545,6 +3553,112 @@ describe("Style replay resend and stored-replay ownership", () => {
     });
     await waitFor(() => expect(localThemeFile()?.saveState).toBe("clean"));
   });
+
+  async function openLoadLatest() {
+    fireEvent.click(screen.getByRole("button", { name: "Load the latest…" }));
+    return screen.findByRole("alertdialog");
+  }
+  const listed = (dialog: HTMLElement, name: string) =>
+    within(within(dialog).getByRole("list", { name }))
+      .getAllByRole("listitem")
+      .map((item) => item.textContent);
+
+  it("asks before Load the latest replaces anything; Keep my changes reads and changes nothing", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    const listsBefore = server.list.mock.calls.length;
+    const before = localThemeFile();
+
+    const dialog = await openLoadLatest();
+    expect(within(dialog).getByText(/cannot be undone/)).toBeTruthy();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Keep my changes" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+
+    expect({
+      lists: server.list.mock.calls.length,
+      reads: server.read.mock.calls.length,
+      writes: server.save.mock.calls.length,
+      file: localThemeFile(),
+      history: historyState(),
+    }).toEqual({
+      lists: listsBefore,
+      reads: 1,
+      writes: 2,
+      file: before,
+      history: { undoAvailable: true, redoAvailable: false },
+    });
+  });
+
+  it.each(["unconfirmed", "file conflict"] as const)(
+    "Load the latest replaces only the listed files and keeps one whose state is %s, saying why",
+    async (keptState) => {
+      const server = controlledThemeFile(STYLE_SOURCE);
+      await loseUndoThenAdvanceSource(server);
+      const kept = "src/components/Kept.tsx";
+      const keptText = "export const Kept = () => <p>mine</p>;";
+      const workspace = () => useThemeWorkspaceStore.getState();
+      act(() => {
+        workspace().updateLocalContent(kept, keptText, scope);
+        workspace().markSourceConflict(kept, scope);
+        if (keptState === "unconfirmed") {
+          workspace().markUnconfirmed(kept, keptText, scope);
+        } else {
+          workspace().markConflict(
+            kept,
+            {
+              kind: "created",
+              remoteExists: true,
+              remoteFileId: "file-kept",
+              remoteVersion: 1,
+              remoteContent: "export const Kept = () => null;",
+            },
+            scope,
+          );
+          workspace().markSourceConflict(kept, scope);
+        }
+      });
+      const keptBefore = workspace().getWorkspaceFiles(
+        scope.storefrontId,
+        scope.themeId,
+      )[kept];
+      const generationBefore = workspace().getAcceptedSourceGeneration(scope);
+
+      const dialog = await openLoadLatest();
+      expect(listed(dialog, "Files to replace")).toEqual([
+        stylePatchTarget.filePath,
+      ]);
+      const keptLines = listed(dialog, "Files kept");
+      expect(keptLines).toHaveLength(1);
+      expect(keptLines[0]).toContain(kept);
+      expect(keptLines[0]).toContain(
+        keptState === "unconfirmed" ? "Check and save" : "conflict",
+      );
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "Replace with the latest" }),
+      );
+      await waitFor(() =>
+        expect(localThemeFile()?.sourceConflict).toBeUndefined(),
+      );
+
+      expect({
+        heroLocal: localThemeFile()?.localContent,
+        kept: workspace().getWorkspaceFiles(scope.storefrontId, scope.themeId)[
+          kept
+        ],
+        // A source conflict remains (the kept file): the newer generation is
+        // not accepted yet.
+        generation: workspace().getAcceptedSourceGeneration(scope),
+        writes: server.save.mock.calls.length,
+      }).toEqual({
+        heroLocal: STYLE_AFTER,
+        kept: keptBefore,
+        generation: generationBefore,
+        writes: 2,
+      });
+    },
+  );
 
   it("does not confirm a Check and save resend whose answer names another receipt", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);

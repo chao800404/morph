@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { type ComponentProps, useState } from "react";
 import { toast } from "sonner";
@@ -1074,6 +1075,44 @@ describe("pending Design writes across paths and states (decision A)", () => {
     expect(saved.content).toBe(mine);
     expect(saved.operation).toBeUndefined();
     expect(saved.designElement).toBeUndefined();
+  });
+
+  // Task 39 round 3. Load the latest replaces the route with the server's
+  // copy, so the Delete's pending record describes text no longer here. It
+  // ends: a later plain save of the file is not held behind it.
+  it("Load the latest on a source-conflicted Design Delete ends its pending record", async () => {
+    saveThemeFile.mockImplementationOnce(sourceConflictAt4);
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(workspaceFile()?.sourceConflict).toBe(true));
+    expect(localContent()).not.toContain("Plain note");
+
+    await press("Load the latest…");
+    const dialog = await screen.findByRole("alertdialog");
+    await act(async () => {
+      within(dialog)
+        .getByRole("button", { name: "Replace with the latest" })
+        .click();
+    });
+    await waitFor(() => expect(workspaceFile()?.sourceConflict).toBeUndefined());
+    expect(localContent()).toBe(SOURCE);
+
+    const onTop = SOURCE.replace("Fine print", "Fine print, restyled");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .updateLocalContent(ROUTE_FILE, onTop, scope),
+    );
+    await openInCode(ROUTE_FILE);
+    await press(/^Save\s*Ctrl\+S$/);
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+
+    const saved = savesOf(ROUTE_FILE)[1]!;
+    expect(saved.content).toBe(onTop);
+    expect(saved.operation).toBeUndefined();
+    expect(workspaceFile()?.errorMessage).not.toBe(
+      PENDING_DESIGN_WRITE_HELD_MESSAGE,
+    );
   });
 });
 
