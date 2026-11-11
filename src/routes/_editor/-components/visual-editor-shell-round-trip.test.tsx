@@ -1786,7 +1786,11 @@ describe("a list both writers changed", () => {
     expect(removeButtons()).toHaveLength(4);
   });
 
-  it("says a saved change is not undone when a landed list write precedes the discard", async () => {
+  // Task 41 R2-3 (the brief's rule): only a list write whose outcome was
+  // unknown and was later confirmed landed is named; an ordinary answered
+  // write is just saved, and the dialog says nothing about it. This replaces
+  // the round-1 test that expected the line after an answered write.
+  it("says nothing of a saved change after an ordinary answered list write", async () => {
     const { rows, listContext, remoteWith, client, source } =
       declaredListFixture();
     vi.spyOn(toast, "error").mockImplementation(() => "");
@@ -1820,9 +1824,182 @@ describe("a list both writers changed", () => {
     // The second Add meets the other writer's change to the same list.
     await conflictOnAdd(client, remoteWith(rows("C", "A", "B", "N"), 7), 1);
     const text = await discardItems();
+    expect(text).not.toMatch(/A saved change is not undone/);
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+  });
+
+  it("says a saved change is not undone when an unanswered list write was later found landed", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+
+    // The first Add gets no answer: its outcome is unknown.
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const sentItems = updateSectionProps.mock.calls[0]![0].data.props.items;
+
+    // The read-back finds it stored, one generation on: it landed.
+    getThemeEditor.mockResolvedValue(remoteWith(sentItems, 2) as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remoteWith(sentItems, 2) as never,
+    );
+    act(() => screen.getByRole("button", { name: "Try again" }).click());
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-editor-unconfirmed-saves]"),
+      ).toBeNull(),
+    );
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    expect(updateSectionProps, "landed: not sent again").toHaveBeenCalledTimes(
+      1,
+    );
+
+    // The next Add meets the other writer's change to the same list.
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B", "N"), 7), 1);
+    const text = await discardItems();
     expect(text).toMatch(/A saved change is not undone/);
     // Only the unsaved change was dropped; nothing was written to undo the
     // saved one.
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+  });
+
+  // Task 41 R2-1: section ids are unique only within a document. Two pages
+  // each with a "hero" whose items both writers changed: discarding on one
+  // page discards that page's list only, and never pours the other page's
+  // latest rows into the Inspector.
+  it("discards the list of the page it is pressed on, not a same-id section's on another page", async () => {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const page = (
+      id: string,
+      type: string,
+      name: string,
+      items: unknown,
+      generation: number,
+    ) => ({
+      ...context.templates[0],
+      id,
+      type,
+      name,
+      draftGeneration: generation,
+      document: {
+        version: 1,
+        sections: [
+          {
+            id: "hero",
+            name: "Featured",
+            type: "hero",
+            enabled: true,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Welcome", items },
+          },
+        ],
+      },
+    });
+    const pages = (
+      home: unknown,
+      homeGeneration: number,
+      about: unknown,
+      aboutGeneration: number,
+    ) =>
+      ({
+        ...context,
+        templates: [
+          page("template-1", "index", "Home", home, homeGeneration),
+          page("template-2", "page", "About", about, aboutGeneration),
+        ],
+      }) as unknown as StorefrontThemeEditorDTO;
+    const { source } = declaredListFixture();
+    const client = readyQueryClient();
+    const start = pages(rows("A", "B"), 1, rows("A", "B"), 1);
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const refuse = () =>
+      updateSectionProps.mockResolvedValueOnce({
+        success: false,
+        message: "Template draft was modified concurrently.",
+        error: "TEMPLATE_DRAFT_CONFLICT",
+      } as never);
+    const view = renderShellWithHero(source, "hero", start, client);
+    const show = (search: StorefrontThemeEditorSearch) =>
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <VisualEditorShell
+            context={start}
+            search={search}
+            onSearchChange={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    const home = { ...baseSearch, section: "hero" };
+    const about = {
+      ...baseSearch,
+      template: "page",
+      templateId: "template-2",
+      section: "hero",
+    } as StorefrontThemeEditorSearch;
+
+    // Home's Add, refused: home's draft is held.
+    await openSection("Featured");
+    refuse();
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(updateSectionProps.mock.calls[0]![0].data.templateId).toBe(
+      "template-1",
+    );
+
+    // About's Add, refused: about's draft is held too.
+    show(about);
+    await flushFrames();
+    await openSection("Featured");
+    refuse();
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(updateSectionProps.mock.calls[1]![0].data.templateId).toBe(
+      "template-2",
+    );
+
+    // Both pages' lists were changed elsewhere: home put C first, about Q.
+    const latest = {
+      success: true,
+      message: "ok",
+      data: pages(rows("C", "A", "B"), 7, rows("Q", "A", "B"), 5),
+    };
+    getThemeEditor.mockResolvedValue(latest as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      latest as never,
+    );
+    act(() =>
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
+    );
+
+    // Discarded on About: About's list is the latest About list.
+    await discardItems();
+    await waitFor(() => expect(screen.getByDisplayValue("Q")).toBeTruthy());
+    expect(screen.queryByDisplayValue("C")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /discard unsaved changes to items/i }),
+    ).toBeNull();
+
+    // Home's draft and its way out are still there.
+    show(home);
+    await flushFrames();
+    await openSection("Featured");
+    expect(
+      screen.getByRole("button", { name: /discard unsaved changes to items/i }),
+    ).toBeTruthy();
     expect(updateSectionProps).toHaveBeenCalledTimes(2);
   });
 

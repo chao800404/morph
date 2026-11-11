@@ -861,6 +861,49 @@ describe("EditorStyleInspector selection content", () => {
       expect(lastSent(onPropsChange)?.items).toEqual([{ title: "Newer row" }]);
     });
 
+    // Task 41 R2-1: section ids are only unique within a document. A reset
+    // for another page's section of the same id is spent here, not applied.
+    it("does not apply a list reset for a same-id section of another document", () => {
+      const onListResetApplied = vi.fn();
+      const onPropsChange = vi.fn();
+      const view = (
+        listReset: {
+          sectionId: string;
+          fieldPath: string;
+          value: unknown;
+          epoch: number;
+          ownedHere: boolean;
+        } | null,
+      ) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", {
+            description: "Description",
+            items: [{ title: "Home row" }],
+          })}
+          selection={sectionSelection}
+          listReset={listReset}
+          onListResetApplied={onListResetApplied}
+          onPropsChange={onPropsChange}
+        />
+      );
+      const { rerender } = render(view(null));
+      rerender(
+        view({
+          sectionId: "section-1",
+          fieldPath: "items",
+          value: [{ title: "About row" }],
+          epoch: 3,
+          ownedHere: false,
+        }),
+      );
+      expect(onListResetApplied).toHaveBeenCalledWith(3);
+      const field = screen.getByDisplayValue("Description");
+      fireEvent.change(field, { target: { value: "Edited" } });
+      fireEvent.blur(field);
+      expect(lastSent(onPropsChange)?.items).toEqual([{ title: "Home row" }]);
+    });
+
     it("applies each newer list reset while it stays mounted", () => {
       const onListResetApplied = vi.fn();
       const onPropsChange = vi.fn();
@@ -3037,6 +3080,68 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
   };
   const cardOf = (input: HTMLElement) =>
     input.closest<HTMLElement>('[class*="bg-muted/30"]');
+
+  // Task 41 round 2: a list both writers changed, in this section.
+  const conflictStatus = {
+    notSaved: true,
+    conflict: true,
+    unknown: false,
+    savedChange: false,
+    busy: false,
+  };
+  const renderHeldList = (
+    selection?: EditorSelectionDescriptor,
+    onDiscardListConflict = vi.fn(),
+  ) => {
+    render(
+      <EditorStyleInspector
+        view="content"
+        onPropsChange={vi.fn()}
+        onUpdateThemeFileStyle={vi.fn()}
+        onJumpToCode={vi.fn()}
+        resourceKey="storefront-1:theme-1:template-1"
+        rowIdTemplateId={TEMPLATE_ID}
+        section={{
+          id: "section-1",
+          type: "entries",
+          componentRef: ENTRIES_PATH,
+          enabled: true,
+          props: {},
+        }}
+        selection={selection}
+        themeFiles={[entriesFile]}
+        listWriteStatuses={{ items: conflictStatus }}
+        onDiscardListConflict={onDiscardListConflict}
+      />,
+    );
+    return onDiscardListConflict;
+  };
+
+  it("points a list conflict at the list's own discard below, not at Load latest (R2-5)", () => {
+    renderHeldList();
+    const notice = document.querySelector('[data-list-not-saved="items"]');
+    expect(notice?.textContent).toContain(
+      "Discard unsaved changes to Entries below",
+    );
+    expect(notice?.textContent).not.toContain("recovery controls above");
+  });
+
+  it("keeps a held list's discard while the selection blocks writing (R2-2)", () => {
+    const onDiscard = renderHeldList({
+      sectionId: "section-1",
+      kind: "section",
+      tagName: "section",
+      isSection: true,
+      contentUnavailable: "value-not-from-row",
+    } as unknown as EditorSelectionDescriptor);
+    // Nothing may be written from this selection: no list card is drawn.
+    expect(screen.queryByRole("button", { name: "Add entry" })).toBeNull();
+    // The way out the editor told the author about still exists here.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Discard unsaved changes to Entries" }),
+    );
+    expect(onDiscard).toHaveBeenCalledWith("section-1", "items");
+  });
 
   it("sends nothing by drawing the lists", () => {
     const onPropsChange = renderEntries();
