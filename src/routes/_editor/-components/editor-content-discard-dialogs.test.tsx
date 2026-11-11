@@ -88,7 +88,11 @@ describe("the section discard confirmation (Discard mine)", () => {
       <SectionDiscardDialog
         open
         sections={[
-          { sectionLabel: "hero", lists: ["items"], fields: ["heading", "items"] },
+          {
+            sectionLabel: "hero",
+            lists: ["items"],
+            fields: ["heading", "items"],
+          },
         ]}
         hasUnconfirmedWrite={false}
         hasSavedChange={false}
@@ -99,9 +103,13 @@ describe("the section discard confirmation (Discard mine)", () => {
     );
     const text = screen.getByRole("alertdialog").textContent ?? "";
     expect(text).toContain("Someone else changed items in hero");
-    expect(text).toContain("all of your unsaved changes to hero (heading, items)");
+    expect(text).toContain(
+      "all of your unsaved changes to hero (heading, items)",
+    );
     expect(text).toContain("Other sections keep their changes");
-    fireEvent.click(screen.getByRole("button", { name: "Discard and load latest" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Discard and load latest" }),
+    );
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
@@ -110,7 +118,9 @@ describe("the section discard confirmation (Discard mine)", () => {
     render(
       <SectionDiscardDialog
         open
-        sections={[{ sectionLabel: "hero", lists: ["items"], fields: ["items"] }]}
+        sections={[
+          { sectionLabel: "hero", lists: ["items"], fields: ["items"] },
+        ]}
         hasUnconfirmedWrite
         hasSavedChange={false}
         discarding={false}

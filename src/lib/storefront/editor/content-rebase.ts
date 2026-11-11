@@ -91,20 +91,36 @@ export function conflictingListKeys({
  *
  * One answer for every place that asks. A list both sides changed is not
  * saved by "Load latest, keep mine" — that is the point of stopping it — so
- * pointing the author at that button would send them round in a circle; the
- * way out for it is the list-specific discard control when the Inspector
- * exposes one; otherwise the draft has to stay here or be discarded by
- * reloading the editor.
+ * pointing the author at that button would send them round in a circle. The
+ * editor knows which way out each held list has (the user's rule, Task 41
+ * 31-B): the list's own discard control beside it in the Content panel, or,
+ * where there is none, "Discard mine…" for its whole section. The message
+ * names the one that applies, and what it discards.
  */
 export function heldContentMessage({
   hasListConflict,
+  listExits = { pathScoped: true, generic: false },
 }: {
   /** A section held because a list in it was changed on both sides. */
   hasListConflict: boolean;
+  /**
+   * Which ways out the held lists have: a list-only discard beside the list
+   * (`pathScoped`), and/or "Discard mine…" for a section whose list has none.
+   */
+  listExits?: Readonly<{ pathScoped: boolean; generic: boolean }>;
 }): string {
-  return hasListConflict
-    ? "A list you edited was also changed elsewhere, so your version cannot be saved over it. Your changes are kept. Select its section and use the list-specific discard control if the Inspector exposes one; otherwise stay here with the draft or reload to discard all unsaved changes."
-    : "Content is out of date with the document. Load the latest version and keep your changes before continuing.";
+  if (!hasListConflict) {
+    return "Content is out of date with the document. Load the latest version and keep your changes before continuing.";
+  }
+  const lead =
+    "A list you edited was also changed elsewhere, so your version cannot be saved over it. Your changes are kept.";
+  if (listExits.generic && listExits.pathScoped) {
+    return `${lead} Select its section and use Discard unsaved changes beside the list in the Content panel to discard only your changes to that list, or use Discard mine… in the toolbar for a section whose list has no such control; it discards all of your unsaved changes to that section and loads the latest version.`;
+  }
+  if (listExits.generic) {
+    return `${lead} Use Discard mine… in the toolbar; it discards all of your unsaved changes to that section and loads the latest version.`;
+  }
+  return `${lead} Select its section and use Discard unsaved changes beside the list in the Content panel; it discards only your changes to that list and loads its latest version.`;
 }
 
 /** Content held after its save failed: the author tries again. */
@@ -122,18 +138,28 @@ export function heldFlushMessage({
   heldKeys,
   conflicts,
   listConflicts,
+  genericListConflictKeys = [],
 }: {
   /** The keys of this document's content still held after the flush. */
   heldKeys: readonly string[];
   conflicts: Readonly<Record<string, unknown>>;
   listConflicts: Readonly<Record<string, unknown>>;
+  /** List conflicts with no list-only discard: "Discard mine…" is theirs. */
+  genericListConflictKeys?: readonly string[];
 }): string {
   const refused = heldKeys.filter(
     (key) => key in conflicts || key in listConflicts,
   );
   if (refused.length === 0) return HELD_FAILED_CONTENT_MESSAGE;
+  const heldLists = refused.filter((key) => key in listConflicts);
   return heldContentMessage({
-    hasListConflict: refused.some((key) => key in listConflicts),
+    hasListConflict: heldLists.length > 0,
+    listExits: {
+      pathScoped: heldLists.some(
+        (key) => !genericListConflictKeys.includes(key),
+      ),
+      generic: heldLists.some((key) => genericListConflictKeys.includes(key)),
+    },
   });
 }
 

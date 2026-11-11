@@ -962,22 +962,31 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     sectionId: section.id,
     sectionProps: section.props,
   });
+  // A list reset is for the panel showing that list when the discard made it:
+  // that panel's own copy still holds the discarded rows. A panel mounted
+  // after it, or showing another section then, reads the latest props itself
+  // when it shows the section, so the reset is spent there without being
+  // applied. Applying it later would put the list as it was at the discard
+  // back over input made since (Task 41 31-A). Each reset is acknowledged
+  // once, whichever way it was spent.
   const appliedListResetEpochRef = useRef<number | null>(null);
+  const listResetAtMountRef = useRef<number | null>(listReset?.epoch ?? null);
   useEffect(() => {
-    if (
-      !listReset ||
-      listReset.sectionId !== section.id ||
-      appliedListResetEpochRef.current === listReset.epoch
-    )
+    if (!listReset || appliedListResetEpochRef.current === listReset.epoch)
       return;
     appliedListResetEpochRef.current = listReset.epoch;
-    const next = setFieldPathValue(
-      localPropsRef.current,
-      listReset.fieldPath,
-      listReset.value,
-    );
-    localPropsRef.current = next;
-    setLocalProps(next);
+    if (
+      listReset.sectionId === section.id &&
+      listReset.epoch !== listResetAtMountRef.current
+    ) {
+      const next = setFieldPathValue(
+        localPropsRef.current,
+        listReset.fieldPath,
+        listReset.value,
+      );
+      localPropsRef.current = next;
+      setLocalProps(next);
+    }
     onListResetApplied?.(listReset.epoch);
   }, [listReset, localPropsRef, onListResetApplied, section.id, setLocalProps]);
 

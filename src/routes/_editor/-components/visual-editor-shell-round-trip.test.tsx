@@ -1124,7 +1124,7 @@ describe("a list both writers changed", () => {
     // hedge (Task 41 31-B). No generic Discard mine is offered for it.
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining(
-        'Select Featured and use "Discard unsaved changes to items" beside the list in the Content panel',
+        'Select Featured and use "Discard unsaved changes to Items" beside the list in the Content panel',
       ),
     );
     expect(error).not.toHaveBeenCalledWith(
@@ -1687,7 +1687,7 @@ describe("a list both writers changed", () => {
     const { rows, listContext, remoteWith, client, source } =
       declaredListFixture();
     vi.spyOn(toast, "error").mockImplementation(() => "");
-    renderShellWithHero(source, "hero", listContext, client);
+    const view = renderShellWithHero(source, "hero", listContext, client);
     await openSection("Featured");
     expect(removeButtons()).toHaveLength(2);
 
@@ -1698,10 +1698,28 @@ describe("a list both writers changed", () => {
 
     // Second conflict on the same list: the other writer left only Z.
     const sent = updateSectionProps.mock.calls.length;
-    await conflictOnAdd(client, remoteWith(rows("Z"), 9), sent);
+    const latest = remoteWith(rows("Z"), 9);
+    await conflictOnAdd(client, latest, sent);
     await discardItems();
     // The panel shows the latest list, not the author's discarded rows.
     await waitFor(() => expect(removeButtons()).toHaveLength(1));
+    const inspectorAdd = screen.getByRole("button", { name: "Add entry" });
+
+    // The route's data catches up with the read, as its loader does after a
+    // refetch (this harness holds `context` fixed otherwise). The Inspector
+    // stays mounted through it.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={latest.data as unknown as StorefrontThemeEditorDTO}
+          search={{ ...baseSearch, section: "hero" }}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    await flushFrames();
+    expect(screen.getByRole("button", { name: "Add entry" })).toBe(inspectorAdd);
+    expect(removeButtons()).toHaveLength(1);
 
     // And the next edit is made on it: Z plus the new row, never C, A, B.
     updateSectionProps.mockResolvedValueOnce({
