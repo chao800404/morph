@@ -1246,6 +1246,45 @@ describe("G2: a result that is not known", () => {
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
 
+  it("G2c: the first write onto the created document, with no answer and not landed, is resent at the generation it was sent at", async () => {
+    // H2 at shell level: the write composed with no copy held is sent at the
+    // generation the queue resolved for the created document. That sent
+    // generation, frozen with it, is what Try again sends again.
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await act(async () => {
+      first.lose();
+    });
+    await pause();
+    expect(saveStatus()).toBe("Save failed");
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+    // Not landed: the created document is still as created.
+    expect(server.route).toEqual({ generation: 1, props: null });
+
+    const readsBefore = getThemeEditor.mock.calls.length;
+    pressTryAgain();
+    await waitFor(() =>
+      expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore),
+    );
+    await pause();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: sent()[0]!.expectedDraftGeneration,
+      expectedSourceGeneration: sent()[0]!.expectedSourceGeneration,
+      props: { heading: "Value 1" },
+    });
+    expect(storedHeading()).toBe("Value 1");
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+  });
+
   it("G2b: after a lost ensure answer (the server created the document), nothing continues on its own", async () => {
     ensureRouteTemplate.mockImplementationOnce(async () => {
       // Created, and the answer never arrives.
