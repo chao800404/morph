@@ -398,6 +398,7 @@ type WriteRequest = {
   sectionId: string;
   props: Record<string, unknown>;
   expectedDraftGeneration: number;
+  expectedSourceGeneration?: number;
   routePath?: string;
 };
 const conflictAnswer = () => ({

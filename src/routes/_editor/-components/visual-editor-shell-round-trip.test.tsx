@@ -5886,12 +5886,10 @@ function Home() {
           serverHolds({ ...STORED }, 1);
           // A Theme file saved meanwhile: the source generation moved on.
           act(() => {
-            useThemeWorkspaceStore
-              .getState()
-              .acceptRemoteGeneration(2, {
-                storefrontId: "storefront-1",
-                themeId: "theme-1",
-              });
+            useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, {
+              storefrontId: "storefront-1",
+              themeId: "theme-1",
+            });
           });
 
           await checkAndSave();
