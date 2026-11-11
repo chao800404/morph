@@ -1308,6 +1308,49 @@ describe("G2: a result that is not known", () => {
     ).toBeNull();
   });
 
+  it("G2d: the first write onto the created document, read back with no section yet at the generation it was sent at, is resent once, never claimed as not sent", async () => {
+    // Round 3 R3-1(b): on a document this editor created, still at the
+    // generation the write was sent at, a section not there yet is the
+    // write not landed (it would have added it). Resent once, as first
+    // sent; the author is never told it was not sent when it was.
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await act(async () => {
+      first.lose();
+    });
+    await pause();
+    expect(saveStatus()).toBe("Save failed");
+    expect(server.route).toEqual({ generation: 1, props: null });
+
+    const readsBefore = getThemeEditor.mock.calls.length;
+    pressTryAgain();
+    await waitFor(() =>
+      expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore),
+    );
+    await pause();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+    expect(storedHeading()).toBe("Value 1");
+    const said = vi
+      .mocked(toast.error)
+      .mock.calls.map((call) => String(call[0]));
+    expect(said).not.toContainEqual(expect.stringContaining("not sent"));
+    expect(said).not.toContainEqual(
+      expect.stringContaining("changed elsewhere"),
+    );
+    expect(saveStatus()).not.toBe("Out of date");
+    expect(
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+    ).toBeNull();
+  });
+
   it("G2b: after a lost ensure answer (the server created the document), nothing continues on its own", async () => {
     ensureRouteTemplate.mockImplementationOnce(async () => {
       // Created, and the answer never arrives.
