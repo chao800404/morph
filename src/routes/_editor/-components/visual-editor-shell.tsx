@@ -733,33 +733,71 @@ function liveStyleReplay<T extends { content: string }>(
  * which are replaced by the server's copy, and which are kept, and why.
  */
 type LoadLatestPlan = Readonly<{
+  /** Replaced by the server's copy. */
   replace: readonly string[];
+  /** Removed: the Theme has no such file (deleted on the server). */
+  remove: readonly string[];
   kept: ReadonlyArray<Readonly<{ path: string; reason: string }>>;
 }>;
 
+const LOAD_LATEST_KEPT_UNCONFIRMED =
+  "its last save got no answer; use Check and save to find out whether it was stored";
+const LOAD_LATEST_KEPT_CONFLICT =
+  "it also changed elsewhere; resolve its conflict in Code";
+const LOAD_LATEST_KEPT_SAVING =
+  "a save of it was still on its way, so it was not replaced under that save";
+const LOAD_LATEST_KEPT_SETTLED =
+  "it was saved or changed meanwhile, so it was left as it is";
+const LOAD_LATEST_KEPT_UNREADABLE =
+  "its latest text could not be read; try again";
+
 function planLoadLatest(
   files: Parameters<typeof sourceConflictPaths>[0],
+  saveOnItsWay: (path: string) => boolean,
 ): LoadLatestPlan {
   const replace: string[] = [];
+  const remove: string[] = [];
   const kept: Array<{ path: string; reason: string }> = [];
   for (const path of sourceConflictPaths(files)) {
     const file = files[path];
     if (file?.unconfirmedContent !== undefined) {
-      kept.push({
-        path,
-        reason:
-          "its last save got no answer; use Check and save to find out whether it was stored",
-      });
+      kept.push({ path, reason: LOAD_LATEST_KEPT_UNCONFIRMED });
     } else if (file?.conflict) {
-      kept.push({
-        path,
-        reason: "it also changed elsewhere; resolve its conflict in Code",
-      });
+      kept.push({ path, reason: LOAD_LATEST_KEPT_CONFLICT });
+    } else if (file?.saveState === "saving" || saveOnItsWay(path)) {
+      kept.push({ path, reason: LOAD_LATEST_KEPT_SAVING });
+    } else if (file && !file.serverExists) {
+      remove.push(path);
     } else {
       replace.push(path);
     }
   }
-  return { replace, kept };
+  return { replace, remove, kept };
+}
+
+/** What Load the latest did, said once it is done. */
+function describeLoadLatest(result: {
+  replaced: readonly string[];
+  removed: readonly string[];
+  kept: ReadonlyArray<{ path: string; reason: string }>;
+}): string {
+  const parts: string[] = [];
+  if (result.replaced.length > 0) {
+    parts.push(`Loaded the latest version of ${result.replaced.join(", ")}.`);
+  }
+  if (result.removed.length > 0) {
+    parts.push(
+      `Removed (deleted on the server): ${result.removed.join(", ")}.`,
+    );
+  }
+  if (result.kept.length > 0) {
+    parts.push(
+      `Kept: ${result.kept
+        .map(({ path, reason }) => `${path} (${reason})`)
+        .join("; ")}.`,
+    );
+  }
+  return parts.join(" ") || "Nothing was loaded.";
 }
 
 /**
@@ -5379,6 +5417,12 @@ export function VisualEditorShell({
   // can be stated as tests instead of reproduced by typing quickly.
   const saveQueueRef = useRef(createThemeFileSaveQueue());
   /**
+   * How many saves of each file are queued or running in `saveQueueRef`.
+   * Load the latest keeps such a file: replacing it under a save on its way
+   * would leave that save's answer, or its send, over the replaced text.
+   */
+  const savesOnTheirWayRef = useRef(new Map<string, number>());
+  /**
    * What each pending Design write of a file was, with the text it wrote; see
    * `pending-design-writes`. A file whose unsaved content is still exactly
    * that text holds that write, and sending it again sends the same
@@ -6569,6 +6613,13 @@ export function VisualEditorShell({
       }
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
+      const onTheirWay = savesOnTheirWayRef.current;
+      onTheirWay.set(filePath, (onTheirWay.get(filePath) ?? 0) + 1);
+      const settled = () => {
+        const left = (onTheirWay.get(filePath) ?? 1) - 1;
+        if (left > 0) onTheirWay.set(filePath, left);
+        else onTheirWay.delete(filePath);
+      };
 
       return saveQueueRef.current.enqueue({
         queueKey: themeOpKey,
@@ -7158,7 +7209,7 @@ export function VisualEditorShell({
             throw error;
           }
         },
-      });
+      }).finally(settled);
     },
     [
       context.storefront.id,
@@ -8608,92 +8659,167 @@ export function VisualEditorShell({
    * of those files and takes what the newest Theme holds. Nothing is sent.
    * Each file's history entries describe the text just replaced, so they are
    * retired (as Reload Remote does). A file whose last save is still
-   * unanswered, or that has a file conflict, is left to its own path; the
-   * newer generation is accepted only once no source conflict remains.
+   * unanswered, that has a file conflict, or whose save is on its way, is
+   * left to its own path; the newer generation is accepted only once no
+   * source conflict remains, and never below what is accepted already.
    *
-   * Asked first (`loadLatestPlan`, shown in a confirmation): only the files
-   * the author confirmed are replaced, and only while they still may be.
+   * Asked first (`loadLatestPlan`, shown in a confirmation) and checked
+   * again at confirm and once more when it runs. It runs as a task of the
+   * Theme's save queue: saves queued before it finish first, and saves
+   * queued after it see what it loaded.
    */
   const [loadLatestPlan, setLoadLatestPlan] =
     useState<LoadLatestPlan | null>(null);
-  const loadLatestForSourceConflicts = useCallback(async (
-    confirmedPaths: readonly string[],
-  ) => {
-    const store = () => useThemeWorkspaceStore.getState();
-    setIsSavingSourceConflicts(true);
-    try {
-      const atLeast = store().getAcceptedSourceGeneration(workspaceScope);
-      let read: {
-        files: readonly StorefrontThemeFileDTO[];
-        sourceGeneration: number;
-      } | null = null;
-      try {
-        const fetched = await queryClient.fetchQuery({
-          ...storefrontThemeFileQueries.tree(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          ),
-          staleTime: 0,
-        });
-        if (
-          Number.isInteger(fetched.sourceGeneration) &&
-          fetched.sourceGeneration >= atLeast
-        ) {
-          read = fetched;
-        }
-      } catch {
-        // Told below.
-      }
-      if (!read) {
-        toast.error(
-          "The latest version of the Theme could not be read. Your changes are kept; try again.",
-        );
-        return;
-      }
-      const replaceable = planLoadLatest(
+  const planLoadLatestNow = useCallback(
+    () =>
+      planLoadLatest(
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId),
+        (path) => savesOnTheirWayRef.current.has(path),
+      ),
+    [workspaceScope],
+  );
+  const loadLatestForSourceConflicts = useCallback(
+    async (confirmed: LoadLatestPlan) => {
+      const store = () => useThemeWorkspaceStore.getState();
+      const workspaceFiles = () =>
         store().getWorkspaceFiles(
           workspaceScope.storefrontId,
           workspaceScope.themeId,
-        ),
-      ).replace;
-      for (const path of confirmedPaths) {
-        if (!replaceable.includes(path)) continue;
-        const latest = read.files.find((file) => file.path === path);
-        store().loadServerFile(
-          path,
-          latest
-            ? { id: latest.id, version: latest.version, content: latest.content }
-            : null,
-          workspaceScope,
         );
-        pendingDesignWritesRef.current.forget(path);
-        history.discardScope(themeFileHistoryScope(path));
+      const replaced: string[] = [];
+      const removed: string[] = [];
+      const kept: Array<{ path: string; reason: string }> = [
+        ...confirmed.kept,
+      ];
+      const wanted = [...confirmed.replace, ...confirmed.remove];
+      if (wanted.length === 0) {
+        toast.info(describeLoadLatest({ replaced, removed, kept }));
+        return;
       }
-      if (
-        sourceConflictPaths(
-          store().getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          ),
-        ).length === 0
-      ) {
-        store().acceptRemoteGeneration(read.sourceGeneration, workspaceScope);
+      const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
+      const loadKey = `${themeOpKey}:load-latest`;
+      setIsSavingSourceConflicts(true);
+      try {
+        const done = await saveQueueRef.current.enqueue({
+          queueKey: themeOpKey,
+          fileKey: loadKey,
+          revision: saveQueueRef.current.claimRevision(loadKey),
+          superseded: () => false,
+          task: async () => {
+            const atLeast = store().getAcceptedSourceGeneration(workspaceScope);
+            let read: {
+              files: readonly StorefrontThemeFileDTO[];
+              binaryFiles?: ReadonlyArray<{ path: string }>;
+              sourceGeneration: number;
+            } | null = null;
+            try {
+              const fetched = await queryClient.fetchQuery({
+                ...storefrontThemeFileQueries.tree(
+                  workspaceScope.storefrontId,
+                  workspaceScope.themeId,
+                ),
+                staleTime: 0,
+              });
+              if (
+                Number.isInteger(fetched.sourceGeneration) &&
+                fetched.sourceGeneration >= atLeast
+              ) {
+                read = fetched;
+              }
+            } catch {
+              // Told below.
+            }
+            if (!read) {
+              toast.error(
+                "The latest version of the Theme could not be read. Your changes are kept; try again.",
+              );
+              return false;
+            }
+            // Checked once more as it runs: what the saves ahead of it left.
+            const now = planLoadLatestNow();
+            for (const path of wanted) {
+              const keptNow = now.kept.find((entry) => entry.path === path);
+              if (keptNow) {
+                kept.push(keptNow);
+                continue;
+              }
+              if (!now.replace.includes(path) && !now.remove.includes(path)) {
+                kept.push({ path, reason: LOAD_LATEST_KEPT_SETTLED });
+                continue;
+              }
+              let latest: StorefrontThemeFileDTO | null = null;
+              const text = read.files.find((file) => file.path === path);
+              if (text) {
+                latest = text;
+              } else if (read.binaryFiles?.some((file) => file.path === path)) {
+                if (!isEditablePublicTextPath(path)) {
+                  kept.push({ path, reason: LOAD_LATEST_KEPT_UNREADABLE });
+                  continue;
+                }
+                // Editable public text is listed with the binary files; its
+                // text is read on its own.
+                const single = await getStorefrontThemeFile({
+                  data: {
+                    storefrontId: workspaceScope.storefrontId,
+                    themeId: workspaceScope.themeId,
+                    path,
+                  },
+                }).catch(() => null);
+                if (single?.success && single.data) {
+                  latest = single.data;
+                } else if (!(single && !single.success && single.error === "NOT_FOUND")) {
+                  kept.push({ path, reason: LOAD_LATEST_KEPT_UNREADABLE });
+                  continue;
+                }
+              }
+              store().loadServerFile(
+                path,
+                latest
+                  ? {
+                      id: latest.id,
+                      version: latest.version,
+                      content: latest.content,
+                    }
+                  : null,
+                workspaceScope,
+              );
+              (latest ? replaced : removed).push(path);
+              pendingDesignWritesRef.current.forget(path);
+              pausedStyleHistoryRef.current.delete(path);
+              unconfirmedStyleHistoryRef.current.delete(path);
+              history.discardScope(themeFileHistoryScope(path));
+            }
+            if (sourceConflictPaths(workspaceFiles()).length === 0) {
+              store().acceptRemoteGeneration(
+                Math.max(
+                  read.sourceGeneration,
+                  store().getAcceptedSourceGeneration(workspaceScope),
+                ),
+                workspaceScope,
+              );
+            }
+            // The preview gets the files as they are now, from this read.
+            const files = workspaceFiles();
+            postPreviewThemeFiles(
+              read.files.flatMap((file) => {
+                const current = files[file.path];
+                return current
+                  ? [{ path: file.path, content: current.localContent }]
+                  : [{ path: file.path, content: file.content }];
+              }),
+            );
+            return true;
+          },
+        });
+        if (done) toast.info(describeLoadLatest({ replaced, removed, kept }));
+      } finally {
+        setIsSavingSourceConflicts(false);
       }
-      postPreviewThemeFiles(
-        themeFiles.flatMap((file) => {
-          const current = store().getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[file.path];
-          return current
-            ? [{ path: file.path, content: current.localContent }]
-            : [];
-        }),
-      );
-    } finally {
-      setIsSavingSourceConflicts(false);
-    }
-  }, [history, postPreviewThemeFiles, queryClient, themeFiles, workspaceScope]);
+    },
+    [history, planLoadLatestNow, postPreviewThemeFiles, queryClient, workspaceScope],
+  );
 
   /**
    * Writes paused on who is signed in, and what getting them going again
@@ -15946,18 +16072,7 @@ export function VisualEditorShell({
             paths={pendingSourceConflicts}
             saving={isSavingSourceConflicts}
             onSave={() => void saveSourceConflicts()}
-            onLoadLatest={() =>
-              setLoadLatestPlan(
-                planLoadLatest(
-                  useThemeWorkspaceStore
-                    .getState()
-                    .getWorkspaceFiles(
-                      workspaceScope.storefrontId,
-                      workspaceScope.themeId,
-                    ),
-                ),
-              )
-            }
+            onLoadLatest={() => setLoadLatestPlan(planLoadLatestNow())}
           />
           {/* Asks first, and says exactly what is replaced and what is kept:
               the button can replace several files from a general notice. */}
@@ -15990,9 +16105,31 @@ export function VisualEditorShell({
                           ))}
                         </ul>
                       </>
-                    ) : (
+                    ) : null}
+                    {loadLatestPlan && loadLatestPlan.remove.length > 0 ? (
+                      <>
+                        <p>
+                          These files are removed from this tab, with your
+                          unsaved text in them and their Undo/Redo history:
+                        </p>
+                        <ul
+                          className="list-disc pl-5"
+                          aria-label="Files to remove"
+                        >
+                          {loadLatestPlan.remove.map((path) => (
+                            <li key={path}>
+                              {path}: the Theme has no such file (deleted on
+                              the server).
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : null}
+                    {loadLatestPlan &&
+                    loadLatestPlan.replace.length === 0 &&
+                    loadLatestPlan.remove.length === 0 ? (
                       <p>No file can be replaced right now.</p>
-                    )}
+                    ) : null}
                     {loadLatestPlan && loadLatestPlan.kept.length > 0 ? (
                       <>
                         <p>These files are kept as they are:</p>
@@ -16011,11 +16148,42 @@ export function VisualEditorShell({
               <AlertDialogFooter>
                 <AlertDialogCancel>Keep my changes</AlertDialogCancel>
                 <AlertDialogAction
-                  disabled={!loadLatestPlan || loadLatestPlan.replace.length === 0}
+                  disabled={
+                    !loadLatestPlan ||
+                    loadLatestPlan.replace.length +
+                      loadLatestPlan.remove.length ===
+                      0
+                  }
                   onClick={() => {
-                    const paths = loadLatestPlan?.replace ?? [];
+                    if (!loadLatestPlan) return;
+                    // Checked again at confirm: a file listed when the
+                    // dialog opened may no longer be one to replace.
+                    const shown = loadLatestPlan;
+                    const now = planLoadLatestNow();
+                    const confirmed: LoadLatestPlan = {
+                      replace: shown.replace.filter((path) =>
+                        now.replace.includes(path),
+                      ),
+                      remove: shown.remove.filter((path) =>
+                        now.remove.includes(path),
+                      ),
+                      kept: [...shown.replace, ...shown.remove].flatMap(
+                        (path) =>
+                          now.replace.includes(path) ||
+                          now.remove.includes(path)
+                            ? []
+                            : [
+                                now.kept.find(
+                                  (entry) => entry.path === path,
+                                ) ?? {
+                                  path,
+                                  reason: LOAD_LATEST_KEPT_SETTLED,
+                                },
+                              ],
+                      ),
+                    };
                     setLoadLatestPlan(null);
-                    void loadLatestForSourceConflicts(paths);
+                    void loadLatestForSourceConflicts(confirmed);
                   }}
                 >
                   Replace with the latest
