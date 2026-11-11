@@ -24,11 +24,17 @@ export function EditorSourceConflictNotice({
   paths,
   saving,
   onSave,
+  onLoadLatest,
   className,
 }: {
   paths: readonly string[];
   saving: boolean;
   onSave: () => void;
+  /**
+   * The other way out: drop this tab's text of these files and take the
+   * newest Theme's. Without it, only saving is offered.
+   */
+  onLoadLatest?: () => void;
   className?: string;
 }) {
   if (paths.length === 0) return null;
@@ -66,6 +72,18 @@ export function EditorSourceConflictNotice({
           not saved yet.
         </p>
       </div>
+      {onLoadLatest ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="shrink-0"
+          disabled={saving}
+          onClick={onLoadLatest}
+        >
+          Load the latest
+        </Button>
+      ) : null}
       <Button
         type="button"
         size="xs"

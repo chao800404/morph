@@ -706,6 +706,8 @@ const HISTORY_REPLAY_FILE_CONFLICT_MESSAGE =
   "The file changed while its save was unanswered. Resolve the file conflict before retrying.";
 const STYLE_REPLAY_OTHER_RUN_MESSAGE =
   "an earlier Undo or Redo of this file got no answer. Use Check and save first; nothing was sent.";
+const STYLE_REPLAY_OVERTAKEN_MESSAGE =
+  "Another save to this Theme came first, so the unanswered Undo or Redo of this file can no longer be confirmed. It was not confirmed or sent again. Your text is kept: save it on top of the latest Theme, or load the latest.";
 
 /**
  * The stored Style replay of a file (a lost Undo/Redo answer), while it is
@@ -6696,6 +6698,9 @@ export function VisualEditorShell({
                     const landed = Boolean(
                       file &&
                       file.lastWriteAttemptId === styleReplay.writeAttemptId &&
+                      // The receipt names the write; the bytes must still
+                      // be the ones it wrote.
+                      file.content === styleReplay.content &&
                       exactLandedVersion &&
                       sourceGenerationDuringRecovery ===
                         styleReplay.sourceGeneration + 1,
@@ -6724,15 +6729,43 @@ export function VisualEditorShell({
                             file.lastWriteAttemptId ===
                               styleReplay.writeAttemptId
                         : false;
-                      if (
-                        (sameFileAtOriginalVersion ||
-                          sameFileAtLandedVersion) &&
-                        sourceGenerationDuringRecovery !==
-                          styleReplay.sourceGeneration
-                      ) {
+                      // Only the Theme moved: this file is as the replay
+                      // left it (untouched, or holding exactly the replay's
+                      // write) and the generation is past where that leaves
+                      // it. Anything else about the file is a file conflict.
+                      const overtakenBySource =
+                        (sameFileAtOriginalVersion &&
+                          sourceGenerationDuringRecovery !==
+                            styleReplay.sourceGeneration) ||
+                        (sameFileAtLandedVersion &&
+                          file?.content === styleReplay.content &&
+                          sourceGenerationDuringRecovery !==
+                            styleReplay.sourceGeneration + 1);
+                      if (overtakenBySource) {
+                        // This file is where the replay left it, but the
+                        // Theme moved on: the replay can no longer be
+                        // confirmed (no evidence), and is not sent again.
+                        // That answers the unknown write: the file is no
+                        // longer unconfirmed, so its stored replay is no
+                        // longer live (`liveStyleReplay` drops it); its
+                        // history step stays open (not moved). The author's
+                        // text stays as a source conflict against what the
+                        // server holds now: saved plainly at that basis (no
+                        // receipt), or replaced by the latest.
                         useThemeWorkspaceStore
                           .getState()
-                          .markSourceConflict(filePath, workspaceScope);
+                          .keepAfterOvertakenSave(
+                            filePath,
+                            file
+                              ? {
+                                  id: file.id,
+                                  version: file.version,
+                                  content: file.content,
+                                }
+                              : null,
+                            workspaceScope,
+                          );
+                        throw new Error(STYLE_REPLAY_OVERTAKEN_MESSAGE);
                       } else {
                         markWorkspaceConflict(
                           filePath,
@@ -7203,10 +7236,12 @@ export function VisualEditorShell({
         historyAttempt?: EditorHistoryAttempt;
       },
     ) => {
-      // Another history run of a file whose Style replay is still unknown is
-      // refused before the workspace or the frame shows its text; the queue
-      // asks the same again when the save runs.
-      if (options?.historyAttempt) {
+      // Another history run of a file whose Style replay is still unknown —
+      // a Style entry's, or any other entry's of the file (Code, Design
+      // element, structure) — is refused before the workspace or the frame
+      // shows its text; the queue asks the same again for Style runs, and
+      // holds any other unconfirmed-file save.
+      if (options?.historyAttempt || options?.historyReplay) {
         const stored = liveStyleReplay(
           unconfirmedStyleHistoryRef.current,
           filePath,
@@ -7218,6 +7253,9 @@ export function VisualEditorShell({
             )[filePath]?.unconfirmedContent,
         );
         if (stored) {
+          if (!options.historyAttempt) {
+            throw new Error(STYLE_REPLAY_OTHER_RUN_MESSAGE);
+          }
           styleReplayRole(
             stored,
             options.historyAttempt,
@@ -8530,6 +8568,92 @@ export function VisualEditorShell({
     queryClient,
     workspaceScope,
   ]);
+
+  /**
+   * The other way out of a source conflict: the author drops this tab's text
+   * of those files and takes what the newest Theme holds. Nothing is sent.
+   * Each file's history entries describe the text just replaced, so they are
+   * retired (as Reload Remote does). A file whose last save is still
+   * unanswered, or that has a file conflict, is left to its own path; the
+   * newer generation is accepted only once no source conflict remains.
+   */
+  const loadLatestForSourceConflicts = useCallback(async () => {
+    const store = () => useThemeWorkspaceStore.getState();
+    setIsSavingSourceConflicts(true);
+    try {
+      const atLeast = store().getAcceptedSourceGeneration(workspaceScope);
+      let read: {
+        files: readonly StorefrontThemeFileDTO[];
+        sourceGeneration: number;
+      } | null = null;
+      try {
+        const fetched = await queryClient.fetchQuery({
+          ...storefrontThemeFileQueries.tree(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          ),
+          staleTime: 0,
+        });
+        if (
+          Number.isInteger(fetched.sourceGeneration) &&
+          fetched.sourceGeneration >= atLeast
+        ) {
+          read = fetched;
+        }
+      } catch {
+        // Told below.
+      }
+      if (!read) {
+        toast.error(
+          "The latest version of the Theme could not be read. Your changes are kept; try again.",
+        );
+        return;
+      }
+      const files = store().getWorkspaceFiles(
+        workspaceScope.storefrontId,
+        workspaceScope.themeId,
+      );
+      for (const path of sourceConflictPaths(files)) {
+        const local = files[path];
+        if (!local || local.unconfirmedContent !== undefined || local.conflict) {
+          continue;
+        }
+        const latest = read.files.find((file) => file.path === path);
+        store().loadServerFile(
+          path,
+          latest
+            ? { id: latest.id, version: latest.version, content: latest.content }
+            : null,
+          workspaceScope,
+        );
+        pendingDesignWritesRef.current.forget(path);
+        history.discardScope(themeFileHistoryScope(path));
+      }
+      if (
+        sourceConflictPaths(
+          store().getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          ),
+        ).length === 0
+      ) {
+        store().acceptRemoteGeneration(read.sourceGeneration, workspaceScope);
+      }
+      postPreviewThemeFiles(
+        themeFiles.flatMap((file) => {
+          const current = store().getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[file.path];
+          return current
+            ? [{ path: file.path, content: current.localContent }]
+            : [];
+        }),
+      );
+    } finally {
+      setIsSavingSourceConflicts(false);
+    }
+  }, [history, postPreviewThemeFiles, queryClient, themeFiles, workspaceScope]);
 
   /**
    * Writes paused on who is signed in, and what getting them going again
@@ -15782,6 +15906,7 @@ export function VisualEditorShell({
             paths={pendingSourceConflicts}
             saving={isSavingSourceConflicts}
             onSave={() => void saveSourceConflicts()}
+            onLoadLatest={() => void loadLatestForSourceConflicts()}
           />
           <EditorStarterUpgradeNotice
             status={context.starterUpgrade}
