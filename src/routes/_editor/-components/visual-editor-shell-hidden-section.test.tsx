@@ -1327,6 +1327,89 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
   });
 
   /**
+   * Task 41 29-B (the user's decision): a Hide whose own answer was lost,
+   * confirmed later by read-back or by an answered resend, records what an
+   * answered Hide records — one "Hide section" entry, once — and its Undo
+   * shows the section again, exactly that step.
+   */
+  describe("a Hide with no answer, confirmed later", () => {
+    async function lostHide() {
+      const shell = renderShell(held());
+      await flushFrames();
+      answerNext.push(lost);
+      fireEvent.click(hideButton());
+      await settle();
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]).toMatchObject({
+        props: { enabled: false },
+        expectedDraftGeneration: 1,
+      });
+      expect(unconfirmedCount()).toBe("1");
+      expect(depth(), "nothing recorded without an answer").toBe("0");
+      return shell;
+    }
+
+    it("read back as landed: recorded once, and Undo shows the section again", async () => {
+      const shell = await lostHide();
+      // It landed: the server holds the section hidden, one generation on.
+      server.enabled = false;
+      server.generation = 2;
+
+      await checkAndSave();
+
+      expect(sent(), "nothing is sent again").toHaveLength(1);
+      expect(unconfirmedCount()).toBeNull();
+      expect(depth(), "recorded once").toBe("1");
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+      await settle();
+      expect(depth(), "and only once").toBe("1");
+
+      await reread(shell);
+      await undo();
+
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        props: { enabled: true },
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+      });
+      expect(Object.keys(sent()[1]!.props as object)).toEqual(["enabled"]);
+      expect(server).toMatchObject({ enabled: true, generation: 3 });
+      expect(depth()).toBe("0");
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+    });
+
+    it("read back as not landed and resent with an answer: recorded once, and Undo shows the section again", async () => {
+      const shell = await lostHide();
+      expect(server).toMatchObject({ enabled: true, generation: 1 });
+
+      await checkAndSave();
+
+      expect(sent(), "sent once more").toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        props: { enabled: false },
+        expectedDraftGeneration: 1,
+      });
+      expect(server).toMatchObject({ enabled: false, generation: 2 });
+      expect(unconfirmedCount()).toBeNull();
+      expect(depth(), "recorded once").toBe("1");
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+
+      await reread(shell);
+      await undo();
+
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]).toMatchObject({
+        props: { enabled: true },
+        expectedDraftGeneration: 2,
+      });
+      expect(server).toMatchObject({ enabled: true, generation: 3 });
+      expect(depth()).toBe("0");
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+    });
+  });
+
+  /**
    * #391 review P2: a first (non-history) Show / Hide pressed while a history
    * run of the same section is out used to retire the section's history first
    * (`invalidateSectionHistory`), deleting that run's open attempt: the run
