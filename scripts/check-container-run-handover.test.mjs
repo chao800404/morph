@@ -14,6 +14,10 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { verifyContainerRunHandover } from "./check-container-run-handover.mjs";
+import {
+  processGroupIdFromStat,
+  processSessionIdFromStat,
+} from "./container-run-handover.mjs";
 
 const CHECKER = fileURLToPath(
   new URL("./check-container-run-handover.mjs", import.meta.url),
@@ -27,7 +31,12 @@ const validRecord = () => ({
   spec: "e2e/m1-container-lifecycle-acceptance.spec.ts",
   phase: "teardown-complete",
   identityRecordedBeforeTeardown: true,
-  runner: { pid: 1234, pgid: 1200, startedAtUtc: "2026-11-10T00:00:00.000Z" },
+  runner: {
+    pid: 1234,
+    pgid: 1234,
+    sid: 1234,
+    startedAtUtc: "2026-11-10T00:00:00.000Z",
+  },
   children: [
     { name: "dev server", pid: 2345, pgid: 2345, stopped: true },
   ],
@@ -58,6 +67,29 @@ test("accepts a complete handover only when every identity is gone", async () =>
     adapters(),
   );
   assert.equal(result.passed, true);
+});
+
+test("parses the runner process group and session after the last comm parenthesis", () => {
+  const stat = "123 (runner name ) with close)) S 1 123 456 789 0 0";
+  assert.equal(processGroupIdFromStat(stat), 456);
+  assert.equal(processSessionIdFromStat(stat), 789);
+});
+
+test("requires a runner session id matching its isolated process identity", async (t) => {
+  for (const [name, mutate] of [
+    ["missing session", (record) => { delete record.runner.sid; }],
+    ["session differs", (record) => { record.runner.sid += 1; }],
+    ["group differs", (record) => { record.runner.pgid -= 1; }],
+  ]) {
+    await t.test(name, async () => {
+      const record = validRecord();
+      mutate(record);
+      await assert.rejects(
+        verifyContainerRunHandover(record, adapters()),
+        /HANDOVER_BAD_RUNNER/,
+      );
+    });
+  }
 });
 
 test("rejects a missing, malformed, or interrupted manifest", async (t) => {
