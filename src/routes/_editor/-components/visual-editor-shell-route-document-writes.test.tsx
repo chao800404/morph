@@ -1260,13 +1260,23 @@ describe("G2: a result that is not known", () => {
     });
     await pause();
     expect(saveStatus()).toBe("Save failed");
+    expect(
+      document
+        .querySelector("[data-editor-unconfirmed-saves]")
+        ?.getAttribute("data-editor-unconfirmed-saves"),
+      "held as unconfirmed, frozen as sent",
+    ).toBe("1");
     expect(sent()[0]).toMatchObject({
       templateId: ROUTE_DOC_ID,
       expectedDraftGeneration: 1,
       props: { heading: "Value 1" },
     });
-    // Not landed: the created document is still as created.
+    // Not landed: the created document is still at generation 1. Its slot
+    // section is read back present but without the value, so the read-back
+    // decides by generation (with no section at all it is taken as moved,
+    // the safe side, and nothing would show which generation was frozen).
     expect(server.route).toEqual({ generation: 1, props: null });
+    server.route = { generation: 1, props: {} };
 
     const readsBefore = getThemeEditor.mock.calls.length;
     pressTryAgain();
@@ -1284,6 +1294,18 @@ describe("G2: a result that is not known", () => {
     });
     expect(storedHeading()).toBe("Value 1");
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    // The read-back judged it by the generation it was sent at: not landed,
+    // so nothing was taken as moved or out of date.
+    expect(
+      vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    ).not.toContainEqual(expect.stringContaining("changed elsewhere"));
+    expect(saveStatus()).not.toBe("Out of date");
+    expect(
+      screen.queryByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeNull();
+    expect(
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+    ).toBeNull();
   });
 
   it("G2b: after a lost ensure answer (the server created the document), nothing continues on its own", async () => {
