@@ -82,10 +82,16 @@ export async function verifyContainerRunHandover(record, adapters = {}) {
   if (
     !positivePid(record.runner.pid) ||
     !positivePid(record.runner.pgid) ||
+    !positivePid(record.runner.sid) ||
+    record.runner.pid !== record.runner.pgid ||
+    record.runner.pid !== record.runner.sid ||
     typeof record.runner.startedAtUtc !== "string" ||
     !Number.isFinite(Date.parse(record.runner.startedAtUtc))
   ) {
-    failed("HANDOVER_BAD_RUNNER", "runner pid, pgid, or start time is invalid");
+    failed(
+      "HANDOVER_BAD_RUNNER",
+      "runner pid, pgid, sid, or start time is invalid for an isolated session",
+    );
   }
   if (!Array.isArray(record.children)) {
     failed("HANDOVER_BAD_CHILDREN", "child process identities are missing");

@@ -21,10 +21,38 @@ export function processGroupIdFromStat(stat) {
   return pgid;
 }
 
+/**
+ * Gets Linux's session field from /proc/<pid>/stat. The comm field is
+ * parenthesized and may itself contain spaces or closing parentheses, so split
+ * after its final closing parenthesis rather than splitting the whole line.
+ * @param {string} stat
+ */
+export function processSessionIdFromStat(stat) {
+  const close = stat.lastIndexOf(")");
+  if (close < 0) throw new Error("HANDOVER_PROC_STAT_INVALID: missing comm field");
+  const fields = stat.slice(close + 1).trim().split(/\s+/);
+  const sid = Number(fields[3]);
+  if (!Number.isSafeInteger(sid) || sid <= 1) {
+    throw new Error("HANDOVER_PROC_STAT_INVALID: missing session id");
+  }
+  return sid;
+}
+
 /** @returns {number | null} */
 export function ownProcessGroupId() {
   try {
     return processGroupIdFromStat(
+      readFileSync(`/proc/${process.pid}/stat`, "utf8"),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** @returns {number | null} */
+export function ownProcessSessionId() {
+  try {
+    return processSessionIdFromStat(
       readFileSync(`/proc/${process.pid}/stat`, "utf8"),
     );
   } catch {

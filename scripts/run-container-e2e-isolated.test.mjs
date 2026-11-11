@@ -46,8 +46,12 @@ function runIsolated(runner, args = []) {
   });
   let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
-  child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+  child.stdout.setEncoding("utf8").on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk) => {
+    stderr += chunk;
+  });
   const exit = new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => resolve({ code, signal }));
@@ -124,8 +128,15 @@ function realStateAdapters() {
 
 test("setsid runner has pid=pgid=sid and a normal handover passes", async (t) => {
   const dir = await scratch(t);
-  const files = await writeRunner(dir, "await new Promise((resolve) => setTimeout(resolve, 150));");
-  const run = runIsolated(files.filename, [files.identity, files.signal, files.residualPid]);
+  const files = await writeRunner(
+    dir,
+    "await new Promise((resolve) => setTimeout(resolve, 150));",
+  );
+  const run = runIsolated(files.filename, [
+    files.identity,
+    files.signal,
+    files.residualPid,
+  ]);
   const { code } = await run.exit;
   const { stdout, stderr } = run.output();
   assert.equal(code, 0, stderr + stdout);
@@ -147,19 +158,21 @@ test("handover rejects a live process left in the isolated runner group", async 
     dir,
     `const residual = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
 writeFileSync(residualPidPath, String(residual.pid));
-await new Promise((resolve) => setTimeout(resolve, 150));`,
+await new Promise((resolve) => setTimeout(resolve, 150));
+process.exit(0);`,
   );
-  const run = runIsolated(files.filename, [files.identity, files.signal, files.residualPid]);
+  const run = runIsolated(files.filename, [
+    files.identity,
+    files.signal,
+    files.residualPid,
+  ]);
   const { code } = await run.exit;
   const { stderr, stdout } = run.output();
   assert.equal(code, 0, stderr + stdout);
   const identity = JSON.parse(await readFile(files.identity, "utf8"));
   try {
     await assert.rejects(
-      verifyContainerRunHandover(
-        handoverRecord(identity),
-        realStateAdapters(),
-      ),
+      verifyContainerRunHandover(handoverRecord(identity), realStateAdapters()),
       /HANDOVER_RUNNER_GROUP_ALIVE/,
     );
   } finally {
@@ -174,7 +187,11 @@ await new Promise((resolve) => setTimeout(resolve, 150));`,
 test("setsid --wait preserves a failing runner exit code", async (t) => {
   const dir = await scratch(t);
   const files = await writeRunner(dir, "process.exit(17);");
-  const run = runIsolated(files.filename, [files.identity, files.signal, files.residualPid]);
+  const run = runIsolated(files.filename, [
+    files.identity,
+    files.signal,
+    files.residualPid,
+  ]);
   const { code } = await run.exit;
   assert.equal(code, 17);
 });
@@ -187,12 +204,20 @@ test("cancellation is forwarded into the runner session", async (t) => {
   writeFileSync(signalPath, "SIGINT");
   process.exit(130);
 });
-await new Promise(() => {});`,
+setInterval(() => {}, 1000);`,
   );
-  const run = runIsolated(files.filename, [files.identity, files.signal, files.residualPid]);
+  const run = runIsolated(files.filename, [
+    files.identity,
+    files.signal,
+    files.residualPid,
+  ]);
   await waitForFile(files.identity, run.child);
   run.child.kill("SIGINT");
-  const { code } = await run.exit;
-  assert.equal(code, 130);
+  const result = await run.exit;
+  assert.equal(
+    result.code,
+    130,
+    JSON.stringify({ ...result, ...run.output() }),
+  );
   assert.equal(await readFile(files.signal, "utf8"), "SIGINT");
 });
