@@ -810,8 +810,13 @@ describe("a content save that fails", () => {
 
     await commitInlineText("Mine", "Welcome");
     await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const before = error.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    // Round 4 R4-3(a): exactly one message for the press, after read-back.
+    expect(
+      error.mock.calls.slice(before).map((call) => String(call[0])),
+    ).toEqual([UNANSWERED_RESEND_REFUSED]);
     expect(updateSectionProps).toHaveBeenCalledTimes(2);
     expect(
       document.querySelector("[data-editor-unconfirmed-saves]"),
@@ -5942,6 +5947,11 @@ function Home() {
           expect(errors(notice)).not.toContainEqual(
             expect.stringContaining("changed elsewhere"),
           );
+          // Round 4 R4-3(a): the resend's refusal is read back before the
+          // author is told anything: no conflict toast for a landed write.
+          expect(errors(notice)).not.toContain(
+            "Template draft was modified concurrently.",
+          );
           expect(depth(), "the landed edit is recorded once").toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
           await settle();
@@ -5954,6 +5964,39 @@ function Home() {
             expectedDraftGeneration: 2,
           });
           expect(stored).toEqual({ heading: "Hello" });
+          expect(depth()).toBe("0");
+        });
+
+        it("keeps the write held when the read after its resend's refusal gets no answer", async () => {
+          // Round 4 R4-5: the refusal proves the Document moved; whether the
+          // original landed is still unknown until a read answers.
+          const notice = notices();
+          await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+          answerNext.push(() => ({
+            success: false,
+            error: "TEMPLATE_DRAFT_CONFLICT",
+            message: "Template draft was modified concurrently.",
+          }));
+          getThemeEditor
+            .mockResolvedValueOnce({
+              success: true,
+              message: "ok",
+              data: editorAt({ ...STORED }, 1),
+            })
+            .mockRejectedValueOnce(new Error("offline"));
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount(), "still unknown: held").toBe("1");
+          expect(saveStatus()).toBe("Save failed");
+          expect(errors(notice)).toContain(
+            "An earlier save is still unresolved. Check again before trying other changes.",
+          );
+          expect(errors(notice)).not.toContainEqual(
+            expect.stringContaining("changed elsewhere"),
+          );
           expect(depth()).toBe("0");
         });
 
@@ -6676,10 +6719,10 @@ function Home() {
           });
         }
 
-        it("not landed, its resend refused for another reason: a failed save with the reason, sent again by the next Try again", async () => {
-          // Round 3 R3-6 / R3-5: the reset branch's refusal is handled as an
-          // ordinary resend's is. Not held, not lost: a failed save, kept
-          // with its run, which the next Try again sends once more.
+        it("not landed, its resend refused for another reason: the run fails with the reason and stays, nothing reads as Save failed, Undo runs it afresh", async () => {
+          // Round 4 R4-1 (R3-6 kept: the reset branch's refusal is handled as
+          // an ordinary resend's is). Refused by an answer, it did not land:
+          // nothing is kept to resend, its entry stays to run again.
           const { added } = await lostResetUndo();
           serverHolds({ ...STORED, items: added }, 2);
           answerNext.push(() => ({
@@ -6693,23 +6736,23 @@ function Home() {
           expect(sent()).toHaveLength(3);
           expect(shape(sent()[2]!)).toEqual(resetUndo(2));
           expect(unconfirmedCount(), "an answer: not held").toBeNull();
-          expect(saveStatus()).toBe("Save failed");
+          expect(saveStatus(), "nothing is pending").not.toBe("Save failed");
           expect(historyButtons(), "the run has not moved").toEqual({
             undo: true,
             redo: false,
           });
-
-          fireEvent.click(screen.getByRole("button", { name: "Try again" }));
           await settle();
+          expect(sent(), "nothing is sent by itself").toHaveLength(3);
 
-          expect(sent(), "sent once more, as first sent").toHaveLength(4);
+          await undo();
+
+          expect(sent(), "a fresh attempt").toHaveLength(4);
           expect(shape(sent()[3]!)).toEqual(resetUndo(2));
           expect(stored).toEqual({ ...STORED });
           expect(historyButtons(), "the run completed once").toEqual({
             undo: false,
             redo: true,
           });
-          expect(saveStatus()).not.toBe("Save failed");
         });
 
         it("read failed: nothing sent, the record and the history unchanged", async () => {
@@ -7870,24 +7913,30 @@ function Home() {
         );
       });
 
-      it("keeps the reorder's own entry when its resend is refused for another reason, and records it on the next save", async () => {
-        // Round 3 R3-7: the next successful send of the kept swap records
-        // "Reorder · item", as the drag's answer would have, not a generic
-        // Content entry.
+      // Round 4 R4-1: a reorder resend refused by an answer did not land:
+      // its own recorder is dropped, and the kept swap is an ordinary
+      // pending edit whose later save records an ordinary Content entry.
+      async function refusedReorderResend() {
         notices();
-        const { one, two } = await dragWithLostAnswer();
-        getThemeEditor.mockResolvedValue(readBack({ items: [one, two] }, 1));
+        const rows = await dragWithLostAnswer();
+        getThemeEditor.mockResolvedValue(
+          readBack({ items: [rows.one, rows.two] }, 1),
+        );
         updateSectionProps.mockResolvedValueOnce({
           success: false,
           error: "REFUSED_BY_MOCK",
           message: "The mock refused the resend.",
         } as never);
-
         fireEvent.click(screen.getByRole("button", { name: "Try again" }));
         await settle();
         expect(sent()).toHaveLength(2);
-        expect(saveStatus()).toBe("Save failed");
+        expect(saveStatus(), "the swap is still pending").toBe("Save failed");
         expect(undoDepth()).toBe("0");
+        return rows;
+      }
+
+      it("a refused reorder resend, then Try again: the kept swap is saved as an ordinary edit, one Content entry", async () => {
+        const { one, two } = await refusedReorderResend();
 
         fireEvent.click(screen.getByRole("button", { name: "Try again" }));
         await settle();
@@ -7897,7 +7946,68 @@ function Home() {
         expect(undoDepth(), "recorded once").toBe("1");
         expect(
           screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
-        ).toBe("Undo Reorder · item");
+        ).toBe("Undo Content");
+        expect(saveStatus()).not.toBe("Save failed");
+      });
+
+      it("a refused reorder resend, then a text edit saved: exactly one Content entry, no Reorder entry", async () => {
+        await refusedReorderResend();
+
+        await type("Two", "Two edited");
+        await settle();
+
+        expect(sent()).toHaveLength(3);
+        expect(undoDepth(), "one entry").toBe("1");
+        expect(
+          screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
+        ).toBe("Undo Content");
+      });
+
+      it("a refused reorder resend, then a text edit refused and sent by Try again: one Content entry, nothing of the reorder recorded", async () => {
+        // The review's scenario: nothing of the refused reorder is left to
+        // record when the section's input is later sent by Try again.
+        await refusedReorderResend();
+        updateSectionProps.mockResolvedValueOnce({
+          success: false,
+          error: "REFUSED_BY_MOCK",
+          message: "The mock refused the edit.",
+        } as never);
+        await type("Two", "Two edited");
+        await settle();
+        expect(sent()).toHaveLength(3);
+        expect(saveStatus()).toBe("Save failed");
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await settle();
+
+        expect(sent()).toHaveLength(4);
+        expect(undoDepth(), "one entry").toBe("1");
+        expect(
+          screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
+        ).toBe("Undo Content");
+      });
+
+      it("a second drag while the first is unanswered retires the section's history: the first, confirmed later, records nothing", async () => {
+        // Round 4 R4-4: retired by a real change. The second drag is held
+        // behind the unanswered first and rolled back, as a refused drag is;
+        // the answered path (first answered and recorded, second refused)
+        // ends with the first's entry retired too: depth 0.
+        notices();
+        const { one, two } = await dragWithLostAnswer();
+        drag(1, 0);
+        await settle();
+        expect(sent(), "the second drag is held").toHaveLength(1);
+        getThemeEditor.mockResolvedValue(readBack({ items: [one, two] }, 1));
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await settle();
+
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1]).toMatchObject({
+          props: { items: [two, one] },
+          expectedDraftGeneration: 1,
+        });
+        expect(undoDepth(), "as the answered path").toBe("0");
       });
 
       it("records the reorder once when its resend is answered, and Undo reverts exactly that swap", async () => {
