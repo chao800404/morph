@@ -3000,9 +3000,13 @@ describe("Style replay resend and stored-replay ownership", () => {
     expectedVersion: write.expectedVersion,
     expectedSourceGeneration: write.expectedSourceGeneration,
   });
-  const historyConflictToasts = (error: ReturnType<typeof vi.spyOn>) =>
+  // Both Style history refusals ("... while confirming Style history", "...
+  // during Style history recovery") start with this.
+  const historyConflictToasts = (error: {
+    mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> };
+  }) =>
     error.mock.calls.filter(([message]) =>
-      String(message).includes("changed while confirming Style history"),
+      String(message).includes("The Theme file or source changed"),
     ).length;
 
   async function finishCheck() {
