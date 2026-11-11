@@ -1257,16 +1257,42 @@ function controlledThemeFile(initialContent: string) {
   const outcomes: ThemeFileOutcome[] = [];
   let nextReadGate: Promise<void> | null = null;
   let releaseHeldRead: (() => void) | null = null;
+  let nextSaveGate: Promise<void> | null = null;
+  /** The Hero file is gone from the server (deleted elsewhere). */
+  let deleted = false;
+  /** Other source files this fixture answers for, by path (task 39 round 4). */
+  const otherFiles = new Map<string, Omit<typeof current, "sourceGeneration">>();
+  /** Editable public text files, listed as binary files, by path. */
+  const publicTexts = new Map<string, Omit<typeof current, "sourceGeneration">>();
   const save = vi.fn(async (...args: unknown[]) => {
+    const gate = nextSaveGate;
+    nextSaveGate = null;
+    if (gate) await gate;
     const data = (
       args[0] as {
-        data?: { content?: unknown; writeAttemptId?: unknown };
+        data?: { path?: unknown; content?: unknown; writeAttemptId?: unknown };
       } | undefined
     )?.data;
     if (typeof data?.content !== "string") {
       throw new Error("Theme-file test write had no content");
     }
     const content = data.content;
+    if (typeof data.path === "string" && otherFiles.has(data.path)) {
+      const before = otherFiles.get(data.path)!;
+      const landedOther = {
+        ...before,
+        content,
+        version: before.version + 1,
+        lastWriteAttemptId: null,
+      };
+      otherFiles.set(data.path, landedOther);
+      current = { ...current, sourceGeneration: current.sourceGeneration + 1 };
+      events.push(`write:${data.path}:` + content);
+      return {
+        success: true,
+        data: { ...landedOther, sourceGeneration: current.sourceGeneration },
+      };
+    }
     const outcome = outcomes.shift() ?? "saved";
     events.push("write:" + content);
 
@@ -1310,11 +1336,26 @@ function controlledThemeFile(initialContent: string) {
     current = landed;
     return { success: true, data: { ...current } };
   });
-  const read = vi.fn(async () => {
+  const read = vi.fn(async (...args: unknown[]) => {
     const gate = nextReadGate;
     nextReadGate = null;
     if (gate) await gate;
     events.push("read");
+    const path = (args[0] as { data?: { path?: unknown } } | undefined)?.data
+      ?.path;
+    if (typeof path === "string" && publicTexts.has(path)) {
+      return { success: true, data: { ...publicTexts.get(path)! } };
+    }
+    if (typeof path === "string" && otherFiles.has(path)) {
+      return { success: true, data: { ...otherFiles.get(path)! } };
+    }
+    if (deleted) {
+      return {
+        success: false,
+        error: "NOT_FOUND",
+        message: "File not found",
+      };
+    }
     const { sourceGeneration: _sourceGeneration, ...file } = current;
     return { success: true, data: file };
   });
@@ -1325,8 +1366,18 @@ function controlledThemeFile(initialContent: string) {
       success: true,
       message: "Theme files listed",
       data: {
-        files: externalFile ? [file, externalFile] : [file],
-        binaryFiles: [],
+        files: [
+          ...(deleted ? [] : [file]),
+          ...(externalFile ? [externalFile] : []),
+          ...otherFiles.values(),
+        ],
+        binaryFiles: Array.from(publicTexts.values(), (text) => ({
+          ...text,
+          content: "",
+          encoding: "binary",
+          blobDigest: "a".repeat(64),
+          sizeBytes: new TextEncoder().encode(text.content).byteLength,
+        })),
         tree: [],
         sourceGeneration,
         latestPublishedRevision: null,
@@ -1395,6 +1446,42 @@ function controlledThemeFile(initialContent: string) {
     replaceFileIdKeepingReceipt,
     advanceFileVersionKeepingReceipt,
     replaceContentKeepingReceipt,
+    /** The next write waits until the returned release is called. */
+    holdNextSave: () => {
+      let release: () => void = () => {};
+      nextSaveGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return () => release();
+    },
+    deleteOnServer: () => {
+      deleted = true;
+      current = { ...current, sourceGeneration: current.sourceGeneration + 1 };
+    },
+    addOtherFile: (path: string, content: string) => {
+      const { sourceGeneration: _generation, ...base } = current;
+      otherFiles.set(path, {
+        ...base,
+        id: `file-${path}`,
+        path,
+        content,
+        version: 1,
+        lastWriteAttemptId: null,
+      });
+    },
+    otherFile: (path: string) => otherFiles.get(path),
+    addPublicText: (path: string, content: string) => {
+      const { sourceGeneration: _generation, ...base } = current;
+      publicTexts.set(path, {
+        ...base,
+        id: `file-${path}`,
+        path,
+        content,
+        mimeType: "text/plain",
+        version: 2,
+        lastWriteAttemptId: null,
+      });
+    },
     file: () => ({ ...current }),
   };
 }
@@ -3659,6 +3746,244 @@ describe("Style replay resend and stored-replay ownership", () => {
       });
     },
   );
+
+  // Task 39 round 4.
+
+  const hero = () => stylePatchTarget.filePath;
+  const workspaceFileAt = (path: string) =>
+    useThemeWorkspaceStore
+      .getState()
+      .getWorkspaceFiles(scope.storefrontId, scope.themeId)[path];
+  const infoSaying = (info: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } }) =>
+    info.mock.calls.map(([message]) => String(message)).join("\n");
+
+  it("keeps a file whose save is in flight when Replace is confirmed, and lets that save land", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    const saveFile = await captureCodeFileSave();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+
+    const dialog = await openLoadLatest();
+    expect(listed(dialog, "Files to replace")).toEqual([hero()]);
+    const release = server.holdNextSave();
+    let saving: Promise<unknown> = Promise.resolve();
+    act(() => {
+      saving = saveFile(hero(), CODE_EDIT, { confirmed: true }).catch(
+        () => {},
+      );
+    });
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    expect(screen.getByRole("alertdialog")).toBe(dialog);
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
+    // Give Load the latest time to run ahead of the held save if it does not
+    // wait for it (the race this guards against), then let the save answer.
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    });
+    release();
+    await act(async () => {
+      await saving;
+    });
+    // The data first: the author's save landed and the tab holds it.
+    await waitFor(() =>
+      expect({
+        local: workspaceFileAt(hero())?.localContent,
+        server: workspaceFileAt(hero())?.serverContent,
+        saveState: workspaceFileAt(hero())?.saveState,
+        file: server.file(),
+      }).toMatchObject({
+        local: CODE_EDIT,
+        server: CODE_EDIT,
+        saveState: "clean",
+        file: { content: CODE_EDIT, version: 3 },
+      }),
+    );
+    await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
+    expect(infoSaying(info)).toContain(hero());
+  });
+
+  it("keeps a file whose save is queued when Replace is confirmed; the queued save goes as the author's", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    const other = "src/components/Queued.tsx";
+    server.addOtherFile(other, "export const Q = 1;");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .markSaved({ ...server.otherFile(other)! }, scope),
+    );
+    const saveFile = await captureCodeFileSave();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+
+    const dialog = await openLoadLatest();
+    const release = server.holdNextSave();
+    let first: Promise<unknown> = Promise.resolve();
+    let queued: Promise<unknown> = Promise.resolve();
+    act(() => {
+      first = saveFile(other, "export const Q = 2;", { confirmed: true }).catch(
+        () => {},
+      );
+    });
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(3));
+    act(() => {
+      queued = saveFile(hero(), CODE_EDIT, { confirmed: true }).catch(
+        () => {},
+      );
+    });
+    expect(screen.getByRole("alertdialog")).toBe(dialog);
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
+    // Give Load the latest time to run ahead of the held save if it does not
+    // wait for it (the race this guards against), then let the save answer.
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    });
+    release();
+    await act(async () => {
+      await first;
+      await queued;
+    });
+    await waitFor(() =>
+      expect({
+        writes: server.save.mock.calls.length,
+        local: workspaceFileAt(hero())?.localContent,
+        saveState: workspaceFileAt(hero())?.saveState,
+        file: server.file(),
+      }).toMatchObject({
+        writes: 4,
+        local: CODE_EDIT,
+        saveState: "clean",
+        file: { content: CODE_EDIT, version: 3 },
+      }),
+    );
+    await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
+    expect(infoSaying(info)).toContain(hero());
+  });
+
+  it("re-checks at confirm: a file that became unconfirmed after the dialog opened is kept and named", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+
+    const dialog = await openLoadLatest();
+    expect(listed(dialog, "Files to replace")).toEqual([hero()]);
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .markUnconfirmed(hero(), STYLE_SOURCE, scope),
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
+    await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
+
+    expect(infoSaying(info)).toContain(hero());
+    expect(infoSaying(info)).toContain("Check and save");
+    expect({
+      local: workspaceFileAt(hero())?.localContent,
+      unconfirmed: workspaceFileAt(hero())?.unconfirmedContent,
+      sourceConflict: workspaceFileAt(hero())?.sourceConflict,
+    }).toEqual({
+      local: STYLE_SOURCE,
+      unconfirmed: STYLE_SOURCE,
+      sourceConflict: true,
+    });
+  });
+
+  it("loads an editable public text file's current text instead of dropping it", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    const notes = "public/notes.txt";
+    server.addPublicText(notes, "server notes\n");
+    act(() => {
+      const workspace = useThemeWorkspaceStore.getState();
+      workspace.markSaved(
+        {
+          id: `file-${notes}`,
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          path: notes,
+          content: "older notes\n",
+          mimeType: "text/plain",
+          isEntry: false,
+          version: 1,
+          createdAt: "2026-08-20T00:00:00.000Z",
+          updatedAt: "2026-08-20T00:00:00.000Z",
+        },
+        scope,
+      );
+      workspace.updateLocalContent(notes, "my notes\n", scope);
+      workspace.markSourceConflict(notes, scope);
+    });
+
+    const dialog = await openLoadLatest();
+    expect(listed(dialog, "Files to replace")).toEqual([notes, hero()].sort());
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
+    await waitFor(() =>
+      expect(workspaceFileAt(notes)?.sourceConflict).toBeUndefined(),
+    );
+    expect({
+      local: workspaceFileAt(notes)?.localContent,
+      server: workspaceFileAt(notes)?.serverContent,
+      version: workspaceFileAt(notes)?.serverVersion,
+      dirty: workspaceFileAt(notes)?.dirty,
+    }).toEqual({
+      local: "server notes\n",
+      server: "server notes\n",
+      version: 2,
+      dirty: false,
+    });
+  });
+
+  it("names a file the Theme does not have as removed, in the dialog and after", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    const draft = "src/components/Draft.tsx";
+    act(() => {
+      const workspace = useThemeWorkspaceStore.getState();
+      workspace.updateLocalContent(draft, "export const Draft = 1;", scope);
+      workspace.markSourceConflict(draft, scope);
+    });
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+
+    const dialog = await openLoadLatest();
+    expect(listed(dialog, "Files to replace")).toEqual([hero()]);
+    expect(listed(dialog, "Files to remove")).toEqual([
+      expect.stringContaining(draft),
+    ]);
+    expect(listed(dialog, "Files to remove")[0]).toContain(
+      "deleted on the server",
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
+    await waitFor(() => expect(workspaceFileAt(draft)).toBeUndefined());
+    await waitFor(() => expect(infoSaying(info)).toContain("Removed"));
+    expect(infoSaying(info)).toContain(draft);
+    expect(workspaceFileAt(hero())?.localContent).toBe(STYLE_AFTER);
+  });
+
+  it("names a file found deleted on the server at run time as removed, not replaced", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    await loseUndoThenAdvanceSource(server);
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+
+    const dialog = await openLoadLatest();
+    expect(listed(dialog, "Files to replace")).toEqual([hero()]);
+    server.deleteOnServer();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Replace with the latest" }),
+    );
+    await waitFor(() => expect(infoSaying(info)).toContain("Removed"));
+    expect(infoSaying(info)).toContain(hero());
+    expect(infoSaying(info)).toContain("deleted on the server");
+    expect(workspaceFileAt(hero())).toBeUndefined();
+  });
 
   it("does not confirm a Check and save resend whose answer names another receipt", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
