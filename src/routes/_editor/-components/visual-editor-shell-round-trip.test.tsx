@@ -3933,8 +3933,6 @@ describe("Style replay resend and stored-replay ownership", () => {
   it("keeps a file with a debounced Style edit made after Replace is confirmed but before the load runs", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
     await loseUndoThenAdvanceSource(server);
-    // The Theme's copy differs from what the edit will write.
-    server.replaceContentKeepingReceipt(STYLE_REMOTE);
     const other = "src/components/Queued.tsx";
     server.addOtherFile(other, "export const Q = 1;");
     act(() =>
@@ -3963,32 +3961,34 @@ describe("Style replay resend and stored-replay ownership", () => {
       within(dialog).getByRole("button", { name: "Replace with the latest" }),
     );
     // A Style edit of Hero while the load waits behind the held save: it is
-    // debounced, not yet in the save queue.
+    // debounced, not yet in the save queue. (Two patches, so the tab's text
+    // differs from the copy it last read.)
+    applyStylePatch();
     applyStylePatch();
     await waitFor(() =>
       expect(workspaceFileAt(hero())?.saveState).toBe("debouncing"),
     );
+    const edited = workspaceFileAt(hero())?.localContent;
+    expect(edited).toContain("p-8 p-8");
     release();
     await act(async () => {
       await first;
     });
-    // The debounced edit goes as the author's, over the file it was made on;
-    // nothing replaced it in between, so the tab holds what it saved.
-    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(4));
-    await waitFor(() =>
-      expect({
-        local: workspaceFileAt(hero())?.localContent,
-        saveState: workspaceFileAt(hero())?.saveState,
-        server: server.file().content,
-      }).toEqual({
-        local: STYLE_AFTER,
-        saveState: "clean",
-        server: STYLE_AFTER,
-      }),
-    );
     await waitFor(() => expect(infoSaying(info)).toContain("Kept"));
     expect(infoSaying(info)).toContain(hero());
     expect(infoSaying(info)).toContain("on its way");
+    // The debounced edit then goes as the author's, over the file it was
+    // made on: nothing replaced the file under it, so the tab holds exactly
+    // what was stored (replaced first, the tab would show the Theme's older
+    // copy as unsaved over the author's stored edit).
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(4));
+    await waitFor(() =>
+      expect({
+        server: server.file().content,
+        local: workspaceFileAt(hero())?.localContent,
+        saveState: workspaceFileAt(hero())?.saveState,
+      }).toEqual({ server: edited, local: edited, saveState: "clean" }),
+    );
   });
 
   it("re-checks at confirm: a file that became unconfirmed after the dialog opened is kept and named", async () => {
