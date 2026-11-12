@@ -3170,11 +3170,16 @@ export function VisualEditorShell({
             ...heldBeforePresentationCheck,
             presentationProof: undefined,
             presentationBlocked: true,
-            // It was shown once (it had a proof): every later presentation
-            // of the section carries it, so the next acknowledged round
-            // releases it (`releasePresentationHeldDrafts`).
-            ...(heldBeforePresentationCheck.presentationProof ||
-            heldBeforePresentationCheck.presentationReleasable
+            // It was shown once (it had a proof on this same non-placeholder
+            // document): every later presentation of the section carries it, so
+            // the next acknowledged round releases it
+            // (`releasePresentationHeldDrafts`). Placeholder-keyed drafts and
+            // drafts adopted from a placeholder stay held for explicit save.
+            ...(routePathFromTemplatePlaceholder(tid) === null &&
+            ((heldBeforePresentationCheck.presentationProof &&
+              heldBeforePresentationCheck.presentationProof.token.templateId ===
+                tid) ||
+              heldBeforePresentationCheck.presentationReleasable)
               ? { presentationReleasable: true }
               : {}),
           });
@@ -14096,7 +14101,10 @@ export function VisualEditorShell({
           : {
               ...staged,
               presentationBlocked: true,
-              ...(shownWhileHeld ? { presentationReleasable: true } : {}),
+              ...(shownWhileHeld &&
+              routePathFromTemplatePlaceholder(keyTemplateId) === null
+                ? { presentationReleasable: true }
+                : {}),
             },
       );
       if (!presentationReadyAtInput) {
@@ -14176,6 +14184,25 @@ export function VisualEditorShell({
         ? captureCurrentSectionPresentationProof(shownIn, entry.sectionId)
         : null;
       if (!proof) continue;
+      const keyTemplateId = key.slice(0, key.length - entry.sectionId.length - 1);
+      if (routePathFromTemplatePlaceholder(keyTemplateId) !== null) continue;
+      if (
+        entry.fields &&
+        proof.token.documentBasis.kind === "existing" &&
+        Object.values(entry.fields).some(
+          (field) =>
+            field.basisDraftGeneration !== undefined &&
+            field.basisDraftGeneration !==
+              (
+                proof.token.documentBasis as {
+                  kind: "existing";
+                  draftGeneration: number;
+                }
+              ).draftGeneration,
+        )
+      ) {
+        continue;
+      }
       pendingPropsMapRef.current.set(key, {
         ...entry,
         presentationBlocked: undefined,
@@ -14183,7 +14210,6 @@ export function VisualEditorShell({
         presentationProof: proof,
       });
       released = true;
-      const keyTemplateId = key.slice(0, key.length - entry.sectionId.length - 1);
       // Sent now, as its debounce would: the typing it waited behind is over.
       const existing = pendingPropsTimersRef.current.get(key);
       if (existing) clearTimeout(existing);
