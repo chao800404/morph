@@ -66,6 +66,32 @@ export function isSectionPresentationPagePresented(args: {
   );
 }
 
+/**
+ * Whether the presentation a proof acknowledged shows the copy a write says
+ * it was made on (Task 40 item 4). `bases` are the copies the write's
+ * fields were first made on (`basisDraftGeneration`); the newest decides.
+ *
+ * - A presentation older than that basis showed the author something other
+ *   than what the write claims: refused, as a write with no basis is.
+ * - A presentation newer than the basis is left to the composition rule
+ *   (`selectCurrentContentFields`: only this session's own steps may lie
+ *   between), which refuses it as out of date otherwise.
+ * - No recorded basis is left to the stage-1 refusal.
+ * - A presentation of a route before its document existed (`new-document`)
+ *   shows only input made with no basis.
+ */
+export function presentationShowsWriteBasis(
+  documentBasis: SectionPresentationToken["documentBasis"],
+  bases: readonly (number | undefined)[],
+): boolean {
+  const known = bases.filter(
+    (basis): basis is number => typeof basis === "number",
+  );
+  if (documentBasis.kind === "new-document") return known.length === 0;
+  if (known.length === 0) return true;
+  return Math.max(...known) <= documentBasis.draftGeneration;
+}
+
 export function isSectionPresentationPageReady(args: {
   page: readonly ExpectedSectionPresentation[];
   latest: ReadonlyMap<string, SectionPresentationToken>;

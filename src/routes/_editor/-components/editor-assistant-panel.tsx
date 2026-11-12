@@ -51,6 +51,8 @@ type EditorAssistantPanelProps = {
   contentResetEpoch?: number;
   /** Current page-wide iframe apply barrier for Document writes. */
   documentPresentationReady?: boolean;
+  /** Said instead of "syncing" when the preview cannot confirm (Task 40 item 3). */
+  documentPresentationPausedReason?: string | null;
   /**
    * Which document the Inspector's inputs hold content of, for keying them:
    * the active template's id unless the shell says the page's document is
@@ -282,6 +284,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onTabChange,
   contentResetEpoch = 0,
   documentPresentationReady = true,
+  documentPresentationPausedReason = null,
   inspectorDocumentKey,
   selectionSourceCurrent = false,
 }: EditorAssistantPanelProps) {
@@ -576,8 +579,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               role="status"
               className="mx-3 mt-3 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
             >
-              Preview syncing. Content writes are paused until every section
-              confirms its current preview was applied.
+              {documentPresentationPausedReason ??
+                "Preview syncing. Content writes are paused until every section confirms its current preview was applied."}
             </p>
           ) : null}
           {inspectorSection && !(contentRefused && tab === "content") ? (

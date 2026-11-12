@@ -21,15 +21,52 @@ export function usePreviewDocument(
   >([]);
   const [presentationCommitSequence, setPresentationCommitSequence] =
     useState(0);
+  /** Per section, the applied acknowledgement this frame last posted. */
+  const postedAppliedAcksRef = useRef(
+    new Map<
+      string,
+      Extract<
+        PreviewToEditorMessage,
+        { type: "morph:storefront-preview-section-presentation-ack" }
+      >
+    >(),
+  );
 
   useLayoutEffect(() => {
     previewDocumentRef.current = document;
     setPreviewDocument(document);
+    // The preview is reset to this copy: whatever it acknowledged as shown
+    // is no longer shown, so those acknowledgements are withdrawn, and any
+    // still waiting for a commit will not be one (Task 40 item 7). The
+    // editor presents the section again on a withdrawal.
+    const pending = pendingPresentationAcksRef.current;
+    for (let index = 0; index < pending.length; index += 1) {
+      const ack = pending[index]!;
+      if (ack.status === "applied") {
+        pending[index] = { ...ack, status: "not-applied", reason: "superseded" };
+      }
+    }
+    const posted = postedAppliedAcksRef.current;
+    for (const ack of posted.values()) {
+      postPreviewToEditorMessage({
+        ...ack,
+        status: "not-applied",
+        reason: "superseded",
+      });
+    }
+    posted.clear();
   }, [document]);
 
   useLayoutEffect(() => {
     const pending = pendingPresentationAcksRef.current.splice(0);
-    for (const ack of pending) postPreviewToEditorMessage(ack);
+    for (const ack of pending) {
+      postPreviewToEditorMessage(ack);
+      if (ack.status === "applied") {
+        postedAppliedAcksRef.current.set(ack.token.sectionId, ack);
+      } else {
+        postedAppliedAcksRef.current.delete(ack.token.sectionId);
+      }
+    }
   }, [presentationCommitSequence, previewDocument]);
 
   useEffect(() => {

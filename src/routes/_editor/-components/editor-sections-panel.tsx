@@ -158,6 +158,8 @@ export type EditorSectionsPanelProps = {
   ) => Promise<SectionReorderResult | void>;
   onToggleSectionEnabled?: (sectionId: string, enabled: boolean) => void;
   documentPresentationReady?: boolean;
+  /** Said instead of "syncing" when the preview cannot confirm (Task 40 item 3). */
+  documentPresentationPausedReason?: string | null;
   editableNodes?: readonly PreviewEditableNode[];
   activeSelection?: EditorSelectionDescriptor | null;
   onSelectEditableNode?: (target: PreviewSelectionRestoreTarget) => void;
@@ -856,6 +858,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onReorderSections,
   onToggleSectionEnabled,
   documentPresentationReady = true,
+  documentPresentationPausedReason = null,
   editableNodes,
   activeSelection,
   onSelectEditableNode,
@@ -1421,7 +1424,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
               role="status"
               className="border-b px-3 py-2 text-xs text-muted-foreground"
             >
-              Preview syncing. Content writes are paused.
+              {documentPresentationPausedReason ??
+                "Preview syncing. Content writes are paused."}
             </div>
           ) : null}
 

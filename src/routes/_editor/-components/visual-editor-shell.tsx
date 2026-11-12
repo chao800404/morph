@@ -404,6 +404,7 @@ import {
   currentAcknowledgedSectionPresentation,
   isSectionPresentationPagePresented,
   isSectionPresentationPageReady as isSectionPresentationPageReadyInModel,
+  presentationShowsWriteBasis,
   sectionPresentationKey,
   type ExpectedSectionPresentation,
 } from "@/lib/storefront/editor/section-presentation-readiness";
@@ -665,6 +666,9 @@ export const PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE =
   "This preview cannot confirm what it shows, so content edits are paused. Your changes are kept; nothing was saved.";
 /** How long a frame with no acknowledgement capability is waited for. */
 export const PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS = 5_000;
+/** Said when a write's basis is newer than the presentation it was proven by. */
+export const PREVIEW_PRESENTATION_BASIS_MESSAGE =
+  "Not saved: the preview showed an older version of this section than your change was made on. Your change is kept; use Load latest, keep mine.";
 /**
  * Said when a canvas click arrives while a preview that navigates as
  * documents has not confirmed the page the editor switched to (D3).
@@ -3017,6 +3021,21 @@ export function VisualEditorShell({
   );
   /** Assigned below, where the content write path is defined. */
   const releasePresentationHeldDraftsRef = useRef<() => void>(() => {});
+  /**
+   * The frame on screen named no section-presentation-ack-v1 and the bounded
+   * wait for one ran out (Task 40 item 3): content edits stay paused, and
+   * what is said is that this preview cannot confirm what it shows.
+   */
+  const [presentationUnconfirmable, setPresentationUnconfirmable] =
+    useState(false);
+  /** Bumped whenever a ready replaces the frame record. */
+  const [frameRecordSequence, setFrameRecordSequence] = useState(0);
+  const presentationUnconfirmableRef = useRef(false);
+  presentationUnconfirmableRef.current = presentationUnconfirmable;
+  const presentationHoldMessage = () =>
+    presentationUnconfirmableRef.current
+      ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
+      : PREVIEW_PRESENTATION_SYNCING_MESSAGE;
   const isSectionPresentationProofCurrent = useCallback(
     (
       proof: SectionPresentationProof | undefined,
@@ -3161,7 +3180,7 @@ export function VisualEditorShell({
           });
           syncContentWritesRef.current();
         }
-        toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+        toast.warning(presentationHoldMessage(), {
           id: "preview-presentation-syncing",
         });
         throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
@@ -3304,6 +3323,24 @@ export function VisualEditorShell({
                 composedOnCreatedDocument =
                   !replay?.resend && madeBeforeDocument && !writeSnapshot;
                 const entry = prepare();
+                // The presentation proven is the one the write's basis was
+                // made on (Task 40 item 4): one older than the basis is
+                // refused, before anything is sent, as a missing basis is.
+                if (
+                  presentationGated &&
+                  presentationProof &&
+                  !presentationShowsWriteBasis(
+                    presentationProof.token.documentBasis,
+                    Object.values(entry.fields ?? {}).map(
+                      (field) => field.basisDraftGeneration,
+                    ),
+                  )
+                ) {
+                  toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+                    id: "preview-presentation-basis",
+                  });
+                  throw draftConflictFailure();
+                }
                 sentDraftGeneration =
                   entry.expectedDraftGeneration ?? generation;
                 reportSent(sentDraftGeneration);
@@ -4277,7 +4314,7 @@ export function VisualEditorShell({
         previewVisibilityRef.current.reconcile(sectionId);
       }
       if (rebasedKeys.length > 0) {
-        toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+        toast.warning(presentationHoldMessage(), {
           id: "preview-presentation-syncing",
         });
       }
@@ -4299,7 +4336,7 @@ export function VisualEditorShell({
         for (const sectionId of sectionModelRef.current.bindings.keys()) {
           previewVisibilityRef.current.reconcile(sectionId);
         }
-        toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+        toast.warning(presentationHoldMessage(), {
           id: "preview-presentation-syncing",
         });
         return;
@@ -5018,6 +5055,34 @@ export function VisualEditorShell({
     refetchPreviewServer,
   ]);
 
+  // Task 40 item 3: a frame that said it is ready without the ack
+  // capability is waited for, bounded; then the reason is shown. Fail
+  // closed throughout: nothing here lets a write go without a proof.
+  useEffect(() => {
+    setPresentationUnconfirmable(false);
+    const record = previewFrameRecordRef.current;
+    if (
+      !previewKey ||
+      !record ||
+      record.previewKey !== previewKey ||
+      record.capabilities.has("section-presentation-ack-v1")
+    ) {
+      return;
+    }
+    const round = record.readyRound;
+    const timer = setTimeout(() => {
+      const now = previewFrameRecordRef.current;
+      if (
+        now &&
+        now.previewKey === previewKeyRef.current &&
+        now.readyRound === round &&
+        !now.capabilities.has("section-presentation-ack-v1")
+      ) {
+        setPresentationUnconfirmable(true);
+      }
+    }, PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [previewKey, frameRecordSequence]);
   const previewFrameReady =
     previewLifecycle.key && previewLifecycle.readySequence > 0
       ? {
@@ -10896,6 +10961,34 @@ export function VisualEditorShell({
           message.operationId,
         );
         const documentVerdict = previewDocumentOf(event);
+        // A withdrawal (Task 40 item 7): the frame no longer shows what it
+        // acknowledged for this token (its document was reset to the server
+        // copy). Only for the token acknowledged now, from the frame, round
+        // and document it came from; the section is presented again, and
+        // nothing is written until that presentation is acknowledged.
+        if (
+          !pending &&
+          message.status === "not-applied" &&
+          record &&
+          record.previewKey === previewKeyRef.current &&
+          record.readyRound === previewReadyRoundRef.current &&
+          record.capabilities.has("section-presentation-ack-v1") &&
+          record.documentId !== null &&
+          documentVerdict?.kind === "message" &&
+          documentVerdict.verified
+        ) {
+          const withdrawn = Array.from(
+            acknowledgedSectionPresentationRef.current,
+          ).find(([, token]) =>
+            sameSectionPresentationToken(token, message.token),
+          );
+          if (withdrawn) {
+            acknowledgedSectionPresentationRef.current.delete(withdrawn[0]);
+            refreshSectionPresentationReady();
+            previewVisibilityRef.current.reconcile(message.token.sectionId);
+          }
+          return;
+        }
         if (
           !record ||
           !pending ||
@@ -11104,6 +11197,7 @@ export function VisualEditorShell({
           capabilities: new Set(message.capabilities ?? []),
           documentId,
         };
+        setFrameRecordSequence((sequence) => sequence + 1);
         // Tell this document what the editor can read back, only when this
         // ready carries a document id and the bridge said it reads the token.
         // The id names the round, not a permission: the bridge ignores any
@@ -13326,7 +13420,7 @@ export function VisualEditorShell({
             )
           : null;
       if (presentationGated && !presentationProof) {
-        toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+        toast.warning(presentationHoldMessage(), {
           id: "preview-presentation-syncing",
         });
         return {
@@ -13372,6 +13466,19 @@ export function VisualEditorShell({
       ) {
         toast.error(MISSING_BASIS_MESSAGE, { id: "content-missing-basis" });
         return { success: false, message: MISSING_BASIS_MESSAGE };
+      }
+      // The press was made on what the acknowledged presentation showed
+      // (Task 40 item 4): a basis newer than that is refused before sending.
+      if (
+        presentationProof &&
+        !presentationShowsWriteBasis(presentationProof.token.documentBasis, [
+          basisDraftGeneration,
+        ])
+      ) {
+        toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+          id: "preview-presentation-basis",
+        });
+        return { success: false, message: PREVIEW_PRESENTATION_BASIS_MESSAGE };
       }
       const generations = fieldKeys.map(
         (path) =>
@@ -13846,7 +13953,7 @@ export function VisualEditorShell({
           // A newer edit that cannot be presented yet must still prevent an
           // older media-signing callback from restoring stale section props.
           cancelAwaitingSignedPost(sectionId);
-          toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+          toast.warning(presentationHoldMessage(), {
             id: "preview-presentation-syncing",
           });
           throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
@@ -13990,7 +14097,7 @@ export function VisualEditorShell({
           previewVisibilityRef.current.reconcile(sectionId);
         }
         syncContentWritesRef.current();
-        toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+        toast.warning(presentationHoldMessage(), {
           id: "preview-presentation-syncing",
         });
         return;
@@ -14459,7 +14566,7 @@ export function VisualEditorShell({
       }
       pendingPropsMapRef.current.set(key, stagedReorder);
       if (!presentationProof) {
-        toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+        toast.warning(presentationHoldMessage(), {
           id: "preview-presentation-syncing",
         });
         return;
@@ -14561,7 +14668,7 @@ export function VisualEditorShell({
           error instanceof Error &&
           error.message === PREVIEW_PRESENTATION_SYNCING_MESSAGE
         ) {
-          toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+          toast.warning(presentationHoldMessage(), {
             id: "preview-presentation-syncing",
           });
           return;
@@ -14717,7 +14824,7 @@ export function VisualEditorShell({
             presentationBlocked: true,
           });
         }
-        toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
+        toast.warning(presentationHoldMessage(), {
           id: "preview-presentation-syncing",
         });
         return;
@@ -17551,6 +17658,11 @@ export function VisualEditorShell({
         <EditorSectionsPanel
           style={LEFT_PANEL_STYLE}
           documentPresentationReady={sectionPresentationReady}
+          documentPresentationPausedReason={
+            presentationUnconfirmable
+              ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
+              : null
+          }
           context={routeBackedContext}
           search={search}
           onSearchChange={handleSectionsSearchChange}
@@ -17935,6 +18047,36 @@ export function VisualEditorShell({
               </div>
             ) : null}
 
+            {presentationUnconfirmable ? (
+              // The existing recovery surface, with the true reason: this
+              // frame cannot acknowledge what it shows (Task 40 item 3).
+              <div
+                role="alert"
+                data-testid="preview-presentation-unconfirmable"
+                className={cn(
+                  "absolute left-1/2 z-50 flex max-w-md -translate-x-1/2 items-start gap-3 rounded-lg border border-amber-500/40 bg-background/95 p-3 text-sm shadow-lg backdrop-blur-sm",
+                  // Below the failed-preview alert when both are shown.
+                  previewLifecycle.phase === "failed" ? "top-40" : "top-16",
+                )}
+              >
+                <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                <div className="min-w-0">
+                  <p className="text-foreground">
+                    {PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={retryLivePreview}
+                  >
+                    Retry Preview
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
             {documentNavigationNotice?.kind === "status" ? (
               // A page switch in a preview that navigates as documents (D3):
               // quiet while the other page loads.
@@ -18076,6 +18218,11 @@ export function VisualEditorShell({
         <EditorAssistantPanel
           contentResetEpoch={contentResetEpoch}
           documentPresentationReady={sectionPresentationReady}
+          documentPresentationPausedReason={
+            presentationUnconfirmable
+              ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
+              : null
+          }
           inspectorDocumentKey={inspectorDocumentKey}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
