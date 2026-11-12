@@ -3083,12 +3083,23 @@ export function VisualEditorShell({
       ) {
         return null;
       }
-      const token = currentAcknowledgedSectionPresentation({
-        templateId,
-        sectionId,
-        latest: latestSectionPresentationRef.current,
-        acknowledged: acknowledgedSectionPresentationRef.current,
-      });
+      const resolvedTemplateId =
+        routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const token =
+        currentAcknowledgedSectionPresentation({
+          templateId: resolvedTemplateId,
+          sectionId,
+          latest: latestSectionPresentationRef.current,
+          acknowledged: acknowledgedSectionPresentationRef.current,
+        }) ??
+        (resolvedTemplateId !== templateId
+          ? currentAcknowledgedSectionPresentation({
+              templateId,
+              sectionId,
+              latest: latestSectionPresentationRef.current,
+              acknowledged: acknowledgedSectionPresentationRef.current,
+            })
+          : null);
       return token
         ? {
             token,
@@ -3170,15 +3181,23 @@ export function VisualEditorShell({
             ...heldBeforePresentationCheck,
             presentationProof: undefined,
             presentationBlocked: true,
-            // It was shown once (it had a proof on this same non-placeholder
-            // document): every later presentation of the section carries it, so
-            // the next acknowledged round releases it
-            // (`releasePresentationHeldDrafts`). Placeholder-keyed drafts and
-            // drafts adopted from a placeholder stay held for explicit save.
-            ...(routePathFromTemplatePlaceholder(tid) === null &&
+            // It was shown once (it had a proof on this same document): every
+            // later presentation of the section carries it, so the next
+            // acknowledged round releases it (`releasePresentationHeldDrafts`).
+            // Unbasised placeholder-keyed drafts and drafts adopted from a
+            // placeholder stay held for explicit save.
+            ...((routePathFromTemplatePlaceholder(tid) === null ||
+              (heldBeforePresentationCheck.fields !== undefined &&
+                Object.values(heldBeforePresentationCheck.fields).every(
+                  (field) => field.basisDraftGeneration !== undefined,
+                ))) &&
             ((heldBeforePresentationCheck.presentationProof &&
-              heldBeforePresentationCheck.presentationProof.token.templateId ===
-                tid) ||
+              (routeTemplateIdsRef.current.get(
+                heldBeforePresentationCheck.presentationProof.token.templateId,
+              ) ??
+                heldBeforePresentationCheck.presentationProof.token
+                  .templateId) ===
+                (routeTemplateIdsRef.current.get(tid) ?? tid)) ||
               heldBeforePresentationCheck.presentationReleasable)
               ? { presentationReleasable: true }
               : {}),
@@ -14102,7 +14121,11 @@ export function VisualEditorShell({
               ...staged,
               presentationBlocked: true,
               ...(shownWhileHeld &&
-              routePathFromTemplatePlaceholder(keyTemplateId) === null
+              (routePathFromTemplatePlaceholder(keyTemplateId) === null ||
+                (staged.fields !== undefined &&
+                  Object.values(staged.fields).every(
+                    (field) => field.basisDraftGeneration !== undefined,
+                  )))
                 ? { presentationReleasable: true }
                 : {}),
             },
@@ -14185,8 +14208,27 @@ export function VisualEditorShell({
         : null;
       if (!proof) continue;
       const keyTemplateId = key.slice(0, key.length - entry.sectionId.length - 1);
-      if (routePathFromTemplatePlaceholder(keyTemplateId) !== null) continue;
-      if (
+      const isPlaceholderKey =
+        routePathFromTemplatePlaceholder(keyTemplateId) !== null;
+      if (isPlaceholderKey) {
+        if (
+          proof.token.documentBasis.kind !== "existing" ||
+          !entry.fields ||
+          Object.values(entry.fields).some(
+            (field) =>
+              field.basisDraftGeneration === undefined ||
+              field.basisDraftGeneration !==
+                (
+                  proof.token.documentBasis as {
+                    kind: "existing";
+                    draftGeneration: number;
+                  }
+                ).draftGeneration,
+          )
+        ) {
+          continue;
+        }
+      } else if (
         entry.fields &&
         proof.token.documentBasis.kind === "existing" &&
         Object.values(entry.fields).some(

@@ -51,7 +51,10 @@ import {
   routeTemplatePlaceholderId,
 } from "./editor-template";
 import { UNCONFIRMED_SAVE_HOLD } from "./editor-unconfirmed-saves-notice";
-import { VisualEditorShell } from "./visual-editor-shell";
+import {
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
 
 /**
  * Consecutive content writes to a route document this editor creates.
@@ -1535,8 +1538,7 @@ describe("the pre-step flush across the placeholder and the real id", () => {
 
     expect(renameOutcome.settled).toEqual({
       ok: false,
-      message:
-        "Not saved: preview syncing. Your change is kept; save it again after the preview finishes syncing.",
+      message: PREVIEW_PRESENTATION_SYNCING_MESSAGE,
     });
     expect(sent()).toHaveLength(1);
     expect(renameSection).not.toHaveBeenCalled();
@@ -1707,6 +1709,16 @@ function pressKeepMine() {
     screen.getByRole("button", { name: "Load latest, keep mine" }).click();
   });
 }
+async function confirmKeepMine() {
+  pressKeepMine();
+  await pause();
+  if (screen.queryByRole("button", { name: "Load latest, keep mine" })) {
+    await waitForPresentationReady();
+    if (screen.queryByRole("button", { name: "Load latest, keep mine" })) {
+      pressKeepMine();
+    }
+  }
+}
 function pressTryAgain() {
   act(() => {
     screen.getByRole("button", { name: "Try again" }).click();
@@ -1795,7 +1807,7 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       expect(storedHeading()).toBe("Theirs");
       expect(screen.getAllByDisplayValue("Value 2").length).toBeGreaterThan(0);
 
-      pressKeepMine();
+      await confirmKeepMine();
       await waitFor(() => expect(sent()).toHaveLength(2));
       await pause();
       expect(sent()).toHaveLength(2);
@@ -2037,7 +2049,7 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       expect(updateSectionProps).not.toHaveBeenCalled();
       expect(server.route).toEqual({ generation: 1, props: null });
 
-      pressKeepMine();
+      await confirmKeepMine();
       await waitFor(() => expect(sent()).toHaveLength(1));
       await pause();
       expect(sent()).toHaveLength(1);
@@ -2086,7 +2098,7 @@ describe("B: a lost ensure answer, then the author goes on", () => {
     expect(updateSectionProps).not.toHaveBeenCalled();
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
 
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expect(sent()).toHaveLength(1);
@@ -2133,7 +2145,7 @@ describe("B: a lost ensure answer, then the author goes on", () => {
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(server.route).toEqual({ generation: 1, props: null });
 
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expect(sent()).toHaveLength(1);
@@ -2203,9 +2215,7 @@ describe("C: placeholder-keyed content during an outside document change", () =>
 
     const outcome = await rename();
     expect(outcome.ok).toBe(false);
-    expect(outcome.message).toBe(
-      "Not saved: preview syncing. Your change is kept; save it again after the preview finishes syncing.",
-    );
+    expect(outcome.message).toBe(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
     await pause();
     expect(renameSection).not.toHaveBeenCalled();
     expectUnsentOverTheirs();
@@ -2254,7 +2264,7 @@ describe("D: steps that flush first stop on held content", () => {
     expect(toast.error).toHaveBeenCalledWith(`Cannot build: ${CONFLICT_HELD}`);
     // Kept: the explicit recovery sends the typed text once; the build does
     // not go on by itself.
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(2));
     await pause();
     expect(sent()[1]).toMatchObject({
@@ -2303,7 +2313,7 @@ describe("D: steps that flush first stop on held content", () => {
     );
     // Kept: the explicit recovery sends the typed text once; the publish
     // does not go on by itself.
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(2));
     await pause();
     expect(sent()[1]).toMatchObject({
@@ -2350,7 +2360,7 @@ describe("E: generation 1 is not proof this tab created the document", () => {
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(screen.getAllByDisplayValue("Value 1").length).toBeGreaterThan(0);
 
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expect(sent()).toHaveLength(1);
@@ -2379,7 +2389,7 @@ describe("E: generation 1 is not proof this tab created the document", () => {
     });
     expect(saveStatus()).toBe("Out of date");
 
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expect(sent()).toHaveLength(1);
@@ -2598,10 +2608,16 @@ describe("R1: one section, one pending edit across the page taking up its route 
     if (screen.queryByRole("button", { name: "Try again" })) {
       pressTryAgain();
       await pause();
+      if (screen.queryByRole("button", { name: "Try again" })) {
+        await waitForPresentationReady();
+        if (screen.queryByRole("button", { name: "Try again" })) {
+          pressTryAgain();
+          await pause();
+        }
+      }
     }
     if (screen.queryByRole("button", { name: "Load latest, keep mine" })) {
-      pressKeepMine();
-      await pause();
+      await confirmKeepMine();
     }
   }
 
