@@ -906,6 +906,51 @@ describe("a content save that fails", () => {
     );
   });
 
+  it("resends an unanswered write once, at its frozen basis, after the frame reloaded (Task 40 item 1)", async () => {
+    // The write was sent with the proof of the old ready round. A reload
+    // ends that round, but the resend is the same write the server may
+    // already hold, sent as first sent and guarded by CAS at its original
+    // generations: it is sent, never dropped for want of a fresh proof.
+    updateSectionProps
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({
+        success: true,
+        data: { draftGeneration: 2, droppedProps: [] },
+      } as never);
+    getThemeEditor.mockResolvedValue(editorHolding({}, 1));
+    renderShell();
+    await commitInlineText();
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const first = updateSectionProps.mock.calls[0]![0].data;
+
+    reloadFrameDocument();
+    liveFrame.ready();
+    await flushFrames();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    act(() => {
+      screen.getByRole("button", { name: "Try again" }).click();
+    });
+
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    const resent = updateSectionProps.mock.calls[1]![0].data;
+    expect(resent).toMatchObject({
+      sectionId: first.sectionId,
+      props: first.props,
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: first.expectedSourceGeneration,
+    });
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    expect(
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+      "answered: no longer tracked",
+    ).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps, "and never a third time").toHaveBeenCalledTimes(
+      2,
+    );
+  });
+
   it("releases the hold and keeps the input as out of date when the resend is refused as moved", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
     const secondNode = {
@@ -8110,6 +8155,26 @@ function Home() {
         it("same generation, key still held: not landed; sent once, as first sent, only on Check and save", async () => {
           const { added } = await lostResetUndo();
           serverHolds({ ...STORED, items: added }, 2);
+          await settle();
+          expect(sent(), "nothing is sent by itself").toHaveLength(2);
+
+          await checkAndSave();
+
+          expect(sent(), "sent once more").toHaveLength(3);
+          expect(shape(sent()[2]!)).toEqual(resetUndo(2));
+          expect(stored).toEqual({ ...STORED });
+          expect(unconfirmedCount()).toBeNull();
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+
+        it("same generation, after the frame reloaded: sent once, as first sent, on Check and save (Task 40 item 1)", async () => {
+          // The reset's resend is the frozen write at its original
+          // generations, CAS-guarded: a reload's new ready round does not
+          // drop it, even when the new frame cannot acknowledge anything.
+          const { added } = await lostResetUndo();
+          serverHolds({ ...STORED, items: added }, 2);
+          reloadFrameDocument();
+          bridgeWithoutPresentationAck.ready();
           await settle();
           expect(sent(), "nothing is sent by itself").toHaveLength(2);
 
