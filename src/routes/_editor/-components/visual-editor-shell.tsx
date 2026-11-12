@@ -646,8 +646,19 @@ export const SOURCE_LOCATION_STALE_MESSAGE =
   "This element's source has changed since the preview showed it. Wait for the preview to update, then click it again.";
 export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
   "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
+/**
+ * Said when a Content write is held for the preview's presentation. True
+ * either way it ends: an edit the canvas was shown is saved by itself once
+ * the preview acknowledges it, and every held change has Try again once the
+ * page is acknowledged (Task 40 item 2).
+ */
 export const PREVIEW_PRESENTATION_SYNCING_MESSAGE =
-  "Not saved: preview syncing. Your change is kept; save it again after the preview finishes syncing.";
+  "Not saved yet: the preview is still syncing, so nothing was sent. Your change is kept, and Try again saves it once the preview has caught up.";
+/** Said where the frame cannot acknowledge what it shows (Task 40 item 3). */
+export const PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE =
+  "This preview cannot confirm what it shows, so content edits are paused. Your changes are kept; nothing was saved.";
+/** How long a frame with no acknowledgement capability is waited for. */
+export const PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS = 5_000;
 /**
  * Said when a canvas click arrives while a preview that navigates as
  * documents has not confirmed the page the editor switched to (D3).
@@ -1848,6 +1859,7 @@ export function VisualEditorShell({
     pending: false,
     sending: false,
     failed: false,
+    held: false,
   });
   /** Content commits begun and not yet answered, queued ones included. */
   const contentSendingRef = useRef(0);
@@ -1867,11 +1879,17 @@ export function VisualEditorShell({
       failed: Array.from(failedContentKeysRef.current).some((key) =>
         pending.has(key),
       ),
+      // Held for the preview's presentation (not sent): an explicit save
+      // sends it once the page is acknowledged again (Task 40 item 2).
+      held: Array.from(pending.values()).some(
+        (entry) => entry.presentationBlocked === true,
+      ),
     };
     setContentWrites((current) =>
       current.pending === next.pending &&
       current.sending === next.sending &&
-      current.failed === next.failed
+      current.failed === next.failed &&
+      current.held === next.held
         ? current
         : next,
     );
@@ -2993,6 +3011,8 @@ export function VisualEditorShell({
   const acknowledgedSectionPresentationRef = useRef(
     new Map<string, SectionPresentationToken>(),
   );
+  /** Assigned below, where the content write path is defined. */
+  const releasePresentationHeldDraftsRef = useRef<() => void>(() => {});
   const isSectionPresentationProofCurrent = useCallback(
     (
       proof: SectionPresentationProof | undefined,
@@ -3095,14 +3115,25 @@ export function VisualEditorShell({
         ? pendingPropsMapRef.current.get(key)
         : undefined;
       const heldSection = replay?.entry ?? heldBeforePresentationCheck;
+      // The proof the input was made with, while it is still current. One
+      // a reload or a new ready round ended is replaced, on an explicit save
+      // only, by the presentation acknowledged now (Task 40 item 2); a
+      // write on its own timer never borrows a later proof.
+      const heldProof = heldSection?.presentationProof;
       const presentationProof =
-        heldSection?.presentationProof ??
-        (confirmed && heldSection
-          ? (captureCurrentSectionPresentationProof(
-              tid,
-              heldSection.sectionId,
-            ) ?? undefined)
-          : undefined);
+        heldProof &&
+        isSectionPresentationProofCurrent(
+          heldProof,
+          tid,
+          heldSection?.sectionId,
+        )
+          ? heldProof
+          : confirmed && heldSection
+            ? (captureCurrentSectionPresentationProof(
+                tid,
+                heldSection.sectionId,
+              ) ?? undefined)
+            : undefined;
       if (
         presentationGated &&
         !isSectionPresentationProofCurrent(
@@ -3114,8 +3145,17 @@ export function VisualEditorShell({
         if (heldBeforePresentationCheck && !replay) {
           pendingPropsMapRef.current.set(key, {
             ...heldBeforePresentationCheck,
+            presentationProof: undefined,
             presentationBlocked: true,
+            // It was shown once (it had a proof): every later presentation
+            // of the section carries it, so the next acknowledged round
+            // releases it (`releasePresentationHeldDrafts`).
+            ...(heldBeforePresentationCheck.presentationProof ||
+            heldBeforePresentationCheck.presentationReleasable
+              ? { presentationReleasable: true }
+              : {}),
           });
+          syncContentWritesRef.current();
         }
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
@@ -3126,11 +3166,20 @@ export function VisualEditorShell({
         if (!confirmed) {
           throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
         }
+      }
+      if (
+        heldBeforePresentationCheck &&
+        (heldBeforePresentationCheck.presentationBlocked ||
+          heldBeforePresentationCheck.presentationProof !== presentationProof)
+      ) {
+        // Released by this explicit save, under the proof it is sent with.
         pendingPropsMapRef.current.set(key, {
           ...heldBeforePresentationCheck,
           presentationBlocked: undefined,
+          presentationReleasable: undefined,
           presentationProof,
         });
+        syncContentWritesRef.current();
       }
       if (!confirmed && unconfirmedContentRef.current.size > 0) {
         setDraftSaveState("error");
@@ -10870,7 +10919,9 @@ export function VisualEditorShell({
         } else {
           acknowledgedSectionPresentationRef.current.delete(pending.sectionKey);
         }
-        refreshSectionPresentationReady();
+        if (refreshSectionPresentationReady()) {
+          releasePresentationHeldDraftsRef.current();
+        }
         return;
       }
 
@@ -13777,14 +13828,12 @@ export function VisualEditorShell({
           )
         : null;
       const presentationReadyAtInput = presentationProof !== null;
-      if (!presentationReadyAtInput) {
-        // A newer edit that cannot be presented yet must still prevent an
-        // older media-signing callback from restoring stale section props.
-        cancelAwaitingSignedPost(sectionId);
-      }
       // A history run's write: its own, awaited, and shown once answered.
       if (options?.historyAttempt) {
         if (!presentationReadyAtInput) {
+          // A newer edit that cannot be presented yet must still prevent an
+          // older media-signing callback from restoring stale section props.
+          cancelAwaitingSignedPost(sectionId);
           toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
             id: "preview-presentation-syncing",
           });
@@ -13800,14 +13849,15 @@ export function VisualEditorShell({
         );
       }
       // 1. Instant 0ms visual sync to iframe canvas
+      // Shown whether or not the write may go yet: a held input is part of
+      // the section the canvas shows, and the round that acknowledges it is
+      // what releases it (Task 40 items 2 and 6). A post still waiting on
+      // signing is superseded, so rapid edits coalesce into its one post.
       const previewProps = parsePreviewSectionProps(nextProps);
-      if (
-        !options?.skipPreviewSync &&
-        previewProps &&
-        presentationReadyAtInput
-      ) {
+      const awaitingSignedBefore = awaitingSignedPostRef.current.has(sectionId);
+      if (!options?.skipPreviewSync && previewProps) {
         syncPreviewSectionProps(sectionId, previewProps);
-      } else if (previewProps && presentationReadyAtInput) {
+      } else if (previewProps) {
         supersedeAwaitingSignedPost(sectionId, previewProps);
       }
 
@@ -13911,9 +13961,23 @@ export function VisualEditorShell({
         key,
         presentationReadyAtInput
           ? { ...staged, presentationProof: presentationProof! }
-          : { ...staged, presentationBlocked: true },
+          : {
+              ...staged,
+              presentationBlocked: true,
+              presentationReleasable: true,
+            },
       );
       if (!presentationReadyAtInput) {
+        if (existingTimer) pendingPropsTimersRef.current.delete(key);
+        // Held, not sent, and shown (above): the round that acknowledges
+        // the section as the editor now holds it is the proof this input is
+        // released with (`releasePresentationHeldDrafts`, Task 40 items 2
+        // and 6). An input previewed on its element only, with no section
+        // post waiting to carry it, gets one, so that round exists.
+        if (options?.skipPreviewSync && !awaitingSignedBefore) {
+          previewVisibilityRef.current.reconcile(sectionId);
+        }
+        syncContentWritesRef.current();
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });
@@ -13952,6 +14016,53 @@ export function VisualEditorShell({
   );
 
   contentChangeRef.current = handleSectionPropsChange;
+  /**
+   * Held drafts the canvas was shown (`presentationReleasable`) go once the
+   * page's presentation is acknowledged again: each takes the proof of the
+   * round that now shows it, and is sent on its usual debounce, as typed
+   * input is (Task 40 items 2 and 6). Nothing without a proof; nothing a
+   * conflict, a failed save or an earlier unanswered write holds (the write
+   * path refuses the last one itself).
+   */
+  releasePresentationHeldDraftsRef.current = () => {
+    if (!sectionPresentationReadyRef.current) return;
+    let released = false;
+    for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
+      if (!entry.presentationBlocked || !entry.presentationReleasable) continue;
+      if (
+        key in contentConflictsRef.current ||
+        failedContentKeysRef.current.has(key)
+      ) {
+        continue;
+      }
+      const shownIn = templateIdForSection(entry.sectionId);
+      const proof = shownIn
+        ? captureCurrentSectionPresentationProof(shownIn, entry.sectionId)
+        : null;
+      if (!proof) continue;
+      pendingPropsMapRef.current.set(key, {
+        ...entry,
+        presentationBlocked: undefined,
+        presentationReleasable: undefined,
+        presentationProof: proof,
+      });
+      released = true;
+      const keyTemplateId = key.slice(0, key.length - entry.sectionId.length - 1);
+      // Sent now, as its debounce would: the typing it waited behind is over.
+      const existing = pendingPropsTimersRef.current.get(key);
+      if (existing) clearTimeout(existing);
+      pendingPropsTimersRef.current.delete(key);
+      void commitSectionPending(keyTemplateId, key).catch(() => {
+        // Mutation UI reports the error; the shared queue keeps the input.
+      });
+    }
+    if (released) syncContentWritesRef.current();
+  };
+  // Also when the page turns ready on a render (a read that made the
+  // expected page match what was acknowledged), not only on an ack.
+  useEffect(() => {
+    if (sectionPresentationReady) releasePresentationHeldDraftsRef.current();
+  }, [sectionPresentationReady]);
   // C5: what a section an inline commit landed on is rebuilt from when the
   // held posts are sent — the newest copy this editor has accepted, decided
   // by `newestAcceptedCopy` exactly as the commit handler below reads it,
@@ -16804,7 +16915,9 @@ export function VisualEditorShell({
                   >
                     Load latest, keep mine
                   </Button>
-                ) : draftSaveState === "error" || contentWrites.failed ? (
+                ) : draftSaveState === "error" ||
+                  contentWrites.failed ||
+                  (contentWrites.held && sectionPresentationReady) ? (
                   // Retry first confirms unknown outcomes. Retained source-
                   // conflict fields still need explicit reselection/new input.
                   <Button

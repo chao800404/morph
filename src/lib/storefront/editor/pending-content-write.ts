@@ -34,6 +34,12 @@ export type PendingContentEntry = {
   props: Record<string, unknown>;
   /** A preview race kept this author input local; only an explicit save may retry it. */
   presentationBlocked?: boolean;
+  /**
+   * A held input the preview was told about (it is part of every later post
+   * of its section): the next acknowledged presentation of the page releases
+   * it with that proof. Unset for a hold the canvas was not shown.
+   */
+  presentationReleasable?: boolean;
   /** The committed preview projection this input was made on. */
   presentationProof?: SectionPresentationProof;
   /** The route the edit was made on; absent for the layout. */
