@@ -1453,7 +1453,10 @@ describe("the frame brought up after the reload", () => {
     });
   });
 
-  it("reprojects the retained draft to the active document without resending the write", async () => {
+  // Task 40 item 2 changes what task 32 pinned here ("without resending the
+  // write"): the retained draft, reprojected and acknowledged by the active
+  // document, is released with that round's proof and saved once.
+  it("reprojects the retained draft to the active document and saves it once under the new round's proof", async () => {
     // A current bridge: each document names itself and answers the editor's
     // pings (C5 option A), so a reload in the frame is a confirmed new document.
     modelCurrentBridge();
@@ -1475,7 +1478,12 @@ describe("the frame brought up after the reload", () => {
       heroPosts(from).every((message) => message.props?.heading === TYPED),
     ).toBe(true);
     expect(replayedLines()).toHaveLength(1);
-    expect(updateSectionProps).not.toHaveBeenCalled();
+    await tick(400);
+    await tick(1_000);
+    expect(updateSectionProps, "saved once").toHaveBeenCalledTimes(1);
+    expect(order.filter((step) => step.startsWith("save:"))).toEqual([
+      `save:${JSON.stringify({ heading: TYPED })}`,
+    ]);
     expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
   });
 

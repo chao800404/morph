@@ -13968,13 +13968,26 @@ export function VisualEditorShell({
         );
       }
       // 1. Instant 0ms visual sync to iframe canvas
-      // Shown whether or not the write may go yet: a held input is part of
-      // the section the canvas shows, and the round that acknowledges it is
-      // what releases it (Task 40 items 2 and 6). A post still waiting on
-      // signing is superseded, so rapid edits coalesce into its one post.
+      // A held input is shown too when the frame on screen can acknowledge
+      // what it shows: the round that acknowledges it is what releases it
+      // (Task 40 items 2 and 6), and a post still waiting on signing is
+      // superseded, so rapid edits coalesce into its one post. A frame that
+      // cannot acknowledge is told nothing new (task 32), and an older
+      // signing callback is stopped from restoring stale props.
+      const frameRecord = previewFrameRecordRef.current;
+      const frameCanAcknowledge = Boolean(
+        frameRecord &&
+        frameRecord.previewKey === previewKeyRef.current &&
+        frameRecord.readyRound === previewReadyRoundRef.current &&
+        frameRecord.documentId !== null &&
+        frameRecord.capabilities.has("section-presentation-ack-v1"),
+      );
+      const shownWhileHeld = !presentationReadyAtInput && frameCanAcknowledge;
       const previewProps = parsePreviewSectionProps(nextProps);
       const awaitingSignedBefore = awaitingSignedPostRef.current.has(sectionId);
-      if (!options?.skipPreviewSync && previewProps) {
+      if (!presentationReadyAtInput && !frameCanAcknowledge) {
+        cancelAwaitingSignedPost(sectionId);
+      } else if (!options?.skipPreviewSync && previewProps) {
         syncPreviewSectionProps(sectionId, previewProps);
       } else if (previewProps) {
         supersedeAwaitingSignedPost(sectionId, previewProps);
@@ -14083,7 +14096,7 @@ export function VisualEditorShell({
           : {
               ...staged,
               presentationBlocked: true,
-              presentationReleasable: true,
+              ...(shownWhileHeld ? { presentationReleasable: true } : {}),
             },
       );
       if (!presentationReadyAtInput) {
@@ -14093,7 +14106,11 @@ export function VisualEditorShell({
         // released with (`releasePresentationHeldDrafts`, Task 40 items 2
         // and 6). An input previewed on its element only, with no section
         // post waiting to carry it, gets one, so that round exists.
-        if (options?.skipPreviewSync && !awaitingSignedBefore) {
+        if (
+          shownWhileHeld &&
+          options?.skipPreviewSync &&
+          !awaitingSignedBefore
+        ) {
           previewVisibilityRef.current.reconcile(sectionId);
         }
         syncContentWritesRef.current();
