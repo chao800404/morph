@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   currentAcknowledgedSectionPresentation,
   isSectionPresentationPageReady,
+  presentationShowsWriteBasis,
   sectionPresentationKey,
   type ExpectedSectionPresentation,
 } from "./section-presentation-readiness";
@@ -106,5 +107,37 @@ describe("section presentation readiness", () => {
         acknowledged: presentations,
       }),
     ).toEqual(layoutToken);
+  });
+});
+
+// Task 40 item 4: the proof is compared with the basis the write sends.
+describe("whether an acknowledged presentation shows a write's basis", () => {
+  const existing = (draftGeneration: number) =>
+    ({ kind: "existing", draftGeneration }) as const;
+
+  it("refuses a write made on a newer copy than the acknowledged presentation showed", () => {
+    expect(presentationShowsWriteBasis(existing(3), [4])).toBe(false);
+    expect(presentationShowsWriteBasis(existing(3), [3, 4])).toBe(false);
+  });
+
+  it("accepts a write made on the copy the presentation showed", () => {
+    expect(presentationShowsWriteBasis(existing(3), [3])).toBe(true);
+    expect(presentationShowsWriteBasis(existing(3), [2, 3])).toBe(true);
+  });
+
+  it("leaves a presentation newer than the basis to the composition rule", () => {
+    // Only this session's own steps may lie between (selectCurrentContentFields).
+    expect(presentationShowsWriteBasis(existing(4), [3])).toBe(true);
+  });
+
+  it("leaves a write with no recorded basis to the stage-1 refusal", () => {
+    expect(presentationShowsWriteBasis(existing(3), [undefined])).toBe(true);
+    expect(presentationShowsWriteBasis(existing(3), [])).toBe(true);
+  });
+
+  it("matches a presentation of a route with no document only to input made with no basis", () => {
+    const created = { kind: "new-document", createEpoch: "route:/about" } as const;
+    expect(presentationShowsWriteBasis(created, [undefined])).toBe(true);
+    expect(presentationShowsWriteBasis(created, [1])).toBe(false);
   });
 });

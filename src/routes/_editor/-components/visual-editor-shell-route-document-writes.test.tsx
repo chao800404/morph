@@ -916,6 +916,47 @@ describe("the route-document exception to the version basis", () => {
     await pause(1_500);
     expect(updateSectionProps).not.toHaveBeenCalled();
   });
+
+  // Task 40 item 5: the stage-1 refusal is reached with a valid presentation
+  // proof (the route acknowledged as having no document yet) and no basis,
+  // from each entry that can be used on such a route.
+  const missingBasisSaid = () =>
+    vi
+      .mocked(toast.error)
+      .mock.calls.map((call) => String(call[0]))
+      .includes(MISSING_BASIS_MESSAGE);
+
+  it("Show / Hide, the ensure finding an existing generation-1 document: no write, the stage-1 refusal said", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    server.route = { generation: 1, props: null };
+    fireEvent.click(
+      screen.getAllByRole("button", { name: `Hide section ${SLOT}` })[0]!,
+    );
+    await pause(1_500);
+
+    expect(updateSectionProps, "no content write").not.toHaveBeenCalled();
+    expect(server.route).toEqual({ generation: 1, props: null });
+    expect(missingBasisSaid()).toBe(true);
+    expect(saveStatus()).toBe("Out of date");
+  });
+
+  it("a canvas reorder, the ensure finding an existing generation-1 document: no write, the stage-1 refusal said", async () => {
+    await openOn(secondRowReport);
+    await waitForPresentationReady();
+    server.route = { generation: 1, props: null };
+    await fromPreview({
+      type: "morph:storefront-preview-commit-array-item-reorder",
+      sectionId: SLOT,
+      draggedFieldPath: "items.1",
+      targetFieldPath: "items.0",
+    });
+    await pause(1_500);
+
+    expect(updateSectionProps, "no content write").not.toHaveBeenCalled();
+    expect(server.route).toEqual({ generation: 1, props: null });
+    expect(missingBasisSaid()).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

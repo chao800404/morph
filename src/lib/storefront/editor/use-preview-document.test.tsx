@@ -177,4 +177,64 @@ describe("preview document presentation acknowledgement", () => {
     );
     expect(headingAtAck).toBe("Latest");
   });
+
+  // Task 40 item 7: a reset to the server copy replaces what was
+  // acknowledged, so the frame withdraws that acknowledgement.
+  it("withdraws an applied acknowledgement when the document prop resets the preview", async () => {
+    const view = render(<PreviewDocument document={initialDocument} />);
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "morph:storefront-preview-update-section-props",
+            sectionId: "hero",
+            props: { heading: "After" },
+            presentationToken,
+          },
+        }),
+      );
+    });
+    expect(protocol.post).toHaveBeenCalledTimes(1);
+
+    const serverCopy = {
+      ...initialDocument,
+      sections: [{ ...initialDocument.sections[0]!, props: { heading: "Server" } }],
+    } as StorefrontPageDocument;
+    await act(async () => {
+      view.rerender(<PreviewDocument document={serverCopy} />);
+    });
+
+    expect(screen.getByTestId("rendered-heading").textContent).toBe("Server");
+    expect(protocol.post).toHaveBeenCalledTimes(2);
+    expect(protocol.post.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: presentationToken.operationId,
+        token: presentationToken,
+        status: "not-applied",
+        reason: "superseded",
+      }),
+    );
+  });
+
+  it("does not withdraw anything when the document prop is the same copy again", async () => {
+    const view = render(<PreviewDocument document={initialDocument} />);
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "morph:storefront-preview-update-section-props",
+            sectionId: "hero",
+            props: { heading: "After" },
+            presentationToken,
+          },
+        }),
+      );
+    });
+    await act(async () => {
+      view.rerender(<PreviewDocument document={initialDocument} />);
+    });
+    expect(protocol.post).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("rendered-heading").textContent).toBe("After");
+  });
 });

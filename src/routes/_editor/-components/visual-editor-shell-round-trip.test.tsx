@@ -34,6 +34,8 @@ import {
   INLINE_TEXT_NOT_SAVED_MESSAGE,
   INLINE_TEXT_REFUSED_MESSAGE,
   PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+  PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS,
+  PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
 import { STARTER_THEME_FILES as OBJPOS_STARTER_FILES } from "@/lib/storefront/starter-theme-files";
@@ -736,6 +738,87 @@ describe("a content save that fails", () => {
     expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("says, after a bounded wait, that a frame which cannot acknowledge pauses content edits (Task 40 item 3)", async () => {
+    vi.spyOn(toast, "warning").mockImplementation(() => "");
+    renderShell(readyQueryClient(), bridgeWithoutPresentationAck);
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Welcome");
+    // Within the wait: no reason claimed yet.
+    expect(
+      screen.queryByText(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE),
+    ).toBeNull();
+
+    await waitFor(
+      () =>
+        expect(
+          screen.getByTestId("preview-presentation-unconfirmable").textContent,
+        ).toContain(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE),
+      { timeout: PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS + 3_000 },
+    );
+    // The panels say the same true reason, never "syncing".
+    expect(screen.queryByText(/Preview syncing/)).toBeNull();
+    expect(
+      screen.getAllByText(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE).length,
+    ).toBeGreaterThan(1);
+
+    // Still fail closed: an input is kept and nothing is written.
+    fireEvent.input(field, { target: { value: "Held, unconfirmable" } });
+    fireEvent.blur(field);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue("Held, unconfirmable")).toBeTruthy();
+  }, 15_000);
+
+  it("re-presents a section whose acknowledgement the frame withdrew (Task 40 item 7)", async () => {
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 2, droppedProps: [] },
+    } as never);
+    renderShell();
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Welcome");
+    await flushFrames();
+    const acked = messagesOfType(
+      "morph:storefront-preview-update-section-props",
+    )
+      .filter((message) => message.sectionId === "hero")
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+    expect(acked).toBeTruthy();
+    const before = posted.length;
+
+    // The frame's document was reset to the server copy: it withdraws what
+    // it acknowledged for the content it no longer shows.
+    fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: acked!.operationId,
+      token: acked,
+      status: "not-applied",
+      reason: "superseded",
+    });
+    await flushFrames();
+
+    const reposted = posted
+      .slice(before)
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === "hero" &&
+          message.presentationToken,
+      );
+    expect(reposted.length, "the section is presented again").toBeGreaterThan(
+      0,
+    );
+    await flushFrames();
+    fireEvent.input(field, { target: { value: "After the withdrawal" } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(updateSectionProps.mock.calls[0]![0].data.props).toEqual({
+      heading: "After the withdrawal",
+    });
   });
 
   it("says so when the server refuses the write", async () => {
