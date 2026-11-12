@@ -168,7 +168,7 @@ Morph 希望同時具備：
     - 【已完成】列表新增或刪除項目時保留預設列；內容的 undo／redo 改為「每次執行各自確認」，未確認的寫入不移動 history（#388）。
     - 【已完成】畫布排序：尚未存進 Document 的列表依畫面上的列排序（#389）；已存的列表排序存成對整個列表的一次修改，undo／redo 也走同一套 history 執行（#390）。
     - 【已完成】區塊 Show／Hide 的 undo／redo 走同一套 history 執行（#391）。這是編輯歷史的正確性，不是 M3 的隱藏功能。
-    - 【進行中】沒有版本依據的內容寫入一律拒絕，第 1 階段（Draft #392）：依據在作者操作的當下取得，缺少時保留輸入、不送出。它只證明「沒有依據就不寫」，不證明依據就是作者畫面上看到的版本；後者是第 2 階段（每個區塊的 presentation token 與 iframe 套用確認，預覽協定變更，已核准方向）。
+    - 【已完成】沒有版本依據的內容寫入一律拒絕，第 1 階段（#392，合併於 `798d363`；main CI #1295，run `42606885669` 通過）：依據在作者操作當下取得，缺少時保留輸入、不送出。這只證明「沒有依據就不寫」，不證明依據就是作者畫面上看到的版本；後者是第 2 階段（每個區塊的 presentation token 與 iframe 套用確認，預覽協定變更，方向已核准）。
     - 【已確認缺口】（唯讀審查，未實際重現）一般內容的未確認寫入，讀回沒看到修改時，會先刪除追蹤再比對內容，可能失去「未確認」保護；要先以獨立 PR 修正，再做列表的「只丟指定列表」。實際的晚到時序要另跑診斷。
     - 【已確認缺口】（唯讀審查）側欄 section 沒有唯一 root 時，Inspector 仍顯示列內欄位輸入，可能取用較舊的 baseline；未找到能繞過伺服器來源檢查、欄位白名單與 CAS 的路徑。在 section 入口的 PR 中移除。
     - 【已確認缺口】client 預覽重新載入後，已隱藏的區塊仍以元件預設值顯示；修正方向已決定（不執行元件的隱藏佔位，只能從 Sections 側欄選取與 Show），屬 M3，未實作。
@@ -410,8 +410,17 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     - 編輯正確性：#356、#386～#391，見 1.2「目前進度」。
     - CI 與 E2E：容器網路介面不配 IPv6 link-local 位址（#382）；13 支 spec 改用 `execLocalD1` 寫入一次性 Theme（#383、#385，SQLITE_BUSY 批次 A，只降低已知衝突）。
   - 上面的容器 target 只在本機鎖定的容器驗收中跑過（各 PR 的紀錄），**CI 還不執行它們**。CI 的分片會跳過這些 title，例如 A7 在分片 5 被跳過。
+  - 2026-11-10～11-12 的進度：
+    - 【Draft，待推送】#394（一般內容未確認寫入恢復）：只在 generation 恰好前進一格且送出內容存在時分類為 landed；前進兩格以上視為 moved，由作者使用「Load latest, keep mine」。第一次 CI 有兩個 E2E 因仍固定舊行為而失敗；只更新測試的 commit `ac890ed` 尚待推送。這項規則仍有 keep-mine 可能記錄 no-op history 的後續問題，見 follow-up 文件。
+    - 【Draft，待推送】#395（Style replay 因果回執，nullable migration 0083）：第一次 CI 的 `lost-editor-writes` 失敗，原因是 workspace snapshot 沒帶回執；修正 commit `a85107e` 尚待推送。
+    - 【Draft，首次 CI 已通過】#396（Stage 3）：兩次隔離的 container run 與 handover 檢查已通過首次 CI，證據已核對；授權只涵蓋推送、建立 Draft 與首次 CI，尚未核准 Ready 或合併。
+    - 【等待 #394】Task 31 列表單獨丟棄：本機 head `88e046b`，完整驗證通過；等 #394 合併後再以 main 更新。
+    - 【進行中，未驗證】Task 32 presentation token 協定 PR1。
+    - 【暫緩】Task 33 client hidden placeholder：等待 #376／#377；重做方案見 `~/handoff/2026-11-11/codex/hidden-redo-plan/PLAN.md`。
+    - 【本機完成，未推送】Task 45 hydration/debounce 修正：base `798d363`，測試 commit `b961ad7`、修正 `d306eb1`；完整本機驗證 PASS。瀏覽器 E2E 證據另列 Task 47，尚待安排。
+    - 【設計完成，未實作】Task 46 Content write id：建議暫維持 #394 分類，先定可驗證的請求期限與回執保留契約；設計見 `~/handoff/2026-11-12/codex/content-write-id/DESIGN.md`。
   - 進行中：
-    - 沒有版本依據的寫入拒絕，第 1 階段（Draft #392）。
+    - 沒有版本依據的寫入拒絕，第 2 階段：presentation token 與 iframe 套用確認；協定方向已核准，仍待設計與實作分拆。
     - Stage 3 CI 接線，依 v3 計畫：
       - 只接 preview-access P2／P3 兩個 title，放在同一個容器 job，維持 30 分鐘上限；
       - 兩次 runner 呼叫之間加 fail-closed 的交接檢查；
