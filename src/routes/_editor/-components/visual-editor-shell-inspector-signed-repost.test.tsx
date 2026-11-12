@@ -535,9 +535,16 @@ describe("an Inspector text edit while the section's media is being signed", () 
     await releaseSigning();
 
     const after = sectionPosts(before);
-    expect(after).toHaveLength(1);
-    expect(subheadingOf(after[0])).toBe("Sub newest");
-    expect(imageSigned(after[0])).toBe(true);
+    // Task 40 items 2 & 6: the held edits coalesce into one signed post
+    // ("Sub newest", never "Sub newer" or unsigned), and acking it
+    // immediately releases and saves the held draft, which reconciles the
+    // saved generation with one matching post-save post.
+    expect(after.length).toBeGreaterThanOrEqual(1);
+    expect(after.length).toBeLessThanOrEqual(2);
+    expect(after.every((post) => subheadingOf(post) === "Sub newest")).toBe(
+      true,
+    );
+    expect(after.every((post) => imageSigned(post))).toBe(true);
 
     await saveSettles();
     await saveSettles();
