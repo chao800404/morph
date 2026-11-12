@@ -1614,7 +1614,13 @@ describe("text typed on the canvas while a show is answered", () => {
         ),
       );
       await new Promise((resolve) => setTimeout(resolve, 350));
-      expect(updateSectionProps).toHaveBeenCalledTimes(1);
+      // Blur released the held canvas post; once the mock iframe acknowledges
+      // it during the wait, `releasePresentationHeldDrafts` (Task 40 item 2)
+      // saves the held typed text once (Show + released `{ heading: TYPED }`).
+      expect(updateSectionProps).toHaveBeenCalledTimes(2);
+      expect(updateSectionProps.mock.calls[1]?.[0]?.data).toMatchObject({
+        props: { heading: TYPED },
+      });
       expect(
         info.mock.calls.filter(
           (call) =>
@@ -1627,7 +1633,7 @@ describe("text typed on the canvas while a show is answered", () => {
       // Stored, and the editor, the frame and the canvas agree on it.
       expect(server.sections[0]).toMatchObject({
         enabled: true,
-        props: { ...STORED_PROPS, heading: STORED },
+        props: { ...STORED_PROPS, heading: TYPED },
       });
       const after = page.render();
       expect(after.hiddenSlots).toEqual([]);
