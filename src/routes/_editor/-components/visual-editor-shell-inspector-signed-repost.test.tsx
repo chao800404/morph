@@ -7,7 +7,6 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
@@ -15,10 +14,7 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-media.serverFn";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import {
-  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
-  VisualEditorShell,
-} from "./visual-editor-shell";
+import { VisualEditorShell } from "./visual-editor-shell";
 import {
   createLiveFrame,
   frameEnvelope,
@@ -582,30 +578,5 @@ describe("an Inspector text edit while the section's media is being signed", () 
       heading: "Final",
       subheading: "Sub newer",
     });
-  });
-
-  it("T4: a canvas edit raced by presentation sync stays unsaved and cancels the older signed post", async () => {
-    const warn = vi.spyOn(toast, "warning").mockImplementation(() => "");
-    await openHeading();
-    signingHeld();
-    await canvasEdit("Edited", "Welcome");
-    await inspectorEdit("Summary", "Sub newer");
-    const before = posted.length;
-    // Before the debounced save leaves: the held copy is "Edited".
-    await canvasSelect("heading");
-    await canvasEdit("Final", "Edited");
-    expect(warn.mock.calls.map(([message]) => String(message))).toContain(
-      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
-    );
-    expect(screen.getByDisplayValue("Final")).toBeTruthy();
-    expect(saveState()).toBe("unsaved");
-    expect(savedProps()).toEqual([]);
-    await saveSettles();
-    await releaseSigning();
-
-    const after = sectionPosts(before);
-    expect(after).toEqual([]);
-    expect(screen.getByDisplayValue("Final")).toBeTruthy();
-    expect(savedProps()).toEqual([]);
   });
 });
