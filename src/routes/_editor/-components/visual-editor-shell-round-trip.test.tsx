@@ -527,6 +527,16 @@ function editorHolding(
   };
 }
 
+/** Said when an unanswered write is not resent because the source moved. */
+const UNANSWERED_SOURCE_MOVED =
+  "The source code has changed, so an unanswered save was not sent again. Select the field again. Your changes are kept.";
+/** Said when a resend was refused as out of date and was not this write's. */
+const UNANSWERED_RESEND_REFUSED =
+  "This section changed elsewhere, so the save sent again was refused. Your changes are kept; load the latest version to continue.";
+/** Said when an unanswered write read back as moved is not sent again. */
+const UNANSWERED_DOCUMENT_MOVED =
+  "This section changed elsewhere since an unanswered save, so it was not sent again. Load the latest version to continue.";
+
 /** The header's own marker, which outlives the toast. */
 const saveStatus = () =>
   document
@@ -778,7 +788,12 @@ describe("a content save that fails", () => {
             version: 1,
             sections: [
               ...context.templates[0]!.document.sections,
-              { id: "second", type: "hero", props: { heading: "Second" } },
+              {
+                id: "second",
+                type: "hero",
+                enabled: true,
+                props: { heading: "Second" },
+              },
             ],
           },
         },
@@ -848,36 +863,141 @@ describe("a content save that fails", () => {
     });
   });
 
-  it("keeps an unanswered write tracked when the readback does not show it", async () => {
+  it("resends an unanswered write once, at its frozen basis, when the readback does not show it", async () => {
     updateSectionProps
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue({
         success: true,
         data: { draftGeneration: 2, droppedProps: [] },
       } as never);
-    getThemeEditor.mockResolvedValue(editorHolding({}));
+    // The server still holds the section as it was, at the same generation.
+    getThemeEditor.mockResolvedValue(editorHolding({}, 1));
     renderShell();
     await commitInlineText();
     await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const first = updateSectionProps.mock.calls[0]![0].data;
     getThemeEditor.mockClear();
 
     act(() => {
       screen.getByRole("button", { name: "Try again" }).click();
     });
 
-    await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
-    // The same-generation read proves the write did not land. Retry that
-    // frozen payload once at its original generation; CAS makes a late
-    // original request lose if this resend wins.
-    expect(getThemeEditor).toHaveBeenCalled();
+    // Not landed at its own generation: sent once more, exactly as first
+    // sent (Task 35 rule), and only once the read has answered.
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
-    expect(updateSectionProps.mock.calls[1]![0].data).toMatchObject({
-      props: { heading: "Hello" },
-      expectedDraftGeneration: 1,
+    expect(getThemeEditor).toHaveBeenCalled();
+    const resent = updateSectionProps.mock.calls[1]![0].data;
+    expect(resent).toMatchObject({
+      sectionId: first.sectionId,
+      props: first.props,
+      expectedDraftGeneration: first.expectedDraftGeneration,
+      expectedSourceGeneration: first.expectedSourceGeneration,
     });
+    expect(first.expectedDraftGeneration).toBe(1);
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    expect(
+      document
+        .querySelector("[data-editor-unconfirmed-saves]")
+        ?.getAttribute("data-editor-unconfirmed-saves") ?? null,
+    ).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps, "and never a third time").toHaveBeenCalledTimes(
+      2,
+    );
+  });
+
+  it("releases the hold and keeps the input as out of date when the resend is refused as moved", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const secondNode = {
+      ...heroNode,
+      id: "second:node:heading",
+      sectionId: "second",
+      target: {
+        ...heroNode.target,
+        sectionId: "second",
+        nodeId: "second:node:heading",
+      },
+    };
+    const twoSectionContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0]!,
+          draftGeneration: 1,
+          document: {
+            version: 1,
+            sections: [
+              ...context.templates[0]!.document.sections,
+              {
+                id: "second",
+                type: "hero",
+                enabled: true,
+                props: { heading: "Second" },
+              },
+            ],
+          },
+        },
+      ],
+    } as StorefrontThemeEditorDTO;
+    updateSectionProps
+      .mockRejectedValueOnce(new Error("offline"))
+      // The resend at the frozen basis: the document moved after the read.
+      .mockResolvedValueOnce({
+        success: false,
+        error: "TEMPLATE_DRAFT_CONFLICT",
+        message: "Template draft was modified concurrently.",
+      } as never)
+      .mockResolvedValue({
+        success: true,
+        data: { draftGeneration: 3, droppedProps: [] },
+      } as never);
+    // The read shows the write not landed, at the generation it was sent at.
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: twoSectionContext,
+    });
+    renderShell(readyQueryClient(), twoSectionContext);
+
+    await commitInlineText("Mine", "Welcome");
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const before = error.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    // Round 4 R4-3(a): exactly one message for the press, after read-back.
+    expect(
+      error.mock.calls.slice(before).map((call) => String(call[0])),
+    ).toEqual([UNANSWERED_RESEND_REFUSED]);
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
     expect(
       document.querySelector("[data-editor-unconfirmed-saves]"),
+      "the refusal proves the original can no longer land: not held again",
     ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
+    const said = error.mock.calls.map((call) => String(call[0]));
+    // Round 3 R3-3: it was sent again, and refused; read back once more it
+    // is not this write's step. The message says what happened.
+    expect(said).toContain(UNANSWERED_RESEND_REFUSED);
+    expect(said).not.toContainEqual(expect.stringContaining("not sent again"));
+    expect(said).not.toContain(
+      "An earlier save is still unresolved. Check again before trying other changes.",
+    );
+
+    // Other sections are not held behind it.
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [secondNode],
+    });
+    const row = await screen.findByText("h1");
+    act(() => row.closest("button")?.click());
+    sendInlineCommit("Second edited", "Second", undefined, "second");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(3));
+    expect(updateSectionProps.mock.calls[2]![0].data).toMatchObject({
+      sectionId: "second",
+      props: { heading: "Second edited" },
+    });
   });
 
   it("does not send again a write that landed when its answer was lost", async () => {
@@ -1177,14 +1297,18 @@ describe("a list both writers changed", () => {
         expect.stringMatching(/items also changed elsewhere/),
       ),
     );
+    // `items` is a declared list of a section on this page, so its own
+    // discard control is the way out, and the message names it without a
+    // hedge (Task 41 31-B). No generic Discard mine is offered for it.
     expect(error).toHaveBeenCalledWith(
-      // A generic Discard mine action no longer exists; the path-specific
-      // control is available only when the selected Inspector exposes the
-      // declared array field, with a stay/reload fallback otherwise.
-      expect.stringMatching(
-        /list-specific discard control if the Inspector exposes one/,
+      expect.stringContaining(
+        'Select Featured and use "Discard unsaved changes to Items" beside the list in the Content panel',
       ),
     );
+    expect(error).not.toHaveBeenCalledWith(
+      expect.stringContaining("if the Inspector exposes one"),
+    );
+    expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(saveStatus()).toBe("Out of date");
 
@@ -1641,6 +1765,637 @@ describe("a list both writers changed", () => {
         name: /discard unsaved changes to related/i,
       }),
     ).toBeTruthy();
+  });
+
+  /**
+   * Task 41 (31-A, 31-C): one declared list, a second section to move the
+   * Inspector to, and a hidden one whose Content the panel refuses, which
+   * unmounts the Inspector.
+   */
+  function declaredListFixture() {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const template = (items: unknown, generation: number) => ({
+      ...context.templates[0],
+      draftGeneration: generation,
+      document: {
+        version: 1,
+        sections: [
+          {
+            id: "hero",
+            name: "Featured",
+            type: "hero",
+            enabled: true,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Welcome", items },
+          },
+          {
+            id: "other",
+            name: "Other",
+            type: "hero",
+            enabled: true,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Other", items: rows("X") },
+          },
+          {
+            id: "gone",
+            name: "Gone",
+            type: "hero",
+            enabled: false,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Gone", items: rows("G") },
+          },
+        ],
+      },
+    });
+    const listContext = {
+      ...context,
+      templates: [template(rows("A", "B"), 1)],
+    } as unknown as StorefrontThemeEditorDTO;
+    const remoteWith = (items: unknown, generation: number) => ({
+      success: true,
+      message: "ok",
+      data: { ...listContext, templates: [template(items, generation)] },
+    });
+    const source = `export const contentFields = {
+        heading: { type: "text", label: "Heading" },
+        items: { type: "array", label: "Items", fields: { title: { type: "text", label: "Title" } } },
+      } as const;
+      export function Hero({ heading = "Welcome", items = [] }) {
+        return <section><h1>{heading}</h1>{items.map((item) => <p key={item.id}>{item.title}</p>)}</section>;
+      }`;
+    return { rows, listContext, remoteWith, client: readyQueryClient(), source };
+  }
+
+  async function openSection(name: string | RegExp) {
+    fireEvent.click(screen.getByRole("button", { name }));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
+  }
+
+  /** Add, refused as moved, then Load latest, keep mine: a list conflict. */
+  async function conflictOnAdd(
+    client: QueryClient,
+    remote: unknown,
+    sentBefore: number,
+  ) {
+    updateSectionProps.mockResolvedValueOnce({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    getThemeEditor.mockResolvedValue(remote as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remote as never,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() =>
+      expect(updateSectionProps).toHaveBeenCalledTimes(sentBefore + 1),
+    );
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    act(() =>
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
+    );
+  }
+
+  /** Discards the items list through its own control; returns the dialog text. */
+  async function discardItems() {
+    act(() =>
+      screen
+        .getByRole("button", { name: /discard unsaved changes to items/i })
+        .click(),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    const text = dialog.textContent ?? "";
+    act(() =>
+      screen
+        .getByRole("button", { name: "Discard list changes and load latest" })
+        .click(),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    return text;
+  }
+
+  const removeButtons = () =>
+    screen.queryAllByRole("button", { name: "Remove" });
+
+  it("applies a second discard in the same session, with the Inspector mounted throughout", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const view = renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+    expect(removeButtons()).toHaveLength(2);
+
+    // First conflict: the other writer added C in front.
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 0);
+    await discardItems();
+    await waitFor(() => expect(removeButtons()).toHaveLength(3));
+
+    // Second conflict on the same list: the other writer left only Z.
+    const sent = updateSectionProps.mock.calls.length;
+    const latest = remoteWith(rows("Z"), 9);
+    await conflictOnAdd(client, latest, sent);
+    await discardItems();
+    // The panel shows the latest list, not the author's discarded rows.
+    await waitFor(() => expect(removeButtons()).toHaveLength(1));
+    const inspectorAdd = screen.getByRole("button", { name: "Add entry" });
+
+    // The route's data catches up with the read, as its loader does after a
+    // refetch (this harness holds `context` fixed otherwise). The Inspector
+    // stays mounted through it.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={latest.data as unknown as StorefrontThemeEditorDTO}
+          search={{ ...baseSearch, section: "hero" }}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    await flushFrames();
+    expect(screen.getByRole("button", { name: "Add entry" })).toBe(inspectorAdd);
+    expect(removeButtons()).toHaveLength(1);
+
+    // And the next edit is made on it: Z plus the new row, never C, A, B.
+    updateSectionProps.mockResolvedValueOnce({
+      success: true,
+      data: { draftGeneration: 10, droppedProps: [] },
+    } as never);
+    const before = updateSectionProps.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() =>
+      expect(updateSectionProps).toHaveBeenCalledTimes(before + 1),
+    );
+    const last = updateSectionProps.mock.calls.at(-1)![0].data;
+    const items = last.props.items as Array<{ id?: string; title?: string }>;
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ id: "z", title: "Z" });
+    expect(last).toMatchObject({ expectedDraftGeneration: 9 });
+  });
+
+  it("keeps a row added after a discard across a real Inspector unmount and remount", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 0);
+    await discardItems();
+    await waitFor(() => expect(removeButtons()).toHaveLength(3));
+
+    // The Add lands, and the editor's document (what a fresh Inspector mount
+    // reads) holds it, as the route's data does once it is refetched.
+    updateSectionProps.mockImplementationOnce(async ({ data }) => {
+      const stored = listContext.templates[0]!.document.sections.find(
+        (candidate) => candidate.id === data.sectionId,
+      );
+      if (stored) Object.assign(stored.props, data.props);
+      return { success: true, data: { draftGeneration: 8, droppedProps: [] } };
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(removeButtons()).toHaveLength(4));
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+    );
+
+    // A hidden section opens no Content: the Inspector is unmounted.
+    const addBefore = screen.getByRole("button", { name: "Add entry" });
+    await openSection(/^Gone/);
+    expect(screen.queryByRole("button", { name: "Add entry" })).toBeNull();
+    await openSection("Featured");
+    const addAfter = screen.getByRole("button", { name: "Add entry" });
+    expect(addAfter, "a fresh mount").not.toBe(addBefore);
+    expect(removeButtons()).toHaveLength(4);
+  });
+
+  // Task 41 R2-3 (the brief's rule): only a list write whose outcome was
+  // unknown and was later confirmed landed is named; an ordinary answered
+  // write is just saved, and the dialog says nothing about it. This replaces
+  // the round-1 test that expected the line after an answered write.
+  it("says nothing of a saved change after an ordinary answered list write", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+
+    // The first Add is answered, as the server answers, with the document
+    // it now holds: it landed and is saved.
+    updateSectionProps.mockImplementationOnce(async ({ data }) => ({
+      success: true,
+      data: {
+        draftGeneration: data.expectedDraftGeneration + 1,
+        droppedProps: [],
+        document: {
+          version: 1,
+          sections: listContext.templates[0]!.document.sections.map(
+            (section) =>
+              section.id === data.sectionId
+                ? { ...section, props: { ...section.props, ...data.props } }
+                : section,
+          ),
+        },
+      },
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+    );
+
+    // The second Add meets the other writer's change to the same list.
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B", "N"), 7), 1);
+    const text = await discardItems();
+    expect(text).not.toMatch(/A saved change is not undone/);
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+  });
+
+  it("says a saved change is not undone when an unanswered list write was later found landed", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+
+    // The first Add gets no answer: its outcome is unknown.
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const sentItems = updateSectionProps.mock.calls[0]![0].data.props.items;
+
+    // The read-back finds it stored, one generation on: it landed.
+    getThemeEditor.mockResolvedValue(remoteWith(sentItems, 2) as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remoteWith(sentItems, 2) as never,
+    );
+    act(() => screen.getByRole("button", { name: "Try again" }).click());
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-editor-unconfirmed-saves]"),
+      ).toBeNull(),
+    );
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    expect(updateSectionProps, "landed: not sent again").toHaveBeenCalledTimes(
+      1,
+    );
+
+    // The next Add meets the other writer's change to the same list.
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B", "N"), 7), 1);
+    const text = await discardItems();
+    expect(text).toMatch(/A saved change is not undone/);
+    // Only the unsaved change was dropped; nothing was written to undo the
+    // saved one.
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+  });
+
+  // Task 41 R2-1: section ids are unique only within a document. Two pages
+  // each with a "hero" whose items both writers changed: discarding on one
+  // page discards that page's list only, and never pours the other page's
+  // latest rows into the Inspector.
+  it("discards the list of the page it is pressed on, not a same-id section's on another page", async () => {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const page = (
+      id: string,
+      type: string,
+      name: string,
+      items: unknown,
+      generation: number,
+    ) => ({
+      ...context.templates[0],
+      id,
+      type,
+      name,
+      draftGeneration: generation,
+      document: {
+        version: 1,
+        sections: [
+          {
+            id: "hero",
+            name: "Featured",
+            type: "hero",
+            enabled: true,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Welcome", items },
+          },
+        ],
+      },
+    });
+    const pages = (
+      home: unknown,
+      homeGeneration: number,
+      about: unknown,
+      aboutGeneration: number,
+    ) =>
+      ({
+        ...context,
+        templates: [
+          page("template-1", "index", "Home", home, homeGeneration),
+          page("template-2", "page", "About", about, aboutGeneration),
+        ],
+      }) as unknown as StorefrontThemeEditorDTO;
+    const { source } = declaredListFixture();
+    const client = readyQueryClient();
+    const start = pages(rows("A", "B"), 1, rows("A", "B"), 1);
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const refuse = () =>
+      updateSectionProps.mockResolvedValueOnce({
+        success: false,
+        message: "Template draft was modified concurrently.",
+        error: "TEMPLATE_DRAFT_CONFLICT",
+      } as never);
+    const view = renderShellWithHero(source, "hero", start, client);
+    const show = (search: StorefrontThemeEditorSearch) =>
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <VisualEditorShell
+            context={start}
+            search={search}
+            onSearchChange={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    const home = { ...baseSearch, section: "hero" };
+    const about = {
+      ...baseSearch,
+      template: "page",
+      templateId: "template-2",
+      section: "hero",
+    } as StorefrontThemeEditorSearch;
+
+    // Home's Add, refused: home's draft is held.
+    await openSection("Featured");
+    refuse();
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(updateSectionProps.mock.calls[0]![0].data.templateId).toBe(
+      "template-1",
+    );
+
+    // About's Add, refused: about's draft is held too.
+    show(about);
+    await flushFrames();
+    await openSection("Featured");
+    refuse();
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(updateSectionProps.mock.calls[1]![0].data.templateId).toBe(
+      "template-2",
+    );
+
+    // Both pages' lists were changed elsewhere: home put C first, about Q.
+    const latest = {
+      success: true,
+      message: "ok",
+      data: pages(rows("C", "A", "B"), 7, rows("Q", "A", "B"), 5),
+    };
+    getThemeEditor.mockResolvedValue(latest as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      latest as never,
+    );
+    act(() =>
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
+    );
+
+    // Discarded on About: About's list is the latest About list.
+    await discardItems();
+    await waitFor(() => expect(screen.getByDisplayValue("Q")).toBeTruthy());
+    expect(screen.queryByDisplayValue("C")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /discard unsaved changes to items/i }),
+    ).toBeNull();
+
+    // Home's draft and its way out are still there.
+    show(home);
+    await flushFrames();
+    await openSection("Featured");
+    expect(
+      screen.getByRole("button", { name: /discard unsaved changes to items/i }),
+    ).toBeTruthy();
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+  });
+
+  // Task 41 R3-1: "Discard mine…" acts only on this page's documents. A list
+  // held on another page is discarded from that page, by its own control.
+  it("does not offer another page's held list in this page's Discard mine", async () => {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const page = (
+      id: string,
+      type: string,
+      name: string,
+      items: unknown,
+      generation: number,
+    ) => ({
+      ...context.templates[0],
+      id,
+      type,
+      name,
+      draftGeneration: generation,
+      document: {
+        version: 1,
+        sections: [
+          {
+            id: "hero",
+            name: "Featured",
+            type: "hero",
+            enabled: true,
+            componentRef: stylePatchTarget.filePath,
+            props: { heading: "Welcome", items },
+          },
+        ],
+      },
+    });
+    const pages = (home: unknown, homeGeneration: number) =>
+      ({
+        ...context,
+        templates: [
+          page("template-1", "index", "Home", home, homeGeneration),
+          page("template-2", "page", "About", rows("A", "B"), 1),
+        ],
+      }) as unknown as StorefrontThemeEditorDTO;
+    const { source } = declaredListFixture();
+    const client = readyQueryClient();
+    const start = pages(rows("A", "B"), 1);
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const view = renderShellWithHero(source, "hero", start, client);
+    const show = (search: StorefrontThemeEditorSearch) =>
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <VisualEditorShell
+            context={start}
+            search={search}
+            onSearchChange={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+
+    // Home's Add, refused, then read against Home's latest: a list conflict.
+    await openSection("Featured");
+    updateSectionProps.mockResolvedValueOnce({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    const latest = {
+      success: true,
+      message: "ok",
+      data: pages(rows("C", "A", "B"), 7),
+    };
+    getThemeEditor.mockResolvedValue(latest as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      latest as never,
+    );
+    act(() =>
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /discard unsaved changes to items/i }),
+      ).toBeTruthy(),
+    );
+
+    // On About, with a hero of its own: nothing of Home's is offered here.
+    show({
+      ...baseSearch,
+      template: "page",
+      templateId: "template-2",
+      section: "hero",
+    } as StorefrontThemeEditorSearch);
+    await flushFrames();
+    await openSection("Featured");
+    expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /discard unsaved changes to items/i }),
+    ).toBeNull();
+
+    // Back on Home, its own discard is the way out, and nothing was sent.
+    show({ ...baseSearch, section: "hero" });
+    await flushFrames();
+    await openSection("Featured");
+    expect(
+      screen.getByRole("button", { name: /discard unsaved changes to items/i }),
+    ).toBeTruthy();
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
+
+  // Task 41 R3-2: a hidden section's held list has exactly one exit.
+  it("offers only Discard mine for a held list of a section that is hidden now", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const view = renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+    const latest = remoteWith(rows("C", "A", "B"), 7);
+    latest.data.templates[0]!.document.sections[0]!.enabled = false;
+    await conflictOnAdd(client, latest, 0);
+
+    // The route's data catches up: the section is hidden now.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={latest.data as unknown as StorefrontThemeEditorDTO}
+          search={{ ...baseSearch, section: "hero" }}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    await flushFrames();
+    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /discard unsaved changes to/i }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Styles$/ }));
+    await flushFrames();
+    expect(
+      screen.queryByRole("button", { name: /discard unsaved changes to/i }),
+    ).toBeNull();
+  });
+
+  // Task 41 R3-5: an answered history step of the list is newer than the
+  // landed write it reverts; the discard no longer claims it as saved.
+  it("does not say a saved change is not undone once its step was undone", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const sentItems = updateSectionProps.mock.calls[0]![0].data.props.items;
+    getThemeEditor.mockResolvedValue(remoteWith(sentItems, 2) as never);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remoteWith(sentItems, 2) as never,
+    );
+    act(() => screen.getByRole("button", { name: "Try again" }).click());
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    const undo = screen.getByRole("button", { name: "Undo" }) as HTMLButtonElement;
+    await waitFor(() => expect(undo.disabled).toBe(false));
+
+    // Undone, and answered: the list is back as it was.
+    updateSectionProps.mockImplementationOnce(async ({ data }) => ({
+      success: true,
+      data: {
+        draftGeneration: data.expectedDraftGeneration + 1,
+        droppedProps: [],
+        document: {
+          version: 1,
+          sections: listContext.templates[0]!.document.sections.map(
+            (section) =>
+              section.id === data.sectionId
+                ? { ...section, props: { ...section.props, ...data.props } }
+                : section,
+          ),
+        },
+      },
+    }));
+    fireEvent.click(undo);
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+    );
+
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 2);
+    const text = await discardItems();
+    expect(text).not.toMatch(/A saved change is not undone/);
+  });
+
+  it("does not say a saved change is not undone when nothing of the list was saved", async () => {
+    const { rows, listContext, remoteWith, client, source } =
+      declaredListFixture();
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShellWithHero(source, "hero", listContext, client);
+    await openSection("Featured");
+    await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 0);
+    const text = await discardItems();
+    expect(text).not.toMatch(/A saved change is not undone/);
   });
 });
 
@@ -2248,6 +3003,61 @@ describe("source refusal recovery contract", () => {
     );
     expect(request(0).expectedSourceGeneration).toBe(1);
     expect(screen.getByDisplayValue("Unanswered heading")).toBeTruthy();
+  });
+
+  it("releases an unanswered write when the source moved, sends nothing, and saves once the field is reselected and edited", async () => {
+    // Round 3 R3-2: the source moved after the unanswered write was sent
+    // (here, as when held Theme files are saved before content). Try again
+    // reads it back not landed, sends nothing at the old source, releases
+    // the hold and keeps the input pending for reselection, as a first
+    // send refused by the source is. Not out of date: "Load latest, keep
+    // mine" could not save it. The way out is the reselect one.
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    getThemeEditor.mockResolvedValue(
+      editorHolding({ heading: "Welcome", subheading: "Summary" }, 1),
+    );
+    await openFields();
+    input("Welcome", "Unanswered heading");
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    expect(
+      updateSectionProps,
+      "nothing sent at the old source",
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+      "the hold is released",
+    ).toBeNull();
+    const said = error.mock.calls.map((call) => String(call[0]));
+    expect(said).toContain(UNANSWERED_SOURCE_MOVED);
+    expect(saveStatus()).not.toBe("Out of date");
+    expect(
+      screen.queryByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeNull();
+    expect(screen.getByDisplayValue("Unanswered heading")).toBeTruthy();
+
+    // The author's way out: reselect the field and make the change again.
+    await reselect();
+    input("Unanswered heading", "Confirmed heading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(request(1).expectedSourceGeneration).toBe(2);
+    expect(request(1).props).toEqual({ heading: "Confirmed heading" });
+    await waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-editor-save-status]")
+          ?.getAttribute("data-save-state"),
+      ).toBe("saved"),
+    );
   });
 
   it("uses a preview-confirmed source even if Code has not accepted it", async () => {
@@ -4938,6 +5748,7 @@ function Home() {
     const { rerender } = render(shell(editorContext));
     if (document.querySelector("iframe")) liveFrame.ready();
     return {
+      client,
       receive: (next: StorefrontThemeEditorDTO) => rerender(shell(next)),
     };
   }
@@ -5865,6 +6676,91 @@ function Home() {
       expect(panelTitles()).toEqual(["One", "Three"]);
     });
 
+    // Task 41 R4-1: the copy an unanswered write was composed on is let go
+    // when the write ends any way at all. Left behind by a refused resend, it
+    // was read later as the basis of the list reset that undid the next Add,
+    // and the reset (found landed) was not named as a saved change.
+    it("names a list reset found landed by its own basis, not by an earlier refused write's (R4-1)", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      vi.spyOn(toast, "warning").mockImplementation(() => "");
+      getThemeEditor.mockImplementation(async () => ({
+        success: true,
+        message: "ok",
+        data: editorAt({ ...stored }, draftGeneration),
+      }));
+      const write = updateSectionProps.getMockImplementation()!;
+      const tryAgain = async () => {
+        fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+        await settle();
+      };
+      const { receive, client } = await openSection({});
+
+      // The first Add gets no answer, and did not land.
+      updateSectionProps.mockImplementationOnce(async () => {
+        throw new Error("offline");
+      });
+      await addEntry();
+      expect(saveStatus()).toBe("Save failed");
+      // Read back not landed, resent, and refused by an answer.
+      updateSectionProps.mockImplementationOnce(
+        async () =>
+          ({
+            success: false,
+            error: "CONTENT_INVALID",
+            message: "Refused.",
+          }) as never,
+      );
+      await tryAgain();
+      expect(stored).not.toHaveProperty("items");
+      // Sent once more, and stored.
+      await tryAgain();
+      expect((stored.items as unknown[]).length).toBe(3);
+      await reread(receive);
+
+      // Undo is a reset of the list (it was stored by nothing before). It
+      // lands, and its answer is lost.
+      updateSectionProps.mockImplementationOnce(async (args) => {
+        await write(args);
+        throw new Error("offline");
+      });
+      await undo();
+      expect(stored).not.toHaveProperty("items");
+      // Read back: landed, a saved change of the list.
+      await tryAgain();
+      await reread(receive);
+
+      // The next Add meets another writer's list; the author discards it.
+      updateSectionProps.mockImplementationOnce(
+        async () =>
+          ({
+            success: false,
+            error: "TEMPLATE_DRAFT_CONFLICT",
+            message: "Template draft was modified concurrently.",
+          }) as never,
+      );
+      await addEntry();
+      stored = { ...stored, items: [{ id: "x", title: "X" }] };
+      draftGeneration += 1;
+      client.setQueryData(
+        storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+        {
+          success: true,
+          message: "ok",
+          data: editorAt({ ...stored }, draftGeneration),
+        } as never,
+      );
+      act(() =>
+        screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+      );
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: /discard unsaved changes to entries/i,
+        }),
+      );
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog.textContent).toMatch(/A saved change is not undone/);
+    });
+
     it("undo of the first Add stores nothing again, and redo writes the added list back with the same ids", async () => {
       const notice = notices();
       const { receive } = await openSection({});
@@ -6402,10 +7298,23 @@ function Home() {
           );
         });
 
-        it("keeps tracking when the late original wins the compare-and-swap race", async () => {
+        it("confirms a resend refused as out of date when the late original won the compare-and-swap race", async () => {
+          // Round 3 R3-3 (the user's rule: landed is confirmed). The resend's
+          // refusal proves only that the Document moved; read back once more
+          // with the frozen write, one generation on with its content, it is
+          // this write's own step: confirmed, recorded once, no conflict.
+          // (Before, this took it as moved, said "not sent again" for a
+          // write that was sent, and lost the step from history.)
+          const notice = notices();
           await lostOrdinaryWrite();
           const original = sent()[0]!;
           serverHolds({ ...STORED }, 1);
+          // Every read answers what the server holds when it is read.
+          getThemeEditor.mockImplementation(async () => ({
+            success: true,
+            message: "ok",
+            data: editorAt({ ...stored }, draftGeneration),
+          }));
           answerNext.push((retry) => {
             const originalAnswer = apply(original);
             expect(originalAnswer).toMatchObject({ success: true });
@@ -6421,22 +7330,192 @@ function Home() {
           });
           expect(stored).toEqual({ heading: "New" });
           expect(draftGeneration).toBe(2);
+          expect(unconfirmedCount(), "not held again").toBeNull();
+          expect(saveStatus()).not.toBe("Out of date");
           expect(
-            unconfirmedCount(),
-            "the original outcome still needs read-back",
-          ).toBe("1");
-          expect(depth()).toBe("0");
-
-          serverHolds({ heading: "New" }, 2);
-          await checkAndSave();
-
-          expect(
-            sent(),
-            "the late original is never sent a third time",
-          ).toHaveLength(2);
-          expect(unconfirmedCount()).toBeNull();
+            screen.queryByRole("button", { name: "Load latest, keep mine" }),
+          ).toBeNull();
+          expect(errors(notice)).not.toContainEqual(
+            expect.stringContaining("changed elsewhere"),
+          );
+          // Round 4 R4-3(a): the resend's refusal is read back before the
+          // author is told anything: no conflict toast for a landed write.
+          expect(errors(notice)).not.toContain(
+            "Template draft was modified concurrently.",
+          );
           expect(depth(), "the landed edit is recorded once").toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
+          await settle();
+          expect(sent(), "and never sent a third time").toHaveLength(2);
+
+          await undo();
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
+            props: { heading: "Hello" },
+            expectedDraftGeneration: 2,
+          });
+          expect(stored).toEqual({ heading: "Hello" });
+          expect(depth()).toBe("0");
+        });
+
+        it("reads again after its resend's refusal without cancelling a read already in flight", async () => {
+          // Round 5 R5-1: a read of the Theme already out when the refusal
+          // comes back was asked before it. The answer that decides is one
+          // asked for after the refusal, and the earlier read's own awaiter
+          // still gets its answer (it is not cancelled).
+          const notice = notices();
+          const { client } = await lostOrdinaryWrite();
+          const original = sent()[0]!;
+          serverHolds({ ...STORED }, 1);
+          const live = async () => ({
+            success: true,
+            message: "ok",
+            data: editorAt({ ...stored }, draftGeneration),
+          });
+          let answerEarlier!: (value: unknown) => void;
+          let earlier: Promise<unknown> | undefined;
+          answerNext.push((retry) => {
+            getThemeEditor.mockImplementation(live);
+            getThemeEditor.mockImplementationOnce(
+              () =>
+                new Promise((resolve) => {
+                  answerEarlier = resolve;
+                }),
+            );
+            // Asked before the refusal, as the route's own reads are.
+            earlier = client.fetchQuery({
+              ...storefrontThemeQueries.detail("storefront-1", "theme-1"),
+              staleTime: 0,
+            });
+            // The late original lands; the resend is refused as out of date.
+            expect(apply(original)).toMatchObject({ success: true });
+            return apply(retry);
+          });
+
+          fireEvent.click(
+            await screen.findByRole("button", { name: "Check and save" }),
+          );
+          await waitFor(() => expect(unconfirmedCount()).toBeNull());
+          await settle();
+
+          expect(sent()).toHaveLength(2);
+          expect(stored).toEqual({ heading: "New" });
+          // Decided by the read after the refusal: landed, recorded once.
+          expect(depth(), "confirmed by the newer read").toBe("1");
+          expect(saveStatus()).not.toBe("Out of date");
+          expect(errors(notice)).not.toContainEqual(
+            expect.stringContaining("changed elsewhere"),
+          );
+          // The earlier read is answered as it was asked: not cancelled (a
+          // cancelled read hands its awaiter the cache's older answer, or
+          // CancelledError when there is none).
+          act(() =>
+            answerEarlier({
+              success: true,
+              message: "earlier read",
+              data: editorAt({ ...STORED }, 1),
+            }),
+          );
+          await expect(earlier).resolves.toMatchObject({
+            success: true,
+            message: "earlier read",
+          });
+        });
+
+        it("keeps the write held when the read after its resend's refusal gets no answer", async () => {
+          // Round 4 R4-5: the refusal proves the Document moved; whether the
+          // original landed is still unknown until a read answers.
+          const notice = notices();
+          await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+          answerNext.push(() => ({
+            success: false,
+            error: "TEMPLATE_DRAFT_CONFLICT",
+            message: "Template draft was modified concurrently.",
+          }));
+          getThemeEditor
+            .mockResolvedValueOnce({
+              success: true,
+              message: "ok",
+              data: editorAt({ ...STORED }, 1),
+            })
+            .mockRejectedValueOnce(new Error("offline"));
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount(), "still unknown: held").toBe("1");
+          expect(saveStatus()).toBe("Save failed");
+          expect(errors(notice)).toContain(
+            "An earlier save is still unresolved. Check again before trying other changes.",
+          );
+          expect(errors(notice)).not.toContainEqual(
+            expect.stringContaining("changed elsewhere"),
+          );
+          expect(depth()).toBe("0");
+        });
+
+        it("does not send in the same press a write read back as moved", async () => {
+          // Round 3 R3-1(a): a write the read-back just took as moved (here:
+          // the section is not in the Document at its own generation) is out
+          // of date; the same Try again does not send its input anyway.
+          const notice = notices();
+          await lostOrdinaryWrite();
+          const read = editorAt({ ...STORED }, 1);
+          getThemeEditor.mockResolvedValue({
+            success: true,
+            message: "ok",
+            data: {
+              ...read,
+              templates: [
+                {
+                  ...read.templates[0]!,
+                  document: { version: 1, sections: [] },
+                },
+              ],
+            } as StorefrontThemeEditorDTO,
+          });
+
+          await checkAndSave();
+
+          expect(errors(notice)).toContain(UNANSWERED_DOCUMENT_MOVED);
+          expect(sent(), "not sent again, as the message says").toHaveLength(1);
+          expect(unconfirmedCount()).toBeNull();
+          expect(saveStatus()).toBe("Out of date");
+        });
+
+        it("does not hold a resend the server refused for another reason, and says why", async () => {
+          const notice = notices();
+          await lostOrdinaryWrite();
+          serverHolds({ ...STORED }, 1);
+          answerNext.push(() => ({
+            success: false,
+            error: "REFUSED_BY_MOCK",
+            message: "The mock refused the resend.",
+          }));
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(2);
+          expect(unconfirmedCount(), "an answer: not held again").toBeNull();
+          expect(saveStatus()).toBe("Save failed");
+          expect(errors(notice)).toContain("The mock refused the resend.");
+          expect(errors(notice)).not.toContain(
+            "An earlier save is still unresolved. Check again before trying other changes.",
+          );
+          expect(stored).toEqual({ ...STORED });
+
+          // Not held forever: the next Try again sends the kept input.
+          fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+          await settle();
+          expect(sent()).toHaveLength(3);
+          expect(sent()[2]).toMatchObject({
+            props: { heading: "New" },
+            expectedDraftGeneration: 1,
+          });
+          expect(stored).toEqual({ heading: "New" });
+          expect(unconfirmedCount()).toBeNull();
+          expect(depth(), "recorded once").toBe("1");
         });
 
         it("two simultaneous recovery actions settle one landed write while newer input remains pending", async () => {
@@ -7094,6 +8173,67 @@ function Home() {
             expect(stored).toEqual(now);
           });
         }
+
+        it("not landed, its resend refused for another reason: the run fails with the reason and stays, nothing reads as Save failed, Undo runs it afresh", async () => {
+          // Round 4 R4-1 (R3-6 kept: the reset branch's refusal is handled as
+          // an ordinary resend's is). Refused by an answer, it did not land:
+          // nothing is kept to resend, its entry stays to run again.
+          const { added } = await lostResetUndo();
+          serverHolds({ ...STORED, items: added }, 2);
+          answerNext.push(() => ({
+            success: false,
+            error: "REFUSED_BY_MOCK",
+            message: "The mock refused the resend.",
+          }));
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(3);
+          expect(shape(sent()[2]!)).toEqual(resetUndo(2));
+          expect(unconfirmedCount(), "an answer: not held").toBeNull();
+          expect(saveStatus(), "nothing is pending").not.toBe("Save failed");
+          expect(historyButtons(), "the run has not moved").toEqual({
+            undo: true,
+            redo: false,
+          });
+          await settle();
+          expect(sent(), "nothing is sent by itself").toHaveLength(3);
+
+          await undo();
+
+          expect(sent(), "a fresh attempt").toHaveLength(4);
+          expect(shape(sent()[3]!)).toEqual(resetUndo(2));
+          expect(stored).toEqual({ ...STORED });
+          expect(historyButtons(), "the run completed once").toEqual({
+            undo: false,
+            redo: true,
+          });
+        });
+
+        it("a run's resend refused for another reason does not hold back input typed meanwhile in the same section", async () => {
+          // Round 5 R5-2: the refused write is the run's, not the input's.
+          // Input typed while the run was unanswered is the author's own and
+          // goes in the same press; nothing reads as a failed save of it.
+          const { added } = await lostResetUndo();
+          await type("Hello", "Typed later");
+          await settle();
+          expect(sent(), "the input is held behind the run").toHaveLength(2);
+          serverHolds({ ...STORED, items: added }, 2);
+          answerNext.push(() => ({
+            success: false,
+            error: "REFUSED_BY_MOCK",
+            message: "The mock refused the resend.",
+          }));
+
+          await checkAndSave();
+
+          expect(sent()).toHaveLength(4);
+          expect(shape(sent()[2]!)).toEqual(resetUndo(2));
+          expect(sent()[3]!.props).toEqual({ heading: "Typed later" });
+          expect(stored).toMatchObject({ heading: "Typed later" });
+          expect(unconfirmedCount()).toBeNull();
+          expect(saveStatus()).not.toBe("Save failed");
+        });
 
         it("read failed: nothing sent, the record and the history unchanged", async () => {
           await lostResetUndo();
@@ -8210,11 +9350,26 @@ function Home() {
         expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
       });
 
-      it("does not record a generic Content history entry when read-back confirms a reorder", async () => {
+      // Task 41 29-B (the user's decision): a reorder confirmed by read-back
+      // or by an answered resend records exactly what an answered drag
+      // records — its own "Reorder · item" entry, once — and its Undo
+      // reverts exactly that swap. (Before, this pinned Undo disabled.)
+      const undoDepth = () =>
+        document
+          .querySelector("[data-editor-undo-depth]")
+          ?.getAttribute("data-editor-undo-depth") ?? null;
+      const undoEnabled = () =>
+        !screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled");
+      const redoEnabled = () =>
+        !screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled");
+
+      it("records the reorder once when read-back confirms it, and Undo reverts exactly that swap", async () => {
+        const { warning, error } = notices();
         const { one, two } = await dragWithLostAnswer();
-        expect(
-          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
-        ).toBe(true);
+        expect(undoEnabled()).toBe(false);
+        // It landed; only its answer was lost.
+        stored = { items: [two, one] };
+        draftGeneration = 2;
         getThemeEditor.mockResolvedValue(readBack({ items: [two, one] }, 2));
 
         fireEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -8225,9 +9380,156 @@ function Home() {
           ).toBeNull(),
         );
         expect(sent()).toHaveLength(1);
+        expect(undoDepth(), "recorded once").toBe("1");
+        expect(undoEnabled()).toBe(true);
+        await settle();
+        expect(undoDepth(), "and only once").toBe("1");
+
+        fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+        await settle();
+
+        expect(warning).not.toHaveBeenCalled();
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1]).toMatchObject({
+          props: { items: [one, two] },
+          expectedDraftGeneration: 2,
+        });
+        expect(stored.items).toEqual([one, two]);
+        expect(undoDepth()).toBe("0");
+        expect(undoEnabled()).toBe(false);
+        expect(redoEnabled()).toBe(true);
+        expect(error).not.toHaveBeenCalledWith(
+          expect.stringContaining("changed elsewhere"),
+        );
+      });
+
+      // Round 4 R4-1: a reorder resend refused by an answer did not land:
+      // its own recorder is dropped, and the kept swap is an ordinary
+      // pending edit whose later save records an ordinary Content entry.
+      async function refusedReorderResend() {
+        notices();
+        const rows = await dragWithLostAnswer();
+        getThemeEditor.mockResolvedValue(
+          readBack({ items: [rows.one, rows.two] }, 1),
+        );
+        updateSectionProps.mockResolvedValueOnce({
+          success: false,
+          error: "REFUSED_BY_MOCK",
+          message: "The mock refused the resend.",
+        } as never);
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await settle();
+        expect(sent()).toHaveLength(2);
+        expect(saveStatus(), "the swap is still pending").toBe("Save failed");
+        expect(undoDepth()).toBe("0");
+        return rows;
+      }
+
+      it("a refused reorder resend, then Try again: the kept swap is saved as an ordinary edit, one Content entry", async () => {
+        const { one, two } = await refusedReorderResend();
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await settle();
+
+        expect(sent()).toHaveLength(3);
+        expect(sent()[2]).toMatchObject({ props: { items: [two, one] } });
+        expect(undoDepth(), "recorded once").toBe("1");
         expect(
-          screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
-        ).toBe(true);
+          screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
+        ).toBe("Undo Content");
+        expect(saveStatus()).not.toBe("Save failed");
+      });
+
+      it("a refused reorder resend, then a text edit saved: exactly one Content entry, no Reorder entry", async () => {
+        await refusedReorderResend();
+
+        await type("Two", "Two edited");
+        await settle();
+
+        expect(sent()).toHaveLength(3);
+        expect(undoDepth(), "one entry").toBe("1");
+        expect(
+          screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
+        ).toBe("Undo Content");
+      });
+
+      it("a refused reorder resend, then a text edit refused and sent by Try again: one Content entry, nothing of the reorder recorded", async () => {
+        // The review's scenario: nothing of the refused reorder is left to
+        // record when the section's input is later sent by Try again.
+        await refusedReorderResend();
+        updateSectionProps.mockResolvedValueOnce({
+          success: false,
+          error: "REFUSED_BY_MOCK",
+          message: "The mock refused the edit.",
+        } as never);
+        await type("Two", "Two edited");
+        await settle();
+        expect(sent()).toHaveLength(3);
+        expect(saveStatus()).toBe("Save failed");
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await settle();
+
+        expect(sent()).toHaveLength(4);
+        expect(undoDepth(), "one entry").toBe("1");
+        expect(
+          screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
+        ).toBe("Undo Content");
+      });
+
+      it("a second drag while the first is unanswered retires the section's history: the first, confirmed later, records nothing", async () => {
+        // Round 4 R4-4: retired by a real change. The second drag is held
+        // behind the unanswered first and rolled back, as a refused drag is;
+        // the answered path (first answered and recorded, second refused)
+        // ends with the first's entry retired too: depth 0.
+        notices();
+        const { one, two } = await dragWithLostAnswer();
+        drag(1, 0);
+        await settle();
+        expect(sent(), "the second drag is held").toHaveLength(1);
+        getThemeEditor.mockResolvedValue(readBack({ items: [one, two] }, 1));
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await settle();
+
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1]).toMatchObject({
+          props: { items: [two, one] },
+          expectedDraftGeneration: 1,
+        });
+        expect(undoDepth(), "as the answered path").toBe("0");
+      });
+
+      it("records the reorder once when its resend is answered, and Undo reverts exactly that swap", async () => {
+        const { warning } = notices();
+        const { one, two } = await dragWithLostAnswer();
+        // Not landed: the server still holds the first order.
+        getThemeEditor.mockResolvedValue(readBack({ items: [one, two] }, 1));
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await settle();
+
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1]).toMatchObject({
+          props: { items: [two, one] },
+          expectedDraftGeneration: 1,
+        });
+        expect(stored.items).toEqual([two, one]);
+        expect(undoDepth(), "recorded once").toBe("1");
+        expect(undoEnabled()).toBe(true);
+
+        fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+        await settle();
+
+        expect(warning).not.toHaveBeenCalled();
+        expect(sent()).toHaveLength(3);
+        expect(sent()[2]).toMatchObject({
+          props: { items: [one, two] },
+          expectedDraftGeneration: 2,
+        });
+        expect(stored.items).toEqual([one, two]);
+        expect(undoDepth()).toBe("0");
+        expect(redoEnabled()).toBe(true);
       });
     });
   });

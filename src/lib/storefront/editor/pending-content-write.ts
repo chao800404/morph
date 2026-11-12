@@ -108,6 +108,69 @@ export function contentEntryTouchesPath(
   ].some(touches);
 }
 
+/**
+ * Every path a frozen content write touches, with each list or object holding
+ * one: where its outcome-unknown status is shown. Built from the same overlap
+ * rule as `contentEntryTouchesPath`, the rule that refuses discarding a list
+ * while such a write is unanswered, so a list (nested ones included) is marked
+ * exactly when its discard is refused.
+ */
+export function contentEntryStatusPaths(entry: PendingContentEntry): string[] {
+  const paths = new Set<string>();
+  for (const path of [
+    ...(entry.listActionPaths ?? []),
+    ...Object.keys(entry.fields ?? {}),
+    ...(entry.resetProps ?? []),
+  ]) {
+    const segments = path.split(".");
+    for (let end = 1; end <= segments.length; end += 1) {
+      paths.add(segments.slice(0, end).join("."));
+    }
+  }
+  return [...paths].filter((path) => contentEntryTouchesPath(entry, path));
+}
+
+/**
+ * The top-level lists a write actually changed: its list actions, the lists
+ * its staged fields are in (a field is staged only when it changed), and,
+ * for a write staged without per-field snapshots, the lists that differ
+ * from the copy it was made on. Never every array the write carries, and,
+ * with no copy to compare with, only what the write itself names.
+ */
+export function changedListPaths(
+  entry: PendingContentEntry,
+  basis?: Readonly<Record<string, unknown>>,
+): string[] {
+  const lists = new Set<string>();
+  for (const path of entry.listActionPaths ?? []) {
+    const root = path.split(".")[0];
+    if (root) lists.add(root);
+  }
+  for (const path of Object.keys(entry.fields ?? {})) {
+    const root = path.split(".")[0];
+    if (root && Array.isArray(entry.props[root])) lists.add(root);
+  }
+  if (!entry.fields && basis) {
+    for (const [root, value] of Object.entries(entry.props)) {
+      if (Array.isArray(value) && !sameContent(value, basis[root])) {
+        lists.add(root);
+      }
+    }
+  }
+  for (const root of entry.resetProps ?? []) {
+    if (basis && Array.isArray(basis[root])) lists.add(root);
+  }
+  return [...lists];
+}
+
+/** The latest value of a list, at its (possibly nested) path, that a discard resets it to. */
+export function discardedListValue(
+  incoming: Record<string, unknown>,
+  fieldPath: string,
+): unknown {
+  return getFieldPathValue(incoming, fieldPath);
+}
+
 /** Whether one unanswered write belongs to the selected document and list. */
 export function hasUnconfirmedContentForList(args: {
   entries: Iterable<readonly [string, PendingContentEntry]>;
@@ -472,8 +535,16 @@ export function discardPendingContentPath(args: {
     const incomingValue = getFieldPathValue(incoming, fieldPath);
     if (incomingValue !== undefined)
       Object.assign(props, setFieldPathValue({}, fieldPath, incomingValue));
+    // Whole props, not per-field snapshots: what is left counts as the
+    // author's only where it differs from the version the discard leaves.
+    // Left holding nothing but that version, it is not a draft at all, and
+    // keeping it pending held the section out of date (Task 41).
+    const holdsChange = Object.entries(props).some(
+      ([key, value]) =>
+        !sameContent(value, key in baseline ? baseline[key] : incoming[key]),
+    );
     return {
-      pending: Object.keys(props).length > 0 ? { ...entry, props } : null,
+      pending: holdsChange ? { ...entry, props } : null,
       baseline,
     };
   }

@@ -399,6 +399,7 @@ type WriteRequest = {
   sectionId: string;
   props: Record<string, unknown>;
   expectedDraftGeneration: number;
+  expectedSourceGeneration?: number;
   routePath?: string;
 };
 const conflictAnswer = () => ({
@@ -1263,6 +1264,110 @@ describe("G2: a result that is not known", () => {
     await pause(1_500);
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
+
+  it("G2c: the first write onto the created document, with no answer and not landed, is resent at the generation it was sent at", async () => {
+    // H2 at shell level: the write composed with no copy held is sent at the
+    // generation the queue resolved for the created document. That sent
+    // generation, frozen with it, is what Try again sends again.
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await act(async () => {
+      first.lose();
+    });
+    await pause();
+    expect(saveStatus()).toBe("Save failed");
+    expect(
+      document
+        .querySelector("[data-editor-unconfirmed-saves]")
+        ?.getAttribute("data-editor-unconfirmed-saves"),
+      "held as unconfirmed, frozen as sent",
+    ).toBe("1");
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+    // Not landed: the created document is still at generation 1. Its slot
+    // section is read back present but without the value, so the read-back
+    // decides by generation (with no section at all it is taken as moved,
+    // the safe side, and nothing would show which generation was frozen).
+    expect(server.route).toEqual({ generation: 1, props: null });
+    server.route = { generation: 1, props: {} };
+
+    const readsBefore = getThemeEditor.mock.calls.length;
+    pressTryAgain();
+    await waitFor(() =>
+      expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore),
+    );
+    await pause();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: sent()[0]!.expectedDraftGeneration,
+      expectedSourceGeneration: sent()[0]!.expectedSourceGeneration,
+      props: { heading: "Value 1" },
+    });
+    expect(storedHeading()).toBe("Value 1");
+    expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
+    // The read-back judged it by the generation it was sent at: not landed,
+    // so nothing was taken as moved or out of date.
+    expect(
+      vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    ).not.toContainEqual(expect.stringContaining("changed elsewhere"));
+    expect(saveStatus()).not.toBe("Out of date");
+    expect(
+      screen.queryByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeNull();
+    expect(
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+    ).toBeNull();
+  });
+
+  it("G2d: the first write onto the created document, read back with no section yet at the generation it was sent at, is resent once, never claimed as not sent", async () => {
+    // Round 3 R3-1(b): on a document this editor created, still at the
+    // generation the write was sent at, a section not there yet is the
+    // write not landed (it would have added it). Resent once, as first
+    // sent; the author is never told it was not sent when it was.
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await act(async () => {
+      first.lose();
+    });
+    await pause();
+    expect(saveStatus()).toBe("Save failed");
+    expect(server.route).toEqual({ generation: 1, props: null });
+
+    const readsBefore = getThemeEditor.mock.calls.length;
+    pressTryAgain();
+    await waitFor(() =>
+      expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore),
+    );
+    await pause();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 1,
+      props: { heading: "Value 1" },
+    });
+    expect(storedHeading()).toBe("Value 1");
+    const said = vi
+      .mocked(toast.error)
+      .mock.calls.map((call) => String(call[0]));
+    expect(said).not.toContainEqual(expect.stringContaining("not sent"));
+    expect(said).not.toContainEqual(
+      expect.stringContaining("changed elsewhere"),
+    );
+    expect(saveStatus()).not.toBe("Out of date");
+    expect(
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+    ).toBeNull();
   });
 
   it("G2b: after a lost ensure answer (the server created the document), nothing continues on its own", async () => {

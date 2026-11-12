@@ -320,6 +320,77 @@ describe("another account signed in", () => {
   });
 });
 
+describe("Save my changes while Try again is resending an unanswered write", () => {
+  // Task 41 29-D: the resume path and Try again share one recovery guard,
+  // so the resume cannot send the same section's input while the resend of
+  // its unanswered write is out: one resend, recorded once.
+  it("sends the write once more, not twice, and records it once", async () => {
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    const { readAgain } = await editHeading();
+    await tick(300);
+    await tick();
+    expect(sentHeadings()).toEqual(["Hello"]);
+    readAgain("access-denied", 0);
+    await tick();
+    await press("Check again");
+    expect(paused()).toBe("verified");
+    // The server still holds the heading as it was: not landed.
+    getThemeEditor.mockResolvedValue(THEME);
+    // The resend is answered only once both recoveries have had their turn.
+    let answerResend!: () => void;
+    const savedHello = {
+      success: true,
+      data: {
+        draftGeneration: 2,
+        droppedProps: [],
+        document: {
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled: true,
+              props: { heading: "Hello" },
+            },
+          ],
+        },
+      },
+    };
+    updateSectionProps.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerResend = () => resolve(savedHello);
+        }),
+    );
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 3, droppedProps: [] },
+    });
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Save my changes" }).click();
+      screen.getByRole("button", { name: "Try again" }).click();
+    });
+    await tick(500);
+    expect(sentHeadings(), "the resend is out").toEqual(["Hello", "Hello"]);
+    await act(async () => {
+      answerResend();
+    });
+    await tick(500);
+    await tick(2_000);
+
+    expect(sentHeadings()).toEqual(["Hello", "Hello"]);
+    expect(
+      document
+        .querySelector("[data-editor-undo-depth]")
+        ?.getAttribute("data-editor-undo-depth"),
+    ).toBe("1");
+    expect(
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+    ).toBeNull();
+  });
+});
+
 describe("a sign-in that merely expired", () => {
   it("leaves the editor open, with writes paused and the edit kept", async () => {
     updateSectionProps.mockRejectedValueOnce(authRequired());

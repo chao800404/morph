@@ -8,6 +8,8 @@ import {
   acknowledgeContentFields,
   discardPendingContentPath,
   contentEntryTouchesPath,
+  contentEntryStatusPaths,
+  discardedListValue,
   hasUnconfirmedContentForList,
   rebaseFieldBasis,
   MISSING_BASIS_MESSAGE,
@@ -366,6 +368,107 @@ describe("discarding one conflicted content list", () => {
         fieldPath: "items",
       }),
     ).toEqual({ pending: null, baseline: incoming });
+  });
+
+  // Task 41 31-A follow-up: a draft staged without per-field snapshots keeps
+  // the whole props. Once its only change (the list) is discarded, what is
+  // left is the latest version itself, not a change of the author's: keeping
+  // it pending left the section out of date and held its next write.
+  it("returns no pending entry when a whole-props draft holds no change after the discard", () => {
+    const incoming = {
+      heading: "Welcome",
+      items: [{ id: "z", title: "Z" }],
+    };
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: {
+        heading: "Welcome",
+        items: [{ id: "c", title: "C" }, { id: "new" }],
+      },
+      listActionPaths: ["items"],
+    };
+    const result = discardPendingContentPath({
+      entry,
+      baseline: { heading: "Welcome", items: [{ id: "c", title: "C" }] },
+      incoming,
+      fieldPath: "items",
+    });
+    expect(result.pending).toBeNull();
+    expect(result.baseline).toEqual(incoming);
+
+    // A sibling change of the author's is still theirs to save.
+    const withHeading = discardPendingContentPath({
+      entry: { ...entry, props: { ...entry.props, heading: "Mine" } },
+      baseline: { heading: "Welcome", items: [{ id: "c", title: "C" }] },
+      incoming,
+      fieldPath: "items",
+    });
+    expect(withHeading.pending?.props).toMatchObject({
+      heading: "Mine",
+      items: incoming.items,
+    });
+  });
+
+  // Task 41 31-F: a nested list is a path, not a top-level key.
+  describe("a nested list", () => {
+    const nested = "items.0.related";
+    const unanswered: PendingContentEntry = {
+      sectionId: "hero",
+      props: {
+        items: [{ id: "row", related: [{ id: "r", title: "Mine" }] }],
+      },
+      fields: {
+        "items.0.related.0.title": field("Mine", 4),
+      },
+    };
+
+    it("resets to the latest value at its path", () => {
+      const incoming = {
+        items: [{ id: "row", related: [{ id: "s", title: "Theirs" }] }],
+      };
+      expect(discardedListValue(incoming, nested)).toEqual([
+        { id: "s", title: "Theirs" },
+      ]);
+      expect(discardedListValue(incoming, "items")).toBe(incoming.items);
+      expect(discardedListValue(incoming, "missing.0.list")).toBeUndefined();
+    });
+
+    it("is marked outcome-unknown exactly where the discard guard refuses", () => {
+      const marked = contentEntryStatusPaths(unanswered);
+      // The list itself, and every list holding it, are marked.
+      expect(marked).toEqual(
+        expect.arrayContaining(["items", "items.0", nested]),
+      );
+      for (const path of [
+        "items",
+        nested,
+        "items.0.related.0",
+        "related",
+        "heading",
+        "items.1.related",
+      ]) {
+        expect(
+          marked.includes(path),
+          `${path}: marker and guard use one overlap rule`,
+        ).toBe(contentEntryTouchesPath(unanswered, path));
+      }
+    });
+
+    it("marks every list a whole-list write or reset under it covers", () => {
+      const wholeList: PendingContentEntry = {
+        sectionId: "hero",
+        props: {},
+        listActionPaths: [nested],
+        resetProps: ["gallery"],
+      };
+      const marked = contentEntryStatusPaths(wholeList);
+      expect(marked).toEqual(
+        expect.arrayContaining(["items", "items.0", nested, "gallery"]),
+      );
+      for (const path of marked) {
+        expect(contentEntryTouchesPath(wholeList, path)).toBe(true);
+      }
+    });
   });
 });
 
