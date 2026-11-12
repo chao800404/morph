@@ -211,6 +211,10 @@ describe("storefront theme file DAL", () => {
       lastWriteAttemptId: writeAttemptId,
     });
     expect(
+      (await storefrontThemeFileDal.listFiles("storefront-a", "theme-a"))[0]
+        ?.lastWriteAttemptId,
+    ).toBe(writeAttemptId);
+    expect(
       (
         await storefrontThemeFileDal.getFileByPath(
           "storefront-a",
@@ -239,6 +243,15 @@ describe("storefront theme file DAL", () => {
       "theme-a",
     );
     expect(afterOrdinarySave[0]).not.toHaveProperty("lastWriteAttemptId");
+    expect(
+      (
+        await storefrontThemeFileDal.getFileByPath(
+          "storefront-a",
+          "theme-a",
+          "src/components/Hero.tsx",
+        )
+      )?.lastWriteAttemptId,
+    ).toBeUndefined();
   });
 
   it("replaces receipts per file, clears them on delete, and binds a recreated file to its own receipt", async () => {

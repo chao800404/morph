@@ -3133,6 +3133,35 @@ describe("Style replay resend and stored-replay ownership", () => {
     );
   }
 
+  it("checks and resends a lost Code save once when the file retains a prior replay receipt", async () => {
+    const server = controlledThemeFile(STYLE_SOURCE);
+    renderShellWithHero(STYLE_SOURCE);
+    await applyAndSaveStyle(server);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(server.file().lastWriteAttemptId).toMatch(UUID));
+    const previousReceipt = server.file().lastWriteAttemptId;
+
+    const saveFile = await captureCodeFileSave();
+    server.outcomes.push("offline");
+    await act(async () => {
+      await saveFile(stylePatchTarget.filePath, CODE_EDIT).catch(() => {});
+    });
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBe(CODE_EDIT),
+    );
+    expect(server.file().lastWriteAttemptId).toBe(previousReceipt);
+    expect(server.save).toHaveBeenCalledTimes(3);
+
+    fireEvent.click(screen.getByRole("button", { name: "Check and save" }));
+    await waitFor(() => expect(server.save).toHaveBeenCalledTimes(4));
+    await waitFor(() =>
+      expect(localThemeFile()?.unconfirmedContent).toBeUndefined(),
+    );
+    expect(sentWrite(server, 3).content).toBe(CODE_EDIT);
+    expect(sentWrite(server, 3).writeAttemptId).toBeUndefined();
+    expect(server.file().content).toBe(CODE_EDIT);
+  });
+
   it("resends a proven not-landed Style Undo once with its own receipt and basis, then confirms it", async () => {
     const server = controlledThemeFile(STYLE_SOURCE);
     renderShellWithHero(STYLE_SOURCE);
