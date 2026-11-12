@@ -3085,7 +3085,15 @@ export function VisualEditorShell({
        */
       recordAnswered?: (answeredDraftGeneration: unknown) => void,
     ) => {
-      const heldBeforePresentationCheck = pendingPropsMapRef.current.get(key);
+      // A resend of an unanswered write (Task 40 item 1) is not gated on the
+      // presentation: it is the frozen write the server may already hold,
+      // sent as first sent at its original draft and source generations,
+      // so CAS refuses it if the document moved. Its presentation was proven
+      // when it was first sent; a frame reload since must not drop it.
+      const presentationGated = !replay?.resend;
+      const heldBeforePresentationCheck = presentationGated
+        ? pendingPropsMapRef.current.get(key)
+        : undefined;
       const heldSection = replay?.entry ?? heldBeforePresentationCheck;
       const presentationProof =
         heldSection?.presentationProof ??
@@ -3096,6 +3104,7 @@ export function VisualEditorShell({
             ) ?? undefined)
           : undefined);
       if (
+        presentationGated &&
         !isSectionPresentationProofCurrent(
           presentationProof,
           tid,
@@ -13246,14 +13255,18 @@ export function VisualEditorShell({
       const historyGeneration = options.historyGeneration;
       const restore = { ...options.restore };
       reportAuthenticatedUserActivity();
+      // A resend goes as first sent, CAS-guarded, without a fresh proof
+      // (Task 40 item 1; see `commitSectionPending`).
+      const presentationGated = !options.resend;
       const presentationTemplateId = templateIdForSection(sectionId);
-      const presentationProof = presentationTemplateId
-        ? captureCurrentSectionPresentationProof(
-            presentationTemplateId,
-            sectionId,
-          )
-        : null;
-      if (!presentationProof) {
+      const presentationProof =
+        presentationGated && presentationTemplateId
+          ? captureCurrentSectionPresentationProof(
+              presentationTemplateId,
+              sectionId,
+            )
+          : null;
+      if (presentationGated && !presentationProof) {
         toast.warning(PREVIEW_PRESENTATION_SYNCING_MESSAGE, {
           id: "preview-presentation-syncing",
         });
@@ -13398,8 +13411,9 @@ export function VisualEditorShell({
         templateId,
         async (generation, resolvedTemplateId, reportSent) => {
           if (
+            presentationGated &&
             !isSectionPresentationProofCurrent(
-              presentationProof,
+              presentationProof ?? undefined,
               resolvedTemplateId,
               sectionId,
             )
