@@ -3558,8 +3558,10 @@ export function VisualEditorShell({
             if (outcome === "landed") {
               // Unknown, now found landed: a reset or history step of a list
               // is recorded as an ordinary write is (R2-3). Its basis is the
-              // copy it was composed on, captured when it was sent (R3-4),
-              // for the lists it removed.
+              // copy captured when it was first sent (a field reset: the copy
+              // it was pressed on; a history run's write: the copy it was
+              // composed on), kept across resends (R3-4, R4-1); the editor's
+              // copy now only if none was captured.
               noteSavedListChange(
                 key,
                 sent,
@@ -3574,6 +3576,8 @@ export function VisualEditorShell({
               // that copy is the next step's basis.
               completeResetLink(link, template?.draftGeneration);
             } else {
+              // Ended (moved): its basis goes with it (R4-1).
+              unconfirmedBasesRef.current.delete(key);
               markResetMoved(key, templateId, link, movedReason(key));
             }
             continue;
@@ -3589,6 +3593,8 @@ export function VisualEditorShell({
             unconfirmedContentRef.current.delete(key);
             unconfirmedResetLinksRef.current.delete(key);
             unconfirmedRecordersRef.current.delete(key);
+            // Ended (moved): its basis goes with it (R4-1).
+            unconfirmedBasesRef.current.delete(key);
             resolved.push([key, sent]);
             markResetMoved(key, templateId, link, movedReason(key));
             continue;
@@ -3719,9 +3725,13 @@ export function VisualEditorShell({
       if (!isRun) refused.set(key, sent.sectionId);
       const templateId =
         templateIdOfPendingContentKey(key, sent.sectionId) ?? key;
+      // Every outcome below but the one that holds it again for a read-back
+      // ends this write: the copy it was composed on goes with it (R4-1).
+      const releaseBasis = () => unconfirmedBasesRef.current.delete(key);
       if (code === TEMPLATE_DRAFT_CONFLICT) {
         setDraftSaveState("error");
         if (typeof sent.expectedDraftGeneration !== "number") {
+          releaseBasis();
           markResetMoved(key, templateId, link);
           return;
         }
@@ -3736,6 +3746,7 @@ export function VisualEditorShell({
         );
         return;
       }
+      releaseBasis();
       if (code === SELECTION_SOURCE_CONFLICT) {
         if (!isRun) {
           // The section's own input, as sent, needs reselection: its fields
@@ -12832,6 +12843,12 @@ export function VisualEditorShell({
               unconfirmedContentRef.current.set(key, sentEntry);
               if (link) unconfirmedResetLinksRef.current.set(key, link);
               else unconfirmedResetLinksRef.current.delete(key);
+              // The copy the reset was pressed on, captured on its first
+              // send and kept across resends: what its read-back compares
+              // the lists it removed with (R4-1).
+              if (!resend && !unconfirmedBasesRef.current.has(key)) {
+                unconfirmedBasesRef.current.set(key, before);
+              }
               syncUnconfirmedContentCount();
             } else if (resend && isEditorWritePaused(error)) {
               // Paused before it left: still not landed, still the author's
@@ -14285,6 +14302,9 @@ export function VisualEditorShell({
     for (const key of discarded) {
       pendingPropsMapRef.current.delete(key);
       pendingPropsBaselineRef.current.delete(key);
+      // Nothing of the section is held unanswered here (checked above);
+      // a basis left from an ended write goes too (R4-1).
+      unconfirmedBasesRef.current.delete(key);
     }
     // The discarded draft may have held a hide: the preview is told the
     // visibility the latest version leaves.
@@ -14495,6 +14515,11 @@ export function VisualEditorShell({
     } else {
       pendingPropsMapRef.current.delete(target.key);
       pendingPropsBaselineRef.current.delete(target.key);
+    }
+    // Nothing of the list is held unanswered here (checked above); a basis
+    // left from an ended write of the section goes too (R4-1).
+    if (!unconfirmedContentRef.current.has(target.key)) {
+      unconfirmedBasesRef.current.delete(target.key);
     }
     setListConflicts((current) => {
       const existing = current[target.key];
