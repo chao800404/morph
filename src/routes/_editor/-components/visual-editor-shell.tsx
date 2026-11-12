@@ -3351,6 +3351,7 @@ export function VisualEditorShell({
                 // made on (Task 40 item 4): one older than the basis is
                 // refused, before anything is sent, as a missing basis is.
                 if (
+                  !replay?.resend &&
                   presentationGated &&
                   presentationProof &&
                   !presentationShowsWriteBasis(
@@ -13494,6 +13495,7 @@ export function VisualEditorShell({
       // The press was made on what the acknowledged presentation showed
       // (Task 40 item 4): a basis newer than that is refused before sending.
       if (
+        authorPress &&
         presentationProof &&
         !presentationShowsWriteBasis(presentationProof.token.documentBasis, [
           basisDraftGeneration,
@@ -14232,15 +14234,7 @@ export function VisualEditorShell({
         entry.fields &&
         proof.token.documentBasis.kind === "existing" &&
         Object.values(entry.fields).some(
-          (field) =>
-            field.basisDraftGeneration !== undefined &&
-            field.basisDraftGeneration !==
-              (
-                proof.token.documentBasis as {
-                  kind: "existing";
-                  draftGeneration: number;
-                }
-              ).draftGeneration,
+          (field) => field.basisDraftGeneration === undefined,
         )
       ) {
         continue;
