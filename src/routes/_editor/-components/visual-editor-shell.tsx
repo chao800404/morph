@@ -41,6 +41,12 @@ import {
 } from "@/lib/storefront/editor/pending-content-write";
 import { resolveSectionContentDeclaration } from "@/lib/storefront/editor/section-content-declaration";
 import {
+  captureBasis,
+  endBasis,
+  releaseUnheldBasis,
+  type UnconfirmedBases,
+} from "@/lib/storefront/editor/unconfirmed-write-basis";
+import {
   listOwnDiscardLabel,
   slotPropsSetInCode,
   type SlotPropsSetInCode,
@@ -2158,9 +2164,7 @@ export function VisualEditorShell({
     Map<string, (answeredDraftGeneration: unknown) => void>
   >(new Map());
   /** The copy each unanswered write was composed on, by key (R3-4). */
-  const unconfirmedBasesRef = useRef<Map<string, Record<string, unknown>>>(
-    new Map(),
-  );
+  const unconfirmedBasesRef = useRef<UnconfirmedBases>(new Map());
   /**
    * How many times each section's history was retired
    * (`invalidateSectionHistory`). A recorder taken at send time records
@@ -3404,23 +3408,24 @@ export function VisualEditorShell({
                       sentDraftGeneration,
                       recordHistory,
                     );
-                    // The copy it was composed on, kept with it: what a
-                    // later read-back compares its lists with (R3-4). A
-                    // resend keeps the one from its first send.
-                    if (!replay?.resend) {
-                      unconfirmedBasesRef.current.set(
-                        key,
-                        writeSnapshot
-                          ? snapshotSectionProps(
-                              writeSnapshot,
-                              sentEntry.sectionId,
-                            )
-                          : storedSectionPropsRef.current(
-                              sentEntry.sectionId,
-                              sentTemplateId,
-                            ),
-                      );
-                    }
+                    // The copy it was composed on, kept with it (its frozen
+                    // entry): what a later read-back compares its lists with
+                    // (R3-4, R5). A resend keeps the first send's copy.
+                    captureBasis(
+                      unconfirmedBasesRef.current,
+                      key,
+                      frozen,
+                      writeSnapshot
+                        ? snapshotSectionProps(
+                            writeSnapshot,
+                            sentEntry.sectionId,
+                          )
+                        : storedSectionPropsRef.current(
+                            sentEntry.sectionId,
+                            sentTemplateId,
+                          ),
+                      replay?.resend ? replay.entry : undefined,
+                    );
                     if (replay) {
                       // A history run's write: held as sent, frozen, with the
                       // run it completes, and decided by its own read-back.
@@ -3485,10 +3490,13 @@ export function VisualEditorShell({
               noteSavedListChange(
                 key,
                 replay.entry,
-                unconfirmedBasesRef.current.get(key) ??
-                  pendingPropsBaselineRef.current.get(key),
+                endBasis(
+                  unconfirmedBasesRef.current,
+                  key,
+                  replay.entry,
+                  "landed",
+                ) ?? pendingPropsBaselineRef.current.get(key),
               );
-              unconfirmedBasesRef.current.delete(key);
             }
           } else {
             if (replay.link?.kind === "history") {
@@ -3801,10 +3809,9 @@ export function VisualEditorShell({
               noteSavedListChange(
                 key,
                 sent,
-                unconfirmedBasesRef.current.get(key) ??
+                endBasis(unconfirmedBasesRef.current, key, sent, "landed") ??
                   storedSectionPropsRef.current(sent.sectionId, templateId),
               );
-              unconfirmedBasesRef.current.delete(key);
               previewResetRef.current(sent.sectionId, { ...sent.props }, [
                 ...(sent.resetProps ?? []),
               ]);
@@ -3813,7 +3820,7 @@ export function VisualEditorShell({
               completeResetLink(link, template?.draftGeneration);
             } else {
               // Ended (moved): its basis goes with it (R4-1).
-              unconfirmedBasesRef.current.delete(key);
+              endBasis(unconfirmedBasesRef.current, key, sent, "moved");
               markResetMoved(key, templateId, link, movedReason(key));
             }
             continue;
@@ -3830,7 +3837,7 @@ export function VisualEditorShell({
             unconfirmedResetLinksRef.current.delete(key);
             unconfirmedRecordersRef.current.delete(key);
             // Ended (moved): its basis goes with it (R4-1).
-            unconfirmedBasesRef.current.delete(key);
+            endBasis(unconfirmedBasesRef.current, key, sent, "moved");
             resolved.push([key, sent]);
             markResetMoved(key, templateId, link, movedReason(key));
             continue;
@@ -3848,9 +3855,9 @@ export function VisualEditorShell({
           noteSavedListChange(
             key,
             sent,
-            unconfirmedBasesRef.current.get(key) ?? baseline,
+            endBasis(unconfirmedBasesRef.current, key, sent, "landed") ??
+              baseline,
           );
-          unconfirmedBasesRef.current.delete(key);
           if (acknowledgeContentFields(pendingPropsMapRef.current, key, sent)) {
             if (!pendingPropsMapRef.current.has(key))
               pendingPropsBaselineRef.current.delete(key);
@@ -3971,7 +3978,8 @@ export function VisualEditorShell({
         templateIdOfPendingContentKey(key, sent.sectionId) ?? key;
       // Every outcome below but the one that holds it again for a read-back
       // ends this write: the copy it was composed on goes with it (R4-1).
-      const releaseBasis = () => unconfirmedBasesRef.current.delete(key);
+      const releaseBasis = () =>
+        endBasis(unconfirmedBasesRef.current, key, sent, "refused");
       if (code === TEMPLATE_DRAFT_CONFLICT) {
         setDraftSaveState("error");
         if (typeof sent.expectedDraftGeneration !== "number") {
@@ -13551,9 +13559,13 @@ export function VisualEditorShell({
               // The copy the reset was pressed on, captured on its first
               // send and kept across resends: what its read-back compares
               // the lists it removed with (R4-1).
-              if (!resend && !unconfirmedBasesRef.current.has(key)) {
-                unconfirmedBasesRef.current.set(key, before);
-              }
+              captureBasis(
+                unconfirmedBasesRef.current,
+                key,
+                sentEntry,
+                before,
+                resend ? resend.sent : undefined,
+              );
               syncUnconfirmedContentCount();
             } else if (resend && isEditorWritePaused(error)) {
               // Paused before it left: still not landed, still the author's
@@ -15174,7 +15186,11 @@ export function VisualEditorShell({
       pendingPropsBaselineRef.current.delete(key);
       // Nothing of the section is held unanswered here (checked above);
       // a basis left from an ended write goes too (R4-1).
-      unconfirmedBasesRef.current.delete(key);
+      releaseUnheldBasis(
+        unconfirmedBasesRef.current,
+        key,
+        unconfirmedContentRef.current.get(key),
+      );
     }
     // The discarded draft may have held a hide: the preview is told the
     // visibility the latest version leaves.
@@ -15386,9 +15402,11 @@ export function VisualEditorShell({
     }
     // Nothing of the list is held unanswered here (checked above); a basis
     // left from an ended write of the section goes too (R4-1).
-    if (!unconfirmedContentRef.current.has(target.key)) {
-      unconfirmedBasesRef.current.delete(target.key);
-    }
+    releaseUnheldBasis(
+      unconfirmedBasesRef.current,
+      target.key,
+      unconfirmedContentRef.current.get(target.key),
+    );
     setListConflicts((current) => {
       const existing = current[target.key];
       if (!existing) return current;
