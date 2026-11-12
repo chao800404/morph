@@ -696,7 +696,13 @@ export const storefrontThemeFileDal = {
           sizeBytes: row.sizeBytes,
         };
       }
-      return { ...common, content: row.content };
+      return {
+        ...common,
+        content: row.content,
+        ...(row.lastWriteAttemptId
+          ? { lastWriteAttemptId: row.lastWriteAttemptId }
+          : {}),
+      };
     });
   },
 
