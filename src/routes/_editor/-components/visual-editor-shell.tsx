@@ -3351,7 +3351,7 @@ export function VisualEditorShell({
                 // made on (Task 40 item 4): one older than the basis is
                 // refused, before anything is sent, as a missing basis is.
                 if (
-                  !replay?.resend &&
+                  !replay &&
                   presentationGated &&
                   presentationProof &&
                   !presentationShowsWriteBasis(
