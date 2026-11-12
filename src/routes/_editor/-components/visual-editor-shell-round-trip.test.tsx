@@ -6419,6 +6419,91 @@ function Home() {
       expect(panelTitles()).toEqual(["One", "Three"]);
     });
 
+    // Task 41 R4-1: the copy an unanswered write was composed on is let go
+    // when the write ends any way at all. Left behind by a refused resend, it
+    // was read later as the basis of the list reset that undid the next Add,
+    // and the reset (found landed) was not named as a saved change.
+    it("names a list reset found landed by its own basis, not by an earlier refused write's (R4-1)", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      vi.spyOn(toast, "warning").mockImplementation(() => "");
+      getThemeEditor.mockImplementation(async () => ({
+        success: true,
+        message: "ok",
+        data: editorAt({ ...stored }, draftGeneration),
+      }));
+      const write = updateSectionProps.getMockImplementation()!;
+      const tryAgain = async () => {
+        fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+        await settle();
+      };
+      const { receive, client } = await openSection({});
+
+      // The first Add gets no answer, and did not land.
+      updateSectionProps.mockImplementationOnce(async () => {
+        throw new Error("offline");
+      });
+      await addEntry();
+      expect(saveStatus()).toBe("Save failed");
+      // Read back not landed, resent, and refused by an answer.
+      updateSectionProps.mockImplementationOnce(
+        async () =>
+          ({
+            success: false,
+            error: "CONTENT_INVALID",
+            message: "Refused.",
+          }) as never,
+      );
+      await tryAgain();
+      expect(stored).not.toHaveProperty("items");
+      // Sent once more, and stored.
+      await tryAgain();
+      expect((stored.items as unknown[]).length).toBe(3);
+      await reread(receive);
+
+      // Undo is a reset of the list (it was stored by nothing before). It
+      // lands, and its answer is lost.
+      updateSectionProps.mockImplementationOnce(async (args) => {
+        await write(args);
+        throw new Error("offline");
+      });
+      await undo();
+      expect(stored).not.toHaveProperty("items");
+      // Read back: landed, a saved change of the list.
+      await tryAgain();
+      await reread(receive);
+
+      // The next Add meets another writer's list; the author discards it.
+      updateSectionProps.mockImplementationOnce(
+        async () =>
+          ({
+            success: false,
+            error: "TEMPLATE_DRAFT_CONFLICT",
+            message: "Template draft was modified concurrently.",
+          }) as never,
+      );
+      await addEntry();
+      stored = { ...stored, items: [{ id: "x", title: "X" }] };
+      draftGeneration += 1;
+      client.setQueryData(
+        storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+        {
+          success: true,
+          message: "ok",
+          data: editorAt({ ...stored }, draftGeneration),
+        } as never,
+      );
+      act(() =>
+        screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+      );
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: /discard unsaved changes to entries/i,
+        }),
+      );
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog.textContent).toMatch(/A saved change is not undone/);
+    });
+
     it("undo of the first Add stores nothing again, and redo writes the added list back with the same ids", async () => {
       const notice = notices();
       const { receive } = await openSection({});
