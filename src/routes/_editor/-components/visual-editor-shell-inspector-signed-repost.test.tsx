@@ -524,29 +524,64 @@ describe("an Inspector text edit while the section's media is being signed", () 
     expect(savedProps()[0]).toMatchObject({ subheading: "Sub newer" });
   });
 
-  it("T3: an edit raced by presentation sync stays unsaved and cancels its older signed post", async () => {
-    const warn = vi.spyOn(toast, "warning").mockImplementation(() => "");
+  // Task 40 item 6: the coalescing guarantee is restored. Rapid edits
+  // while the section's media is signing end in one post with the last
+  // text, and are saved (released once the page is acknowledged again),
+  // never left as "Not saved".
+  it("T3: several Inspector edits while signing end in one post, with the last text", async () => {
     await openHeading();
     signingHeld();
     await canvasEdit("Edited", "Welcome");
     const before = posted.length;
     await inspectorEdit("Summary", "Sub newer");
-    const warnsAfterFirst = warn.mock.calls.map(([message]) => String(message));
     await inspectorEdit("Sub newer", "Sub newest");
     await saveSettles();
-    expect(warnsAfterFirst).not.toContain(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
-    expect(warn.mock.calls.map(([message]) => String(message))).toContain(
-      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
-    );
-    expect(screen.getByDisplayValue("Sub newest")).toBeTruthy();
-    expect(savedProps()).toEqual([]);
-    expect(saveState()).toBe("unsaved");
-
     await releaseSigning();
 
-    expect(sectionPosts(before).map(subheadingOf)).not.toContain("Sub newer");
-    expect(screen.getByDisplayValue("Sub newest")).toBeTruthy();
-    expect(savedProps()).toEqual([]);
+    const after = sectionPosts(before);
+    expect(after).toHaveLength(1);
+    expect(subheadingOf(after[0])).toBe("Sub newest");
+    expect(imageSigned(after[0])).toBe(true);
+
+    await saveSettles();
+    await saveSettles();
+    await waitFor(() => expect(saveState()).toBe("saved"));
+    expect(savedProps().at(-1)).toMatchObject({
+      heading: "Edited",
+      subheading: "Sub newest",
+    });
+  });
+
+  it("T4: a later canvas edit still supersedes an Inspector edit's pending post", async () => {
+    await openHeading();
+    signingHeld();
+    await canvasEdit("Edited", "Welcome");
+    await inspectorEdit("Summary", "Sub newer");
+    const before = posted.length;
+    // Before the debounced save leaves: the held copy is "Edited".
+    await canvasSelect("heading");
+    await canvasEdit("Final", "Edited");
+    expect(headingOf(sectionPosts(before).at(-1))).toBe("Final");
+    expect(subheadingOf(sectionPosts(before).at(-1))).toBe("Sub newer");
+    await saveSettles();
+    await releaseSigning();
+
+    const after = sectionPosts(before);
+    expect(
+      after.map(headingOf).filter((heading) => heading !== "Final"),
+    ).toEqual([]);
+    expect(
+      after.map(subheadingOf).filter((sub) => sub !== "Sub newer"),
+    ).toEqual([]);
+    expect(imageSigned(after.at(-1))).toBe(true);
+
+    await saveSettles();
+    await saveSettles();
+    await waitFor(() => expect(saveState()).toBe("saved"));
+    expect(savedProps().at(-1)).toMatchObject({
+      heading: "Final",
+      subheading: "Sub newer",
+    });
   });
 
   it("T4: a canvas edit raced by presentation sync stays unsaved and cancels the older signed post", async () => {

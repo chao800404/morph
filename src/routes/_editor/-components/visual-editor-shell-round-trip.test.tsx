@@ -5264,7 +5264,8 @@ function Home() {
   it("does not write over someone else's change read while the author's edit waits, when the field is typed into again before it leaves", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
-    const { editorContext, receive, field } = await openHeading(fixture);
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     fireEvent.input(field, { target: { value: "Mine" } });
     fireEvent.blur(field);
@@ -5280,11 +5281,14 @@ function Home() {
     await releaseQueued();
 
     expect(sent()).toHaveLength(0);
-    // The editor knows the remote generation, but the canvas has not
-    // acknowledged that presentation yet, so this is held locally instead of
-    // being sent for a server-side OCC refusal.
-    expect(saveStatus()).toBe("Unsaved");
+    // Task 40 item 6: held while the canvas presents the read copy, then
+    // released with that round's proof and refused as made on the older
+    // copy (out of date), never sent over theirs; keep mine then saves it.
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(sent()).toHaveLength(0);
     expect(screen.getAllByDisplayValue("Mine again").length).toBeGreaterThan(0);
+
+    await keepMineAndExpectSaved(client, editorContext, fixture, "Mine again");
   });
 
   // The author is in the field when someone else's change to it is read:
@@ -5294,7 +5298,8 @@ function Home() {
   it("does not replace the field the author is in, and refuses what they typed there on the older copy", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
-    const { editorContext, receive, field } = await openHeading(fixture);
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
     act(() => {
       field.focus();
     });
@@ -5313,8 +5318,11 @@ function Home() {
     });
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect(sent()).toHaveLength(0);
-    expect(saveStatus()).not.toBe("Saved");
+    // Task 40 item 6: restored to its keep-mine recovery.
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(screen.getAllByDisplayValue("Mine typed").length).toBeGreaterThan(0);
+
+    await keepMineAndExpectSaved(client, editorContext, fixture, "Mine typed");
   });
 
   it("writes nothing when the author leaves the field unchanged, and then shows someone else's change", async () => {
@@ -5344,7 +5352,8 @@ function Home() {
   it("keeps an IME composition in the field going when someone else's change is read", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();
-    const { editorContext, receive, field } = await openHeading(fixture);
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
     act(() => {
       field.focus();
     });
@@ -5365,8 +5374,10 @@ function Home() {
     await new Promise((resolve) => setTimeout(resolve, 1_200));
 
     expect(sent()).toHaveLength(0);
-    expect(saveStatus()).not.toBe("Saved");
+    // Task 40 item 6: restored to its keep-mine recovery.
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(screen.getAllByDisplayValue("中文").length).toBeGreaterThan(0);
+    await keepMineAndExpectSaved(client, editorContext, fixture, "中文");
   });
 
   it("counts what the author types in another field as made on the older copy while an update is held back", async () => {

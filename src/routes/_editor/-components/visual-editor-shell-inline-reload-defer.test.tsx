@@ -571,6 +571,41 @@ describe("text typed on the canvas when the preview server is replaced", () => {
     expect(saveStatus()).toBe("Unsaved");
     expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
     expect(updateSectionProps).not.toHaveBeenCalled();
+
+    // Task 40 item 2: the replacement frame comes up and acknowledges the
+    // page, the held draft included. The draft is released with that new
+    // round's proof and saved once; an explicit save after it adds nothing.
+    fromPreview({
+      type: "morph:storefront-preview-ready",
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 2 },
+      },
+    });
+    await tick(0);
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+      routePath: "/",
+    });
+    answerLatestRouteRequest({
+      origin: PREVIEW_ORIGIN,
+      session: PREVIEW_SESSION,
+    });
+    await tick(10);
+    await tick(400);
+    await tick(400);
+    expect(order.filter((step) => step.startsWith("save:"))).toEqual([
+      `save:${JSON.stringify({ heading: TYPED })}`,
+    ]);
+    const tryAgain = screen.queryByRole("button", { name: "Try again" });
+    if (tryAgain) {
+      act(() => tryAgain.click());
+      await tick(400);
+    }
+    await tick(1_000);
+    expect(updateSectionProps, "exactly one save").toHaveBeenCalledTimes(1);
+    expect(saveStatus()).toMatch(/^(Unpublished|Published)$/);
     expect(startThemePreviewServer).not.toHaveBeenCalled();
     expect(useThemeWorkspaceStore.getState().acceptedGenerations).toEqual(
       accepted,
