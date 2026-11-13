@@ -246,6 +246,8 @@ type Posted = {
   type: string;
   routePath?: string | null;
   routeRequestId?: number;
+  navigationIntent?: "author" | "frame-follow";
+  followEpoch?: number;
   selectionRevision?: number;
   sectionId?: string | null;
   nodeId?: string | null;
