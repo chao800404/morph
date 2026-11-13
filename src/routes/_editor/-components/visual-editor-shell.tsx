@@ -1727,6 +1727,12 @@ export function VisualEditorShell({
    * itself, while that switch is the one under way; null otherwise.
    */
   const frameFollowRef = useRef<string | null>(null);
+  const frameFollowOriginRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+    routePath: string;
+    epoch: number | null;
+  } | null>(null);
   /** Sends the frame back to the page on screen; set beside the route sync. */
   const returnFrameToPageRef = useRef<() => void>(() => {});
   const handleRouteIntent = useCallback((routePath?: string) => {
@@ -1760,6 +1766,14 @@ export function VisualEditorShell({
         editorRoutePathsMatch(follow, search.routePath))
     ) {
       frameFollowRef.current = null;
+    }
+    const origin = frameFollowOriginRef.current;
+    if (
+      origin !== null &&
+      pendingRoutePath !== origin.routePath &&
+      !editorRoutePathsMatch(origin.routePath, search.routePath)
+    ) {
+      frameFollowOriginRef.current = null;
     }
   }, [pendingRoutePath, search.routePath]);
 
@@ -9920,6 +9934,7 @@ export function VisualEditorShell({
       // asked for, and the author asked, again.
       if (frameFollowRef.current !== null) {
         frameFollowRef.current = null;
+        frameFollowOriginRef.current = null;
         returnFrameToPageRef.current();
       }
       if (why === "kept-editing") {
@@ -11835,6 +11850,12 @@ export function VisualEditorShell({
               !(followUnderWay && editorRoutePathsMatch(route.path, follow))
             ) {
               frameFollowRef.current = route.path;
+              frameFollowOriginRef.current = {
+                previewKey,
+                readyRound: previewReadyRoundRef.current,
+                routePath: route.path,
+                epoch: message.frameNavigationEpoch ?? null,
+              };
               setPendingRoutePath(route.path);
             }
           }
@@ -11848,14 +11869,17 @@ export function VisualEditorShell({
         return;
       }
       if (message.type === "morph:storefront-preview-route-applied") {
-        // The frame's answer to a route request: what a replay waits for
-        // before it sends content to a reloaded frame.
-        instanceContentReplayRef.current?.routeApplied(
-          previewKey,
-          previewReadyRoundRef.current,
-          message.routeRequestId,
-          message.routePath,
-        );
+        const superseded = message.status === "superseded";
+        // Only a genuinely applied route releases content replay; a superseded
+        // answer only retires the stale wait so the editor can follow the frame.
+        if (!superseded) {
+          instanceContentReplayRef.current?.routeApplied(
+            previewKey,
+            previewReadyRoundRef.current,
+            message.routeRequestId,
+            message.routePath,
+          );
+        }
         frameRouteRef.current = {
           key: previewKey,
           round: previewReadyRoundRef.current,
@@ -11871,7 +11895,7 @@ export function VisualEditorShell({
           routeRequest.id === message.routeRequestId
         ) {
           routeRequest.answered = true;
-          if (documentNavigationRef.current) {
+          if (!superseded && documentNavigationRef.current) {
             dispatchDocumentNavigation({
               type: "route-answered",
               key: previewKey,
@@ -12186,11 +12210,24 @@ export function VisualEditorShell({
     if (!routeSyncTemplateId || !templateId) return null;
     routeRequestIdRef.current += 1;
     const routeRequestId = routeRequestIdRef.current;
+    const origin = frameFollowOriginRef.current;
+    const isFrameFollow =
+      origin !== null &&
+      origin.previewKey === previewKeyRef.current &&
+      origin.readyRound === previewReadyRoundRef.current &&
+      editorRoutePathsMatch(origin.routePath, search.routePath ?? "/");
+    if (isFrameFollow) {
+      frameFollowOriginRef.current = null;
+    }
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-route",
       templateId,
       routePath: search.routePath ?? null,
       routeRequestId,
+      navigationIntent: isFrameFollow ? "frame-follow" : "author",
+      ...(isFrameFollow && origin.epoch !== null
+        ? { followEpoch: origin.epoch }
+        : {}),
     });
     return routeRequestId;
   }, [routeSyncTemplateId, postEditorToPreviewMessage, search.routePath]);
