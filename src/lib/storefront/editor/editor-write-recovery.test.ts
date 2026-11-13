@@ -223,6 +223,20 @@ describe("settleHeldFile", () => {
 });
 
 describe("confirmLostSave", () => {
+  it("accepts a file-specific causal proof when its source uses a write receipt", async () => {
+    const landed = { content: "response is not the proof", version: 3 };
+    const markLanded = vi.fn();
+    await expect(
+      confirmLostSave({
+        unconfirmedContent: "sent",
+        readLatest: async () => landed,
+        isLanded: (latest) => latest.version === 3,
+        markLanded,
+      }),
+    ).resolves.toBe("landed");
+    expect(markLanded).toHaveBeenCalledWith(landed);
+  });
+
   it("records a save that landed, and only that version", async () => {
     const markLanded = vi.fn();
     await expect(

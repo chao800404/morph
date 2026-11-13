@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { readdirSync, readFileSync } from "node:fs";
 import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -43,11 +44,13 @@ vi.mock("cloudflare:workers", () => ({
         },
       }),
       batch: async (statements: Array<any>) => {
-        return statements.map((s) => {
-          if (typeof s.run === "function") return s.run();
-          if (typeof s.all === "function") return s.all();
-          return {};
-        });
+        return sqlite.transaction(() =>
+          statements.map((s) => {
+            if (typeof s.run === "function") return s.run();
+            if (typeof s.all === "function") return s.all();
+            return {};
+          }),
+        )();
       },
     },
   },
@@ -101,7 +104,8 @@ beforeEach(() => {
       deleted_at text,
       encoding text DEFAULT 'utf8' NOT NULL,
       blob_digest text,
-      size_bytes integer
+      size_bytes integer,
+      last_write_attempt_id text
     );
     CREATE TABLE storefront_theme_revisions (
       id text PRIMARY KEY NOT NULL,
@@ -172,6 +176,467 @@ afterEach(() => {
 });
 
 describe("storefront theme file DAL", () => {
+  it("persists a write-attempt receipt and clears it on a later ordinary save", async () => {
+    const created = await storefrontThemeFileDal.saveFile(
+      "storefront-a",
+      "theme-a",
+      "src/components/Hero.tsx",
+      "export const Hero = () => null;",
+      "text/typescript",
+      { expectedSourceGeneration: 1, expectMissing: true },
+    );
+    const writeAttemptId = "00000000-0000-4000-8000-000000000001";
+    const saved = await storefrontThemeFileDal.saveFile(
+      "storefront-a",
+      "theme-a",
+      "src/components/Hero.tsx",
+      "export const Hero = () => <main />;",
+      "text/typescript",
+      {
+        expectedSourceGeneration: 2,
+        expectedFileId: created.id,
+        expectedVersion: created.version,
+        writeAttemptId,
+      },
+    );
+
+    expect(saved.lastWriteAttemptId).toBe(writeAttemptId);
+    const snapshot = await storefrontThemeFileDal.listWorkspaceEntries(
+      "storefront-a",
+      "theme-a",
+    );
+    expect(snapshot).toHaveLength(1);
+    expect(snapshot[0]).toMatchObject({
+      path: "src/components/Hero.tsx",
+      lastWriteAttemptId: writeAttemptId,
+    });
+    expect(
+      (await storefrontThemeFileDal.listFiles("storefront-a", "theme-a"))[0]
+        ?.lastWriteAttemptId,
+    ).toBe(writeAttemptId);
+    expect(
+      (
+        await storefrontThemeFileDal.getFileByPath(
+          "storefront-a",
+          "theme-a",
+          "src/components/Hero.tsx",
+        )
+      )?.lastWriteAttemptId,
+    ).toBe(writeAttemptId);
+
+    const [updated] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/components/Hero.tsx",
+          content: "export const Hero = () => <main />;",
+          expectedFileId: saved.id,
+          expectedVersion: saved.version,
+        },
+      ],
+      { expectedSourceGeneration: 3 },
+    );
+    expect(updated?.lastWriteAttemptId).toBeUndefined();
+    const afterOrdinarySave = await storefrontThemeFileDal.listWorkspaceEntries(
+      "storefront-a",
+      "theme-a",
+    );
+    expect(afterOrdinarySave[0]).not.toHaveProperty("lastWriteAttemptId");
+    expect(
+      (
+        await storefrontThemeFileDal.getFileByPath(
+          "storefront-a",
+          "theme-a",
+          "src/components/Hero.tsx",
+        )
+      )?.lastWriteAttemptId,
+    ).toBeUndefined();
+  });
+
+  it("replaces receipts per file, clears them on delete, and binds a recreated file to its own receipt", async () => {
+    const [first, second] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/components/First.tsx",
+          content: "export const First = () => null;",
+          expectMissing: true,
+        },
+        {
+          path: "src/components/Second.tsx",
+          content: "export const Second = () => null;",
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+
+    const previousReceipt = "00000000-0000-4000-8000-000000000011";
+    const [firstWithReceipt, secondWithReceipt] =
+      await storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: first!.path,
+            content: first!.content,
+            expectedFileId: first!.id,
+            expectedVersion: first!.version,
+            writeAttemptId: previousReceipt,
+          },
+          {
+            path: second!.path,
+            content: second!.content,
+            expectedFileId: second!.id,
+            expectedVersion: second!.version,
+            writeAttemptId: previousReceipt,
+          },
+        ],
+        { expectedSourceGeneration: 2 },
+      );
+    expect(firstWithReceipt?.lastWriteAttemptId).toBe(previousReceipt);
+    expect(secondWithReceipt?.lastWriteAttemptId).toBe(previousReceipt);
+
+    const replacementReceipt = "00000000-0000-4000-8000-000000000012";
+    const [firstReplaced, secondCleared] =
+      await storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: first!.path,
+            content: "export const First = () => <main />;",
+            expectedFileId: firstWithReceipt!.id,
+            expectedVersion: firstWithReceipt!.version,
+            writeAttemptId: replacementReceipt,
+          },
+          {
+            path: second!.path,
+            content: "export const Second = () => <main />;",
+            expectedFileId: secondWithReceipt!.id,
+            expectedVersion: secondWithReceipt!.version,
+          },
+        ],
+        { expectedSourceGeneration: 3 },
+      );
+    expect(firstReplaced?.lastWriteAttemptId).toBe(replacementReceipt);
+    expect(secondCleared?.lastWriteAttemptId).toBeUndefined();
+
+    await storefrontThemeFileDal.saveFilesBatch("storefront-a", "theme-a", [], {
+      expectedSourceGeneration: 4,
+      deletions: [
+        {
+          path: first!.path,
+          expectedFileId: firstReplaced!.id,
+          expectedVersion: firstReplaced!.version,
+        },
+      ],
+    });
+    const deleted = sqlite
+      .prepare(
+        `SELECT last_write_attempt_id, deleted_at FROM storefront_theme_files WHERE id = ?`,
+      )
+      .get(firstReplaced!.id) as {
+      last_write_attempt_id: string | null;
+      deleted_at: string | null;
+    };
+    expect(deleted.last_write_attempt_id).toBeNull();
+    expect(deleted.deleted_at).not.toBeNull();
+
+    const recreatedReceipt = "00000000-0000-4000-8000-000000000013";
+    const recreated = await storefrontThemeFileDal.saveFile(
+      "storefront-a",
+      "theme-a",
+      first!.path,
+      "export const First = () => <aside />;",
+      "text/typescript",
+      {
+        expectedSourceGeneration: 5,
+        expectMissing: true,
+        writeAttemptId: recreatedReceipt,
+      },
+    );
+    expect(recreated.id).not.toBe(firstReplaced!.id);
+    expect(recreated.lastWriteAttemptId).toBe(recreatedReceipt);
+  });
+
+  it("rolls back a file receipt and source generation when a later batch mutation fails", async () => {
+    const created = await storefrontThemeFileDal.saveFile(
+      "storefront-a",
+      "theme-a",
+      "src/components/Hero.tsx",
+      "export const Hero = () => null;",
+      "text/typescript",
+      { expectedSourceGeneration: 1, expectMissing: true },
+    );
+    const attemptId = "00000000-0000-4000-8000-000000000021";
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: created.path,
+            content: "export const Hero = () => <main />;",
+            expectedFileId: created.id,
+            expectedVersion: created.version,
+            writeAttemptId: attemptId,
+          },
+          {
+            path: "src/components/Duplicate.tsx",
+            content: "export const Duplicate = () => null;",
+            expectMissing: true,
+            writeAttemptId: attemptId,
+          },
+          {
+            path: "src/components/Duplicate.tsx",
+            content: "export const Duplicate = () => <main />;",
+            expectMissing: true,
+            writeAttemptId: "00000000-0000-4000-8000-000000000022",
+          },
+        ],
+        { expectedSourceGeneration: 2 },
+      ),
+    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+
+    const unchanged = await storefrontThemeFileDal.getFileByPath(
+      "storefront-a",
+      "theme-a",
+      created.path,
+    );
+    expect(unchanged).toMatchObject({
+      id: created.id,
+      content: created.content,
+      version: created.version,
+    });
+    expect(unchanged?.lastWriteAttemptId).toBeUndefined();
+    await expect(
+      storefrontThemeFileDal.getFileByPath(
+        "storefront-a",
+        "theme-a",
+        "src/components/Duplicate.tsx",
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).resolves.toBe(2);
+  });
+
+  it("does not persist a receipt when the file version compare-and-swap is rejected", async () => {
+    const created = await storefrontThemeFileDal.saveFile(
+      "storefront-a",
+      "theme-a",
+      "src/components/Hero.tsx",
+      "export const Hero = () => null;",
+      "text/typescript",
+      { expectedSourceGeneration: 1, expectMissing: true },
+    );
+    const attemptId = "00000000-0000-4000-8000-000000000031";
+
+    await expect(
+      storefrontThemeFileDal.saveFile(
+        "storefront-a",
+        "theme-a",
+        created.path,
+        "export const Hero = () => <main />;",
+        "text/typescript",
+        {
+          expectedSourceGeneration: 2,
+          expectedFileId: created.id,
+          expectedVersion: created.version + 1,
+          writeAttemptId: attemptId,
+        },
+      ),
+    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+
+    const unchanged = await storefrontThemeFileDal.getFileByPath(
+      "storefront-a",
+      "theme-a",
+      created.path,
+    );
+    expect(unchanged).toMatchObject({
+      id: created.id,
+      content: created.content,
+      version: created.version,
+    });
+    expect(unchanged?.lastWriteAttemptId).toBeUndefined();
+    await expect(
+      storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).resolves.toBe(2);
+  });
+
+  it("applies migration 0083 to existing file data without changing its contents", () => {
+    const migrationDb = new Database(":memory:");
+    try {
+      migrationDb.exec(`
+        CREATE TABLE storefront_theme_files (
+          id text PRIMARY KEY NOT NULL,
+          content text NOT NULL
+        );
+        INSERT INTO storefront_theme_files (id, content)
+        VALUES ('existing-file', 'export const Hero = () => <main />;');
+      `);
+
+      const migration = readFileSync(
+        "drizzle/0083_style_replay_causal_receipt.sql",
+        "utf8",
+      );
+      migrationDb.exec(migration);
+
+      expect(
+        migrationDb
+          .prepare(
+            "SELECT id, content, last_write_attempt_id FROM storefront_theme_files",
+          )
+          .get(),
+      ).toEqual({
+        id: "existing-file",
+        content: "export const Hero = () => <main />;",
+        last_write_attempt_id: null,
+      });
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  it("applies migration 0083 on the real 0082 schema with rows, leaving rows and existing columns unchanged", () => {
+    // The schema 0083 meets in a deployed database: every migration before it,
+    // in the order wrangler applies `migrations_dir` (file name), not a
+    // hand-written stand-in for `storefront_theme_files`.
+    const migrationDb = new Database(":memory:");
+    const refused: string[] = [];
+    const refusedSql: string[] = [];
+    try {
+      const files = readdirSync("drizzle")
+        .filter((file) => file.endsWith(".sql"))
+        .sort();
+      expect(files).toContain("0082_preview_access_resolved_grant.sql");
+      for (const file of files) {
+        if (file >= "0083") break;
+        const sql = readFileSync(`drizzle/${file}`, "utf8");
+        const statements = sql.split("--> statement-breakpoint");
+        statements.forEach((statement, index) => {
+          if (!statement.replace(/--.*$/gm, "").trim()) return;
+          try {
+            migrationDb.exec(statement);
+          } catch {
+            refused.push(`${file}#${index}`);
+            refusedSql.push(statement);
+          }
+        });
+      }
+      // better-sqlite3 is built without double-quoted string literals, which
+      // two old `users` table rebuild copies use. Each refused statement is
+      // named exactly (file and statement index); any other refusal, or a
+      // second one in the same file, fails here instead of being skipped.
+      expect(refused).toEqual([
+        "0005_curly_blazing_skull.sql#13",
+        "0007_concerned_vapor.sql#2",
+      ]);
+      for (const statement of refusedSql) {
+        expect(statement).toMatch(/INSERT INTO `__new_users`/);
+        expect(statement).not.toMatch(/storefront_theme_files/);
+      }
+
+      migrationDb.exec(`
+        INSERT INTO storefronts (id, sales_channel_id, name, created_at, updated_at)
+        VALUES ('storefront-m', 'channel-m', 'Store', '2026-01-01', '2026-01-01');
+        INSERT INTO storefront_themes (id, storefront_id, name, created_at, updated_at)
+        VALUES ('theme-m', 'storefront-m', 'Theme', '2026-01-01', '2026-01-01');
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, mime_type, is_entry,
+           created_at, updated_at, deleted_at, version)
+        VALUES
+          ('file-text', 'storefront-m', 'theme-m', 'src/components/Hero.tsx',
+           'export const Hero = () => <main />;', 'text/typescript', 1,
+           '2026-01-01', '2026-01-02', NULL, 7),
+          ('file-deleted', 'storefront-m', 'theme-m', 'src/old.tsx',
+           'export {};', 'text/typescript', 0,
+           '2026-01-01', '2026-01-03', '2026-01-04', 2);
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, mime_type, is_entry,
+           created_at, updated_at, version, encoding, blob_digest, size_bytes)
+        VALUES
+          ('file-binary', 'storefront-m', 'theme-m', 'public/logo.png', '',
+           'image/png', 0, '2026-01-01', '2026-01-05', 3, 'binary',
+           '${"a".repeat(64)}', 128);
+      `);
+
+      const columnsOf = () =>
+        (
+          migrationDb
+            .prepare("PRAGMA table_info(storefront_theme_files)")
+            .all() as Array<{
+            name: string;
+            type: string;
+            notnull: number;
+            dflt_value: unknown;
+            pk: number;
+          }>
+        ).map(({ name, type, notnull, dflt_value, pk }) => ({
+          name,
+          type,
+          notnull,
+          dflt_value,
+          pk,
+        }));
+      const schemaObjects = () =>
+        migrationDb
+          .prepare(
+            "SELECT type, name, sql FROM sqlite_master WHERE tbl_name = 'storefront_theme_files' AND type != 'table' ORDER BY name",
+          )
+          .all();
+      const rowsOf = (columns: readonly string[]) =>
+        migrationDb
+          .prepare(
+            `SELECT ${columns.map((c) => `"${c}"`).join(", ")} FROM storefront_theme_files ORDER BY id`,
+          )
+          .all();
+
+      const columnsBefore = columnsOf();
+      const namesBefore = columnsBefore.map((column) => column.name);
+      expect(namesBefore).not.toContain("last_write_attempt_id");
+      const rowsBefore = rowsOf(namesBefore);
+      const objectsBefore = schemaObjects();
+      expect(rowsBefore).toHaveLength(3);
+
+      migrationDb.exec(
+        readFileSync("drizzle/0083_style_replay_causal_receipt.sql", "utf8"),
+      );
+
+      expect(columnsOf()).toEqual([
+        ...columnsBefore,
+        {
+          name: "last_write_attempt_id",
+          type: "TEXT",
+          notnull: 0,
+          dflt_value: null,
+          pk: 0,
+        },
+      ]);
+      expect(rowsOf(namesBefore)).toEqual(rowsBefore);
+      expect(schemaObjects()).toEqual(objectsBefore);
+      expect(
+        migrationDb
+          .prepare(
+            "SELECT id, last_write_attempt_id FROM storefront_theme_files ORDER BY id",
+          )
+          .all(),
+      ).toEqual([
+        { id: "file-binary", last_write_attempt_id: null },
+        { id: "file-deleted", last_write_attempt_id: null },
+        { id: "file-text", last_write_attempt_id: null },
+      ]);
+    } finally {
+      migrationDb.close();
+    }
+  });
+
   it("increments source_generation on saveFilesBatch", async () => {
     expect(
       await storefrontThemeFileDal.getSourceGeneration(
@@ -1148,10 +1613,15 @@ describe("a Starter upgrade racing another tab's save", () => {
     const { planned, plannedGeneration } = await planThenAnotherTabSaves();
 
     await expect(
-      storefrontThemeFileDal.saveFilesBatch("storefront-a", "theme-a", planned.files, {
-        expectedSourceGeneration: plannedGeneration,
-        deletions: planned.deletions,
-      }),
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        planned.files,
+        {
+          expectedSourceGeneration: plannedGeneration,
+          deletions: planned.deletions,
+        },
+      ),
     ).rejects.toThrow("CONFLICT_SOURCE_GENERATION_MISMATCH");
     expect(await contentNow()).toBe(AUTHOR_EDIT);
   });
@@ -1166,10 +1636,15 @@ describe("a Starter upgrade racing another tab's save", () => {
     );
 
     await expect(
-      storefrontThemeFileDal.saveFilesBatch("storefront-a", "theme-a", planned.files, {
-        expectedSourceGeneration: lateGeneration!,
-        deletions: planned.deletions,
-      }),
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        planned.files,
+        {
+          expectedSourceGeneration: lateGeneration!,
+          deletions: planned.deletions,
+        },
+      ),
     ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
     expect(await contentNow()).toBe(AUTHOR_EDIT);
   });

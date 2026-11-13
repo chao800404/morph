@@ -83,6 +83,13 @@ export type ThemeWorkspaceFileState = ThemeFileServerState & {
   refusedEarlier?: boolean;
 };
 
+/** What the server holds for one file: identity, version and text. */
+export type ThemeServerFileSnapshot = Readonly<{
+  id: string;
+  version: number;
+  content: string;
+}>;
+
 export type ThemeConflictResolution = ThemeFileServerState & {
   content: string | null;
 };
@@ -174,6 +181,27 @@ export interface ThemeWorkspaceStore {
     scope?: WorkspaceScope,
   ) => ThemeConflictResolution | null;
   discardLocalChanges: (path: string, scope?: WorkspaceScope) => void;
+  /**
+   * An unanswered save found, on read-back, to be overtaken: the Theme moved
+   * on, so it can no longer be confirmed. That is an answer, so it is no
+   * longer `unconfirmedContent`. The author's text stays, unsaved, as a
+   * source conflict against what the server holds now (`latest`, null when
+   * the server holds no such file).
+   */
+  keepAfterOvertakenSave: (
+    path: string,
+    latest: ThemeServerFileSnapshot | null,
+    scope?: WorkspaceScope,
+  ) => void;
+  /**
+   * Takes what the server holds (`latest`) as this tab's file, replacing the
+   * local text; null removes a file the server no longer holds.
+   */
+  loadServerFile: (
+    path: string,
+    latest: ThemeServerFileSnapshot | null,
+    scope?: WorkspaceScope,
+  ) => void;
   getDirtyFiles: (scope?: WorkspaceScope) => string[];
   hasUnsavedEdits: (scope?: WorkspaceScope) => boolean;
   hasActiveConflictsOrErrors: (scope?: WorkspaceScope) => boolean;
@@ -1006,6 +1034,66 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
         content: current.localContent,
         ...serverState,
       };
+    },
+
+    keepAfterOvertakenSave: (path, latest, scope) => {
+      set((state) => {
+        const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+        const current = workspaceFiles[path];
+        if (!current) return state;
+
+        const next = {
+          ...workspaceFiles,
+          [path]: {
+            ...current,
+            ...(latest
+              ? presentOnServer(latest.id, latest.version)
+              : ABSENT_ON_SERVER),
+            serverContent: latest?.content ?? "",
+            dirty: true,
+            saveState: "dirty" as const,
+            conflict: undefined,
+            errorMessage: undefined,
+            sourceConflict: true,
+            unconfirmedContent: undefined,
+            refusedEarlier: undefined,
+          },
+        };
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        };
+      });
+    },
+
+    loadServerFile: (path, latest, scope) => {
+      set((state) => {
+        const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+        const current = workspaceFiles[path];
+        if (!current) return state;
+
+        const next = { ...workspaceFiles };
+        if (!latest) {
+          delete next[path];
+        } else {
+          next[path] = {
+            path,
+            ...presentOnServer(latest.id, latest.version),
+            serverContent: latest.content,
+            localContent: latest.content,
+            dirty: false,
+            saveState: "clean",
+          };
+        }
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        };
+      });
     },
 
     discardLocalChanges: (path, scope) => {

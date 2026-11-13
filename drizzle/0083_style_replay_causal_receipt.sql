@@ -1,0 +1,1 @@
+ALTER TABLE `storefront_theme_files` ADD `last_write_attempt_id` text;

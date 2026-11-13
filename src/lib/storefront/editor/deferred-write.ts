@@ -34,8 +34,10 @@ export type DeferredWritePorts<TId, TResult> = Readonly<{
   record: () => TId;
   discard: (id: TId) => void;
   save: () => Promise<TResult>;
-  /** Whether the result means the write never landed. */
-  isConflict: (result: TResult) => boolean;
+  /** Whether the result confirms that the write did not land. */
+  isNotLanded: (result: TResult) => boolean;
+  /** Keeps the optimistic history entry when the write outcome is unknown. */
+  retainOnError?: (error: unknown) => boolean;
   /** Reports a write that failed outright. */
   onError: (error: unknown) => void;
 }>;
@@ -43,8 +45,17 @@ export type DeferredWritePorts<TId, TResult> = Readonly<{
 export function scheduleDeferredWrite<TId, TResult>(
   ports: DeferredWritePorts<TId, TResult>,
 ): void {
-  const { writes, key, delayMs, record, discard, save, isConflict, onError } =
-    ports;
+  const {
+    writes,
+    key,
+    delayMs,
+    record,
+    discard,
+    save,
+    isNotLanded,
+    retainOnError,
+    onError,
+  } = ports;
 
   // Recorded here rather than when the write lands: the author can press undo
   // during the debounce window, and an entry that arrives afterwards cannot
@@ -54,11 +65,12 @@ export function scheduleDeferredWrite<TId, TResult>(
   writes.schedule(key, delayMs, () =>
     save()
       .then((result) => {
-        // A conflicted write never landed, so there is nothing to reverse.
-        if (isConflict(result)) discard(id);
+        // A refused or superseded write never landed, so there is nothing to
+        // reverse.
+        if (isNotLanded(result)) discard(id);
       })
       .catch((error: unknown) => {
-        discard(id);
+        if (!retainOnError?.(error)) discard(id);
         onError(error);
       }),
   );

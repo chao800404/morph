@@ -9,6 +9,8 @@ export type StorefrontThemeFileDTO = {
   mimeType: string;
   isEntry: boolean;
   version: number;
+  /** Causal receipt for the most recent write; null when the last save was not tagged. */
+  lastWriteAttemptId?: string | null;
   createdAt: string;
   updatedAt: string;
   /** Source text; absent on every reader that predates binary files. */

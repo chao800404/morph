@@ -109,6 +109,7 @@ import {
   earlierRefusalStillApplies,
   settleHeldFile,
   templateIdOfPendingContentKey,
+  UnconfirmedThemeFileWriteError,
   verifyEditorWriter,
 } from "@/lib/storefront/editor/editor-write-recovery";
 import {
@@ -267,6 +268,7 @@ import {
   deleteStorefrontThemePage,
   getStorefrontThemeFile,
   initStorefrontStarterTheme,
+  listStorefrontThemeFiles,
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -719,6 +721,152 @@ class DesignStructureRefusedError extends Error {}
 /** An undo or redo whose write did not land; the entry stays. */
 export const HISTORY_REPLAY_NOT_SAVED_MESSAGE =
   "the change is not saved yet. It stays in the history; try again once the file is saved.";
+const HISTORY_REPLAY_FILE_CONFLICT_MESSAGE =
+  "The file changed while its save was unanswered. Resolve the file conflict before retrying.";
+const STYLE_REPLAY_OTHER_RUN_MESSAGE =
+  "an earlier Undo or Redo of this file got no answer. Use Check and save first; nothing was sent.";
+const STYLE_REPLAY_OVERTAKEN_MESSAGE =
+  "Another save to this Theme came first, so the unanswered Undo or Redo of this file can no longer be confirmed. It was not confirmed or sent again. Your text is kept: save it on top of the latest Theme, or load the latest.";
+
+/**
+ * The stored Style replay of a file (a lost Undo/Redo answer), while it is
+ * still the file's unconfirmed write. Once the file holds no unconfirmed
+ * write, or another one, the stored replay describes nothing that is still
+ * unknown: it is dropped, so no later save or run inherits its receipt.
+ */
+function liveStyleReplay<T extends { content: string }>(
+  replays: Map<string, T>,
+  filePath: string,
+  unconfirmedContent: string | undefined,
+): T | undefined {
+  const stored = replays.get(filePath);
+  if (stored && stored.content !== unconfirmedContent) {
+    replays.delete(filePath);
+    return undefined;
+  }
+  return stored;
+}
+
+/**
+ * What "Load the latest" would do to the files a source conflict lists:
+ * which are replaced by the server's copy, and which are kept, and why.
+ */
+type LoadLatestPlan = Readonly<{
+  /**
+   * Replaced by the server's copy (or removed, when the read finds the
+   * server no longer holds a file it once held: deleted on the server).
+   */
+  replace: readonly string[];
+  kept: ReadonlyArray<Readonly<{ path: string; reason: string }>>;
+}>;
+
+const LOAD_LATEST_KEPT_UNCONFIRMED =
+  "its last save got no answer; use Check and save to find out whether it was stored";
+const LOAD_LATEST_KEPT_CONFLICT =
+  "it also changed elsewhere; resolve its conflict in Code";
+const LOAD_LATEST_KEPT_SAVING =
+  "a save of it was still on its way, so it was not replaced under that save";
+const LOAD_LATEST_KEPT_SETTLED =
+  "it was saved or changed meanwhile, so it was left as it is";
+const LOAD_LATEST_KEPT_UNREADABLE =
+  "its latest text could not be read; try again";
+const LOAD_LATEST_KEPT_NEVER_SAVED =
+  "never saved to the Theme; save or delete it yourself";
+
+function planLoadLatest(
+  files: Parameters<typeof sourceConflictPaths>[0],
+  saveOnItsWay: (path: string) => boolean,
+): LoadLatestPlan {
+  const replace: string[] = [];
+  const kept: Array<{ path: string; reason: string }> = [];
+  for (const path of sourceConflictPaths(files)) {
+    const file = files[path];
+    if (file?.unconfirmedContent !== undefined) {
+      kept.push({ path, reason: LOAD_LATEST_KEPT_UNCONFIRMED });
+    } else if (file?.conflict) {
+      kept.push({ path, reason: LOAD_LATEST_KEPT_CONFLICT });
+    } else if (
+      // Running, queued, or waiting on its debounce: an edit already made
+      // that a save will still send.
+      file?.saveState === "saving" ||
+      file?.saveState === "debouncing" ||
+      saveOnItsWay(path)
+    ) {
+      kept.push({ path, reason: LOAD_LATEST_KEPT_SAVING });
+    } else if (file && !file.serverExists) {
+      // Created in this tab and never stored: there is no Theme copy of it to
+      // load, and it was never deleted on the server either.
+      kept.push({ path, reason: LOAD_LATEST_KEPT_NEVER_SAVED });
+    } else {
+      replace.push(path);
+    }
+  }
+  return { replace, kept };
+}
+
+/** What Load the latest did, said once it is done. */
+function describeLoadLatest(result: {
+  replaced: readonly string[];
+  removed: readonly string[];
+  kept: ReadonlyArray<{ path: string; reason: string }>;
+}): string {
+  const parts: string[] = [];
+  if (result.replaced.length > 0) {
+    parts.push(`Loaded the latest version of ${result.replaced.join(", ")}.`);
+  }
+  if (result.removed.length > 0) {
+    parts.push(
+      `Removed (deleted on the server): ${result.removed.join(", ")}.`,
+    );
+  }
+  if (result.kept.length > 0) {
+    parts.push(
+      `Kept: ${result.kept
+        .map(({ path, reason }) => `${path} (${reason})`)
+        .join("; ")}.`,
+    );
+  }
+  return parts.join(" ") || "Nothing was loaded.";
+}
+
+/**
+ * Whose a stored Style replay is, for one save of its file:
+ * - `same-run`: the same history entry and direction running again;
+ * - `check-and-save`: the author's explicit save of exactly its text, with
+ *   no history run (Check and save, Save my changes, a confirmed Code save
+ *   of those bytes): the same write, sent under its own receipt;
+ * - `other`: any other save of the file. It may settle the replay from
+ *   read-back evidence; it never sends under the replay's receipt.
+ * Another history run of the file is refused before anything is read or
+ * sent: its outcome would be judged against a write still unknown.
+ */
+function styleReplayRole(
+  stored: { attempt: EditorHistoryAttempt; content: string },
+  historyAttempt: EditorHistoryAttempt | undefined,
+  confirmed: boolean,
+  contentToSave: string,
+): "same-run" | "check-and-save" | "other" {
+  if (historyAttempt) {
+    if (
+      stored.attempt.entryId === historyAttempt.entryId &&
+      stored.attempt.direction === historyAttempt.direction
+    ) {
+      return "same-run";
+    }
+    throw new Error(STYLE_REPLAY_OTHER_RUN_MESSAGE);
+  }
+  return confirmed && contentToSave === stored.content
+    ? "check-and-save"
+    : "other";
+}
+
+const HISTORY_REPLAY_REFUSAL_MESSAGES = {
+  superseded:
+    "A newer Theme file write replaced this history change. Try again.",
+  "source-conflict":
+    "The Theme source changed. Resolve the source conflict before retrying.",
+  "auth-paused": "Theme file saving is paused. Restore access before retrying.",
+} as const;
 
 /**
  * Whether a file may take a Design element edit now: the edit is judged on
@@ -5983,9 +6131,52 @@ export function VisualEditorShell({
 
   /** Source writes waiting out a debounce, kept with what they would send. */
   const pendingSaveWritesRef = useRef(createDebouncedWrites());
+  /**
+   * Style edits whose first file write was held by the auth gate. They are
+   * not history until the existing resume/read-back path proves the text was
+   * saved. Keep the original file precondition and source generation with the
+   * edit while it waits.
+   */
+  type PausedStyleHistoryIntent = {
+    storefrontId: string;
+    themeId: string;
+    path: string;
+    label: string;
+    before: string;
+    after: string;
+    serverExists: boolean;
+    serverFileId: string | null;
+    serverVersion: number | null;
+    sourceGeneration: number;
+  };
+  type UnconfirmedStyleHistoryReplay = Readonly<{
+    attempt: EditorHistoryAttempt;
+    writeAttemptId: string;
+    content: string;
+    serverExists: boolean;
+    serverFileId: string | null;
+    serverVersion: number | null;
+    sourceGeneration: number;
+  }>;
+  const pausedStyleHistoryRef = useRef(
+    new Map<string, PausedStyleHistoryIntent[]>(),
+  );
+  /** A lost Style Undo/Redo answer, linked to the exact history run and file basis. */
+  const unconfirmedStyleHistoryRef = useRef(
+    new Map<string, UnconfirmedStyleHistoryReplay>(),
+  );
+  const recordPausedStyleHistoryRef = useRef<
+    ((intent: PausedStyleHistoryIntent) => void) | null
+  >(null);
   // Ordering and supersession live in `theme-file-save-queue`, where both rules
   // can be stated as tests instead of reproduced by typing quickly.
   const saveQueueRef = useRef(createThemeFileSaveQueue());
+  /**
+   * How many saves of each file are queued or running in `saveQueueRef`.
+   * Load the latest keeps such a file: replacing it under a save on its way
+   * would leave that save's answer, or its send, over the replaced text.
+   */
+  const savesOnTheirWayRef = useRef(new Map<string, number>());
   /**
    * What each pending Design write of a file was, with the text it wrote; see
    * `pending-design-writes`. A file whose unsaved content is still exactly
@@ -7145,6 +7336,9 @@ export function VisualEditorShell({
     contentDiff,
   );
 
+  type SavedThemeFile = StorefrontThemeFileDTO & {
+    sourceGeneration?: number | null;
+  };
   const saveThemeFileSequentially = useCallback(
     async (
       filePath: string,
@@ -7166,14 +7360,28 @@ export function VisualEditorShell({
             designElement: DesignElementOperation;
           }
         | { operation: "design-structure" },
+      historyAttempt?: EditorHistoryAttempt,
     ): Promise<
-      | { status: "saved"; file: StorefrontThemeFileDTO }
+      | { status: "saved"; file: SavedThemeFile }
       | { status: "superseded" }
       | { status: "source-conflict" }
       | { status: "auth-paused" }
+      | { status: "file-conflict" }
     > => {
+      if (historyAttempt && isEditablePublicTextPath(filePath)) {
+        throw new Error(
+          "Style history replay receipts are only supported for Theme source files.",
+        );
+      }
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
+      const onTheirWay = savesOnTheirWayRef.current;
+      onTheirWay.set(filePath, (onTheirWay.get(filePath) ?? 0) + 1);
+      const settled = () => {
+        const left = (onTheirWay.get(filePath) ?? 1) - 1;
+        if (left > 0) onTheirWay.set(filePath, left);
+        else onTheirWay.delete(filePath);
+      };
 
       return saveQueueRef.current.enqueue({
         queueKey: themeOpKey,
@@ -7181,10 +7389,11 @@ export function VisualEditorShell({
         revision: targetRevision,
         superseded: () => ({ status: "superseded" }) as const,
         task: async (): Promise<
-          | { status: "saved"; file: StorefrontThemeFileDTO }
+          | { status: "saved"; file: SavedThemeFile }
           | { status: "superseded" }
           | { status: "source-conflict" }
           | { status: "auth-paused" }
+          | { status: "file-conflict" }
         > => {
           const readCurrent = () =>
             useThemeWorkspaceStore
@@ -7212,6 +7421,44 @@ export function VisualEditorShell({
             throw new Error(UNCONFIRMED_SAVE_HOLD);
           }
 
+          // Read here, in the queue, after every save ahead of this one has
+          // settled what it owned; see `styleReplayRole`.
+          const styleReplay = liveStyleReplay(
+            unconfirmedStyleHistoryRef.current,
+            filePath,
+            current.unconfirmedContent,
+          );
+          const replayRole = styleReplay
+            ? styleReplayRole(
+                styleReplay,
+                historyAttempt,
+                confirmed,
+                contentToSave,
+              )
+            : undefined;
+          const writeAttemptId =
+            styleReplay &&
+            (replayRole === "same-run" || replayRole === "check-and-save")
+              ? styleReplay.writeAttemptId
+              : historyAttempt
+                ? crypto.randomUUID()
+                : undefined;
+          /**
+           * Completes the stored replay's own history run, once, when this
+           * save is not that run (which completes itself) but the evidence
+           * says its write landed.
+           */
+          const confirmStoredReplay = (replay: UnconfirmedStyleHistoryReplay) => {
+            if (unconfirmedStyleHistoryRef.current.get(filePath) === replay) {
+              unconfirmedStyleHistoryRef.current.delete(filePath);
+            }
+            history.confirm(
+              replay.attempt.entryId,
+              replay.attempt.direction,
+              replay.attempt.attemptId,
+            );
+          };
+
           markWorkspaceSaving(filePath, workspaceScope);
 
           try {
@@ -7220,11 +7467,16 @@ export function VisualEditorShell({
             // sent again; see `confirmLostSave`. With no answer this throws,
             // and the file stays as it is.
             if (current.unconfirmedContent !== undefined) {
-              const confirmed: { file?: StorefrontThemeFileDTO } = {};
+              const confirmed: { file?: SavedThemeFile } = {};
+              let styleReplayLanded = false;
+              let latestDuringRecovery:
+                StorefrontThemeFileDTO | null | undefined;
+              let sourceGenerationDuringRecovery: number | undefined;
               await confirmLostSave({
                 unconfirmedContent: current.unconfirmedContent,
+                ...(styleReplay ? { isLanded: () => styleReplayLanded } : {}),
                 readLatest: async () => {
-                  const latest = await getStorefrontThemeFile({
+                  const latestFile = await getStorefrontThemeFile({
                     data: {
                       storefrontId: context.storefront.id,
                       themeId: context.theme.id,
@@ -7234,19 +7486,268 @@ export function VisualEditorShell({
                     reportEditorReadFailure(workspaceScope, error);
                     throw error;
                   });
-                  if (latest.success) return latest.data ?? null;
-                  if (latest.error === "NOT_FOUND") return null;
-                  throw new Error(latest.message);
+                  let file: StorefrontThemeFileDTO | null;
+                  if (latestFile.success) {
+                    file = latestFile.data ?? null;
+                  } else if (latestFile.error === "NOT_FOUND") {
+                    file = null;
+                  } else {
+                    throw new Error(latestFile.message);
+                  }
+
+                  // A single-file read has the file id/version but no source
+                  // generation. Read the existing workspace snapshot too;
+                  // if the file moved between the two reads, decide nothing.
+                  const latest = await listStorefrontThemeFiles({
+                    data: {
+                      storefrontId: context.storefront.id,
+                      themeId: context.theme.id,
+                    },
+                  }).catch((error: unknown) => {
+                    reportEditorReadFailure(workspaceScope, error);
+                    throw error;
+                  });
+                  if (!latest.success) {
+                    throw new Error(latest.message);
+                  }
+                  if (
+                    !Number.isSafeInteger(latest.data.sourceGeneration) ||
+                    latest.data.sourceGeneration < 1
+                  ) {
+                    throw new Error(
+                      "Theme source generation was unavailable during save recovery.",
+                    );
+                  }
+                  const snapshotFile = latest.data.files.find(
+                    (candidate) => candidate.path === filePath,
+                  );
+                  const sameFileRead = file
+                    ? snapshotFile?.id === file.id &&
+                      snapshotFile.version === file.version &&
+                      snapshotFile.lastWriteAttemptId ===
+                        file.lastWriteAttemptId
+                    : snapshotFile === undefined;
+                  if (!sameFileRead) {
+                    throw new Error(
+                      "Theme file changed during save recovery read-back.",
+                    );
+                  }
+                  sourceGenerationDuringRecovery = latest.data.sourceGeneration;
+                  if (styleReplay) {
+                    const exactLandedVersion = styleReplay.serverExists
+                      ? Boolean(
+                          file &&
+                          file.id === styleReplay.serverFileId &&
+                          styleReplay.serverVersion !== null &&
+                          file.version === styleReplay.serverVersion + 1,
+                        )
+                      : Boolean(file && file.version === 1);
+                    const landed = Boolean(
+                      file &&
+                      file.lastWriteAttemptId === styleReplay.writeAttemptId &&
+                      // The receipt names the write; the bytes must still
+                      // be the ones it wrote.
+                      file.content === styleReplay.content &&
+                      exactLandedVersion &&
+                      sourceGenerationDuringRecovery ===
+                        styleReplay.sourceGeneration + 1,
+                    );
+                    styleReplayLanded = landed;
+                    const sameFileAtOriginalVersion = styleReplay.serverExists
+                      ? Boolean(
+                          file &&
+                          file.id === styleReplay.serverFileId &&
+                          file.version === styleReplay.serverVersion,
+                        )
+                      : file === null;
+                    const notLanded =
+                      sameFileAtOriginalVersion &&
+                      sourceGenerationDuringRecovery ===
+                        styleReplay.sourceGeneration;
+                    if (!landed && !notLanded) {
+                      const sameFileAtLandedVersion = file
+                        ? styleReplay.serverExists
+                          ? file.id === styleReplay.serverFileId &&
+                            styleReplay.serverVersion !== null &&
+                            file.version === styleReplay.serverVersion + 1 &&
+                            file.lastWriteAttemptId ===
+                              styleReplay.writeAttemptId
+                          : file.version === 1 &&
+                            file.lastWriteAttemptId ===
+                              styleReplay.writeAttemptId
+                        : false;
+                      // Only the Theme moved: this file is as the replay
+                      // left it (untouched, or holding exactly the replay's
+                      // write) and the generation is past where that leaves
+                      // it. Anything else about the file is a file conflict.
+                      const overtakenBySource =
+                        (sameFileAtOriginalVersion &&
+                          sourceGenerationDuringRecovery !==
+                            styleReplay.sourceGeneration) ||
+                        (sameFileAtLandedVersion &&
+                          file?.content === styleReplay.content &&
+                          sourceGenerationDuringRecovery !==
+                            styleReplay.sourceGeneration + 1);
+                      if (overtakenBySource) {
+                        // This file is where the replay left it, but the
+                        // Theme moved on: the replay can no longer be
+                        // confirmed (no evidence), and is not sent again.
+                        // That answers the unknown write: the file is no
+                        // longer unconfirmed, so its stored replay is no
+                        // longer live (`liveStyleReplay` drops it); its
+                        // history step stays open (not moved). The author's
+                        // text stays as a source conflict against what the
+                        // server holds now: saved plainly at that basis (no
+                        // receipt), or replaced by the latest.
+                        useThemeWorkspaceStore
+                          .getState()
+                          .keepAfterOvertakenSave(
+                            filePath,
+                            file
+                              ? {
+                                  id: file.id,
+                                  version: file.version,
+                                  content: file.content,
+                                }
+                              : null,
+                            workspaceScope,
+                          );
+                        throw new Error(STYLE_REPLAY_OVERTAKEN_MESSAGE);
+                      } else {
+                        markWorkspaceConflict(
+                          filePath,
+                          file
+                            ? {
+                                kind: current.serverExists
+                                  ? "modified"
+                                  : "created",
+                                remoteExists: true,
+                                remoteFileId: file.id,
+                                remoteVersion: file.version,
+                                remoteContent: file.content,
+                              }
+                            : {
+                                kind: "deleted",
+                                remoteExists: false,
+                                remoteFileId: null,
+                                remoteVersion: null,
+                                remoteContent: null,
+                              },
+                          workspaceScope,
+                        );
+                      }
+                      throw new Error(
+                        "The Theme file or source changed during Style history recovery. The original replay was not sent again.",
+                      );
+                    }
+                  }
+                  latestDuringRecovery = file;
+                  return latestDuringRecovery;
                 },
                 markLanded: (latest) => {
                   confirmed.file = latest;
-                  markWorkspaceSaved(latest, workspaceScope);
+                  markWorkspaceSaved(
+                    latest,
+                    workspaceScope,
+                    sourceGenerationDuringRecovery,
+                  );
                 },
               });
+              if (styleReplay && confirmed.file) {
+                if (
+                  (replayRole !== "other" &&
+                    styleReplay.content !== contentToSave) ||
+                  confirmed.file.lastWriteAttemptId !==
+                    styleReplay.writeAttemptId
+                ) {
+                  throw new Error(
+                    "The Style history replay receipt did not match the original write.",
+                  );
+                }
+                // Landed, proven by its receipt. A history run of it
+                // completes itself when this returns; any other save
+                // completes that run here.
+                if (replayRole !== "same-run") confirmStoredReplay(styleReplay);
+                if (replayRole !== "other") {
+                  pendingDesignWritesRef.current.landed(
+                    filePath,
+                    targetRevision,
+                  );
+                  return {
+                    status: "saved",
+                    file: {
+                      ...confirmed.file,
+                      sourceGeneration: sourceGenerationDuringRecovery,
+                    },
+                  };
+                }
+                // Another save of the file: its own text goes next, as a
+                // plain save against the version the replay landed as.
+              }
               // What would be sent is what the server already holds.
               if (confirmed.file?.content === contentToSave) {
                 pendingDesignWritesRef.current.landed(filePath, targetRevision);
-                return { status: "saved", file: confirmed.file };
+                return {
+                  status: "saved",
+                  file: {
+                    ...confirmed.file,
+                    sourceGeneration: sourceGenerationDuringRecovery,
+                  },
+                };
+              }
+              if (!confirmed.file && latestDuringRecovery !== undefined) {
+                const latest = latestDuringRecovery;
+                const sameFileBaseline = latest
+                  ? current.serverExists === true &&
+                    current.serverFileId === latest.id &&
+                    current.serverVersion === latest.version &&
+                    (styleReplay || current.serverContent === latest.content)
+                  : current.serverExists !== true;
+                const acceptedGeneration = useThemeWorkspaceStore
+                  .getState()
+                  .getAcceptedSourceGeneration(workspaceScope);
+                if (!sameFileBaseline) {
+                  markWorkspaceConflict(
+                    filePath,
+                    latest
+                      ? {
+                          kind: current.serverExists ? "modified" : "created",
+                          remoteExists: true,
+                          remoteFileId: latest.id,
+                          remoteVersion: latest.version,
+                          remoteContent: latest.content,
+                        }
+                      : {
+                          kind: "deleted",
+                          remoteExists: false,
+                          remoteFileId: null,
+                          remoteVersion: null,
+                          remoteContent: null,
+                        },
+                    workspaceScope,
+                  );
+                  return { status: "file-conflict" };
+                }
+                if (sourceGenerationDuringRecovery !== acceptedGeneration) {
+                  useThemeWorkspaceStore
+                    .getState()
+                    .markSourceConflict(filePath, workspaceScope);
+                  return { status: "source-conflict" };
+                }
+                if (latest) {
+                  markWorkspaceSaved(
+                    latest,
+                    workspaceScope,
+                    sourceGenerationDuringRecovery,
+                  );
+                }
+                if (!styleReplay && latest?.content === contentToSave) {
+                  pendingDesignWritesRef.current.landed(
+                    filePath,
+                    targetRevision,
+                  );
+                  return { status: "saved", file: latest };
+                }
               }
               current = readCurrent();
               if (!current)
@@ -7284,6 +7785,7 @@ export function VisualEditorShell({
                         content: contentToSave,
                         ...themeFileWritePrecondition(current),
                         expectedSourceGeneration: acceptedGeneration,
+                        ...(writeAttemptId ? { writeAttemptId } : {}),
                         ...(operationSave ?? {}),
                       },
                     }),
@@ -7308,7 +7810,20 @@ export function VisualEditorShell({
                 useThemeWorkspaceStore
                   .getState()
                   .markUnconfirmed(filePath, contentToSave, workspaceScope);
-                throw error;
+                // A Check and save resend lost again keeps its stored replay
+                // as it was: same run, same receipt, same basis.
+                if (historyAttempt) {
+                  unconfirmedStyleHistoryRef.current.set(filePath, {
+                    attempt: historyAttempt,
+                    content: contentToSave,
+                    serverExists: current.serverExists,
+                    serverFileId: current.serverFileId,
+                    serverVersion: current.serverVersion,
+                    writeAttemptId: writeAttemptId!,
+                    sourceGeneration: acceptedGeneration,
+                  });
+                }
+                throw new UnconfirmedThemeFileWriteError(error);
               }
               // Not sent, or refused for who is asking: the edit stays in the
               // workspace, marked, and goes when writes are resumed.
@@ -7398,6 +7913,16 @@ export function VisualEditorShell({
             }
 
             markWorkspaceSaved(res.data, workspaceScope);
+            // The resend of a replay proven not landed, answered: this very
+            // send carried the replay's receipt and basis, so the answer is
+            // the evidence for that history run.
+            if (
+              replayRole === "check-and-save" &&
+              styleReplay &&
+              res.data.lastWriteAttemptId === styleReplay.writeAttemptId
+            ) {
+              confirmStoredReplay(styleReplay);
+            }
             queryClient.setQueryData<ThemeFilesTreeQueryData | undefined>(
               storefrontThemeFileQueries.tree(
                 context.storefront.id,
@@ -7446,12 +7971,13 @@ export function VisualEditorShell({
             throw error;
           }
         },
-      });
+      }).finally(settled);
     },
     [
       context.storefront.id,
       context.theme.id,
       getScopedOpKey,
+      history,
       markWorkspaceConflict,
       markWorkspaceError,
       markWorkspaceSaved,
@@ -7500,10 +8026,12 @@ export function VisualEditorShell({
           fromHistory?: boolean;
           renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
+          confirmed?: boolean;
           operation?: "code-default" | "design-element";
           codeDefault?: CodeDefaultWriteProof;
           designElement?: DesignElementOperation;
           historyReplay?: boolean;
+          historyAttempt?: EditorHistoryAttempt;
           structureEdit?: boolean;
         },
       ) => Promise<unknown>)
@@ -7551,8 +8079,38 @@ export function VisualEditorShell({
          * is the author's and is kept.)
          */
         historyReplay?: boolean;
+        /** The exact Style history run whose unknown write is being sent. */
+        historyAttempt?: EditorHistoryAttempt;
       },
     ) => {
+      // Another history run of a file whose Style replay is still unknown —
+      // a Style entry's, or any other entry's of the file (Code, Design
+      // element, structure) — is refused before the workspace or the frame
+      // shows its text; the queue asks the same again for Style runs, and
+      // holds any other unconfirmed-file save.
+      if (options?.historyAttempt || options?.historyReplay) {
+        const stored = liveStyleReplay(
+          unconfirmedStyleHistoryRef.current,
+          filePath,
+          useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            )[filePath]?.unconfirmedContent,
+        );
+        if (stored) {
+          if (!options.historyAttempt) {
+            throw new Error(STYLE_REPLAY_OTHER_RUN_MESSAGE);
+          }
+          styleReplayRole(
+            stored,
+            options.historyAttempt,
+            options.confirmed ?? false,
+            content,
+          );
+        }
+      }
       // What this write is. Named by the caller, or else the pending Design
       // write whose very text this is, sent again by whoever asks (Code, a
       // publish flush, a resend): the same write, judged the same way.
@@ -7691,6 +8249,7 @@ export function VisualEditorShell({
               : origin?.kind === "structure-edit"
                 ? { operation: "design-structure" }
                 : undefined,
+          options?.historyAttempt,
         );
       } catch (error) {
         // A Design element edit the server refused is taken back, in the
@@ -7739,6 +8298,15 @@ export function VisualEditorShell({
         result.status === "source-conflict" ||
         result.status === "auth-paused"
       ) {
+        if (options?.historyReplay) {
+          throw new Error(HISTORY_REPLAY_REFUSAL_MESSAGES[result.status]);
+        }
+        return null;
+      }
+      if (result.status === "file-conflict") {
+        if (options?.historyReplay) {
+          throw new Error(HISTORY_REPLAY_FILE_CONFLICT_MESSAGE);
+        }
         return null;
       }
       // Only a landed write is reversible, and only one that actually changed
@@ -7844,6 +8412,115 @@ export function VisualEditorShell({
   );
 
   handleUnifiedSaveFileRef.current = handleUnifiedSaveFile;
+
+  const recordPausedStyleHistory = useCallback(
+    (intent: PausedStyleHistoryIntent) => {
+      const replayStyle = async (
+        content: string,
+        attempt: EditorHistoryAttempt,
+      ) => {
+        const files = useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          );
+        const hasOnlyThisUnconfirmedFile =
+          files[intent.path]?.unconfirmedContent !== undefined &&
+          unconfirmedPaths(files).every((path) => path === intent.path);
+        const previous = unconfirmedStyleHistoryRef.current.get(intent.path);
+        if (
+          previous?.attempt.entryId === attempt.entryId &&
+          previous.attempt.direction === attempt.direction
+        ) {
+          unconfirmedStyleHistoryRef.current.set(intent.path, {
+            ...previous,
+            attempt,
+          });
+        }
+        const save = handleUnifiedSaveFileRef.current;
+        if (!save) throw new Error("Theme file history is not ready.");
+        const saved = await save(intent.path, content, {
+          fromHistory: true,
+          historyReplay: true,
+          renderDocument: true,
+          confirmed: hasOnlyThisUnconfirmedFile,
+          historyAttempt: attempt,
+        });
+        if (saved === null || saved === undefined) {
+          throw new Error("The Style change was not saved.");
+        }
+        const pending = unconfirmedStyleHistoryRef.current.get(intent.path);
+        if (pending?.attempt.attemptId === attempt.attemptId) {
+          unconfirmedStyleHistoryRef.current.delete(intent.path);
+        }
+        return saved;
+      };
+
+      history.record({
+        label: intent.label,
+        scope: themeFileHistoryScope(intent.path),
+        undo: (attempt) => {
+          resetPreviewSelectionStyle();
+          return replayStyle(intent.before, attempt);
+        },
+        redo: (attempt) => {
+          resetPreviewSelectionStyle();
+          return replayStyle(intent.after, attempt);
+        },
+      });
+    },
+    [history, resetPreviewSelectionStyle, workspaceScope],
+  );
+  recordPausedStyleHistoryRef.current = recordPausedStyleHistory;
+
+  const settlePausedStyleHistoryWrite = useCallback(
+    (filePath: string, content: string, result: unknown) => {
+      const pending = pausedStyleHistoryRef.current.get(filePath);
+      if (!pending?.length) return;
+      if (result === null || typeof result !== "object") {
+        pausedStyleHistoryRef.current.delete(filePath);
+        return;
+      }
+      const saved = result as Partial<SavedThemeFile>;
+      const first = pending[0];
+      const last = pending[pending.length - 1];
+      const sameBaseline = pending.every(
+        (intent) =>
+          intent.storefrontId === workspaceScope.storefrontId &&
+          intent.themeId === workspaceScope.themeId &&
+          intent.serverExists === first.serverExists &&
+          intent.serverFileId === first.serverFileId &&
+          intent.serverVersion === first.serverVersion &&
+          intent.sourceGeneration === first.sourceGeneration,
+      );
+      const continuous = pending.every(
+        (intent, index) =>
+          index === 0 || pending[index - 1]?.after === intent.before,
+      );
+      if (
+        !sameBaseline ||
+        !continuous ||
+        saved.path !== filePath ||
+        saved.content !== content ||
+        content !== last.after ||
+        (first.serverExists &&
+          (first.serverFileId === null ||
+            first.serverVersion === null ||
+            saved.id !== first.serverFileId ||
+            typeof saved.version !== "number" ||
+            saved.version <= first.serverVersion))
+      ) {
+        pausedStyleHistoryRef.current.delete(filePath);
+        return;
+      }
+      const record = recordPausedStyleHistoryRef.current;
+      if (!record) return;
+      for (const intent of pending) record(intent);
+      pausedStyleHistoryRef.current.delete(filePath);
+    },
+    [workspaceScope],
+  );
 
   const handleRepairThemeLinkBinding = useCallback(
     async (filePath: string, fieldKey: string): Promise<boolean> => {
@@ -8740,6 +9417,180 @@ export function VisualEditorShell({
   ]);
 
   /**
+   * The other way out of a source conflict: the author drops this tab's text
+   * of those files and takes what the newest Theme holds. Nothing is sent.
+   * Each file's history entries describe the text just replaced, so they are
+   * retired (as Reload Remote does). A file whose last save is still
+   * unanswered, that has a file conflict, or whose save is on its way, is
+   * left to its own path; the newer generation is accepted only once no
+   * source conflict remains, and never below what is accepted already.
+   *
+   * Asked first (`loadLatestPlan`, shown in a confirmation) and checked
+   * again at confirm and once more when it runs. It runs as a task of the
+   * Theme's save queue: saves queued before it finish first, and saves
+   * queued after it see what it loaded.
+   */
+  const [loadLatestPlan, setLoadLatestPlan] =
+    useState<LoadLatestPlan | null>(null);
+  /** Loads queued or running; the notice's buttons wait for them. */
+  const [loadsInProgress, setLoadsInProgress] = useState(0);
+  const loadSequenceRef = useRef(0);
+  const planLoadLatestNow = useCallback(
+    () =>
+      planLoadLatest(
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId),
+        (path) =>
+          savesOnTheirWayRef.current.has(path) ||
+          pendingSaveWritesRef.current.has(getScopedOpKey(path)),
+      ),
+    [getScopedOpKey, workspaceScope],
+  );
+  const loadLatestForSourceConflicts = useCallback(
+    async (confirmed: LoadLatestPlan) => {
+      const store = () => useThemeWorkspaceStore.getState();
+      const workspaceFiles = () =>
+        store().getWorkspaceFiles(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        );
+      const replaced: string[] = [];
+      const removed: string[] = [];
+      const kept: Array<{ path: string; reason: string }> = [
+        ...confirmed.kept,
+      ];
+      const wanted = [...confirmed.replace];
+      if (wanted.length === 0) {
+        toast.info(describeLoadLatest({ replaced, removed, kept }));
+        return;
+      }
+      const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
+      // Each load its own key: a second one queues behind, never supersedes.
+      loadSequenceRef.current += 1;
+      const loadKey = `${themeOpKey}:load-latest:${loadSequenceRef.current}`;
+      setLoadsInProgress((count) => count + 1);
+      try {
+        const done = await saveQueueRef.current.enqueue({
+          queueKey: themeOpKey,
+          fileKey: loadKey,
+          revision: saveQueueRef.current.claimRevision(loadKey),
+          superseded: () => false,
+          task: async () => {
+            const atLeast = store().getAcceptedSourceGeneration(workspaceScope);
+            let read: {
+              files: readonly StorefrontThemeFileDTO[];
+              binaryFiles?: ReadonlyArray<{ path: string }>;
+              sourceGeneration: number;
+            } | null = null;
+            try {
+              const fetched = await queryClient.fetchQuery({
+                ...storefrontThemeFileQueries.tree(
+                  workspaceScope.storefrontId,
+                  workspaceScope.themeId,
+                ),
+                staleTime: 0,
+              });
+              if (
+                Number.isInteger(fetched.sourceGeneration) &&
+                fetched.sourceGeneration >= atLeast
+              ) {
+                read = fetched;
+              }
+            } catch {
+              // Told below.
+            }
+            if (!read) {
+              toast.error(
+                "The latest version of the Theme could not be read. Your changes are kept; try again.",
+              );
+              return false;
+            }
+            // Checked once more as it runs: what the saves ahead of it left.
+            const now = planLoadLatestNow();
+            for (const path of wanted) {
+              const keptNow = now.kept.find((entry) => entry.path === path);
+              if (keptNow) {
+                kept.push(keptNow);
+                continue;
+              }
+              if (!now.replace.includes(path)) {
+                kept.push({ path, reason: LOAD_LATEST_KEPT_SETTLED });
+                continue;
+              }
+              let latest: StorefrontThemeFileDTO | null = null;
+              const text = read.files.find((file) => file.path === path);
+              if (text) {
+                latest = text;
+              } else if (read.binaryFiles?.some((file) => file.path === path)) {
+                if (!isEditablePublicTextPath(path)) {
+                  kept.push({ path, reason: LOAD_LATEST_KEPT_UNREADABLE });
+                  continue;
+                }
+                // Editable public text is listed with the binary files; its
+                // text is read on its own.
+                const single = await getStorefrontThemeFile({
+                  data: {
+                    storefrontId: workspaceScope.storefrontId,
+                    themeId: workspaceScope.themeId,
+                    path,
+                  },
+                }).catch(() => null);
+                if (single?.success && single.data) {
+                  latest = single.data;
+                } else if (!(single && !single.success && single.error === "NOT_FOUND")) {
+                  kept.push({ path, reason: LOAD_LATEST_KEPT_UNREADABLE });
+                  continue;
+                }
+              }
+              store().loadServerFile(
+                path,
+                latest
+                  ? {
+                      id: latest.id,
+                      version: latest.version,
+                      content: latest.content,
+                    }
+                  : null,
+                workspaceScope,
+              );
+              (latest ? replaced : removed).push(path);
+              pendingDesignWritesRef.current.forget(path);
+              pausedStyleHistoryRef.current.delete(path);
+              unconfirmedStyleHistoryRef.current.delete(path);
+              history.discardScope(themeFileHistoryScope(path));
+            }
+            if (sourceConflictPaths(workspaceFiles()).length === 0) {
+              store().acceptRemoteGeneration(
+                Math.max(
+                  read.sourceGeneration,
+                  store().getAcceptedSourceGeneration(workspaceScope),
+                ),
+                workspaceScope,
+              );
+            }
+            // The preview gets the files as they are now, from this read.
+            const files = workspaceFiles();
+            postPreviewThemeFiles(
+              read.files.flatMap((file) => {
+                const current = files[file.path];
+                return current
+                  ? [{ path: file.path, content: current.localContent }]
+                  : [{ path: file.path, content: file.content }];
+              }),
+            );
+            return true;
+          },
+        });
+        if (done) toast.info(describeLoadLatest({ replaced, removed, kept }));
+      } finally {
+        setLoadsInProgress((count) => count - 1);
+      }
+    },
+    [history, planLoadLatestNow, postPreviewThemeFiles, queryClient, workspaceScope],
+  );
+
+  /**
    * Writes paused on who is signed in, and what getting them going again
    * involves; see `editor-write-gate` and `EditorWritesPausedNotice`.
    */
@@ -9333,13 +10184,35 @@ export function VisualEditorShell({
             pendingDesignWritesRef.current.heldByServer(path, latest.content);
             markWorkspaceSaved(latest, workspaceScope);
           },
-          save: (content) =>
-            handleUnifiedSaveFile(path, content, {
-              fromHistory: true,
-              confirmed: true,
-              ...pendingDesignSaveOptions(path, content),
-            }),
+          save: async (content) => {
+            try {
+              const saved = await handleUnifiedSaveFile(path, content, {
+                fromHistory: true,
+                confirmed: true,
+                ...pendingDesignSaveOptions(path, content),
+              });
+              settlePausedStyleHistoryWrite(path, content, saved);
+              return saved;
+            } catch (error) {
+              // An unanswered send is resolved only by the existing
+              // read-back path. An answered refusal cannot create history.
+              const remainsUnconfirmed =
+                readFiles()[path]?.unconfirmedContent !== undefined;
+              if (
+                !(error instanceof UnconfirmedThemeFileWriteError) &&
+                !remainsUnconfirmed
+              ) {
+                pausedStyleHistoryRef.current.delete(path);
+              }
+              throw error;
+            }
+          },
         });
+        if (settled === "landed" || settled === "skipped") {
+          // The read already found the draft (or could not safely send it);
+          // it was not a resumed write that this Style operation can own.
+          pausedStyleHistoryRef.current.delete(path);
+        }
         if (settled === "unanswered") unanswered += 1;
       }
       if (unanswered > 0) {
@@ -9364,6 +10237,7 @@ export function VisualEditorShell({
     pendingDesignSaveOptions,
     pendingDesignWritesToLeave,
     retryFailedContent,
+    settlePausedStyleHistoryWrite,
     workspaceScope,
     writeGate.epoch,
   ]);
@@ -9396,11 +10270,25 @@ export function VisualEditorShell({
       for (const path of unconfirmedPaths(readFiles())) {
         const content = readFiles()[path]?.localContent;
         if (content === undefined) continue;
-        await handleUnifiedSaveFile(path, content, {
-          fromHistory: true,
-          confirmed: true,
-          ...pendingDesignSaveOptions(path, content),
-        });
+        try {
+          const saved = await handleUnifiedSaveFile(path, content, {
+            fromHistory: true,
+            confirmed: true,
+            ...pendingDesignSaveOptions(path, content),
+          });
+          settlePausedStyleHistoryWrite(path, content, saved);
+        } catch (error) {
+          const remainsUnconfirmed =
+            readFiles()[path]?.unconfirmedContent !== undefined;
+          if (
+            !(error instanceof UnconfirmedThemeFileWriteError) &&
+            !remainsUnconfirmed
+          ) {
+            pausedStyleHistoryRef.current.delete(path);
+            unconfirmedStyleHistoryRef.current.delete(path);
+          }
+          throw error;
+        }
       }
       await retryFailedContent();
     } catch (error) {
@@ -9417,6 +10305,7 @@ export function VisualEditorShell({
     pendingDesignSaveOptions,
     pendingDesignWritesToLeave,
     retryFailedContent,
+    settlePausedStyleHistoryWrite,
     workspaceScope,
   ]);
 
@@ -10050,6 +10939,75 @@ export function VisualEditorShell({
         const styleBefore = targetCurrentSource;
         const styleAfter = updatedContent;
         const stylePath = targetFilePath;
+        const styleWorkspaceFile = useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[stylePath];
+        const styleServerFile = themeFiles.find(
+          (file) => file.path === stylePath,
+        );
+        const pausedStyleIntent: PausedStyleHistoryIntent = {
+          storefrontId: workspaceScope.storefrontId,
+          themeId: workspaceScope.themeId,
+          path: stylePath,
+          label: `Style · ${elementName}`,
+          before: styleBefore,
+          after: styleAfter,
+          serverExists:
+            styleWorkspaceFile?.serverExists ?? Boolean(styleServerFile),
+          serverFileId:
+            styleWorkspaceFile?.serverFileId ?? styleServerFile?.id ?? null,
+          serverVersion:
+            styleWorkspaceFile?.serverVersion ??
+            styleServerFile?.version ??
+            null,
+          sourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+        };
+        const replayStyle = async (
+          content: string,
+          attempt: EditorHistoryAttempt,
+        ) => {
+          const files = useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            );
+          const hasOnlyThisUnconfirmedFile =
+            files[stylePath]?.unconfirmedContent !== undefined &&
+            unconfirmedPaths(files).every((path) => path === stylePath);
+          const previous = unconfirmedStyleHistoryRef.current.get(stylePath);
+          if (
+            previous?.attempt.entryId === attempt.entryId &&
+            previous.attempt.direction === attempt.direction
+          ) {
+            unconfirmedStyleHistoryRef.current.set(stylePath, {
+              ...previous,
+              attempt,
+            });
+          }
+          const saved = await handleUnifiedSaveFile(stylePath, content, {
+            fromHistory: true,
+            historyReplay: true,
+            renderDocument: true,
+            // A person pressing this file's Style Undo/Redo explicitly resumes
+            // its unanswered write. Other files remain behind the normal hold.
+            confirmed: hasOnlyThisUnconfirmedFile,
+            historyAttempt: attempt,
+          });
+          if (saved === null || saved === undefined) {
+            throw new Error("The Style change was not saved.");
+          }
+          const pending = unconfirmedStyleHistoryRef.current.get(stylePath);
+          if (pending?.attempt.attemptId === attempt.attemptId) {
+            unconfirmedStyleHistoryRef.current.delete(stylePath);
+          }
+          return saved;
+        };
         scheduleDeferredWrite({
           writes: pendingSaveWritesRef.current,
           key: opKey,
@@ -10058,29 +11016,45 @@ export function VisualEditorShell({
             history.record({
               label: `Style · ${elementName}`,
               scope: themeFileHistoryScope(stylePath),
-              undo: () => {
+              undo: (attempt) => {
                 resetPreviewSelectionStyle();
-                return handleUnifiedSaveFile(stylePath, styleBefore, {
-                  fromHistory: true,
-                  renderDocument: true,
-                });
+                return replayStyle(styleBefore, attempt);
               },
-              redo: () => {
+              redo: (attempt) => {
                 resetPreviewSelectionStyle();
-                return handleUnifiedSaveFile(stylePath, styleAfter, {
-                  fromHistory: true,
-                  renderDocument: true,
-                });
+                return replayStyle(styleAfter, attempt);
               },
             }),
           discard: (id) => history.discard(id),
-          save: () =>
-            saveThemeFileSequentially(
+          save: async () => {
+            const result = await saveThemeFileSequentially(
               targetFilePath,
               updatedContent,
               nextRevision,
-            ),
-          isConflict: (result) => result.status === "source-conflict",
+            );
+            if (result.status === "auth-paused") {
+              const existing =
+                pausedStyleHistoryRef.current.get(stylePath) ?? [];
+              const pending = existing.every(
+                (intent) =>
+                  intent.storefrontId === workspaceScope.storefrontId &&
+                  intent.themeId === workspaceScope.themeId,
+              )
+                ? existing
+                : [];
+              pausedStyleHistoryRef.current.set(stylePath, [
+                ...pending,
+                pausedStyleIntent,
+              ]);
+            }
+            return result;
+          },
+          isNotLanded: (result) =>
+            result.status === "source-conflict" ||
+            result.status === "auth-paused" ||
+            result.status === "superseded",
+          retainOnError: (error) =>
+            error instanceof UnconfirmedThemeFileWriteError,
           onError: (error) => {
             toast.error(
               `Failed to save source file ${targetFilePath}: ${
@@ -16439,9 +17413,102 @@ export function VisualEditorShell({
           />
           <EditorSourceConflictNotice
             paths={pendingSourceConflicts}
-            saving={isSavingSourceConflicts}
+            saving={isSavingSourceConflicts || loadsInProgress > 0}
             onSave={() => void saveSourceConflicts()}
+            onLoadLatest={() => setLoadLatestPlan(planLoadLatestNow())}
           />
+          {/* Asks first, and says exactly what is replaced and what is kept:
+              the button can replace several files from a general notice. */}
+          <AlertDialog
+            open={loadLatestPlan !== null}
+            onOpenChange={(open) => {
+              if (!open) setLoadLatestPlan(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Replace your changes with the latest version?
+                </AlertDialogTitle>
+                <AlertDialogDescription asChild>
+                  <div className="space-y-2">
+                    {loadLatestPlan && loadLatestPlan.replace.length > 0 ? (
+                      <>
+                        <p>
+                          These files are replaced by the copy the Theme holds
+                          now. Your unsaved text in them, and their Undo/Redo
+                          history, are discarded. This cannot be undone.
+                        </p>
+                        <ul
+                          className="list-disc pl-5"
+                          aria-label="Files to replace"
+                        >
+                          {loadLatestPlan.replace.map((path) => (
+                            <li key={path}>{path}</li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : null}
+                    {loadLatestPlan && loadLatestPlan.replace.length === 0 ? (
+                      <p>No file can be replaced right now.</p>
+                    ) : null}
+                    {loadLatestPlan && loadLatestPlan.kept.length > 0 ? (
+                      <>
+                        <p>These files are kept as they are:</p>
+                        <ul className="list-disc pl-5" aria-label="Files kept">
+                          {loadLatestPlan.kept.map(({ path, reason }) => (
+                            <li key={path}>
+                              {path}: {reason}.
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : null}
+                  </div>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep my changes</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={
+                    !loadLatestPlan || loadLatestPlan.replace.length === 0
+                  }
+                  onClick={() => {
+                    if (!loadLatestPlan) return;
+                    // Checked again at confirm: a file listed when the
+                    // dialog opened may no longer be one to replace.
+                    const shown = loadLatestPlan;
+                    const now = planLoadLatestNow();
+                    const confirmed: LoadLatestPlan = {
+                      replace: shown.replace.filter((path) =>
+                        now.replace.includes(path),
+                      ),
+                      kept: [
+                        // Kept when the dialog opened, and said so there.
+                        ...shown.kept,
+                        ...shown.replace.flatMap((path) =>
+                          now.replace.includes(path)
+                            ? []
+                            : [
+                                now.kept.find(
+                                  (entry) => entry.path === path,
+                                ) ?? {
+                                  path,
+                                  reason: LOAD_LATEST_KEPT_SETTLED,
+                                },
+                              ],
+                        ),
+                      ],
+                    };
+                    setLoadLatestPlan(null);
+                    void loadLatestForSourceConflicts(confirmed);
+                  }}
+                >
+                  Replace with the latest
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           <EditorStarterUpgradeNotice
             status={context.starterUpgrade}
             reviewRequest={starterReviewRequest}

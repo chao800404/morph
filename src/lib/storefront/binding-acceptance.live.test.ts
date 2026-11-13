@@ -141,6 +141,7 @@ beforeEach(() => {
       id text PRIMARY KEY NOT NULL, storefront_id text NOT NULL,
       theme_id text NOT NULL, path text NOT NULL, content text NOT NULL,
       mime_type text, is_entry integer DEFAULT 0, version integer DEFAULT 1,
+      last_write_attempt_id text,
       created_at text NOT NULL, updated_at text NOT NULL, deleted_at text,
       encoding text DEFAULT 'utf8' NOT NULL, blob_digest text, size_bytes integer
     );
