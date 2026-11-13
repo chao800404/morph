@@ -134,6 +134,16 @@ import {
   TEMPLATE_DRAFT_CONFLICT,
 } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
 import { Input } from "@/components/ui/input";
