@@ -913,6 +913,10 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
     document
       .querySelector("[data-editor-unconfirmed-saves]")
       ?.getAttribute("data-editor-unconfirmed-saves") ?? null;
+  const saveStatus = () =>
+    document
+      .querySelector("[data-editor-save-status]")
+      ?.getAttribute("aria-label");
   // Past the content write's 300 ms debounce and its answer.
   const settle = () =>
     act(() => new Promise((resolve) => setTimeout(resolve, 1_200)));
@@ -1324,6 +1328,200 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
       expectedDraftGeneration: 3,
     });
     expect(depth()).toBe("1");
+  });
+
+  /**
+   * Task 41 29-B (the user's decision): a Hide whose own answer was lost,
+   * confirmed later by read-back or by an answered resend, records what an
+   * answered Hide records — one "Hide section" entry, once — and its Undo
+   * shows the section again, exactly that step.
+   */
+  describe("a Hide with no answer, confirmed later", () => {
+    async function lostHide() {
+      const shell = renderShell(held());
+      await flushFrames();
+      answerNext.push(lost);
+      fireEvent.click(hideButton());
+      await settle();
+      expect(sent()).toHaveLength(1);
+      expect(sent()[0]).toMatchObject({
+        props: { enabled: false },
+        expectedDraftGeneration: 1,
+      });
+      expect(unconfirmedCount()).toBe("1");
+      expect(depth(), "nothing recorded without an answer").toBe("0");
+      return shell;
+    }
+
+    it("read back as landed: recorded once, and Undo shows the section again", async () => {
+      const shell = await lostHide();
+      // It landed: the server holds the section hidden, one generation on.
+      server.enabled = false;
+      server.generation = 2;
+
+      await checkAndSave();
+
+      expect(sent(), "nothing is sent again").toHaveLength(1);
+      expect(unconfirmedCount()).toBeNull();
+      expect(depth(), "recorded once").toBe("1");
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+      await settle();
+      expect(depth(), "and only once").toBe("1");
+
+      await reread(shell);
+      await undo();
+
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        props: { enabled: true },
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+      });
+      expect(Object.keys(sent()[1]!.props as object)).toEqual(["enabled"]);
+      expect(server).toMatchObject({ enabled: true, generation: 3 });
+      expect(depth()).toBe("0");
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+    });
+
+    it("read back as not landed and resent with an answer: recorded once, and Undo shows the section again", async () => {
+      const shell = await lostHide();
+      expect(server).toMatchObject({ enabled: true, generation: 1 });
+
+      await checkAndSave();
+
+      expect(sent(), "sent once more").toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        props: { enabled: false },
+        expectedDraftGeneration: 1,
+      });
+      expect(server).toMatchObject({ enabled: false, generation: 2 });
+      expect(unconfirmedCount()).toBeNull();
+      expect(depth(), "recorded once").toBe("1");
+      expect(historyButtons()).toEqual({ undo: true, redo: false });
+
+      await reread(shell);
+      await undo();
+
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]).toMatchObject({
+        props: { enabled: true },
+        expectedDraftGeneration: 2,
+      });
+      expect(server).toMatchObject({ enabled: true, generation: 3 });
+      expect(depth()).toBe("0");
+      expect(historyButtons()).toEqual({ undo: false, redo: true });
+    });
+
+    // Round 4 R4-4: a press that changes nothing the editor holds (Hide
+    // again while the Hide is unanswered: the row still offers Hide) retires
+    // nothing, so the Hide confirmed later keeps its entry, as an answered
+    // Hide does. (Round 3 had this press retire the history, which left a
+    // landed Hide with no history.) Retiring by a real change is pinned on a
+    // reorder in the round-trip tests.
+    const showButton = () =>
+      screen.getAllByRole("button", { name: "Show section hero" })[0]!;
+
+    it("Hide pressed again while the Hide is unanswered changes nothing: the Hide confirmed later keeps its entry", async () => {
+      await lostHide();
+      fireEvent.click(hideButton());
+      await settle();
+      expect(sent(), "nothing more is sent").toHaveLength(1);
+
+      await checkAndSave();
+
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        props: { enabled: false },
+        expectedDraftGeneration: 1,
+      });
+      expect(server).toMatchObject({ enabled: false, generation: 2 });
+      expect(depth(), "as the answered path: the Hide's entry").toBe("1");
+      expect(
+        screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
+      ).toBe("Undo Hide section");
+    });
+
+    it("Try again before Show: the Hide is recorded, then Show retires it and records its own", async () => {
+      const shell = await lostHide();
+
+      await checkAndSave();
+      expect(depth()).toBe("1");
+
+      await reread(shell);
+      fireEvent.click(showButton());
+      await settle();
+
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]).toMatchObject({ props: { enabled: true } });
+      expect(depth(), "as the answered path: one entry").toBe("1");
+      expect(
+        screen.getByRole("button", { name: "Undo" }).getAttribute("title"),
+      ).toBe("Undo Show section");
+    });
+  });
+
+  it("an Undo with no answer, not landed, its resend refused for another reason: the run fails with the reason and stays to run again; nothing reads as Save failed", async () => {
+    // Round 4 R4-1: a write refused by an answer did not land: nothing to
+    // confirm or record, nothing kept to resend. The run fails visibly with
+    // the server's reason, its entry stays, and Undo starts a fresh attempt.
+    await lostUndo();
+    answerNext.push(refusal);
+
+    await checkAndSave();
+
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]).toMatchObject({
+      props: { enabled: true },
+      expectedDraftGeneration: 2,
+    });
+    expect(unconfirmedCount()).toBeNull();
+    expect(
+      vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    ).toContain("The mock refused the replay.");
+    expect(saveStatus(), "nothing is pending: not a failed save").not.toBe(
+      "Save failed",
+    );
+    expect(depth(), "the run has not moved").toBe("1");
+    expect(previewHidden(), "the canvas shows what the server holds").toBe(
+      true,
+    );
+    await settle();
+    expect(sent(), "nothing is sent again by itself").toHaveLength(3);
+
+    await undo();
+
+    expect(sent()).toHaveLength(4);
+    expect(sent()[3]).toMatchObject({
+      props: { enabled: true },
+      expectedDraftGeneration: 2,
+    });
+    expect(server).toMatchObject({ enabled: true, generation: 3 });
+    expect(depth(), "moved once").toBe("0");
+    expect(historyButtons()).toEqual({ undo: false, redo: true });
+  });
+
+  it("an Undo with no answer, the source moved before Check and save: not sent, said so, the entry stays, the canvas matches the server", async () => {
+    // Round 4 R4-3(b): a run's write not sent because the source moved says
+    // so in its own words; the marker it leaves is its history entry.
+    await lostUndo();
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+
+    await checkAndSave();
+
+    expect(sent(), "not sent at the old source").toHaveLength(2);
+    expect(unconfirmedCount()).toBeNull();
+    expect(
+      vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    ).toContain(
+      "The source code has changed, so an unanswered undo or redo was not sent again. Nothing was changed; its entry is still in the history.",
+    );
+    expect(saveStatus()).not.toBe("Save failed");
+    expect(depth(), "its entry is still there").toBe("1");
+    expect(previewHidden(), "the canvas shows what the server holds").toBe(
+      true,
+    );
   });
 
   /**
