@@ -920,17 +920,22 @@ describe("a refused hide the author discards", () => {
     act(() => {
       row.closest("button")?.click();
     });
-    fromPreview({
-      type: "morph:storefront-preview-commit-inline-text",
-      sectionId: "hero",
-      fieldKey: "title",
-      fieldPath: "items.1.title",
-      value: "B edited",
-      originalValue: "B",
-    });
-    await flushFrames();
-    await waitFor(() => expect(hideButton().matches(":disabled")).toBe(false));
-    fireEvent.click(hideButton());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fromPreview({
+        type: "morph:storefront-preview-commit-inline-text",
+        sectionId: "hero",
+        fieldKey: "title",
+        fieldPath: "items.1.title",
+        value: "B edited",
+        originalValue: "B",
+      });
+      await flushFrames();
+      expect(hideButton().matches(":disabled")).toBe(false);
+      fireEvent.click(hideButton());
+    } finally {
+      vi.useRealTimers();
+    }
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
     expect(writes()[0]).toMatchObject({ enabled: false });
     expect(writes()[0]).toHaveProperty("items");
