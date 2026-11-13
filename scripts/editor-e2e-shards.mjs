@@ -25,6 +25,7 @@ export const EDITOR_SHARDS = [
     // Shard 1 was the shortest shard job after shard 5 in main run
     // 42387058349 (8m08s; shard 5 7m42s, the others 9m11s to 15m55s).
     "unstored-list-inspector-writes.spec.ts",
+    "history-back-controlled-repro.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
