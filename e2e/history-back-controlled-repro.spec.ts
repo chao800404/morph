@@ -44,26 +44,22 @@ test.describe("Controlled repro: held frame-follow set-route(detail) after histo
   test.describe.configure({ mode: "serial" });
 
   test.beforeAll(async ({ browser }) => {
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    const page = await signedInPage(browser);
     try {
-      await signedInPage(page);
       await openEditor(page);
       await writeThemeFiles(page, scope(), NAV_FILES_DRAFT);
     } finally {
-      await context.close();
+      await page.context().close();
     }
   });
 
   test.afterAll(async ({ browser }) => {
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    const page = await signedInPage(browser);
     try {
-      await signedInPage(page);
       await openEditor(page);
       await removeNavMatrixFiles(page);
     } finally {
-      await context.close();
+      await page.context().close();
     }
   });
 
