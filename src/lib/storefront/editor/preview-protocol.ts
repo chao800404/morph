@@ -344,6 +344,8 @@ export type EditorToPreviewMessage =
        * request from an older one. Absent from an editor that asks for none.
        */
       routeRequestId?: number;
+      navigationIntent?: "author" | "frame-follow";
+      followEpoch?: number;
     }
   | {
       type: "morph:storefront-preview-set-section";
@@ -673,6 +675,7 @@ export type PreviewToEditorMessage =
        * with no router to ask, which is then taken at its word as before.
        */
       routePath?: string;
+      frameNavigationEpoch?: number;
     }
   | {
       /**
@@ -688,6 +691,7 @@ export type PreviewToEditorMessage =
       type: "morph:storefront-preview-route-applied";
       routeRequestId: number;
       routePath: string | null;
+      status?: "applied" | "superseded";
     }
   | {
       type: "morph:storefront-preview-theme-files-applied";
@@ -1338,7 +1342,11 @@ export function parseEditorToPreviewMessage(
       return isBoundedString(value.templateId, 100) &&
         (value.routePath === null || isBoundedString(value.routePath, 500)) &&
         (value.routeRequestId === undefined ||
-          isSafeRevision(value.routeRequestId))
+          isSafeRevision(value.routeRequestId)) &&
+        (value.navigationIntent === undefined ||
+          value.navigationIntent === "author" ||
+          value.navigationIntent === "frame-follow") &&
+        (value.followEpoch === undefined || isSafeRevision(value.followEpoch))
         ? {
             type: value.type,
             templateId: value.templateId,
@@ -1346,6 +1354,12 @@ export function parseEditorToPreviewMessage(
             ...(value.routeRequestId === undefined
               ? {}
               : { routeRequestId: value.routeRequestId }),
+            ...(value.navigationIntent === undefined
+              ? {}
+              : { navigationIntent: value.navigationIntent }),
+            ...(value.followEpoch === undefined
+              ? {}
+              : { followEpoch: value.followEpoch }),
           }
         : null;
     case "morph:storefront-preview-set-section":
@@ -1655,23 +1669,43 @@ export function parsePreviewToEditorMessage(
     case "morph:storefront-preview-structure": {
       const nodes = parsePreviewEditableNodes(value.nodes);
       if (!nodes) return null;
-      if (value.routePath === undefined) return { type: value.type, nodes };
-      return typeof value.routePath === "string" &&
-        value.routePath.startsWith("/") &&
-        value.routePath.length <= 512
-        ? { type: value.type, nodes, routePath: value.routePath }
-        : null;
+      if (
+        value.frameNavigationEpoch !== undefined &&
+        !isSafeRevision(value.frameNavigationEpoch)
+      ) {
+        return null;
+      }
+      if (
+        value.routePath !== undefined &&
+        (typeof value.routePath !== "string" ||
+          !value.routePath.startsWith("/") ||
+          value.routePath.length > 512)
+      ) {
+        return null;
+      }
+      return {
+        type: value.type,
+        nodes,
+        ...(value.routePath === undefined ? {} : { routePath: value.routePath }),
+        ...(value.frameNavigationEpoch === undefined
+          ? {}
+          : { frameNavigationEpoch: value.frameNavigationEpoch }),
+      };
     }
     case "morph:storefront-preview-route-applied":
       return isSafeRevision(value.routeRequestId) &&
         (value.routePath === null ||
           (typeof value.routePath === "string" &&
             value.routePath.startsWith("/") &&
-            value.routePath.length <= 512))
+            value.routePath.length <= 512)) &&
+        (value.status === undefined ||
+          value.status === "applied" ||
+          value.status === "superseded")
         ? {
             type: value.type,
             routeRequestId: value.routeRequestId,
             routePath: value.routePath,
+            ...(value.status === undefined ? {} : { status: value.status }),
           }
         : null;
     case "morph:storefront-preview-theme-files-applied":

@@ -414,14 +414,49 @@ function currentRoutePattern() {
     : undefined;
 }
 
+let frameNavigationEpoch = 0;
+let lastCommittedRouteLocation =
+  typeof location !== "undefined" ? location.pathname + location.search : "";
+let subscribedEpochRouter = null;
+
+function syncFrameNavigationEpoch() {
+  if (typeof location === "undefined") return frameNavigationEpoch;
+  const router =
+    typeof window !== "undefined" ? window.__morphPreviewRouter : undefined;
+  if (
+    router &&
+    router !== subscribedEpochRouter &&
+    typeof router.history?.subscribe === "function"
+  ) {
+    subscribedEpochRouter = router;
+    router.history.subscribe(() => {
+      syncFrameNavigationEpoch();
+    });
+  }
+  const currentLocation = location.pathname + location.search;
+  if (currentLocation !== lastCommittedRouteLocation) {
+    lastCommittedRouteLocation = currentLocation;
+    frameNavigationEpoch += 1;
+  }
+  return frameNavigationEpoch;
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("popstate", () => {
+    syncFrameNavigationEpoch();
+  });
+}
+
 function reportStructure() {
   if (!channel) return;
+  const epoch = syncFrameNavigationEpoch();
   const routePath = currentRoutePattern();
   postPreviewToEditorMessage(
     {
       type: "morph:storefront-preview-structure",
       nodes: collectPreviewEditableNodes(document),
       ...(routePath ? { routePath } : {}),
+      frameNavigationEpoch: epoch,
     },
     channel,
   );
@@ -434,19 +469,39 @@ function reportStructure() {
  * while the page is still on the one it booted on, it would be applied to
  * that page's content instead. A request without an id asks for no answer.
  */
-function answerRouteRequest(routeRequestId, routePath) {
+function answerRouteRequest(routeRequestId, routePath, status) {
   if (!channel || typeof routeRequestId !== "number") return;
   postPreviewToEditorMessage(
     {
       type: "morph:storefront-preview-route-applied",
       routeRequestId,
       routePath,
+      ...(status ? { status } : {}),
     },
     channel,
   );
 }
 
 function applyEditorRoute(message) {
+  const currentEpoch = syncFrameNavigationEpoch();
+  const isFrameFollow = message.navigationIntent === "frame-follow";
+  const hasValidFollowEpoch =
+    typeof message.followEpoch === "number" &&
+    Number.isSafeInteger(message.followEpoch) &&
+    message.followEpoch >= 0;
+  if (
+    !documentNavigation &&
+    isFrameFollow &&
+    (!hasValidFollowEpoch || message.followEpoch !== currentEpoch)
+  ) {
+    answerRouteRequest(
+      message.routeRequestId,
+      currentRoutePattern() ?? null,
+      "superseded",
+    );
+    reportStructure();
+    return;
+  }
   appliedRoutePath = null;
   // A real Theme owns its router, so the entry Morph generates hands it
   // over. Without one there is nothing to navigate and the page simply
@@ -480,8 +535,9 @@ function applyEditorRoute(message) {
         // router never says null, which means it has none.
         const routePath = currentRoutePattern();
         if (routePath) {
+          syncFrameNavigationEpoch();
           appliedRoutePath = message.routePath ?? "/";
-          answerRouteRequest(message.routeRequestId, routePath);
+          answerRouteRequest(message.routeRequestId, routePath, "applied");
         }
       });
     // The page it lands on is a different set of elements entirely.
@@ -496,7 +552,7 @@ function applyEditorRoute(message) {
   } else {
     // No router: this is the one page it shows, and its content is kept by
     // its own address, so it is already where any route puts it.
-    answerRouteRequest(message.routeRequestId, null);
+    answerRouteRequest(message.routeRequestId, null, "applied");
   }
 }
 

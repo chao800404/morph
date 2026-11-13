@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { type ComponentProps, useState } from "react";
 import { toast } from "sonner";
@@ -35,7 +36,6 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
-  HISTORY_REPLAY_NOT_SAVED_MESSAGE,
   PENDING_DESIGN_WRITE_HELD_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
@@ -1082,6 +1082,44 @@ describe("pending Design writes across paths and states (decision A)", () => {
     expect(saved.operation).toBeUndefined();
     expect(saved.designElement).toBeUndefined();
   });
+
+  // Task 39 round 3. Load the latest replaces the route with the server's
+  // copy, so the Delete's pending record describes text no longer here. It
+  // ends: a later plain save of the file is not held behind it.
+  it("Load the latest on a source-conflicted Design Delete ends its pending record", async () => {
+    saveThemeFile.mockImplementationOnce(sourceConflictAt4);
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(workspaceFile()?.sourceConflict).toBe(true));
+    expect(localContent()).not.toContain("Plain note");
+
+    await press("Load the latest…");
+    const dialog = await screen.findByRole("alertdialog");
+    await act(async () => {
+      within(dialog)
+        .getByRole("button", { name: "Replace with the latest" })
+        .click();
+    });
+    await waitFor(() => expect(workspaceFile()?.sourceConflict).toBeUndefined());
+    expect(localContent()).toBe(SOURCE);
+
+    const onTop = SOURCE.replace("Fine print", "Fine print, restyled");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .updateLocalContent(ROUTE_FILE, onTop, scope),
+    );
+    await openInCode(ROUTE_FILE);
+    await press(/^Save\s*Ctrl\+S$/);
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+
+    const saved = savesOf(ROUTE_FILE)[1]!;
+    expect(saved.content).toBe(onTop);
+    expect(saved.operation).toBeUndefined();
+    expect(workspaceFile()?.errorMessage).not.toBe(
+      PENDING_DESIGN_WRITE_HELD_MESSAGE,
+    );
+  });
 });
 
 describe("text held behind a Design write still on its way (decision A)", () => {
@@ -1305,7 +1343,7 @@ describe("undo and redo of a Design element edit (decision A, Q2)", () => {
     undoKey();
     await waitFor(() =>
       expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
-        `Could not undo: ${HISTORY_REPLAY_NOT_SAVED_MESSAGE}`,
+        "Could not undo: The Theme source changed. Resolve the source conflict before retrying.",
       ),
     );
     expect(workspaceFile()?.sourceConflict).toBe(true);

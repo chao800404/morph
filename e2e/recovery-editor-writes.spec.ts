@@ -130,6 +130,9 @@ test.describe("unsaved work when the signed-in account changes", () => {
 
       // Meanwhile another tab, opened on the document as it is now, writes.
       otherTab = await sharedEditor(browser);
+      await expect(await heroContentField(otherTab.page, 0)).toHaveValue(
+        value("landed"),
+      );
       await writeSectionField(
         otherTab.page,
         other.section,
@@ -243,7 +246,40 @@ test.describe("unsaved work when the signed-in account changes", () => {
     );
   }
 
-  test("after a landed write is confirmed, the next edit is saved on the document the check read and keeps both writers' changes", async ({
+  async function expectMovedThenKeepMine(
+    browser: Browser,
+    run: Awaited<ReturnType<typeof landedThenAnotherWriter>>,
+    other: { section: string; index: number },
+  ) {
+    // Two generations have passed. Even if the sent value is present, the
+    // read alone cannot establish which writer produced it.
+    expect(run.resentByCheck).toBe(0);
+    expect(run.checkAnswer).toBe("none");
+    await expect(run.page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      "Out of date",
+      { timeout: 30_000 },
+    );
+    const field = await heroContentField(run.page, 0);
+    await expect(field).toHaveValue(run.value("landed"));
+    const before = run.writes.sent;
+    await field.fill(run.value("next"));
+    await field.press("Tab");
+    await run.page.waitForTimeout(2_000);
+    expect(run.writes.sent, "no write before the author chooses").toBe(before);
+    await expect(field).toHaveValue(run.value("next"));
+    expect(await storedField(browser, "hero", 0)).toBe(run.value("landed"));
+    expect(await storedField(browser, other.section, other.index)).toBe(
+      run.value("theirs"),
+    );
+
+    // The author explicitly chooses the latest document as the basis.
+    await loadLatestKeepMine(run.page);
+    expect(run.writes.sent - before, "writes after keep mine").toBe(1);
+    await run.finish();
+  }
+
+  test("an unanswered write followed by another section's write is held until the author keeps it on the latest document", async ({
     browser,
   }) => {
     test.setTimeout(420_000);
@@ -253,37 +289,27 @@ test.describe("unsaved work when the signed-in account changes", () => {
       index: 0,
     });
     try {
-      // Confirmed by the check: nothing sent again.
-      expect(run.resentByCheck).toBe(0);
-      // The check read the document, the other tab's change included, and
-      // this tab composes on what it read: the next edit, typed after that,
-      // is saved as it is, with nothing of the other tab's written over.
-      await nextEditSavedOnReadBack(run.page, run.writes, run.value("next"));
-      await run.finish();
+      await expectMovedThenKeepMine(browser, run, {
+        section: "editorial-intro",
+        index: 0,
+      });
     } finally {
       await run.cleanup();
     }
   });
 
-  test("a landed write is confirmed when another writer changed another field of its section", async ({
+  test("an unanswered write followed by another field's write is held until the author keeps it on the latest document", async ({
     browser,
   }) => {
     test.setTimeout(420_000);
-    // The other tab writes another field of the same section. A content
-    // write carries only the fields typed into, so the server still holds
-    // every value this tab sent and the check can say it landed.
+    // The other tab writes another field of the same section. The earlier
+    // value remains visible on the server but its author is not proven.
     const run = await landedThenAnotherWriter(browser, {
       section: "hero",
       index: 1,
     });
     try {
-      // Confirmed by the check: nothing sent again.
-      expect(run.resentByCheck).toBe(0);
-      // The next edit is composed on the document the check read, so it is
-      // saved and carries the other tab's field as that tab wrote it. Both
-      // writers' changes are what the server holds.
-      await nextEditSavedOnReadBack(run.page, run.writes, run.value("next"));
-      await run.finish();
+      await expectMovedThenKeepMine(browser, run, { section: "hero", index: 1 });
     } finally {
       await run.cleanup();
     }

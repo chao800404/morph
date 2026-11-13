@@ -503,6 +503,8 @@ export const storefrontThemeFiles = sqliteTable(
     sizeBytes: integer("size_bytes"),
     isEntry: integer("is_entry", { mode: "boolean" }).default(false),
     version: integer("version").notNull().default(1),
+    /** Last write-attempt receipt; overwritten or cleared by every later file save. */
+    lastWriteAttemptId: text("last_write_attempt_id"),
     ...timestamps,
   },
   (table) => [

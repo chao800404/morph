@@ -110,6 +110,7 @@ export function prepareThemeFileUpdate(args: {
   content: string;
   mimeType?: string | null;
   now: string;
+  writeAttemptId?: string;
 }) {
   return {
     guard: env.DATABASE.prepare(
@@ -138,20 +139,22 @@ export function prepareThemeFileUpdate(args: {
       SET content = ?1,
           mime_type = ?2,
           version = version + 1,
-          updated_at = ?3
-      WHERE storefront_id = ?4
-        AND theme_id = ?5
-        AND path = ?6
-        AND id = ?7
-        AND version = ?8
+          updated_at = ?3,
+          last_write_attempt_id = ?4
+      WHERE storefront_id = ?5
+        AND theme_id = ?6
+        AND path = ?7
+        AND id = ?8
+        AND version = ?9
         AND encoding = 'utf8'
         AND deleted_at IS NULL
-      RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
+      RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at, last_write_attempt_id
     `,
     ).bind(
       args.content,
       detectThemeMimeType(args.path, args.mimeType),
       args.now,
+      args.writeAttemptId ?? null,
       args.storefrontId,
       args.themeId,
       args.path,
@@ -633,6 +636,9 @@ export const storefrontThemeFileDal = {
       mimeType: row.mimeType ?? "text/plain",
       isEntry: Boolean(row.isEntry),
       version: row.version ?? 1,
+      ...(row.lastWriteAttemptId
+        ? { lastWriteAttemptId: row.lastWriteAttemptId }
+        : {}),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
@@ -690,7 +696,13 @@ export const storefrontThemeFileDal = {
           sizeBytes: row.sizeBytes,
         };
       }
-      return { ...common, content: row.content };
+      return {
+        ...common,
+        content: row.content,
+        ...(row.lastWriteAttemptId
+          ? { lastWriteAttemptId: row.lastWriteAttemptId }
+          : {}),
+      };
     });
   },
 
@@ -766,7 +778,8 @@ export const storefrontThemeFileDal = {
         ? env.DATABASE.prepare(
             `UPDATE storefront_theme_files
              SET blob_digest = ?1, size_bytes = ?2, mime_type = ?3,
-                 version = version + 1, updated_at = ?4
+                 version = version + 1, updated_at = ?4,
+                 last_write_attempt_id = NULL
              WHERE storefront_id = ?5 AND theme_id = ?6 AND path = ?7
                AND id = ?8 AND version = ?9 AND encoding = 'binary'
                AND deleted_at IS NULL`,
@@ -897,6 +910,9 @@ export const storefrontThemeFileDal = {
       mimeType: row.mimeType ?? "text/plain",
       isEntry: Boolean(row.isEntry),
       version: row.version ?? 1,
+      ...(row.lastWriteAttemptId
+        ? { lastWriteAttemptId: row.lastWriteAttemptId }
+        : {}),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -963,6 +979,7 @@ export const storefrontThemeFileDal = {
       expectedFileId?: string;
       expectedVersion?: number;
       expectMissing?: boolean;
+      writeAttemptId?: string;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
@@ -986,6 +1003,7 @@ export const storefrontThemeFileDal = {
           expectedFileId: options.expectedFileId,
           expectedVersion: options.expectedVersion,
           expectMissing: options.expectMissing,
+          writeAttemptId: options.writeAttemptId,
         },
       ],
       {
@@ -1012,6 +1030,7 @@ export const storefrontThemeFileDal = {
       expectedVersion?: number;
       expectMissing?: boolean;
       mimeType?: string;
+      writeAttemptId?: string;
     }>,
     options: {
       expectedSourceGeneration: number;
@@ -1210,6 +1229,7 @@ export const storefrontThemeFileDal = {
           content: item.content,
           mimeType: item.mimeType,
           now,
+          writeAttemptId: item.writeAttemptId,
         });
         preconditionStatements.push(update.guard);
         mutationStatements.push(update.mutation);
@@ -1232,10 +1252,10 @@ export const storefrontThemeFileDal = {
             `
             INSERT INTO storefront_theme_files (
               id, storefront_id, theme_id, path, content, mime_type,
-              is_entry, version, created_at, updated_at
+              is_entry, version, created_at, updated_at, last_write_attempt_id
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
-            RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, ?9)
+            RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at, last_write_attempt_id
           `,
           ).bind(
             item.fileId,
@@ -1246,6 +1266,7 @@ export const storefrontThemeFileDal = {
             detectThemeMimeType(item.path, item.mimeType),
             item.path === "src/pages/index.tsx" ? 1 : 0,
             now,
+            item.writeAttemptId ?? null,
           ),
         );
       }
@@ -1277,7 +1298,7 @@ export const storefrontThemeFileDal = {
         env.DATABASE.prepare(
           `
           UPDATE storefront_theme_files
-          SET deleted_at = ?1, updated_at = ?1
+          SET deleted_at = ?1, updated_at = ?1, last_write_attempt_id = NULL
           WHERE storefront_id = ?2
             AND theme_id = ?3
             AND path = ?4
@@ -1458,6 +1479,12 @@ export const storefrontThemeFileDal = {
             row?.version ??
               (item.expectedVersion ? item.expectedVersion + 1 : 1),
           ),
+          ...((row?.last_write_attempt_id ?? row?.lastWriteAttemptId)
+            ? {
+                lastWriteAttemptId:
+                  row?.last_write_attempt_id ?? row?.lastWriteAttemptId,
+              }
+            : {}),
           createdAt: row?.created_at ?? row?.createdAt ?? now,
           updatedAt: row?.updated_at ?? row?.updatedAt ?? now,
         };
@@ -1566,7 +1593,7 @@ export const storefrontThemeFileDal = {
       env.DATABASE.prepare(
         `
         UPDATE storefront_theme_files
-        SET deleted_at = ?1, updated_at = ?1
+        SET deleted_at = ?1, updated_at = ?1, last_write_attempt_id = NULL
         WHERE storefront_id = ?2
           AND theme_id = ?3
           AND path = ?4
@@ -2000,7 +2027,7 @@ export const storefrontThemeFileDal = {
       env.DATABASE.prepare(
         `
         UPDATE storefront_theme_files
-        SET deleted_at = ?1, updated_at = ?1
+        SET deleted_at = ?1, updated_at = ?1, last_write_attempt_id = NULL
         WHERE storefront_id = ?2 AND theme_id = ?3 AND deleted_at IS NULL
       `,
       ).bind(now, storefrontId, themeId),

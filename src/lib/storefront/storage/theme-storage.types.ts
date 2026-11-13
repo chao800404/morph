@@ -27,6 +27,8 @@ export type SaveThemeSourceFileOptions = {
   expectedFileId?: string;
   expectedVersion?: number;
   expectMissing?: boolean;
+  /** Identifies one editor history replay if its save response is lost. */
+  writeAttemptId?: string;
   createRevision?: boolean;
   revisionMessage?: string;
   createdBy?: string;
@@ -42,6 +44,8 @@ export type SaveThemeSourceFilesBatchItem = {
   expectedVersion?: number;
   expectMissing?: boolean;
   mimeType?: string;
+  /** Causal receipt attached to this single file mutation, if any. */
+  writeAttemptId?: string;
 };
 
 export type SaveThemeSourceFilesBatchOptions = {

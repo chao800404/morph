@@ -1559,3 +1559,77 @@ describe("the editor capability announcement", () => {
     expect(acceptedEditorCapabilities(null, current)).toEqual([]);
   });
 });
+
+describe("frame-follow navigation epoch protocol fields", () => {
+  it("parses frameNavigationEpoch, navigationIntent, followEpoch, and route-applied status", () => {
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/detail",
+        frameNavigationEpoch: 3,
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/detail",
+      frameNavigationEpoch: 3,
+    });
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/detail",
+        frameNavigationEpoch: -1,
+      }),
+    ).toBeNull();
+
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-set-route",
+        templateId: "tpl-1",
+        routePath: "/detail",
+        routeRequestId: 2,
+        navigationIntent: "frame-follow",
+        followEpoch: 3,
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-set-route",
+      templateId: "tpl-1",
+      routePath: "/detail",
+      routeRequestId: 2,
+      navigationIntent: "frame-follow",
+      followEpoch: 3,
+    });
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-set-route",
+        templateId: "tpl-1",
+        routePath: "/detail",
+        navigationIntent: "unknown",
+      }),
+    ).toBeNull();
+
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: 2,
+        routePath: "/home",
+        status: "superseded",
+      }),
+    ).toEqual({
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId: 2,
+      routePath: "/home",
+      status: "superseded",
+    });
+    expect(
+      parsePreviewToEditorMessage({
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: 2,
+        routePath: "/home",
+        status: "invalid",
+      }),
+    ).toBeNull();
+  });
+});
