@@ -73,15 +73,21 @@ export function acceptReadSnapshot(
     sections: readonly SnapshotSection[];
   }>,
   steps: OwnDraftSteps,
+  firstReadOwnBasis?: number,
 ): ContentSnapshot | undefined {
   if (!validGeneration(read.draftGeneration)) return current;
   if (current && read.draftGeneration <= current.draftGeneration)
     return current;
   const ownSince =
-    current &&
-    ownChainReaches(current.draftGeneration, read.draftGeneration, steps)
-      ? current.ownSince
-      : read.draftGeneration;
+    current
+      ? ownChainReaches(current.draftGeneration, read.draftGeneration, steps)
+        ? current.ownSince
+        : read.draftGeneration
+      : validGeneration(firstReadOwnBasis) &&
+          firstReadOwnBasis < read.draftGeneration &&
+          ownChainReaches(firstReadOwnBasis, read.draftGeneration, steps)
+        ? firstReadOwnBasis
+        : read.draftGeneration;
   return {
     draftGeneration: read.draftGeneration,
     sections: read.sections,

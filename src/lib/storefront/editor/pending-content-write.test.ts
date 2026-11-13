@@ -1060,6 +1060,27 @@ describe("classifyUnconfirmedContent: version first, then content", () => {
     });
   });
 
+  it("does not attribute an ordinary field to an unanswered write after two generations", () => {
+    const ordinary: PendingContentEntry = {
+      sectionId: "section",
+      props: { heading: "Hello" },
+      expectedDraftGeneration: SENT_AT,
+      expectedSourceGeneration: 1,
+    };
+    expect(
+      pendingContentWrite.classifyUnconfirmedContent(
+        ordinary,
+        read(SENT_AT + 1, { heading: "Hello", subheading: "Theirs" }),
+      ),
+    ).toBe("landed");
+    expect(
+      pendingContentWrite.classifyUnconfirmedContent(
+        ordinary,
+        read(SENT_AT + 2, { heading: "Hello", subheading: "Theirs" }),
+      ),
+    ).toBe("moved");
+  });
+
   // Added with the implementation (user decision 3): the generation did not
   // move, yet everything the write sent is already there. It cannot be shown
   // that this request did it, so it is never resent.
@@ -1083,6 +1104,25 @@ describe("classifyUnconfirmedContent: version first, then content", () => {
 });
 
 describe("sentContentWrite: what was sent stays as sent", () => {
+  it("freezes the actual send generation when a route entry had no draft basis", () => {
+    const entry: PendingContentEntry = {
+      sectionId: "route-section",
+      routePath: "/contact",
+      props: { heading: "Hello" },
+      expectedSourceGeneration: 1,
+    };
+
+    const sent = pendingContentWrite.sentContentWrite(entry, 1, false);
+
+    expect(sent).toMatchObject({
+      sectionId: "route-section",
+      routePath: "/contact",
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: 1,
+      recordHistory: false,
+    });
+  });
+
   it("is not changed by later changes to the entry it was made from", () => {
     const props: Record<string, unknown> = { heading: "Hello" };
     const resetProps = ["items"];
