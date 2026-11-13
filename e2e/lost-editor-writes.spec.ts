@@ -309,10 +309,19 @@ test.describe("unsaved work when the signed-in account changes", () => {
         page.getByRole("button", { name: "Load latest, keep mine" }),
       ).toHaveCount(0);
 
-      // And it is what the server holds.
+      // A fresh edit after a one-step confirmation is still writable without
+      // reloading or choosing a conflict resolution.
+      const next = `${marker} next`;
+      const nextAnswer = nextContentWrite(page);
+      await field.fill(next);
+      await field.press("Tab");
+      expect(await nextAnswer, "the next edit is saved").toBe("saved");
+      expect(writes.sent, "only the new edit was sent").toBe(2);
+
+      // The fresh edit is what the server holds.
       await page.unrouteAll({ behavior: "ignoreErrors" });
       await openEditor(page);
-      await expect(await heroContentField(page)).toHaveValue(marker);
+      await expect(await heroContentField(page)).toHaveValue(next);
     } finally {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       const restore = await heroContentField(page).catch(() => null);
