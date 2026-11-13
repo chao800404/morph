@@ -155,6 +155,7 @@ export async function sendPasswordResetEmail({
         email,
         appName: config.server.appName,
         logoUrl: `${baseUrl}/logo192.png`,
+        supportAddress: config.server.emailSupportAddress,
       }),
     );
 

@@ -3,6 +3,7 @@ import { defineConfig, type CMSUserConfig } from "./lib/config/create-config";
 import { localization } from "./lib/config/localization";
 import { cmsTrustedOrigins } from "./lib/config/trusted-origins";
 import { MAX_ASSETS_PER_RECORD } from "./lib/config/upload-limits";
+import { resendAdapter } from "./lib/email/adapters";
 import {
   Account,
   Contents,
@@ -20,7 +21,7 @@ import {
  * server and client views of the config.
  *
  * Everything outside `server` is declarative and ships to the browser.
- * Secrets belong in `server`: `createServerOnlyFn` is one of the TanStack Start
+ * That callback uses `createServerOnlyFn`, one of the TanStack Start
  * compiler's `transformFuncs`, so that function's body is removed from the
  * client bundle. Read `process.env` inside it, never as a module-level
  * constant, or the value is captured before the transform can strip it.
@@ -109,18 +110,17 @@ export const cmsConfig = defineConfig({
     },
   },
   trustedOrigins: cmsTrustedOrigins,
-  email: {
-    defaultFromAddress: "medusa@mail.cmsapp.org",
-    defaultFromName: "medusa",
-  },
-
   // Server-only. Never reaches the browser.
   server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => ({
-    database: {
-      connectionString: process.env.DATABASE_URL,
-    },
-    email: {
-      apiKey: process.env.RESEND_API_KEY || "",
-    },
+    database: { connectionString: process.env.DATABASE_URL },
+    // Choose the adapter here. Identity and credentials have one configuration.
+    email: resendAdapter({
+      // Compatibility placeholders; replace with owner-approved identities before sending.
+      defaultFromAddress:
+        process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
+      defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
+      supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
+      apiKey: process.env.RESEND_API_KEY ?? "",
+    }),
   })),
 });
