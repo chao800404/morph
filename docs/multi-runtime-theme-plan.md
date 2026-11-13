@@ -63,7 +63,7 @@ L1 能通用，是因為內容配對、內容依賴的證明、Build Preview、r
 | ------ | -------------------------------------- | ------------- | --------------------------------------------------------------------------------------- |
 | 第一版 | TanStack Start（React）                | Certified     | 現有實作；原生匯入依 start-native-import-plan 進行                                      |
 | 第一版 | Astro（`.astro` + React／Vue 元件）    | Certified     | 2026-10-06 驗證通過（見下）。靜態 HTML 模板以 `src/pages/*.html` 放進 Astro，不另設框架 |
-| 第二個接入 | React Router（原 Remix）         | 先 Unverified | 2026-10-08 排在 Astro 之後。官方 Cloudflare Vite plugin 支援，建置路線同 Start；檔案語言是 TSX，L2 沿用現有改寫器。輪到時再選定版本（Cloudflare 文件已從 v7 改寫為 v8） |
+| 第二個接入 | React Router v8（原 Remix）      | 先 Unverified | 2026-10-08 排在 Astro 之後。官方 Cloudflare Vite plugin 支援，建置路線同 Start；檔案語言是 TSX，L2 沿用現有改寫器。2026-10-15 決定以 v8 為目標，不做 v7（v8.0.0 於 2026-06-17 發布，middleware 一律開啟，Cloudflare 改用 `@cloudflare/vite-plugin`；官方每年一個大版本） |
 | 之後   | 通用 Vite 託管（L1）：SvelteKit、SolidStart、Vue 等 | 先 Unverified | 先求能建置、預覽、發布；SvelteKit 用自己的 `adapter-cloudflare`，SolidStart 在 Cloudflare 文件標為 Beta |
 | 之後   | Next.js（經 vinext）                   | 先 Unverified | vinext 1.0（2026-09-28）以 Vite 重新實作 Next.js API；官方仍提醒非所有專案都能直接替換，npm 上仍為 beta  |
 | 之後   | Nuxt、TanStack Start Solid             | 先 Unverified | 依需求逐一接入                                                                          |
@@ -307,7 +307,7 @@ TanStack Start 專屬的部分（selective SSR、`pages`、`spa`、步驟 1b–1
    建置與產物、官方 Astro Cloudflare 範例原樣匯入驗收；Design 以整條鏈驗收，ISR／SSG 以經 Core 的
    快取行為驗收。（2026-10-08）Design 先做 L1.5；`.astro` 的 L2 改寫等專用解析 Worker 通過雲端驗證之後
    （Astro 計畫 8.2）。
-5. **React Router（原 Remix）接入**（2026-10-08 決定排在 Astro 之後）：建置路線同 Start，L2 沿用 TSX。
+5. **React Router v8（原 Remix）接入**（2026-10-08 決定排在 Astro 之後；2026-10-15 決定以 v8 為目標，不做 v7）：建置路線同 Start，L2 沿用 TSX。
    做 Astro 的 A1、A2 時，以「第三個框架也能套用」檢查共用介面，不把 Astro 特有的處理寫進共用層。
 6. **建立網站時選擇框架**，以及模板宣告所需框架。
 7. **通用 Vite 託管（L1）**：以兩三個官方 Cloudflare 範例（例如 Vue、Svelte、Solid）驗收；之後依需求替
