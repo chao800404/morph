@@ -939,3 +939,62 @@ describe("a fast /b then /c inside the frame", () => {
     expect(harness.search().section).toBeUndefined();
   });
 });
+
+describe("frame-follow navigationIntent and followEpoch", () => {
+  it("preserves the structure frameNavigationEpoch across async route load and sends frame-follow", async () => {
+    const harness = await settled();
+    harness.holdLoads();
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/b",
+      frameNavigationEpoch: 7,
+    });
+    await tick(0);
+    // Same-page structure re-report or higher epoch during async load must not
+    // overwrite the captured followEpoch for the pending /b switch.
+    harness.finishLoad();
+    await tick(0);
+    expect(latestRequest()).toMatchObject({
+      routePath: "/b",
+      navigationIntent: "frame-follow",
+      followEpoch: 7,
+    });
+  });
+
+  it("retires a superseded route request without blocking subsequent follow back to /", async () => {
+    const harness = await settled();
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/b",
+      frameNavigationEpoch: 2,
+    });
+    await tick(0);
+    const req = latestRequest();
+    expect(req?.routePath).toBe("/b");
+    expect(req?.navigationIntent).toBe("frame-follow");
+    expect(req?.followEpoch).toBe(2);
+
+    // Frame navigated back to / before /b set-route arrived -> bridge answers superseded
+    fromPreview({
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId: req!.routeRequestId!,
+      routePath: "/",
+      status: "superseded",
+    });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/",
+      frameNavigationEpoch: 3,
+    });
+    await tick(0);
+    expect(shownRoute(harness)).toBe("/");
+    expect(latestRequest()).toMatchObject({
+      routePath: null,
+      navigationIntent: "frame-follow",
+      followEpoch: 3,
+    });
+  });
+});
