@@ -138,6 +138,7 @@ describe("a Start page (no document navigation declared)", () => {
         type: "morph:storefront-preview-route-applied",
         routeRequestId: 7,
         routePath: null,
+        status: "applied",
       },
     ]);
     expect(page.currentRoutePattern()).toBeUndefined();
@@ -192,6 +193,7 @@ describe("a page that navigates as documents (Astro)", () => {
         type: "morph:storefront-preview-structure",
         nodes: [],
         routePath: "/about/",
+        frameNavigationEpoch: 0,
       },
       {
         type: "morph:storefront-preview-route-applied",
@@ -258,6 +260,7 @@ describe("a page that navigates as documents (Astro)", () => {
         type: "morph:storefront-preview-structure",
         nodes: [],
         routePath: "/login",
+        frameNavigationEpoch: 0,
       },
     ]);
     expect(page.applied()).toBeNull();
@@ -300,6 +303,7 @@ describe("a page that navigates as documents (Astro)", () => {
         type: "morph:storefront-preview-structure",
         nodes: [],
         routePath: "/about",
+        frameNavigationEpoch: 0,
       },
     ]);
     // Only that first request: one the editor sends after it is followed.

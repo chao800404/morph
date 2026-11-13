@@ -987,6 +987,7 @@ describe("answering the editor's request for a route", () => {
       // A Start page: no document navigation declared
       // (theme-preview-bridge-document-navigation.test.ts has the other).
       "documentNavigation",
+      "syncFrameNavigationEpoch",
       source + "; return applyEditorRoute;",
     )(
       {
@@ -1014,6 +1015,7 @@ describe("answering the editor's request for a route", () => {
       () => steps.push("structure"),
       options.matched,
       false,
+      () => 0,
     ) as (message: Record<string, unknown>) => void;
     return { apply, steps, posted, attributes, timers };
   }
@@ -1047,6 +1049,7 @@ describe("answering the editor's request for a route", () => {
         type: "morph:storefront-preview-route-applied",
         routeRequestId: 3,
         routePath: "/inline-reload-defer",
+        status: "applied",
       },
     ]);
     expect(page.steps).toEqual(["finish-inline", "structure", "answer"]);
@@ -1062,6 +1065,7 @@ describe("answering the editor's request for a route", () => {
         type: "morph:storefront-preview-route-applied",
         routeRequestId: 4,
         routePath: "/",
+        status: "applied",
       },
     ]);
   });
@@ -1085,6 +1089,7 @@ describe("answering the editor's request for a route", () => {
         type: "morph:storefront-preview-route-applied",
         routeRequestId: 6,
         routePath: null,
+        status: "applied",
       },
     ]);
     expect(page.steps).toEqual(["answer"]);
@@ -1272,11 +1277,9 @@ describe("a field outside every section (the page stand-in)", () => {
   it("is named only for the route this document applied and answered", () => {
     // Cleared the moment a new request arrives; set only together with the
     // answer the editor checks, to the route the editor asked for.
+    expect(BRIDGE).toContain("appliedRoutePath = null;");
     expect(BRIDGE).toContain(
-      "function applyEditorRoute(message) {\n  appliedRoutePath = null;",
-    );
-    expect(BRIDGE).toContain(
-      'appliedRoutePath = message.routePath ?? "/";\n          answerRouteRequest(message.routeRequestId, routePath);',
+      'appliedRoutePath = message.routePath ?? "/";\n          answerRouteRequest(message.routeRequestId, routePath, "applied");',
     );
   });
 
