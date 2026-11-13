@@ -56,9 +56,15 @@ import {
   createMachineLock,
   flockAvailable,
 } from "./e2e-machine-lock.mjs";
+import {
+  ownProcessGroupId,
+  ownProcessSessionId,
+  writeHandoverRecord,
+} from "./container-run-handover.mjs";
 
 /** Whether an exit has already been chosen. See `exitAfterFlush` below. */
 let exiting = false;
+const RUNNER_STARTED_AT_UTC = new Date().toISOString();
 
 /**
  * Exits once stdout and stderr have reached the pipe.
@@ -677,63 +683,207 @@ function cleanUp() {
 }
 
 async function runTeardown() {
-  // Signalled together and awaited together. The children are independent, so
-  // stopping them in sequence would make each one wait out the others' budgets.
-  const stoppedAll = (
-    await Promise.all(started.map((entry) => stop(entry)))
-  ).every(Boolean);
-  started.length = 0;
-  // After the children are gone, so a container a stopping dev server was about
-  // to release is not counted as leaked. That ordering was only a comment
-  // before: the loop above returned before the servers had stopped, so this
-  // counted containers the run had in fact released.
-  const containersGone = await removeOwnContainers();
-  // After the children are gone, so the sidecar's exit is in its record, and
-  // before the state directory goes with the originals.
-  for (const { from, to } of keptAfterTeardown.splice(0)) {
+  const handoverPath = process.env.MORPH_E2E_HANDOVER_RECORD
+    ? path.resolve(process.env.MORPH_E2E_HANDOVER_RECORD)
+    : null;
+  const runArgs = process.argv.slice(2).filter((arg) => arg !== "--");
+  const spec =
+    runArgs.find((arg) => arg.endsWith(".spec.ts")) ??
+    (runArgs.join(" ") || "(full suite)");
+  const stateDirAtTeardown = stateDir;
+  const childIdentities = started.map(({ name, child }) => ({
+    name,
+    pid: child.pid ?? null,
+    // Every child is spawned detached, making its pid the process-group id.
+    pgid: child.pid ?? null,
+  }));
+  const lockPath = process.env.MORPH_E2E_LOCK_FILE ?? DEFAULT_LOCK_FILE;
+  const lockWasAcquired = machineLock !== null;
+  const invocationId = randomUUID();
+  const runnerIdentity = {
+    pid: process.pid,
+    pgid: ownProcessGroupId(),
+    sid: ownProcessSessionId(),
+    startedAtUtc: RUNNER_STARTED_AT_UTC,
+  };
+  const stopResults = new Map();
+  let stoppedAll = false;
+  let containersAttempted = false;
+  let containersGone = false;
+  let stateDirRemoved = false;
+  let lockReleaseCompleted = false;
+  let identityRecordedBeforeTeardown = false;
+  let cleanupError = null;
+  let recordWriteError = null;
+
+  const makeRecord = (phase) => ({
+    schemaVersion: 1,
+    invocationId,
+    spec,
+    phase,
+    identityRecordedBeforeTeardown,
+    runner: runnerIdentity,
+    children: childIdentities.map((child) => ({
+      ...child,
+      stopped: stopResults.get(child.pid) === true,
+    })),
+    stateDir: {
+      path: stateDirAtTeardown,
+      removed: stateDirRemoved,
+    },
+    containers: {
+      prefix: containerPrefix,
+      cleanupAttempted: containersAttempted,
+      gone: containersGone,
+    },
+    machineLock: {
+      path: lockPath,
+      acquired: lockWasAcquired,
+      releaseCompleted: lockReleaseCompleted,
+    },
+    writtenAtUtc: new Date().toISOString(),
+  });
+
+  const writeRecord = async (phase) => {
+    if (!handoverPath) return true;
     try {
-      await mkdir(path.dirname(to), { recursive: true });
-      await copyFile(from, to);
-      log(`kept ${to}`);
+      await writeHandoverRecord(handoverPath, makeRecord(phase));
+      return true;
     } catch (error) {
-      log(`could not keep ${to}: ${error instanceof Error ? error.message : error}`);
+      recordWriteError = error;
+      log(
+        `could not write container handover record: ${error instanceof Error ? error.message : error}`,
+      );
+      return false;
     }
+  };
+
+  if (handoverPath) {
+    identityRecordedBeforeTeardown = true;
+    identityRecordedBeforeTeardown = await writeRecord("identity-recorded");
   }
-  // Only once every child has stopped, so nothing is still writing in it; and
-  // only this run's directory: anything else in `.morph-previews/` is not this
-  // run's. A directory that could not be removed is reported and left, and the
-  // rest of the teardown still runs.
-  if (previewWorkspaces) {
-    if (!stoppedAll) {
-      log(`kept ${previewWorkspaces}: a process this run started may still be using it`);
-    } else {
+  try {
+    // Signalled together and awaited together. The children are independent, so
+    // stopping them in sequence would make each one wait out the others' budgets.
+    const stops = await Promise.allSettled(
+      started.map(async (entry) => ({
+        pid: entry.child.pid ?? null,
+        stopped: await stop(entry),
+      })),
+    );
+    stoppedAll = stops.every(
+      (result) =>
+        result.status === "fulfilled" && result.value.stopped === true,
+    );
+    for (const result of stops) {
+      if (result.status === "fulfilled") {
+        stopResults.set(result.value.pid, result.value.stopped);
+      }
+    }
+    started.length = 0;
+
+    // After the children are gone, so a container a stopping dev server was about
+    // to release is not counted as leaked.
+    containersAttempted = containerPrefix !== null;
+    containersGone = await removeOwnContainers();
+
+    // After the children are gone, so the sidecar's exit is in its record, and
+    // before the state directory goes with the originals.
+    for (const { from, to } of keptAfterTeardown.splice(0)) {
       try {
-        await rm(previewWorkspaces, { recursive: true, force: true });
-        log(`removed ${previewWorkspaces}`);
+        await mkdir(path.dirname(to), { recursive: true });
+        await copyFile(from, to);
+        log(`kept ${to}`);
       } catch (error) {
+        log(`could not keep ${to}: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+
+    // Only once every child has stopped, so nothing is still writing in it; and
+    // only this run's directory.
+    if (previewWorkspaces) {
+      if (!stoppedAll) {
+        log(`kept ${previewWorkspaces}: a process this run started may still be using it`);
+      } else {
+        try {
+          await rm(previewWorkspaces, { recursive: true, force: true });
+          log(`removed ${previewWorkspaces}`);
+        } catch (error) {
+          log(
+            `could not remove ${previewWorkspaces}: ${error instanceof Error ? error.message : error}`,
+          );
+        }
+      }
+      previewWorkspaces = null;
+    }
+    if (stateDirAtTeardown) {
+      await rm(stateDirAtTeardown, { recursive: true, force: true });
+      stateDirRemoved = true;
+      log(`removed ${stateDirAtTeardown}`);
+      stateDir = null;
+    }
+  } catch (error) {
+    cleanupError = error;
+    log(
+      `container run teardown failed: ${error instanceof Error ? error.message : error}`,
+    );
+  } finally {
+    // Last: the slot is free only after this run has left the machine. If any
+    // process group or container may remain, let the existing guardian retain it.
+    if (machineLock) {
+      try {
+        const handOver = !containersGone || !stoppedAll;
+        await machineLock.release({ handOver });
+        lockReleaseCompleted = !handOver;
         log(
-          `could not remove ${previewWorkspaces}: ${error instanceof Error ? error.message : error}`,
+          handOver
+            ? "left the machine's E2E slot to the lock's guardian, which keeps it until this run's resources are gone"
+            : "released the machine's E2E slot",
+        );
+        machineLock = null;
+      } catch (error) {
+        cleanupError ??= error;
+        log(
+          `could not release the machine's E2E slot: ${error instanceof Error ? error.message : error}`,
         );
       }
     }
-    previewWorkspaces = null;
+    const complete =
+      identityRecordedBeforeTeardown &&
+      runnerIdentity.pgid !== null &&
+      runnerIdentity.sid !== null &&
+      runnerIdentity.pid === runnerIdentity.pgid &&
+      runnerIdentity.pid === runnerIdentity.sid &&
+      childIdentities.every((child) => Number.isSafeInteger(child.pid) && child.pid > 1) &&
+      stoppedAll &&
+      containersGone &&
+      stateDirRemoved &&
+      lockWasAcquired &&
+      lockReleaseCompleted &&
+      !cleanupError;
+    if (handoverPath) {
+      const wroteFinalRecord = await writeRecord(
+        complete ? "teardown-complete" : "teardown-incomplete",
+      );
+      if (!wroteFinalRecord) recordWriteError ??= new Error("final handover record write failed");
+    }
   }
-  if (stateDir) {
-    await rm(stateDir, { recursive: true, force: true });
-    log(`removed ${stateDir}`);
-    stateDir = null;
-  }
-  // Last: the slot is free only once this run has left the machine. Also
-  // stops a wait still in progress when the run was interrupted while waiting.
-  if (machineLock) {
-    await machineLock.release({ handOver: !containersGone });
-    machineLock = null;
-    log(
-      containersGone
-        ? "released the machine's E2E slot"
-        : "left the machine's E2E slot to the lock's guardian, which keeps it until this run's containers are gone",
-    );
-  }
+
+  if (cleanupError) throw cleanupError;
+  const handoverComplete =
+    identityRecordedBeforeTeardown &&
+    runnerIdentity.pgid !== null &&
+    runnerIdentity.sid !== null &&
+    runnerIdentity.pid === runnerIdentity.pgid &&
+    runnerIdentity.pid === runnerIdentity.sid &&
+    childIdentities.every((child) => Number.isSafeInteger(child.pid) && child.pid > 1) &&
+    stoppedAll &&
+    containersGone &&
+    stateDirRemoved &&
+    lockWasAcquired &&
+    lockReleaseCompleted &&
+    recordWriteError === null;
+  return { handoverComplete };
 }
 
 /**
@@ -1431,13 +1581,29 @@ async function main() {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    void cleanUp().then(() => exitAfterFlush(130));
+    void cleanUp().then(
+      () => exitAfterFlush(130),
+      (error) => {
+        console.error(
+          `[e2e] teardown after signal failed: ${error instanceof Error ? error.message : error}`,
+        );
+        return exitAfterFlush(130);
+      },
+    );
   });
 }
 
 main()
   .then(async () => {
-    await cleanUp();
+    const teardownResult = await cleanUp();
+    if (
+      process.env.MORPH_E2E_HANDOVER_RECORD &&
+      !teardownResult.handoverComplete
+    ) {
+      throw new Error(
+        "E2E_RUNNER_HANDOVER_INCOMPLETE: this run cannot authorize a following container invocation.",
+      );
+    }
     log("passed");
     // Success used to fall off the end of the event loop and wait for the last
     // handle to close. That is how a green run became a thirty-minute job: the
@@ -1450,7 +1616,11 @@ main()
   })
   .catch(async (error) => {
     console.error(`[e2e] ${error instanceof Error ? error.message : error}`);
-    await cleanUp();
+    await cleanUp().catch((cleanupError) => {
+      console.error(
+        `[e2e] teardown failed: ${cleanupError instanceof Error ? cleanupError.message : cleanupError}`,
+      );
+    });
     // The same barrier, and the exit where a dropped line costs most: this is the
     // only one that says what went wrong. `await cleanUp()` above gave it time to
     // drain by accident rather than by design — a normal teardown returns in 1 ms.

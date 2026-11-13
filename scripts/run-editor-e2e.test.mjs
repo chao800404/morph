@@ -55,6 +55,9 @@ import {
 const FIRST_SHARD = `--shard=1/${EDITOR_SHARD_COUNT}`;
 
 const RUNNER = fileURLToPath(new URL("./run-editor-e2e.mjs", import.meta.url));
+const ISOLATED_RUNNER = fileURLToPath(
+  new URL("./run-container-e2e-isolated.mjs", import.meta.url),
+);
 
 const FAKE_NPX = `#!/usr/bin/env node
 import { spawnSync } from "node:child_process";
@@ -283,7 +286,12 @@ after(async () => {
  * Starts the real runner in the scratch directory. `onStarted` gets the child
  * for cases that have to act on it mid-run.
  */
-async function runRunner(extraEnv, onStarted, extraArgs = ["fake.spec.ts"]) {
+async function runRunner(
+  extraEnv,
+  onStarted,
+  extraArgs = ["fake.spec.ts"],
+  isolated = false,
+) {
   const pidDir = await mkdtemp(path.join(scratch, "pids-"));
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -295,22 +303,30 @@ async function runRunner(extraEnv, onStarted, extraArgs = ["fake.spec.ts"]) {
       delete env[key];
     }
   }
-  const child = spawn(process.execPath, [RUNNER, "--", ...extraArgs], {
-    cwd: scratch,
-    env: {
-      ...env,
-      PATH: `${path.join(scratch, "bin")}${path.delimiter}${process.env.PATH}`,
-      MORPH_E2E_TRANSPORT: "cloudflare-sandbox",
-      MORPH_E2E_PORT: String(await freePort()),
-      // Its own lock: these fake runs must neither wait for nor block a real
-      // run on this machine. Beside pidDir, not in it: every name in pidDir
-      // is read as a pid.
-      MORPH_E2E_LOCK_FILE: `${pidDir}.lock`,
-      FAKE_PID_DIR: pidDir,
-      ...extraEnv,
+  const child = spawn(
+    process.execPath,
+    [
+      ...(isolated ? [ISOLATED_RUNNER, RUNNER] : [RUNNER]),
+      "--",
+      ...extraArgs,
+    ],
+    {
+      cwd: scratch,
+      env: {
+        ...env,
+        PATH: `${path.join(scratch, "bin")}${path.delimiter}${process.env.PATH}`,
+        MORPH_E2E_TRANSPORT: "cloudflare-sandbox",
+        MORPH_E2E_PORT: String(await freePort()),
+        // Its own lock: these fake runs must neither wait for nor block a real
+        // run on this machine. Beside pidDir, not in it: every name in pidDir
+        // is read as a pid.
+        MORPH_E2E_LOCK_FILE: `${pidDir}.lock`,
+        FAKE_PID_DIR: pidDir,
+        ...extraEnv,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  );
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
@@ -375,6 +391,43 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
         JSON.parse(await readFile(report, "utf8")).suites[0].specs.length,
         7,
       );
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "records run identity before teardown and its exact cleanup outcome",
+    { timeout: 90_000 },
+    async () => {
+      const handover = path.join(scratch, "retained", "container-run.json");
+      const result = await runRunner(
+        {
+          MORPH_E2E_HANDOVER_RECORD: handover,
+          FAKE_REPORT_STATUS: "passed",
+        },
+        undefined,
+        [FIRST_SHARD],
+        true,
+      );
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      const record = JSON.parse(await readFile(handover, "utf8"));
+      assert.equal(record.schemaVersion, 1);
+      assert.match(record.invocationId, /^[0-9a-f-]{36}$/);
+      assert.equal(record.spec, FIRST_SHARD);
+      assert.equal(record.phase, "teardown-complete");
+      assert.ok(Number.isSafeInteger(record.runner.pid));
+      assert.ok(Number.isSafeInteger(record.runner.pgid));
+      assert.ok(Number.isSafeInteger(record.runner.sid));
+      assert.equal(record.runner.pgid, record.runner.pid);
+      assert.equal(record.runner.sid, record.runner.pid);
+      assert.ok(record.children.some((child) => child.name === "dev server"));
+      assert.ok(record.children.every((child) => child.stopped === true));
+      assert.equal(record.stateDir.removed, true);
+      assert.match(record.containers.prefix, /^workerd-morph-e2e-[a-f0-9]{12}-$/);
+      assert.equal(record.containers.cleanupAttempted, true);
+      assert.equal(record.containers.gone, true);
+      assert.equal(record.machineLock.acquired, true);
+      assert.equal(record.machineLock.releaseCompleted, true);
       assert.deepEqual(result.leftBehind, []);
     },
   );
