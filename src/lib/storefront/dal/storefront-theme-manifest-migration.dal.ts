@@ -546,7 +546,7 @@ export async function applyThemeManifestMigration(args: {
     env.DATABASE.prepare(
       `
         UPDATE storefront_theme_files
-        SET deleted_at = ?1, updated_at = ?1
+        SET deleted_at = ?1, updated_at = ?1, last_write_attempt_id = NULL
         WHERE id = ?2 AND storefront_id = ?3 AND theme_id = ?4
           AND path = ?5 AND version = ?6 AND deleted_at IS NULL
       `,

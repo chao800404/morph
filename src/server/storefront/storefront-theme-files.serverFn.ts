@@ -137,6 +137,7 @@ async function saveDesignElementOperation(
     expectedFileId?: string;
     expectedVersion?: number;
     expectedSourceGeneration: number;
+    writeAttemptId?: string;
     createRevision?: boolean;
     revisionMessage?: string;
   },
@@ -193,6 +194,7 @@ async function saveDesignElementOperation(
         expectedVersion: stored.version,
         expectMissing: false,
         expectedSourceGeneration: snapshot.sourceGeneration,
+        writeAttemptId: data.writeAttemptId,
         createRevision: data.createRevision,
         revisionMessage: data.revisionMessage,
         createdBy: context.user?.id,
@@ -254,6 +256,7 @@ async function saveDesignStructureWrite(
     expectedVersion?: number;
     expectMissing?: boolean;
     expectedSourceGeneration: number;
+    writeAttemptId?: string;
     createRevision?: boolean;
     revisionMessage?: string;
   },
@@ -289,6 +292,7 @@ async function saveDesignStructureWrite(
         expectedVersion: data.expectedVersion,
         expectMissing: data.expectMissing,
         expectedSourceGeneration: snapshot.sourceGeneration,
+        writeAttemptId: data.writeAttemptId,
         createRevision: data.createRevision,
         revisionMessage: data.revisionMessage,
         createdBy: context.user?.id,
@@ -930,6 +934,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
             expectedVersion: data.expectedVersion,
             expectMissing: false,
             expectedSourceGeneration: data.expectedSourceGeneration,
+            writeAttemptId: data.writeAttemptId,
             createRevision: data.createRevision,
             revisionMessage:
               data.revisionMessage ??
@@ -993,6 +998,7 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
           expectedVersion: data.expectedVersion,
           expectMissing: data.expectMissing,
           expectedSourceGeneration: data.expectedSourceGeneration,
+          writeAttemptId: data.writeAttemptId,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,

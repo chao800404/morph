@@ -80,6 +80,8 @@ export type PendingDesignWrites = {
   landed: (path: string, revision: number) => void;
   /** What the server holds was found to be this text: its record ends. */
   heldByServer: (path: string, content: string) => void;
+  /** The author took the server's file over this tab's text: the record ends. */
+  forget: (path: string) => void;
   get: (path: string) => PendingDesignWrite | undefined;
   /** Every pending write's text, by path: what Code's save-all must leave. */
   texts: () => Map<string, string>;
@@ -110,6 +112,9 @@ export function createPendingDesignWrites(): PendingDesignWrites {
     },
     heldByServer: (path, content) => {
       if (records.get(path)?.content === content) records.delete(path);
+    },
+    forget: (path) => {
+      records.delete(path);
     },
     get: (path) => records.get(path),
     texts: () =>
