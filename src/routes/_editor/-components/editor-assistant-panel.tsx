@@ -577,6 +577,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 }
                 documentWritesRefused={contentRefused}
                 themeFiles={themeFiles}
+                framework={context.theme.framework}
                 routeSourcePath={routeSourcePath}
                 onPromoteText={onPromoteText}
                 onCreatePageCopy={onCreatePageCopy}
