@@ -281,6 +281,10 @@ const HEADING_ICONS: Readonly<Record<string, EditableNodeIcon>> = {
   h6: { component: Heading6, name: "h6" },
 };
 
+/** Interim notice for a hidden section; wording is state-based on purpose. */
+const HIDDEN_SECTION_NOTICE =
+  "此區塊的隱藏效果尚未確認，預覽或發布結果可能仍顯示內容，或發生渲染錯誤。";
+
 function editableNodeIcon(node: PreviewEditableNode): EditableNodeIcon {
   if (node.kind === "heading") {
     return (
@@ -529,6 +533,17 @@ function SortableSectionRow({
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
+        {section.enabled === false ? (
+          // Interim notice (M3 P0a). Informational only: it describes the
+          // draft Hide, not the published release, and changes no write path.
+          <p
+            role="note"
+            data-editor-hidden-section-notice="true"
+            className="px-2 pb-1 text-[0.7rem] leading-snug text-muted-foreground"
+          >
+            {HIDDEN_SECTION_NOTICE}
+          </p>
+        ) : null}
         <CollapsibleContent>{children}</CollapsibleContent>
       </Collapsible>
     </SidebarMenuItem>
