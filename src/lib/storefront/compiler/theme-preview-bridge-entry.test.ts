@@ -1309,3 +1309,17 @@ describe("a field outside every section (the page stand-in)", () => {
     );
   });
 });
+
+describe("Start and container bridge presentation ack", () => {
+  it("advertises section-presentation-ack-v1 in BRIDGE_CAPABILITIES", () => {
+    expect(BRIDGE).toContain('"section-presentation-ack-v1"');
+  });
+
+  it("defers section-presentation-ack until router.invalidate and DOM commit complete, and supersedes older tokens", () => {
+    expect(BRIDGE).toContain("morph:storefront-preview-section-presentation-ack");
+    expect(BRIDGE).toContain("pendingPresentationTokens");
+    expect(BRIDGE).toContain('reason: "superseded"');
+    expect(BRIDGE).toContain('reason: "section-missing"');
+    expect(BRIDGE).toContain("flushEarlyPresentationTokens");
+  });
+});
