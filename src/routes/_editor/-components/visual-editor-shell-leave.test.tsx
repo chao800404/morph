@@ -923,7 +923,7 @@ describe("reloading or closing the tab", () => {
 });
 
 describe("a list conflict the update stopped on", () => {
-  it("still stops a navigation, keeps the draft on the page, and says what to do", async () => {
+  it("offers Discard mine for an undeclared list, and every message names it", async () => {
     const rows = (...titles: string[]) =>
       titles.map((title) => ({ id: title.toLowerCase(), title }));
     const withRows = (items: unknown, generation = 1) =>
@@ -998,19 +998,36 @@ describe("a list conflict the update stopped on", () => {
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
+    // This fixture has no Theme contentFields declaration for `items`, so the
+    // Inspector has no array card for a list-only discard. The user's rule
+    // (Task 41 31-B): where no path-scoped discard exists, the generic
+    // "Discard mine…" for that section is the way out, and every message
+    // names it rather than hedging about what the Inspector may show.
     await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Discard mine…" }),
-      ).toBeTruthy(),
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Use Discard mine… in the toolbar to discard all of your unsaved changes to hero",
+        ),
+      ),
     );
+    expect(toast.error).not.toHaveBeenCalledWith(
+      expect.stringContaining("if the Inspector exposes one"),
+    );
+    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }),
+    ).toBeNull();
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
 
-    // Leaving the editor would lose the draft: it is stopped, and the
-    // dialog points at the way out that works for a list conflict. Pointing
-    // at "keep mine" would send the author round in a circle.
+    // Leaving would lose the draft: it is stopped, and the dialog points at
+    // the way out that works here. Pointing at "keep mine" would send the
+    // author round in a circle.
     const leaving = navigate("leave-editor");
     const leaveDialog = await screen.findByRole("alertdialog", {}, { timeout: 5000 });
-    expect(leaveDialog.textContent).toContain("Discard mine");
+    expect(leaveDialog.textContent).toContain("Use Discard mine… in the toolbar");
+    expect(leaveDialog.textContent).not.toContain("if the Inspector exposes one");
     act(() => {
       screen.getByRole("button", { name: "Stay here" }).click();
     });
@@ -1024,13 +1041,34 @@ describe("a list conflict the update stopped on", () => {
     const switching = navigate("switch-page");
     const switchDialog = await screen.findByRole("alertdialog", {}, { timeout: 5000 });
     expect(switching.blocked).toBeUndefined();
-    expect(switchDialog.textContent).toContain("Discard mine");
+    expect(switchDialog.textContent).toContain("Use Discard mine… in the toolbar");
     act(() => {
       screen.getByRole("button", { name: "Switch, keep draft unsaved" }).click();
     });
     await waitFor(() => expect(switching.blocked).toBe(false));
     expect(saveStatus()).toBe("Out of date");
     expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+    // The exit asks first and states exactly what goes: every unsaved change
+    // to that section, which here is the list, and nothing of other sections.
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    const discardDialog = await screen.findByRole("alertdialog");
+    expect(discardDialog.textContent).toContain(
+      "all of your unsaved changes to hero (items)",
+    );
+    expect(discardDialog.textContent).toContain(
+      "Other sections keep their changes",
+    );
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull(),
+    );
+    expect(saveStatus()).not.toBe("Out of date");
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
 });

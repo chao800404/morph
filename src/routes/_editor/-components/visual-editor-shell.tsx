@@ -32,8 +32,29 @@ import {
   MISSING_BASIS_MESSAGE,
   missingBasisFailure,
   ROUTE_DOCUMENT_CREATED_GENERATION,
+  discardPendingContentPath,
+  discardedListValue,
+  contentEntryStatusPaths,
+  changedListPaths,
+  hasUnconfirmedContentForList as hasUnconfirmedListWrite,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
+import { resolveSectionContentDeclaration } from "@/lib/storefront/editor/section-content-declaration";
+import {
+  captureBasis,
+  endBasis,
+  releaseUnheldBasis,
+  type UnconfirmedBases,
+} from "@/lib/storefront/editor/unconfirmed-write-basis";
+import {
+  listOwnDiscardLabel,
+  slotPropsSetInCode,
+  type SlotPropsSetInCode,
+} from "@/lib/storefront/editor/list-discard-control";
+import {
+  ListDiscardDialog,
+  SectionDiscardDialog,
+} from "./editor-content-discard-dialogs";
 import {
   acceptAnsweredWrite,
   acceptReadSnapshot,
@@ -290,7 +311,10 @@ import {
   isDocumentWriteTarget,
   isPageStandInId,
 } from "@/lib/storefront/editor/page-stand-in";
-import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
+import {
+  getComponentFilePath,
+  patchElementClassNameResult,
+} from "@/lib/storefront/ast/theme-ast-transformer";
 import {
   applyDesignElementOperation,
   DESIGN_ELEMENT_UNSAVED_MESSAGE,
@@ -449,6 +473,8 @@ import {
 } from "./editor-sections-panel";
 import type {
   InspectorInlineTextCommit,
+  InspectorListReset,
+  InspectorListWriteStatus,
   InspectorPropsChangeOptions,
 } from "./editor-style-inspector";
 import { resolveStylesSelectionTransition } from "./editor-styles-selection-mode";
@@ -1331,6 +1357,73 @@ function isCanvasControl(target: EventTarget, canvas: Element): boolean {
   return control !== null && canvas.contains(control);
 }
 
+type HeldListConflicts = Readonly<
+  Record<string, { templateId: string; sectionId: string; lists: string[] }>
+>;
+type ListDiscardControl = (
+  templateId: string,
+  sectionId: string,
+  fieldPath: string,
+) => string | null;
+/** Whether a held section belongs to a document of the page shown. */
+type HeldSectionOwnedHere = (
+  entry: Readonly<{ templateId: string; sectionId: string }>,
+) => boolean;
+
+/**
+ * The held list conflicts this page's "Discard mine…" is the way out for:
+ * this page's own (its route document and its layout documents), with a list
+ * that has no discard control of its own (the user's rule, Task 41 31-B).
+ * Another page's are discarded from that page (Task 41 R3-1).
+ */
+function genericListConflictKeysOf(
+  conflicts: HeldListConflicts,
+  control: ListDiscardControl,
+  ownedHere: HeldSectionOwnedHere,
+): string[] {
+  return Object.entries(conflicts)
+    .filter(
+      ([, entry]) =>
+        ownedHere(entry) &&
+        entry.lists.some(
+          (path) => control(entry.templateId, entry.sectionId, path) === null,
+        ),
+    )
+    .map(([key]) => key);
+}
+
+/** The held list conflicts of other pages, discarded from their own page. */
+function otherPageListConflictKeysOf(
+  conflicts: HeldListConflicts,
+  ownedHere: HeldSectionOwnedHere,
+): string[] {
+  return Object.entries(conflicts)
+    .filter(([, entry]) => !ownedHere(entry))
+    .map(([key]) => key);
+}
+
+/** Which ways out the held list conflicts have, for the message naming them. */
+function listExitsOf(
+  conflicts: HeldListConflicts,
+  control: ListDiscardControl,
+  ownedHere: HeldSectionOwnedHere,
+): { pathScoped: boolean; generic: boolean; otherPage: boolean } {
+  const here = Object.values(conflicts).filter(ownedHere);
+  const has = (scoped: boolean) =>
+    here.some((entry) =>
+      entry.lists.some(
+        (path) =>
+          (control(entry.templateId, entry.sectionId, path) !== null) ===
+          scoped,
+      ),
+    );
+  return {
+    pathScoped: has(true),
+    generic: has(false),
+    otherPage: here.length < Object.keys(conflicts).length,
+  };
+}
+
 export function VisualEditorShell({
   context,
   search,
@@ -1474,12 +1567,95 @@ export function VisualEditorShell({
   >({});
   const listConflictsRef = useRef(listConflicts);
   listConflictsRef.current = listConflicts;
-  const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
+  /**
+   * The label of a held list's own discard control ("Discard unsaved changes
+   * to <label>" beside it in the Content panel), or null where the panel has
+   * none for it: a list the section's component does not declare, a section
+   * on another page, one the panel refuses (hidden), or one with no stored
+   * copy (source mode). Null is where "Discard mine…" is the way out (the
+   * user's rule, Task 41 31-B). Assigned below, once its inputs exist.
+   */
+  const listDiscardControlRef = useRef<
+    (templateId: string, sectionId: string, fieldPath: string) => string | null
+  >(() => null);
+  const sectionLabelRef = useRef<(sectionId: string) => string>((id) => id);
+  /** Whether a held section is this page's (`listOwnedHere`). */
+  const listOwnedHereRef = useRef<HeldSectionOwnedHere>(() => true);
+  const [discardDialogTarget, setDiscardDialogTarget] = useState<{
+    key: string;
+    templateId: string;
+    sectionId: string;
+    fieldPath: string;
+  } | null>(null);
   // A discard waiting on the latest version: one at a time, and the button
   // that starts one is not offered meanwhile.
   const [discarding, setDiscarding] = useState(false);
   const discardingRef = useRef(false);
+  // "Discard mine…"'s confirmation, for held lists with no discard of their own.
+  const [sectionDiscardOpen, setSectionDiscardOpen] = useState(false);
+  // Bumped by "Discard mine": the Inspector's own copy of a discarded section
+  // is replaced by the latest one, so nothing typed before is sent again.
   const [contentResetEpoch, setContentResetEpoch] = useState(0);
+  // Keyed by its document as well as its section: section ids are unique
+  // only within a document (Task 41 R2-1).
+  const [listReset, setListReset] = useState<
+    (InspectorListReset & { templateId: string }) | null
+  >(null);
+  // Never restarts: an acknowledged reset clears `listReset`, and a counter
+  // derived from it would hand the next discard an epoch the mounted
+  // Inspector has already applied, so it would be skipped (Task 41 31-A).
+  const listResetEpochRef = useRef(0);
+  /**
+   * Lists (by pending-content key) whose write had an unknown outcome and
+   * was later confirmed landed: by a read-back, or by an answered resend
+   * (the brief's rule, Task 41 R2-3). The author never saw that write
+   * answered, so a later discard of the list says it does not undo it. An
+   * ordinary answered write is not recorded, and supersedes a record of
+   * the lists it changed.
+   */
+  const [savedListChanges, setSavedListChanges] = useState<
+    Record<string, string[]>
+  >({});
+  const noteSavedListChange = useCallback(
+    (
+      key: string,
+      entry: PendingContentEntry | undefined,
+      basis?: Readonly<Record<string, unknown>>,
+    ) => {
+      const lists = entry ? changedListPaths(entry, basis) : [];
+      if (lists.length === 0) return;
+      setSavedListChanges((current) => {
+        const known = current[key] ?? [];
+        const added = lists.filter((path) => !known.includes(path));
+        return added.length === 0
+          ? current
+          : { ...current, [key]: [...known, ...added] };
+      });
+    },
+    [],
+  );
+  /** A newer confirmed write of these lists: the earlier record is superseded. */
+  const supersedeSavedListChange = useCallback(
+    (
+      key: string,
+      entry: PendingContentEntry | undefined,
+      basis?: Readonly<Record<string, unknown>>,
+    ) => {
+      const lists = entry ? changedListPaths(entry, basis) : [];
+      if (lists.length === 0) return;
+      setSavedListChanges((current) => {
+        const known = current[key];
+        if (!known) return current;
+        const kept = known.filter((path) => !lists.includes(path));
+        if (kept.length === known.length) return current;
+        const next = { ...current };
+        if (kept.length > 0) next[key] = kept;
+        else delete next[key];
+        return next;
+      });
+    },
+    [],
+  );
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
@@ -2113,6 +2289,8 @@ export function VisualEditorShell({
   const unconfirmedRecordersRef = useRef<
     Map<string, (answeredDraftGeneration: unknown) => void>
   >(new Map());
+  /** The copy each unanswered write was composed on, by key (R3-4). */
+  const unconfirmedBasesRef = useRef<UnconfirmedBases>(new Map());
   /**
    * How many times each section's history was retired
    * (`invalidateSectionHistory`). A recorder taken at send time records
@@ -2332,6 +2510,41 @@ export function VisualEditorShell({
 
   /** Route documents created in this session, by the placeholder they replaced. */
   const routeTemplateIdsRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Whether two template ids name the same document: the same id, a route
+   * placeholder and the document created for it, or two ids of one route.
+   */
+  const sameTemplateOwner = useCallback(
+    (left: string, right: string) => {
+      const leftOwner = routeTemplateIdsRef.current.get(left) ?? left;
+      const rightOwner = routeTemplateIdsRef.current.get(right) ?? right;
+      if (leftOwner === rightOwner) return true;
+      const routePathForId = (id: string) =>
+        routePathFromTemplatePlaceholder(id) ??
+        context.templates.find(
+          (template) =>
+            template.id === (routeTemplateIdsRef.current.get(id) ?? id),
+        )?.routePath ??
+        null;
+      const leftRoutePath = routePathForId(left);
+      return leftRoutePath !== null && leftRoutePath === routePathForId(right);
+    },
+    [context.templates],
+  );
+  /**
+   * The one notion of "the same section" (Task 41): the same section id in
+   * the same document, under any of the document's ids. Section ids are
+   * unique only within a document, so the id alone never decides.
+   */
+  const sameSectionTarget = useCallback(
+    (
+      left: Readonly<{ templateId: string; sectionId: string }>,
+      right: Readonly<{ templateId: string; sectionId: string }>,
+    ) =>
+      left.sectionId === right.sectionId &&
+      sameTemplateOwner(left.templateId, right.templateId),
+    [sameTemplateOwner],
+  );
   /**
    * The route documents this editor's own ensure created (the server said
    * `createdByThisCall`), by real id. Input made while such a route had no
@@ -3132,6 +3345,24 @@ export function VisualEditorShell({
                       sentDraftGeneration,
                       recordHistory,
                     );
+                    // The copy it was composed on, kept with it (its frozen
+                    // entry): what a later read-back compares its lists with
+                    // (R3-4, R5). A resend keeps the first send's copy.
+                    captureBasis(
+                      unconfirmedBasesRef.current,
+                      key,
+                      frozen,
+                      writeSnapshot
+                        ? snapshotSectionProps(
+                            writeSnapshot,
+                            sentEntry.sectionId,
+                          )
+                        : storedSectionPropsRef.current(
+                            sentEntry.sectionId,
+                            sentTemplateId,
+                          ),
+                      replay?.resend ? replay.entry : undefined,
+                    );
                     if (replay) {
                       // A history run's write: held as sent, frozen, with the
                       // run it completes, and decided by its own read-back.
@@ -3190,18 +3421,57 @@ export function VisualEditorShell({
             // A resent ordinary write records what its first answer would
             // have: its own entry, once.
             replay.record?.(answeredDraftGeneration);
-          } else if (replay.link?.kind === "history") {
-            // Answered: the entry's next step goes onto the copy this made.
-            noteHistoryStepAnswered(
-              replay.link.attempt,
-              answeredDraftGeneration,
-            );
+            // Its outcome was unknown, and this answer confirms it landed,
+            // compared with the copy it was first composed on (R3-4).
+            if (result) {
+              noteSavedListChange(
+                key,
+                replay.entry,
+                endBasis(
+                  unconfirmedBasesRef.current,
+                  key,
+                  replay.entry,
+                  "landed",
+                ) ?? pendingPropsBaselineRef.current.get(key),
+              );
+            }
+          } else {
+            if (replay.link?.kind === "history") {
+              // Answered: the entry's next step goes onto the copy this made.
+              noteHistoryStepAnswered(
+                replay.link.attempt,
+                answeredDraftGeneration,
+              );
+            }
+            // A history step or a field reset of a list, answered, is newer
+            // than any earlier record of it (R3-5).
+            if (result) {
+              supersedeSavedListChange(
+                key,
+                replay.entry,
+                writeSnapshot
+                  ? snapshotSectionProps(writeSnapshot, replay.entry.sectionId)
+                  : undefined,
+              );
+            }
           }
           return result;
         }
         clearConflict();
         failedContentKeysRef.current.delete(key);
-        if (result) recordAnswered?.(answeredDraftGeneration);
+        if (result) {
+          recordAnswered?.(answeredDraftGeneration);
+          // An ordinary answered write is just saved (not recorded), and is
+          // newer than any earlier record of the lists it changed.
+          const answered = sentEntry as PendingContentEntry | undefined;
+          supersedeSavedListChange(
+            key,
+            answered,
+            writeSnapshot && answered
+              ? snapshotSectionProps(writeSnapshot, answered.sectionId)
+              : undefined,
+          );
+        }
         return result;
       } catch (error) {
         const code = (error as { code?: string }).code;
@@ -3261,6 +3531,8 @@ export function VisualEditorShell({
       resentReplay,
       noteHistoryStepAnswered,
       recordSavedContentHistory,
+      noteSavedListChange,
+      supersedeSavedListChange,
     ],
   );
 
@@ -3450,6 +3722,18 @@ export function VisualEditorShell({
             unconfirmedRecordersRef.current.delete(key);
             resolved.push([key, sent]);
             if (outcome === "landed") {
+              // Unknown, now found landed: a reset or history step of a list
+              // is recorded as an ordinary write is (R2-3). Its basis is the
+              // copy captured when it was first sent (a field reset: the copy
+              // it was pressed on; a history run's write: the copy it was
+              // composed on), kept across resends (R3-4, R4-1); the editor's
+              // copy now only if none was captured.
+              noteSavedListChange(
+                key,
+                sent,
+                endBasis(unconfirmedBasesRef.current, key, sent, "landed") ??
+                  storedSectionPropsRef.current(sent.sectionId, templateId),
+              );
               previewResetRef.current(sent.sectionId, { ...sent.props }, [
                 ...(sent.resetProps ?? []),
               ]);
@@ -3457,6 +3741,8 @@ export function VisualEditorShell({
               // that copy is the next step's basis.
               completeResetLink(link, template?.draftGeneration);
             } else {
+              // Ended (moved): its basis goes with it (R4-1).
+              endBasis(unconfirmedBasesRef.current, key, sent, "moved");
               markResetMoved(key, templateId, link, movedReason(key));
             }
             continue;
@@ -3472,6 +3758,8 @@ export function VisualEditorShell({
             unconfirmedContentRef.current.delete(key);
             unconfirmedResetLinksRef.current.delete(key);
             unconfirmedRecordersRef.current.delete(key);
+            // Ended (moved): its basis goes with it (R4-1).
+            endBasis(unconfirmedBasesRef.current, key, sent, "moved");
             resolved.push([key, sent]);
             markResetMoved(key, templateId, link, movedReason(key));
             continue;
@@ -3484,6 +3772,14 @@ export function VisualEditorShell({
           unconfirmedRecordersRef.current.delete(key);
           resolved.push([key, sent]);
           const baseline = pendingPropsBaselineRef.current.get(key);
+          // Unknown, now found landed: the one place a read-back confirms an
+          // ordinary write (the refusedAt read-back included).
+          noteSavedListChange(
+            key,
+            sent,
+            endBasis(unconfirmedBasesRef.current, key, sent, "landed") ??
+              baseline,
+          );
           if (acknowledgeContentFields(pendingPropsMapRef.current, key, sent)) {
             if (!pendingPropsMapRef.current.has(key))
               pendingPropsBaselineRef.current.delete(key);
@@ -3543,6 +3839,7 @@ export function VisualEditorShell({
       context.storefront.id,
       context.theme.id,
       markResetMoved,
+      noteSavedListChange,
       ownDraftSteps,
       queryClient,
       recordSavedContentHistory,
@@ -3593,9 +3890,14 @@ export function VisualEditorShell({
       if (!isRun) refused.set(key, sent.sectionId);
       const templateId =
         templateIdOfPendingContentKey(key, sent.sectionId) ?? key;
+      // Every outcome below but the one that holds it again for a read-back
+      // ends this write: the copy it was composed on goes with it (R4-1).
+      const releaseBasis = () =>
+        endBasis(unconfirmedBasesRef.current, key, sent, "refused");
       if (code === TEMPLATE_DRAFT_CONFLICT) {
         setDraftSaveState("error");
         if (typeof sent.expectedDraftGeneration !== "number") {
+          releaseBasis();
           markResetMoved(key, templateId, link);
           return;
         }
@@ -3610,6 +3912,7 @@ export function VisualEditorShell({
         );
         return;
       }
+      releaseBasis();
       if (code === SELECTION_SOURCE_CONFLICT) {
         if (!isRun) {
           // The section's own input, as sent, needs reselection: its fields
@@ -3805,8 +4108,30 @@ export function VisualEditorShell({
             lists: conflictedLists,
           },
         }));
+        // The way out this list has, named as the editor knows it: its own
+        // discard control, or "Discard mine…" where it has none.
+        const controls = conflictedLists.map((path) =>
+          listDiscardControlRef.current(templateId, pending.sectionId, path),
+        );
+        const ownedHere = listOwnedHereRef.current({
+          templateId,
+          sectionId: pending.sectionId,
+        });
+        // This page's label only for this page's section (R3-1).
+        const sectionLabel = ownedHere
+          ? sectionLabelRef.current(pending.sectionId)
+          : (section?.name ?? pending.sectionId);
+        const what = `${conflictedLists.join(", ")} also changed elsewhere since you edited ${conflictedLists.length === 1 ? "it" : "them"}, so your version was not written over theirs. Your changes are kept.`;
         toast.error(
-          `${conflictedLists.join(", ")} also changed elsewhere since you edited ${conflictedLists.length === 1 ? "it" : "them"}, so your version was not written over theirs. Use "Discard mine" to load the latest version, then make your change again.`,
+          !ownedHere
+            ? `${what} That list is in ${sectionLabel} on another page (${template.name ?? template.id}). Open that page to discard your changes to it there.`
+            : controls.every((label) => label !== null)
+            ? `${what} Select ${sectionLabel} and use ${controls
+                .map((label) => `"Discard unsaved changes to ${label}"`)
+                .join(
+                  " or ",
+                )} beside the list in the Content panel; it discards only your changes to that list.`
+            : `${what} Use Discard mine… in the toolbar to discard all of your unsaved changes to ${sectionLabel} and load the latest version.`,
         );
         continue;
       }
@@ -3890,22 +4215,15 @@ export function VisualEditorShell({
         );
         return;
       }
-      // The section of a document a key names, under any of the document's
-      // ids. The section id comes from the entry or the record that names
-      // it, never parsed out of the key.
-      const targetOf = (key: string, sectionId: string) => {
-        const templateId = templateIdOfPendingContentKey(key, sectionId);
-        return {
-          sectionId,
-          documentId: templateId
-            ? (routeTemplateIdsRef.current.get(templateId) ?? templateId)
-            : key,
-        };
-      };
-      const sameTarget = (
-        a: { sectionId: string; documentId: string },
-        b: { sectionId: string; documentId: string },
-      ) => a.sectionId === b.sectionId && a.documentId === b.documentId;
+      // The section of a document a key names. The section id comes from the
+      // entry or the record that names it, never parsed out of the key; the
+      // document is compared under any of its ids (`sameSectionTarget`, the
+      // editor's one notion of the same section).
+      const targetOf = (key: string, sectionId: string) => ({
+        sectionId,
+        templateId: templateIdOfPendingContentKey(key, sectionId) ?? key,
+      });
+      const sameTarget = sameSectionTarget;
       // A conflict is recorded under its key with its template id: the
       // section id is the rest of the key.
       const conflicted = Object.entries(contentConflictsRef.current).flatMap(
@@ -3948,7 +4266,12 @@ export function VisualEditorShell({
     } finally {
       retryingFailedContentRef.current = false;
     }
-  }, [commitSectionPending, resendUnconfirmedWrites, settleUnconfirmedContent]);
+  }, [
+    commitSectionPending,
+    resendUnconfirmedWrites,
+    sameSectionTarget,
+    settleUnconfirmedContent,
+  ]);
 
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
@@ -4004,6 +4327,15 @@ export function VisualEditorShell({
             heldKeys,
             conflicts: contentConflictsRef.current,
             listConflicts: listConflictsRef.current,
+            genericListConflictKeys: genericListConflictKeysOf(
+              listConflictsRef.current,
+              listDiscardControlRef.current,
+              listOwnedHereRef.current,
+            ),
+            otherPageListConflictKeys: otherPageListConflictKeysOf(
+              listConflictsRef.current,
+              listOwnedHereRef.current,
+            ),
           }),
         );
       }
@@ -6101,6 +6433,13 @@ export function VisualEditorShell({
    */
   const [inlineTextCommit, setInlineTextCommit] =
     useState<InspectorInlineTextCommit | null>(null);
+  const inlineRefusalIdRef = useRef(0);
+  const [refusedInlineText, setRefusedInlineText] = useState<{
+    id: number;
+    sectionId: string;
+    fieldPath: string;
+    value: string;
+  } | null>(null);
   const previewSelectionStyle = useCallback(
     (styles: Record<string, string>, targetElement: string) => {
       const selection = previewSelection.currentTarget();
@@ -9535,7 +9874,14 @@ export function VisualEditorShell({
             // "Keep mine" does not save a list both sides changed; see
             // `heldContentMessage`.
             Object.keys(listConflictsRef.current).length > 0
-              ? heldContentMessage({ hasListConflict: true })
+              ? heldContentMessage({
+                  hasListConflict: true,
+                  listExits: listExitsOf(
+                    listConflictsRef.current,
+                    listDiscardControlRef.current,
+                    listOwnedHereRef.current,
+                  ),
+                })
               : Object.keys(contentConflictsRef.current).length > 0
                 ? "Some content is out of date with the document. Use Load latest, keep mine first."
                 : Object.values(readFiles()).some(
@@ -13489,6 +13835,16 @@ export function VisualEditorShell({
               unconfirmedContentRef.current.set(key, sentEntry);
               if (link) unconfirmedResetLinksRef.current.set(key, link);
               else unconfirmedResetLinksRef.current.delete(key);
+              // The copy the reset was pressed on, captured on its first
+              // send and kept across resends: what its read-back compares
+              // the lists it removed with (R4-1).
+              captureBasis(
+                unconfirmedBasesRef.current,
+                key,
+                sentEntry,
+                before,
+                resend ? resend.sent : undefined,
+              );
               syncUnconfirmedContentCount();
             } else if (resend && isEditorWritePaused(error)) {
               // Paused before it left: still not landed, still the author's
@@ -13670,6 +14026,15 @@ export function VisualEditorShell({
               heldKeys: [key],
               conflicts: contentConflictsRef.current,
               listConflicts: listConflictsRef.current,
+              genericListConflictKeys: genericListConflictKeysOf(
+                listConflictsRef.current,
+                listDiscardControlRef.current,
+                listOwnedHereRef.current,
+              ),
+              otherPageListConflictKeys: otherPageListConflictKeysOf(
+                listConflictsRef.current,
+                listOwnedHereRef.current,
+              ),
             }),
           );
         }
@@ -13825,6 +14190,7 @@ export function VisualEditorShell({
         stored: sectionPropsSnapshot(sectionId),
         routePath: routePathForTemplate(templateId),
         inputPath: options?.inputFieldPath,
+        listActionPath: options?.listActionPath,
         // The copy the author was looking at when they began this input, if
         // the Inspector knows it is older than the one the editor holds now;
         // otherwise the latest accepted snapshot generation now, at the
@@ -14002,11 +14368,18 @@ export function VisualEditorShell({
           getFieldPathValue(comparedProps, message.fieldPath),
         )
       ) {
+        setRefusedInlineText({
+          id: ++inlineRefusalIdRef.current,
+          sectionId: message.sectionId,
+          fieldPath: message.fieldPath,
+          value: message.value,
+        });
         toast.info(INLINE_TEXT_NOT_SAVED_MESSAGE, {
           id: "inline-text-refused",
         });
         return;
       }
+      setRefusedInlineText(null);
 
       // Keep the Inspector's content control aligned with the value just
       // written: waiting for the debounced save and refetch would otherwise
@@ -14637,19 +15010,228 @@ export function VisualEditorShell({
     [context.storefront.id, context.theme.id, queryClient],
   );
 
+  const hasUnconfirmedContentForList = useCallback(
+    (templateId: string, sectionId: string, fieldPath: string) =>
+      hasUnconfirmedListWrite({
+        entries: unconfirmedContentRef.current,
+        sectionId,
+        fieldPath,
+        templateId,
+        templateIdForKey: templateIdOfPendingContentKey,
+        sameTemplateOwner,
+      }),
+    [sameTemplateOwner],
+  );
+  const hasSavedListChange = (target: NonNullable<typeof discardDialogTarget>) =>
+    Object.entries(savedListChanges).some(([key, paths]) => {
+      const templateId = templateIdOfPendingContentKey(key, target.sectionId);
+      return (
+        templateId !== null &&
+        sameTemplateOwner(templateId, target.templateId) &&
+        paths.includes(target.fieldPath)
+      );
+    });
+
   /**
-   * Discards the unsaved content of sections whose update stopped on a list
-   * both sides changed, and loads the latest version — only once the author
-   * has confirmed it in the dialog that names what will be lost.
-   *
-   * The whole section's unsaved content goes, not only the list: what is left
-   * would be an edit made against a version the author no longer sees. The
-   * Inspector's own copy is reset with it (`contentResetEpoch`), so nothing
-   * typed before is sent again by the next keystroke.
+   * Which held lists have a discard control of their own, decided as the
+   * Content panel decides whether to draw one: a declared array field of a
+   * section stored in this page's document and not hidden. The declaration is
+   * read the way the Inspector reads it (`resolveSectionContentDeclaration`),
+   * cached per file list.
    */
-  const discardListConflicts = useCallback(async () => {
-    const entries = Object.entries(listConflicts);
-    if (entries.length === 0 || discardingRef.current) return;
+  const declarationCache = useMemo(
+    () =>
+      new Map<
+        string,
+        {
+          declaration: ReturnType<typeof resolveSectionContentDeclaration>;
+          propsSetInCode: SlotPropsSetInCode;
+        }
+      >(),
+    [effectiveThemeFiles],
+  );
+  const activeDocumentSections =
+    (
+      routeBackedContext.templates.find(
+        (template) => template.id === activeTemplate?.id,
+      ) ?? activeTemplate
+    )?.document.sections ?? [];
+  const sectionLabel = (sectionId: string) =>
+    activeDocumentSections.find((section) => section.id === sectionId)?.name ||
+    sectionId;
+  /**
+   * Whether a held section is this page's: the document this page binds the
+   * section id to (its route document, or a layout document it renders) is
+   * the held entry's document. Section ids are unique only within a document.
+   */
+  const listOwnedHere: HeldSectionOwnedHere = (entry) => {
+    const here = templateIdForSection(entry.sectionId);
+    return (
+      here !== null &&
+      sameSectionTarget(entry, { templateId: here, sectionId: entry.sectionId })
+    );
+  };
+  const listDiscardControl: ListDiscardControl = (
+    templateId,
+    sectionId,
+    fieldPath,
+  ) => {
+    // The copy the Content panel reads the section from: none here means the
+    // panel is in source mode.
+    const section = activeDocumentSections.find(
+      (candidate) => candidate.id === sectionId,
+    );
+    let cached: ReturnType<typeof declarationCache.get> = undefined;
+    if (section) {
+      const cacheKey = `${section.type}\u0000${section.componentRef ?? ""}\u0000${activeThemeRoute?.sourcePath ?? ""}\u0000${sectionId}`;
+      cached = declarationCache.get(cacheKey);
+      if (!cached) {
+        const componentFile = getComponentFilePath(
+          section.type,
+          effectiveThemeFiles,
+          section.componentRef ?? undefined,
+        );
+        cached = {
+          declaration: resolveSectionContentDeclaration(effectiveThemeFiles, {
+            componentRef: section.componentRef,
+            componentPath: componentFile,
+            sectionComponentPath: componentFile,
+          }),
+          // What the page's code sets of this section, read as the panel
+          // reads it (`slotPropsSetInCode`).
+          propsSetInCode: slotPropsSetInCode(
+            effectiveThemeFiles,
+            activeThemeRoute?.sourcePath ?? null,
+            sectionId,
+          ),
+        };
+        declarationCache.set(cacheKey, cached);
+      }
+    }
+    // The panel's own rule, every check in it (`listOwnDiscardLabel`, Task
+    // 41 R2-2/R3-2): this page's section, not hidden, stored, a declared
+    // list with a resolved row shape that the page's code does not set. The
+    // panel draws this control for a held list whatever the selection, so
+    // null here is exactly where "Discard mine…" is the way out instead.
+    return listOwnDiscardLabel({
+      contentStore: section ? "document" : "source",
+      fields: cached?.declaration.capability?.fields ?? {},
+      propsSetInCode: cached?.propsSetInCode ?? null,
+      fieldPath,
+      ownedHere: listOwnedHere({ templateId, sectionId }),
+      sectionHidden: section?.enabled === false,
+    });
+  };
+  listDiscardControlRef.current = listDiscardControl;
+  listOwnedHereRef.current = listOwnedHere;
+  sectionLabelRef.current = sectionLabel;
+
+  /** The held list conflicts "Discard mine…" is offered for. */
+  const genericListConflictKeys = genericListConflictKeysOf(
+    listConflicts,
+    listDiscardControl,
+    listOwnedHere,
+  );
+  const sectionDiscardScopes = genericListConflictKeys.flatMap((key) => {
+    const entry = listConflicts[key];
+    if (!entry) return [];
+    const pending = pendingPropsMapRef.current.get(key);
+    const fields = pending
+      ? [
+          ...new Set(
+            [
+              ...(pending.fields
+                ? Object.keys(pending.fields)
+                : Object.keys(pending.props)),
+              ...(pending.listActionPaths ?? []),
+              ...(pending.resetProps ?? []),
+            ].map((path) => path.split(".")[0] ?? path),
+          ),
+        ]
+      : [];
+    return [
+      {
+        key,
+        templateId: entry.templateId,
+        sectionId: entry.sectionId,
+        sectionLabel: sectionLabel(entry.sectionId),
+        lists: entry.lists,
+        fields,
+      },
+    ];
+  });
+  const sameSectionOf = (
+    key: string,
+    sectionId: string,
+    templateId: string,
+  ) => {
+    const keyTemplateId = templateIdOfPendingContentKey(key, sectionId);
+    return keyTemplateId !== null && sameTemplateOwner(keyTemplateId, templateId);
+  };
+  const sectionDiscardHasUnconfirmedWrite = sectionDiscardScopes.some((scope) =>
+    Array.from(unconfirmedContentRef.current).some(
+      ([key, entry]) =>
+        entry.sectionId === scope.sectionId &&
+        sameSectionOf(key, scope.sectionId, scope.templateId),
+    ),
+  );
+  const sectionDiscardHasSavedChange = sectionDiscardScopes.some((scope) =>
+    Object.entries(savedListChanges).some(
+      ([key, paths]) =>
+        paths.length > 0 &&
+        sameSectionOf(key, scope.sectionId, scope.templateId),
+    ),
+  );
+
+  /**
+   * "Discard mine": discards every unsaved change of the sections whose held
+   * list has no discard of its own, and loads the latest version — only once
+   * the author has confirmed it in the dialog that names what goes.
+   *
+   * The whole section's unsaved content goes, not only the list: there is no
+   * list-only discard for it, and what is left would be an edit made against
+   * a version the author no longer sees. The Inspector's own copy is reset
+   * with it (`contentResetEpoch`), so nothing typed before is sent again.
+   * Sections whose lists have their own discard keep theirs.
+   */
+  const discardSectionConflicts = useCallback(async () => {
+    const keys = genericListConflictKeysOf(
+      listConflictsRef.current,
+      listDiscardControlRef.current,
+      listOwnedHereRef.current,
+    );
+    const entries = keys.flatMap((key) => {
+      const entry = listConflictsRef.current[key];
+      return entry ? [[key, entry] as const] : [];
+    });
+    if (discardingRef.current) return;
+    // Refused with its reason, never silently (Task 41 R2-6).
+    if (entries.length === 0) {
+      toast.error(
+        "Nothing here is held by a list both writers changed any more, so nothing was discarded.",
+      );
+      setSectionDiscardOpen(false);
+      return;
+    }
+    // An unanswered write of one of these sections decides first.
+    const unanswered = entries.some(([, entry]) =>
+      Array.from(unconfirmedContentRef.current).some(([key, sent]) =>
+        sameSectionTarget(
+          {
+            templateId:
+              templateIdOfPendingContentKey(key, sent.sectionId) ?? key,
+            sectionId: sent.sectionId,
+          },
+          entry,
+        ),
+      ),
+    );
+    if (unanswered) {
+      toast.error(
+        "A save of this section has not been answered yet, so nothing was discarded. Use Try again to check it first.",
+      );
+      return;
+    }
     // What the author confirmed discarding, as it stood when they did. Every
     // edit stores a new draft object, so one that differs after the wait is
     // an edit made while the latest version was loading — not part of what
@@ -14679,6 +15261,7 @@ export function VisualEditorShell({
       toast.error(
         "The latest version could not be loaded, so nothing was discarded. Try again.",
       );
+      setSectionDiscardOpen(false);
       return;
     }
     const editedMeanwhile = [...confirmed].some(
@@ -14688,10 +15271,20 @@ export function VisualEditorShell({
       toast.error(
         "You edited this section while the latest version was loading, so nothing was discarded. Choose Discard mine again to discard your changes as they are now.",
       );
+      setSectionDiscardOpen(false);
+      return;
+    }
+    // Still what was confirmed: each section is still held by its conflict
+    // (Task 41 R2-7).
+    if (entries.some(([key]) => !(key in listConflictsRef.current))) {
+      toast.error(
+        "This section is no longer held by a list conflict, so nothing was discarded.",
+      );
+      setSectionDiscardOpen(false);
       return;
     }
 
-    const keys = new Set(entries.map(([key]) => key));
+    const discarded = new Set(entries.map(([key]) => key));
     const hiddenBefore = new Map(
       entries.map(([key, entry]) => [
         key,
@@ -14700,13 +15293,18 @@ export function VisualEditorShell({
     );
     // The version just read is the one the discard leaves, so it becomes the
     // accepted copy before the preview is told about it — as every other
-    // read does. Without it a write from elsewhere that landed after the
-    // conflict (another tab hiding the section) was missed, and the preview
-    // was posted the older copy shown.
+    // read does.
     acceptReadTemplates(fresh.data.templates);
-    for (const key of keys) {
+    for (const key of discarded) {
       pendingPropsMapRef.current.delete(key);
       pendingPropsBaselineRef.current.delete(key);
+      // Nothing of the section is held unanswered here (checked above);
+      // a basis left from an ended write goes too (R4-1).
+      releaseUnheldBasis(
+        unconfirmedBasesRef.current,
+        key,
+        unconfirmedContentRef.current.get(key),
+      );
     }
     // The discarded draft may have held a hide: the preview is told the
     // visibility the latest version leaves.
@@ -14717,13 +15315,39 @@ export function VisualEditorShell({
         hiddenBefore.get(key),
       );
     }
+    // Current at once, as `markResetMoved` writes it: a step that reads the
+    // held conflicts before the next render does not see the discarded ones.
+    const remainingConflicts = { ...contentConflictsRef.current };
+    for (const key of discarded) delete remainingConflicts[key];
+    contentConflictsRef.current = remainingConflicts;
     setContentConflicts((current) => {
       const next = { ...current };
-      for (const key of keys) delete next[key];
+      for (const key of discarded) delete next[key];
       return next;
     });
-    setListConflicts({});
-    setDiscardDialogOpen(false);
+    setListConflicts((current) => {
+      const next = { ...current };
+      for (const key of discarded) delete next[key];
+      return next;
+    });
+    setSavedListChanges((current) => {
+      const next: Record<string, string[]> = {};
+      for (const [key, paths] of Object.entries(current)) {
+        const sameSection = entries.some(([, entry]) => {
+          const keyTemplateId = templateIdOfPendingContentKey(
+            key,
+            entry.sectionId,
+          );
+          return (
+            keyTemplateId !== null &&
+            sameTemplateOwner(keyTemplateId, entry.templateId)
+          );
+        });
+        if (!sameSection) next[key] = paths;
+      }
+      return next;
+    });
+    setSectionDiscardOpen(false);
     // Edits from here on are made against the version just loaded.
     for (const requestedTemplateId of new Set(
       entries.map(([, entry]) => entry.templateId),
@@ -14746,10 +15370,224 @@ export function VisualEditorShell({
     acceptReadTemplates,
     context.storefront.id,
     context.theme.id,
-    listConflicts,
     previewSectionIsHidden,
     queryClient,
     reconcileAfterRemoval,
+    sameSectionTarget,
+    sameTemplateOwner,
+  ]);
+
+  /**
+   * Opens the list-only discard for the section the Content panel shows: the
+   * section of this page's document, never a same-id section of another page
+   * (section ids are unique only within a document; Task 41 R2-1).
+   */
+  const openListDiscard = useCallback(
+    (sectionId: string, fieldPath: string) => {
+      if (discardingRef.current) return;
+      const here = templateIdForSection(sectionId);
+      if (!here) return;
+      const conflict = Object.entries(listConflictsRef.current).find(
+        ([, entry]) =>
+          entry.lists.includes(fieldPath) &&
+          sameSectionTarget(entry, { templateId: here, sectionId }),
+      );
+      if (!conflict) return;
+      const [key, entry] = conflict;
+      setDiscardDialogTarget({
+        key,
+        templateId: entry.templateId,
+        sectionId,
+        fieldPath,
+      });
+    },
+    [sameSectionTarget, templateIdForSection],
+  );
+
+  const acknowledgeListReset = useCallback((epoch: number) => {
+    setListReset((current) =>
+      current?.epoch === epoch ? null : current,
+    );
+  }, []);
+
+  /** Load the latest Document and discard only the confirmed list path. */
+  const discardListConflict = useCallback(async () => {
+    const target = discardDialogTarget;
+    if (!target || discardingRef.current) return;
+    const conflict = listConflictsRef.current[target.key];
+    const confirmed = pendingPropsMapRef.current.get(target.key);
+    // Refused with its reason, never silently (Task 41 R2-6).
+    if (!conflict?.lists.includes(target.fieldPath) || !confirmed) {
+      toast.error(
+        "This list is no longer held by a conflict, so nothing was discarded.",
+      );
+      setDiscardDialogTarget(null);
+      return;
+    }
+    if (
+      hasUnconfirmedContentForList(
+        target.templateId,
+        target.sectionId,
+        target.fieldPath,
+      )
+    ) {
+      toast.error(
+        "A save of this list has not been answered yet, so nothing was discarded. Use Try again to check it first.",
+      );
+      return;
+    }
+    const ownerId = routeTemplateIdsRef.current.get(target.templateId) ?? target.templateId;
+
+    discardingRef.current = true;
+    setDiscarding(true);
+    const fresh = await queryClient
+      .fetchQuery({
+        ...storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ),
+        staleTime: 0,
+      })
+      .catch(() => null)
+      .finally(() => {
+        discardingRef.current = false;
+        setDiscarding(false);
+      });
+    if (!fresh?.success) {
+      toast.error(
+        "The latest version could not be loaded, so nothing was discarded. Try again.",
+      );
+      setDiscardDialogTarget(null);
+      return;
+    }
+    if (pendingPropsMapRef.current.get(target.key) !== confirmed) {
+      toast.error(
+        "You edited this list while the latest version was loading, so nothing was discarded. Confirm the discard again for the current list.",
+      );
+      setDiscardDialogTarget(null);
+      return;
+    }
+    // Still what was confirmed: the list is still held by its conflict
+    // (Task 41 R2-7).
+    if (!listConflictsRef.current[target.key]?.lists.includes(target.fieldPath)) {
+      toast.error(
+        "This list is no longer held by a conflict, so nothing was discarded.",
+      );
+      setDiscardDialogTarget(null);
+      return;
+    }
+
+    const routePath =
+      routePathFromTemplatePlaceholder(target.templateId) ??
+      confirmed.routePath ??
+      null;
+    const template =
+      fresh.data.templates.find((candidate) => candidate.id === ownerId) ??
+      (routePath === null
+        ? undefined
+        : fresh.data.templates.find(
+            (candidate) => candidate.routePath === routePath,
+          ));
+    const section = template?.document.sections.find(
+      (candidate) => candidate.id === target.sectionId,
+    );
+    if (!template || !section) {
+      toast.error(
+        "The latest list could not be found, so nothing was discarded. Try again.",
+      );
+      setDiscardDialogTarget(null);
+      return;
+    }
+    if (routePath !== null && target.templateId !== template.id) {
+      routeTemplateIdsRef.current.set(target.templateId, template.id);
+    }
+    const incoming = (section.props as Record<string, unknown>) ?? {};
+    const result = discardPendingContentPath({
+      entry: confirmed,
+      baseline: pendingPropsBaselineRef.current.get(target.key),
+      incoming,
+      fieldPath: target.fieldPath,
+    });
+    acceptReadTemplates(fresh.data.templates);
+    if (result.pending) {
+      pendingPropsMapRef.current.set(target.key, result.pending);
+      pendingPropsBaselineRef.current.set(target.key, result.baseline);
+    } else {
+      pendingPropsMapRef.current.delete(target.key);
+      pendingPropsBaselineRef.current.delete(target.key);
+    }
+    // Nothing of the list is held unanswered here (checked above); a basis
+    // left from an ended write of the section goes too (R4-1).
+    releaseUnheldBasis(
+      unconfirmedBasesRef.current,
+      target.key,
+      unconfirmedContentRef.current.get(target.key),
+    );
+    setListConflicts((current) => {
+      const existing = current[target.key];
+      if (!existing) return current;
+      const lists = existing.lists.filter((path) => path !== target.fieldPath);
+      const next = { ...current };
+      if (lists.length > 0) next[target.key] = { ...existing, lists };
+      else delete next[target.key];
+      return next;
+    });
+    if (!result.pending) {
+      // Current at once, as `markResetMoved` writes it.
+      if (target.key in contentConflictsRef.current) {
+        const remaining = { ...contentConflictsRef.current };
+        delete remaining[target.key];
+        contentConflictsRef.current = remaining;
+      }
+      setContentConflicts((current) => {
+        if (!(target.key in current)) return current;
+        const next = { ...current };
+        delete next[target.key];
+        return next;
+      });
+    }
+    setSavedListChanges((current) => {
+      const next: Record<string, string[]> = {};
+      for (const [key, paths] of Object.entries(current)) {
+        const templateId = templateIdOfPendingContentKey(key, target.sectionId);
+        const kept =
+          templateId !== null && sameTemplateOwner(templateId, target.templateId)
+            ? paths.filter((path) => path !== target.fieldPath)
+            : paths;
+        if (kept.length > 0) next[key] = kept;
+      }
+      return next;
+    });
+    if (typeof template.draftGeneration === "number") {
+      templateDraftGenerationRef.current.set(
+        template.id,
+        template.draftGeneration,
+      );
+    }
+    listResetEpochRef.current += 1;
+    setListReset({
+      templateId: template.id,
+      sectionId: target.sectionId,
+      fieldPath: target.fieldPath,
+      // A path, not a top-level key: a nested list resets to its own value.
+      value: discardedListValue(incoming, target.fieldPath),
+      epoch: listResetEpochRef.current,
+    });
+    // The confirmed read is now the preview's accepted copy too. Reconcile
+    // through the shared visibility-aware poster so a hidden section carries
+    // no values and a shown section displays the latest list plus any sibling
+    // pending fields retained by the path-scoped discard.
+    reconcilePreviewSection(target.sectionId);
+    setDiscardDialogTarget(null);
+  }, [
+    acceptReadTemplates,
+    context.storefront.id,
+    context.theme.id,
+    discardDialogTarget,
+    queryClient,
+    hasUnconfirmedContentForList,
+    reconcilePreviewSection,
+    sameTemplateOwner,
   ]);
 
   const handleRenameSection = useCallback(
@@ -16228,58 +17066,62 @@ export function VisualEditorShell({
                     {fieldsAwaitingReselection.join(", ")}
                   </span>
                 ) : null}
-                {Object.keys(listConflicts).length > 0 ? (
-                  // The way out when an update stopped on a list both sides
-                  // changed. Nothing is discarded by the button itself: it
-                  // asks first, and says exactly what would be lost.
+                {genericListConflictKeys.length > 0 ? (
+                  // The way out where a held list has no discard of its own
+                  // (the user's rule, Task 41 31-B). Nothing is discarded by
+                  // the button itself: it asks first, naming what goes.
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     className="h-7 shrink-0 px-2 text-xs"
                     disabled={discarding}
-                    onClick={() => setDiscardDialogOpen(true)}
-                    title="Discard your unsaved changes to the sections whose lists were also changed elsewhere, and load the latest version."
+                    onClick={() => setSectionDiscardOpen(true)}
+                    title={`Discard all of your unsaved changes to ${sectionDiscardScopes
+                      .map((scope) => scope.sectionLabel)
+                      .join(", ")}, and load the latest version.`}
                   >
                     Discard mine…
                   </Button>
                 ) : null}
-                <AlertDialog
-                  open={discardDialogOpen}
-                  onOpenChange={setDiscardDialogOpen}
-                >
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>
-                        Discard your unsaved changes?
-                      </AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Someone else changed{" "}
-                        {Object.values(listConflicts)
-                          .map(
-                            (entry) =>
-                              `${entry.lists.join(", ")} in ${entry.sectionId}`,
-                          )
-                          .join("; ")}{" "}
-                        since you edited it, so your version cannot be saved
-                        over theirs. Discarding removes all of your unsaved
-                        changes to{" "}
-                        {Object.values(listConflicts).length === 1
-                          ? "that section"
-                          : "those sections"}{" "}
-                        and loads the latest version. This cannot be undone.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Keep my changes</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={() => void discardListConflicts()}
-                      >
-                        Discard and load latest
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                <SectionDiscardDialog
+                  open={sectionDiscardOpen && sectionDiscardScopes.length > 0}
+                  sections={sectionDiscardScopes}
+                  hasUnconfirmedWrite={sectionDiscardHasUnconfirmedWrite}
+                  hasSavedChange={sectionDiscardHasSavedChange}
+                  discarding={discarding}
+                  onOpenChange={setSectionDiscardOpen}
+                  onConfirm={() => void discardSectionConflicts()}
+                />
+                <ListDiscardDialog
+                  target={
+                    discardDialogTarget
+                      ? {
+                          sectionLabel: sectionLabel(
+                            discardDialogTarget.sectionId,
+                          ),
+                          fieldPath: discardDialogTarget.fieldPath,
+                        }
+                      : null
+                  }
+                  hasUnconfirmedWrite={Boolean(
+                    discardDialogTarget &&
+                      hasUnconfirmedContentForList(
+                        discardDialogTarget.templateId,
+                        discardDialogTarget.sectionId,
+                        discardDialogTarget.fieldPath,
+                      ),
+                  )}
+                  hasSavedChange={Boolean(
+                    discardDialogTarget &&
+                      hasSavedListChange(discardDialogTarget),
+                  )}
+                  discarding={discarding}
+                  onOpenChange={(open) => {
+                    if (!open) setDiscardDialogTarget(null);
+                  }}
+                  onConfirm={() => void discardListConflict()}
+                />
                 {/* Splits the bar into what is true and what you can do. The
                     status was the only item here with no container of its own,
                     so against a row of icon buttons it read as loose text. */}
@@ -16551,6 +17393,29 @@ export function VisualEditorShell({
           onRetry={onRetryThemeRead}
         />
         <div inert={editorLock !== null} className="flex flex-col">
+          {refusedInlineText ? (
+            <div
+              role="alert"
+              data-inline-text-not-saved={refusedInlineText.id}
+              className="border-b bg-destructive/5 px-4 py-2 text-xs"
+            >
+              <p className="font-medium text-destructive">
+                Not saved — reselect then type.
+              </p>
+              <p className="text-muted-foreground">
+                Your text for {refusedInlineText.fieldPath} in section{" "}
+                {refusedInlineText.sectionId} was not applied. Copy it below;
+                selecting the section again will not apply it automatically.
+              </p>
+              <textarea
+                aria-label="Copy text that was not saved"
+                readOnly
+                rows={2}
+                value={refusedInlineText.value}
+                className="mt-1 w-full resize-y rounded border bg-background p-2 text-foreground"
+              />
+            </div>
+          ) : null}
           <EditorUnconfirmedSavesNotice
             count={unconfirmedFiles.length + unconfirmedContentCount}
             checking={isCheckingUnconfirmed}
@@ -17436,6 +18301,108 @@ export function VisualEditorShell({
           previewWidth={previewWidth}
           themeFiles={effectiveThemeFiles}
           selection={editableSelection}
+          listWriteStatuses={(() => {
+            const sectionId = editableSelection?.sectionId;
+            const requestedTemplateId = sectionId
+              ? templateIdForSection(sectionId)
+              : null;
+            if (!sectionId || !requestedTemplateId) return {};
+            const ownerId =
+              routeTemplateIdsRef.current.get(requestedTemplateId) ??
+              requestedTemplateId;
+            const matchesOwner = (key: string) => {
+              const templateId = templateIdOfPendingContentKey(key, sectionId);
+              return (
+                templateId !== null &&
+                sameTemplateOwner(templateId, ownerId)
+              );
+            };
+            const statuses: Record<string, InspectorListWriteStatus> = {};
+            const mark = (
+              fieldPath: string,
+              update: Partial<InspectorListWriteStatus>,
+            ) => {
+              const next = Object.assign(
+                {
+                  notSaved: false,
+                  conflict: false,
+                  unknown: false,
+                  savedChange: false,
+                  busy: false,
+                },
+                statuses[fieldPath],
+                update,
+              );
+              next.busy =
+                discarding &&
+                discardDialogTarget?.sectionId === sectionId &&
+                discardDialogTarget.fieldPath === fieldPath;
+              statuses[fieldPath] = next;
+            };
+            for (const entry of Object.values(listConflicts)) {
+              if (entry.sectionId !== sectionId) continue;
+              if (!sameTemplateOwner(entry.templateId, ownerId)) continue;
+              for (const path of entry.lists)
+                mark(path, { notSaved: true, conflict: true });
+            }
+            for (const [key, entry] of pendingPropsMapRef.current) {
+              if (
+                entry.sectionId !== sectionId ||
+                !matchesOwner(key)
+              )
+                continue;
+              const serverRefused =
+                Boolean(contentConflicts[key]) ||
+                failedContentKeysRef.current.has(key);
+              for (const path of entry.listActionPaths ?? []) {
+                const blockedBeforeSend = Object.entries(entry.fields ?? {}).some(
+                  ([fieldPath, field]) =>
+                    (fieldPath === path || fieldPath.startsWith(`${path}.`)) &&
+                    field.rejected,
+                );
+                if (serverRefused) {
+                  mark(path, { notSaved: true, kind: "server-refused" });
+                } else if (blockedBeforeSend) {
+                  mark(path, { notSaved: true, kind: "blocked-before-send" });
+                }
+              }
+            }
+            for (const [key, entry] of unconfirmedContentRef.current) {
+              if (entry.sectionId !== sectionId || !matchesOwner(key)) continue;
+              // The discard guard's own overlap rule: a list (nested ones
+              // included) is marked exactly when its discard is refused.
+              for (const path of contentEntryStatusPaths(entry))
+                mark(path, {
+                  notSaved: true,
+                  unknown: true,
+                  kind: "outcome-unknown",
+                });
+            }
+            for (const [key, paths] of Object.entries(savedListChanges)) {
+              if (!matchesOwner(key)) continue;
+              for (const path of paths) mark(path, { savedChange: true });
+            }
+            return statuses;
+          })()}
+          listReset={
+            listReset && {
+              ...listReset,
+              // Applied only to this page's section of that id; another
+              // page's reset is spent, never poured into it (R2-1).
+              ownedHere: (() => {
+                const here = templateIdForSection(listReset.sectionId);
+                return (
+                  here !== null &&
+                  sameSectionTarget(listReset, {
+                    templateId: here,
+                    sectionId: listReset.sectionId,
+                  })
+                );
+              })(),
+            }
+          }
+          onListResetApplied={acknowledgeListReset}
+          onDiscardListConflict={openListDiscard}
           activeComputedStyleRevision={activeComputedStyleRevision}
           activeViewport={search.viewport}
           onUpdateThemeFileStyle={handleUpdateThemeFileStyle}

@@ -6,6 +6,11 @@ import {
   stageContentFields,
   selectCurrentContentFields,
   acknowledgeContentFields,
+  discardPendingContentPath,
+  contentEntryTouchesPath,
+  contentEntryStatusPaths,
+  discardedListValue,
+  hasUnconfirmedContentForList,
   rebaseFieldBasis,
   MISSING_BASIS_MESSAGE,
   type PendingContentEntry,
@@ -204,6 +209,266 @@ describe("per-field source recovery", () => {
       heading: "Confirmed heading",
     });
     expect(save).toHaveBeenCalledOnce();
+  });
+});
+
+describe("discarding one conflicted content list", () => {
+  it("matches frozen list actions, nested row fields, and resets only within that list", () => {
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: { heading: "Mine", items: [{ id: "row", title: "Mine row" }] },
+      fields: {
+        heading: { value: "Mine", sourceGeneration: 3, basisDraftGeneration: 4 },
+        "items.0.title": {
+          value: "Mine row",
+          sourceGeneration: 3,
+          basisDraftGeneration: 4,
+        },
+      },
+      listActionPaths: ["items"],
+      resetProps: ["items"],
+    };
+
+    expect(contentEntryTouchesPath(entry, "items")).toBe(true);
+    expect(contentEntryTouchesPath(entry, "items.0.related")).toBe(true);
+    expect(contentEntryTouchesPath(entry, "heading")).toBe(true);
+    expect(contentEntryTouchesPath(entry, "related")).toBe(false);
+    expect(contentEntryTouchesPath(entry, "items..title")).toBe(false);
+
+    const wholeListEntry: PendingContentEntry = {
+      sectionId: "hero",
+      props: { items: [{ id: "row", title: "Mine row" }] },
+      fields: {
+        items: {
+          value: [{ id: "row", title: "Mine row" }],
+          sourceGeneration: 3,
+          basisDraftGeneration: 4,
+        },
+      },
+    };
+    expect(contentEntryTouchesPath(wholeListEntry, "items.0.title")).toBe(true);
+  });
+
+  it("blocks discarding a list with an unanswered write under an aliased document id", () => {
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: { items: [{ id: "row", title: "Mine" }] },
+      fields: {
+        "items.0.title": {
+          value: "Mine",
+          sourceGeneration: 3,
+          basisDraftGeneration: 4,
+        },
+      },
+    };
+    const entries = new Map([[
+      "route-placeholder:hero",
+      entry,
+    ]]);
+    const sameTemplateOwner = (left: string, right: string) =>
+      [left, right].every((id) =>
+        ["route-placeholder", "template-real"].includes(id),
+      );
+    const matchesList = (sectionId: string, fieldPath: string) =>
+      hasUnconfirmedContentForList({
+        entries,
+        sectionId,
+        fieldPath,
+        templateId: "template-real",
+        templateIdForKey: (key) => key.slice(0, key.lastIndexOf(":")),
+        sameTemplateOwner,
+      });
+
+    expect(matchesList("hero", "items")).toBe(true);
+    expect(matchesList("hero", "related")).toBe(false);
+    expect(matchesList("footer", "items")).toBe(false);
+  });
+
+  const field = (value: unknown, basisDraftGeneration: number) => ({
+    value,
+    sourceGeneration: 3,
+    basisDraftGeneration,
+  });
+
+  it("drops only the selected list paths and overlays every sibling draft on the fresh document", () => {
+    const incoming = {
+      heading: "Remote heading",
+      items: [{ id: "remote", title: "Remote row" }],
+      related: [{ id: "related-base", title: "Related base" }],
+      untouched: [{ id: "remote-untouched", title: "Remote but not edited" }],
+    };
+    const oldBaseline = {
+      heading: "Old heading",
+      items: [{ id: "old", title: "Old row" }],
+      related: [{ id: "related-base", title: "Related base" }],
+      untouched: [{ id: "old-untouched", title: "Old value" }],
+    };
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      expectedDraftGeneration: 4,
+      expectedSourceGeneration: 3,
+      props: {
+        heading: "Mine heading",
+        items: [{ id: "old", title: "Mine row" }],
+        related: [{ id: "related-mine", title: "Mine related" }],
+      },
+      fields: {
+        heading: field("Mine heading", 4),
+        "items.0.title": field("Mine row", 4),
+        related: field(
+          [{ id: "related-mine", title: "Mine related" }],
+          4,
+        ),
+      },
+    };
+
+    const result = discardPendingContentPath({
+      entry,
+      baseline: oldBaseline,
+      incoming,
+      fieldPath: "items",
+    });
+
+    expect(result.pending).toMatchObject({
+      expectedDraftGeneration: 4,
+      expectedSourceGeneration: 3,
+      props: {
+        heading: "Mine heading",
+        items: incoming.items,
+        related: [{ id: "related-mine", title: "Mine related" }],
+      },
+    });
+    expect(result.pending!.props).not.toHaveProperty("untouched");
+    expect(Object.keys(result.pending!.fields!)).toEqual([
+      "heading",
+      "related",
+    ]);
+    expect(result.pending!.fields!.heading).toEqual(field("Mine heading", 4));
+    expect(result.baseline).toEqual({
+      ...oldBaseline,
+      items: incoming.items,
+    });
+  });
+
+  it("returns no pending entry when the selected list was the only draft", () => {
+    const incoming = { items: [{ id: "remote", title: "Remote row" }] };
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: { items: [{ id: "mine", title: "Mine row" }] },
+      fields: {
+        items: field([{ id: "mine", title: "Mine row" }], 4),
+      },
+    };
+
+    expect(
+      discardPendingContentPath({
+        entry,
+        baseline: { items: [{ id: "old", title: "Old row" }] },
+        incoming,
+        fieldPath: "items",
+      }),
+    ).toEqual({ pending: null, baseline: incoming });
+  });
+
+  // Task 41 31-A follow-up: a draft staged without per-field snapshots keeps
+  // the whole props. Once its only change (the list) is discarded, what is
+  // left is the latest version itself, not a change of the author's: keeping
+  // it pending left the section out of date and held its next write.
+  it("returns no pending entry when a whole-props draft holds no change after the discard", () => {
+    const incoming = {
+      heading: "Welcome",
+      items: [{ id: "z", title: "Z" }],
+    };
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: {
+        heading: "Welcome",
+        items: [{ id: "c", title: "C" }, { id: "new" }],
+      },
+      listActionPaths: ["items"],
+    };
+    const result = discardPendingContentPath({
+      entry,
+      baseline: { heading: "Welcome", items: [{ id: "c", title: "C" }] },
+      incoming,
+      fieldPath: "items",
+    });
+    expect(result.pending).toBeNull();
+    expect(result.baseline).toEqual(incoming);
+
+    // A sibling change of the author's is still theirs to save.
+    const withHeading = discardPendingContentPath({
+      entry: { ...entry, props: { ...entry.props, heading: "Mine" } },
+      baseline: { heading: "Welcome", items: [{ id: "c", title: "C" }] },
+      incoming,
+      fieldPath: "items",
+    });
+    expect(withHeading.pending?.props).toMatchObject({
+      heading: "Mine",
+      items: incoming.items,
+    });
+  });
+
+  // Task 41 31-F: a nested list is a path, not a top-level key.
+  describe("a nested list", () => {
+    const nested = "items.0.related";
+    const unanswered: PendingContentEntry = {
+      sectionId: "hero",
+      props: {
+        items: [{ id: "row", related: [{ id: "r", title: "Mine" }] }],
+      },
+      fields: {
+        "items.0.related.0.title": field("Mine", 4),
+      },
+    };
+
+    it("resets to the latest value at its path", () => {
+      const incoming = {
+        items: [{ id: "row", related: [{ id: "s", title: "Theirs" }] }],
+      };
+      expect(discardedListValue(incoming, nested)).toEqual([
+        { id: "s", title: "Theirs" },
+      ]);
+      expect(discardedListValue(incoming, "items")).toBe(incoming.items);
+      expect(discardedListValue(incoming, "missing.0.list")).toBeUndefined();
+    });
+
+    it("is marked outcome-unknown exactly where the discard guard refuses", () => {
+      const marked = contentEntryStatusPaths(unanswered);
+      // The list itself, and every list holding it, are marked.
+      expect(marked).toEqual(
+        expect.arrayContaining(["items", "items.0", nested]),
+      );
+      for (const path of [
+        "items",
+        nested,
+        "items.0.related.0",
+        "related",
+        "heading",
+        "items.1.related",
+      ]) {
+        expect(
+          marked.includes(path),
+          `${path}: marker and guard use one overlap rule`,
+        ).toBe(contentEntryTouchesPath(unanswered, path));
+      }
+    });
+
+    it("marks every list a whole-list write or reset under it covers", () => {
+      const wholeList: PendingContentEntry = {
+        sectionId: "hero",
+        props: {},
+        listActionPaths: [nested],
+        resetProps: ["gallery"],
+      };
+      const marked = contentEntryStatusPaths(wholeList);
+      expect(marked).toEqual(
+        expect.arrayContaining(["items", "items.0", nested, "gallery"]),
+      );
+      for (const path of marked) {
+        expect(contentEntryTouchesPath(wholeList, path)).toBe(true);
+      }
+    });
   });
 });
 

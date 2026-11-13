@@ -764,6 +764,179 @@ describe("EditorStyleInspector selection content", () => {
     const lastSent = (spy: ReturnType<typeof vi.fn>) =>
       spy.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
 
+    it("acknowledges a list reset after applying its epoch", () => {
+      const onListResetApplied = vi.fn();
+      render(
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", { heading: "Heading", items: [] })}
+          selection={sectionSelection}
+          listReset={{
+            sectionId: "section-1",
+            fieldPath: "items",
+            value: [{ title: "Server row" }],
+            epoch: 17,
+          }}
+          onListResetApplied={onListResetApplied}
+          onPropsChange={vi.fn()}
+        />,
+      );
+
+      // The shell clears this one-shot reset, so a later Inspector mount
+      // cannot reapply it over a newer Add/Remove draft.
+      expect(onListResetApplied).toHaveBeenCalledWith(17);
+    });
+
+    // Task 41 31-A: a reset is for the panel showing its list when it is
+    // made. A panel mounted after it, or showing another section then, reads
+    // the latest props itself; applying the old reset later would put the
+    // list as it was at the discard back over newer input.
+    it("does not apply a list reset made before it was mounted", () => {
+      const onListResetApplied = vi.fn();
+      const onPropsChange = vi.fn();
+      render(
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", {
+            description: "Description",
+            items: [{ title: "Newer row" }],
+          })}
+          selection={sectionSelection}
+          listReset={{
+            sectionId: "section-1",
+            fieldPath: "items",
+            value: [{ title: "Reset row" }],
+            epoch: 4,
+          }}
+          onListResetApplied={onListResetApplied}
+          onPropsChange={onPropsChange}
+        />,
+      );
+      expect(onListResetApplied).toHaveBeenCalledWith(4);
+      const field = screen.getByDisplayValue("Description");
+      fireEvent.change(field, { target: { value: "Edited" } });
+      fireEvent.blur(field);
+      expect(lastSent(onPropsChange)?.items).toEqual([{ title: "Newer row" }]);
+    });
+
+    it("does not apply another section's list reset when it later shows that section", () => {
+      const onListResetApplied = vi.fn();
+      const onPropsChange = vi.fn();
+      const reset = {
+        sectionId: "section-1",
+        fieldPath: "items",
+        value: [{ title: "Reset row" }],
+        epoch: 5,
+      };
+      const view = (
+        id: string,
+        props: Record<string, unknown>,
+        listReset: typeof reset | null,
+      ) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith(id, props)}
+          selection={{ ...(sectionSelection as object), sectionId: id } as never}
+          listReset={listReset}
+          onListResetApplied={onListResetApplied}
+          onPropsChange={onPropsChange}
+        />
+      );
+      const { rerender } = render(
+        view("section-2", { description: "Other", items: [] }, null),
+      );
+      // Made while this panel shows another section: nothing here to reset.
+      rerender(view("section-2", { description: "Other", items: [] }, reset));
+      expect(onListResetApplied).toHaveBeenCalledWith(5);
+      rerender(
+        view(
+          "section-1",
+          { description: "Description", items: [{ title: "Newer row" }] },
+          reset,
+        ),
+      );
+      const field = screen.getByDisplayValue("Description");
+      fireEvent.change(field, { target: { value: "Edited" } });
+      fireEvent.blur(field);
+      expect(lastSent(onPropsChange)?.items).toEqual([{ title: "Newer row" }]);
+    });
+
+    // Task 41 R2-1: section ids are only unique within a document. A reset
+    // for another page's section of the same id is spent here, not applied.
+    it("does not apply a list reset for a same-id section of another document", () => {
+      const onListResetApplied = vi.fn();
+      const onPropsChange = vi.fn();
+      const view = (
+        listReset: {
+          sectionId: string;
+          fieldPath: string;
+          value: unknown;
+          epoch: number;
+          ownedHere: boolean;
+        } | null,
+      ) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", {
+            description: "Description",
+            items: [{ title: "Home row" }],
+          })}
+          selection={sectionSelection}
+          listReset={listReset}
+          onListResetApplied={onListResetApplied}
+          onPropsChange={onPropsChange}
+        />
+      );
+      const { rerender } = render(view(null));
+      rerender(
+        view({
+          sectionId: "section-1",
+          fieldPath: "items",
+          value: [{ title: "About row" }],
+          epoch: 3,
+          ownedHere: false,
+        }),
+      );
+      expect(onListResetApplied).toHaveBeenCalledWith(3);
+      const field = screen.getByDisplayValue("Description");
+      fireEvent.change(field, { target: { value: "Edited" } });
+      fireEvent.blur(field);
+      expect(lastSent(onPropsChange)?.items).toEqual([{ title: "Home row" }]);
+    });
+
+    it("applies each newer list reset while it stays mounted", () => {
+      const onListResetApplied = vi.fn();
+      const onPropsChange = vi.fn();
+      const view = (reset: { value: unknown; epoch: number } | null) => (
+        <EditorStyleInspector
+          view="content"
+          section={sectionWith("section-1", {
+            description: "Description",
+            items: [{ title: "Mine" }],
+          })}
+          selection={sectionSelection}
+          listReset={
+            reset
+              ? { sectionId: "section-1", fieldPath: "items", ...reset }
+              : null
+          }
+          onListResetApplied={onListResetApplied}
+          onPropsChange={onPropsChange}
+        />
+      );
+      const { rerender } = render(view(null));
+      rerender(view({ value: [{ title: "First reset" }], epoch: 1 }));
+      rerender(view(null));
+      rerender(view({ value: [{ title: "Second reset" }], epoch: 2 }));
+      expect(onListResetApplied.mock.calls).toEqual([[1], [2]]);
+      const field = screen.getByDisplayValue("Description");
+      fireEvent.change(field, { target: { value: "Edited" } });
+      fireEvent.blur(field);
+      expect(lastSent(onPropsChange)?.items).toEqual([
+        { title: "Second reset" },
+      ]);
+    });
+
     it("does not send back a field the server changed elsewhere", () => {
       const onPropsChange = vi.fn();
       const view = (props: Record<string, unknown>) => (
@@ -2908,6 +3081,81 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
   const cardOf = (input: HTMLElement) =>
     input.closest<HTMLElement>('[class*="bg-muted/30"]');
 
+  // Task 41 round 2: a list both writers changed, in this section.
+  const conflictStatus = {
+    notSaved: true,
+    conflict: true,
+    unknown: false,
+    savedChange: false,
+    busy: false,
+  };
+  const renderHeldList = (
+    selection?: EditorSelectionDescriptor,
+    onDiscardListConflict = vi.fn(),
+  ) => {
+    render(
+      <EditorStyleInspector
+        view="content"
+        onPropsChange={vi.fn()}
+        onUpdateThemeFileStyle={vi.fn()}
+        onJumpToCode={vi.fn()}
+        resourceKey="storefront-1:theme-1:template-1"
+        rowIdTemplateId={TEMPLATE_ID}
+        section={{
+          id: "section-1",
+          type: "entries",
+          componentRef: ENTRIES_PATH,
+          enabled: true,
+          props: {},
+        }}
+        selection={selection}
+        themeFiles={[entriesFile]}
+        listWriteStatuses={{ items: conflictStatus }}
+        onDiscardListConflict={onDiscardListConflict}
+      />,
+    );
+    return onDiscardListConflict;
+  };
+
+  it("points a list conflict at the list's own discard below, not at Load latest (R2-5)", () => {
+    renderHeldList();
+    const notice = document.querySelector('[data-list-not-saved="items"]');
+    expect(notice?.textContent).toContain(
+      "Discard unsaved changes to Entries below",
+    );
+    expect(notice?.textContent).not.toContain("recovery controls above");
+  });
+
+  it("keeps a held list's discard while the selection blocks writing (R2-2)", () => {
+    const onDiscard = renderHeldList({
+      sectionId: "section-1",
+      kind: "section",
+      tagName: "section",
+      isSection: true,
+      contentUnavailable: "value-not-from-row",
+    } as unknown as EditorSelectionDescriptor);
+    // Nothing may be written from this selection: no list card is drawn.
+    expect(screen.queryByRole("button", { name: "Add entry" })).toBeNull();
+    // The way out the editor told the author about still exists here.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Discard unsaved changes to Entries" }),
+    );
+    expect(onDiscard).toHaveBeenCalledWith("section-1", "items");
+  });
+
+  // Task 41 R3-3: the list's own discard stays reachable with the Content
+  // group collapsed. (A list whose row shape never resolved has no own
+  // discard by the shared rule; see list-discard-control.test.ts.)
+  it("keeps a held list's discard while the Content group is collapsed (R3-3)", () => {
+    const onDiscard = renderHeldList();
+    fireEvent.click(screen.getByRole("button", { name: /Content & Fields/ }));
+    expect(screen.queryByRole("button", { name: "Add entry" })).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Discard unsaved changes to Entries" }),
+    );
+    expect(onDiscard).toHaveBeenCalledWith("section-1", "items");
+  });
+
   it("sends nothing by drawing the lists", () => {
     const onPropsChange = renderEntries();
     expect(screen.getByDisplayValue("Two")).toBeTruthy();
@@ -3109,6 +3357,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(onPropsChange).toHaveBeenCalledTimes(1);
       expect(onPropsChange.mock.calls[0]![1]).toEqual({
         inputFieldPath: "items",
+        listActionPath: "items",
         selectionFieldPath: "items.1.title",
       });
     });
@@ -3121,6 +3370,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(onPropsChange).toHaveBeenCalledTimes(1);
       expect(onPropsChange.mock.calls[0]![1]).toEqual({
         inputFieldPath: "items",
+        listActionPath: "items",
         selectionFieldPath: "items.1.title",
       });
     });
@@ -3164,6 +3414,7 @@ export default function Entries({ items = ${JSON.stringify(ITEMS)}, links = ${JS
       expect(Object.keys(sent)).toEqual(["links"]);
       expect(options).toEqual({
         inputFieldPath: "links",
+        listActionPath: "links",
         selectionFieldPath: "links.1.label",
       });
     });

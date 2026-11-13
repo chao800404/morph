@@ -148,6 +148,15 @@ const source = `export const contentFields = {
 export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
   return <section><h1 data-morph-node="heading">{heading}</h1><p>{subheading}</p>{image ? <img src={image.url} alt="" /> : null}</section>;
 }`;
+const listSource = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+  subheading: { type: "text", label: "Subheading" },
+  image: { type: "image", label: "Image" },
+  items: { type: "array", label: "Items", fields: { title: { type: "text", label: "Title" } } }
+};
+export function Hero({ heading = "Welcome", subheading = "Summary", image, items = [] }) {
+  return <section><h1 data-morph-node="heading">{heading}</h1><p>{subheading}</p>{image ? <img src={image.url} alt="" /> : null}{items.map((item) => <p key={item.id}>{item.title}</p>)}</section>;
+}`;
 
 /** The document the server holds, which every content write merges into. */
 type ServerSection = {
@@ -224,7 +233,7 @@ const search = {
   section: "hero",
 } as StorefrontThemeEditorSearch;
 
-function readyClient() {
+function readyClient(componentSource = source) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -245,7 +254,7 @@ function readyClient() {
           storefrontId: "storefront-1",
           themeId: "theme-1",
           path: HERO_PATH,
-          content: source,
+          content: componentSource,
           mimeType: "text/typescript",
           isEntry: false,
           version: 1,
@@ -796,7 +805,7 @@ describe("a late post after a hide", () => {
 });
 
 describe("a refused hide the author discards", () => {
-  it("T6: Discard mine posts the section shown again, with the latest version's values", async () => {
+  it("T6: discarding the list keeps the separate hide intent and posts no values", async () => {
     const rows = (...titles: string[]) =>
       titles.map((title) => ({ id: title.toLowerCase(), title }));
     const listContext = (
@@ -831,7 +840,7 @@ describe("a refused hide the author discards", () => {
     };
     getThemeEditor.mockReset();
     getThemeEditor.mockResolvedValue(remote);
-    const client = readyClient();
+    const client = readyClient(listSource);
     client.setQueryData(
       storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
       remote as never,
@@ -895,26 +904,173 @@ describe("a refused hide the author discards", () => {
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
+    fireEvent.click(screen.getByTitle("Select hero; drag to reorder"));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy(),
+      expect(
+        screen.getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
     );
     expect(valuePosts(hideAt + 1)).toEqual([]);
 
     const beforeDiscard = posted.length;
     act(() => {
-      screen.getByRole("button", { name: "Discard mine…" }).click();
+      screen.getByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }).click();
     });
     act(() => {
-      screen.getByRole("button", { name: "Discard and load latest" }).click();
+      screen
+        .getByRole("button", { name: "Discard list changes and load latest" })
+        .click();
     });
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull(),
+      expect(
+        screen.queryByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeNull(),
     );
-    // Nothing was written, and the preview was told the section is shown,
-    // with the version the editor now holds.
+    // Nothing was written. Discarding `items` leaves the separate pending
+    // `enabled: false` intent intact; hidden sections stay hidden and receive
+    // no values, even though the latest server copy is currently shown.
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     const reconciled = heroPosts(beforeDiscard).at(-1);
-    expect(reconciled?.enabled).toBe(true);
+    expect(reconciled?.enabled).toBe(false);
+    expect(reconciled?.props).toBeUndefined();
+  });
+
+  // Task 41 31-D: T6's hidden expectation is about a section being hidden.
+  // A shown section's discard still posts the latest list, as before Task 31.
+  it("T6c: discarding the list of a shown section posts the latest list", async () => {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const listContext = (
+      items: ReturnType<typeof rows>,
+      draftGeneration: number,
+    ) =>
+      contextOf(
+        {
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled: true,
+              props: { heading: "Welcome", items },
+            },
+          ],
+        },
+        draftGeneration,
+      );
+    updateSectionProps.mockReset();
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    const remote = {
+      success: true,
+      message: "ok",
+      data: listContext(rows("C", "A", "B"), 7),
+    };
+    getThemeEditor.mockReset();
+    getThemeEditor.mockResolvedValue(remote);
+    const client = readyClient(listSource);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remote as never,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={listContext(rows("A", "B"), 1)}
+          search={{
+            template: "index",
+            templateId: "template-1",
+            viewport: "desktop",
+          } as StorefrontThemeEditorSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [
+        {
+          id: "hero:node:row-title",
+          parentId: null,
+          sectionId: "hero",
+          label: "Title",
+          kind: "heading",
+          tagName: "h1",
+          target: {
+            sectionId: "hero",
+            nodeId: "hero:node:row-title",
+            fieldKey: "title",
+            fieldPath: "items.1.title",
+            itemId: "b",
+            isSection: false,
+          },
+        },
+      ],
+    });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+      value: "B edited",
+      originalValue: "B",
+    });
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    fireEvent.click(screen.getByTitle("Select hero; drag to reorder"));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
+    );
+
+    const beforeDiscard = posted.length;
+    act(() => {
+      screen.getByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }).click();
+    });
+    act(() => {
+      screen
+        .getByRole("button", { name: "Discard list changes and load latest" })
+        .click();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeNull(),
+    );
+    // Nothing was written, and the preview was told the section is shown,
+    // with the latest list the editor now holds.
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    const reconciled = heroPosts(beforeDiscard).at(-1);
+    expect(reconciled?.enabled).not.toBe(false);
     expect(
       (reconciled?.props?.items as Array<{ title: string }> | undefined)?.map(
         (item) => item.title,
@@ -922,7 +1078,7 @@ describe("a refused hide the author discards", () => {
     ).toEqual(["C", "A", "B"]);
   });
 
-  it("T6b: Discard mine after another tab hid the section posts it hidden, with no values", async () => {
+  it("T6b: discarding the list after another tab hid the section keeps it hidden, with no values", async () => {
     const rows = (...titles: string[]) =>
       titles.map((title) => ({ id: title.toLowerCase(), title }));
     const listContext = (
@@ -958,7 +1114,7 @@ describe("a refused hide the author discards", () => {
     };
     getThemeEditor.mockReset();
     getThemeEditor.mockResolvedValue(remote);
-    const client = readyClient();
+    const client = readyClient(listSource);
     client.setQueryData(
       storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
       remote as never,
@@ -1016,8 +1172,16 @@ describe("a refused hide the author discards", () => {
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
+    fireEvent.click(screen.getByTitle("Select hero; drag to reorder"));
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy(),
+      expect(
+        screen.getByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeTruthy(),
     );
 
     // Between the conflict and the discard, another tab hides the section:
@@ -1030,8 +1194,149 @@ describe("a refused hide the author discards", () => {
 
     const beforeDiscard = posted.length;
     act(() => {
+      screen.getByRole("button", {
+        name: /Discard unsaved changes to items/i,
+      }).click();
+    });
+    act(() => {
+      screen
+        .getByRole("button", { name: "Discard list changes and load latest" })
+        .click();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", {
+          name: /Discard unsaved changes to items/i,
+        }),
+      ).toBeNull(),
+    );
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    // The preview is told the version the discard leaves: hidden, and none
+    // of the older copy's values on the way.
+    const afterDiscard = heroPosts(beforeDiscard);
+    expect(afterDiscard.filter((message) => message.enabled === true)).toEqual([]);
+    expect(valuePosts(beforeDiscard)).toEqual([]);
+    expect(afterDiscard.at(-1)).toMatchObject({ enabled: false });
+    expect(frameAfter(heroPosts()).slots).not.toHaveProperty("hero");
+  });
+
+  /**
+   * Task 41 R2-4: the generic "Discard mine…" on a hidden section. `items`
+   * is not declared by this Hero (`source`), so the list has no discard of
+   * its own and "Discard mine…" drops the whole section draft, the refused
+   * hide with it. T6 and T6b keep the list-only discard.
+   */
+  async function refusedHideOnUndeclaredList(remoteEnabledAtDiscard: boolean) {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const listContext = (
+      items: ReturnType<typeof rows>,
+      draftGeneration: number,
+      enabled = true,
+    ) =>
+      contextOf(
+        {
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled,
+              props: { heading: "Welcome", items },
+            },
+          ],
+        },
+        draftGeneration,
+      );
+    updateSectionProps.mockReset();
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    const remote = {
+      success: true,
+      message: "ok",
+      data: listContext(rows("C", "A", "B"), 7),
+    };
+    getThemeEditor.mockReset();
+    getThemeEditor.mockResolvedValue(remote);
+    const client = readyClient(source);
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remote as never,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={listContext(rows("A", "B"), 1)}
+          search={{
+            template: "index",
+            templateId: "template-1",
+            viewport: "desktop",
+          } as StorefrontThemeEditorSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [
+        {
+          id: "hero:node:row-title",
+          parentId: null,
+          sectionId: "hero",
+          label: "Title",
+          kind: "heading",
+          tagName: "h1",
+          target: {
+            sectionId: "hero",
+            nodeId: "hero:node:row-title",
+            fieldKey: "title",
+            fieldPath: "items.1.title",
+            itemId: "b",
+            isSection: false,
+          },
+        },
+      ],
+    });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+      value: "B edited",
+      originalValue: "B",
+    });
+    fireEvent.click(hideButton());
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(writes()[0]).toMatchObject({ enabled: false });
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Discard unsaved changes to/i }),
+    ).toBeNull();
+    if (!remoteEnabledAtDiscard) {
+      getThemeEditor.mockResolvedValue({
+        success: true,
+        message: "ok",
+        data: listContext(rows("C", "A", "B"), 8, false),
+      });
+    }
+    const beforeDiscard = posted.length;
+    act(() => {
       screen.getByRole("button", { name: "Discard mine…" }).click();
     });
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toContain("all of your unsaved changes to hero");
     act(() => {
       screen.getByRole("button", { name: "Discard and load latest" }).click();
     });
@@ -1039,8 +1344,22 @@ describe("a refused hide the author discards", () => {
       expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull(),
     );
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
-    // The preview is told the version the discard leaves: hidden, and none
-    // of the older copy's values on the way.
+    return beforeDiscard;
+  }
+
+  it("T6d: Discard mine drops the refused hide with the list, and posts the section shown with the latest list", async () => {
+    const beforeDiscard = await refusedHideOnUndeclaredList(true);
+    const reconciled = heroPosts(beforeDiscard).at(-1);
+    expect(reconciled?.enabled).toBe(true);
+    expect(
+      (reconciled?.props?.items as Array<{ title: string }> | undefined)?.map(
+        (item) => item.title,
+      ),
+    ).toEqual(["C", "A", "B"]);
+  });
+
+  it("T6e: Discard mine after another tab hid the section keeps it hidden, with no values", async () => {
+    const beforeDiscard = await refusedHideOnUndeclaredList(false);
     const afterDiscard = heroPosts(beforeDiscard);
     expect(afterDiscard.filter((message) => message.enabled === true)).toEqual([]);
     expect(valuePosts(beforeDiscard)).toEqual([]);

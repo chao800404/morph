@@ -205,12 +205,50 @@ describe("telling a list change from an id repair, three ways", () => {
 });
 
 describe("what an author whose content is held is told", () => {
-  it("points a list conflict at the way out that resolves it", () => {
-    // "Keep mine" will not save a list both sides changed; naming it would
-    // send the author round in a circle.
-    const message = heldContentMessage({ hasListConflict: true });
-    expect(message).toMatch(/Discard mine/);
+  // "Keep mine" will not save a list both sides changed; naming it would send
+  // the author round in a circle. The editor knows which exit each held list
+  // has (Task 41 31-B), so the message names that one, without a hedge.
+  it("points a list with its own discard control at that control only", () => {
+    const message = heldContentMessage({
+      hasListConflict: true,
+      listExits: { pathScoped: true, generic: false },
+    });
+    expect(message).toMatch(/Discard unsaved changes/);
+    expect(message).toMatch(/only your changes to that list/);
+    expect(message).not.toMatch(/Discard mine/);
+    expect(message).not.toMatch(/if the Inspector exposes one/);
     expect(message).not.toMatch(/keep your changes before continuing/);
+  });
+
+  it("points a list with no discard control of its own at Discard mine, saying what it discards", () => {
+    const message = heldContentMessage({
+      hasListConflict: true,
+      listExits: { pathScoped: false, generic: true },
+    });
+    expect(message).toMatch(/Use Discard mine… in the toolbar/);
+    expect(message).toMatch(/all of your unsaved changes to that section/);
+    expect(message).not.toMatch(/Discard unsaved changes/);
+    expect(message).not.toMatch(/if the Inspector exposes one/);
+  });
+
+  // Task 41 R3-1: a list held on another page is discarded from its page.
+  it("names the other page for a list held there", () => {
+    const message = heldContentMessage({
+      hasListConflict: true,
+      listExits: { pathScoped: false, generic: false, otherPage: true },
+    });
+    expect(message).toMatch(/on another page/);
+    expect(message).toMatch(/Open that page to discard/);
+    expect(message).not.toMatch(/Discard mine… in the toolbar/);
+  });
+
+  it("names both exits when held lists have different ones", () => {
+    const message = heldContentMessage({
+      hasListConflict: true,
+      listExits: { pathScoped: true, generic: true },
+    });
+    expect(message).toMatch(/Discard unsaved changes/);
+    expect(message).toMatch(/Discard mine…/);
   });
 
   it("keeps pointing any other conflict at loading the latest and keeping mine", () => {
@@ -222,7 +260,14 @@ describe("what an author whose content is held is told", () => {
 
 describe("why a step that saves one document first stopped", () => {
   const CONFLICT = heldContentMessage({ hasListConflict: false });
-  const LIST = heldContentMessage({ hasListConflict: true });
+  const LIST = heldContentMessage({
+    hasListConflict: true,
+    listExits: { pathScoped: true, generic: false },
+  });
+  const GENERIC = heldContentMessage({
+    hasListConflict: true,
+    listExits: { pathScoped: false, generic: true },
+  });
 
   it("tells this document's plain failure as one, though another document has a conflict", () => {
     expect(
@@ -244,7 +289,7 @@ describe("why a step that saves one document first stopped", () => {
     ).toBe(CONFLICT);
   });
 
-  it("points a list conflict here at Discard mine, not another document's list conflict", () => {
+  it("points a list conflict here at its recovery control, not another document's list conflict", () => {
     expect(
       heldFlushMessage({
         heldKeys: ["doc-a:hero", "doc-a:cards"],
@@ -259,5 +304,25 @@ describe("why a step that saves one document first stopped", () => {
         listConflicts: { "doc-b:cards": "doc-b" },
       }),
     ).toBe(CONFLICT);
+  });
+
+  it("names Discard mine for a held list conflict that has no discard control of its own", () => {
+    expect(
+      heldFlushMessage({
+        heldKeys: ["doc-a:cards"],
+        conflicts: { "doc-a:cards": "doc-a" },
+        listConflicts: { "doc-a:cards": "doc-a" },
+        genericListConflictKeys: ["doc-a:cards"],
+      }),
+    ).toBe(GENERIC);
+    // Another document's generic exit says nothing about this one's list.
+    expect(
+      heldFlushMessage({
+        heldKeys: ["doc-a:cards"],
+        conflicts: { "doc-a:cards": "doc-a" },
+        listConflicts: { "doc-a:cards": "doc-a" },
+        genericListConflictKeys: ["doc-b:cards"],
+      }),
+    ).toBe(LIST);
   });
 });
