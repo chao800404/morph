@@ -106,9 +106,7 @@ function postPresentationAck(token, status, reason) {
       {
         type: "morph:storefront-preview-section-presentation-ack",
         operationId: token.operationId,
-        sectionId: token.sectionId,
-        routePath: token.routePath,
-        revision: token.revision,
+        token,
         status: "applied",
       },
       channel,
@@ -120,9 +118,7 @@ function postPresentationAck(token, status, reason) {
       {
         type: "morph:storefront-preview-section-presentation-ack",
         operationId: token.operationId,
-        sectionId: token.sectionId,
-        routePath: token.routePath,
-        revision: token.revision,
+        token,
         status: "not-applied",
         reason: "superseded",
       },
@@ -134,9 +130,7 @@ function postPresentationAck(token, status, reason) {
     {
       type: "morph:storefront-preview-section-presentation-ack",
       operationId: token.operationId,
-      sectionId: token.sectionId,
-      routePath: token.routePath,
-      revision: token.revision,
+      token,
       status: "not-applied",
       reason: "section-missing",
     },
