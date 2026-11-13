@@ -28,7 +28,7 @@ export const START_PREVIEW_SHARDS = [
   // navigation-matrix: shard 3 was the shortest Start shard job of main run
   // 41267736430 (10m53s, against 19m44s and 17m45s); the spec's Start preview
   // cells took ~2.6 min locally.
-  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts", "navigation-matrix.spec.ts"],
+  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts", "navigation-matrix.spec.ts", "history-back-controlled-repro.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 

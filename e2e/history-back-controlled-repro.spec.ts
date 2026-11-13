@@ -12,8 +12,10 @@ import {
 } from "./navigation-matrix-fixture";
 
 test.skip(
-  !EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR,
-  "Needs the runner-owned throwaway store.",
+  !EDITOR_PATH ||
+    !process.env.MORPH_E2E_STATE_DIR ||
+    process.env.MORPH_E2E_PREVIEW_RUNTIME !== "start",
+  "Needs the runner-owned throwaway store and full Start preview runtime (MORPH_E2E_PREVIEW_RUNTIME=start).",
 );
 
 async function exitSectionSelectionMode(page: Page) {

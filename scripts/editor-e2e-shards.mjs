@@ -25,7 +25,6 @@ export const EDITOR_SHARDS = [
     // Shard 1 was the shortest shard job after shard 5 in main run
     // 42387058349 (8m08s; shard 5 7m42s, the others 9m11s to 15m55s).
     "unstored-list-inspector-writes.spec.ts",
-    "history-back-controlled-repro.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -102,6 +101,7 @@ export const EDITOR_SHARDS = [
     "publish.spec.ts",
     "source-asset-publish.spec.ts",
     "preview-start-bridge-interruption.spec.ts",
+    "history-back-controlled-repro.spec.ts",
     // Container transport only, so it skips on every shard. Its exact tests
     // are listed in scripts/container-acceptance-targets/.
     "starter-upgrade-publish-acceptance.spec.ts",
