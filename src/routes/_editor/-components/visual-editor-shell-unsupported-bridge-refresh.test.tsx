@@ -188,21 +188,22 @@ const heroNode = {
   },
 };
 
-function renderShell(initialFp = "fp-old-build") {
+async function renderShell(initialFp = "fp-old-build") {
+  const initialServer = {
+    success: true,
+    message: "Live Preview server ready",
+    data: {
+      url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+      workspaceFingerprint: initialFp,
+      bridgeCapabilities: ["selection-field-section", "code-default-selection", "astro-identity-v2"],
+    },
+  } as never;
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   client.setQueryData(
     themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
-    {
-      success: true,
-      message: "Live Preview server ready",
-      data: {
-        url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
-        workspaceFingerprint: initialFp,
-        bridgeCapabilities: ["selection-field-section", "code-default-selection", "astro-identity-v2"],
-      },
-    } as never,
+    initialServer,
   );
   client.setQueryData(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
@@ -217,6 +218,9 @@ function renderShell(initialFp = "fp-old-build") {
       />
     </QueryClientProvider>,
   );
+  await waitFor(() => {
+    expect(currentIframe()).toBeTruthy();
+  });
   return client;
 }
 
@@ -233,6 +237,13 @@ function fromPreview(data: Record<string, unknown>) {
     );
   });
   answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+}
+
+function sendReady(capabilities: string[]) {
+  sendFrameReady(
+    { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+    capabilities,
+  );
 }
 
 describe("bounded auto-refresh when preview bridge lacks section-presentation-ack-v1", () => {
@@ -303,28 +314,20 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       },
     } as never);
 
-    renderShell("fp-old-build");
-    const firstSrc = currentIframe()?.getAttribute("src");
+    await renderShell("fp-old-build");
+    const firstIframe = currentIframe();
 
-    sendFrameReady({
-      origin: PREVIEW_ORIGIN,
-      session: PREVIEW_SESSION,
-      capabilities: ["selection-field-section"],
-    });
+    sendReady(["selection-field-section"]);
 
     await waitFor(() => {
       expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
     });
     await waitFor(() => {
-      expect(currentIframe()?.getAttribute("src")).not.toBe(firstSrc);
+      expect(currentIframe()).not.toBe(firstIframe);
     });
 
     reloadFrameDocument();
-    sendFrameReady({
-      origin: PREVIEW_ORIGIN,
-      session: PREVIEW_SESSION,
-      capabilities: ["selection-field-section", "section-presentation-ack-v1"],
-    });
+    sendReady(["selection-field-section", "section-presentation-ack-v1"]);
     fromPreview({
       type: "morph:storefront-preview-structure",
       nodes: [heroNode],
@@ -345,14 +348,10 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       },
     } as never);
 
-    renderShell("fp-old-build");
-    const firstSrc = currentIframe()?.getAttribute("src");
+    await renderShell("fp-old-build");
+    const firstIframe = currentIframe();
 
-    sendFrameReady({
-      origin: PREVIEW_ORIGIN,
-      session: PREVIEW_SESSION,
-      capabilities: ["selection-field-section"],
-    });
+    sendReady(["selection-field-section"]);
 
     await waitFor(() => {
       expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
@@ -361,7 +360,8 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       expect(screen.getByTestId("preview-presentation-unconfirmable")).toBeTruthy();
     });
 
-    expect(currentIframe()?.getAttribute("src")).toBe(firstSrc);
+    expect(firstIframe?.isConnected).toBe(true);
+    expect(currentIframe()).toBe(firstIframe);
     const alert = screen.getByTestId("preview-presentation-unconfirmable");
     expect(alert.textContent).toContain(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE);
     expect(alert.textContent).toContain("Could not update the preview.");
@@ -382,31 +382,23 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       },
     } as never);
 
-    renderShell("fp-old-build");
-    const firstSrc = currentIframe()?.getAttribute("src");
+    await renderShell("fp-old-build");
+    const firstIframe = currentIframe();
 
-    sendFrameReady({
-      origin: PREVIEW_ORIGIN,
-      session: PREVIEW_SESSION,
-      capabilities: ["selection-field-section"],
-    });
+    sendReady(["selection-field-section"]);
 
     await waitFor(() => {
-      expect(currentIframe()?.getAttribute("src")).not.toBe(firstSrc);
+      expect(currentIframe()).not.toBe(firstIframe);
     });
-    const secondSrc = currentIframe()?.getAttribute("src");
+    const secondIframe = currentIframe();
 
     reloadFrameDocument();
-    sendFrameReady({
-      origin: PREVIEW_ORIGIN,
-      session: PREVIEW_SESSION,
-      capabilities: ["selection-field-section"],
-    });
+    sendReady(["selection-field-section"]);
 
     await waitFor(() => {
       expect(screen.getByTestId("preview-presentation-unconfirmable")).toBeTruthy();
     });
-    expect(currentIframe()?.getAttribute("src")).toBe(secondSrc);
+    expect(currentIframe()).toBe(secondIframe);
     expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
     expect(
       screen.getByTestId("preview-presentation-unconfirmable").textContent,
@@ -415,8 +407,8 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
   });
 
   it("does not auto-refresh when no ready arrives (slow cold start or auth failure)", async () => {
+    await renderShell("fp-old-build");
     vi.useFakeTimers();
-    renderShell("fp-old-build");
 
     await act(async () => {
       vi.advanceTimersByTime(PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS + 1_000);
@@ -440,12 +432,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       },
     } as never);
 
-    renderShell("fp-old-build");
-    sendFrameReady({
-      origin: PREVIEW_ORIGIN,
-      session: PREVIEW_SESSION,
-      capabilities: ["selection-field-section"],
-    });
+    await renderShell("fp-old-build");
     fromPreview({
       type: "morph:storefront-preview-structure",
       nodes: [heroNode],
@@ -458,23 +445,19 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
 
     const input = await screen.findByDisplayValue("Welcome");
-    const firstSrc = currentIframe()?.getAttribute("src");
+    const firstIframe = currentIframe();
 
     fireEvent.compositionStart(input);
-    // While composing, even if an unsupported ready arrives, refresh is deferred.
-    sendFrameReady({
-      origin: PREVIEW_ORIGIN,
-      session: PREVIEW_SESSION,
-      capabilities: ["selection-field-section"],
+    // While composing, an unsupported ready defers its reload until composition ends.
+    sendReady(["selection-field-section"]);
+    await waitFor(() => {
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
     });
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(currentIframe()?.getAttribute("src")).toBe(firstSrc);
+    expect(currentIframe()).toBe(firstIframe);
 
     fireEvent.compositionEnd(input, { data: "中文" });
     await waitFor(() => {
-      expect(currentIframe()?.getAttribute("src")).not.toBe(firstSrc);
+      expect(currentIframe()).not.toBe(firstIframe);
     });
     expect(updateSectionProps).not.toHaveBeenCalled();
   });

@@ -389,6 +389,7 @@ import {
 import {
   applyThemePreviewFiles,
   confirmThemePreviewContent,
+  startThemePreviewServer,
   syncThemePreviewContent,
   touchThemePreviewServer,
   probeThemePreviewAddress,
@@ -678,6 +679,9 @@ export const PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE =
   "This preview cannot confirm what it shows, so content edits are paused. Your changes are kept; nothing was saved.";
 /** How long a frame with no acknowledgement capability is waited for. */
 export const PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS = 5_000;
+/** Said when bounded auto-refresh for an unsupported bridge stops. */
+export const PREVIEW_UNSUPPORTED_REFRESH_FAILED_MESSAGE =
+  "Could not update the preview.";
 /** Said when a write's basis is newer than the presentation it was proven by. */
 export const PREVIEW_PRESENTATION_BASIS_MESSAGE =
   "Not saved: the preview showed an older version of this section than your change was made on. Your change is kept; use Load latest, keep mine.";
@@ -4890,6 +4894,13 @@ export function VisualEditorShell({
    */
   const [inlineEditOpen, setInlineEditOpen] = useState(false);
   const inlineEditOpenRef = useRef(false);
+  const [inspectorComposing, setInspectorComposing] = useState(false);
+  const inspectorComposingRef = useRef(false);
+  const [unsupportedRefreshFailed, setUnsupportedRefreshFailed] =
+    useState(false);
+  const unsupportedBridgeAttemptedRef = useRef(new Set<string>());
+  const unsupportedBridgeReloadingRef = useRef(false);
+  const deferredUnsupportedRefreshRef = useRef<(() => void) | null>(null);
   /** Called with true when the edit was finished, false when it was lost. */
   const inlineEditEndedRef = useRef(new Set<(finished: boolean) => void>());
   /** The finish this editor asked for and has not seen answered; one at most. */
@@ -5252,34 +5263,139 @@ export function VisualEditorShell({
     refetchPreviewServer,
   ]);
 
-  // Task 40 item 3: a frame that said it is ready without the ack
-  // capability is waited for, bounded; then the reason is shown. Fail
-  // closed throughout: nothing here lets a write go without a proof.
+  const previewServerDataRef = useRef(previewServer.data);
+  previewServerDataRef.current = previewServer.data;
+  const unsupportedBridgeFailedRef = useRef(false);
+
   useEffect(() => {
-    setPresentationUnconfirmable(false);
+    if (!inspectorComposing && !inlineEditOpen) {
+      const pending = deferredUnsupportedRefreshRef.current;
+      if (pending) {
+        deferredUnsupportedRefreshRef.current = null;
+        pending();
+      }
+    }
+  }, [inlineEditOpen, inspectorComposing]);
+
+  useEffect(() => {
     const record = previewFrameRecordRef.current;
-    if (
-      !previewKey ||
-      !record ||
-      record.previewKey !== previewKey ||
-      record.capabilities.has("section-presentation-ack-v1")
-    ) {
+    if (!previewKey || !record || record.previewKey !== previewKey) {
       return;
     }
-    const round = record.readyRound;
-    const timer = setTimeout(() => {
-      const now = previewFrameRecordRef.current;
-      if (
-        now &&
-        now.previewKey === previewKeyRef.current &&
-        now.readyRound === round &&
-        !now.capabilities.has("section-presentation-ack-v1")
-      ) {
+    if (record.capabilities.has("section-presentation-ack-v1")) {
+      unsupportedBridgeReloadingRef.current = false;
+      unsupportedBridgeFailedRef.current = false;
+      deferredUnsupportedRefreshRef.current = null;
+      setUnsupportedRefreshFailed(false);
+      setPresentationUnconfirmable(false);
+      return;
+    }
+
+    if (unsupportedBridgeReloadingRef.current) {
+      unsupportedBridgeReloadingRef.current = false;
+      unsupportedBridgeFailedRef.current = true;
+      setUnsupportedRefreshFailed(true);
+      setPresentationUnconfirmable(true);
+      return;
+    }
+
+    if (deferredUnsupportedRefreshRef.current) {
+      return;
+    }
+
+    const serverData = previewServerDataRef.current?.success
+      ? previewServerDataRef.current.data
+      : null;
+    const currentFingerprint = serverData?.workspaceFingerprint ?? null;
+    const baseScope = previewUrlRef.current ?? previewKey;
+    const buildKey =
+      currentFingerprint ?? `${baseScope}:${serverData?.url ?? ""}`;
+    const attemptKey = `${baseScope}::${buildKey}`;
+
+    if (unsupportedBridgeAttemptedRef.current.has(attemptKey)) {
+      if (unsupportedBridgeFailedRef.current) {
+        setUnsupportedRefreshFailed(true);
         setPresentationUnconfirmable(true);
+        return;
       }
-    }, PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS);
-    return () => clearTimeout(timer);
-  }, [previewKey, frameRecordSequence]);
+      setPresentationUnconfirmable(false);
+      setUnsupportedRefreshFailed(false);
+      const round = record.readyRound;
+      const timer = setTimeout(() => {
+        const now = previewFrameRecordRef.current;
+        if (
+          now &&
+          now.previewKey === previewKeyRef.current &&
+          now.readyRound === round &&
+          !now.capabilities.has("section-presentation-ack-v1")
+        ) {
+          unsupportedBridgeFailedRef.current = true;
+          setUnsupportedRefreshFailed(true);
+          setPresentationUnconfirmable(true);
+        }
+      }, PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS);
+      return () => clearTimeout(timer);
+    }
+
+    setPresentationUnconfirmable(false);
+    setUnsupportedRefreshFailed(false);
+    unsupportedBridgeFailedRef.current = false;
+    unsupportedBridgeAttemptedRef.current.add(attemptKey);
+    const checkedPreviewKey = previewKey;
+    const storefrontId = context.storefront.id;
+    const themeId = context.theme.id;
+    void startThemePreviewServer({
+      data: { storefrontId, themeId },
+    }).then(
+      (result) => {
+        if (previewKeyRef.current !== checkedPreviewKey) return;
+        const nextData = result?.success ? result.data : null;
+        const supportsAck =
+          Array.isArray(nextData?.bridgeCapabilities) &&
+          nextData.bridgeCapabilities.includes("section-presentation-ack-v1");
+        const nextFingerprint = nextData?.workspaceFingerprint ?? null;
+        const buildChanged =
+          currentFingerprint === null ||
+          (nextFingerprint !== null && nextFingerprint !== currentFingerprint);
+        if (!supportsAck || !buildChanged) {
+          unsupportedBridgeFailedRef.current = true;
+          setUnsupportedRefreshFailed(true);
+          setPresentationUnconfirmable(true);
+          return;
+        }
+        if (nextFingerprint) {
+          unsupportedBridgeAttemptedRef.current.add(
+            `${baseScope}::${nextFingerprint}`,
+          );
+        }
+        const runReload = () => {
+          queryClient.setQueryData(
+            themePreviewServerQueries.forTheme(storefrontId, themeId).queryKey,
+            result,
+          );
+          unsupportedBridgeReloadingRef.current = true;
+          setPreviewRevision((revision) => revision + 1);
+        };
+        if (inspectorComposingRef.current || inlineEditOpenRef.current) {
+          deferredUnsupportedRefreshRef.current = runReload;
+        } else {
+          runReload();
+        }
+      },
+      () => {
+        if (previewKeyRef.current !== checkedPreviewKey) return;
+        unsupportedBridgeFailedRef.current = true;
+        setUnsupportedRefreshFailed(true);
+        setPresentationUnconfirmable(true);
+      },
+    );
+  }, [
+    previewKey,
+    frameRecordSequence,
+    context.storefront.id,
+    context.theme.id,
+    queryClient,
+  ]);
   const previewFrameReady =
     previewLifecycle.key && previewLifecycle.readySequence > 0
       ? {
@@ -19257,6 +19373,11 @@ export function VisualEditorShell({
                   <p className="text-foreground">
                     {PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE}
                   </p>
+                  {unsupportedRefreshFailed ? (
+                    <p className="mt-1 text-muted-foreground">
+                      {PREVIEW_UNSUPPORTED_REFRESH_FAILED_MESSAGE}
+                    </p>
+                  ) : null}
                   <Button
                     type="button"
                     variant="outline"
@@ -19264,7 +19385,9 @@ export function VisualEditorShell({
                     className="mt-2"
                     onClick={retryLivePreview}
                   >
-                    Retry Preview
+                    {unsupportedRefreshFailed
+                      ? "Reload preview"
+                      : "Retry Preview"}
                   </Button>
                 </div>
               </div>
@@ -19408,7 +19531,18 @@ export function VisualEditorShell({
           <div className="h-8 w-1 rounded-full bg-border group-hover:bg-primary group-active:bg-primary transition-colors" />
         </div>
 
-        <EditorAssistantPanel
+        <div
+          className="contents"
+          onCompositionStart={() => {
+            inspectorComposingRef.current = true;
+            setInspectorComposing(true);
+          }}
+          onCompositionEnd={() => {
+            inspectorComposingRef.current = false;
+            setInspectorComposing(false);
+          }}
+        >
+          <EditorAssistantPanel
           contentResetEpoch={contentResetEpoch}
           documentPresentationReady={sectionPresentationReady}
           documentPresentationPausedReason={
@@ -19559,7 +19693,8 @@ export function VisualEditorShell({
           onJumpToCode={handleJumpToCode}
           onTabChange={setAssistantPanelTab}
           selectionSourceCurrent={isSelectionSourceCurrent(editableSelection)}
-        />
+          />
+        </div>
 
         <EditorSmallScreenNotice />
       </EditorModeSurface>

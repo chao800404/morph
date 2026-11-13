@@ -407,6 +407,16 @@ describe("the runtime startThemePreviewServer starts the preview with", () => {
   });
 
   it("reports workspaceFingerprint and bridgeCapabilities from the materialized preview workspace", async () => {
+    dal.findEditorContext.mockResolvedValue(editorContext("start"));
+    dal.start.mockResolvedValueOnce({
+      ok: true,
+      url: "https://preview.example",
+      processId: "proc-1",
+      attemptId: "attempt-1",
+      readyMs: 10,
+      timings: {},
+      hoistedContentFields: {},
+    });
     const result = await call(startThemePreviewServer, {
       storefrontId: STOREFRONT,
       themeId: THEME,
