@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { expect, test, type Page, type Request } from "@playwright/test";
 import { EDITOR_PATH, openEditor } from "./helpers";
 import {
@@ -22,14 +23,98 @@ function isPreviewSubresource(page: Page, request: Request) {
   }
 }
 
-function countFrameDocuments(page: Page) {
-  const documents: number[] = [];
-  page.on("request", (request) => {
-    if (!request.isNavigationRequest()) return;
-    if (request.frame() === page.mainFrame()) return;
-    documents.push(Date.now());
+type PreviewReadyObservation = {
+  previewDocument: string;
+  hasAckCapability: boolean;
+};
+
+type PreviewAckObservation = {
+  previewDocument: string;
+  status: string;
+  operationId: string;
+};
+
+type PreviewLifecycleSnapshot = {
+  readyEvents: PreviewReadyObservation[];
+  distinctDocuments: string[];
+  acks: PreviewAckObservation[];
+};
+
+/**
+ * Observes actual preview-bridge ready and ack envelopes on the editor window.
+ * Container access redirects never emit `morph:storefront-preview-ready`, so
+ * they are never mistaken for a product preview reload.
+ */
+async function observePreviewLifecycle(page: Page) {
+  await page.addInitScript(() => {
+    if (window.top !== window) return;
+    const state = {
+      readyEvents: [] as Array<{
+        previewDocument: string;
+        hasAckCapability: boolean;
+      }>,
+      acks: [] as Array<{
+        previewDocument: string;
+        status: string;
+        operationId: string;
+      }>,
+    };
+    (
+      window as unknown as {
+        __morphPreviewLifecycle?: typeof state;
+      }
+    ).__morphPreviewLifecycle = state;
+    window.addEventListener("message", (event) => {
+      const data = event.data;
+      if (!data || typeof data !== "object") return;
+      const previewDocument =
+        typeof data.previewDocument === "string" ? data.previewDocument : "";
+      if (!previewDocument) return;
+      if (data.type === "morph:storefront-preview-ready") {
+        const capabilities = Array.isArray(data.capabilities)
+          ? data.capabilities
+          : [];
+        state.readyEvents.push({
+          previewDocument,
+          hasAckCapability: capabilities.includes(
+            "section-presentation-ack-v1",
+          ),
+        });
+      } else if (
+        data.type === "morph:storefront-preview-section-presentation-ack"
+      ) {
+        state.acks.push({
+          previewDocument,
+          status: typeof data.status === "string" ? data.status : "",
+          operationId:
+            typeof data.operationId === "string" ? data.operationId : "",
+        });
+      }
+    });
   });
-  return documents;
+
+  return async (): Promise<PreviewLifecycleSnapshot> =>
+    page.evaluate(() => {
+      const state = (
+        window as unknown as {
+          __morphPreviewLifecycle?: {
+            readyEvents: PreviewReadyObservation[];
+            acks: PreviewAckObservation[];
+          };
+        }
+      ).__morphPreviewLifecycle ?? { readyEvents: [], acks: [] };
+      const distinctDocuments: string[] = [];
+      for (const entry of state.readyEvents) {
+        if (!distinctDocuments.includes(entry.previewDocument)) {
+          distinctDocuments.push(entry.previewDocument);
+        }
+      }
+      return {
+        readyEvents: [...state.readyEvents],
+        distinctDocuments,
+        acks: [...state.acks],
+      };
+    });
 }
 
 function collectServerFunctions(page: Page) {
@@ -62,23 +147,100 @@ function isStartThemePreviewServer(url: string) {
   return isServerFn(url, "startThemePreviewServer");
 }
 
-function uncachedHeaders(request: Request) {
-  const headers = { ...request.headers() };
+async function uncachedHeaders(page: Page, request: Request) {
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(await request.allHeaders())) {
+    if (key.startsWith(":")) continue;
+    headers[key] = value;
+  }
   delete headers["if-none-match"];
   delete headers["if-modified-since"];
+  delete headers["accept-encoding"];
+  if (!headers["cookie"]) {
+    const cookies = await page.context().cookies(request.url());
+    if (cookies.length > 0) {
+      headers["cookie"] = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    }
+  }
   return headers;
+}
+
+type LoopbackResponse = {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+};
+
+/**
+ * Fetches a preview subresource over loopback (`127.0.0.1` / `::1`) while
+ * preserving the original `Host` header and cookies, because Node's DNS
+ * resolver does not resolve `pv-*.preview.localhost` in container runs.
+ */
+async function fetchBridgeThroughLoopback(
+  page: Page,
+  request: Request,
+): Promise<LoopbackResponse> {
+  const url = new URL(request.url());
+  const headers = await uncachedHeaders(page, request);
+  const targetHost =
+    url.hostname === "localhost" || url.hostname === "127.0.0.1"
+      ? url.hostname
+      : "127.0.0.1";
+  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+
+  const send = (host: string) =>
+    new Promise<LoopbackResponse>((resolve, reject) => {
+      const outgoing = httpRequest(
+        {
+          host,
+          port,
+          method: request.method(),
+          path: url.pathname + url.search,
+          headers: { ...headers, host: url.host },
+        },
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+          incoming.on("end", () => {
+            const outHeaders: Record<string, string> = {};
+            for (const [name, value] of Object.entries(incoming.headers)) {
+              if (value === undefined) continue;
+              outHeaders[name] = Array.isArray(value)
+                ? value.join(", ")
+                : value;
+            }
+            resolve({
+              status: incoming.statusCode ?? 200,
+              headers: outHeaders,
+              body: Buffer.concat(chunks).toString("utf8"),
+            });
+          });
+        },
+      );
+      outgoing.on("error", reject);
+      outgoing.end();
+    });
+
+  return send(targetHost).catch((err: NodeJS.ErrnoException) => {
+    if (err?.code === "ECONNREFUSED" && targetHost === "127.0.0.1") {
+      return send("::1");
+    }
+    throw err;
+  });
 }
 
 async function fulfillUncachedBridge(
   route: Parameters<Parameters<Page["route"]>[1]>[0],
-  response: Awaited<ReturnType<typeof route.fetch>>,
+  response: LoopbackResponse,
   body: string,
 ) {
-  const headers = { ...response.headers() };
+  const headers = { ...response.headers };
   delete headers["etag"];
   delete headers["last-modified"];
+  delete headers["content-encoding"];
+  delete headers["content-length"];
   headers["cache-control"] = "no-store";
-  return route.fulfill({ response, headers, body });
+  return route.fulfill({ status: response.status, headers, body });
 }
 
 function stripCapabilityFromBody(body: string) {
@@ -136,7 +298,7 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     page,
   }) => {
     test.setTimeout(180_000);
-    const documents = countFrameDocuments(page);
+    const readLifecycle = await observePreviewLifecycle(page);
     const serverFunctions = collectServerFunctions(page);
     const rejectedAcks: string[] = [];
     let strippedInitialBridge = 0;
@@ -156,12 +318,12 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       const request = route.request();
       if (
         isPreviewSubresource(page, request) &&
-        documents.length === 1 &&
+        strippedInitialBridge === 0 &&
         new URL(request.url()).pathname.endsWith(BRIDGE_PATH)
       ) {
         strippedInitialBridge += 1;
-        const response = await route.fetch({ headers: uncachedHeaders(request) });
-        const body = stripCapabilityFromBody(await response.text());
+        const response = await fetchBridgeThroughLoopback(page, request);
+        const body = stripCapabilityFromBody(response.body);
         return fulfillUncachedBridge(route, response, body);
       }
       if (
@@ -181,17 +343,38 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     try {
       await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
       await expect
-        .poll(() => documents.length, {
-          timeout: 60_000,
-          message: "expected bounded single auto-refresh to new bridge",
-        })
-        .toBe(2);
+        .poll(
+          async () => {
+            const snap = await readLifecycle();
+            const lastReady = snap.readyEvents.at(-1);
+            return (
+              snap.distinctDocuments.length === 2 &&
+              Boolean(lastReady?.hasAckCapability)
+            );
+          },
+          {
+            timeout: 60_000,
+            message:
+              "expected bounded single auto-refresh to a new preview document with ack capability",
+          },
+        )
+        .toBe(true);
       await expect(
         page.locator("[data-editor-tree-sortable]").first(),
       ).toBeAttached({ timeout: 45_000 });
 
+      const afterRefresh = await readLifecycle();
       expect(strippedInitialBridge).toBe(1);
       expect(startCalls).toBeGreaterThanOrEqual(2);
+      expect(afterRefresh.distinctDocuments).toHaveLength(2);
+      expect(
+        afterRefresh.readyEvents.some(
+          (event) =>
+            event.previewDocument === afterRefresh.distinctDocuments[0] &&
+            !event.hasAckCapability,
+        ),
+        "initial preview document must have loaded the stripped bridge",
+      ).toBe(true);
       expect(
         serverFunctions.writes(),
         `no write should run during unsupported bridge auto-refresh (called: ${serverFunctions.called.join(", ")})`,
@@ -201,11 +384,25 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       ).toHaveCount(0);
 
       // Verify the reloaded bridge supports ack cleanly on a real edit.
+      const refreshedDoc = afterRefresh.distinctDocuments[1];
       const field = await heroContentField(page, 0);
       const original = await field.inputValue();
       const updated = `${MARKER} swap ${Date.now()}`;
       await field.fill(updated);
       await expect(field).toHaveValue(updated);
+      await expect
+        .poll(
+          async () => {
+            const snap = await readLifecycle();
+            return snap.acks.some(
+              (ack) =>
+                ack.previewDocument === refreshedDoc &&
+                ack.status === "applied",
+            );
+          },
+          { timeout: 20_000 },
+        )
+        .toBe(true);
       await field.fill(original);
       expect(rejectedAcks).toEqual([]);
     } finally {
@@ -217,8 +414,9 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     page,
   }) => {
     test.setTimeout(180_000);
-    const documents = countFrameDocuments(page);
+    const readLifecycle = await observePreviewLifecycle(page);
     let allowSupportedService = false;
+    let strippedBridgeCount = 0;
     let startCalls = 0;
 
     await page.route("**/*", async (route) => {
@@ -228,8 +426,9 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
         isPreviewSubresource(page, request) &&
         new URL(request.url()).pathname.endsWith(BRIDGE_PATH)
       ) {
-        const response = await route.fetch({ headers: uncachedHeaders(request) });
-        const body = stripCapabilityFromBody(await response.text());
+        strippedBridgeCount += 1;
+        const response = await fetchBridgeThroughLoopback(page, request);
+        const body = stripCapabilityFromBody(response.body);
         return fulfillUncachedBridge(route, response, body);
       }
       if (
@@ -252,15 +451,27 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       ).toBeVisible({ timeout: 60_000 });
       const reloadButton = page.getByRole("button", { name: "Reload preview" });
       await expect(reloadButton).toBeVisible();
-      expect(documents).toHaveLength(1);
+      const beforeManualReload = await readLifecycle();
+      expect(strippedBridgeCount).toBeGreaterThanOrEqual(1);
+      expect(beforeManualReload.distinctDocuments).toHaveLength(1);
       expect(startCalls).toBeGreaterThanOrEqual(2);
 
       // Manual recovery once service supports the new bridge.
       allowSupportedService = true;
       await reloadButton.click();
       await expect
-        .poll(() => documents.length, { timeout: 30_000 })
-        .toBe(2);
+        .poll(
+          async () => {
+            const snap = await readLifecycle();
+            const lastReady = snap.readyEvents.at(-1);
+            return (
+              snap.distinctDocuments.length === 2 &&
+              Boolean(lastReady?.hasAckCapability)
+            );
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(true);
       await expect(
         page.getByText("Could not update the preview."),
       ).toHaveCount(0);
@@ -273,19 +484,21 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     page,
   }) => {
     test.setTimeout(180_000);
-    const documents = countFrameDocuments(page);
+    const readLifecycle = await observePreviewLifecycle(page);
+    let strippedInitialBridge = 0;
     let startCalls = 0;
 
     await page.route("**/*", async (route) => {
       const request = route.request();
       if (
         isPreviewSubresource(page, request) &&
-        documents.length === 1 &&
+        strippedInitialBridge === 0 &&
         new URL(request.url()).pathname.endsWith(BRIDGE_PATH)
       ) {
-        const response = await route.fetch({ headers: uncachedHeaders(request) });
-        const body = stripCapabilityFromBody(await response.text());
-        return route.fulfill({ response, body });
+        strippedInitialBridge += 1;
+        const response = await fetchBridgeThroughLoopback(page, request);
+        const body = stripCapabilityFromBody(response.body);
+        return fulfillUncachedBridge(route, response, body);
       }
       if (
         request.method() === "POST" &&
@@ -309,8 +522,10 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
         .poll(() => startCalls, { timeout: 45_000 })
         .toBeGreaterThanOrEqual(2);
       await page.waitForTimeout(2_000);
+      const snap = await readLifecycle();
+      expect(strippedInitialBridge).toBe(1);
       expect(
-        documents,
+        snap.distinctDocuments,
         "failed background check must not trigger an automatic reload",
       ).toHaveLength(1);
     } finally {
@@ -323,9 +538,10 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     browser,
   }) => {
     test.setTimeout(180_000);
-    const documents = countFrameDocuments(page);
+    const readLifecycle = await observePreviewLifecycle(page);
     const serverFunctions = collectServerFunctions(page);
     let stripBridge = false;
+    let strippedBridgeCount = 0;
     let startCalls = 0;
     let releaseBackgroundStart: (() => void) | null = null;
 
@@ -336,8 +552,9 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
         isPreviewSubresource(page, request) &&
         new URL(request.url()).pathname.endsWith(BRIDGE_PATH)
       ) {
-        const response = await route.fetch({ headers: uncachedHeaders(request) });
-        const body = stripCapabilityFromBody(await response.text());
+        strippedBridgeCount += 1;
+        const response = await fetchBridgeThroughLoopback(page, request);
+        const body = stripCapabilityFromBody(response.body);
         return fulfillUncachedBridge(route, response, body);
       }
       if (
@@ -361,6 +578,9 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
 
     try {
       await openEditor(page);
+      const beforeReload = await readLifecycle();
+      expect(beforeReload.distinctDocuments).toHaveLength(1);
+
       const field = await heroContentField(page, 0);
       const draft = `${MARKER} ime`;
 
@@ -379,16 +599,27 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       });
 
       // Reload the iframe once with an unsupported bridge while composing is active.
+      // Reload the active frame document itself (not `iframe.src`, which in
+      // container runs holds a one-time `/__morph/preview-auth/begin` URL).
       stripBridge = true;
-      await page.evaluate(() => {
-        const iframe = document.querySelector("iframe");
-        if (iframe) iframe.src = iframe.src;
-      });
+      const previewFrame = await page
+        .locator("iframe")
+        .first()
+        .contentFrame();
+      expect(previewFrame, "preview iframe must have a contentFrame").not.toBeNull();
+      await previewFrame!.evaluate(() => window.location.reload());
       await expect
-        .poll(() => documents.length, { timeout: 30_000 })
-        .toBe(2);
-      await expect
-        .poll(() => releaseBackgroundStart !== null, { timeout: 30_000 })
+        .poll(
+          async () => {
+            const snap = await readLifecycle();
+            return (
+              strippedBridgeCount >= 1 &&
+              snap.distinctDocuments.length === 2 &&
+              releaseBackgroundStart !== null
+            );
+          },
+          { timeout: 30_000 },
+        )
         .toBe(true);
 
       // Now let the background check confirm the new bridge while still composing.
@@ -397,7 +628,8 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       await page.waitForTimeout(1_500);
 
       // Must NOT have reloaded while composing; caret and draft text stay intact.
-      expect(documents).toHaveLength(2);
+      const whileComposing = await readLifecycle();
+      expect(whileComposing.distinctDocuments).toHaveLength(2);
       const state = await field.evaluate((el) => {
         const input = el as HTMLInputElement;
         return {
@@ -416,8 +648,18 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
         );
       });
       await expect
-        .poll(() => documents.length, { timeout: 30_000 })
-        .toBe(3);
+        .poll(
+          async () => {
+            const snap = await readLifecycle();
+            const lastReady = snap.readyEvents.at(-1);
+            return (
+              snap.distinctDocuments.length === 3 &&
+              Boolean(lastReady?.hasAckCapability)
+            );
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(true);
       expect(serverFunctions.writes().length).toBe(writesBeforeEnd);
 
       await expect(
