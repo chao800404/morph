@@ -8,6 +8,7 @@ import {
 import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.generated";
 import { themePreviewContentModuleSource } from "./theme-preview-content";
 import { selectionFieldRefusal } from "@/lib/storefront/editor/preview-dom";
+import { parsePreviewToEditorEnvelope } from "@/lib/storefront/editor/preview-protocol";
 
 // Node has no `CSS.escape`, which the section selector the refusal rule
 // builds reads; the ids here need no escaping.
@@ -1321,5 +1322,100 @@ describe("Start and container bridge presentation ack", () => {
     expect(BRIDGE).toContain('reason: "superseded"');
     expect(BRIDGE).toContain('reason: "section-missing"');
     expect(BRIDGE).toContain("flushEarlyPresentationTokens");
+  });
+
+  it("emits section-presentation-ack accepted by parsePreviewToEditorEnvelope and rejects legacy flattened payload", () => {
+    const fnSource = BRIDGE.slice(
+      BRIDGE.indexOf("function postPresentationAck("),
+      BRIDGE.indexOf("function queuePresentationToken("),
+    );
+    const posted: Record<string, unknown>[] = [];
+    const postPreviewToEditorMessage = (
+      payload: Record<string, unknown>,
+      channel: { sessionId: string },
+    ) => {
+      posted.push({
+        ...payload,
+        previewSession: channel.sessionId,
+      });
+    };
+    const channel = {
+      editorOrigin: "http://localhost:3000",
+      sessionId: "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e",
+    };
+    const postPresentationAck = new Function(
+      "channel",
+      "postPreviewToEditorMessage",
+      `${fnSource}\nreturn postPresentationAck;`,
+    )(channel, postPreviewToEditorMessage) as (
+      token: Record<string, unknown>,
+      status: string,
+      reason?: string,
+    ) => void;
+
+    const token = {
+      workspaceKey: "storefront-1:theme-1",
+      templateId: "template-1",
+      routePath: "/",
+      sectionId: "hero",
+      documentBasis: { kind: "existing", draftGeneration: 1 },
+      overlayRevision: 3,
+      presentationRevision: 1,
+      operationId: "op-1",
+    };
+
+    postPresentationAck(token, "applied");
+    postPresentationAck(token, "not-applied", "superseded");
+    postPresentationAck(token, "not-applied", "section-missing");
+
+    const expectedOrigin = "https://preview.morph.test";
+    const expectedSource = {} as MessageEventSource;
+    const security = {
+      expectedOrigin,
+      expectedSource,
+      previewSession: channel.sessionId,
+    };
+    const parse = (data: unknown) =>
+      parsePreviewToEditorEnvelope(
+        {
+          data,
+          origin: expectedOrigin,
+          source: expectedSource,
+        } as unknown as MessageEvent<unknown>,
+        security,
+      );
+
+    expect(posted).toHaveLength(3);
+    expect(parse(posted[0])?.message).toEqual({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: "op-1",
+      status: "applied",
+      token,
+    });
+    expect(parse(posted[1])?.message).toEqual({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: "op-1",
+      status: "not-applied",
+      reason: "superseded",
+      token,
+    });
+    expect(parse(posted[2])?.message).toEqual({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: "op-1",
+      status: "not-applied",
+      reason: "section-missing",
+      token,
+    });
+
+    const legacyFlattened = {
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: token.operationId,
+      sectionId: token.sectionId,
+      routePath: token.routePath,
+      revision: 3,
+      status: "applied",
+      previewSession: channel.sessionId,
+    };
+    expect(parse(legacyFlattened)).toBeNull();
   });
 });

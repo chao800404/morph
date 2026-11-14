@@ -8,6 +8,7 @@ import type { ThemeReadFailure } from "@/lib/storefront/editor/editor-read-lock"
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
+import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { VisualEditorShell } from "./visual-editor-shell";
 import {
@@ -41,6 +42,9 @@ const OWNER = { id: "user-1", name: "Owner", email: "owner@morph.test" };
 const updateSectionProps = vi.hoisted(() => vi.fn());
 const getThemeEditor = vi.hoisted(() => vi.fn());
 const getSession = vi.hoisted(() => vi.fn());
+const listThemeFiles = vi.hoisted(() => vi.fn());
+const startPreviewServer = vi.hoisted(() => vi.fn());
+const applyPreviewFiles = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "@/server/storefront/storefront-themes.serverFn",
@@ -48,6 +52,23 @@ vi.mock(
     ...(await importOriginal<Record<string, unknown>>()),
     updateStorefrontThemeSectionProps: updateSectionProps,
     getStorefrontThemeEditor: getThemeEditor,
+  }),
+);
+
+vi.mock(
+  "@/server/storefront/storefront-theme-files.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    listStorefrontThemeFiles: listThemeFiles,
+  }),
+);
+
+vi.mock(
+  "@/server/storefront/storefront-theme-preview-server.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    startThemePreviewServer: startPreviewServer,
+    applyThemePreviewFiles: applyPreviewFiles,
   }),
 );
 
@@ -134,6 +155,15 @@ function renderShell() {
       success: true,
       message: "Live Preview server ready",
       data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
+    } as never,
+  );
+  client.setQueryData(
+    storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+    {
+      files: [],
+      tree: [],
+      sourceGeneration: 1,
+      latestPublishedRevision: null,
     } as never,
   );
   const retryRead = vi.fn();
@@ -235,6 +265,29 @@ beforeEach(() => {
   useEditorWriteGateStore.setState({ gates: {} });
   getThemeEditor.mockResolvedValue(THEME);
   getSession.mockResolvedValue({ user: { id: OWNER.id } });
+  listThemeFiles.mockResolvedValue({
+    success: true,
+    message: "ok",
+    data: {
+      files: [],
+      tree: [],
+      sourceGeneration: 1,
+      latestPublishedRevision: null,
+    },
+  });
+  startPreviewServer.mockResolvedValue({
+    success: true,
+    message: "Live Preview server ready",
+    data: {
+      url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+      bridgeCapabilities: ["selection-field-section", "section-presentation-ack-v1"],
+    },
+  });
+  applyPreviewFiles.mockResolvedValue({
+    success: true,
+    message: "Live Preview files written",
+    data: { previewId: "preview-1", changed: [], unchanged: [], skipped: [] },
+  });
   vi.spyOn(toast, "error").mockImplementation(() => "");
   vi.spyOn(toast, "info").mockImplementation(() => "");
 });
