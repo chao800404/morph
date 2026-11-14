@@ -725,7 +725,8 @@ describe("the replay after a frame reload on a route that is not the home page",
     // Only that: the frame is kept, nothing is reloaded, started or saved.
     expect(document.querySelector("iframe")).toBe(frame);
     expect(reloadLines()).toHaveLength(1);
-    expect(startThemePreviewServer).not.toHaveBeenCalled();
+    // PR2 probes startThemePreviewServer once when ready lacks section-presentation-ack-v1.
+    expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
     expect(updateSectionProps).not.toHaveBeenCalled();
     expect(
       vi.mocked(touchThemePreviewServer).mock.calls.length,

@@ -41,8 +41,13 @@ const frameWindow = () =>
  * A current bridge in one frame window: the document active in it, and how
  * many of the editor's posts it has read for pings.
  */
-type CurrentBridge = { active: string; read: number };
+type CurrentBridge = {
+  active: string;
+  read: number;
+  presentationAcks: boolean;
+};
 const bridges = new WeakMap<Window, CurrentBridge>();
+const pumpedBridges = new WeakSet<Window>();
 /** On for the rest of the test that called `modelCurrentBridge`. */
 let currentBridges = false;
 let documents = 0;
@@ -56,7 +61,7 @@ function bridgeOf(frame: Window | null): CurrentBridge | null {
   if (!frame || !currentBridges) return null;
   let bridge = bridges.get(frame);
   if (!bridge) {
-    bridge = { active: nextDocument(), read: 0 };
+    bridge = { active: nextDocument(), read: 0, presentationAcks: false };
     bridges.set(frame, bridge);
   }
   return bridge;
@@ -106,12 +111,74 @@ export function answerFramePings(
   if (!bridge) return;
   const calls = vi.mocked(postEditorToPreviewMessage).mock.calls;
   const pings: number[] = [];
+  const themeFileRevisions: number[] = [];
+  const presentationTokens: Array<{
+    operationId: string;
+    token: Record<string, unknown>;
+  }> = [];
   for (; bridge.read < calls.length; bridge.read += 1) {
     const [target, message] = calls[bridge.read]!;
-    const posted = message as { type?: string; heartbeatId?: number };
-    if (target === frame && posted.type === PING && typeof posted.heartbeatId === "number") {
+    const posted = message as {
+      type?: string;
+      heartbeatId?: number;
+      styleRevision?: number;
+      presentationToken?: Record<string, unknown> & { operationId?: unknown };
+    };
+    if (target !== frame) continue;
+    if (posted.type === PING && typeof posted.heartbeatId === "number") {
       pings.push(posted.heartbeatId);
+    } else if (
+      posted.type === "morph:storefront-preview-update-theme-files" &&
+      typeof posted.styleRevision === "number"
+    ) {
+      themeFileRevisions.push(posted.styleRevision);
+    } else if (
+      bridge.presentationAcks &&
+      posted.type === "morph:storefront-preview-update-section-props" &&
+      posted.presentationToken &&
+      typeof posted.presentationToken.operationId === "string"
+    ) {
+      presentationTokens.push({
+        operationId: posted.presentationToken.operationId,
+        token: posted.presentationToken,
+      });
     }
+  }
+  for (const styleRevision of themeFileRevisions) {
+    const deliver = () =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "morph:storefront-preview-theme-files-applied",
+            styleRevision,
+            previewSession: address.session,
+            previewDocument: bridge.active,
+          },
+          origin: address.origin,
+          source: frame,
+        }),
+      );
+    if (options.committed === false) deliver();
+    else act(deliver);
+  }
+  for (const { operationId, token } of presentationTokens) {
+    const deliver = () =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "morph:storefront-preview-section-presentation-ack",
+            operationId,
+            token,
+            status: "applied",
+            previewSession: address.session,
+            previewDocument: bridge.active,
+          },
+          origin: address.origin,
+          source: frame,
+        }),
+      );
+    if (options.committed === false) deliver();
+    else act(deliver);
   }
   for (const heartbeatId of pings) {
     const deliver = () =>
@@ -164,16 +231,58 @@ function latestRouteRequest() {
  */
 export const LIVE_FRAME_CAPABILITIES: readonly string[] = [
   "selection-field-section",
+  "section-presentation-ack-v1",
 ];
 
 /** The frame says it is ready, naming what it can do. */
 export function sendFrameReady(
   address: PreviewFrameAddress,
   capabilities: readonly string[] = LIVE_FRAME_CAPABILITIES,
+  readyFields: Readonly<Record<string, unknown>> = {},
 ) {
+  if (capabilities.includes("section-presentation-ack-v1")) {
+    enablePresentationAcks(address);
+  }
   send(address, {
+    ...readyFields,
     type: READY,
     ...(capabilities.length > 0 ? { capabilities: [...capabilities] } : {}),
+  });
+}
+
+/** Model the active frame accepting section updates and answering after commit. */
+export function enablePresentationAcks(address: PreviewFrameAddress) {
+  modelCurrentBridge();
+  const frame = frameWindow();
+  const bridge = bridgeOf(frame);
+  if (!frame || !bridge) return;
+  bridge.presentationAcks = true;
+  startCurrentBridgePump(frame, address);
+}
+
+/**
+ * Apply acknowledgements as soon as the editor posts them, without replacing
+ * the test's transport mock implementation. A real frame receives these
+ * posts independently of the next user-to-frame message.
+ */
+function startCurrentBridgePump(
+  frame: Window,
+  address: PreviewFrameAddress,
+) {
+  if (pumpedBridges.has(frame)) return;
+  pumpedBridges.add(frame);
+  let active = true;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const pump = () => {
+    if (!active) return;
+    answerFramePings(address);
+    timer = setTimeout(pump, 5);
+  };
+  timer = setTimeout(pump, 0);
+  onTestFinished(() => {
+    active = false;
+    if (timer !== null) clearTimeout(timer);
+    pumpedBridges.delete(frame);
   });
 }
 
@@ -205,6 +314,8 @@ export function createLiveFrame(
     answerReady?: boolean;
     /** What the frame's own ready (`ready()`) names; a frame built before these says none. */
     capabilities?: readonly string[];
+    /** Additional current-frame identity supplied with the ready message. */
+    readyFields?: Readonly<Record<string, unknown>>;
   }> = {},
 ) {
   const up = new WeakSet<Window>();
@@ -231,7 +342,8 @@ export function createLiveFrame(
     ready() {
       const frame = frameWindow();
       if (frame) up.add(frame);
-      sendFrameReady(address, options.capabilities ?? LIVE_FRAME_CAPABILITIES);
+      const capabilities = options.capabilities ?? LIVE_FRAME_CAPABILITIES;
+      sendFrameReady(address, capabilities, options.readyFields);
       send(address, {
         type: "morph:storefront-preview-structure",
         nodes: [],

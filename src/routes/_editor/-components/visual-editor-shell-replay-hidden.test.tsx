@@ -1,11 +1,22 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { postEditorToPreviewMessage } from "@/lib/storefront/editor/preview-protocol";
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
+import {
+  answerFramePings,
+  enablePresentationAcks,
+  frameEnvelope,
+} from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-media.serverFn";
 import { listStorefrontThemeFiles } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -274,6 +285,7 @@ type Posted = {
   routePath?: string | null;
   routeRequestId?: number;
   heartbeatId?: number;
+  presentationToken?: { sectionId?: string; operationId: string };
 };
 let log: Array<{ target: unknown; message: Posted }> = [];
 
@@ -310,17 +322,19 @@ function fromPreview(data: Record<string, unknown>, source = currentWindow()) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source,
       }),
     );
   });
+  answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
 }
 
 const tick = (ms = 20) =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
+    answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
   });
 
 async function live(ms: number) {
@@ -345,7 +359,8 @@ const cardMessages = (target: unknown) =>
     .filter(
       (entry) =>
         entry.target === target &&
-        entry.message.type === "morph:storefront-preview-update-section-props" &&
+        entry.message.type ===
+          "morph:storefront-preview-update-section-props" &&
         entry.message.sectionId === SLOT,
     )
     .map((entry) => entry.message);
@@ -378,13 +393,22 @@ async function firstFrame() {
   vi.useFakeTimers({
     toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
   });
+  enablePresentationAcks({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
   fromPreview({
     type: "morph:storefront-preview-ready",
-    servedInstance: { kind: "known", instance: { session: SESSION, serial: 1 } },
+    capabilities: ["selection-field-section", "section-presentation-ack-v1"],
+    servedInstance: {
+      kind: "known",
+      instance: { session: SESSION, serial: 1 },
+    },
   });
   await tick(0);
   await tick(0);
-  return currentWindow();
+  const first = currentWindow();
+  applied(latestRequest(first), ROUTE_PATH);
+  await tick(0);
+  await tick(0);
+  return first;
 }
 
 /** A renewal names `.2`: the frame is reloaded; the new one comes up. */
@@ -393,8 +417,10 @@ async function reloadAndReady(first: Window | null) {
   await live(65_000);
   const second = currentWindow();
   expect(second !== null && second !== first).toBe(true);
+  enablePresentationAcks({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
   fromPreview({
     type: "morph:storefront-preview-ready",
+    capabilities: ["selection-field-section", "section-presentation-ack-v1"],
     servedInstance: { kind: "known", instance: serving },
   });
   await tick(0);
@@ -403,9 +429,11 @@ async function reloadAndReady(first: Window | null) {
 }
 
 async function hide() {
-  fireEvent.click(
-    screen.getAllByRole("button", { name: /^Hide section/ })[0]!,
-  );
+  await tick(0);
+  await tick(0);
+  const button = screen.getAllByRole("button", { name: /^Hide section/ })[0]!;
+  expect(button.matches(":disabled")).toBe(false);
+  fireEvent.click(button);
   await tick(0);
   await tick(0);
 }
@@ -421,9 +449,10 @@ beforeEach(() => {
     files: {},
     activeWorkspaceKey: null,
   });
-  useThemeWorkspaceStore
-    .getState()
-    .setBaseSourceGeneration(1, { storefrontId: "storefront-1", themeId: "theme-1" });
+  useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, {
+    storefrontId: "storefront-1",
+    themeId: "theme-1",
+  });
   useEditorWriteGateStore.setState({ gates: {} });
   getThemeEditor.mockReset();
   getThemeEditor.mockResolvedValue({
@@ -433,9 +462,11 @@ beforeEach(() => {
   });
   updateSectionProps.mockReset();
   vi.mocked(postEditorToPreviewMessage).mockReset();
-  vi.mocked(postEditorToPreviewMessage).mockImplementation((target, message) => {
-    log.push({ target, message: message as Posted });
-  });
+  vi.mocked(postEditorToPreviewMessage).mockImplementation(
+    (target, message) => {
+      log.push({ target, message: message as Posted });
+    },
+  );
   vi.mocked(signThemePreviewMedia).mockReset();
   vi.mocked(signThemePreviewMedia).mockResolvedValue({
     success: true,
@@ -462,25 +493,31 @@ beforeEach(() => {
       ({
         success: true,
         message: "Live Preview server checked",
-        data: { previewId: "preview-1", serving: true, servedInstance: serving },
+        data: {
+          previewId: "preview-1",
+          serving: true,
+          servedInstance: serving,
+        },
       }) as never,
   );
   vi.mocked(applyThemePreviewFiles).mockReset();
-  vi.mocked(applyThemePreviewFiles).mockImplementation(async (request: unknown) => {
-    const files = (request as { data: { files: Array<{ path: string }> } }).data
-      .files;
-    return {
-      success: true,
-      message: "Live Preview files written",
-      data: {
-        previewId: "preview-1",
-        changed: [],
-        unchanged: files.map((entry) => entry.path),
-        skipped: [],
-        servedInstance: serving,
-      },
-    } as never;
-  });
+  vi.mocked(applyThemePreviewFiles).mockImplementation(
+    async (request: unknown) => {
+      const files = (request as { data: { files: Array<{ path: string }> } })
+        .data.files;
+      return {
+        success: true,
+        message: "Live Preview files written",
+        data: {
+          previewId: "preview-1",
+          changed: [],
+          unchanged: files.map((entry) => entry.path),
+          skipped: [],
+          servedInstance: serving,
+        },
+      } as never;
+    },
+  );
   vi.mocked(probeThemePreviewAddress).mockReset();
   vi.mocked(probeThemePreviewAddress).mockResolvedValue({
     success: true,
@@ -500,6 +537,15 @@ const HIDDEN_ONLY = {
   props: undefined,
   enabled: false,
 };
+const expectHiddenUpdates = (target: unknown) => {
+  const messages = cardMessages(target);
+  expect(messages).toHaveLength(1);
+  expect(messages[0]).toMatchObject(HIDDEN_ONLY);
+  expect(messages[0]?.presentationToken).toMatchObject({
+    sectionId: SLOT,
+    operationId: expect.any(String),
+  });
+};
 
 describe("the replay for a hidden section", () => {
   it("T2: a reload during an unanswered hide replays it with no props", async () => {
@@ -509,8 +555,8 @@ describe("the replay for a hidden section", () => {
     // Precondition: sent, and never answered.
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(
-      (updateSectionProps.mock.calls[0]![0] as { data: { props: unknown } }).data
-        .props,
+      (updateSectionProps.mock.calls[0]![0] as { data: { props: unknown } })
+        .data.props,
     ).toEqual({ enabled: false });
 
     const second = await reloadAndReady(first);
@@ -518,7 +564,7 @@ describe("the replay for a hidden section", () => {
     await tick(0);
     // The read holds the section shown with its stored title: the write it
     // was never answered about did not land. The replay sends the hide.
-    expect(cardMessages(second)).toEqual([HIDDEN_ONLY]);
+    expectHiddenUpdates(second);
   });
 
   it("(d): another tab's hide, brought in by the replay's own read, replays with no props", async () => {
@@ -535,13 +581,14 @@ describe("the replay for a hidden section", () => {
     const second = await reloadAndReady(first);
     applied(latestRequest(second), ROUTE_PATH);
     await tick(0);
-    expect(cardMessages(second)).toEqual([HIDDEN_ONLY]);
+    expectHiddenUpdates(second);
   });
 
   it("(g): answers from the replaced frame or an older round release nothing, and the release sends no props", async () => {
     updateSectionProps.mockRejectedValue(new Error("offline"));
     const first = await firstFrame();
     const earlier = latestRequest(first);
+    const beforeHide = cardMessages(first).length;
     await hide();
     const second = await reloadAndReady(first);
     // The replaced window, and an answer to the earlier round's request.
@@ -551,10 +598,12 @@ describe("the replay for a hidden section", () => {
     expect(cardMessages(second)).toEqual([]);
     applied(latestRequest(second), ROUTE_PATH);
     await tick(0);
-    expect(cardMessages(second)).toEqual([HIDDEN_ONLY]);
+    expectHiddenUpdates(second);
     // Nothing reached the replaced window after the hide either.
     expect(
-      cardMessages(first).filter((message) => message.props !== undefined),
+      cardMessages(first)
+        .slice(beforeHide)
+        .filter((message) => message.props !== undefined),
     ).toEqual([]);
   });
 
@@ -594,7 +643,7 @@ describe("the replay for a hidden section", () => {
 
     await hide();
     const hideAt = cardMessages(second).length;
-    expect(cardMessages(second).at(-1)).toEqual(HIDDEN_ONLY);
+    expect(cardMessages(second).at(-1)).toMatchObject(HIDDEN_ONLY);
     await act(async () => {
       releaseSigning();
     });
@@ -603,7 +652,9 @@ describe("the replay for a hidden section", () => {
     expect(
       cardMessages(second)
         .slice(hideAt)
-        .filter((message) => message.props !== undefined || message.enabled === true),
+        .filter(
+          (message) => message.props !== undefined || message.enabled === true,
+        ),
     ).toEqual([]);
   });
 });

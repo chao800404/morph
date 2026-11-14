@@ -1,6 +1,12 @@
 import type { ComponentProps } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
@@ -41,26 +47,39 @@ const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
 const FRAME = { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION } as const;
 const HERO_PATH = "src/components/Hero.tsx";
 const SELECTION_FIELD = "morph:storefront-preview-update-selection-field";
-const UNAVAILABLE = "Live preview typing unavailable — reload the preview to restore";
+const UNAVAILABLE =
+  "Live preview typing unavailable — reload the preview to restore";
 
 const posted: Array<Record<string, unknown>> = [];
 const updateSectionProps = vi.hoisted(() => vi.fn());
 const getThemeEditor = vi.hoisted(() => vi.fn());
 
-vi.mock("@/server/storefront/storefront-themes.serverFn", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  updateStorefrontThemeSectionProps: updateSectionProps,
-  getStorefrontThemeEditor: getThemeEditor,
-}));
+vi.mock(
+  "@/server/storefront/storefront-themes.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    updateStorefrontThemeSectionProps: updateSectionProps,
+    getStorefrontThemeEditor: getThemeEditor,
+  }),
+);
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  postEditorToPreviewMessage: vi.fn((_target: unknown, message: Record<string, unknown>) => {
-    posted.push(message);
-  }),
+  postEditorToPreviewMessage: vi.fn(
+    (_target: unknown, message: Record<string, unknown>) => {
+      posted.push(message);
+    },
+  ),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  Link: ({ to, children, ...rest }: { to?: string; children?: React.ReactNode }) => (
+  Link: ({
+    to,
+    children,
+    ...rest
+  }: {
+    to?: string;
+    children?: React.ReactNode;
+  }) => (
     <a href={to} {...rest}>
       {children}
     </a>
@@ -73,7 +92,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
  */
 const typedFor = vi.hoisted(() => ({ sectionId: "hero" }));
 vi.mock("./editor-assistant-panel", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./editor-assistant-panel")>();
+  const actual =
+    await importOriginal<typeof import("./editor-assistant-panel")>();
   const RealPanel = actual.EditorAssistantPanel;
   return {
     ...actual,
@@ -83,7 +103,12 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
         <button
           type="button"
           onClick={() =>
-            props.onPreviewSelectionField?.(typedFor.sectionId, "heading", "heading", "From the panel")
+            props.onPreviewSelectionField?.(
+              typedFor.sectionId,
+              "heading",
+              "heading",
+              "From the panel",
+            )
           }
         >
           Type for a named section
@@ -105,14 +130,22 @@ let server: { generation: number; sections: Array<Record<string, unknown>> };
 function contextOf(): StorefrontThemeEditorDTO {
   return {
     previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
-    storefront: { id: "storefront-1", name: "Store", domain: null, status: "active" },
+    storefront: {
+      id: "storefront-1",
+      name: "Store",
+      domain: null,
+      status: "active",
+    },
     theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
     templates: [
       {
         id: "template-1",
         type: "index",
         name: "Home",
-        document: { version: 1, sections: JSON.parse(JSON.stringify(server.sections)) },
+        document: {
+          version: 1,
+          sections: JSON.parse(JSON.stringify(server.sections)),
+        },
         draftGeneration: server.generation,
         version: 1,
       },
@@ -128,45 +161,55 @@ const search = {
 } as StorefrontThemeEditorSearch;
 
 function readyClient() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey, {
-    success: true,
-    message: "Live Preview server ready",
-    data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
-  } as never);
-  client.setQueryData(storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey, {
-    files: [
-      {
-        id: "file-hero",
-        storefrontId: "storefront-1",
-        themeId: "theme-1",
-        path: HERO_PATH,
-        content: source,
-        mimeType: "text/typescript",
-        isEntry: false,
-        version: 1,
-        createdAt: "2026-10-18T00:00:00.000Z",
-        updatedAt: "2026-10-18T00:00:00.000Z",
-      },
-    ],
-    tree: [
-      {
-        name: "src",
-        path: "src",
-        isDirectory: true,
-        children: [
-          {
-            name: "components",
-            path: "src/components",
-            isDirectory: true,
-            children: [{ name: "Hero.tsx", path: HERO_PATH, isDirectory: false }],
-          },
-        ],
-      },
-    ],
-    sourceGeneration: 1,
-    latestPublishedRevision: null,
-  } as never);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  client.setQueryData(
+    themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
+    {
+      success: true,
+      message: "Live Preview server ready",
+      data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
+    } as never,
+  );
+  client.setQueryData(
+    storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+    {
+      files: [
+        {
+          id: "file-hero",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          path: HERO_PATH,
+          content: source,
+          mimeType: "text/typescript",
+          isEntry: false,
+          version: 1,
+          createdAt: "2026-10-18T00:00:00.000Z",
+          updatedAt: "2026-10-18T00:00:00.000Z",
+        },
+      ],
+      tree: [
+        {
+          name: "src",
+          path: "src",
+          isDirectory: true,
+          children: [
+            {
+              name: "components",
+              path: "src/components",
+              isDirectory: true,
+              children: [
+                { name: "Hero.tsx", path: HERO_PATH, isDirectory: false },
+              ],
+            },
+          ],
+        },
+      ],
+      sourceGeneration: 1,
+      latestPublishedRevision: null,
+    } as never,
+  );
   return client;
 }
 
@@ -178,7 +221,11 @@ function readyClient() {
 function renderShell() {
   render(
     <QueryClientProvider client={readyClient()}>
-      <VisualEditorShell context={contextOf()} search={search} onSearchChange={vi.fn()} />
+      <VisualEditorShell
+        context={contextOf()}
+        search={search}
+        onSearchChange={vi.fn()}
+      />
     </QueryClientProvider>,
   );
 }
@@ -199,8 +246,12 @@ function fromPreview(data: Record<string, unknown>) {
 
 async function flushFrames() {
   await act(async () => {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
   });
 }
 
@@ -209,7 +260,9 @@ async function selectHeading() {
   const revision =
     Math.max(
       canvasRevision,
-      ...posted.map((m) => (typeof m.selectionRevision === "number" ? m.selectionRevision : 0)),
+      ...posted.map((m) =>
+        typeof m.selectionRevision === "number" ? m.selectionRevision : 0,
+      ),
     ) + 1;
   canvasRevision = revision;
   fromPreview({
@@ -230,7 +283,9 @@ async function selectHeading() {
     inputType: null,
     styleRevision: Math.max(
       0,
-      ...posted.map((m) => (typeof m.styleRevision === "number" ? m.styleRevision : 0)),
+      ...posted.map((m) =>
+        typeof m.styleRevision === "number" ? m.styleRevision : 0,
+      ),
     ),
     className: "",
     isSection: false,
@@ -244,7 +299,9 @@ async function selectHeading() {
 }
 
 /** Renders, brings the frame up as a live one with `capabilities`, and opens the heading. */
-async function openHeading(capabilities: readonly string[] = LIVE_FRAME_CAPABILITIES) {
+async function openHeading(
+  capabilities: readonly string[] = LIVE_FRAME_CAPABILITIES,
+) {
   renderShell();
   createLiveFrame(FRAME, { capabilities }).ready();
   await selectHeading();
@@ -252,7 +309,8 @@ async function openHeading(capabilities: readonly string[] = LIVE_FRAME_CAPABILI
   return screen.findByDisplayValue("Welcome");
 }
 
-const fieldPosts = (from = 0) => posted.slice(from).filter((message) => message.type === SELECTION_FIELD);
+const fieldPosts = (from = 0) =>
+  posted.slice(from).filter((message) => message.type === SELECTION_FIELD);
 
 beforeEach(() => {
   posted.length = 0;
@@ -260,7 +318,14 @@ beforeEach(() => {
   typedFor.sectionId = "hero";
   server = {
     generation: 1,
-    sections: [{ id: "hero", type: "hero", enabled: true, props: { heading: "Welcome", subheading: "Summary" } }],
+    sections: [
+      {
+        id: "hero",
+        type: "hero",
+        enabled: true,
+        props: { heading: "Welcome", subheading: "Summary" },
+      },
+    ],
   };
   useThemeWorkspaceStore.setState({
     acceptedGenerations: {},
@@ -275,24 +340,36 @@ beforeEach(() => {
     themeId: "theme-1",
   });
   updateSectionProps.mockReset();
-  updateSectionProps.mockImplementation(async (request: { data: { props: Record<string, unknown> } }) => {
-    const section = server.sections[0] as { enabled: boolean; props: Record<string, unknown> };
-    for (const [key, value] of Object.entries(request.data.props)) {
-      if (key === "enabled") section.enabled = value as boolean;
-      else section.props[key] = value;
-    }
-    server.generation += 1;
-    return {
-      success: true,
-      data: {
-        draftGeneration: server.generation,
-        droppedProps: [],
-        document: { version: 1, sections: JSON.parse(JSON.stringify(server.sections)) },
-      },
-    };
-  });
+  updateSectionProps.mockImplementation(
+    async (request: { data: { props: Record<string, unknown> } }) => {
+      const section = server.sections[0] as {
+        enabled: boolean;
+        props: Record<string, unknown>;
+      };
+      for (const [key, value] of Object.entries(request.data.props)) {
+        if (key === "enabled") section.enabled = value as boolean;
+        else section.props[key] = value;
+      }
+      server.generation += 1;
+      return {
+        success: true,
+        data: {
+          draftGeneration: server.generation,
+          droppedProps: [],
+          document: {
+            version: 1,
+            sections: JSON.parse(JSON.stringify(server.sections)),
+          },
+        },
+      };
+    },
+  );
   getThemeEditor.mockReset();
-  getThemeEditor.mockImplementation(async () => ({ success: true, message: "ok", data: contextOf() }));
+  getThemeEditor.mockImplementation(async () => ({
+    success: true,
+    message: "ok",
+    data: contextOf(),
+  }));
   vi.spyOn(toast, "error").mockImplementation(() => "");
   vi.spyOn(toast, "success").mockImplementation(() => "");
 });
@@ -316,18 +393,24 @@ describe("typing into an Inspector field", () => {
 
   it("E2: a frame that did not say it reads the section gets no post, and one quiet status", async () => {
     const info = vi.spyOn(console, "info");
-    const field = await openHeading([]);
+    // This bridge lacks selection-field support but still confirms section
+    // presentation, so the Inspector's ordinary Document save remains valid.
+    const field = await openHeading(["section-presentation-ack-v1"]);
     fireEvent.input(field, { target: { value: "Typed" } });
     fireEvent.input(field, { target: { value: "Typed more" } });
     expect(fieldPosts()).toEqual([]);
     expect(screen.getAllByText(UNAVAILABLE)).toHaveLength(1);
     expect(
-      info.mock.calls.filter(([line]) => String(line).includes("live typing unavailable")),
+      info.mock.calls.filter(([line]) =>
+        String(line).includes("live typing unavailable"),
+      ),
     ).toHaveLength(1);
     // The field still saves as it always did.
     fireEvent.blur(field);
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
-    expect(updateSectionProps.mock.calls[0]![0].data.props).toEqual({ heading: "Typed more" });
+    expect(updateSectionProps.mock.calls[0]![0].data.props).toEqual({
+      heading: "Typed more",
+    });
   });
 
   it("E3: a capability from the frame's previous ready does not count", async () => {
@@ -349,7 +432,9 @@ describe("typing into an Inspector field", () => {
   it("E4: typing reported for a section other than the one selected posts nothing", async () => {
     await openHeading();
     typedFor.sectionId = "other";
-    fireEvent.click(screen.getByRole("button", { name: "Type for a named section" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Type for a named section" }),
+    );
     expect(fieldPosts()).toEqual([]);
     expect(screen.queryByText(UNAVAILABLE)).toBeNull();
   });
@@ -360,7 +445,11 @@ describe("typing into an Inspector field", () => {
     expect(fieldPosts()).toHaveLength(1);
     const before = posted.length;
     // The frame moved by itself and names the page it is on now.
-    fromPreview({ type: "morph:storefront-preview-structure", nodes: [], routePath: "/pages/elsewhere" });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/pages/elsewhere",
+    });
     fireEvent.input(field, { target: { value: "Typed elsewhere" } });
     expect(fieldPosts(before)).toEqual([]);
     expect(screen.queryByText(UNAVAILABLE)).toBeNull();
@@ -368,7 +457,9 @@ describe("typing into an Inspector field", () => {
 
   it("E6: a section the editor holds hidden gets no post", async () => {
     const field = await openHeading();
-    fireEvent.click(screen.getAllByRole("button", { name: "Hide section hero" })[0]!);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Hide section hero" })[0]!,
+    );
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
     const before = posted.length;
     fireEvent.input(field, { target: { value: "Typed while hidden" } });
@@ -378,7 +469,9 @@ describe("typing into an Inspector field", () => {
   it("E7: with nothing selected, typing reported for a section posts nothing", async () => {
     renderShell();
     createLiveFrame(FRAME).ready();
-    fireEvent.click(screen.getByRole("button", { name: "Type for a named section" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Type for a named section" }),
+    );
     expect(fieldPosts()).toEqual([]);
   });
 });

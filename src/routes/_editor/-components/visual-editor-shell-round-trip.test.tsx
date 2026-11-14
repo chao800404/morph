@@ -1,4 +1,9 @@
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  createLiveFrame,
+  frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
+} from "@/lib/test-utils/preview-frame-handshake";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -30,6 +35,9 @@ import { themePreviewServerQueries } from "../-queries/theme-preview-server.quer
 import {
   INLINE_TEXT_NOT_SAVED_MESSAGE,
   INLINE_TEXT_REFUSED_MESSAGE,
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+  PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS,
+  PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
 import { STARTER_THEME_FILES as OBJPOS_STARTER_FILES } from "@/lib/storefront/starter-theme-files";
@@ -37,10 +45,7 @@ import {
   identifyUnstoredListRows,
   normalizeDocumentRowIds,
 } from "@/lib/storefront/editor/normalize-row-ids";
-import {
-  MISSING_BASIS_MESSAGE,
-  RESELECT_CONTENT_MESSAGE,
-} from "@/lib/storefront/editor/pending-content-write";
+import { RESELECT_CONTENT_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
 import {
   resolveSelectable as objposResolveSelectable,
   selectionMetadata as objposSelectionMetadata,
@@ -173,15 +178,83 @@ const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
 /** The frame comes up and names its page, as a live one does. */
-const liveFrame = createLiveFrame({
-  origin: PREVIEW_ORIGIN,
-  session: PREVIEW_SESSION,
-});
+const liveFrame = createLiveFrame(
+  {
+    origin: PREVIEW_ORIGIN,
+    session: PREVIEW_SESSION,
+  },
+  {
+    capabilities: ["selection-field-section", "section-presentation-ack-v1"],
+  },
+);
+const bridgeWithoutPresentationAck = createLiveFrame(
+  { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+  { capabilities: ["selection-field-section"] },
+);
 
-const posted: Array<Record<string, unknown>> = [];
+const { posted, latestPostedStyleRevision, postPreviewMessage } = vi.hoisted(
+  () => ({
+    posted: [] as Array<Record<string, unknown>>,
+    latestPostedStyleRevision: { value: 0 },
+    postPreviewMessage: vi.fn(),
+  }),
+);
+
+const recordPreviewMessage = (
+  _target: unknown,
+  message: Record<string, unknown>,
+) => {
+  posted.push(message);
+  if (
+    typeof message.styleRevision === "number" &&
+    Number.isSafeInteger(message.styleRevision)
+  ) {
+    latestPostedStyleRevision.value = Math.max(
+      latestPostedStyleRevision.value,
+      message.styleRevision,
+    );
+  }
+  if (
+    message.type !== "morph:storefront-preview-update-section-props" ||
+    typeof message.presentationToken !== "object" ||
+    message.presentationToken === null
+  ) {
+    return;
+  }
+  const token = message.presentationToken as { operationId?: unknown };
+  const frame = document.querySelector("iframe");
+  if (!frame?.contentWindow || typeof token.operationId !== "string") {
+    return;
+  }
+  // Model the bridge ack after its queued React DOM commit. The document
+  // identity is copied from the active frame, so a stale-document ack is
+  // rejected by the shell just as it is in the live transport.
+  const data = frameEnvelope({
+    type: "morph:storefront-preview-section-presentation-ack",
+    previewSession: PREVIEW_SESSION,
+    operationId: token.operationId,
+    token: message.presentationToken,
+    status: "applied",
+  });
+  queueMicrotask(() => {
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data,
+          origin: PREVIEW_ORIGIN,
+          source: frame.contentWindow,
+        }),
+      ),
+    );
+  });
+};
 
 beforeEach(() => {
+  modelCurrentBridge();
   posted.length = 0;
+  latestPostedStyleRevision.value = 0;
+  postPreviewMessage.mockClear();
+  postPreviewMessage.mockImplementation(recordPreviewMessage);
   themeFileServerControl.save = null;
   themeFileServerControl.read = null;
   themeFileServerControl.list = null;
@@ -226,33 +299,33 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
     EditorAssistantPanel: (props: ComponentProps<typeof RealPanel>) => {
       return (
         <>
-        <RealPanel {...props} />
-        <button
-          type="button"
-          onClick={() =>
-            props.onUpdateThemeFileStyle?.(
-              stylePatchTarget.filePath,
-              stylePatchTarget.elementName,
-              (prevClasses) => `${prevClasses} p-8`,
-            )
-          }
-        >
-          Apply a style patch
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            void props.onPromoteText?.({
-              sectionId: "hero",
-              componentSourcePath: "src/components/Hero.tsx",
-              targetKey: "heading",
-              fieldName: "heading",
-              value: "Welcome",
-            })
-          }
-        >
-          Promote the selected text
-        </button>
+          <RealPanel {...props} />
+          <button
+            type="button"
+            onClick={() =>
+              props.onUpdateThemeFileStyle?.(
+                stylePatchTarget.filePath,
+                stylePatchTarget.elementName,
+                (prevClasses) => `${prevClasses} p-8`,
+              )
+            }
+          >
+            Apply a style patch
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              void props.onPromoteText?.({
+                sectionId: "hero",
+                componentSourcePath: "src/components/Hero.tsx",
+                targetKey: "heading",
+                fieldName: "heading",
+                value: "Welcome",
+              })
+            }
+          >
+            Promote the selected text
+          </button>
         </>
       );
     },
@@ -301,12 +374,32 @@ vi.mock(
 
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  postEditorToPreviewMessage: vi.fn(
-    (_target: unknown, message: Record<string, unknown>) => {
-      posted.push(message);
-    },
-  ),
+  postEditorToPreviewMessage: postPreviewMessage,
 }));
+
+vi.mock("./use-live-preview-message-bridge", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./use-live-preview-message-bridge")>();
+  const { useCallback } = await import("react");
+  return {
+    ...actual,
+    useLivePreviewMessageBridge: (
+      ...args: Parameters<typeof actual.useLivePreviewMessageBridge>
+    ) => {
+      const bridge = actual.useLivePreviewMessageBridge(...args);
+      const postMessage = useCallback(
+        (
+          target: Parameters<typeof bridge.postMessage>[0],
+          message: Parameters<typeof bridge.postMessage>[1],
+        ) => {
+          postPreviewMessage(target, message);
+        },
+        [args[0]],
+      );
+      return { ...bridge, postMessage };
+    },
+  };
+});
 
 // The shell's breadcrumb uses `Link`. A real router would make this a test
 // about routing.
@@ -393,33 +486,61 @@ function readyQueryClient() {
 
 function renderShell(
   client = readyQueryClient(),
-  editorContext: StorefrontThemeEditorDTO = context,
+  frameOrContext: typeof liveFrame | StorefrontThemeEditorDTO = liveFrame,
+  onSearchChange = vi.fn(),
 ) {
-  return render(
+  const hasFrame = "ready" in frameOrContext;
+  const frame = hasFrame ? frameOrContext : liveFrame;
+  const editorContext = hasFrame ? context : frameOrContext;
+  const rendered = render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={editorContext}
         search={baseSearch}
-        onSearchChange={vi.fn()}
+        onSearchChange={onSearchChange}
       />
     </QueryClientProvider>,
   );
+  if (document.querySelector("iframe")) frame.ready();
+  return rendered;
 }
 
 /** A message from the framed preview, addressed so the transport accepts it. */
-function fromPreview(data: Record<string, unknown>) {
-  liveFrame.before(data);
+function fromPreview(
+  data: Record<string, unknown>,
+  options: Readonly<{ preserveSelectionRevision?: boolean }> = {},
+) {
+  // Flush startup effects before choosing the revision the live frame echoes.
+  act(() => {});
+  const latestSelectionRevision = posted.reduce((latest, message) => {
+    const revision = message.selectionRevision;
+    return typeof revision === "number" ? Math.max(latest, revision) : latest;
+  }, 0);
+  const latestStyleRevision = posted.reduce((latest, message) => {
+    const revision = message.styleRevision;
+    return typeof revision === "number" ? Math.max(latest, revision) : latest;
+  }, latestPostedStyleRevision.value);
+  const currentReport =
+    data.type === "morph:storefront-preview-select-section"
+      ? { ...data, styleRevision: latestStyleRevision }
+      : data;
+  const response =
+    currentReport.type === "morph:storefront-preview-select-section" &&
+    !options.preserveSelectionRevision
+      ? { ...currentReport, selectionRevision: latestSelectionRevision + 1 }
+      : currentReport;
+  liveFrame.before(response);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...response, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
     );
   });
-  liveFrame.after(data);
+  liveFrame.after(response);
 }
 
 const messagesOfType = (type: string) =>
@@ -586,23 +707,27 @@ async function flushFrames() {
 }
 
 describe("the selection round trip", () => {
-  it("tells the frame which section the tree moved to", () => {
-    const { rerender } = renderShell();
+  it("asks the frame to select a section chosen from the tree", () => {
+    const onSearchChange = vi.fn();
+    // This test is about selection routing, which predates presentation acks.
+    // Keep the frame on the legacy path so the ack-model adapter does not
+    // replace the message observer this assertion is measuring.
+    renderShell(undefined, bridgeWithoutPresentationAck, onSearchChange);
     posted.length = 0;
-
-    rerender(
-      <QueryClientProvider client={readyQueryClient()}>
-        <VisualEditorShell
-          context={context}
-          search={{ ...baseSearch, section: "hero" }}
-          onSearchChange={vi.fn()}
-        />
-      </QueryClientProvider>,
-    );
-
+    const sectionRow = screen.getByTitle("Select hero; drag to reorder");
+    fireEvent.click(sectionRow);
+    expect(onSearchChange).toHaveBeenCalledWith({ section: "hero" });
     expect(
-      messagesOfType("morph:storefront-preview-set-section"),
-    ).toContainEqual(expect.objectContaining({ sectionId: "hero" }));
+      messagesOfType("morph:storefront-preview-set-selection-mode"),
+    ).toContainEqual(
+      expect.objectContaining({
+        enabled: true,
+        restoreTarget: expect.objectContaining({
+          sectionId: "hero",
+          isSection: true,
+        }),
+      }),
+    );
   });
 
   it("keeps a section change quiet while there is no frame to address", () => {
@@ -674,6 +799,109 @@ describe("the selection round trip", () => {
  * anyone looking at the catch — this pins both shapes it arrives in.
  */
 describe("a content save that fails", () => {
+  it("keeps Document edits unsaved when the bridge cannot acknowledge presentation", async () => {
+    const warning = vi.spyOn(toast, "warning").mockImplementation(() => "");
+    renderShell(readyQueryClient(), bridgeWithoutPresentationAck);
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Welcome");
+    fireEvent.input(field, { target: { value: "Held without ack" } });
+    fireEvent.blur(field);
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith(
+      PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE,
+      expect.anything(),
+    );
+    expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
+    expect(saveStatus()).not.toBe("Saved");
+
+    expect(saveStatus()).toBe("Unsaved");
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("says, after a bounded wait, that a frame which cannot acknowledge pauses content edits (Task 40 item 3)", async () => {
+    vi.spyOn(toast, "warning").mockImplementation(() => "");
+    renderShell(readyQueryClient(), bridgeWithoutPresentationAck);
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Welcome");
+
+    await waitFor(
+      () =>
+        expect(
+          screen.getByTestId("preview-presentation-unconfirmable").textContent,
+        ).toContain(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE),
+      { timeout: PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS + 3_000 },
+    );
+    // The panels say the same true reason, never "syncing".
+    expect(screen.queryByText(/Preview syncing/)).toBeNull();
+    expect(
+      screen.getAllByText(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE).length,
+    ).toBeGreaterThan(1);
+
+    // Still fail closed: an input is kept and nothing is written.
+    fireEvent.input(field, { target: { value: "Held, unconfirmable" } });
+    fireEvent.blur(field);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue("Held, unconfirmable")).toBeTruthy();
+  }, 15_000);
+
+  it("re-presents a section whose acknowledgement the frame withdrew (Task 40 item 7)", async () => {
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 2, droppedProps: [] },
+    } as never);
+    renderShell();
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Welcome");
+    await flushFrames();
+    const acked = messagesOfType(
+      "morph:storefront-preview-update-section-props",
+    )
+      .filter((message) => message.sectionId === "hero")
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+    expect(acked).toBeTruthy();
+    const before = posted.length;
+
+    // The frame's document was reset to the server copy: it withdraws what
+    // it acknowledged for the content it no longer shows.
+    fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: acked!.operationId,
+      token: acked,
+      status: "not-applied",
+      reason: "superseded",
+    });
+    await flushFrames();
+
+    const reposted = posted
+      .slice(before)
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === "hero" &&
+          message.presentationToken,
+      );
+    expect(reposted.length, "the section is presented again").toBeGreaterThan(
+      0,
+    );
+    await flushFrames();
+    fireEvent.input(field, { target: { value: "After the withdrawal" } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(updateSectionProps.mock.calls[0]![0].data.props).toEqual({
+      heading: "After the withdrawal",
+    });
+  });
+
   it("says so when the server refuses the write", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
     updateSectionProps.mockResolvedValue({
@@ -835,6 +1063,51 @@ describe("a content save that fails", () => {
       document
         .querySelector("[data-editor-unconfirmed-saves]")
         ?.getAttribute("data-editor-unconfirmed-saves") ?? null,
+    ).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps, "and never a third time").toHaveBeenCalledTimes(
+      2,
+    );
+  });
+
+  it("resends an unanswered write once, at its frozen basis, after the frame reloaded (Task 40 item 1)", async () => {
+    // The write was sent with the proof of the old ready round. A reload
+    // ends that round, but the resend is the same write the server may
+    // already hold, sent as first sent and guarded by CAS at its original
+    // generations: it is sent, never dropped for want of a fresh proof.
+    updateSectionProps
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({
+        success: true,
+        data: { draftGeneration: 2, droppedProps: [] },
+      } as never);
+    getThemeEditor.mockResolvedValue(editorHolding({}, 1));
+    renderShell();
+    await commitInlineText();
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const first = updateSectionProps.mock.calls[0]![0].data;
+
+    reloadFrameDocument();
+    liveFrame.ready();
+    await flushFrames();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    act(() => {
+      screen.getByRole("button", { name: "Try again" }).click();
+    });
+
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    const resent = updateSectionProps.mock.calls[1]![0].data;
+    expect(resent).toMatchObject({
+      sectionId: first.sectionId,
+      props: first.props,
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: first.expectedSourceGeneration,
+    });
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    expect(
+      document.querySelector("[data-editor-unconfirmed-saves]"),
+      "answered: no longer tracked",
     ).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(updateSectionProps, "and never a third time").toHaveBeenCalledTimes(
@@ -1058,6 +1331,22 @@ describe("a content save the document moved under", () => {
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();
     });
+    await waitFor(() =>
+      expect(
+        messagesOfType("morph:storefront-preview-update-section-props").some(
+          (message) => {
+            const token = message.presentationToken as
+              { documentBasis?: { draftGeneration?: number } } | undefined;
+            return token?.documentBasis?.draftGeneration === 7;
+          },
+        ),
+      ).toBe(true),
+    );
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    await flushFrames();
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
 
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
     const resend = updateSectionProps.mock.calls[1]![0] as {
@@ -1170,6 +1459,7 @@ describe("a list both writers changed", () => {
       listContext,
       client,
     );
+    if (document.querySelector("iframe")) liveFrame.ready();
 
     // The author edits B's title on the canvas.
     const rowNode = {
@@ -1245,11 +1535,15 @@ describe("a list both writers changed", () => {
     expect(await screen.findByText("Not saved")).toBeTruthy();
 
     act(() => {
-      screen.getByRole("button", { name: /discard unsaved changes to items/i }).click();
+      screen
+        .getByRole("button", { name: /discard unsaved changes to items/i })
+        .click();
     });
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog.textContent).toMatch(/Discard changes to .*items/);
-    expect(dialog.textContent).toMatch(/only your unsaved changes to this list/);
+    expect(dialog.textContent).toMatch(
+      /only your unsaved changes to this list/,
+    );
     expect(dialog.textContent).toMatch(/Other fields and lists will stay/);
 
     // Declined, nothing changes: the draft is still there to decide about.
@@ -1268,14 +1562,18 @@ describe("a list both writers changed", () => {
     // discarded, since dropping the draft would leave the author with neither.
     getThemeEditor.mockRejectedValueOnce(new Error("offline"));
     act(() => {
-      screen.getByRole("button", {
-        name: /discard unsaved changes to items/i,
-      }).click();
+      screen
+        .getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        })
+        .click();
     });
     act(() => {
-      screen.getByRole("button", {
-        name: "Discard list changes and load latest",
-      }).click();
+      screen
+        .getByRole("button", {
+          name: "Discard list changes and load latest",
+        })
+        .click();
     });
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(
@@ -1302,14 +1600,18 @@ describe("a list both writers changed", () => {
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     act(() => {
-      screen.getByRole("button", {
-        name: /discard unsaved changes to items/i,
-      }).click();
+      screen
+        .getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        })
+        .click();
     });
     act(() => {
-      screen.getByRole("button", {
-        name: "Discard list changes and load latest",
-      }).click();
+      screen
+        .getByRole("button", {
+          name: "Discard list changes and load latest",
+        })
+        .click();
     });
     await waitFor(() =>
       expect(
@@ -1345,14 +1647,18 @@ describe("a list both writers changed", () => {
     // written: the latest version is what the editor now holds.
     getThemeEditor.mockResolvedValue(remote);
     act(() => {
-      screen.getByRole("button", {
-        name: /discard unsaved changes to items/i,
-      }).click();
+      screen
+        .getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        })
+        .click();
     });
     act(() => {
-      screen.getByRole("button", {
-        name: "Discard list changes and load latest",
-      }).click();
+      screen
+        .getByRole("button", {
+          name: "Discard list changes and load latest",
+        })
+        .click();
     });
     await waitFor(() => expect(saveStatus()).not.toBe("Out of date"));
     expect(
@@ -1394,8 +1700,11 @@ describe("a list both writers changed", () => {
       expect(updateSectionProps).toHaveBeenCalledTimes(beforeAdd + 1),
     );
     expect(
-      (listContext.templates[0]!.document.sections[0]!.props as { items: unknown[] })
-        .items,
+      (
+        listContext.templates[0]!.document.sections[0]!.props as {
+          items: unknown[];
+        }
+      ).items,
     ).toHaveLength(4);
 
     fireEvent.click(screen.getByRole("button", { name: "Other" }));
@@ -1511,9 +1820,11 @@ describe("a list both writers changed", () => {
     await flushFrames();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await flushFrames();
-    const addEntries = () => screen.getAllByRole("button", { name: "Add entry" });
+    const addEntries = () =>
+      screen.getAllByRole("button", { name: "Add entry" });
     expect(addEntries()).toHaveLength(2);
     fireEvent.click(addEntries()[0]!);
+    await flushFrames();
     fireEvent.click(addEntries()[1]!);
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
@@ -1522,7 +1833,9 @@ describe("a list both writers changed", () => {
       success: true,
       data: { draftGeneration: 8, droppedProps: [] },
     } as never);
-    act(() => screen.getByRole("button", { name: "Load latest, keep mine" }).click());
+    act(() =>
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click(),
+    );
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(
         expect.stringMatching(/items, related also changed elsewhere/),
@@ -1624,16 +1937,20 @@ describe("a list both writers changed", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     await flushFrames();
     act(() =>
-      screen.getByRole("button", {
-        name: /discard unsaved changes to items/i,
-      }).click(),
+      screen
+        .getByRole("button", {
+          name: /discard unsaved changes to items/i,
+        })
+        .click(),
     );
     await screen.findByRole("alertdialog");
     getThemeEditor.mockResolvedValueOnce(remoteOtherChanged);
     act(() =>
-      screen.getByRole("button", {
-        name: "Discard list changes and load latest",
-      }).click(),
+      screen
+        .getByRole("button", {
+          name: "Discard list changes and load latest",
+        })
+        .click(),
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(
@@ -2306,18 +2623,20 @@ describe("bringing the canvas to a selection", () => {
 
     fromPreview({
       type: "morph:storefront-preview-structure",
+      routePath: "/",
       nodes: [heroNode],
     });
     const row = await screen.findByText("h1");
     posted.length = 0;
     act(() => {
       row.closest("button")?.click();
+      row.closest("button")?.click();
     });
 
     const revision = messagesOfType(
       "morph:storefront-preview-set-selection-mode",
-    )[0]!.selectionRevision as number;
-    expect(revision).toBeGreaterThan(0);
+    ).at(-1)!.selectionRevision as number;
+    expect(revision).toBeGreaterThan(1);
 
     // Every nullable field is present as an explicit `null`: the protocol reads
     // an omitted key as the wrong shape, not as an absent value.
@@ -2351,7 +2670,7 @@ describe("bringing the canvas to a selection", () => {
     const resting = canvasY();
     expect(resting).not.toBeNull();
 
-    fromPreview(answer(revision - 1));
+    fromPreview(answer(revision - 1), { preserveSelectionRevision: true });
     await flushFrames();
     const afterStale = canvasY();
 
@@ -2425,7 +2744,7 @@ function renderShellWithHero(
       latestPublishedRevision: null,
     } as never,
   );
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={editorContext}
@@ -2438,6 +2757,8 @@ function renderShellWithHero(
       />
     </QueryClientProvider>,
   );
+  if (document.querySelector("iframe")) liveFrame.ready();
+  return rendered;
 }
 
 const STYLE_SOURCE =
@@ -2981,7 +3302,11 @@ describe("source refusal recovery contract", () => {
 
     // The new frame's existing full-source handshake confirms the snapshot.
     // This controlled bridge event is not a browser/HMR acceptance test.
-    fromPreview({ type: "morph:storefront-preview-ready" });
+    getThemeEditor.mockResolvedValueOnce(
+      editorHolding({ heading: "Welcome", subheading: "Summary" }, 1),
+    );
+    reloadFrameDocument();
+    liveFrame.ready();
     await waitFor(() =>
       expect(
         messagesOfType("morph:storefront-preview-update-theme-files").length,
@@ -3252,11 +3577,13 @@ describe("source refusal recovery contract", () => {
     );
   });
 
-  it("blocks input without a selection baseline before calling the server", async () => {
+  it("uses a preview-confirmed source even if Code has not accepted it", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
-    await openFields();
-    // A newly reported selection cannot capture a version from a workspace
-    // that has not accepted one; do not substitute the current Theme version.
+    renderShellWithHero(source, "hero", editorContext);
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await screen.findByDisplayValue("Welcome");
+    // The preview has confirmed the current Theme source even though this
+    // workspace still has no accepted source generation.
     act(() =>
       useThemeWorkspaceStore.getState().setBaseSourceGeneration(0, scope),
     );
@@ -3265,13 +3592,17 @@ describe("source refusal recovery contract", () => {
     ).toBe(0);
     await reselect();
     input("Welcome", "No baseline heading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(request(0).expectedSourceGeneration).toBe(1);
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(message, {
         id: "selection-source-conflict",
       }),
     );
-    expect(updateSectionProps).not.toHaveBeenCalled();
     expect(screen.getByDisplayValue("No baseline heading")).toBeTruthy();
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(0);
   });
 
   it("keeps an old undo record blocked even after the field is freshly selected", async () => {
@@ -5762,9 +6093,12 @@ describe("an inline edit of text the Theme changed", () => {
   it("is not saved when another tab's save, at a newer generation, changed the field", async () => {
     saved();
     const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    const warning = vi.spyOn(toast, "warning").mockImplementation(() => "");
     const client = readyQueryClient();
     const view = renderShell(client);
     await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await screen.findByDisplayValue("Welcome");
 
     // Another tab's save, read back at the generation it produced.
     view.rerender(
@@ -5788,8 +6122,20 @@ describe("an inline edit of text the Theme changed", () => {
       expect.anything(),
     );
 
-    // The control: an edit begun from the newer stored value is saved, on
-    // the generation that read brought.
+    // The editor has now re-presented the page at the new Document generation.
+    // The control edit is accepted only after that presentation is acknowledged.
+    await waitFor(() =>
+      expect(
+        messagesOfType("morph:storefront-preview-update-section-props").some(
+          (message) => {
+            const token = message.presentationToken as
+              { documentBasis?: { draftGeneration?: number } } | undefined;
+            return token?.documentBasis?.draftGeneration === 2;
+          },
+        ),
+      ).toBe(true),
+    );
+    await flushFrames();
     sendInlineCommit("Theirs, edited", "Theirs");
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
     const sent = updateSectionProps.mock.calls[0]![0] as {
@@ -5797,6 +6143,7 @@ describe("an inline edit of text the Theme changed", () => {
     };
     expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
     expect(sent.data.expectedDraftGeneration).toBe(2);
+    expect(warning).not.toHaveBeenCalled();
   });
 
   it("is not saved when it names a field other than the one selected", async () => {
@@ -6070,6 +6417,10 @@ function Home() {
     );
     document.body.replaceChildren();
     expect(item).toBeTruthy();
+    const currentStyleRevision = posted.reduce((latest, message) => {
+      const revision = message.styleRevision;
+      return typeof revision === "number" ? Math.max(latest, revision) : latest;
+    }, 0);
     return {
       type: "morph:storefront-preview-select-section",
       sectionId: item!.sectionId,
@@ -6088,7 +6439,7 @@ function Home() {
       itemId: item!.itemId,
       contentUnavailable: item!.contentUnavailable,
       ...objposSelectionMetadata(item!),
-      styleRevision: 0,
+      styleRevision: currentStyleRevision,
       selectionRevision: 1,
       className: item!.element.getAttribute("class") ?? "",
       isSection: item!.element === item!.section,
@@ -6155,7 +6506,9 @@ function Home() {
         />
       </QueryClientProvider>
     );
-    const { rerender } = render(shell(editorContext));
+    const rendered = render(shell(editorContext));
+    if (document.querySelector("iframe")) liveFrame.ready();
+    const { rerender } = rendered;
     return {
       client,
       editorContext,
@@ -6887,6 +7240,15 @@ function Home() {
       await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
       await waitFor(() => expect(saveState()).toBe("saved"));
       expect(read.sentWhenRead).toBe(1);
+      expect(
+        messagesOfType("morph:storefront-preview-update-section-props").some(
+          (message) => {
+            const token = message.presentationToken as
+              { documentBasis?: { draftGeneration?: number } } | undefined;
+            return token?.documentBasis?.draftGeneration === 2;
+          },
+        ),
+      ).toBe(true);
       vi.useFakeTimers({
         toFake: ["setTimeout", "clearTimeout"],
         shouldAdvanceTime: true,
@@ -7449,9 +7811,31 @@ function Home() {
       ) as never,
     );
     const before = sent().length;
-    act(() => {
-      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    const keepMine = screen.getByRole("button", {
+      name: "Load latest, keep mine",
     });
+    act(() => keepMine.click());
+    await waitFor(() =>
+      expect(
+        sent().length === before + 1 ||
+          messagesOfType("morph:storefront-preview-update-section-props").some(
+            (message) => {
+              const token = message.presentationToken as
+                { documentBasis?: { draftGeneration?: number } } | undefined;
+              return token?.documentBasis?.draftGeneration === 2;
+            },
+          ),
+      ).toBe(true),
+    );
+    // If the latest generation was not acknowledged before the explicit click,
+    // let the presentation commit first and require a second explicit click.
+    // When it was already acknowledged, the first click may write immediately.
+    if (sent().length === before) {
+      await flushFrames();
+      if (sent().length === before) {
+        act(() => keepMine.click());
+      }
+    }
     await waitFor(() => expect(sent()).toHaveLength(before + 1));
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect(sent()).toHaveLength(before + 1);
@@ -7481,7 +7865,11 @@ function Home() {
     await releaseQueued();
 
     expect(sent()).toHaveLength(0);
-    expect(saveStatus()).toBe("Out of date");
+    // Task 40 item 6: held while the canvas presents the read copy, then
+    // released with that round's proof and refused as made on the older
+    // copy (out of date), never sent over theirs; keep mine then saves it.
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(sent()).toHaveLength(0);
     expect(screen.getAllByDisplayValue("Mine again").length).toBeGreaterThan(0);
 
     await keepMineAndExpectSaved(client, editorContext, fixture, "Mine again");
@@ -7514,7 +7902,8 @@ function Home() {
     });
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect(sent()).toHaveLength(0);
-    expect(saveStatus()).toBe("Out of date");
+    // Task 40 item 6: restored to its keep-mine recovery.
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(screen.getAllByDisplayValue("Mine typed").length).toBeGreaterThan(0);
 
     await keepMineAndExpectSaved(client, editorContext, fixture, "Mine typed");
@@ -7569,7 +7958,9 @@ function Home() {
     await new Promise((resolve) => setTimeout(resolve, 1_200));
 
     expect(sent()).toHaveLength(0);
-    expect(saveStatus()).toBe("Out of date");
+    // Task 40 item 6: restored to its keep-mine recovery.
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    expect(screen.getAllByDisplayValue("中文").length).toBeGreaterThan(0);
     await keepMineAndExpectSaved(client, editorContext, fixture, "中文");
   });
 
@@ -7995,6 +8386,7 @@ function Home() {
       </QueryClientProvider>
     );
     const { rerender } = render(shell(editorContext));
+    if (document.querySelector("iframe")) liveFrame.ready();
     return {
       client,
       receive: (next: StorefrontThemeEditorDTO) => rerender(shell(next)),
@@ -9363,18 +9755,24 @@ function Home() {
       });
 
       /**
-       * `heading` typed and an entry added inside one debounce: one write,
-       * one history entry, whose undo restores `heading` and removes `items`.
+       * `heading` typed and an entry added inside one debounce: the Add waits
+       * for the heading's preview commit acknowledgement, then joins the same
+       * pending write and history entry.
        */
       async function mixedWrite() {
         stored = { ...STORED };
         const editor = await openSection({ ...STORED });
         const heading = (await screen.findAllByDisplayValue("Hello"))[0]!;
-        const add = await screen.findByRole("button", { name: "Add entry" });
-        // Both inside the shell's 300 ms debounce, with nothing awaited
-        // between them: one pending entry, so one write.
+        const add = (await screen.findByRole("button", {
+          name: "Add entry",
+        })) as HTMLButtonElement;
+        // The preview update temporarily pauses Content controls. Wait for its
+        // DOM-commit acknowledgement, still inside the 300 ms debounce, so
+        // the list action joins the same pending entry.
         fireEvent.input(heading, { target: { value: "New" } });
         fireEvent.blur(heading);
+        await flushFrames();
+        await waitFor(() => expect(add.disabled).toBe(false));
         fireEvent.click(add);
         await settle();
         expect(sent(), "one write for both keys").toHaveLength(1);
@@ -10352,6 +10750,26 @@ function Home() {
         it("same generation, key still held: not landed; sent once, as first sent, only on Check and save", async () => {
           const { added } = await lostResetUndo();
           serverHolds({ ...STORED, items: added }, 2);
+          await settle();
+          expect(sent(), "nothing is sent by itself").toHaveLength(2);
+
+          await checkAndSave();
+
+          expect(sent(), "sent once more").toHaveLength(3);
+          expect(shape(sent()[2]!)).toEqual(resetUndo(2));
+          expect(stored).toEqual({ ...STORED });
+          expect(unconfirmedCount()).toBeNull();
+          expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+
+        it("same generation, after the frame reloaded: sent once, as first sent, on Check and save (Task 40 item 1)", async () => {
+          // The reset's resend is the frozen write at its original
+          // generations, CAS-guarded: a reload's new ready round does not
+          // drop it, even when the new frame cannot acknowledge anything.
+          const { added } = await lostResetUndo();
+          serverHolds({ ...STORED, items: added }, 2);
+          reloadFrameDocument();
+          bridgeWithoutPresentationAck.ready();
           await settle();
           expect(sent(), "nothing is sent by itself").toHaveLength(2);
 
@@ -11807,8 +12225,6 @@ function Home() {
       warning: vi.spyOn(toast, "warning").mockImplementation(() => ""),
       error: vi.spyOn(toast, "error").mockImplementation(() => ""),
     });
-    const errors = (notice: ReturnType<typeof notices>) =>
-      notice.error.mock.calls.map((call) => String(call[0]));
     const conflictAnswer = {
       success: false,
       error: "TEMPLATE_DRAFT_CONFLICT",
@@ -11917,8 +12333,11 @@ function Home() {
         readsCarryGeneration = false;
         const { receive } = await openHeading(NO_GENERATION);
         const field = (await screen.findAllByDisplayValue("Hello"))[0]!;
+        expect((field as HTMLInputElement).disabled).toBe(true);
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         try {
+          // Direct dispatch bypasses the disabled control to model a late
+          // event; a real user cannot type until the presentation is ready.
           fireEvent.input(field, { target: { value: "Mine" } });
           fireEvent.blur(field);
           expect(sent()).toHaveLength(0);
@@ -11938,37 +12357,48 @@ function Home() {
 
         expect(sent(), "no request").toHaveLength(0);
         expect(stored, "their heading kept").toEqual({ heading: "Theirs" });
-        expect(saveStatus()).toBe("Out of date");
+        expect(saveStatus()).toBe("Unsaved");
         expect(screen.getAllByDisplayValue("Mine").length).toBeGreaterThan(0);
         expect(depth(), "history unchanged").toBe("0");
         expect(unconfirmedCount()).toBeNull();
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(notice.warning).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+          expect.anything(),
+        );
         await settle();
         expect(sent(), "nothing is sent on its own").toHaveLength(0);
       });
 
-      it("focused with no basis, then another tab's change read, then typed: nothing sent, theirs kept, the input kept", async () => {
+      it("keeps Content paused without a basis, then presents the latest read before enabling it", async () => {
         const notice = notices();
         readsCarryGeneration = false;
         const { receive } = await openHeading(NO_GENERATION);
         const field = (
           await screen.findAllByDisplayValue("Hello")
         )[0]! as HTMLInputElement;
-        act(() => field.focus());
+        expect(field.disabled).toBe(true);
+        expect(
+          screen
+            .getAllByRole("status")
+            .some((status) => status.textContent?.includes("Preview syncing")),
+        ).toBe(true);
         theyWrite({ heading: "Theirs" });
         act(() => {
           receive(editorAt({ ...stored }, draftGeneration));
         });
         await flushFrames();
-        fireEvent.input(field, { target: { value: "Mine" } });
-        fireEvent.blur(field);
-        await settle();
+        const currentField = (await screen.findByDisplayValue(
+          "Theirs",
+        )) as HTMLInputElement;
+        await waitFor(() => expect(currentField.disabled).toBe(false));
 
         expect(sent(), "no request").toHaveLength(0);
         expect(stored).toEqual({ heading: "Theirs" });
-        expect(saveStatus()).toBe("Out of date");
+        expect(currentField.isConnected).toBe(true);
         expect(depth()).toBe("0");
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(unconfirmedCount()).toBeNull();
+        expect(notice.error).not.toHaveBeenCalled();
+        expect(notice.warning).not.toHaveBeenCalled();
       });
 
       it("control: focused on generation 1, another tab's change read, then typed: refused as out of date", async () => {
@@ -12036,22 +12466,27 @@ function Home() {
           targetFieldPath: `items.${target}`,
         });
 
-      it("dragged with no basis, another tab's change on the server: nothing sent, theirs kept, the swap kept as not saved", async () => {
+      it("rejects a drag signal without a presentation basis and keeps the latest server rows", async () => {
         const notice = notices();
         readsCarryGeneration = false;
         await openTitle({}, 1, NO_GENERATION);
         theyWrite({ items: theirRows() });
 
+        // Inject the bridge event directly despite the syncing page; real
+        // reorder controls remain unavailable until the page is acknowledged.
         drag(1, 0);
         await settle();
 
         expect(sent(), "no request").toHaveLength(0);
         expect(stored).toEqual({ items: theirRows() });
-        expect(saveStatus()).toBe("Out of date");
-        expect(canvasRows(), "the swap stays drawn").toEqual(["Two", "One"]);
+        expect(saveStatus()).toBe("Unsaved");
+        expect(canvasRows(), "no unacknowledged swap is applied").toBeNull();
         expect(depth(), "history unchanged").toBe("0");
         expect(unconfirmedCount()).toBeNull();
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(notice.warning).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+          expect.anything(),
+        );
         await settle();
         expect(sent()).toHaveLength(0);
       });
@@ -12114,7 +12549,7 @@ function Home() {
         headingField = true;
       });
 
-      it("pressed with no basis while the field still shows the copy it was focused on, after another tab's change was read: nothing sent, theirs kept, the value kept", async () => {
+      it("after a no-basis read, waits for the latest value to be presented before Reset uses it", async () => {
         const notice = notices();
         stored = { heading: "Hello" };
         readsCarryGeneration = false;
@@ -12125,23 +12560,34 @@ function Home() {
         const field = (
           await screen.findAllByDisplayValue("Hello")
         )[0]! as HTMLInputElement;
-        act(() => field.focus());
+        expect(field.disabled).toBe(true);
         theyWrite({ heading: "Theirs" });
         act(() => {
           receive(editorAt({ ...stored }, draftGeneration));
         });
         await flushFrames();
+        const currentField = (await screen.findByDisplayValue(
+          "Theirs",
+        )) as HTMLInputElement;
+        await waitFor(() => expect(currentField.disabled).toBe(false));
+        const reset = await screen.findByRole("button", {
+          name: "Use code default",
+        });
+        expect((reset as HTMLButtonElement).disabled).toBe(false);
+        expect(sent(), "reading and presenting does not write").toHaveLength(0);
 
         await pressReset();
 
-        expect(sent(), "no request").toHaveLength(0);
-        expect(stored, "their value kept").toEqual({ heading: "Theirs" });
-        expect(depth(), "history unchanged").toBe("0");
+        expect(sent(), "Reset uses the newly presented copy").toHaveLength(1);
+        expect(sent()[0]).toMatchObject({
+          resetProps: ["heading"],
+          expectedDraftGeneration: 2,
+          expectedSourceGeneration: 1,
+        });
+        expect(stored).toEqual({});
+        expect(depth()).toBe("1");
         expect(unconfirmedCount()).toBeNull();
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
-        expect(
-          screen.getByRole("button", { name: "Use code default" }),
-        ).toBeTruthy();
+        expect(notice.error).not.toHaveBeenCalled();
       });
 
       it("pressed with no basis, another tab's change on the server: nothing sent, theirs kept", async () => {
@@ -12151,12 +12597,19 @@ function Home() {
         await openSection({ heading: "Hello" }, NO_GENERATION);
         theyWrite({ heading: "Theirs" });
 
-        await pressReset();
-
+        expect(
+          screen.queryByRole("button", { name: "Use code default" }),
+        ).toBeNull();
+        expect(
+          screen
+            .getAllByRole("status")
+            .some((status) => status.textContent?.includes("Preview syncing")),
+        ).toBe(true);
         expect(sent(), "no request").toHaveLength(0);
         expect(stored).toEqual({ heading: "Theirs" });
         expect(depth()).toBe("0");
-        expect(errors(notice)).toContain(MISSING_BASIS_MESSAGE);
+        expect(notice.error).not.toHaveBeenCalled();
+        expect(notice.warning).not.toHaveBeenCalled();
       });
 
       it("control: pressed with the basis it was made on: one removal, recorded once", async () => {

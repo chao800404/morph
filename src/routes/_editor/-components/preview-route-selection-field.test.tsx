@@ -67,7 +67,10 @@ beforeEach(() => {
   vi.spyOn(editor, "postMessage").mockImplementation(((message: unknown) => {
     posted.push(message);
   }) as never);
-  Object.defineProperty(window, "parent", { value: editor, configurable: true });
+  Object.defineProperty(window, "parent", {
+    value: editor,
+    configurable: true,
+  });
   debug = vi.spyOn(console, "debug").mockImplementation(() => {});
   const page = document.createElement("main");
   page.innerHTML = `
@@ -82,21 +85,36 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  Object.defineProperty(window, "parent", { value: window, configurable: true });
+  Object.defineProperty(window, "parent", {
+    value: window,
+    configurable: true,
+  });
   vi.restoreAllMocks();
   document.body.innerHTML = "";
 });
 
-const hero = () => document.querySelector<HTMLElement>('[data-storefront-section-id="hero"]')!;
+const hero = () =>
+  document.querySelector<HTMLElement>('[data-storefront-section-id="hero"]')!;
 const heroHeading = () => hero().querySelector("h1")!.textContent;
 
 function selectHero() {
   render(<Bridge />);
-  fromEditor({ type: "morph:storefront-preview-set-selection-mode", enabled: true });
-  fromEditor({ type: "morph:storefront-preview-set-section", sectionId: "hero" });
+  fromEditor({
+    type: "morph:storefront-preview-set-selection-mode",
+    enabled: true,
+  });
+  fromEditor({
+    type: "morph:storefront-preview-set-section",
+    sectionId: "hero",
+  });
 }
 
-const field = (sectionId: string, fieldKey: string, fieldPath: string, value: string) => ({
+const field = (
+  sectionId: string,
+  fieldKey: string,
+  fieldPath: string,
+  value: string,
+) => ({
   type: "morph:storefront-preview-update-selection-field",
   sectionId,
   fieldKey,
@@ -108,9 +126,13 @@ describe("Morph's preview route and a selection-field post", () => {
   it("says on ready that it reads the section the post names", () => {
     render(<Bridge />);
     const ready = posted.find(
-      (message) => (message as { type?: string }).type === "morph:storefront-preview-ready",
+      (message) =>
+        (message as { type?: string }).type ===
+        "morph:storefront-preview-ready",
     );
-    expect(ready).toMatchObject({ capabilities: ["selection-field-section"] });
+    expect(ready).toMatchObject({
+      capabilities: ["selection-field-section", "section-presentation-ack-v1"],
+    });
   });
 
   it("applies a post to the selected section it names", () => {
@@ -123,9 +145,10 @@ describe("Morph's preview route and a selection-field post", () => {
     selectHero();
     fromEditor(field("other", "heading", "heading", "Typed"));
     expect(heroHeading()).toBe("Stored heading");
-    expect(document.querySelector('[data-storefront-section-id="other"] h1')!.textContent).toBe(
-      "Other heading",
-    );
+    expect(
+      document.querySelector('[data-storefront-section-id="other"] h1')!
+        .textContent,
+    ).toBe("Other heading");
     expect(debug).toHaveBeenCalledTimes(1);
   });
 
@@ -150,9 +173,10 @@ describe("Morph's preview route and a selection-field post", () => {
     selectHero();
     fromEditor(field("hero", "heading", "heading", "Typed"));
     expect(heroHeading()).toBe("Typed");
-    expect(document.querySelector('[data-storefront-section-id="other"] h1')!.textContent).toBe(
-      "Other heading",
-    );
+    expect(
+      document.querySelector('[data-storefront-section-id="other"] h1')!
+        .textContent,
+    ).toBe("Other heading");
   });
 
   it("sends nothing back to the editor for a refused post", () => {

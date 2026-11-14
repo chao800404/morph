@@ -23,9 +23,12 @@ import {
 } from "./visual-editor-shell";
 import {
   answerFramePings,
+  enablePresentationAcks,
   frameEnvelope,
+  LIVE_FRAME_CAPABILITIES,
   modelCurrentBridge,
   reloadFrameDocument,
+  sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
@@ -405,20 +408,25 @@ const shownRoute = (harness: Harness) => harness.search().routePath ?? "/";
 async function settled(initial: StorefrontThemeEditorSearch = homeSearch) {
   const harness = renderRouted(initial);
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
-  fromPreview({
-    type: "morph:storefront-preview-ready",
-    servedInstance: {
-      kind: "known",
-      instance: { session: SESSION, serial: 1 },
+  sendFrameReady(
+    { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+    LIVE_FRAME_CAPABILITIES,
+    {
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
     },
-  });
+  );
   await tick(0);
   const request = latestRequest();
   // Precondition: the frame was sent the route on screen.
   expect(request?.routePath ?? "/").toBe(initial.routePath ?? "/");
   applied(request?.routeRequestId, initial.routePath ?? "/");
   report(initial.routePath ?? "/");
-  await tick(0);
+  // Allow the frame's post-commit presentation acknowledgements to settle
+  // before tests issue a write or guarded navigation.
+  await tick(10);
   return harness;
 }
 
@@ -532,8 +540,13 @@ describe("following the author's navigation inside the preview frame", () => {
     // booted on — both before the editor has sent this round's request. The
     // last request it knows of was answered, but by the frame's last round.
     reloadFrameDocument();
+    enablePresentationAcks({
+      origin: PREVIEW_ORIGIN,
+      session: PREVIEW_SESSION,
+    });
     fromPreviewUncommitted({
       type: "morph:storefront-preview-ready",
+      capabilities: [...LIVE_FRAME_CAPABILITIES],
       servedInstance: {
         kind: "known",
         instance: { session: SESSION, serial: 1 },

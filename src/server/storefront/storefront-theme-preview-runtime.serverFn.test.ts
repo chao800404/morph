@@ -405,4 +405,33 @@ describe("the runtime startThemePreviewServer starts the preview with", () => {
     expect(dal.findEditorContext).not.toHaveBeenCalled();
     expect(dal.start).not.toHaveBeenCalled();
   });
+
+  it("reports workspaceFingerprint and bridgeCapabilities from the materialized preview workspace", async () => {
+    dal.findEditorContext.mockResolvedValue(editorContext("start"));
+    dal.start.mockResolvedValueOnce({
+      ok: true,
+      url: "https://preview.example",
+      processId: "proc-1",
+      attemptId: "attempt-1",
+      readyMs: 10,
+      timings: {},
+      hoistedContentFields: {},
+    });
+    const result = await call(startThemePreviewServer, {
+      storefrontId: STOREFRONT,
+      themeId: THEME,
+    });
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        workspaceFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+        bridgeCapabilities: expect.arrayContaining([
+          "selection-field-section",
+          "code-default-selection",
+          "astro-identity-v2",
+          "section-presentation-ack-v1",
+        ]),
+      },
+    });
+  });
 });

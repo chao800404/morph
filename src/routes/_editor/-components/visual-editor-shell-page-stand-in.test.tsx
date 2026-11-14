@@ -1,6 +1,7 @@
 import {
   createLiveFrame,
   frameEnvelope,
+  LIVE_FRAME_CAPABILITIES,
   modelCurrentBridge,
   reloadFrameDocument,
   sendFrameReady,
@@ -386,6 +387,10 @@ async function editorWithFrame(routeSource: string, mode: FrameMode) {
   if (mode !== "old-bridge") modelCurrentBridge();
   const liveFrame = createLiveFrame(ADDRESS, {
     answerReady: mode !== "route-unanswered",
+    capabilities:
+      mode === "old-bridge"
+        ? ["selection-field-section"]
+        : LIVE_FRAME_CAPABILITIES,
   });
   mountShell(routeSource);
   await wait(30);

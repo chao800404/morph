@@ -1,3 +1,9 @@
+import {
+  PREVIEW_BRIDGE_SOURCE_HASH,
+} from "@/lib/storefront/compiler/preview-bridge-sources.generated";
+import {
+  THEME_PREVIEW_BRIDGE_CAPABILITIES,
+} from "@/lib/storefront/compiler/theme-preview-bridge-entry";
 import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
 import {
   parsePreviewServedInstance,
@@ -121,6 +127,14 @@ type PreviewEnv = {
    */
   MORPH_THEME_PREVIEW_RUNTIME?: string;
 };
+
+async function computePreviewWorkspaceFingerprint(parts: readonly string[]) {
+  const bytes = new TextEncoder().encode(parts.join("\0"));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
 
 export const startThemePreviewServer = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(themePreviewServerInputSchema, data))
@@ -290,6 +304,15 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
         ? framedPreviewAddress(url.url, previewId, selection.previewHostname)
         : { url: url.url, origin: url.origin, access: "open" as const };
 
+    const workspaceFingerprint = await computePreviewWorkspaceFingerprint([
+      PREVIEW_BRIDGE_SOURCE_HASH,
+      previewRuntime ?? "client",
+      framework.ok ? framework.framework.id : "unknown",
+      entry ?? "",
+      String(sourceGeneration),
+    ]);
+    const bridgeCapabilities = [...THEME_PREVIEW_BRIDGE_CAPABILITIES];
+
     return ok("Live Preview server ready", {
       previewId,
       attemptId: started.attemptId,
@@ -305,6 +328,8 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       readyMs: started.readyMs,
       timings: started.timings,
       hoistedContentFields: started.hoistedContentFields,
+      workspaceFingerprint,
+      bridgeCapabilities,
       // Whether the editor syncs saved content into this preview, and how the
       // canvas shows it once the preview confirms (A6b-2).
       contentRefresh: previewContentRefresh({

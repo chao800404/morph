@@ -6,9 +6,16 @@ describe("what each built-in preview page advertises", () => {
   it("the client-only preview does not claim the code-default capability", () => {
     expect(CLIENT_ONLY_PREVIEW_CAPABILITIES).toEqual([
       "selection-field-section",
+      "section-presentation-ack-v1",
     ]);
     expect(CLIENT_ONLY_PREVIEW_CAPABILITIES).not.toContain(
       "code-default-selection",
+    );
+  });
+
+  it("the client-only preview advertises presentation ack only when its route handles it", () => {
+    expect(CLIENT_ONLY_PREVIEW_CAPABILITIES).toContain(
+      "section-presentation-ack-v1",
     );
   });
 

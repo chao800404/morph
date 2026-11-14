@@ -251,6 +251,7 @@ function frameReady(served: PreviewServedInstance) {
           type: "morph:storefront-preview-ready",
           servedInstance: { kind: "known", instance: served },
           previewSession: PREVIEW_SESSION,
+          capabilities: ["selection-field-section", "section-presentation-ack-v1"],
         },
         origin: PREVIEW_ORIGIN,
         source: current?.contentWindow ?? null,

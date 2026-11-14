@@ -60,6 +60,17 @@ const styleSnapshot: PreviewStyleSnapshot = {
   justifyContent: "normal",
 };
 
+const sectionPresentationToken = {
+  workspaceKey: "store-1:theme-1",
+  templateId: "template-page",
+  routePath: "/about",
+  sectionId: "hero",
+  documentBasis: { kind: "existing", draftGeneration: 3 },
+  overlayRevision: 4,
+  presentationRevision: 8,
+  operationId: "presentation-8",
+} as const;
+
 describe("preview protocol", () => {
   it("accepts bounded preview liveness probes and responses", () => {
     const ping = {
@@ -675,6 +686,84 @@ describe("preview protocol", () => {
     ).toBeNull();
   });
 
+  it("carries a bounded section presentation token while keeping legacy updates readable", () => {
+    const update = {
+      type: "morph:storefront-preview-update-section-props",
+      sectionId: "hero",
+      props: { heading: "Hello" },
+      presentationToken: sectionPresentationToken,
+    } as const;
+    expect(parseEditorToPreviewMessage(update)).toMatchObject(update);
+    expect(
+      parseEditorToPreviewMessage({ ...update, sectionId: "another-section" }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({
+        ...update,
+        presentationToken: {
+          ...sectionPresentationToken,
+          documentBasis: { kind: "existing", draftGeneration: 0 },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({
+        ...update,
+        presentationToken: {
+          ...sectionPresentationToken,
+          routePath: "about",
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({
+        type: update.type,
+        sectionId: update.sectionId,
+        props: update.props,
+      }),
+    ).toMatchObject({
+      type: update.type,
+      sectionId: update.sectionId,
+      props: update.props,
+    });
+  });
+
+  it("accepts only a matching section presentation acknowledgement", () => {
+    const ack = {
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: sectionPresentationToken.operationId,
+      token: sectionPresentationToken,
+      status: "applied",
+    } as const;
+    expect(parsePreviewToEditorMessage(ack)).toEqual(ack);
+    expect(
+      parsePreviewToEditorMessage({
+        ...ack,
+        operationId: "another-operation",
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...ack,
+        status: "not-applied",
+      }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...ack,
+        status: "not-applied",
+        reason: "superseded",
+      }),
+    ).toMatchObject({ status: "not-applied", reason: "superseded" });
+    expect(
+      parsePreviewToEditorMessage({
+        ...ack,
+        status: "applied",
+        reason: "superseded",
+      }),
+    ).toBeNull();
+  });
+
   it("carries keys to remove, so a reset shows the component default", () => {
     const message = {
       type: "morph:storefront-preview-update-section-props",
@@ -1248,9 +1337,18 @@ describe("what a frame says it can do on ready", () => {
     expect(
       parsePreviewToEditorMessage({
         ...ready,
-        capabilities: ["selection-field-section"],
+        capabilities: [
+          "selection-field-section",
+          "section-presentation-ack-v1",
+        ],
       }),
-    ).toEqual({ ...ready, capabilities: ["selection-field-section"] });
+    ).toEqual({
+      ...ready,
+      capabilities: [
+        "selection-field-section",
+        "section-presentation-ack-v1",
+      ],
+    });
   });
 
   it("P4: drops unknown tokens and repeats, and reads absent as none", () => {

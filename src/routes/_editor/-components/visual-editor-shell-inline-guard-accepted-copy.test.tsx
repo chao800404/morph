@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
@@ -7,9 +13,15 @@ import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-s
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import { MISSING_BASIS_MESSAGE } from "@/lib/storefront/editor/pending-content-write";
-import { INLINE_TEXT_NOT_SAVED_MESSAGE, VisualEditorShell } from "./visual-editor-shell";
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  INLINE_TEXT_NOT_SAVED_MESSAGE,
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
+import {
+  createLiveFrame,
+  frameEnvelope,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * Text finished on the canvas right after a write was answered.
@@ -40,20 +52,32 @@ const posted: Array<Record<string, unknown>> = [];
 const updateSectionProps = vi.hoisted(() => vi.fn());
 const getThemeEditor = vi.hoisted(() => vi.fn());
 
-vi.mock("@/server/storefront/storefront-themes.serverFn", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  updateStorefrontThemeSectionProps: updateSectionProps,
-  getStorefrontThemeEditor: getThemeEditor,
-}));
+vi.mock(
+  "@/server/storefront/storefront-themes.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    updateStorefrontThemeSectionProps: updateSectionProps,
+    getStorefrontThemeEditor: getThemeEditor,
+  }),
+);
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  postEditorToPreviewMessage: vi.fn((_target: unknown, message: Record<string, unknown>) => {
-    posted.push(message);
-  }),
+  postEditorToPreviewMessage: vi.fn(
+    (_target: unknown, message: Record<string, unknown>) => {
+      posted.push(message);
+    },
+  ),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  Link: ({ to, children, ...rest }: { to?: string; children?: React.ReactNode }) => (
+  Link: ({
+    to,
+    children,
+    ...rest
+  }: {
+    to?: string;
+    children?: React.ReactNode;
+  }) => (
     <a href={to} {...rest}>
       {children}
     </a>
@@ -75,7 +99,12 @@ const contextAt = (
 ): StorefrontThemeEditorDTO =>
   ({
     previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
-    storefront: { id: "storefront-1", name: "Store", domain: null, status: "active" },
+    storefront: {
+      id: "storefront-1",
+      name: "Store",
+      domain: null,
+      status: "active",
+    },
     theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
     templates: [
       {
@@ -117,45 +146,59 @@ const heroNode = {
 };
 
 const client = () => {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey, {
-    success: true,
-    message: "Live Preview server ready",
-    data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
-  } as never);
-  queryClient.setQueryData(storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey, {
-    files: [
-      {
-        id: "file-hero",
-        storefrontId: "storefront-1",
-        themeId: "theme-1",
-        path: "src/components/Hero.tsx",
-        content: source,
-        mimeType: "text/typescript",
-        isEntry: false,
-        version: 1,
-        createdAt: "2026-10-15T00:00:00.000Z",
-        updatedAt: "2026-10-15T00:00:00.000Z",
-      },
-    ],
-    tree: [
-      {
-        name: "src",
-        path: "src",
-        isDirectory: true,
-        children: [
-          {
-            name: "components",
-            path: "src/components",
-            isDirectory: true,
-            children: [{ name: "Hero.tsx", path: "src/components/Hero.tsx", isDirectory: false }],
-          },
-        ],
-      },
-    ],
-    sourceGeneration: 1,
-    latestPublishedRevision: null,
-  } as never);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  queryClient.setQueryData(
+    themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
+    {
+      success: true,
+      message: "Live Preview server ready",
+      data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
+    } as never,
+  );
+  queryClient.setQueryData(
+    storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+    {
+      files: [
+        {
+          id: "file-hero",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          path: "src/components/Hero.tsx",
+          content: source,
+          mimeType: "text/typescript",
+          isEntry: false,
+          version: 1,
+          createdAt: "2026-10-15T00:00:00.000Z",
+          updatedAt: "2026-10-15T00:00:00.000Z",
+        },
+      ],
+      tree: [
+        {
+          name: "src",
+          path: "src",
+          isDirectory: true,
+          children: [
+            {
+              name: "components",
+              path: "src/components",
+              isDirectory: true,
+              children: [
+                {
+                  name: "Hero.tsx",
+                  path: "src/components/Hero.tsx",
+                  isDirectory: false,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      sourceGeneration: 1,
+      latestPublishedRevision: null,
+    } as never,
+  );
   return queryClient;
 };
 
@@ -164,11 +207,18 @@ function renderEditor(context: StorefrontThemeEditorDTO) {
   const queryClient = client();
   const tree = (ctx: StorefrontThemeEditorDTO) => (
     <QueryClientProvider client={queryClient}>
-      <VisualEditorShell context={ctx} search={search} onSearchChange={vi.fn()} />
+      <VisualEditorShell
+        context={ctx}
+        search={search}
+        onSearchChange={vi.fn()}
+      />
     </QueryClientProvider>
   );
   const view = render(tree(context));
-  return { rerenderWith: (ctx: StorefrontThemeEditorDTO) => view.rerender(tree(ctx)) };
+  liveFrame.ready();
+  return {
+    rerenderWith: (ctx: StorefrontThemeEditorDTO) => view.rerender(tree(ctx)),
+  };
 }
 
 function fromPreview(data: Record<string, unknown>) {
@@ -177,7 +227,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -190,6 +240,10 @@ const settle = () =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
+    // The current-frame bridge acknowledges a section only after its
+    // presentation post has been committed. Let its mocked post-commit pump
+    // run before this helper interacts with the section.
+    await vi.advanceTimersByTimeAsync(10);
   });
 const saveSettles = async () => {
   await act(async () => {
@@ -204,7 +258,9 @@ async function canvasSelect(field: "heading" | null) {
   const revision =
     Math.max(
       canvasRevision,
-      ...posted.map((m) => (typeof m.selectionRevision === "number" ? m.selectionRevision : 0)),
+      ...posted.map((m) =>
+        typeof m.selectionRevision === "number" ? m.selectionRevision : 0,
+      ),
     ) + 1;
   canvasRevision = revision;
   fromPreview({
@@ -225,7 +281,9 @@ async function canvasSelect(field: "heading" | null) {
     inputType: null,
     styleRevision: Math.max(
       0,
-      ...posted.map((m) => (typeof m.styleRevision === "number" ? m.styleRevision : 0)),
+      ...posted.map((m) =>
+        typeof m.styleRevision === "number" ? m.styleRevision : 0,
+      ),
     ),
     className: "",
     isSection: field === null,
@@ -240,7 +298,10 @@ async function canvasSelect(field: "heading" | null) {
 
 /** Selects the section, opens the Inspector's content and saves `value` as the heading. */
 async function inspectorSavesHeading(from: string, value: string) {
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   await canvasSelect(null);
   const contentTab = screen.queryByRole("button", { name: /^Content$/ });
   if (contentTab) fireEvent.click(contentTab);
@@ -256,13 +317,19 @@ async function inspectorSavesHeading(from: string, value: string) {
 async function canvasCommits(value: string, originalValue: string) {
   // The heading selected the way the round-trip tests select it: the page
   // reports its structure and the tree row is clicked.
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
   });
   await settle();
-  fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+  fromPreview({
+    type: "morph:storefront-preview-inline-text-editing",
+    editing: true,
+  });
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
     sectionId: "hero",
@@ -271,22 +338,32 @@ async function canvasCommits(value: string, originalValue: string) {
     value,
     originalValue,
   });
-  fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+  fromPreview({
+    type: "morph:storefront-preview-inline-text-editing",
+    editing: false,
+  });
   await saveSettles();
 }
 
 const savedHeadings = () =>
   updateSectionProps.mock.calls.map(
-    (call) => (call[0] as { data: { props: Record<string, unknown> } }).data.props.heading,
+    (call) =>
+      (call[0] as { data: { props: Record<string, unknown> } }).data.props
+        .heading,
   );
 const refusedNotices = () =>
-  vi.mocked(toast.info).mock.calls.filter((call) => call[0] === INLINE_TEXT_NOT_SAVED_MESSAGE);
+  vi
+    .mocked(toast.info)
+    .mock.calls.filter((call) => call[0] === INLINE_TEXT_NOT_SAVED_MESSAGE);
 
 /** The server's copy of the hero, written as the shell writes it. */
 let server: { props: HeroProps; generation: number };
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout"],
+    shouldAdvanceTime: true,
+  });
   posted.length = 0;
   canvasRevision = 0;
   useThemeWorkspaceStore.setState({
@@ -298,22 +375,37 @@ beforeEach(() => {
     activeWorkspaceKey: null,
   });
   useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
-  server = { props: { heading: "Welcome", subheading: "Summary" }, generation: 1 };
+  server = {
+    props: { heading: "Welcome", subheading: "Summary" },
+    generation: 1,
+  };
   updateSectionProps.mockReset();
-  updateSectionProps.mockImplementation(async ({ data }: { data: { props: Partial<HeroProps> } }) => {
-    server = { props: { ...server.props, ...data.props }, generation: server.generation + 1 };
-    return {
-      success: true,
-      data: {
-        draftGeneration: server.generation,
-        droppedProps: [],
-        document: {
-          version: 1,
-          sections: [{ id: "hero", type: "hero", enabled: true, props: { ...server.props } }],
+  updateSectionProps.mockImplementation(
+    async ({ data }: { data: { props: Partial<HeroProps> } }) => {
+      server = {
+        props: { ...server.props, ...data.props },
+        generation: server.generation + 1,
+      };
+      return {
+        success: true,
+        data: {
+          draftGeneration: server.generation,
+          droppedProps: [],
+          document: {
+            version: 1,
+            sections: [
+              {
+                id: "hero",
+                type: "hero",
+                enabled: true,
+                props: { ...server.props },
+              },
+            ],
+          },
         },
-      },
-    };
-  });
+      };
+    },
+  );
   getThemeEditor.mockReset();
   getThemeEditor.mockImplementation(async () => ({
     success: true,
@@ -351,17 +443,23 @@ describe("a canvas commit right after a write was answered, before the context c
   it("P2 no copy held of an existing document: the Inspector save is refused before it is sent, the input kept", async () => {
     // A context with no draft generation gives the editor no accepted copy
     // of a document that already exists (template-1).
-    renderEditor(contextAt({ heading: "Welcome", subheading: "Summary" }, undefined));
+    renderEditor(
+      contextAt({ heading: "Welcome", subheading: "Summary" }, undefined),
+    );
     await inspectorSavesHeading("Welcome", "Inspector heading");
 
     expect(updateSectionProps, "nothing sent").not.toHaveBeenCalled();
-    expect(screen.getAllByDisplayValue("Inspector heading").length).toBeGreaterThan(0);
     expect(
-      document.querySelector("[data-editor-save-status]")?.getAttribute("aria-label"),
-    ).toBe("Out of date");
-    expect(vi.mocked(toast.error).mock.calls.map((call) => String(call[0]))).toContain(
-      MISSING_BASIS_MESSAGE,
-    );
+      screen.getAllByDisplayValue("Inspector heading").length,
+    ).toBeGreaterThan(0);
+    expect(
+      document
+        .querySelector("[data-editor-save-status]")
+        ?.getAttribute("aria-label"),
+    ).toBe("Unsaved");
+    expect(
+      vi.mocked(toast.warning).mock.calls.map((call) => String(call[0])),
+    ).toContain(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
     // Nothing is sent on its own afterwards either.
     await saveSettles();
     expect(updateSectionProps).not.toHaveBeenCalled();
@@ -370,10 +468,14 @@ describe("a canvas commit right after a write was answered, before the context c
 
 describe("what still refuses", () => {
   it("C1 a newer read brings someone else's change: the page's older text is refused", async () => {
-    const { rerenderWith } = renderEditor(contextAt({ heading: "Welcome", subheading: "Summary" }, 1));
+    const { rerenderWith } = renderEditor(
+      contextAt({ heading: "Welcome", subheading: "Summary" }, 1),
+    );
     await inspectorSavesHeading("Welcome", "Inspector heading");
     // Another tab saved since: the next read has it, at a newer generation.
-    rerenderWith(contextAt({ heading: "Other tab heading", subheading: "Summary" }, 3));
+    rerenderWith(
+      contextAt({ heading: "Other tab heading", subheading: "Summary" }, 3),
+    );
     await settle();
 
     await canvasCommits("Canvas heading", "Inspector heading");
@@ -382,7 +484,9 @@ describe("what still refuses", () => {
   });
 
   it("C2 an older read arriving late changes nothing: our text is accepted, the old one refused", async () => {
-    const { rerenderWith } = renderEditor(contextAt({ heading: "Welcome", subheading: "Summary" }, 1));
+    const { rerenderWith } = renderEditor(
+      contextAt({ heading: "Welcome", subheading: "Summary" }, 1),
+    );
     await inspectorSavesHeading("Welcome", "Inspector heading");
     // A read from before the write lands after its answer.
     rerenderWith(contextAt({ heading: "Welcome", subheading: "Summary" }, 1));

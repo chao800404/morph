@@ -389,6 +389,7 @@ import {
 import {
   applyThemePreviewFiles,
   confirmThemePreviewContent,
+  startThemePreviewServer,
   syncThemePreviewContent,
   touchThemePreviewServer,
   probeThemePreviewAddress,
@@ -402,13 +403,24 @@ import {
   EDITOR_CAPABILITIES,
   parsePreviewSectionProps,
   parsePreviewServedInstance,
+  sameSectionPresentationToken,
   type PreviewCapability,
   type PreviewCatalogResponseBody,
   type PreviewEditableNode,
   type PreviewSectionProps,
+  type SectionPresentationProof,
+  type SectionPresentationToken,
   type PreviewSelectionRestoreTarget,
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
+import {
+  currentAcknowledgedSectionPresentation,
+  isSectionPresentationPagePresented,
+  isSectionPresentationPageReady as isSectionPresentationPageReadyInModel,
+  presentationShowsWriteBasis,
+  sectionPresentationKey,
+  type ExpectedSectionPresentation,
+} from "@/lib/storefront/editor/section-presentation-readiness";
 import { splitPageRoots } from "@/lib/storefront/editor/page-structure";
 import { resolveEditorSectionModel } from "@/lib/storefront/editor/editor-section-model";
 import {
@@ -654,6 +666,25 @@ export const SOURCE_LOCATION_STALE_MESSAGE =
   "This element's source has changed since the preview showed it. Wait for the preview to update, then click it again.";
 export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
   "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
+/**
+ * Said when a Content write is held for the preview's presentation. True
+ * either way it ends: an edit the canvas was shown is saved by itself once
+ * the preview acknowledges it, and every held change has Try again once the
+ * page is acknowledged (Task 40 item 2).
+ */
+export const PREVIEW_PRESENTATION_SYNCING_MESSAGE =
+  "Not saved yet: the preview is still syncing, so nothing was sent. Your change is kept, and Try again saves it once the preview has caught up.";
+/** Said where the frame cannot acknowledge what it shows (Task 40 item 3). */
+export const PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE =
+  "This preview cannot confirm what it shows, so content edits are paused. Your changes are kept; nothing was saved.";
+/** How long a frame with no acknowledgement capability is waited for. */
+export const PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS = 5_000;
+/** Said when bounded auto-refresh for an unsupported bridge stops. */
+export const PREVIEW_UNSUPPORTED_REFRESH_FAILED_MESSAGE =
+  "Could not update the preview.";
+/** Said when a write's basis is newer than the presentation it was proven by. */
+export const PREVIEW_PRESENTATION_BASIS_MESSAGE =
+  "Not saved: the preview showed an older version of this section than your change was made on. Your change is kept; use Load latest, keep mine.";
 /**
  * Said when a canvas click arrives while a preview that navigates as
  * documents has not confirmed the page the editor switched to (D3).
@@ -2014,6 +2045,7 @@ export function VisualEditorShell({
     pending: false,
     sending: false,
     failed: false,
+    held: false,
   });
   /** Content commits begun and not yet answered, queued ones included. */
   const contentSendingRef = useRef(0);
@@ -2033,11 +2065,17 @@ export function VisualEditorShell({
       failed: Array.from(failedContentKeysRef.current).some((key) =>
         pending.has(key),
       ),
+      // Held for the preview's presentation (not sent): an explicit save
+      // sends it once the page is acknowledged again (Task 40 item 2).
+      held: Array.from(pending.values()).some(
+        (entry) => entry.presentationBlocked === true,
+      ),
     };
     setContentWrites((current) =>
       current.pending === next.pending &&
       current.sending === next.sending &&
-      current.failed === next.failed
+      current.failed === next.failed &&
+      current.held === next.held
         ? current
         : next,
     );
@@ -2119,14 +2157,16 @@ export function VisualEditorShell({
     };
     const state = useThemeWorkspaceStore.getState();
     const confirmed = confirmedPreviewSourceRef.current;
-    return sourceGenerationForFreshSelection({
+    const input = {
       accepted: state.getAcceptedSourceGeneration(scope),
       observed: state.getObservedSourceGeneration(scope),
       confirmedPreview:
         confirmed?.key === previewKeyRef.current ? confirmed.generation : null,
       hasLocalSourceChanges:
         state.hasUnsavedEdits(scope) || state.hasActiveConflictsOrErrors(scope),
-    });
+    };
+    const output = sourceGenerationForFreshSelection(input);
+    return output;
   }, [context.storefront.id, context.theme.id]);
   const captureSourceForSelection = useCallback(
     (target: PreviewSelectionRestoreTarget) => {
@@ -3123,6 +3163,131 @@ export function VisualEditorShell({
     [currentContentSourceGeneration],
   );
 
+  const previewKeyRef = useRef<string | null>(null);
+  const previewReadyRoundRef = useRef(0);
+  const previewFrameRecordRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+    capabilities: ReadonlySet<PreviewCapability>;
+    documentId: string | null;
+  } | null>(null);
+  const [sectionPresentationReady, setSectionPresentationReady] =
+    useState(false);
+  const sectionPresentationReadyRef = useRef(false);
+  const initialPresentationReplayRef = useRef<(() => void) | null>(null);
+  const previewPropsRevisionRef = useRef(new Map<string, number>());
+  const presentationRevisionRef = useRef(0);
+  const pendingSectionPresentationRef = useRef(
+    new Map<
+      string,
+      Readonly<{
+        token: SectionPresentationToken;
+        sectionKey: string;
+        previewKey: string;
+        readyRound: number;
+        previewDocumentId: string;
+      }>
+    >(),
+  );
+  const latestSectionPresentationRef = useRef(
+    new Map<string, SectionPresentationToken>(),
+  );
+  const acknowledgedSectionPresentationRef = useRef(
+    new Map<string, SectionPresentationToken>(),
+  );
+  /** Assigned below, where the content write path is defined. */
+  const releasePresentationHeldDraftsRef = useRef<() => void>(() => {});
+  /**
+   * The frame on screen named no section-presentation-ack-v1 and the bounded
+   * wait for one ran out (Task 40 item 3): content edits stay paused, and
+   * what is said is that this preview cannot confirm what it shows.
+   */
+  const [presentationUnconfirmable, setPresentationUnconfirmable] =
+    useState(false);
+  /** Bumped whenever a ready replaces the frame record. */
+  const [frameRecordSequence, setFrameRecordSequence] = useState(0);
+  const presentationUnconfirmableRef = useRef(false);
+  presentationUnconfirmableRef.current = presentationUnconfirmable;
+  const presentationHoldMessage = () =>
+    presentationUnconfirmableRef.current
+      ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
+      : PREVIEW_PRESENTATION_SYNCING_MESSAGE;
+  const isSectionPresentationProofCurrent = useCallback(
+    (
+      proof: SectionPresentationProof | undefined,
+      templateId?: string,
+      sectionId?: string,
+    ) => {
+      if (!proof) return false;
+      const frame = previewFrameRecordRef.current;
+      const proofTemplateId = proof.token.templateId;
+      const resolveTemplateId = (id: string) =>
+        routeTemplateIdsRef.current.get(id) ?? id;
+      const sameTemplate =
+        templateId === undefined ||
+        resolveTemplateId(proofTemplateId) === resolveTemplateId(templateId);
+      return Boolean(
+        frame &&
+        frame.previewKey === previewKeyRef.current &&
+        frame.readyRound === previewReadyRoundRef.current &&
+        frame.documentId === proof.previewDocumentId &&
+        frame.capabilities.has("section-presentation-ack-v1") &&
+        proof.previewKey === frame.previewKey &&
+        proof.readyRound === frame.readyRound &&
+        proof.token.workspaceKey ===
+          `${context.storefront.id}:${context.theme.id}` &&
+        proof.token.routePath === (currentSearchRoutePathRef.current ?? "/") &&
+        sameTemplate &&
+        (sectionId === undefined || proof.token.sectionId === sectionId),
+      );
+    },
+    [context.storefront.id, context.theme.id],
+  );
+  const captureCurrentSectionPresentationProof = useCallback(
+    (
+      templateId: string,
+      sectionId: string,
+    ): SectionPresentationProof | null => {
+      if (!sectionPresentationReadyRef.current) return null;
+      const frame = previewFrameRecordRef.current;
+      if (
+        !frame ||
+        frame.previewKey !== previewKeyRef.current ||
+        frame.readyRound !== previewReadyRoundRef.current ||
+        frame.documentId === null ||
+        !frame.capabilities.has("section-presentation-ack-v1")
+      ) {
+        return null;
+      }
+      const resolvedTemplateId =
+        routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const token =
+        currentAcknowledgedSectionPresentation({
+          templateId: resolvedTemplateId,
+          sectionId,
+          latest: latestSectionPresentationRef.current,
+          acknowledged: acknowledgedSectionPresentationRef.current,
+        }) ??
+        (resolvedTemplateId !== templateId
+          ? currentAcknowledgedSectionPresentation({
+              templateId,
+              sectionId,
+              latest: latestSectionPresentationRef.current,
+              acknowledged: acknowledgedSectionPresentationRef.current,
+            })
+          : null);
+      return token
+        ? {
+            token,
+            previewKey: frame.previewKey,
+            readyRound: frame.readyRound,
+            previewDocumentId: frame.documentId,
+          }
+        : null;
+    },
+    [],
+  );
+
   const commitSectionPending = useCallback(
     async (
       tid: string,
@@ -3150,6 +3315,95 @@ export function VisualEditorShell({
        */
       recordAnswered?: (answeredDraftGeneration: unknown) => void,
     ) => {
+      // A resend of an unanswered write (Task 40 item 1) is not gated on the
+      // presentation: it is the frozen write the server may already hold,
+      // sent as first sent at its original draft and source generations,
+      // so CAS refuses it if the document moved. Its presentation was proven
+      // when it was first sent; a frame reload since must not drop it.
+      const presentationGated = !replay?.resend;
+      const heldBeforePresentationCheck = presentationGated
+        ? pendingPropsMapRef.current.get(key)
+        : undefined;
+      const heldSection = replay?.entry ?? heldBeforePresentationCheck;
+      // The proof the input was made with, while it is still current. One
+      // a reload or a new ready round ended is replaced, on an explicit save
+      // only, by the presentation acknowledged now (Task 40 item 2); a
+      // write on its own timer never borrows a later proof.
+      const heldProof = heldSection?.presentationProof;
+      const presentationProof =
+        heldProof &&
+        isSectionPresentationProofCurrent(
+          heldProof,
+          tid,
+          heldSection?.sectionId,
+        )
+          ? heldProof
+          : confirmed && heldSection
+            ? (captureCurrentSectionPresentationProof(
+                tid,
+                heldSection.sectionId,
+              ) ?? undefined)
+            : undefined;
+      if (
+        presentationGated &&
+        !isSectionPresentationProofCurrent(
+          presentationProof,
+          tid,
+          heldSection?.sectionId,
+        )
+      ) {
+        if (heldBeforePresentationCheck && !replay) {
+          pendingPropsMapRef.current.set(key, {
+            ...heldBeforePresentationCheck,
+            presentationProof: undefined,
+            presentationBlocked: true,
+            // It was shown once (it had a proof on this same document): every
+            // later presentation of the section carries it, so the next
+            // acknowledged round releases it (`releasePresentationHeldDrafts`).
+            // Unbasised placeholder-keyed drafts and drafts adopted from a
+            // placeholder stay held for explicit save.
+            ...((routePathFromTemplatePlaceholder(tid) === null ||
+              (heldBeforePresentationCheck.fields !== undefined &&
+                Object.values(heldBeforePresentationCheck.fields).every(
+                  (field) => field.basisDraftGeneration !== undefined,
+                ))) &&
+            ((heldBeforePresentationCheck.presentationProof &&
+              (routeTemplateIdsRef.current.get(
+                heldBeforePresentationCheck.presentationProof.token.templateId,
+              ) ??
+                heldBeforePresentationCheck.presentationProof.token
+                  .templateId) ===
+                (routeTemplateIdsRef.current.get(tid) ?? tid)) ||
+              heldBeforePresentationCheck.presentationReleasable)
+              ? { presentationReleasable: true }
+              : {}),
+          });
+          syncContentWritesRef.current();
+        }
+        toast.warning(presentationHoldMessage(), {
+          id: "preview-presentation-syncing",
+        });
+        throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+      }
+      if (heldBeforePresentationCheck?.presentationBlocked) {
+        if (!confirmed) {
+          throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+        }
+      }
+      if (
+        heldBeforePresentationCheck &&
+        (heldBeforePresentationCheck.presentationBlocked ||
+          heldBeforePresentationCheck.presentationProof !== presentationProof)
+      ) {
+        // Released by this explicit save, under the proof it is sent with.
+        pendingPropsMapRef.current.set(key, {
+          ...heldBeforePresentationCheck,
+          presentationBlocked: undefined,
+          presentationReleasable: undefined,
+          presentationProof,
+        });
+        syncContentWritesRef.current();
+      }
       if (!confirmed && unconfirmedContentRef.current.size > 0) {
         setDraftSaveState("error");
         throw new Error(UNANSWERED_EARLIER_SAVE);
@@ -3209,8 +3463,8 @@ export function VisualEditorShell({
           own: replay?.entry,
           acknowledgeOwn: Boolean(replay?.resend && replay.link === null),
           failureCode: (result) => result.error,
-          select: (entry) =>
-            replay?.resend
+          select: (entry) => {
+            return replay?.resend
               ? resentReplay(entry)
               : selectCurrentContentFields(
                   entry,
@@ -3222,7 +3476,8 @@ export function VisualEditorShell({
                   onDocumentCreatedHere
                     ? { missingBasis: ROUTE_DOCUMENT_CREATED_GENERATION }
                     : undefined,
-                ),
+                );
+          },
           saveWhenSent: (prepare) =>
             enqueueTemplateMutation(
               tid,
@@ -3268,6 +3523,25 @@ export function VisualEditorShell({
                 composedOnCreatedDocument =
                   !replay?.resend && madeBeforeDocument && !writeSnapshot;
                 const entry = prepare();
+                // The presentation proven is the one the write's basis was
+                // made on (Task 40 item 4): one older than the basis is
+                // refused, before anything is sent, as a missing basis is.
+                if (
+                  !replay &&
+                  presentationGated &&
+                  presentationProof &&
+                  !presentationShowsWriteBasis(
+                    presentationProof.token.documentBasis,
+                    Object.values(entry.fields ?? {}).map(
+                      (field) => field.basisDraftGeneration,
+                    ),
+                  )
+                ) {
+                  toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+                    id: "preview-presentation-basis",
+                  });
+                  throw draftConflictFailure();
+                }
                 sentDraftGeneration =
                   entry.expectedDraftGeneration ?? generation;
                 reportSent(sentDraftGeneration);
@@ -3305,6 +3579,7 @@ export function VisualEditorShell({
                       };
                     }
                   ).data;
+                  let acceptedAnsweredSnapshot = false;
                   // The document our write produced, with its generation: the
                   // next write composes on it, not on a read from before it.
                   // Accepted here, before the write's pending input is
@@ -3329,8 +3604,10 @@ export function VisualEditorShell({
                         ? { ownStepFrom: ROUTE_DOCUMENT_CREATED_GENERATION }
                         : undefined,
                     );
-                    if (next)
+                    if (next) {
                       contentSnapshotsRef.current.set(sentTemplateId, next);
+                      acceptedAnsweredSnapshot = true;
+                    }
                   }
                   // A visibility this write carried is answered: the preview
                   // is told what the editor holds now, which a newer toggle
@@ -3341,6 +3618,16 @@ export function VisualEditorShell({
                       answered,
                       hiddenBefore,
                     );
+                  }
+                  // The accepted snapshot changed this page's Document
+                  // generation. Every section token on that page must name
+                  // the copy now held by the editor before another input can
+                  // use its presentation proof. The pending overlay remains
+                  // in place until commitPendingContent acknowledges it.
+                  if (result.success && acceptedAnsweredSnapshot) {
+                    for (const sectionId of sectionModelRef.current.bindings.keys()) {
+                      previewVisibilityRef.current.reconcile(sectionId);
+                    }
                   }
                   return result;
                 },
@@ -3545,6 +3832,8 @@ export function VisualEditorShell({
       resentReplay,
       noteHistoryStepAnswered,
       recordSavedContentHistory,
+      captureCurrentSectionPresentationProof,
+      isSectionPresentationProofCurrent,
       noteSavedListChange,
       supersedeSavedListChange,
     ],
@@ -3698,7 +3987,20 @@ export function VisualEditorShell({
             }
           }
         }
+        const priorDraftGenerations = new Map(
+          fresh.data.templates.map((template) => [
+            template.id,
+            contentSnapshotsRef.current.get(template.id)?.draftGeneration,
+          ]),
+        );
         acceptReadTemplates(fresh.data.templates, firstReadOwnBases);
+        const readAdvancedDocument = fresh.data.templates.some((template) => {
+          const before = priorDraftGenerations.get(template.id);
+          const after = contentSnapshotsRef.current.get(
+            template.id,
+          )?.draftGeneration;
+          return after !== undefined && after !== before;
+        });
         for (const [key, sent] of unconfirmed) {
           // Another recovery may have settled or replaced this exact write while
           // this read was in flight. Only its current owner may move history.
@@ -3832,9 +4134,17 @@ export function VisualEditorShell({
             recorder?.(template?.draftGeneration);
           }
         }
-        // Each answer found: the preview is told the visibility it leaves.
-        for (const [key, sent] of resolved) {
-          reconcileAfterRemoval(sent.sectionId, sent, hiddenBefore.get(key));
+        if (readAdvancedDocument) {
+          // Re-present the accepted generation before another input can use its
+          // section token; the page-wide barrier waits for every ack.
+          for (const sectionId of sectionModelRef.current.bindings.keys()) {
+            previewVisibilityRef.current.reconcile(sectionId);
+          }
+        } else {
+          // Each answer found: the preview is told the visibility it leaves.
+          for (const [key, sent] of resolved) {
+            reconcileAfterRemoval(sent.sectionId, sent, hiddenBefore.get(key));
+          }
         }
         syncUnconfirmedContentCount();
       })();
@@ -4075,7 +4385,21 @@ export function VisualEditorShell({
       );
     const freshTemplates = fresh?.success ? fresh.data.templates : null;
     if (!freshTemplates) return;
+    const priorDraftGenerations = new Map(
+      freshTemplates.map((template) => [
+        template.id,
+        contentSnapshotsRef.current.get(template.id)?.draftGeneration,
+      ]),
+    );
     acceptReadTemplates(freshTemplates);
+    const readAdvancedDocument = freshTemplates.some((template) => {
+      const before = priorDraftGenerations.get(template.id);
+      const after = contentSnapshotsRef.current.get(
+        template.id,
+      )?.draftGeneration;
+      return after !== undefined && after !== before;
+    });
+    const rebasedKeys: Array<{ key: string; templateId: string }> = [];
 
     for (const [key, templateId] of conflicts) {
       const pending = pendingPropsMapRef.current.get(key);
@@ -4179,16 +4503,72 @@ export function VisualEditorShell({
           template.draftGeneration,
         );
       }
+      rebasedKeys.push({ key, templateId });
+    }
 
+    if (readAdvancedDocument) {
+      // The author asked to keep this draft, but the accepted latest Document
+      // has not yet been shown by this frame. Present the rebased page and
+      // leave the draft unsaved; a second explicit action after its acks is
+      // required to write it.
+      for (const sectionId of sectionModelRef.current.bindings.keys()) {
+        previewVisibilityRef.current.reconcile(sectionId);
+      }
+      if (rebasedKeys.length > 0) {
+        toast.warning(presentationHoldMessage(), {
+          id: "preview-presentation-syncing",
+        });
+      }
+      return;
+    }
+
+    const proofs = new Map<string, SectionPresentationProof>();
+    for (const { key, templateId } of rebasedKeys) {
+      const pending = pendingPropsMapRef.current.get(key);
+      if (!pending) continue;
+      const proof = captureCurrentSectionPresentationProof(
+        templateId,
+        pending.sectionId,
+      );
+      if (
+        !proof ||
+        !isSectionPresentationProofCurrent(proof, templateId, pending.sectionId)
+      ) {
+        for (const sectionId of sectionModelRef.current.bindings.keys()) {
+          previewVisibilityRef.current.reconcile(sectionId);
+        }
+        toast.warning(presentationHoldMessage(), {
+          id: "preview-presentation-syncing",
+        });
+        return;
+      }
+      proofs.set(key, proof);
+    }
+
+    for (const { key } of rebasedKeys) {
+      const pending = pendingPropsMapRef.current.get(key);
+      const proof = proofs.get(key);
+      if (pending && proof) {
+        pendingPropsMapRef.current.set(key, {
+          ...pending,
+          presentationProof: proof,
+          presentationBlocked: undefined,
+        });
+      }
+    }
+
+    for (const { key, templateId } of rebasedKeys) {
       await commitSectionPending(templateId, key, true, true).catch(() => {
         // Reported by the mutation, and recorded again if it conflicted.
       });
     }
   }, [
     acceptReadTemplates,
+    captureCurrentSectionPresentationProof,
     commitSectionPending,
     context.storefront.id,
     context.theme.id,
+    isSectionPresentationProofCurrent,
     queryClient,
   ]);
 
@@ -4440,6 +4820,7 @@ export function VisualEditorShell({
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
+  previewKeyRef.current = previewKey;
   // A preview on its `pv-` host is framed through the authorization flow
   // first (#214 P2): one flow per framed document, answered at most once.
   const previewAccessMode =
@@ -4513,6 +4894,13 @@ export function VisualEditorShell({
    */
   const [inlineEditOpen, setInlineEditOpen] = useState(false);
   const inlineEditOpenRef = useRef(false);
+  const [inspectorComposing, setInspectorComposing] = useState(false);
+  const inspectorComposingRef = useRef(false);
+  const [unsupportedRefreshFailed, setUnsupportedRefreshFailed] =
+    useState(false);
+  const unsupportedBridgeAttemptedRef = useRef(new Set<string>());
+  const unsupportedBridgeReloadingRef = useRef(false);
+  const deferredUnsupportedRefreshRef = useRef<(() => void) | null>(null);
   /** Called with true when the edit was finished, false when it was lost. */
   const inlineEditEndedRef = useRef(new Set<(finished: boolean) => void>());
   /** The finish this editor asked for and has not seen answered; one at most. */
@@ -4594,8 +4982,6 @@ export function VisualEditorShell({
     stepCanvasDeferral({ type: "key-change", previewKey });
     reportInlineEdit(false, false);
   }, [previewKey, reportInlineEdit, stepCanvasDeferral]);
-  const previewKeyRef = useRef(previewKey);
-  previewKeyRef.current = previewKey;
   /**
    * A frame whose dev server was restarted on the same address gets a new
    * frame, and only that — see `createPreviewInstanceWatch`. Fed by the ready
@@ -4608,22 +4994,6 @@ export function VisualEditorShell({
    * messages it sends.
    */
   const instanceContentReplayRef = useRef<InstanceContentReplay | null>(null);
-  /** Counts every ready message, of any frame: a frame's ready round. */
-  const previewReadyRoundRef = useRef(0);
-  /**
-   * What the frame said about itself on its latest ready, for that frame and
-   * round only: what it can do (`PREVIEW_CAPABILITIES`), and `documentId`,
-   * the document that ready came from (C5, `classifyPreviewDocument`); null
-   * for a ready that named none, which is unverified. No record for the
-   * frame and round on screen, or a capability it did not name, is
-   * unsupported: absent never matches.
-   */
-  const previewFrameRecordRef = useRef<{
-    previewKey: string;
-    readyRound: number;
-    capabilities: ReadonlySet<PreviewCapability>;
-    documentId: string | null;
-  } | null>(null);
   /** Whether the frame on screen said, in this round, that it can `capability`. */
   const frameCan = useCallback((capability: PreviewCapability) => {
     const record = previewFrameRecordRef.current;
@@ -4893,6 +5263,139 @@ export function VisualEditorShell({
     refetchPreviewServer,
   ]);
 
+  const previewServerDataRef = useRef(previewServer.data);
+  previewServerDataRef.current = previewServer.data;
+  const unsupportedBridgeFailedRef = useRef(false);
+
+  useEffect(() => {
+    if (!inspectorComposing && !inlineEditOpen) {
+      const pending = deferredUnsupportedRefreshRef.current;
+      if (pending) {
+        deferredUnsupportedRefreshRef.current = null;
+        pending();
+      }
+    }
+  }, [inlineEditOpen, inspectorComposing]);
+
+  useEffect(() => {
+    const record = previewFrameRecordRef.current;
+    if (!previewKey || !record || record.previewKey !== previewKey) {
+      return;
+    }
+    if (record.capabilities.has("section-presentation-ack-v1")) {
+      unsupportedBridgeReloadingRef.current = false;
+      unsupportedBridgeFailedRef.current = false;
+      deferredUnsupportedRefreshRef.current = null;
+      setUnsupportedRefreshFailed(false);
+      setPresentationUnconfirmable(false);
+      return;
+    }
+
+    if (unsupportedBridgeReloadingRef.current) {
+      unsupportedBridgeReloadingRef.current = false;
+      unsupportedBridgeFailedRef.current = true;
+      setUnsupportedRefreshFailed(true);
+      setPresentationUnconfirmable(true);
+      return;
+    }
+
+    if (deferredUnsupportedRefreshRef.current) {
+      return;
+    }
+
+    const serverData = previewServerDataRef.current?.success
+      ? previewServerDataRef.current.data
+      : null;
+    const currentFingerprint = serverData?.workspaceFingerprint ?? null;
+    const baseScope = previewUrlRef.current ?? previewKey;
+    const buildKey =
+      currentFingerprint ?? `${baseScope}:${serverData?.url ?? ""}`;
+    const attemptKey = `${baseScope}::${buildKey}`;
+
+    if (unsupportedBridgeAttemptedRef.current.has(attemptKey)) {
+      if (unsupportedBridgeFailedRef.current) {
+        setUnsupportedRefreshFailed(true);
+        setPresentationUnconfirmable(true);
+        return;
+      }
+      setPresentationUnconfirmable(false);
+      setUnsupportedRefreshFailed(false);
+      const round = record.readyRound;
+      const timer = setTimeout(() => {
+        const now = previewFrameRecordRef.current;
+        if (
+          now &&
+          now.previewKey === previewKeyRef.current &&
+          now.readyRound === round &&
+          !now.capabilities.has("section-presentation-ack-v1")
+        ) {
+          unsupportedBridgeFailedRef.current = true;
+          setUnsupportedRefreshFailed(true);
+          setPresentationUnconfirmable(true);
+        }
+      }, PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS);
+      return () => clearTimeout(timer);
+    }
+
+    setPresentationUnconfirmable(false);
+    setUnsupportedRefreshFailed(false);
+    unsupportedBridgeFailedRef.current = false;
+    unsupportedBridgeAttemptedRef.current.add(attemptKey);
+    const checkedPreviewKey = previewKey;
+    const storefrontId = context.storefront.id;
+    const themeId = context.theme.id;
+    void startThemePreviewServer({
+      data: { storefrontId, themeId },
+    }).then(
+      (result) => {
+        if (previewKeyRef.current !== checkedPreviewKey) return;
+        const nextData = result?.success ? result.data : null;
+        const supportsAck =
+          Array.isArray(nextData?.bridgeCapabilities) &&
+          nextData.bridgeCapabilities.includes("section-presentation-ack-v1");
+        const nextFingerprint = nextData?.workspaceFingerprint ?? null;
+        const buildChanged =
+          currentFingerprint === null ||
+          (nextFingerprint !== null && nextFingerprint !== currentFingerprint);
+        if (!supportsAck || !buildChanged) {
+          unsupportedBridgeFailedRef.current = true;
+          setUnsupportedRefreshFailed(true);
+          setPresentationUnconfirmable(true);
+          return;
+        }
+        if (nextFingerprint) {
+          unsupportedBridgeAttemptedRef.current.add(
+            `${baseScope}::${nextFingerprint}`,
+          );
+        }
+        const runReload = () => {
+          queryClient.setQueryData(
+            themePreviewServerQueries.forTheme(storefrontId, themeId).queryKey,
+            result,
+          );
+          unsupportedBridgeReloadingRef.current = true;
+          setPreviewRevision((revision) => revision + 1);
+        };
+        if (inspectorComposingRef.current || inlineEditOpenRef.current) {
+          deferredUnsupportedRefreshRef.current = runReload;
+        } else {
+          runReload();
+        }
+      },
+      () => {
+        if (previewKeyRef.current !== checkedPreviewKey) return;
+        unsupportedBridgeFailedRef.current = true;
+        setUnsupportedRefreshFailed(true);
+        setPresentationUnconfirmable(true);
+      },
+    );
+  }, [
+    previewKey,
+    frameRecordSequence,
+    context.storefront.id,
+    context.theme.id,
+    queryClient,
+  ]);
   const previewFrameReady =
     previewLifecycle.key && previewLifecycle.readySequence > 0
       ? {
@@ -6277,11 +6780,12 @@ export function VisualEditorShell({
    * commands live in `use-preview-selection`.
    */
   const postSelectionMessage = useCallback(
-    (message: Parameters<typeof postEditorToPreviewMessage>[1]) =>
+    (message: Parameters<typeof postEditorToPreviewMessage>[1]) => {
       postEditorToPreviewMessage(
         previewIframeRef.current?.contentWindow,
         message,
-      ),
+      );
+    },
     [postEditorToPreviewMessage],
   );
   const readLatestStyleRevision = useCallback(
@@ -11456,6 +11960,12 @@ export function VisualEditorShell({
 
   // A new frame starts a document on whatever the preview holds now.
   useEffect(() => {
+    pendingSectionPresentationRef.current.clear();
+    latestSectionPresentationRef.current.clear();
+    acknowledgedSectionPresentationRef.current.clear();
+    sectionPresentationBindingRef.current = null;
+    sectionPresentationReadyRef.current = false;
+    setSectionPresentationReady(false);
     if (previewKey)
       previewCompileRecoveryRef.current.noteDocumentStarted(previewKey);
   }, [previewKey]);
@@ -11548,6 +12058,10 @@ export function VisualEditorShell({
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (!message) {
+        // A new document is first read as a candidate while its ping/pong
+        // identity check completes. That is a valid handshake step, not a
+        // malformed preview message.
+        if (previewDocumentOf(event)?.kind === "candidate") return;
         if (
           import.meta.env.DEV &&
           typeof (event.data as { type?: unknown })?.type === "string" &&
@@ -11562,6 +12076,8 @@ export function VisualEditorShell({
         }
         return;
       }
+      if (message.type === "morph:storefront-preview-select-section") {
+      }
 
       if (message.type === "morph:storefront-preview-pong") {
         const heartbeat = previewHeartbeatRef.current;
@@ -11574,6 +12090,79 @@ export function VisualEditorShell({
         }
         heartbeat.lastPongAt = Date.now();
         heartbeat.failed = false;
+        return;
+      }
+
+      if (
+        message.type === "morph:storefront-preview-section-presentation-ack"
+      ) {
+        const record = previewFrameRecordRef.current;
+        const pending = pendingSectionPresentationRef.current.get(
+          message.operationId,
+        );
+        const documentVerdict = previewDocumentOf(event);
+        // A withdrawal (Task 40 item 7): the frame no longer shows what it
+        // acknowledged for this token (its document was reset to the server
+        // copy). Only for the token acknowledged now, from the frame, round
+        // and document it came from; the section is presented again, and
+        // nothing is written until that presentation is acknowledged.
+        if (
+          !pending &&
+          message.status === "not-applied" &&
+          record &&
+          record.previewKey === previewKeyRef.current &&
+          record.readyRound === previewReadyRoundRef.current &&
+          record.capabilities.has("section-presentation-ack-v1") &&
+          record.documentId !== null &&
+          documentVerdict?.kind === "message" &&
+          documentVerdict.verified
+        ) {
+          const withdrawn = Array.from(
+            acknowledgedSectionPresentationRef.current,
+          ).find(([, token]) =>
+            sameSectionPresentationToken(token, message.token),
+          );
+          if (withdrawn) {
+            acknowledgedSectionPresentationRef.current.delete(withdrawn[0]);
+            refreshSectionPresentationReady();
+            previewVisibilityRef.current.reconcile(message.token.sectionId);
+          }
+          return;
+        }
+        if (
+          !record ||
+          !pending ||
+          record.previewKey !== previewKeyRef.current ||
+          record.readyRound !== previewReadyRoundRef.current ||
+          !record.capabilities.has("section-presentation-ack-v1") ||
+          record.documentId === null ||
+          pending.previewKey !== record.previewKey ||
+          pending.readyRound !== record.readyRound ||
+          pending.previewDocumentId !== record.documentId ||
+          documentVerdict?.kind !== "message" ||
+          !documentVerdict.verified ||
+          !sameSectionPresentationToken(pending.token, message.token) ||
+          latestSectionPresentationRef.current.get(pending.sectionKey) ===
+            undefined ||
+          !sameSectionPresentationToken(
+            latestSectionPresentationRef.current.get(pending.sectionKey)!,
+            message.token,
+          )
+        ) {
+          return;
+        }
+        pendingSectionPresentationRef.current.delete(message.operationId);
+        if (message.status === "applied") {
+          acknowledgedSectionPresentationRef.current.set(
+            pending.sectionKey,
+            message.token,
+          );
+        } else {
+          acknowledgedSectionPresentationRef.current.delete(pending.sectionKey);
+        }
+        if (refreshSectionPresentationReady()) {
+          releasePresentationHeldDraftsRef.current();
+        }
         return;
       }
 
@@ -11717,7 +12306,15 @@ export function VisualEditorShell({
           type: "ready",
           verified: documentId !== null,
         });
-        if (deferral.armReplay) {
+        // A newly identified iframe document starts from whatever snapshot
+        // its preview request loaded. Read the latest editor Document and
+        // replay every bound section into this round so the page-wide
+        // presentation barrier is based on post-commit acknowledgements for
+        // the complete page, not only sections with pending edits.
+        if (
+          deferral.armReplay ||
+          (documentId !== null && previewReadyRoundRef.current > 0)
+        ) {
           instanceContentReplayRef.current?.frameReloaded(
             previewKey,
             previewReadyRoundRef.current,
@@ -11725,6 +12322,12 @@ export function VisualEditorShell({
           );
         }
         dispatchPreviewLifecycle({ type: "frame-ready", key: previewKey });
+        pendingSectionPresentationRef.current.clear();
+        latestSectionPresentationRef.current.clear();
+        acknowledgedSectionPresentationRef.current.clear();
+        sectionPresentationBindingRef.current = null;
+        sectionPresentationReadyRef.current = false;
+        setSectionPresentationReady(false);
         previewReadyRoundRef.current += 1;
         // This round's record replaces the last one: a capability counts only
         // for the ready that named it.
@@ -11734,6 +12337,7 @@ export function VisualEditorShell({
           capabilities: new Set(message.capabilities ?? []),
           documentId,
         };
+        setFrameRecordSequence((sequence) => sequence + 1);
         // Tell this document what the editor can read back, only when this
         // ready carries a document id and the bridge said it reads the token.
         // The id names the round, not a permission: the bridge ignores any
@@ -11753,6 +12357,7 @@ export function VisualEditorShell({
           previewKey,
           previewReadyRoundRef.current,
         );
+        refreshSectionPresentationReady();
         previewInstanceWatchRef.current?.frameReady(
           previewKey,
           message.servedInstance ?? null,
@@ -11902,6 +12507,18 @@ export function VisualEditorShell({
               routePath: message.routePath,
             });
           }
+        }
+        if (
+          previewReadyRoundRef.current === 1 &&
+          previewStructureMatchesRoute(
+            message.routePath ?? undefined,
+            search.routePath,
+          )
+        ) {
+          // The first document was already rendered from the editor's loaded
+          // snapshot. Send that complete page once its route is confirmed;
+          // later documents use the read-before-replay recovery path above.
+          initialPresentationReplayRef.current?.();
         }
         return;
       }
@@ -12391,7 +13008,14 @@ export function VisualEditorShell({
       }
       onSearchChange(next);
     },
-    [activeRouteSections, activeTemplate, onSearchChange, search.routePath],
+    [
+      activeRouteSections,
+      activeTemplate,
+      onSearchChange,
+      previewSelection.askForSelection,
+      previewSelection.forget,
+      search.routePath,
+    ],
   );
 
   // A page row changes the route before it can select the page root. Wait for
@@ -13042,7 +13666,178 @@ export function VisualEditorShell({
       },
     }),
   );
-  const previewPropsRevisionRef = useRef(new Map<string, number>());
+  const sectionPresentationBindingRef = useRef<string | null>(null);
+  const sectionModelRef = useRef(sectionModel);
+  sectionModelRef.current = sectionModel;
+  const presentationContextRef = useRef({
+    workspaceKey: `${context.storefront.id}:${context.theme.id}`,
+    templates: context.templates,
+    activeTemplate,
+    layoutTemplate,
+    routePath: search.routePath ?? "/",
+  });
+  const acceptedPresentationGeneration = useCallback(
+    (
+      snapshot: { draftGeneration: number } | undefined,
+      ownerTemplate: { draftGeneration?: number } | undefined,
+    ) => {
+      const snapshotGeneration = snapshot?.draftGeneration;
+      const contextGeneration = ownerTemplate?.draftGeneration;
+      const validContextGeneration =
+        typeof contextGeneration === "number" &&
+        Number.isSafeInteger(contextGeneration) &&
+        contextGeneration > 0;
+      // The editor context can receive another tab's newer Document before a
+      // later write/read-back refreshes our retained snapshot. Presentation
+      // attestations must name the copy currently shown by the Inspector.
+      if (
+        validContextGeneration &&
+        (snapshotGeneration === undefined ||
+          contextGeneration >= snapshotGeneration)
+      ) {
+        return contextGeneration;
+      }
+      return snapshotGeneration ?? contextGeneration;
+    },
+    [],
+  );
+  presentationContextRef.current = {
+    workspaceKey: `${context.storefront.id}:${context.theme.id}`,
+    templates: context.templates,
+    activeTemplate,
+    layoutTemplate,
+    routePath: search.routePath ?? "/",
+  };
+  const expectedSectionPresentations =
+    useCallback((): ExpectedSectionPresentation[] => {
+      const current = presentationContextRef.current;
+      return [...sectionModelRef.current.bindings].map(
+        ([sectionId, binding]) => {
+          const templateId = binding.templateId;
+          const template =
+            current.templates.find(
+              (candidate) => candidate.id === templateId,
+            ) ??
+            (current.activeTemplate?.id === templateId
+              ? current.activeTemplate
+              : current.layoutTemplate?.id === templateId
+                ? current.layoutTemplate
+                : undefined);
+          const snapshotKey =
+            routeTemplateIdsRef.current.get(templateId) ?? templateId;
+          const draftGeneration = acceptedPresentationGeneration(
+            contentSnapshotsRef.current.get(snapshotKey),
+            template,
+          );
+          const createdTemplateId =
+            routeTemplateIdsRef.current.get(templateId) ?? templateId;
+          const documentBasis =
+            typeof draftGeneration === "number" &&
+            Number.isSafeInteger(draftGeneration) &&
+            draftGeneration > 0
+              ? ({ kind: "existing", draftGeneration } as const)
+              : routePathFromTemplatePlaceholder(createdTemplateId) !== null ||
+                  routeDocumentsCreatedHereRef.current.has(createdTemplateId)
+                ? ({
+                    kind: "new-document",
+                    createEpoch: createdTemplateId,
+                  } as const)
+                : null;
+          return {
+            workspaceKey: current.workspaceKey,
+            templateId,
+            routePath: current.routePath,
+            sectionId,
+            documentBasis,
+            overlayRevision:
+              previewPropsRevisionRef.current.get(sectionId) ?? 0,
+          };
+        },
+      );
+    }, [acceptedPresentationGeneration]);
+  const isSectionPresentationPageReady = useCallback(() => {
+    const frame = previewFrameRecordRef.current;
+    if (
+      !frame ||
+      frame.previewKey !== previewKeyRef.current ||
+      frame.readyRound !== previewReadyRoundRef.current ||
+      frame.documentId === null ||
+      !frame.capabilities.has("section-presentation-ack-v1")
+    ) {
+      return false;
+    }
+    return isSectionPresentationPageReadyInModel({
+      page: expectedSectionPresentations(),
+      latest: latestSectionPresentationRef.current,
+      acknowledged: acknowledgedSectionPresentationRef.current,
+    });
+  }, [expectedSectionPresentations]);
+  // Keep the event-side guard current during the render that changes the
+  // expected page, before a passive effect can update the visible state.
+  sectionPresentationReadyRef.current = isSectionPresentationPageReady();
+  const refreshSectionPresentationReady = useCallback(() => {
+    const ready = isSectionPresentationPageReady();
+    sectionPresentationReadyRef.current = ready;
+    setSectionPresentationReady((current) =>
+      current === ready ? current : ready,
+    );
+    return ready;
+  }, [isSectionPresentationPageReady]);
+  const hasCurrentSectionPresentation = useCallback(() => {
+    const ready = isSectionPresentationPageReady();
+    if (ready !== sectionPresentationReadyRef.current) {
+      sectionPresentationReadyRef.current = ready;
+      setSectionPresentationReady(ready);
+    }
+    return ready;
+  }, [isSectionPresentationPageReady]);
+  useEffect(() => {
+    refreshSectionPresentationReady();
+  }, [
+    activeTemplate,
+    context.templates,
+    layoutTemplate,
+    previewKey,
+    search.routePath,
+    sectionModel,
+    refreshSectionPresentationReady,
+  ]);
+  useEffect(() => {
+    const frame = previewFrameRecordRef.current;
+    if (
+      !frame ||
+      frame.previewKey !== previewKeyRef.current ||
+      frame.readyRound !== previewReadyRoundRef.current ||
+      frame.documentId === null ||
+      !frame.capabilities.has("section-presentation-ack-v1")
+    ) {
+      return;
+    }
+    const page = expectedSectionPresentations();
+    if (
+      isSectionPresentationPagePresented({
+        page,
+        latest: latestSectionPresentationRef.current,
+      })
+    ) {
+      return;
+    }
+    // A newer editor read can advance the Document without a write callback
+    // (for example, another tab saved while this page stayed open). Re-send
+    // every bound section at that copy; inputs remain held until all of these
+    // post-commit acknowledgements arrive.
+    for (const sectionId of sectionModelRef.current.bindings.keys()) {
+      previewVisibilityRef.current.reconcile(sectionId);
+    }
+  }, [
+    activeTemplate,
+    context.templates,
+    expectedSectionPresentations,
+    layoutTemplate,
+    previewKey,
+    search.routePath,
+    sectionModel,
+  ]);
   /**
    * Per section, the post still waiting on media signing: its revision, and
    * the validity of the work that made it — a replay's frame, ready round and
@@ -13089,12 +13884,95 @@ export function VisualEditorShell({
       // post was composed from. Only the message is changed; what is saved,
       // pending or accepted is not touched.
       const hidden = previewSectionIsHidden(sectionId);
+      let presentationToken: SectionPresentationToken | undefined;
+      const frame = previewFrameRecordRef.current;
+      const templateId = templateIdForSection(sectionId);
+      const snapshotKey = templateId
+        ? (routeTemplateIdsRef.current.get(templateId) ?? templateId)
+        : null;
+      const snapshot = snapshotKey
+        ? contentSnapshotsRef.current.get(snapshotKey)
+        : undefined;
+      const ownerTemplate = templateId
+        ? (context.templates.find((template) => template.id === templateId) ??
+          (activeTemplate?.id === templateId
+            ? activeTemplate
+            : layoutTemplate?.id === templateId
+              ? layoutTemplate
+              : undefined))
+        : undefined;
+      const draftGeneration = acceptedPresentationGeneration(
+        snapshot,
+        ownerTemplate,
+      );
+      const createdTemplateId = templateId
+        ? (routeTemplateIdsRef.current.get(templateId) ?? templateId)
+        : null;
+      const documentBasis =
+        typeof draftGeneration === "number" &&
+        Number.isSafeInteger(draftGeneration) &&
+        draftGeneration > 0
+          ? ({ kind: "existing", draftGeneration } as const)
+          : createdTemplateId &&
+              (routePathFromTemplatePlaceholder(createdTemplateId) !== null ||
+                routeDocumentsCreatedHereRef.current.has(createdTemplateId))
+            ? ({
+                kind: "new-document",
+                createEpoch: createdTemplateId,
+              } as const)
+            : null;
+      if (
+        frame &&
+        frame.previewKey === previewKeyRef.current &&
+        frame.readyRound === previewReadyRoundRef.current &&
+        frame.documentId !== null &&
+        frame.capabilities.has("section-presentation-ack-v1") &&
+        templateId &&
+        documentBasis
+      ) {
+        const presentationRevision = presentationRevisionRef.current + 1;
+        presentationRevisionRef.current = presentationRevision;
+        presentationToken = {
+          workspaceKey: `${context.storefront.id}:${context.theme.id}`,
+          templateId,
+          routePath: search.routePath ?? "/",
+          sectionId,
+          documentBasis,
+          overlayRevision: previewPropsRevisionRef.current.get(sectionId) ?? 0,
+          presentationRevision,
+          operationId: `section-presentation-${presentationRevision}`,
+        };
+        const sectionKey = sectionPresentationKey(templateId, sectionId);
+        for (const [
+          operationId,
+          pending,
+        ] of pendingSectionPresentationRef.current) {
+          if (pending.sectionKey === sectionKey) {
+            pendingSectionPresentationRef.current.delete(operationId);
+          }
+        }
+        latestSectionPresentationRef.current.set(sectionKey, presentationToken);
+        acknowledgedSectionPresentationRef.current.delete(sectionKey);
+        sectionPresentationReadyRef.current = false;
+        setSectionPresentationReady(false);
+        pendingSectionPresentationRef.current.set(
+          presentationToken.operationId,
+          {
+            token: presentationToken,
+            sectionKey,
+            previewKey: frame.previewKey,
+            readyRound: frame.readyRound,
+            previewDocumentId: frame.documentId,
+          },
+        );
+      }
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-section-props",
         sectionId,
         props: hidden ? undefined : resolvedProps,
         enabled: hidden ? false : enabled,
         ...(!hidden && resetKeys?.length ? { resetKeys } : {}),
+        ...(presentationToken ? { presentationToken } : {}),
       });
       // Anything that changes what the canvas renders has to re-measure,
       // not just a file write. The theme's own `min-h-screen` resolves
@@ -13103,7 +13981,18 @@ export function VisualEditorShell({
       // otherwise leave the space it used to occupy behind.
       schedulePreviewRemeasureRef.current();
     },
-    [holdCanvasPost, previewSectionIsHidden],
+    [
+      activeTemplate,
+      acceptedPresentationGeneration,
+      context.storefront.id,
+      context.templates,
+      context.theme.id,
+      holdCanvasPost,
+      layoutTemplate,
+      previewSectionIsHidden,
+      search.routePath,
+      templateIdForSection,
+    ],
   );
   const syncPreviewSectionProps = useCallback(
     (
@@ -13202,6 +14091,15 @@ export function VisualEditorShell({
     },
     [previewMediaCache, postPreviewSectionProps],
   );
+  const cancelAwaitingSignedPost = useCallback((sectionId: string) => {
+    const waiting = awaitingSignedPostRef.current.get(sectionId);
+    if (!waiting) return;
+    const revisions = previewPropsRevisionRef.current;
+    if (revisions.get(sectionId) === waiting.revision) {
+      revisions.set(sectionId, waiting.revision + 1);
+    }
+    awaitingSignedPostRef.current.delete(sectionId);
+  }, []);
   // C5: a post an inline edit held, sent once the edit ended, through the
   // poster it was held by — so the hidden check, the selection-field gates and
   // the transport checks are asked now, not when it was held. A committed
@@ -13264,6 +14162,20 @@ export function VisualEditorShell({
     },
     [currentContentSourceGeneration, syncPreviewSectionProps],
   );
+  initialPresentationReplayRef.current = () => {
+    const frame = previewFrameRecordRef.current;
+    if (
+      !frame ||
+      frame.readyRound !== 1 ||
+      frame.previewKey !== previewKeyRef.current ||
+      !frame.capabilities.has("section-presentation-ack-v1")
+    ) {
+      return;
+    }
+    for (const sectionId of sectionModelRef.current.bindings.keys()) {
+      reconcilePreviewSection(sectionId);
+    }
+  };
   previewVisibilityRef.current.reconcile = reconcilePreviewSection;
 
   // The frame `createPreviewInstanceWatch` brought up is given, once it is on
@@ -13272,8 +14184,6 @@ export function VisualEditorShell({
   // (`createInstanceContentReplay`). Its page renders from the snapshot of
   // the last start, which this tab's saves since then do not reach. Only
   // content messages: no save, no start, no baseline moved.
-  const sectionModelRef = useRef(sectionModel);
-  sectionModelRef.current = sectionModel;
   useEffect(() => {
     const replay = createInstanceContentReplay({
       readLatest: async () => {
@@ -13660,6 +14570,26 @@ export function VisualEditorShell({
       const historyGeneration = options.historyGeneration;
       const restore = { ...options.restore };
       reportAuthenticatedUserActivity();
+      // A resend goes as first sent, CAS-guarded, without a fresh proof
+      // (Task 40 item 1; see `commitSectionPending`).
+      const presentationGated = !options.resend;
+      const presentationTemplateId = templateIdForSection(sectionId);
+      const presentationProof =
+        presentationGated && presentationTemplateId
+          ? captureCurrentSectionPresentationProof(
+              presentationTemplateId,
+              sectionId,
+            )
+          : null;
+      if (presentationGated && !presentationProof) {
+        toast.warning(presentationHoldMessage(), {
+          id: "preview-presentation-syncing",
+        });
+        return {
+          success: false,
+          message: PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+        };
+      }
       if (!isDocumentWriteTarget(sectionId, templateIdForSection)) {
         return { success: false, message: "Nothing to reset here." };
       }
@@ -13698,6 +14628,20 @@ export function VisualEditorShell({
       ) {
         toast.error(MISSING_BASIS_MESSAGE, { id: "content-missing-basis" });
         return { success: false, message: MISSING_BASIS_MESSAGE };
+      }
+      // The press was made on what the acknowledged presentation showed
+      // (Task 40 item 4): a basis newer than that is refused before sending.
+      if (
+        authorPress &&
+        presentationProof &&
+        !presentationShowsWriteBasis(presentationProof.token.documentBasis, [
+          basisDraftGeneration,
+        ])
+      ) {
+        toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+          id: "preview-presentation-basis",
+        });
+        return { success: false, message: PREVIEW_PRESENTATION_BASIS_MESSAGE };
       }
       const generations = fieldKeys.map(
         (path) =>
@@ -13795,6 +14739,16 @@ export function VisualEditorShell({
       const result = (await enqueueTemplateMutation(
         templateId,
         async (generation, resolvedTemplateId, reportSent) => {
+          if (
+            presentationGated &&
+            !isSectionPresentationProofCurrent(
+              presentationProof ?? undefined,
+              resolvedTemplateId,
+              sectionId,
+            )
+          ) {
+            throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+          }
           // Having waited behind another write is not leave to send: if one
           // went unanswered meanwhile, this one is held as a content write is.
           if (!resend && unconfirmedContentRef.current.size > 0) {
@@ -13954,6 +14908,8 @@ export function VisualEditorShell({
       setHistoryStepBasis,
       noteHistoryStepAnswered,
       unnamedCopyBasis,
+      captureCurrentSectionPresentationProof,
+      isSectionPresentationProofCurrent,
     ],
   );
   resetContentFieldsRef.current = handleResetContentFields;
@@ -14037,6 +14993,7 @@ export function VisualEditorShell({
       // A structural change staged as one field (a canvas reorder's list),
       // as the step it replays was.
       inputPath?: string,
+      presentationProof?: SectionPresentationProof | null,
     ): Promise<void> => {
       // A history record keeps its original version; it is never re-read.
       if (historySourceGeneration === undefined) {
@@ -14105,9 +15062,12 @@ export function VisualEditorShell({
       const staged =
         stage(storedSectionPropsRef.current(sectionId)) ?? stage({});
       if (!staged) throw sourceSelectionFailure();
+      if (!presentationProof) {
+        throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+      }
       if (!requestedFinishCommitRef.current) leaveGuard.noteInput();
       await commitSectionPending(keyTemplateId, key, false, false, {
-        entry: staged,
+        entry: { ...staged, presentationProof },
         link: { kind: "history", attempt },
       });
     },
@@ -14142,25 +15102,61 @@ export function VisualEditorShell({
       ) {
         throw sourceSelectionFailure();
       }
+      const presentationTemplateId = templateIdForSection(sectionId);
+      const presentationProof = presentationTemplateId
+        ? captureCurrentSectionPresentationProof(
+            presentationTemplateId,
+            sectionId,
+          )
+        : null;
+      const presentationReadyAtInput = presentationProof !== null;
       // A history run's write: its own, awaited, and shown once answered.
       if (options?.historyAttempt) {
+        if (!presentationReadyAtInput) {
+          // A newer edit that cannot be presented yet must still prevent an
+          // older media-signing callback from restoring stale section props.
+          cancelAwaitingSignedPost(sectionId);
+          toast.warning(presentationHoldMessage(), {
+            id: "preview-presentation-syncing",
+          });
+          throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+        }
         return replaySectionProps(
           sectionId,
           nextProps,
           options.historySourceGeneration,
           options.historyAttempt,
           options.inputFieldPath,
+          presentationProof,
         );
       }
       // 1. Instant 0ms visual sync to iframe canvas
+      // A held input is shown too when the frame on screen can acknowledge
+      // what it shows: the round that acknowledges it is what releases it
+      // (Task 40 items 2 and 6), and a post still waiting on signing is
+      // superseded, so rapid edits coalesce into its one post. A frame that
+      // cannot acknowledge is told nothing new (task 32), and an older
+      // signing callback is stopped from restoring stale props.
+      const frameRecord = previewFrameRecordRef.current;
+      const frameCanAcknowledge = Boolean(
+        frameRecord &&
+        frameRecord.previewKey === previewKeyRef.current &&
+        frameRecord.readyRound === previewReadyRoundRef.current &&
+        frameRecord.documentId !== null &&
+        frameRecord.capabilities.has("section-presentation-ack-v1"),
+      );
+      const shownWhileHeld = !presentationReadyAtInput && frameCanAcknowledge;
       const previewProps = parsePreviewSectionProps(nextProps);
-      if (!options?.skipPreviewSync && previewProps) {
+      const awaitingSignedBefore = awaitingSignedPostRef.current.has(sectionId);
+      if (!presentationReadyAtInput && !frameCanAcknowledge) {
+        cancelAwaitingSignedPost(sectionId);
+      } else if (!options?.skipPreviewSync && previewProps) {
         syncPreviewSectionProps(sectionId, previewProps);
       } else if (previewProps) {
         supersedeAwaitingSignedPost(sectionId, previewProps);
       }
 
-      const templateId = templateIdForSection(sectionId);
+      const templateId = presentationTemplateId;
       if (!templateId) return;
       // One entry per section: an edit still held under the route
       // placeholder takes this one in, and is sent as the placeholder's.
@@ -14256,7 +15252,43 @@ export function VisualEditorShell({
                 )?.sourceGeneration ?? null),
       });
       if (!staged) return;
-      pendingPropsMapRef.current.set(key, staged);
+      pendingPropsMapRef.current.set(
+        key,
+        presentationReadyAtInput
+          ? { ...staged, presentationProof: presentationProof! }
+          : {
+              ...staged,
+              presentationBlocked: true,
+              ...(shownWhileHeld &&
+              (routePathFromTemplatePlaceholder(keyTemplateId) === null ||
+                (staged.fields !== undefined &&
+                  Object.values(staged.fields).every(
+                    (field) => field.basisDraftGeneration !== undefined,
+                  )))
+                ? { presentationReleasable: true }
+                : {}),
+            },
+      );
+      if (!presentationReadyAtInput) {
+        if (existingTimer) pendingPropsTimersRef.current.delete(key);
+        // Held, not sent, and shown (above): the round that acknowledges
+        // the section as the editor now holds it is the proof this input is
+        // released with (`releasePresentationHeldDrafts`, Task 40 items 2
+        // and 6). An input previewed on its element only, with no section
+        // post waiting to carry it, gets one, so that round exists.
+        if (
+          shownWhileHeld &&
+          options?.skipPreviewSync &&
+          !awaitingSignedBefore
+        ) {
+          previewVisibilityRef.current.reconcile(sectionId);
+        }
+        syncContentWritesRef.current();
+        toast.warning(presentationHoldMessage(), {
+          id: "preview-presentation-syncing",
+        });
+        return;
+      }
 
       const timer = setTimeout(() => {
         pendingPropsTimersRef.current.delete(key);
@@ -14275,11 +15307,14 @@ export function VisualEditorShell({
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       supersedeAwaitingSignedPost,
+      cancelAwaitingSignedPost,
       templateIdForSection,
       routePathForTemplate,
       updatePropsMutation,
       selectedFieldBaseline,
       currentContentSourceGeneration,
+      hasCurrentSectionPresentation,
+      captureCurrentSectionPresentationProof,
       provenFieldGeneration,
       replaySectionProps,
       unnamedCopyBasis,
@@ -14287,6 +15322,82 @@ export function VisualEditorShell({
   );
 
   contentChangeRef.current = handleSectionPropsChange;
+  /**
+   * Held drafts the canvas was shown (`presentationReleasable`) go once the
+   * page's presentation is acknowledged again: each takes the proof of the
+   * round that now shows it, and is sent on its usual debounce, as typed
+   * input is (Task 40 items 2 and 6). Nothing without a proof; nothing a
+   * conflict, a failed save or an earlier unanswered write holds (the write
+   * path refuses the last one itself).
+   */
+  releasePresentationHeldDraftsRef.current = () => {
+    if (!sectionPresentationReadyRef.current) return;
+    let released = false;
+    for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
+      if (!entry.presentationBlocked || !entry.presentationReleasable) continue;
+      if (
+        key in contentConflictsRef.current ||
+        failedContentKeysRef.current.has(key)
+      ) {
+        continue;
+      }
+      const shownIn = templateIdForSection(entry.sectionId);
+      const proof = shownIn
+        ? captureCurrentSectionPresentationProof(shownIn, entry.sectionId)
+        : null;
+      if (!proof) continue;
+      const keyTemplateId = key.slice(0, key.length - entry.sectionId.length - 1);
+      const isPlaceholderKey =
+        routePathFromTemplatePlaceholder(keyTemplateId) !== null;
+      if (isPlaceholderKey) {
+        if (
+          proof.token.documentBasis.kind !== "existing" ||
+          !entry.fields ||
+          Object.values(entry.fields).some(
+            (field) =>
+              field.basisDraftGeneration === undefined ||
+              field.basisDraftGeneration !==
+                (
+                  proof.token.documentBasis as {
+                    kind: "existing";
+                    draftGeneration: number;
+                  }
+                ).draftGeneration,
+          )
+        ) {
+          continue;
+        }
+      } else if (
+        entry.fields &&
+        proof.token.documentBasis.kind === "existing" &&
+        Object.values(entry.fields).some(
+          (field) => field.basisDraftGeneration === undefined,
+        )
+      ) {
+        continue;
+      }
+      pendingPropsMapRef.current.set(key, {
+        ...entry,
+        presentationBlocked: undefined,
+        presentationReleasable: undefined,
+        presentationProof: proof,
+      });
+      released = true;
+      // Sent now, as its debounce would: the typing it waited behind is over.
+      const existing = pendingPropsTimersRef.current.get(key);
+      if (existing) clearTimeout(existing);
+      pendingPropsTimersRef.current.delete(key);
+      void commitSectionPending(keyTemplateId, key).catch(() => {
+        // Mutation UI reports the error; the shared queue keeps the input.
+      });
+    }
+    if (released) syncContentWritesRef.current();
+  };
+  // Also when the page turns ready on a render (a read that made the
+  // expected page match what was acknowledged), not only on an ack.
+  useEffect(() => {
+    if (sectionPresentationReady) releasePresentationHeldDraftsRef.current();
+  }, [sectionPresentationReady]);
   // C5: what a section an inline commit landed on is rebuilt from when the
   // held posts are sent — the newest copy this editor has accepted, decided
   // by `newestAcceptedCopy` exactly as the commit handler below reads it,
@@ -14517,6 +15628,9 @@ export function VisualEditorShell({
       // swap is not sent (the write's own check refuses it) and the section's
       // history is not retired for it.
       const templateIdAtDrop = templateIdForSection(sectionId);
+      const presentationProof = templateIdAtDrop
+        ? captureCurrentSectionPresentationProof(templateIdAtDrop, sectionId)
+        : null;
       const basisAtDrop = templateIdAtDrop
         ? contentBasisFor(templateIdAtDrop)
         : undefined;
@@ -14524,7 +15638,9 @@ export function VisualEditorShell({
         templateIdAtDrop !== null &&
         basisAtDrop === undefined &&
         routePathFromTemplatePlaceholder(templateIdAtDrop) === null;
-      if (!noBasisAtDrop) invalidateSectionHistory(sectionId);
+      if (presentationProof && !noBasisAtDrop) {
+        invalidateSectionHistory(sectionId);
+      }
       if (!activeTemplate) return;
       // The section as this page shows it: a slot its source proves is one
       // even before anything is stored for it. Read only — the stored copy
@@ -14658,10 +15774,19 @@ export function VisualEditorShell({
         basisDraftGeneration: basisAtDrop,
       });
       if (!reorderPending) return;
+      const stagedReorder = presentationProof
+        ? { ...reorderPending, presentationProof }
+        : { ...reorderPending, presentationBlocked: true };
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(key, { ...section.props });
       }
-      pendingPropsMapRef.current.set(key, reorderPending);
+      pendingPropsMapRef.current.set(key, stagedReorder);
+      if (!presentationProof) {
+        toast.warning(presentationHoldMessage(), {
+          id: "preview-presentation-syncing",
+        });
+        return;
+      }
       syncPreviewSectionProps(sectionId, previewProps);
       setActiveSelection((current) => {
         if (!current?.fieldPath) return current;
@@ -14755,6 +15880,15 @@ export function VisualEditorShell({
           scopedRecorder(sectionId, recordReorder),
         );
       } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === PREVIEW_PRESENTATION_SYNCING_MESSAGE
+        ) {
+          toast.warning(presentationHoldMessage(), {
+            id: "preview-presentation-syncing",
+          });
+          return;
+        }
         // Not sent for want of a basis: the swap is kept, pending and on the
         // canvas, as not saved (Out of date), for the author's "Load latest,
         // keep mine". Nothing was answered, so there is nothing to roll back.
@@ -14768,12 +15902,12 @@ export function VisualEditorShell({
         if (
           unanswered &&
           unanswered !== unansweredBefore &&
-          pendingPropsMapRef.current.get(key) === reorderPending
+          pendingPropsMapRef.current.get(key) === stagedReorder
         ) {
           return;
         }
         const hiddenBefore = previewSectionIsHidden(sectionId);
-        if (pendingPropsMapRef.current.get(key) === reorderPending) {
+        if (pendingPropsMapRef.current.get(key) === stagedReorder) {
           if (priorPending) pendingPropsMapRef.current.set(key, priorPending);
           else pendingPropsMapRef.current.delete(key);
         }
@@ -14807,6 +15941,7 @@ export function VisualEditorShell({
       setHistoryStepBasis,
       contentBasisFor,
       contentKeyFor,
+      captureCurrentSectionPresentationProof,
     ],
   );
 
@@ -14831,6 +15966,9 @@ export function VisualEditorShell({
       // The basis, taken at the click: the latest accepted snapshot
       // generation of the section's document now.
       const templateIdAtClick = templateIdForSection(sectionId);
+      const presentationProof = templateIdAtClick
+        ? captureCurrentSectionPresentationProof(templateIdAtClick, sectionId)
+        : null;
       const basisAtClick = templateIdAtClick
         ? contentBasisFor(templateIdAtClick)
         : undefined;
@@ -14879,6 +16017,34 @@ export function VisualEditorShell({
         syncPreviewSectionProps(sectionId, undefined, enabled);
         return;
       }
+      if (!presentationProof) {
+        const key = contentKeyFor(templateId, sectionId);
+        const blockedToggle = stageContentFields({
+          pending: pendingPropsMapRef.current.get(key),
+          sectionId,
+          stored: { ...sectionPropsSnapshot(sectionId), enabled: !enabled },
+          next: { enabled },
+          routePath: routePathForTemplate(templateId),
+          sourceForPath: () => generation,
+          basisDraftGeneration: basisAtClick,
+        });
+        if (blockedToggle) {
+          if (!pendingPropsBaselineRef.current.has(key)) {
+            pendingPropsBaselineRef.current.set(
+              key,
+              sectionPropsSnapshot(sectionId),
+            );
+          }
+          pendingPropsMapRef.current.set(key, {
+            ...blockedToggle,
+            presentationBlocked: true,
+          });
+        }
+        toast.warning(presentationHoldMessage(), {
+          id: "preview-presentation-syncing",
+        });
+        return;
+      }
       // One entry per section (`contentKeyFor`), sent as the key's own.
       const key = contentKeyFor(templateId, sectionId);
       const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
@@ -14916,7 +16082,10 @@ export function VisualEditorShell({
           sectionPropsSnapshot(sectionId),
         );
       }
-      pendingPropsMapRef.current.set(key, togglePending);
+      pendingPropsMapRef.current.set(key, {
+        ...togglePending,
+        presentationProof,
+      });
       // 1. Instant 0ms visual toggle on canvas, posted once this toggle is
       // the intent the editor holds and before anything is awaited: a hide as
       // `{ enabled: false }`, a show with the section's values in the same
@@ -14994,6 +16163,7 @@ export function VisualEditorShell({
       reconcilePreviewSection,
       contentBasisFor,
       contentKeyFor,
+      captureCurrentSectionPresentationProof,
     ],
   );
 
@@ -15059,7 +16229,9 @@ export function VisualEditorShell({
       }),
     [sameTemplateOwner],
   );
-  const hasSavedListChange = (target: NonNullable<typeof discardDialogTarget>) =>
+  const hasSavedListChange = (
+    target: NonNullable<typeof discardDialogTarget>,
+  ) =>
     Object.entries(savedListChanges).some(([key, paths]) => {
       const templateId = templateIdOfPendingContentKey(key, target.sectionId);
       return (
@@ -15442,9 +16614,7 @@ export function VisualEditorShell({
   );
 
   const acknowledgeListReset = useCallback((epoch: number) => {
-    setListReset((current) =>
-      current?.epoch === epoch ? null : current,
-    );
+    setListReset((current) => (current?.epoch === epoch ? null : current));
   }, []);
 
   /** Load the latest Document and discard only the confirmed list path. */
@@ -15588,7 +16758,8 @@ export function VisualEditorShell({
       for (const [key, paths] of Object.entries(current)) {
         const templateId = templateIdOfPendingContentKey(key, target.sectionId);
         const kept =
-          templateId !== null && sameTemplateOwner(templateId, target.templateId)
+          templateId !== null &&
+          sameTemplateOwner(templateId, target.templateId)
             ? paths.filter((path) => path !== target.fieldPath)
             : paths;
         if (kept.length > 0) next[key] = kept;
@@ -15686,11 +16857,17 @@ export function VisualEditorShell({
 
   const handleReorderSections = useCallback(
     async (sectionIds: string[]) => {
+      if (!hasCurrentSectionPresentation()) {
+        throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+      }
       if (!activeThemeRoute) {
         throw new Error("The active template has no source-authored route.");
       }
       if (activeTemplate) await flushTemplatePendingProps();
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+      if (!hasCurrentSectionPresentation()) {
+        throw new Error(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
+      }
       const routeFile = effectiveThemeFiles.find(
         (file) => file.path === activeThemeRoute.sourcePath,
       );
@@ -15724,6 +16901,7 @@ export function VisualEditorShell({
       flushTemplatePendingProps,
       layoutTemplate,
       handleUnifiedSaveFile,
+      hasCurrentSectionPresentation,
     ],
   );
 
@@ -17078,7 +18256,9 @@ export function VisualEditorShell({
                   >
                     Load latest, keep mine
                   </Button>
-                ) : draftSaveState === "error" || contentWrites.failed ? (
+                ) : draftSaveState === "error" ||
+                  contentWrites.failed ||
+                  (contentWrites.held && sectionPresentationReady) ? (
                   // Retry first confirms unknown outcomes. Retained source-
                   // conflict fields still need explicit reselection/new input.
                   <Button
@@ -17786,13 +18966,21 @@ export function VisualEditorShell({
       >
         <EditorSectionsPanel
           style={LEFT_PANEL_STYLE}
+          documentPresentationReady={sectionPresentationReady}
+          documentPresentationPausedReason={
+            presentationUnconfirmable
+              ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
+              : null
+          }
           context={routeBackedContext}
           search={search}
           onSearchChange={handleSectionsSearchChange}
           onSectionOrderChange={syncPreviewSectionOrder}
           onSaveStateChange={setDraftSaveState}
           onReorderSections={
-            activeThemeRoute && !sectionsUnavailableForFramework
+            activeThemeRoute &&
+            sectionPresentationReady &&
+            !sectionsUnavailableForFramework
               ? handleReorderSections
               : undefined
           }
@@ -18168,6 +19356,43 @@ export function VisualEditorShell({
               </div>
             ) : null}
 
+            {presentationUnconfirmable ? (
+              // The existing recovery surface, with the true reason: this
+              // frame cannot acknowledge what it shows (Task 40 item 3).
+              <div
+                role="alert"
+                data-testid="preview-presentation-unconfirmable"
+                className={cn(
+                  "absolute left-1/2 z-50 flex max-w-md -translate-x-1/2 items-start gap-3 rounded-lg border border-amber-500/40 bg-background/95 p-3 text-sm shadow-lg backdrop-blur-sm",
+                  // Below the failed-preview alert when both are shown.
+                  previewLifecycle.phase === "failed" ? "top-40" : "top-16",
+                )}
+              >
+                <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                <div className="min-w-0">
+                  <p className="text-foreground">
+                    {PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE}
+                  </p>
+                  {unsupportedRefreshFailed ? (
+                    <p className="mt-1 text-muted-foreground">
+                      {PREVIEW_UNSUPPORTED_REFRESH_FAILED_MESSAGE}
+                    </p>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={retryLivePreview}
+                  >
+                    {unsupportedRefreshFailed
+                      ? "Reload preview"
+                      : "Retry Preview"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
             {documentNavigationNotice?.kind === "status" ? (
               // A page switch in a preview that navigates as documents (D3):
               // quiet while the other page loads.
@@ -18306,8 +19531,25 @@ export function VisualEditorShell({
           <div className="h-8 w-1 rounded-full bg-border group-hover:bg-primary group-active:bg-primary transition-colors" />
         </div>
 
-        <EditorAssistantPanel
+        <div
+          className="contents"
+          onCompositionStart={() => {
+            inspectorComposingRef.current = true;
+            setInspectorComposing(true);
+          }}
+          onCompositionEnd={() => {
+            inspectorComposingRef.current = false;
+            setInspectorComposing(false);
+          }}
+        >
+          <EditorAssistantPanel
           contentResetEpoch={contentResetEpoch}
+          documentPresentationReady={sectionPresentationReady}
+          documentPresentationPausedReason={
+            presentationUnconfirmable
+              ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
+              : null
+          }
           inspectorDocumentKey={inspectorDocumentKey}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
@@ -18350,8 +19592,7 @@ export function VisualEditorShell({
             const matchesOwner = (key: string) => {
               const templateId = templateIdOfPendingContentKey(key, sectionId);
               return (
-                templateId !== null &&
-                sameTemplateOwner(templateId, ownerId)
+                templateId !== null && sameTemplateOwner(templateId, ownerId)
               );
             };
             const statuses: Record<string, InspectorListWriteStatus> = {};
@@ -18383,16 +19624,14 @@ export function VisualEditorShell({
                 mark(path, { notSaved: true, conflict: true });
             }
             for (const [key, entry] of pendingPropsMapRef.current) {
-              if (
-                entry.sectionId !== sectionId ||
-                !matchesOwner(key)
-              )
-                continue;
+              if (entry.sectionId !== sectionId || !matchesOwner(key)) continue;
               const serverRefused =
                 Boolean(contentConflicts[key]) ||
                 failedContentKeysRef.current.has(key);
               for (const path of entry.listActionPaths ?? []) {
-                const blockedBeforeSend = Object.entries(entry.fields ?? {}).some(
+                const blockedBeforeSend = Object.entries(
+                  entry.fields ?? {},
+                ).some(
                   ([fieldPath, field]) =>
                     (fieldPath === path || fieldPath.startsWith(`${path}.`)) &&
                     field.rejected,
@@ -18454,7 +19693,8 @@ export function VisualEditorShell({
           onJumpToCode={handleJumpToCode}
           onTabChange={setAssistantPanelTab}
           selectionSourceCurrent={isSelectionSourceCurrent(editableSelection)}
-        />
+          />
+        </div>
 
         <EditorSmallScreenNotice />
       </EditorModeSurface>

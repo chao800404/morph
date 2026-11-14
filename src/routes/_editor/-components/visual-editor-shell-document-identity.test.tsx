@@ -21,6 +21,7 @@ import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.q
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
   PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE,
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
   PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
@@ -88,17 +89,21 @@ vi.mock(
     probeThemePreviewAddress: vi.fn(),
   }),
 );
-vi.mock("@/server/storefront/storefront-preview-media.serverFn", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  signThemePreviewMedia: vi.fn(),
-}));
+vi.mock(
+  "@/server/storefront/storefront-preview-media.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    signThemePreviewMedia: vi.fn(),
+  }),
+);
 vi.mock("./editor-media-picker-popover", () => ({
   EditorMediaPickerPopover: () => null,
 }));
 // The real panel, with one button that reports live typing for the heading
 // section, as an Inspector field bound to it does.
 vi.mock("./editor-assistant-panel", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./editor-assistant-panel")>();
+  const actual =
+    await importOriginal<typeof import("./editor-assistant-panel")>();
   const RealPanel = actual.EditorAssistantPanel;
   return {
     ...actual,
@@ -108,7 +113,12 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
         <button
           type="button"
           onClick={() =>
-            props.onPreviewSelectionField?.("hero", "heading", "heading", "From the panel")
+            props.onPreviewSelectionField?.(
+              "hero",
+              "heading",
+              "heading",
+              "From the panel",
+            )
           }
         >
           Type for the hero
@@ -123,7 +133,14 @@ vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  Link: ({ to, children, ...rest }: { to?: string; children?: React.ReactNode }) => (
+  Link: ({
+    to,
+    children,
+    ...rest
+  }: {
+    to?: string;
+    children?: React.ReactNode;
+  }) => (
     <a href={to} {...rest}>
       {children}
     </a>
@@ -132,7 +149,12 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 
 const context = {
   previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
-  storefront: { id: "storefront-1", name: "Store", domain: null, status: "active" },
+  storefront: {
+    id: "storefront-1",
+    name: "Store",
+    domain: null,
+    status: "active",
+  },
   theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
   templates: [
     {
@@ -196,7 +218,9 @@ const tree = () => ({
           name: "routes",
           path: "src/routes",
           isDirectory: true,
-          children: [{ name: "index.tsx", path: routeFile.path, isDirectory: false }],
+          children: [
+            { name: "index.tsx", path: routeFile.path, isDirectory: false },
+          ],
         },
       ],
     },
@@ -210,7 +234,9 @@ const SAVED = { success: true, data: { draftGeneration: 2, droppedProps: [] } };
 const infoLines: string[] = [];
 
 function renderShell() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   client.setQueryData(
     themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
     {
@@ -225,7 +251,11 @@ function renderShell() {
   );
   return render(
     <QueryClientProvider client={client}>
-      <VisualEditorShell context={context} search={search} onSearchChange={vi.fn()} />
+      <VisualEditorShell
+        context={context}
+        search={search}
+        onSearchChange={vi.fn()}
+      />
     </QueryClientProvider>,
   );
 }
@@ -239,6 +269,8 @@ function renderShell() {
 let active: string | null = null;
 /** Pings this frame has answered, and whether it answers at all for now. */
 let answeredPings = 0;
+let answeredPresentations = 0;
+let activePresentationAcks = false;
 let pongsHeld = false;
 
 function dispatchFrom(id: string | null, data: Record<string, unknown>) {
@@ -261,10 +293,31 @@ function dispatchFrom(id: string | null, data: Record<string, unknown>) {
 /** The active document answers every ping it has not answered yet, as a live bridge does. */
 function answerPings() {
   if (pongsHeld) return;
-  const pings = posted().filter((message) => message.type === "morph:storefront-preview-ping");
+  const messages = posted();
+  const pings = messages.filter(
+    (message) => message.type === "morph:storefront-preview-ping",
+  );
   for (const ping of pings.slice(answeredPings)) {
     answeredPings += 1;
-    dispatchFrom(active, { type: "morph:storefront-preview-pong", heartbeatId: ping.heartbeatId });
+    dispatchFrom(active, {
+      type: "morph:storefront-preview-pong",
+      heartbeatId: ping.heartbeatId,
+    });
+  }
+  const presentations = messages.filter(
+    (message) =>
+      message.type === "morph:storefront-preview-update-section-props" &&
+      typeof message.presentationToken?.operationId === "string",
+  );
+  for (const message of presentations.slice(answeredPresentations)) {
+    answeredPresentations += 1;
+    if (!activePresentationAcks) continue;
+    dispatchFrom(active, {
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: message.presentationToken!.operationId,
+      token: message.presentationToken,
+      status: "applied",
+    });
   }
 }
 
@@ -283,6 +336,10 @@ function releasePongs() {
 const tick = (ms = 20) =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
+    // A live client bridge answers an update after its own React commit.
+    // Timer-backed editor posts can be created during the advance above, so
+    // answer after it as well as after messages sent directly by a test.
+    answerPings();
   });
 
 type Posted = {
@@ -294,9 +351,12 @@ type Posted = {
   routePath?: string | null;
   routeRequestId?: number;
   heartbeatId?: number;
+  presentationToken?: { operationId: string };
 };
 const posted = () =>
-  vi.mocked(postEditorToPreviewMessage).mock.calls.map(([, message]) => message as Posted);
+  vi
+    .mocked(postEditorToPreviewMessage)
+    .mock.calls.map(([, message]) => message as Posted);
 const canvasPosts = (from: number) =>
   posted()
     .slice(from)
@@ -312,19 +372,28 @@ const heroPosts = (from: number) =>
       message.sectionId === "hero",
   );
 const routeRequests = () =>
-  posted().filter((message) => message.type === "morph:storefront-preview-set-route");
+  posted().filter(
+    (message) => message.type === "morph:storefront-preview-set-route",
+  );
 const replayedLines = () =>
-  infoLines.filter((line) => line.startsWith("[preview-instance] content replayed"));
+  infoLines.filter((line) =>
+    line.startsWith("[preview-instance] content replayed"),
+  );
 const droppedLines = () =>
-  infoLines.filter((line) => line.startsWith("[preview-instance] content replay dropped"));
+  infoLines.filter((line) =>
+    line.startsWith("[preview-instance] content replay dropped"),
+  );
 const unreadNotices = () =>
   vi
     .mocked(toast.warning)
-    .mock.calls.filter((call) => call[0] === PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE);
+    .mock.calls.filter(
+      (call) => call[0] === PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE,
+    );
 
 /** The document says it is ready, as a current bridge does, being the one now active. */
 async function ready(id: string | null) {
   active = id;
+  activePresentationAcks = id !== null;
   await staleReady(id);
 }
 
@@ -332,7 +401,10 @@ async function ready(id: string | null) {
 async function staleReady(id: string | null) {
   fromDocument(id, {
     type: "morph:storefront-preview-ready",
-    capabilities: ["selection-field-section"],
+    capabilities: [
+      "selection-field-section",
+      ...(id !== null ? ["section-presentation-ack-v1"] : []),
+    ],
   });
   await tick(0);
   await tick(0);
@@ -351,7 +423,10 @@ function answerRoute(id: string | null) {
 async function frameUp(id: string | null) {
   renderShell();
   // Before any ready, as a page reports its structure.
-  fromDocument(id, { type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromDocument(id, {
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
@@ -367,7 +442,10 @@ async function frameUp(id: string | null) {
 }
 
 const editing = (id: string | null, open: boolean) =>
-  fromDocument(id, { type: "morph:storefront-preview-inline-text-editing", editing: open });
+  fromDocument(id, {
+    type: "morph:storefront-preview-inline-text-editing",
+    editing: open,
+  });
 
 /** The page's commit of the heading, typed over the stored "Welcome". */
 const commit = (id: string | null, value = TYPED) =>
@@ -388,7 +466,10 @@ async function live(id: string | null, ms: number) {
       .filter((message) => message.type === "morph:storefront-preview-ping")
       .at(-1);
     if (ping) {
-      fromDocument(id, { type: "morph:storefront-preview-pong", heartbeatId: ping.heartbeatId });
+      fromDocument(id, {
+        type: "morph:storefront-preview-pong",
+        heartbeatId: ping.heartbeatId,
+      });
     }
   }
 }
@@ -397,6 +478,8 @@ beforeEach(() => {
   infoLines.length = 0;
   active = null;
   answeredPings = 0;
+  answeredPresentations = 0;
+  activePresentationAcks = false;
   pongsHeld = false;
   useThemeWorkspaceStore.setState({
     acceptedGenerations: {},
@@ -412,7 +495,11 @@ beforeEach(() => {
   });
   useEditorWriteGateStore.setState({ gates: {} });
   getThemeEditor.mockReset();
-  getThemeEditor.mockResolvedValue({ success: true, message: "ok", data: context });
+  getThemeEditor.mockResolvedValue({
+    success: true,
+    message: "ok",
+    data: context,
+  });
   updateSectionProps.mockReset();
   updateSectionProps.mockResolvedValue(SAVED);
   vi.mocked(postEditorToPreviewMessage).mockReset();
@@ -447,20 +534,23 @@ beforeEach(() => {
       }) as never,
   );
   vi.mocked(applyThemePreviewFiles).mockReset();
-  vi.mocked(applyThemePreviewFiles).mockImplementation(async (request: unknown) => {
-    const files = (request as { data: { files: Array<{ path: string }> } }).data.files;
-    return {
-      success: true,
-      message: "Live Preview files written",
-      data: {
-        previewId: "preview-1",
-        changed: [],
-        unchanged: files.map((file) => file.path),
-        skipped: [],
-        servedInstance: { session: SESSION, serial: 1 },
-      },
-    } as never;
-  });
+  vi.mocked(applyThemePreviewFiles).mockImplementation(
+    async (request: unknown) => {
+      const files = (request as { data: { files: Array<{ path: string }> } })
+        .data.files;
+      return {
+        success: true,
+        message: "Live Preview files written",
+        data: {
+          previewId: "preview-1",
+          changed: [],
+          unchanged: files.map((file) => file.path),
+          skipped: [],
+          servedInstance: { session: SESSION, serial: 1 },
+        },
+      } as never;
+    },
+  );
   vi.mocked(probeThemePreviewAddress).mockReset();
   vi.mocked(probeThemePreviewAddress).mockResolvedValue({
     success: true,
@@ -486,7 +576,9 @@ describe("canvas posts while an inline edit is open (C5)", () => {
     expect(canvasPosts(from)).toEqual([]);
     editing(DOC_A, false);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     // The write goes as it always does.
     await tick(400);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
@@ -543,16 +635,28 @@ describe("a ready from a new document while an edit is open", () => {
     answerRoute(DOC_B);
     await tick(0);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     expect(replayedLines()).toHaveLength(1);
 
     // The edit was lost with its document: a late close from it posts nothing.
     editing(DOC_A, false);
     await tick(0);
     expect(heroPosts(from)).toHaveLength(1);
-    // Nothing was saved twice, and the commit's write still goes.
+    // The write had not left before the frame changed. Its old proof cannot
+    // authorize it against the new document; keep the draft for an explicit
+    // save after the preview finishes syncing.
     await tick(400);
-    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
+    expect(
+      vi
+        .mocked(toast.warning)
+        .mock.calls.some(
+          (call) => call[0] === PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+        ),
+    ).toBe(true);
     expect(unreadNotices()).toEqual([]);
   });
 
@@ -579,7 +683,9 @@ describe("a ready from a new document while an edit is open", () => {
     answerRoute(DOC_B);
     await tick(0);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     expect(replayedLines()).toHaveLength(1);
   });
 
@@ -635,7 +741,9 @@ describe("the same document's ready again", () => {
     expect(canvasPosts(from)).toEqual([]);
     editing(DOC_A, false);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     expect(replayedLines()).toEqual([]);
   });
 });
@@ -678,14 +786,14 @@ describe("a message from a document that is not the current one", () => {
 });
 
 describe("a frame whose bridge sends no id (an older bridge)", () => {
-  it("takes its messages as before", async () => {
+  it("does not write through a bridge that cannot acknowledge presentation", async () => {
     await frameUp(null);
     const from = posted().length;
     commit(null);
     await tick(0);
-    expect(heroPosts(from)).toHaveLength(1);
+    expect(heroPosts(from)).toEqual([]);
     await tick(400);
-    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps).not.toHaveBeenCalled();
   });
 
   it("does not take a later id-less ready on the same frame: the open edit and what it held stay, nothing is replayed, and the author is told once", async () => {
@@ -700,15 +808,21 @@ describe("a frame whose bridge sends no id (an older bridge)", () => {
     // Not taken: no new round, nothing sent, nothing replayed.
     expect(routeRequests()).toHaveLength(requests);
     expect(canvasPosts(from)).toEqual([]);
-    expect(screen.getAllByText(PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE)).toHaveLength(1);
+    expect(
+      screen.getAllByText(PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE),
+    ).toHaveLength(1);
     // The edit is still the editor's: its close sends what it held.
     editing(null, false);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     expect(replayedLines()).toEqual([]);
     // Told once, however many such readies come.
     await ready(null);
-    expect(screen.getAllByText(PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE)).toHaveLength(1);
+    expect(
+      screen.getAllByText(PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE),
+    ).toHaveLength(1);
     // A status near the preview, never a toast or an automatic reload.
     expect(unreadNotices()).toEqual([]);
     expect(routeRequests()).toHaveLength(requests);
@@ -727,7 +841,9 @@ describe("a frame whose bridge sends no id (an older bridge)", () => {
     expect(canvasPosts(from)).toEqual([]);
     editing(DOC_A, false);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
   });
 });
 
@@ -782,7 +898,9 @@ describe("a ready the editor has not confirmed", () => {
     // A is still the frame's document: its close sends what the edit held.
     editing(DOC_A, false);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     expect(replayedLines()).toEqual([]);
     // And X's own messages are not taken.
     commit(DOC_X, "From the stale document");
@@ -809,7 +927,9 @@ describe("a ready the editor has not confirmed", () => {
     answerRoute(DOC_B);
     await tick(0);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     expect(replayedLines()).toHaveLength(1);
     expect(droppedLines()).toEqual([]);
   });
@@ -827,13 +947,17 @@ describe("a ready the editor has not confirmed", () => {
     commit(idOf(65));
     await tick(0);
     const requests = routeRequests().length;
+    const replays = replayedLines().length;
     await staleReady(idOf(0));
     expect(routeRequests()).toHaveLength(requests);
+    expect(replayedLines()).toHaveLength(replays);
     expect(canvasPosts(from)).toEqual([]);
     editing(idOf(65), false);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
-    expect(replayedLines()).toEqual([]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
+    expect(replayedLines()).toHaveLength(replays);
   });
 
   it("does not take a candidate's own messages before it is confirmed", async () => {
@@ -847,7 +971,9 @@ describe("a ready the editor has not confirmed", () => {
     const from = posted().length;
     commit(DOC_A);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     await tick(400);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     // Once B answers, it is the frame's document: a new round, its route sent.
@@ -879,7 +1005,9 @@ describe("a ready the editor has not confirmed", () => {
     active = DOC_A;
     editing(DOC_A, false);
     await tick(0);
-    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
   });
 
   it("lets a second candidate replace the first", async () => {
@@ -900,10 +1028,11 @@ describe("a ready the editor has not confirmed", () => {
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
 
-  it("settles a replay that replayed: a later document with no edit open replays nothing", async () => {
+  it("replays the retained draft to each confirmed document without resending its write", async () => {
     await frameUp(DOC_A);
     editing(DOC_A, true);
     await tick(0);
+    const from = posted().length;
     commit(DOC_A);
     await tick(0);
     await ready(DOC_B);
@@ -911,10 +1040,20 @@ describe("a ready the editor has not confirmed", () => {
     await tick(0);
     await tick(0);
     expect(replayedLines()).toHaveLength(1);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+    ]);
     await ready(DOC_C);
     answerRoute(DOC_C);
     await tick(0);
     await tick(0);
-    expect(replayedLines()).toHaveLength(1);
+    expect(replayedLines()).toHaveLength(2);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([
+      TYPED,
+      TYPED,
+    ]);
+    await tick(400);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
   });
 });

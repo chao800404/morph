@@ -19,6 +19,13 @@ import {
  * untrusted side throughout: it reads the DOM and reports, and holds no
  * capability of its own beyond the preview URL it was loaded from.
  */
+export const THEME_PREVIEW_BRIDGE_CAPABILITIES = [
+  "selection-field-section",
+  "code-default-selection",
+  "astro-identity-v2",
+  "section-presentation-ack-v1",
+] as const;
+
 export function themePreviewBridgeEntrySource(): string {
   return `import {
   postPreviewToEditorMessage,
@@ -79,11 +86,7 @@ import {
  * the shared PREVIEW_CAPABILITIES list: a page may only advertise a token
  * after its own code reads the editor message and applies the rule.
  */
-const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = [
-  "selection-field-section",
-  "code-default-selection",
-  "astro-identity-v2",
-];
+const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = ${JSON.stringify(THEME_PREVIEW_BRIDGE_CAPABILITIES, null, 2)};
 
 const channel = documentPreviewRuntimeChannel();
 // A refused selection-field post is said here, in the page, and nowhere else.
@@ -93,6 +96,127 @@ const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
 // context. Re-run the existing router loaders, which read that same snapshot
 // through the preview content endpoint. Coalesce a frame's section messages;
 // never reload the document or introduce a second content provider.
+const pendingPresentationTokens = new Map();
+const postedAppliedPresentationAcks = new Map();
+
+function postPresentationAck(token, status, reason) {
+  if (!channel || !token) return;
+  if (status === "applied") {
+    postPreviewToEditorMessage(
+      {
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      },
+      channel,
+    );
+    return;
+  }
+  if (reason === "superseded") {
+    postPreviewToEditorMessage(
+      {
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "superseded",
+      },
+      channel,
+    );
+    return;
+  }
+  postPreviewToEditorMessage(
+    {
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: token.operationId,
+      token,
+      status: "not-applied",
+      reason: "section-missing",
+    },
+    channel,
+  );
+}
+
+function queuePresentationToken(sectionId, enabled, token) {
+  if (!token) return;
+  const previous = pendingPresentationTokens.get(sectionId);
+  if (previous && previous.token.operationId !== token.operationId) {
+    postPresentationAck(previous.token, "not-applied", "superseded");
+  }
+  pendingPresentationTokens.set(sectionId, { sectionId, enabled, token });
+}
+
+function isSectionPresentationCommitted(sectionId, enabled) {
+  const matches = document.querySelectorAll(previewSectionSelector(sectionId));
+  if (enabled === false) {
+    if (matches.length === 0) return true;
+    return Array.from(matches).every(
+      (element) =>
+        element.hasAttribute("hidden") ||
+        element.hasAttribute("data-morph-section-hidden"),
+    );
+  }
+  if (matches.length !== 1) return false;
+  const element = matches[0];
+  return (
+    !element.hasAttribute("hidden") &&
+    !element.hasAttribute("data-morph-section-hidden")
+  );
+}
+
+function flushPendingPresentationTokens() {
+  if (pendingPresentationTokens.size === 0) return;
+  const currentRoute = currentRoutePattern() ?? location.pathname;
+  const entries = Array.from(pendingPresentationTokens.entries());
+  for (const [sectionId, entry] of entries) {
+    const latest = pendingPresentationTokens.get(sectionId);
+    if (!latest || latest.token.operationId !== entry.token.operationId) {
+      continue;
+    }
+    pendingPresentationTokens.delete(sectionId);
+    if (entry.token.routePath && entry.token.routePath !== currentRoute) {
+      postPresentationAck(entry.token, "not-applied", "section-missing");
+      continue;
+    }
+    if (isSectionPresentationCommitted(sectionId, entry.enabled)) {
+      postedAppliedPresentationAcks.set(entry.token.operationId, entry.token);
+      postPresentationAck(entry.token, "applied");
+    } else {
+      postPresentationAck(entry.token, "not-applied", "section-missing");
+    }
+  }
+}
+
+function withdrawAppliedPresentationAcks() {
+  if (postedAppliedPresentationAcks.size === 0) return;
+  for (const token of postedAppliedPresentationAcks.values()) {
+    postPresentationAck(token, "not-applied", "superseded");
+  }
+  postedAppliedPresentationAcks.clear();
+}
+
+function flushEarlyPresentationTokens() {
+  const queue = window.__morphEarlyPresentationQueue;
+  if (!Array.isArray(queue) || queue.length === 0) return;
+  const items = queue.splice(0, queue.length);
+  for (const item of items) {
+    if (!item?.presentationToken) continue;
+    if (item.superseded) {
+      postPresentationAck(item.presentationToken, "not-applied", "superseded");
+      continue;
+    }
+    queuePresentationToken(item.sectionId, item.enabled, item.presentationToken);
+  }
+  requestAnimationFrame(() => {
+    flushPendingPresentationTokens();
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.__morphFlushEarlyPresentation = flushEarlyPresentationTokens;
+}
+
 let contentRefreshScheduled = false;
 function refreshPreviewContent() {
   if (contentRefreshScheduled) return;
@@ -100,7 +224,17 @@ function refreshPreviewContent() {
   requestAnimationFrame(() => {
     contentRefreshScheduled = false;
     const router = window.__morphPreviewRouter;
-    if (typeof router?.invalidate !== "function") return;
+    if (typeof router?.invalidate !== "function") {
+      if (
+        typeof pendingPresentationTokens !== "undefined" &&
+        pendingPresentationTokens.size > 0
+      ) {
+        requestAnimationFrame(() => {
+          flushPendingPresentationTokens();
+        });
+      }
+      return;
+    }
     void Promise.resolve()
       .then(() => router.invalidate({ sync: true }))
       .then(() => {
@@ -118,8 +252,22 @@ function refreshPreviewContent() {
         }
         reportStructure();
         drawOverlays();
+        if (
+          typeof pendingPresentationTokens !== "undefined" &&
+          pendingPresentationTokens.size > 0
+        ) {
+          requestAnimationFrame(() => {
+            flushPendingPresentationTokens();
+          });
+        }
       })
       .catch(() => {
+        if (typeof pendingPresentationTokens !== "undefined") {
+          for (const entry of pendingPresentationTokens.values()) {
+            postPresentationAck(entry.token, "not-applied", "section-missing");
+          }
+          pendingPresentationTokens.clear();
+        }
         console.warn("[morph-preview] content refresh failed; the previous render may still be visible.");
       });
   });
@@ -437,6 +585,7 @@ function syncFrameNavigationEpoch() {
   if (currentLocation !== lastCommittedRouteLocation) {
     lastCommittedRouteLocation = currentLocation;
     frameNavigationEpoch += 1;
+    withdrawAppliedPresentationAcks();
   }
   return frameNavigationEpoch;
 }
@@ -1517,6 +1666,11 @@ if (channel) {
       return;
     }
     if (message?.type === "morph:storefront-preview-update-section-props") {
+      queuePresentationToken(
+        message.sectionId,
+        message.enabled,
+        message.presentationToken,
+      );
       updatePreviewContent(
         message.sectionId,
         message.props,
