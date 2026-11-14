@@ -132,7 +132,7 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     }
   });
 
-  test("real platform-swap: unsupported bridge auto-refreshes once to new bridge and ack takes effect", async ({
+  test("simulated swap: unsupported bridge auto-refreshes once to new bridge and ack takes effect", async ({
     page,
   }) => {
     test.setTimeout(180_000);

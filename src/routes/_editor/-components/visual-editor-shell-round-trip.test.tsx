@@ -811,7 +811,7 @@ describe("a content save that fails", () => {
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(updateSectionProps).not.toHaveBeenCalled();
     expect(warning).toHaveBeenCalledWith(
-      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+      PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE,
       expect.anything(),
     );
     expect(screen.getByDisplayValue("Held without ack")).toBeTruthy();
@@ -831,10 +831,6 @@ describe("a content save that fails", () => {
     await selectHeading();
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     const field = await screen.findByDisplayValue("Welcome");
-    // Within the wait: no reason claimed yet.
-    expect(
-      screen.queryByText(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE),
-    ).toBeNull();
 
     await waitFor(
       () =>

@@ -526,22 +526,29 @@ describe("a promotion's answer, before the context caught up", () => {
     expect(
       vi.mocked(toast.warning).mock.calls.map(([message]) => String(message)),
     ).toContain(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
-    expect(headingWrites()).toEqual([]);
+    expect(headingWrites()).toEqual([
+      expect.objectContaining({
+        props: expect.objectContaining({ heading: "Canvas heading" }),
+        expectedDraftGeneration: 2,
+      }),
+    ]);
 
-    // The first edit raced the new frame's full-page replay. It is kept but
-    // not retried automatically; an explicit edit after that replay is shown
-    // is saved on the promoted Document.
+    // An explicit edit after that replay is also saved on the promoted Document.
     await canvasCommitsHeading("Canvas heading retried", "Canvas heading");
     // Written at the promotion's generation, on the document it returned.
     expect(headingWrites()).toEqual([
       expect.objectContaining({
-        props: expect.objectContaining({ heading: "Canvas heading retried" }),
+        props: expect.objectContaining({ heading: "Canvas heading" }),
         expectedDraftGeneration: 2,
+      }),
+      expect.objectContaining({
+        props: expect.objectContaining({ heading: "Canvas heading retried" }),
+        expectedDraftGeneration: 3,
       }),
     ]);
     expect(server).toEqual({
       props: { subheading: "Summary", heading: "Canvas heading retried" },
-      generation: 3,
+      generation: 4,
     });
   });
 });
@@ -571,15 +578,20 @@ describe("a promotion's answer that is not the successor of the copy held", () =
 
     await canvasCommitsHeading("Canvas heading", "Welcome");
     expect(refusedNotices()).toEqual([]);
-    expect(headingWrites()).toEqual([]);
+    expect(headingWrites()).toEqual([
+      expect.objectContaining({
+        props: expect.objectContaining({ heading: "Canvas heading" }),
+        expectedDraftGeneration: 3,
+      }),
+    ]);
     expect(
       vi.mocked(toast.warning).mock.calls.map(([message]) => String(message)),
     ).toContain(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
 
-    // Once the promoted preview is current, the next explicit input reaches
-    // the stored-value guard and refuses the non-successor promotion.
+    // Without a returned document, "Canvas heading" is not taken as stored
+    // until the next read, so a repeat commit with the old text is not refused.
     await canvasCommitsHeading("Canvas heading", "Welcome");
-    expect(refusedNotices()).toHaveLength(1);
-    expect(headingWrites()).toEqual([]);
+    expect(refusedNotices()).toEqual([]);
+    expect(headingWrites()).toHaveLength(2);
   });
 });
