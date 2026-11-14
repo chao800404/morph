@@ -1418,4 +1418,21 @@ describe("Start and container bridge presentation ack", () => {
     };
     expect(parse(legacyFlattened)).toBeNull();
   });
+
+  it("skips router invalidation and hidden-attribute mutation when updatePreviewContent reports no change", () => {
+    const updateHandler = BRIDGE.slice(
+      BRIDGE.indexOf('if (message?.type === "morph:storefront-preview-update-section-props")'),
+      BRIDGE.indexOf('if (message?.type === "morph:storefront-preview-set-section-order")'),
+    );
+    expect(updateHandler).toContain("const changed = updatePreviewContent(");
+    expect(updateHandler).toContain("if (changed)");
+  });
+
+  it("withdraws applied presentation acks only for the current route during client-side navigation", () => {
+    const withdrawFn = BRIDGE.slice(
+      BRIDGE.indexOf("function withdrawAppliedPresentationAcks("),
+      BRIDGE.indexOf("function flushEarlyPresentationTokens("),
+    );
+    expect(withdrawFn).toContain("token.routePath !== currentRoute");
+  });
 });

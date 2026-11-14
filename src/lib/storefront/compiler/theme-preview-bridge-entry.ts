@@ -188,12 +188,13 @@ function flushPendingPresentationTokens() {
   }
 }
 
-function withdrawAppliedPresentationAcks() {
+function withdrawAppliedPresentationAcks(currentRoute) {
   if (postedAppliedPresentationAcks.size === 0) return;
-  for (const token of postedAppliedPresentationAcks.values()) {
+  for (const [sectionId, token] of postedAppliedPresentationAcks.entries()) {
+    if (token.routePath && token.routePath !== currentRoute) continue;
     postPresentationAck(token, "not-applied", "superseded");
+    postedAppliedPresentationAcks.delete(sectionId);
   }
-  postedAppliedPresentationAcks.clear();
 }
 
 function flushEarlyPresentationTokens() {
@@ -585,7 +586,12 @@ function syncFrameNavigationEpoch() {
   if (currentLocation !== lastCommittedRouteLocation) {
     lastCommittedRouteLocation = currentLocation;
     frameNavigationEpoch += 1;
-    withdrawAppliedPresentationAcks();
+    const routerLocation = router?.state?.location?.pathname;
+    const currentRoute =
+      routerLocation === location.pathname
+        ? (currentRoutePattern() ?? location.pathname)
+        : location.pathname;
+    withdrawAppliedPresentationAcks(currentRoute);
   }
   return frameNavigationEpoch;
 }
@@ -1671,21 +1677,27 @@ if (channel) {
         message.enabled,
         message.presentationToken,
       );
-      updatePreviewContent(
+      const changed = updatePreviewContent(
         message.sectionId,
         message.props,
         message.enabled,
         message.resetKeys,
       );
-      refreshPreviewContent();
-      const section = document.querySelector(
-        previewSectionSelector(message.sectionId),
-      );
-      if (section && typeof message.enabled === "boolean") {
-        section.toggleAttribute("hidden", !message.enabled);
+      if (changed) {
+        refreshPreviewContent();
+        const section = document.querySelector(
+          previewSectionSelector(message.sectionId),
+        );
+        if (section && typeof message.enabled === "boolean") {
+          section.toggleAttribute("hidden", !message.enabled);
+        }
+        reportStructure();
+        drawOverlays();
+      } else if (pendingPresentationTokens.size > 0) {
+        requestAnimationFrame(() => {
+          flushPendingPresentationTokens();
+        });
       }
-      reportStructure();
-      drawOverlays();
       return;
     }
     if (message?.type === "morph:storefront-preview-set-section-order") {

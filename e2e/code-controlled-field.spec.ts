@@ -4,6 +4,7 @@ import {
   EDITOR_PATH,
   clickExposedElement,
   enableSelection,
+  exposedCanvasPoint,
   isServerFunctionCall,
   openContentTab,
   previewFrame,
@@ -739,6 +740,16 @@ for (const theme of [
         await enableSelection(page);
       }
       await heading.scrollIntoViewIfNeeded();
+      const point = await exposedCanvasPoint(page);
+      if (point) {
+        await page.mouse.move(point.x, point.y);
+        for (let step = 0; step < 6; step += 1) {
+          const box = await heading.boundingBox();
+          if (!box || box.y + box.height <= 600) break;
+          await page.mouse.wheel(0, 300);
+          await page.waitForTimeout(150);
+        }
+      }
       expect(await clickExposedElement(page, heading)).not.toBeNull();
       await settleSelection(page);
       await openContentTab(page);

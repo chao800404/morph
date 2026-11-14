@@ -3195,6 +3195,9 @@ export function VisualEditorShell({
   const acknowledgedSectionPresentationRef = useRef(
     new Map<string, SectionPresentationToken>(),
   );
+  const appliedSectionPresentationRef = useRef(
+    new Map<string, SectionPresentationToken>(),
+  );
   /** Assigned below, where the content write path is defined. */
   const releasePresentationHeldDraftsRef = useRef<() => void>(() => {});
   /**
@@ -3432,12 +3435,12 @@ export function VisualEditorShell({
 
       contentSendingRef.current += 1;
       syncContentWritesRef.current();
+      // What was actually sent, once it was: a write that failed before
+      // leaving is not one that may have landed.
+      let sentEntry: PendingContentEntry | undefined;
       try {
         // The snapshot the write is composed on, taken when it is sent.
         let writeSnapshot: ContentSnapshot | undefined;
-        // What was actually sent, once it was: a write that failed before
-        // leaving is not one that may have landed.
-        let sentEntry: PendingContentEntry | undefined;
         let sentDraftGeneration = 0;
         // The draft generation the answer gave this write: what an undo of
         // it is checked against (`basisWithinOwnRange`).
@@ -3533,8 +3536,18 @@ export function VisualEditorShell({
                   !presentationShowsWriteBasis(
                     presentationProof.token.documentBasis,
                     Object.values(entry.fields ?? {}).map(
-                      (field) => field.basisDraftGeneration,
+                      (field) =>
+                        field.basisDraftGeneration ??
+                        (onDocumentCreatedHere
+                          ? ROUTE_DOCUMENT_CREATED_GENERATION
+                          : undefined),
                     ),
+                    onDocumentCreatedHere
+                      ? {
+                          createdDocumentGeneration:
+                            ROUTE_DOCUMENT_CREATED_GENERATION,
+                        }
+                      : undefined,
                   )
                 ) {
                   toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
@@ -3782,6 +3795,21 @@ export function VisualEditorShell({
           toast.error(RESELECT_CONTENT_MESSAGE, {
             id: "selection-source-conflict",
           });
+          if (
+            sentEntry &&
+            heldSection &&
+            (latestSectionPresentationRef.current.has(
+              sectionPresentationKey(tid, heldSection.sectionId),
+            ) ||
+              latestSectionPresentationRef.current.has(
+                sectionPresentationKey(
+                  routeTemplateIdsRef.current.get(tid) ?? tid,
+                  heldSection.sectionId,
+                ),
+              ))
+          ) {
+            previewVisibilityRef.current.reconcile(heldSection.sectionId);
+          }
         }
         if (replay) {
           // A refused resend is decided by `resendUnconfirmedWrites`
@@ -3802,6 +3830,21 @@ export function VisualEditorShell({
             toast.error(MISSING_BASIS_MESSAGE, { id: "content-missing-basis" });
           }
           setContentConflicts((current) => ({ ...current, [key]: tid }));
+          if (
+            sentEntry &&
+            heldSection &&
+            (latestSectionPresentationRef.current.has(
+              sectionPresentationKey(tid, heldSection.sectionId),
+            ) ||
+              latestSectionPresentationRef.current.has(
+                sectionPresentationKey(
+                  routeTemplateIdsRef.current.get(tid) ?? tid,
+                  heldSection.sectionId,
+                ),
+              ))
+          ) {
+            previewVisibilityRef.current.reconcile(heldSection.sectionId);
+          }
         } else if (
           (error as { code?: string }).code === UNANSWERED_EARLIER_SAVE_CODE
         ) {
@@ -3836,6 +3879,7 @@ export function VisualEditorShell({
       isSectionPresentationProofCurrent,
       noteSavedListChange,
       supersedeSavedListChange,
+      unnamedCopyBasis,
     ],
   );
 
@@ -6246,6 +6290,7 @@ export function VisualEditorShell({
       const templateId = templateIdForSection(sectionId);
       if (!templateId) return null;
       const key = contentKeyFor(templateId, sectionId);
+      const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
       return {
         snapshot: contentSnapshotsRef.current.get(
           routeTemplateIdsRef.current.get(templateId) ?? templateId,
@@ -6253,9 +6298,13 @@ export function VisualEditorShell({
         sectionId,
         pending: pendingPropsMapRef.current.get(key),
         unconfirmed: unconfirmedContentRef.current.get(key),
+        missingBasis:
+          routePathFromTemplatePlaceholder(keyTemplateId) !== null
+            ? unnamedCopyBasis(keyTemplateId)
+            : undefined,
       };
     },
-    [contentKeyFor, templateIdForSection],
+    [contentKeyFor, templateIdForSection, unnamedCopyBasis],
   );
   /** Read by the preview poster, which is created once. */
   const previewSectionStateRef = useRef(previewSectionState);
@@ -11963,6 +12012,7 @@ export function VisualEditorShell({
     pendingSectionPresentationRef.current.clear();
     latestSectionPresentationRef.current.clear();
     acknowledgedSectionPresentationRef.current.clear();
+    appliedSectionPresentationRef.current.clear();
     sectionPresentationBindingRef.current = null;
     sectionPresentationReadyRef.current = false;
     setSectionPresentationReady(false);
@@ -12122,8 +12172,21 @@ export function VisualEditorShell({
           ).find(([, token]) =>
             sameSectionPresentationToken(token, message.token),
           );
-          if (withdrawn) {
-            acknowledgedSectionPresentationRef.current.delete(withdrawn[0]);
+          const appliedKey = sectionPresentationKey(
+            message.token.routePath,
+            message.token.sectionId,
+          );
+          const applied = appliedSectionPresentationRef.current.get(appliedKey);
+          const withdrawnApplied =
+            applied !== undefined &&
+            sameSectionPresentationToken(applied, message.token);
+          if (withdrawn || withdrawnApplied) {
+            if (withdrawn) {
+              acknowledgedSectionPresentationRef.current.delete(withdrawn[0]);
+            }
+            if (withdrawnApplied) {
+              appliedSectionPresentationRef.current.delete(appliedKey);
+            }
             refreshSectionPresentationReady();
             previewVisibilityRef.current.reconcile(message.token.sectionId);
           }
@@ -12152,13 +12215,27 @@ export function VisualEditorShell({
           return;
         }
         pendingSectionPresentationRef.current.delete(message.operationId);
+        const appliedKey = sectionPresentationKey(
+          message.token.routePath,
+          message.token.sectionId,
+        );
         if (message.status === "applied") {
           acknowledgedSectionPresentationRef.current.set(
             pending.sectionKey,
             message.token,
           );
+          appliedSectionPresentationRef.current.set(appliedKey, message.token);
         } else {
           acknowledgedSectionPresentationRef.current.delete(pending.sectionKey);
+          if (
+            message.reason !== "superseded" &&
+            !(
+              message.reason === "section-missing" &&
+              !frameShowsEditorPageRef.current()
+            )
+          ) {
+            appliedSectionPresentationRef.current.delete(appliedKey);
+          }
         }
         if (refreshSectionPresentationReady()) {
           releasePresentationHeldDraftsRef.current();
@@ -13772,6 +13849,39 @@ export function VisualEditorShell({
       acknowledged: acknowledgedSectionPresentationRef.current,
     });
   }, [expectedSectionPresentations]);
+  const isSectionPresentationPageEstablished = useCallback(() => {
+    if (presentationUnconfirmableRef.current) return false;
+    const frame = previewFrameRecordRef.current;
+    if (
+      !frame ||
+      frame.previewKey !== previewKeyRef.current ||
+      frame.readyRound !== previewReadyRoundRef.current ||
+      frame.documentId === null ||
+      !frame.capabilities.has("section-presentation-ack-v1")
+    ) {
+      return false;
+    }
+    const page = expectedSectionPresentations();
+    return page.every((expected) => {
+      if (expected.documentBasis === null) return false;
+      const applied = appliedSectionPresentationRef.current.get(
+        sectionPresentationKey(expected.routePath, expected.sectionId),
+      );
+      if (!applied) return false;
+      const appliedOwner =
+        routeTemplateIdsRef.current.get(applied.templateId) ??
+        applied.templateId;
+      const expectedOwner =
+        routeTemplateIdsRef.current.get(expected.templateId) ??
+        expected.templateId;
+      return (
+        applied.workspaceKey === expected.workspaceKey &&
+        applied.routePath === expected.routePath &&
+        applied.sectionId === expected.sectionId &&
+        appliedOwner === expectedOwner
+      );
+    });
+  }, [expectedSectionPresentations]);
   // Keep the event-side guard current during the render that changes the
   // expected page, before a passive effect can update the visible state.
   sectionPresentationReadyRef.current = isSectionPresentationPageReady();
@@ -13810,6 +13920,19 @@ export function VisualEditorShell({
       frame.readyRound !== previewReadyRoundRef.current ||
       frame.documentId === null ||
       !frame.capabilities.has("section-presentation-ack-v1")
+    ) {
+      return;
+    }
+    const frameRoute = frameRouteRef.current;
+    if (
+      frameRoute !== null &&
+      frameRoute.key === frame.previewKey &&
+      frameRoute.round === frame.readyRound &&
+      frameRoute.routePath !== null &&
+      !previewStructureMatchesRoute(
+        frameRoute.routePath,
+        currentSearchRoutePathRef.current,
+      )
     ) {
       return;
     }
@@ -14216,6 +14339,7 @@ export function VisualEditorShell({
         for (const [sectionId, binding] of sectionModelRef.current.bindings) {
           const templateId = binding.templateId;
           const key = contentKeyFor(templateId, sectionId);
+          const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
           // A hidden section is replayed as hidden, with no props: its
           // stored values stay with the editor (`previewSectionPost`).
           const section = previewSectionPost({
@@ -14226,6 +14350,10 @@ export function VisualEditorShell({
             pending: pendingPropsMapRef.current.get(key),
             unconfirmed: unconfirmedContentRef.current.get(key),
             sourceGeneration,
+            missingBasis:
+              routePathFromTemplatePlaceholder(keyTemplateId) !== null
+                ? unnamedCopyBasis(keyTemplateId)
+                : undefined,
           });
           if (!section) continue;
           syncPreviewSectionProps(
@@ -14271,6 +14399,7 @@ export function VisualEditorShell({
     queryClient,
     stepCanvasDeferral,
     syncPreviewSectionProps,
+    unnamedCopyBasis,
   ]);
 
   // A content write the server took only in part: the source it checked no
@@ -15322,6 +15451,130 @@ export function VisualEditorShell({
   );
 
   contentChangeRef.current = handleSectionPropsChange;
+
+  const handleSectionContentBlur = useCallback(
+    (sectionId: string) => {
+      const templateId = templateIdForSection(sectionId);
+      if (!templateId) return;
+      const key = contentKeyFor(templateId, sectionId);
+      const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
+      const held = pendingPropsMapRef.current.get(key);
+      if (!held || (!held.presentationBlocked && held.presentationProof)) return;
+      if (routePathFromTemplatePlaceholder(keyTemplateId) === null) return;
+      const createdTemplateId = routeTemplateIdsRef.current.get(keyTemplateId);
+      if (
+        !createdTemplateId ||
+        !routeDocumentsCreatedHereRef.current.has(createdTemplateId)
+      ) {
+        return;
+      }
+      const frame = previewFrameRecordRef.current;
+      const fallbackToken =
+        !sectionPresentationReadyRef.current &&
+        !frameShowsEditorPageRef.current() &&
+        frame &&
+        frame.previewKey === previewKeyRef.current &&
+        frame.readyRound === previewReadyRoundRef.current &&
+        frame.documentId !== null &&
+        frame.capabilities.has("section-presentation-ack-v1")
+          ? (currentAcknowledgedSectionPresentation({
+              templateId: createdTemplateId,
+              sectionId,
+              latest: latestSectionPresentationRef.current,
+              acknowledged: acknowledgedSectionPresentationRef.current,
+            }) ??
+            currentAcknowledgedSectionPresentation({
+              templateId: keyTemplateId,
+              sectionId,
+              latest: latestSectionPresentationRef.current,
+              acknowledged: acknowledgedSectionPresentationRef.current,
+            }) ??
+            appliedSectionPresentationRef.current.get(
+              sectionPresentationKey(
+                currentSearchRoutePathRef.current ?? "/",
+                sectionId,
+              ),
+            ) ??
+            null)
+          : null;
+      const proof =
+        captureCurrentSectionPresentationProof(keyTemplateId, sectionId) ??
+        (fallbackToken && frame && frame.documentId !== null
+          ? {
+              token: fallbackToken,
+              previewKey: frame.previewKey,
+              readyRound: frame.readyRound,
+              previewDocumentId: frame.documentId,
+            }
+          : null);
+      if (
+        !proof ||
+        !isSectionPresentationProofCurrent(proof, keyTemplateId, sectionId)
+      ) {
+        return;
+      }
+      const basisGen = contentBasisFor(createdTemplateId);
+      const presentedGeneration =
+        proof.token.documentBasis.kind === "existing"
+          ? proof.token.documentBasis.draftGeneration
+          : proof.token.documentBasis.kind === "new-document"
+            ? ROUTE_DOCUMENT_CREATED_GENERATION
+            : null;
+      if (
+        presentedGeneration === null ||
+        basisGen === undefined ||
+        presentedGeneration > basisGen
+      ) {
+        return;
+      }
+      if (
+        unconfirmedContentRef.current.size > 0 ||
+        key in contentConflictsRef.current ||
+        failedContentKeysRef.current.has(key)
+      ) {
+        return;
+      }
+      const snapshot = contentSnapshotsRef.current.get(createdTemplateId);
+      const sourceGen = currentContentSourceGeneration();
+      const missingBasis = unnamedCopyBasis(keyTemplateId);
+      if (
+        !snapshot ||
+        !held.fields ||
+        Object.values(held.fields).some((field) => {
+          const basis = field.basisDraftGeneration ?? missingBasis;
+          return (
+            field.rejected ||
+            field.sourceGeneration !== sourceGen ||
+            basis === undefined ||
+            !basisWithinOwnRange(snapshot, basis) ||
+            presentedGeneration < basis
+          );
+        })
+      ) {
+        return;
+      }
+      pendingPropsMapRef.current.set(key, {
+        ...held,
+        presentationBlocked: undefined,
+        presentationReleasable: undefined,
+        presentationProof: proof,
+      });
+      syncContentWritesRef.current();
+      void commitSectionPending(keyTemplateId, key).catch(() => {
+        // Mutation UI reports the error; the shared queue keeps the input.
+      });
+    },
+    [
+      captureCurrentSectionPresentationProof,
+      commitSectionPending,
+      contentBasisFor,
+      contentKeyFor,
+      currentContentSourceGeneration,
+      isSectionPresentationProofCurrent,
+      templateIdForSection,
+      unnamedCopyBasis,
+    ],
+  );
   /**
    * Held drafts the canvas was shown (`presentationReleasable`) go once the
    * page's presentation is acknowledged again: each takes the proof of the
@@ -15350,19 +15603,25 @@ export function VisualEditorShell({
       const isPlaceholderKey =
         routePathFromTemplatePlaceholder(keyTemplateId) !== null;
       if (isPlaceholderKey) {
+        if (proof.token.documentBasis.kind !== "existing" || !entry.fields) {
+          continue;
+        }
+        const resolvedId =
+          routeTemplateIdsRef.current.get(keyTemplateId) ?? keyTemplateId;
+        const snapshot = contentSnapshotsRef.current.get(resolvedId);
+        const presentedGeneration = (
+          proof.token.documentBasis as {
+            kind: "existing";
+            draftGeneration: number;
+          }
+        ).draftGeneration;
         if (
-          proof.token.documentBasis.kind !== "existing" ||
-          !entry.fields ||
+          !snapshot ||
           Object.values(entry.fields).some(
             (field) =>
               field.basisDraftGeneration === undefined ||
-              field.basisDraftGeneration !==
-                (
-                  proof.token.documentBasis as {
-                    kind: "existing";
-                    draftGeneration: number;
-                  }
-                ).draftGeneration,
+              !basisWithinOwnRange(snapshot, field.basisDraftGeneration) ||
+              presentedGeneration < field.basisDraftGeneration,
           )
         ) {
           continue;
@@ -19545,6 +19804,9 @@ export function VisualEditorShell({
           <EditorAssistantPanel
           contentResetEpoch={contentResetEpoch}
           documentPresentationReady={sectionPresentationReady}
+          documentPresentationEstablished={
+            sectionPresentationReady || isSectionPresentationPageEstablished()
+          }
           documentPresentationPausedReason={
             presentationUnconfirmable
               ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
@@ -19687,6 +19949,7 @@ export function VisualEditorShell({
           onRepairThemeLinkBinding={handleRepairThemeLinkBinding}
           onSwitchThemeLinkElement={handleSwitchThemeLinkElement}
           onSectionPropsChange={handleSectionPropsChange}
+          onSectionContentBlur={handleSectionContentBlur}
           contentBasisForSection={contentBasisForSection}
           inlineTextCommit={inlineTextCommit}
           onCodeComponentPropsChange={handleCodeComponentPropsChange}

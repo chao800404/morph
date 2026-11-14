@@ -522,120 +522,56 @@ test.describe("the editor on a preview page running an older bridge", () => {
           }
         }
 
-        // 2. What the editor does with it.
-        await expect(
-          page.locator("[data-editor-tree-sortable]").first(),
-          "the structure the old bridge reported is in the sidebar",
-        ).toBeAttached({ timeout: 45_000 });
-        const frameOld = await previewFrameObject(page);
-        // The editor answers a ready with its own capabilities only when the
-        // ready names `code-default-selection` and a document; none does.
-        expect(
-          (await recordedIn(frameOld)).toFrame.filter(
-            (message) => message.type === EDITOR_CAPABILITIES_MESSAGE,
-          ),
-          "the editor did not announce its capabilities to an old bridge",
-        ).toEqual([]);
-        expect(
-          consoleLines.includes(READY_WITHOUT_IDENTITY),
-          "the editor logged a ready it cannot tell apart",
-        ).toBe(!expected.documentId);
-
-        await selectCardTitle(page);
-        const shownBefore = (await cardTitle(page).textContent()) ?? "";
-        const sentBeforeTyping = (await recordedIn(frameOld)).toFrame.length;
-        const live = `old ${expected.label} ${Date.now()}`;
-        await titleField(page).fill(live);
-        const liveTyping = expected.capabilities?.includes(
-          "selection-field-section",
-        );
-        if (liveTyping) {
-          // The canvas follows the Inspector as the author types.
-          await expect(cardTitle(page)).toHaveText(live, { timeout: 15_000 });
-          await expect(notice(page, LIVE_TYPING_UNAVAILABLE)).toHaveCount(0);
-        } else {
-          // A bridge that did not say it reads the section a post names gets
-          // no live post, and the author is told.
-          await expect(notice(page, LIVE_TYPING_UNAVAILABLE)).toBeVisible({
-            timeout: 15_000,
-          });
-          await page.waitForTimeout(1_000);
-          await expect(cardTitle(page)).toHaveText(shownBefore);
-        }
-        await titleField(page).press("Tab");
-        await expect
-          .poll(() => storedTitle(page), { timeout: 30_000 })
-          .toBe(live);
-        // What reached the frame for this edit, typing and save together.
-        const contentPosts = async () =>
-          (await recordedIn(frameOld)).toFrame
-            .slice(sentBeforeTyping)
-            .map((message) => message.type)
-            .filter(
-              (type) =>
-                type === "morph:storefront-preview-update-selection-field" ||
-                type === "morph:storefront-preview-update-section-props",
-            );
-        if (liveTyping) {
-          await expect(cardTitle(page)).toHaveText(live, { timeout: 30_000 });
-          expect(await contentPosts()).toContain(
-            "morph:storefront-preview-update-selection-field",
-          );
-        } else {
-          // Observed 2026-10-29, recorded rather than fixed here: the saved
-          // value does not reach this canvas. An Inspector text field
-          // previews only through `update-selection-field`
-          // (`skipPreviewSync`), which this bridge is not sent, and the save
-          // posts no section content either; the comment on
-          // LIVE_TYPING_UNAVAILABLE_MESSAGE says the canvas shows the value
-          // once saved. The canvas keeps what it showed, and the notice
-          // stays.
-          await page.waitForTimeout(5_000);
-          expect(await contentPosts()).toEqual([]);
-          await expect(cardTitle(page)).toHaveText(shownBefore);
-          await expect(notice(page, LIVE_TYPING_UNAVAILABLE)).toBeVisible();
-        }
-        await expect(page.getByRole("alert")).toHaveCount(0);
-
-        // The page reloads itself, in the same iframe, still on the old
-        // bridge (the route still answers).
-        const hitsBeforeSelfReload = hits.length;
-        const readiesBeforeSelfReload = (await readies(page)).length;
-        await expect(notice(page, OLDER_BRIDGE_RELOADED)).toHaveCount(0);
-        await frameOld
-          .evaluate(() => window.location.reload())
-          .catch(() => undefined);
-        await expect
-          .poll(async () => (await readies(page)).length, { timeout: 120_000 })
-          .toBeGreaterThan(readiesBeforeSelfReload);
-        expect(
-          hits.length,
-          "the reloaded document asked for the old bridge again",
-        ).toBeGreaterThan(hitsBeforeSelfReload);
-        if (expected.documentId) {
-          // A new document, by its id: the editor confirms it and takes it.
-          const ids = (await readies(page)).map(
-            (message) => message.previewDocument,
-          );
-          expect(ids.at(-1), "the reloaded document names a new id").not.toBe(
-            ids[0],
-          );
-          expect(ids.at(-1)).toMatch(/^[0-9a-f]{32}$/);
-          await expect(
-            previewFrame(page).locator(
-              "html[data-storefront-editor-selection-enabled]",
+        // 2. What the editor does with it (Task 32: missing `section-presentation-ack-v1`
+        // pauses writes & sorting, shows unconfirmable notice + Reload preview, and
+        // sends zero writes while paused).
+        const writesWhileOld: string[] = [];
+        const recordWrite = (request: { url(): string }) => {
+          if (request.url().includes("updateStorefrontThemeSectionProps")) {
+            writesWhileOld.push(request.url());
+          }
+        };
+        page.on("request", recordWrite);
+        try {
+          const frameOld = await previewFrameObject(page);
+          // The editor answers a ready with its own capabilities only when the
+          // ready names `code-default-selection` and a document; none does.
+          expect(
+            (await recordedIn(frameOld)).toFrame.filter(
+              (message) => message.type === EDITOR_CAPABILITIES_MESSAGE,
             ),
-            "the editor restored its tool in the new document",
-          ).toBeAttached({ timeout: 45_000 });
-          await page.waitForTimeout(1_000);
-          await expect(notice(page, OLDER_BRIDGE_RELOADED)).toHaveCount(0);
-        } else {
-          // The same frame ready again with no id: the editor cannot confirm
-          // which document it is, takes nothing from it, and asks for a
-          // reload.
-          await expect(notice(page, OLDER_BRIDGE_RELOADED)).toBeVisible({
-            timeout: 30_000,
-          });
+            "the editor did not announce its capabilities to an old bridge",
+          ).toEqual([]);
+          expect(
+            consoleLines.includes(READY_WITHOUT_IDENTITY),
+            "the editor logged a ready it cannot tell apart",
+          ).toBe(!expected.documentId);
+
+          await expect(
+            page.getByTestId("preview-presentation-unconfirmable"),
+            "missing section-presentation-ack-v1 pauses editing after bounded check",
+          ).toBeVisible({ timeout: 45_000 });
+          await expect(
+            page.getByRole("button", { name: "Reload preview" }),
+          ).toBeVisible();
+          await expect(
+            page.locator("[data-editor-tree-sortable]"),
+            "sorting is disabled while presentation is unconfirmable",
+          ).toHaveCount(0);
+
+          const storedBefore = await storedTitle(page);
+          await selectCardTitle(page);
+          await expect(
+            titleField(page),
+            "content field is disabled while bridge lacks section-presentation-ack-v1",
+          ).toBeDisabled({ timeout: 15_000 });
+          expect(
+            writesWhileOld,
+            "no content writes were sent while paused",
+          ).toEqual([]);
+          expect(await storedTitle(page)).toBe(storedBefore);
+        } finally {
+          page.off("request", recordWrite);
         }
       } finally {
         await page.unroute("**/*", serveOldBridge);

@@ -935,3 +935,236 @@ jobs:
           path: test-results/
           retention-days: 7
           if-no-files-found: error
+
+  # Presentation-ack container acceptance: runs in a separate Cloudflare Sandbox
+  # runner under the full Start runtime so process/container/network state and
+  # diagnostics stay isolated from M1. Intentional division of labor: running
+  # presentation-ack-refresh.spec.ts here under Start does not equate to Start
+  # sidecar coverage.
+  editor-e2e-container-presentation-ack:
+    name: Editor E2E container presentation-ack acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Use the primary Ubuntu archive for apt
+        run: |
+          grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
+            echo "::error::The runner's Ubuntu sources no longer read /etc/apt/apt-mirrors.txt; this step would change nothing."
+            exit 1
+          }
+          printf '%s\tpriority:%s\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2 \
+            | sudo tee /etc/apt/apt-mirrors.txt
+
+      - name: Install Chromium for Playwright
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
+          for attempt in 1 2 3; do
+            install_log=$(mktemp "/tmp/playwright-install-${attempt}-XXXXXX.log")
+            log_dev_ino=$(stat -L -c "%d:%i" "$install_log" 2>/dev/null || true)
+            status=0
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > "$install_log" 2>&1 &
+            install_pid=$!
+            wait "$install_pid" || status=$?
+            cat "$install_log"
+            if [ "$status" -eq 0 ]; then
+              rm -f "$install_log"
+              exit 0
+            fi
+            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" "$install_log"; then
+              echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              rm -f "$install_log"
+              exit "$status"
+            fi
+            echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
+            sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            is_attempt_descendant() {
+              local p=$1
+              [ -d "/proc/$p" ] || return 1
+              local pgid
+              pgid=$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null || true)
+              if [ -n "$pgid" ] && [ "$pgid" = "$install_pid" ]; then
+                return 0
+              fi
+              [ -n "$log_dev_ino" ] || return 1
+              for fd_name in $(sudo -n ls "/proc/$p/fd" 2>/dev/null || ls "/proc/$p/fd" 2>/dev/null || true); do
+                local fd_dev_ino
+                fd_dev_ino=$(sudo -n stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || true)
+                if [ -n "$fd_dev_ino" ] && [ "$fd_dev_ino" = "$log_dev_ino" ]; then
+                  local flags
+                  flags=$(sudo -n awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || true)
+                  if [ -n "$flags" ] && [ $(( flags & 3 )) -ne 0 ]; then
+                    return 0
+                  fi
+                fi
+              done
+              return 1
+            }
+            for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+              [ -f "$lock_file" ] || continue
+              for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
+                if is_attempt_descendant "$lock_pid"; then
+                  echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
+                  sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                else
+                  echo "::warning::Unconfirmed lock holder $lock_pid on $lock_file (not verified attempt writer); skipping termination."
+                fi
+              done
+            done
+            for log_pid in $(sudo -n fuser "$install_log" 2>/dev/null || fuser "$install_log" 2>/dev/null || true); do
+              if is_attempt_descendant "$log_pid"; then
+                sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+              else
+                echo "::warning::Unconfirmed or read-only process $log_pid holding log; skipping termination."
+              fi
+            done
+            rm -f "$install_log"
+            if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
+              echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::Chromium install failed after 3 attempts (last exit $status)."
+          exit "$status"
+
+      - name: Write the run's environment
+        run: |
+          cat > .env.e2e <<EOF
+          E2E_EMAIL=editor-e2e@morph.invalid
+          E2E_PASSWORD=$(openssl rand -hex 24)
+          E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+          EOF
+          cat > .dev.vars <<EOF
+          MORPH_THEME_PREVIEW_RUNTIME=start
+          MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
+          MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+          MORPH_PREVIEW_REQUEST_TRACE=1
+          EOF
+
+      - name: Give new container interfaces no IPv6 link-local address
+        run: |
+          sudo sysctl -w net.ipv6.conf.default.addr_gen_mode=1
+          if [ "$(sysctl -n net.ipv6.conf.default.addr_gen_mode)" != 1 ]; then
+            echo "::error::net.ipv6.conf.default.addr_gen_mode did not take."
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/container-network"
+          mkdir -p "$dir"
+          ip -o addr show > "$dir/addresses-before.txt"
+          nohup ip -ts -o monitor link address > "$dir/ip-monitor.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/ip-monitor.pid"
+          sleep 0.2
+          sudo ip link add morphprobe0 type veth peer name morphprobe1
+          sudo ip link del morphprobe0
+          for i in $(seq 1 50); do
+            grep -q 'Deleted [0-9]*: morphprobe0' "$dir/ip-monitor.log" && exit 0
+            sleep 0.1
+          done
+          echo "::error::The interface monitor did not report a probe link, so container interfaces would go unrecorded."
+          exit 1
+
+      - name: Record container diagnostics
+        run: |
+          nohup node scripts/container-diagnostics.mjs record "$RUNNER_TEMP/container-diagnostics"             > "$RUNNER_TEMP/container-diagnostics.out" 2>&1 &
+          for i in $(seq 1 50); do
+            grep -q '"ev":"recording"' "$RUNNER_TEMP/container-diagnostics/recorder.ndjson" 2>/dev/null && exit 0
+            sleep 0.1
+          done
+          echo "::warning::Container diagnostics did not start; the run goes on without them."
+
+      - name: Run presentation-ack container acceptance
+        env:
+          MORPH_E2E_AUTH_DIAGNOSTICS: "1"
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/container-presentation-ack.json
+        run: node scripts/run-editor-e2e.mjs e2e/presentation-ack-refresh.spec.ts --output=test-results/container-presentation-ack
+
+      - name: Stop container diagnostics
+        if: always()
+        run: node scripts/container-diagnostics.mjs stop "$RUNNER_TEMP/container-diagnostics" test-results/container-diagnostics
+
+      - name: Require the run's container veths to have had no IPv6 link-local address
+        if: always()
+        run: |
+          dir="$RUNNER_TEMP/container-network"
+          log="$dir/ip-monitor.log"
+          keep_record() {
+            status=$?
+            if ! { mkdir -p test-results/container-network && cp -R "$dir"/. test-results/container-network/; }; then
+              echo "::error::The container interface record could not be kept with the results."
+              [ "$status" -ne 0 ] || status=1
+            fi
+            exit "$status"
+          }
+          trap keep_record EXIT
+          incomplete() {
+            echo "::error::Container interface evidence is incomplete: $1"
+            exit 1
+          }
+          pid=$(cat "$RUNNER_TEMP/ip-monitor.pid" 2>/dev/null) || incomplete "the monitor was never started."
+          kill -0 "$pid" 2>/dev/null || incomplete "the monitor exited before the run ended."
+          sudo ip link add morphprobe2 type veth peer name morphprobe3
+          sudo ip link del morphprobe2
+          reported=no
+          for i in $(seq 1 50); do
+            if grep -q 'Deleted [0-9]*: morphprobe2' "$log"; then
+              reported=yes
+              break
+            fi
+            sleep 0.1
+          done
+          kill "$pid"
+          for i in $(seq 1 50); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          [ "$reported" = yes ] || incomplete "the monitor stopped reporting before the run ended."
+          if grep -iE 'receive error|no buffer space' "$log"; then
+            incomplete "the monitor reported a receive error."
+          fi
+          ip -o addr show > "$dir/addresses-after.txt"
+          veths=$({ grep -oE 'veth[0-9a-f]+' "$log" || true; } | sort -u | wc -l)
+          echo "container veths seen: $veths"
+          if grep -E 'veth[0-9a-f]+.*inet6 fe80:' "$log"; then
+            echo "::error::A container veth got an IPv6 link-local address: the setting did not hold."
+            exit 1
+          fi
+          if [ "$veths" -eq 0 ]; then
+            echo "::error::No container veth was recorded, so the setting was not checked."
+            exit 1
+          fi
+
+      - name: Require presentation-ack container tests to have passed with zero skip and zero retry
+        run: node scripts/check-container-acceptance.mjs test-results/container-presentation-ack.json scripts/container-acceptance-targets/presentation-ack-refresh.mjs
+
+      - name: Upload results and failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-e2e-container-presentation-ack-attempt-${{ github.run_attempt }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: error

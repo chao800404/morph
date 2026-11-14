@@ -410,6 +410,8 @@ type EditorStyleInspectorProps = {
    * focused, so what the author types there counts as made on that copy.
    */
   contentBasis?: () => number | undefined;
+  /** Called when a focused content input blurs. */
+  onContentBlur?: () => void;
   /**
    * The last value an inline canvas edit wrote. Applied to this section's
    * fields before the save and refetch bring it back as stored props.
@@ -906,6 +908,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onListResetApplied,
   onDiscardListConflict,
   contentBasis,
+  onContentBlur,
   inlineTextCommit = null,
   onJumpToCode,
   sharedLayoutPaths,
@@ -1088,6 +1091,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const handleContentBlur = (event: React.FocusEvent<HTMLElement>) => {
     if (contentFocusRef.current?.element !== event.target) return;
     contentFocusRef.current = null;
+    onContentBlur?.();
     // After focus settles: moving into another input keeps updates held.
     setTimeout(syncShownEpochs, 0);
   };

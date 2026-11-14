@@ -83,11 +83,18 @@ export function isSectionPresentationPagePresented(args: {
 export function presentationShowsWriteBasis(
   documentBasis: SectionPresentationToken["documentBasis"],
   bases: readonly (number | undefined)[],
+  options?: { createdDocumentGeneration?: number },
 ): boolean {
   const known = bases.filter(
     (basis): basis is number => typeof basis === "number",
   );
-  if (documentBasis.kind === "new-document") return known.length === 0;
+  if (documentBasis.kind === "new-document") {
+    return known.every(
+      (basis) =>
+        options?.createdDocumentGeneration !== undefined &&
+        basis === options.createdDocumentGeneration,
+    );
+  }
   if (known.length === 0) return true;
   return Math.max(...known) <= documentBasis.draftGeneration;
 }

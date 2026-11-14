@@ -1083,6 +1083,76 @@ describe("the selection when the page takes up the route document it created", (
     await waitFor(() => expect(cardFields()).toHaveLength(0));
     expect(liveTyped("Value 2")).toHaveLength(0);
   });
+
+  it("never disables or blurs the focused Inspector input while the page takes up its route document and the author keeps typing", async () => {
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "first");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+
+    const field = cardFields()[0]!;
+    act(() => {
+      field.focus();
+    });
+    expect(document.activeElement).toBe(field);
+
+    let disabledCount = 0;
+    const observer = new MutationObserver(() => {
+      if (field.disabled) {
+        disabledCount += 1;
+        field.blur();
+      }
+    });
+    observer.observe(field, { attributes: true, attributeFilter: ["disabled"] });
+
+    try {
+      act(() => {
+        fireEvent.input(field, { target: { value: "first still typing" } });
+      });
+      await readWhileOut();
+      await expectAdopted();
+
+      expect(disabledCount).toBe(0);
+      expect(field.disabled).toBe(false);
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("first still typing");
+
+      act(() => {
+        fireEvent.input(field, {
+          target: { value: "first still typing more" },
+        });
+      });
+      expect(disabledCount).toBe(0);
+      expect(field.disabled).toBe(false);
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("first still typing more");
+      expect(liveTyped("first still typing more")).toHaveLength(1);
+
+      await act(async () => {
+        first.release();
+      });
+      await waitForPresentationReady();
+      expect(disabledCount).toBe(0);
+      expect(field.disabled).toBe(false);
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("first still typing more");
+
+      act(() => {
+        fireEvent.blur(field);
+      });
+      await pause();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        sectionId: SLOT,
+        expectedDraftGeneration: 2,
+        props: { heading: "first still typing more" },
+      });
+      expect(disabledCount).toBe(0);
+    } finally {
+      observer.disconnect();
+    }
+  });
 });
 
 /** The route requests the editor posted to the frame, in order. */
@@ -1177,6 +1247,39 @@ describe("the second edit on a route document this editor just created", () => {
     expect(storedHeading()).toBe("Value 2");
     expect(server.route!.generation).toBe(3);
     expect(saveStatus()).toBe("Unpublished");
+  });
+
+  it("placeholder-keyed edit typed while the first save is unanswered is saved on blur after route adoption", async () => {
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+
+    // Type while the first write is still unanswered and the editor is still on the placeholder.
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    expect(sent()).toHaveLength(1);
+
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await waitForPresentationReady();
+
+    await act(async () => {
+      fireEvent.focus(cardFields()[0]!);
+      fireEvent.blur(cardFields()[0]!);
+    });
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      sectionId: SLOT,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
   });
 });
 
@@ -2991,5 +3094,109 @@ describe("only an answered write with a valid document makes the first copy", ()
     await pause();
     sentOnceOntoCreatedDocument();
     expect(sourceBaseline()).toEqual(before);
+  });
+});
+
+describe("frame self-navigation to an unfollowed route while editing the editor's page", () => {
+  it("keeps the Inspector field enabled and saves edits after the frame navigates to an unfollowed route", async () => {
+    await openOn(headingReport);
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+
+    await type("Default heading", "After nav");
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      props: { heading: "After nav" },
+    });
+  });
+
+  it("saves an edit typed after unfollowed frame navigation once an in-flight route-document creation adopts the document", async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstHeld = false;
+    updateSectionProps.mockImplementationOnce(
+      async ({ data }: { data: WriteRequest }) => {
+        firstHeld = true;
+        await firstGate;
+        return applyWrite(data);
+      },
+    );
+
+    await openOn(headingReport);
+    await type("Default heading", "First");
+    await waitFor(() => expect(firstHeld).toBe(true));
+
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+
+    const field = (await screen.findAllByDisplayValue("First"))[0]!;
+    await waitFor(() => expect(field.matches(":disabled")).toBe(false));
+    fireEvent.input(field, { target: { value: "Second" } });
+    const postedBeforeRelease = posted.length;
+    releaseFirst();
+    await expectAdopted();
+    await flushFrames();
+
+    // If VisualEditorShell sent a presentation token while the frame is on
+    // /unfollowed/elsewhere, the real bridge responds with section-missing.
+    for (const msg of posted.slice(postedBeforeRelease)) {
+      if (
+        msg.type === "morph:storefront-preview-update-section-props" &&
+        msg.presentationToken
+      ) {
+        const token = msg.presentationToken as { operationId: string };
+        await fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: token.operationId,
+          token,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+      }
+    }
+    fireEvent.blur(field);
+    await pause();
+
+    expect(server.route).toMatchObject({
+      generation: 3,
+      props: { heading: "Second" },
+    });
+  });
+
+  it("still blocks writes if the frame booted on an unfollowed route and never presented the editor's page", async () => {
+    renderEditor();
+    await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
+    await flushFrames();
+    await fromPreview({
+      type: "morph:storefront-preview-ready",
+      capabilities: [
+        "selection-field-section",
+        "code-default-selection",
+        "section-presentation-ack-v1",
+      ],
+    });
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 0,
+    });
+    await flushFrames();
+    expect(screen.queryByDisplayValue("Default heading")).toBeNull();
+    expect(sent()).toHaveLength(0);
   });
 });

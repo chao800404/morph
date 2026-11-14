@@ -22,6 +22,7 @@ import {
 } from "./visual-editor-shell";
 import {
   answerFramePings,
+  answerLatestRouteRequest,
   frameEnvelope,
   modelCurrentBridge,
   reloadFrameDocument,
@@ -460,5 +461,94 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       expect(currentIframe()).not.toBe(firstIframe);
     });
     expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("re-sends presentation tokens and re-enables content editing after manual Refresh preview reloads the frame", async () => {
+    vi.mocked(startThemePreviewServer).mockResolvedValue({
+      success: true,
+      message: "Live Preview server ready",
+      data: {
+        url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+        workspaceFingerprint: "fp-current-build",
+        bridgeCapabilities: [
+          "selection-field-section",
+          "section-presentation-ack-v1",
+        ],
+      },
+    } as never);
+
+    vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
+      if (
+        message.type === "morph:storefront-preview-update-section-props" &&
+        message.presentationToken
+      ) {
+        const token = message.presentationToken;
+        queueMicrotask(() => {
+          fromPreview({
+            type: "morph:storefront-preview-section-presentation-ack",
+            operationId: token.operationId,
+            token,
+            status: "applied",
+          });
+        });
+      }
+    });
+
+    await renderShell("fp-current-build");
+    sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+      routePath: "/",
+    });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+
+    const input = await screen.findByDisplayValue("Welcome");
+    await waitFor(() => {
+      expect((input as HTMLInputElement).disabled).toBe(false);
+    });
+
+    const firstIframe = currentIframe();
+    const sentBeforeRefresh = vi.mocked(postEditorToPreviewMessage).mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh preview" }));
+    await waitFor(() => {
+      expect(currentIframe()).not.toBe(firstIframe);
+    });
+
+    // The reloaded frame becomes ready with a new document id and ack capability.
+    reloadFrameDocument();
+    sendReady([
+      "selection-field-section",
+      "section-presentation-ack-v1",
+    ]);
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+
+    await waitFor(() => {
+      const recentTokens = vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.slice(sentBeforeRefresh)
+        .map(([, message]) => message)
+        .filter(
+          (
+            message,
+          ): message is Extract<
+            typeof message,
+            { type: "morph:storefront-preview-update-section-props" }
+          > =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            Boolean(message.presentationToken),
+        );
+      expect(recentTokens.length).toBeGreaterThan(0);
+    });
+
+    await waitFor(() => {
+      expect((input as HTMLInputElement).disabled).toBe(false);
+    });
   });
 });

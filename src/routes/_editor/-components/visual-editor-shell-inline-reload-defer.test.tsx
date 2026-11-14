@@ -916,6 +916,58 @@ describe("the frame brought up after the reload", () => {
     expect(startThemePreviewServer).not.toHaveBeenCalled();
   });
 
+  it("rolls the canvas back to the accepted text while keeping the Inspector draft when the new frame replays first and the write is then refused", async () => {
+    const first = writeInFlight();
+    await frameUp();
+    await heldWhileTyping();
+    commitAndClose(TYPED);
+    await tick(400);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+
+    const from = await newFrameUp();
+    await tick(400);
+    expect(replayedLines()).toHaveLength(1);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(heroPosts(from).at(-1)?.props?.heading).toBe(TYPED);
+
+    await act(async () => first.answer(REFUSED));
+    await tick(100);
+    expect(heroPosts(from).at(-1)?.props?.heading).toBe("Welcome");
+    expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
+    expect(
+      document.querySelector("[data-editor-source-reselection]")?.textContent ??
+        "",
+    ).toContain("hero.heading");
+    expect(saveStatus()).toMatch(/^Save failed/);
+  });
+
+  it("does not overwrite newer input typed after the refused edit when rolling back a refused write", async () => {
+    const first = writeInFlight();
+    await frameUp();
+    await heldWhileTyping();
+    commitAndClose(TYPED);
+    await tick(400);
+
+    const from = await newFrameUp();
+    await tick(400);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+    // While the first write is out, the author types a newer value in the
+    // Inspector before the refusal for the earlier edit arrives.
+    const input = screen.getByDisplayValue(TYPED) as HTMLInputElement;
+    act(() => {
+      fireEvent.focus(input);
+      fireEvent.input(input, { target: { value: "Newer after reselect" } });
+      fireEvent.blur(input);
+    });
+    await tick(10);
+
+    await act(async () => first.answer(REFUSED));
+    await tick(100);
+    expect(screen.getByDisplayValue("Newer after reselect")).toBeTruthy();
+    expect(heroPosts(from).at(-1)?.props?.heading).toBe("Newer after reselect");
+  });
+
   it("does not show an unanswered write the read does not hold, and leaves it unanswered", async () => {
     updateSectionProps.mockImplementation(
       async (request: { data: { props: unknown } }) => {

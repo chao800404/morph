@@ -137,6 +137,8 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /** Called when a focused content input blurs for a document section. */
+  onSectionContentBlur?: (sectionId: string) => void;
   /** See the Inspector's `contentBasis`; asked by the section's id. */
   contentBasisForSection?: (sectionId: string) => number | undefined;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
@@ -146,6 +148,7 @@ type EditorAssistantPanelProps = {
   /** Replaces one Inspector list with the exact value read from the server. */
   listReset?: InspectorListReset | null;
   onListResetApplied?: (epoch: number) => void;
+  documentPresentationEstablished?: boolean;
   onDiscardListConflict?: (sectionId: string, fieldPath: string) => void;
   onCodeComponentPropsChange?: (
     filePath: string,
@@ -273,6 +276,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onSectionPropsChange,
+  onSectionContentBlur,
   contentBasisForSection,
   inlineTextCommit,
   listWriteStatuses,
@@ -284,6 +288,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onTabChange,
   contentResetEpoch = 0,
   documentPresentationReady = true,
+  documentPresentationEstablished,
   documentPresentationPausedReason = null,
   inspectorDocumentKey,
   selectionSourceCurrent = false,
@@ -412,16 +417,17 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       contentStore,
       onCodeComponentPropsChange,
       onSectionPropsChange,
+  onSectionContentBlur,
       sourceDefaultRefusal,
       storedSection,
     ],
   );
   const inspectorContentBasis = useCallback(
     () =>
-      documentSection
-        ? contentBasisForSection?.(documentSection.id)
+      storedSection
+        ? contentBasisForSection?.(storedSection.id)
         : undefined,
-    [contentBasisForSection, documentSection],
+    [contentBasisForSection, storedSection],
   );
 
   useEffect(() => {
@@ -597,7 +603,11 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 resourceKey={`${context.storefront.id}:${context.theme.id}:${inspectorDocumentKey ?? activeTemplate?.id ?? ""}:${contentStore}:${contentResetEpoch}`}
                 rowIdTemplateId={activeTemplate?.id}
                 view={tab === "content" ? "content" : "styles"}
-                disabled={tab === "content" && !documentPresentationReady}
+                disabled={
+                  tab === "content" &&
+                  contentStore === "document" &&
+                  !(documentPresentationEstablished ?? documentPresentationReady)
+                }
                 section={inspectorSection}
                 contentStore={contentStore}
                 sourceDefaultRefusal={
@@ -619,6 +629,11 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 onRepairThemeLinkBinding={onRepairThemeLinkBinding}
                 onSwitchThemeLinkElement={onSwitchThemeLinkElement}
                 onPropsChange={handleInspectorPropsChange}
+                onContentBlur={
+                  contentStore === "document" && storedSection
+                    ? () => onSectionContentBlur?.(storedSection.id)
+                    : undefined
+                }
                 listWriteStatuses={listWriteStatuses}
                 listReset={listReset}
                 onListResetApplied={onListResetApplied}
