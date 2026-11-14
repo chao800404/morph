@@ -540,6 +540,14 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     test.setTimeout(180_000);
     const readLifecycle = await observePreviewLifecycle(page);
     const serverFunctions = collectServerFunctions(page);
+    let lastPreviewUrl = "";
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) return;
+      const url = frame.url();
+      if (url.includes("editorOrigin=")) {
+        lastPreviewUrl = url;
+      }
+    });
     let stripBridge = false;
     let strippedBridgeCount = 0;
     let startCalls = 0;
@@ -599,15 +607,17 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       });
 
       // Reload the iframe once with an unsupported bridge while composing is active.
-      // Reload the active frame document itself (not `iframe.src`, which in
-      // container runs holds a one-time `/__morph/preview-auth/begin` URL).
+      // Navigate to `lastPreviewUrl` (which keeps `editorOrigin` & `previewSession`
+      // before client routing normalizes `window.location`, and avoids re-hitting
+      // the one-time `/__morph/preview-auth/begin` URL in container runs).
       stripBridge = true;
-      const previewFrame = await page
-        .locator("iframe")
-        .first()
-        .contentFrame();
-      expect(previewFrame, "preview iframe must have a contentFrame").not.toBeNull();
-      await previewFrame!.evaluate(() => window.location.reload());
+      expect(lastPreviewUrl, "preview frame must have navigated with editorOrigin").toContain("editorOrigin=");
+      const iframeHandle = await page.locator("iframe").first().elementHandle();
+      const previewFrame = await iframeHandle?.contentFrame();
+      expect(previewFrame, "preview iframe must have a contentFrame").toBeTruthy();
+      await previewFrame!.evaluate((url) => {
+        window.location.replace(url);
+      }, lastPreviewUrl);
       await expect
         .poll(
           async () => {
