@@ -3199,4 +3199,71 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     expect(screen.queryByDisplayValue("Default heading")).toBeNull();
     expect(sent()).toHaveLength(0);
   });
+
+  it("controlled race: save lands, ack withheld, frame self-navigates to unfollowed route, continue typing and blur", async () => {
+    await openOn(headingReport);
+
+    const originalDispatch = window.dispatchEvent.bind(window);
+    let withholdAppliedAck = true;
+    const dispatchSpy = vi
+      .spyOn(window, "dispatchEvent")
+      .mockImplementation((event: Event) => {
+        if (
+          withholdAppliedAck &&
+          event instanceof MessageEvent &&
+          event.data?.type ===
+            "morph:storefront-preview-section-presentation-ack" &&
+          event.data?.status === "applied"
+        ) {
+          return true;
+        }
+        return originalDispatch(event);
+      });
+
+    try {
+      await type("Default heading", "First");
+      await pause();
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+
+      await fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/unfollowed/elsewhere",
+        frameNavigationEpoch: 1,
+      });
+      await flushFrames();
+
+      const field = (await screen.findAllByDisplayValue("First"))[0]!;
+      expect(field.matches(":disabled")).toBe(false);
+      fireEvent.input(field, { target: { value: "Second" } });
+      fireEvent.blur(field);
+      await pause();
+
+      const syncingBanners = screen.queryAllByText(
+        /Preview syncing\. Content writes are paused/,
+      );
+      expect({
+        fieldValue: (field as HTMLInputElement).value,
+        fieldDisabled: field.matches(":disabled"),
+        syncingBannerTexts: syncingBanners.map((el) => el.textContent),
+        sentCount: sent().length,
+        serverRoute: server.route,
+      }).toEqual({
+        fieldValue: "Second",
+        fieldDisabled: false,
+        syncingBannerTexts: expect.arrayContaining([
+          expect.stringContaining("Preview syncing. Content writes are paused"),
+        ]),
+        sentCount: 1,
+        serverRoute: { generation: 2, props: { heading: "First" } },
+      });
+    } finally {
+      withholdAppliedAck = false;
+      dispatchSpy.mockRestore();
+    }
+  });
 });
