@@ -222,6 +222,9 @@ test.describe("typing after the preview moved to another page by itself", () => 
     await expect(cardTitle(page, SLOT)).toHaveText(live);
     await titleField(page).press("Tab");
     await expect.poll(() => storedTitle(page, SLOT)).toBe(live);
+    // Wait for the post-save presentation ack to complete on HOME_ROUTE before
+    // the preview frame navigates away on its own.
+    await expect(page.getByText(/Preview syncing/)).toHaveCount(0);
 
     // The frame moves by itself, as a link inside it would.
     await previewFrame(page)
