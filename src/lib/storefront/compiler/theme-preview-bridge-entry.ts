@@ -221,8 +221,22 @@ if (typeof window !== "undefined") {
 let contentRefreshScheduled = false;
 let contentRefreshEpoch = 0;
 let contentRefreshInFlightCount = 0;
+let latestRefreshSucceededEpoch = 0;
+let latestRefreshFailedEpoch = 0;
 function isContentRefreshPending() {
   return contentRefreshScheduled || contentRefreshInFlightCount > 0;
+}
+function schedulePendingPresentationFlush(targetEpoch) {
+  if (
+    typeof pendingPresentationTokens === "undefined" ||
+    pendingPresentationTokens.size === 0
+  ) {
+    return;
+  }
+  requestAnimationFrame(() => {
+    if (targetEpoch !== contentRefreshEpoch || isContentRefreshPending()) return;
+    flushPendingPresentationTokens();
+  });
 }
 function refreshPreviewContent() {
   contentRefreshEpoch += 1;
@@ -233,16 +247,11 @@ function refreshPreviewContent() {
     const refreshEpoch = contentRefreshEpoch;
     const router = window.__morphPreviewRouter;
     if (typeof router?.invalidate !== "function") {
-      if (
-        refreshEpoch === contentRefreshEpoch &&
-        contentRefreshInFlightCount === 0 &&
-        typeof pendingPresentationTokens !== "undefined" &&
-        pendingPresentationTokens.size > 0
-      ) {
-        requestAnimationFrame(() => {
-          if (refreshEpoch !== contentRefreshEpoch || isContentRefreshPending()) return;
-          flushPendingPresentationTokens();
-        });
+      if (refreshEpoch > latestRefreshSucceededEpoch) {
+        latestRefreshSucceededEpoch = refreshEpoch;
+      }
+      if (!isContentRefreshPending() && latestRefreshSucceededEpoch === contentRefreshEpoch) {
+        schedulePendingPresentationFlush(contentRefreshEpoch);
       }
       return;
     }
@@ -251,6 +260,9 @@ function refreshPreviewContent() {
       .then(() => router.invalidate({ sync: true }))
       .then(() => {
         contentRefreshInFlightCount = Math.max(0, contentRefreshInFlightCount - 1);
+        if (refreshEpoch > latestRefreshSucceededEpoch) {
+          latestRefreshSucceededEpoch = refreshEpoch;
+        }
         // The selected element is re-found, not widened to its section:
         // typing in the Inspector refreshes on every change, and the
         // selection must stay on the field being typed into.
@@ -265,29 +277,27 @@ function refreshPreviewContent() {
         }
         reportStructure();
         drawOverlays();
-        if (
-          refreshEpoch === contentRefreshEpoch &&
-          contentRefreshInFlightCount === 0 &&
-          typeof pendingPresentationTokens !== "undefined" &&
-          pendingPresentationTokens.size > 0
-        ) {
-          requestAnimationFrame(() => {
-            if (refreshEpoch !== contentRefreshEpoch || isContentRefreshPending()) return;
-            flushPendingPresentationTokens();
-          });
+        if (!isContentRefreshPending() && latestRefreshSucceededEpoch === contentRefreshEpoch) {
+          schedulePendingPresentationFlush(contentRefreshEpoch);
         }
       })
       .catch(() => {
         contentRefreshInFlightCount = Math.max(0, contentRefreshInFlightCount - 1);
-        if (
-          refreshEpoch === contentRefreshEpoch &&
-          contentRefreshInFlightCount === 0 &&
-          typeof pendingPresentationTokens !== "undefined"
-        ) {
-          for (const entry of pendingPresentationTokens.values()) {
-            postPresentationAck(entry.token, "not-applied", "section-missing");
+        if (refreshEpoch > latestRefreshFailedEpoch) {
+          latestRefreshFailedEpoch = refreshEpoch;
+        }
+        if (!isContentRefreshPending() && typeof pendingPresentationTokens !== "undefined") {
+          if (
+            latestRefreshFailedEpoch === contentRefreshEpoch &&
+            latestRefreshFailedEpoch > latestRefreshSucceededEpoch
+          ) {
+            for (const entry of pendingPresentationTokens.values()) {
+              postPresentationAck(entry.token, "not-applied", "section-missing");
+            }
+            pendingPresentationTokens.clear();
+          } else if (latestRefreshSucceededEpoch === contentRefreshEpoch) {
+            schedulePendingPresentationFlush(contentRefreshEpoch);
           }
-          pendingPresentationTokens.clear();
         }
         console.warn("[morph-preview] content refresh failed; the previous render may still be visible.");
       });

@@ -1546,4 +1546,230 @@ describe("Start and container bridge presentation ack", () => {
     await flushRaf();
     expect(flushed).toEqual(["hero:op-2"]);
   });
+
+  it("flushes op-2 without getting stuck when the second router.invalidate resolves before the first", async () => {
+    const refreshSource = BRIDGE.slice(
+      BRIDGE.indexOf("let contentRefreshScheduled = false;"),
+      BRIDGE.indexOf("// Off until the editor asks for it,"),
+    );
+
+    const flushed: string[] = [];
+    const acks: Array<{ operationId: string; status: string; reason?: string }> = [];
+    const pendingPresentationTokens = new Map<
+      string,
+      { sectionId: string; enabled: boolean; token: { operationId: string } }
+    >();
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+    let invalidateCall = 0;
+    const windowObj = {
+      __morphPreviewRouter: {
+        invalidate: () => {
+          invalidateCall += 1;
+          if (invalidateCall === 1) {
+            return new Promise<void>((resolve) => {
+              resolveFirst = resolve;
+            });
+          }
+          return new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          });
+        },
+      },
+    };
+    const rafQueue: FrameRequestCallback[] = [];
+    const requestAnimationFrame = (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    };
+    const flushRaf = async () => {
+      while (rafQueue.length > 0) {
+        const next = rafQueue.shift()!;
+        next(0);
+        await Promise.resolve();
+      }
+    };
+    const flushPendingPresentationTokens = () => {
+      for (const [sectionId, entry] of pendingPresentationTokens.entries()) {
+        flushed.push(`${sectionId}:${entry.token.operationId}`);
+        pendingPresentationTokens.delete(sectionId);
+      }
+    };
+    const refreshPreviewContent = new Function(
+      "window",
+      "requestAnimationFrame",
+      "pendingPresentationTokens",
+      "flushPendingPresentationTokens",
+      "postPresentationAck",
+      "restoreSelectedTarget",
+      "restoreSelectedSection",
+      "reportStructure",
+      "drawOverlays",
+      "selectionEnabled",
+      "lastRestoreTarget",
+      "selectedSectionId",
+      `${refreshSource}\nreturn refreshPreviewContent;`,
+    )(
+      windowObj,
+      requestAnimationFrame,
+      pendingPresentationTokens,
+      flushPendingPresentationTokens,
+      (token: { operationId: string }, status: string, reason?: string) => {
+        acks.push({ operationId: token.operationId, status, reason });
+      },
+      () => {},
+      () => {},
+      () => {},
+      () => {},
+      false,
+      null,
+      null,
+    ) as () => void;
+
+    pendingPresentationTokens.set("hero", {
+      sectionId: "hero",
+      enabled: true,
+      token: { operationId: "op-1" },
+    });
+    refreshPreviewContent();
+    await flushRaf();
+    expect(invalidateCall).toBe(1);
+
+    pendingPresentationTokens.set("hero", {
+      sectionId: "hero",
+      enabled: true,
+      token: { operationId: "op-2" },
+    });
+    refreshPreviewContent();
+    await flushRaf();
+    expect(invalidateCall).toBe(2);
+
+    // Second invalidate finishes BEFORE first: must wait for first to drain (not flush early).
+    resolveSecond();
+    await Promise.resolve();
+    await Promise.resolve();
+    await flushRaf();
+    expect(flushed).toEqual([]);
+    expect(pendingPresentationTokens.has("hero")).toBe(true);
+
+    // First invalidate now finishes: op-2 must flush and NOT be left stuck forever.
+    resolveFirst();
+    await Promise.resolve();
+    await Promise.resolve();
+    await flushRaf();
+    expect(flushed).toEqual(["hero:op-2"]);
+    expect(acks).toEqual([]);
+  });
+
+  it("does not clear op-2 or fail when an older router.invalidate rejects after the newer one resolves", async () => {
+    const refreshSource = BRIDGE.slice(
+      BRIDGE.indexOf("let contentRefreshScheduled = false;"),
+      BRIDGE.indexOf("// Off until the editor asks for it,"),
+    );
+
+    const flushed: string[] = [];
+    const acks: Array<{ operationId: string; status: string; reason?: string }> = [];
+    const pendingPresentationTokens = new Map<
+      string,
+      { sectionId: string; enabled: boolean; token: { operationId: string } }
+    >();
+    let rejectFirst!: (reason?: unknown) => void;
+    let resolveSecond!: () => void;
+    let invalidateCall = 0;
+    const windowObj = {
+      __morphPreviewRouter: {
+        invalidate: () => {
+          invalidateCall += 1;
+          if (invalidateCall === 1) {
+            return new Promise<void>((_, reject) => {
+              rejectFirst = reject;
+            });
+          }
+          return new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          });
+        },
+      },
+    };
+    const rafQueue: FrameRequestCallback[] = [];
+    const requestAnimationFrame = (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    };
+    const flushRaf = async () => {
+      while (rafQueue.length > 0) {
+        const next = rafQueue.shift()!;
+        next(0);
+        await Promise.resolve();
+      }
+    };
+    const flushPendingPresentationTokens = () => {
+      for (const [sectionId, entry] of pendingPresentationTokens.entries()) {
+        flushed.push(`${sectionId}:${entry.token.operationId}`);
+        pendingPresentationTokens.delete(sectionId);
+      }
+    };
+    const refreshPreviewContent = new Function(
+      "window",
+      "requestAnimationFrame",
+      "pendingPresentationTokens",
+      "flushPendingPresentationTokens",
+      "postPresentationAck",
+      "restoreSelectedTarget",
+      "restoreSelectedSection",
+      "reportStructure",
+      "drawOverlays",
+      "selectionEnabled",
+      "lastRestoreTarget",
+      "selectedSectionId",
+      `${refreshSource}\nreturn refreshPreviewContent;`,
+    )(
+      windowObj,
+      requestAnimationFrame,
+      pendingPresentationTokens,
+      flushPendingPresentationTokens,
+      (token: { operationId: string }, status: string, reason?: string) => {
+        acks.push({ operationId: token.operationId, status, reason });
+      },
+      () => {},
+      () => {},
+      () => {},
+      () => {},
+      false,
+      null,
+      null,
+    ) as () => void;
+
+    pendingPresentationTokens.set("hero", {
+      sectionId: "hero",
+      enabled: true,
+      token: { operationId: "op-1" },
+    });
+    refreshPreviewContent();
+    await flushRaf();
+
+    pendingPresentationTokens.set("hero", {
+      sectionId: "hero",
+      enabled: true,
+      token: { operationId: "op-2" },
+    });
+    refreshPreviewContent();
+    await flushRaf();
+
+    // Newer invalidate succeeds first.
+    resolveSecond();
+    await Promise.resolve();
+    await Promise.resolve();
+    await flushRaf();
+    expect(flushed).toEqual([]);
+
+    // Older invalidate rejects afterwards: must NOT post not-applied for op-2; op-2 still flushes.
+    rejectFirst(new Error("stale failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await flushRaf();
+    expect(acks).toEqual([]);
+    expect(flushed).toEqual(["hero:op-2"]);
+  });
 });

@@ -189,7 +189,11 @@ const heroNode = {
   },
 };
 
-async function renderShell(initialFp = "fp-old-build") {
+async function renderShell(
+  initialFp = "fp-old-build",
+  customContext: StorefrontThemeEditorDTO = context,
+  customTree = tree(),
+) {
   const initialServer = {
     success: true,
     message: "Live Preview server ready",
@@ -208,12 +212,12 @@ async function renderShell(initialFp = "fp-old-build") {
   );
   client.setQueryData(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
-    tree() as never,
+    customTree as never,
   );
   render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={context}
+        context={customContext}
         search={homeSearch}
         onSearchChange={vi.fn()}
       />
@@ -550,5 +554,256 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
     await waitFor(() => {
       expect((input as HTMLInputElement).disabled).toBe(false);
     });
+  });
+
+  it("does not write defaults into Document when a bound section has no saved props on Refresh preview", async () => {
+    vi.mocked(startThemePreviewServer).mockResolvedValue({
+      success: true,
+      message: "Live Preview server ready",
+      data: {
+        url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+        workspaceFingerprint: "fp-current-build",
+        bridgeCapabilities: [
+          "selection-field-section",
+          "section-presentation-ack-v1",
+        ],
+      },
+    } as never);
+
+    vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
+      if (
+        message.type === "morph:storefront-preview-update-section-props" &&
+        message.presentationToken
+      ) {
+        const token = message.presentationToken;
+        queueMicrotask(() => {
+          fromPreview({
+            type: "morph:storefront-preview-section-presentation-ack",
+            operationId: token.operationId,
+            token,
+            status: "applied",
+          });
+        });
+      }
+    });
+
+    const noPropsContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    vi.mocked(getThemeEditor).mockResolvedValue({
+      success: true,
+      data: noPropsContext,
+    } as never);
+
+    const boundTree = {
+      ...tree(),
+      files: [
+        {
+          id: "file-morph-content",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          path: "src/morph/content.ts",
+          content: 'export { content, morph, isSectionHidden } from "@morph/sdk";\n',
+          mimeType: "text/typescript",
+          isEntry: false,
+          version: 1,
+          createdAt: "2026-10-17T00:00:00.000Z",
+          updatedAt: "2026-10-17T00:00:00.000Z",
+        },
+        {
+          id: "file-hero",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          path: "src/components/Hero.tsx",
+          content: [
+            'export const schema = { heading: { type: "text", label: "Heading" } } as const;',
+            'export default function Hero({ heading = "Default heading" }: { heading?: string }) { return <h1>{heading}</h1>; }',
+          ].join("\n"),
+          mimeType: "text/typescript",
+          isEntry: false,
+          version: 1,
+          createdAt: "2026-10-17T00:00:00.000Z",
+          updatedAt: "2026-10-17T00:00:00.000Z",
+        },
+        {
+          ...tree().files[0]!,
+          content: [
+            'import { createFileRoute } from "@tanstack/react-router";',
+            'import { content } from "../morph/content";',
+            'import Hero from "../components/Hero";',
+            'export const Route = createFileRoute("/")({ component: Home });',
+            'function Home() { return <main><Hero {...content("hero")} /></main>; }',
+          ].join("\n"),
+        },
+      ],
+    };
+    vi.mocked(listStorefrontThemeFiles).mockResolvedValue({
+      success: true,
+      data: boundTree,
+    } as never);
+
+    await renderShell("fp-current-build", noPropsContext, boundTree);
+    sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+      routePath: "/",
+    });
+
+    const firstIframe = currentIframe();
+    const sentBeforeRefresh = vi.mocked(postEditorToPreviewMessage).mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh preview" }));
+    await waitFor(() => {
+      expect(currentIframe()).not.toBe(firstIframe);
+    });
+
+    reloadFrameDocument();
+    sendReady([
+      "selection-field-section",
+      "section-presentation-ack-v1",
+    ]);
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+      routePath: "/",
+    });
+
+    await waitFor(() => {
+      const heroUpdates = vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.slice(sentBeforeRefresh)
+        .map(([, message]) => message)
+        .filter(
+          (
+            message,
+          ): message is Extract<
+            typeof message,
+            { type: "morph:storefront-preview-update-section-props" }
+          > =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            message.sectionId === "hero" &&
+            Boolean(message.presentationToken),
+        );
+      expect(heroUpdates.length).toBeGreaterThan(0);
+      expect(heroUpdates.at(-1)).toMatchObject({
+        sectionId: "hero",
+        props: undefined,
+        enabled: true,
+      });
+    });
+
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("keeps hidden sections disabled (enabled: false) when replaying bound sections on Refresh preview", async () => {
+    vi.mocked(startThemePreviewServer).mockResolvedValue({
+      success: true,
+      message: "Live Preview server ready",
+      data: {
+        url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+        workspaceFingerprint: "fp-current-build",
+        bridgeCapabilities: [
+          "selection-field-section",
+          "section-presentation-ack-v1",
+        ],
+      },
+    } as never);
+
+    vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
+      if (
+        message.type === "morph:storefront-preview-update-section-props" &&
+        message.presentationToken
+      ) {
+        const token = message.presentationToken;
+        queueMicrotask(() => {
+          fromPreview({
+            type: "morph:storefront-preview-section-presentation-ack",
+            operationId: token.operationId,
+            token,
+            status: "applied",
+          });
+        });
+      }
+    });
+
+    const hiddenContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [
+              { id: "hero", type: "hero", enabled: false, props: { heading: "Welcome" } },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    vi.mocked(getThemeEditor).mockResolvedValue({
+      success: true,
+      data: hiddenContext,
+    } as never);
+
+    await renderShell("fp-current-build", hiddenContext);
+    sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+      routePath: "/",
+    });
+
+    const firstIframe = currentIframe();
+    const sentBeforeRefresh = vi.mocked(postEditorToPreviewMessage).mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh preview" }));
+    await waitFor(() => {
+      expect(currentIframe()).not.toBe(firstIframe);
+    });
+
+    reloadFrameDocument();
+    sendReady([
+      "selection-field-section",
+      "section-presentation-ack-v1",
+    ]);
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+
+    await waitFor(() => {
+      const heroUpdates = vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.slice(sentBeforeRefresh)
+        .map(([, message]) => message)
+        .filter(
+          (
+            message,
+          ): message is Extract<
+            typeof message,
+            { type: "morph:storefront-preview-update-section-props" }
+          > =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            message.sectionId === "hero" &&
+            Boolean(message.presentationToken),
+        );
+      expect(heroUpdates.length).toBeGreaterThan(0);
+      expect(heroUpdates.at(-1)).toMatchObject({
+        sectionId: "hero",
+        enabled: false,
+      });
+    });
+
+    expect(updateSectionProps).not.toHaveBeenCalled();
   });
 });
