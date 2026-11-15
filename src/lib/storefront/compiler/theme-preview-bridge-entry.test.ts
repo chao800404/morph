@@ -1426,6 +1426,7 @@ describe("Start and container bridge presentation ack", () => {
     );
     expect(updateHandler).toContain("const changed = updatePreviewContent(");
     expect(updateHandler).toContain("if (changed)");
+    expect(updateHandler).toContain("!isContentRefreshPending()");
   });
 
   it("withdraws applied presentation acks only for the current route during client-side navigation", () => {
@@ -1434,5 +1435,115 @@ describe("Start and container bridge presentation ack", () => {
       BRIDGE.indexOf("function flushEarlyPresentationTokens("),
     );
     expect(withdrawFn).toContain("token.routePath !== currentRoute");
+  });
+
+  it("defers flushing pending presentation tokens when a newer refreshPreviewContent is queued while an older invalidate is in flight", async () => {
+    const refreshSource = BRIDGE.slice(
+      BRIDGE.indexOf("let contentRefreshScheduled = false;"),
+      BRIDGE.indexOf("// Off until the editor asks for it,"),
+    );
+    const pendingPresentationTokens = new Map<
+      string,
+      { sectionId: string; enabled: boolean; token: { operationId: string } }
+    >();
+    const flushed: string[] = [];
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+    let invalidateCall = 0;
+    const windowObj = {
+      __morphPreviewRouter: {
+        invalidate: () => {
+          invalidateCall += 1;
+          if (invalidateCall === 1) {
+            return new Promise<void>((resolve) => {
+              resolveFirst = resolve;
+            });
+          }
+          return new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          });
+        },
+      },
+    };
+    const rafQueue: FrameRequestCallback[] = [];
+    const requestAnimationFrame = (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    };
+    const flushRaf = async () => {
+      while (rafQueue.length > 0) {
+        const next = rafQueue.shift()!;
+        next(0);
+        await Promise.resolve();
+      }
+    };
+    const flushPendingPresentationTokens = () => {
+      for (const [sectionId, entry] of pendingPresentationTokens.entries()) {
+        flushed.push(`${sectionId}:${entry.token.operationId}`);
+        pendingPresentationTokens.delete(sectionId);
+      }
+    };
+    const refreshPreviewContent = new Function(
+      "window",
+      "requestAnimationFrame",
+      "pendingPresentationTokens",
+      "flushPendingPresentationTokens",
+      "postPresentationAck",
+      "restoreSelectedTarget",
+      "restoreSelectedSection",
+      "reportStructure",
+      "drawOverlays",
+      "selectionEnabled",
+      "lastRestoreTarget",
+      "selectedSectionId",
+      `${refreshSource}\nreturn refreshPreviewContent;`,
+    )(
+      windowObj,
+      requestAnimationFrame,
+      pendingPresentationTokens,
+      flushPendingPresentationTokens,
+      () => {},
+      () => {},
+      () => {},
+      () => {},
+      () => {},
+      false,
+      null,
+      null,
+    ) as () => void;
+
+    pendingPresentationTokens.set("hero", {
+      sectionId: "hero",
+      enabled: true,
+      token: { operationId: "op-1" },
+    });
+    refreshPreviewContent();
+    await flushRaf();
+    expect(invalidateCall).toBe(1);
+
+    // Newer token arrives while the first router.invalidate is still in flight.
+    pendingPresentationTokens.set("hero", {
+      sectionId: "hero",
+      enabled: true,
+      token: { operationId: "op-2" },
+    });
+    refreshPreviewContent();
+    await flushRaf();
+    expect(invalidateCall).toBe(2);
+
+    // First invalidate finishes with stale DOM: must NOT flush op-2 yet.
+    resolveFirst();
+    await Promise.resolve();
+    await Promise.resolve();
+    await flushRaf();
+    expect(flushed).toEqual([]);
+    expect(pendingPresentationTokens.has("hero")).toBe(true);
+
+    // Second invalidate finishes with updated DOM: flushes op-2.
+    resolveSecond();
+    await Promise.resolve();
+    await Promise.resolve();
+    await flushRaf();
+    expect(flushed).toEqual(["hero:op-2"]);
   });
 });

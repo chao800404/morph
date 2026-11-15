@@ -14355,13 +14355,12 @@ export function VisualEditorShell({
                 ? unnamedCopyBasis(keyTemplateId)
                 : undefined,
           });
-          if (!section) continue;
           syncPreviewSectionProps(
             sectionId,
-            section.props
+            section?.props
               ? (parsePreviewSectionProps(section.props) ?? undefined)
               : undefined,
-            section.enabled,
+            section?.enabled ?? true,
             undefined,
             isCurrent,
           );

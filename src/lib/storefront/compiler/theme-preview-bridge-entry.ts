@@ -219,26 +219,38 @@ if (typeof window !== "undefined") {
 }
 
 let contentRefreshScheduled = false;
+let contentRefreshEpoch = 0;
+let contentRefreshInFlightCount = 0;
+function isContentRefreshPending() {
+  return contentRefreshScheduled || contentRefreshInFlightCount > 0;
+}
 function refreshPreviewContent() {
+  contentRefreshEpoch += 1;
   if (contentRefreshScheduled) return;
   contentRefreshScheduled = true;
   requestAnimationFrame(() => {
     contentRefreshScheduled = false;
+    const refreshEpoch = contentRefreshEpoch;
     const router = window.__morphPreviewRouter;
     if (typeof router?.invalidate !== "function") {
       if (
+        refreshEpoch === contentRefreshEpoch &&
+        contentRefreshInFlightCount === 0 &&
         typeof pendingPresentationTokens !== "undefined" &&
         pendingPresentationTokens.size > 0
       ) {
         requestAnimationFrame(() => {
+          if (refreshEpoch !== contentRefreshEpoch || isContentRefreshPending()) return;
           flushPendingPresentationTokens();
         });
       }
       return;
     }
+    contentRefreshInFlightCount += 1;
     void Promise.resolve()
       .then(() => router.invalidate({ sync: true }))
       .then(() => {
+        contentRefreshInFlightCount = Math.max(0, contentRefreshInFlightCount - 1);
         // The selected element is re-found, not widened to its section:
         // typing in the Inspector refreshes on every change, and the
         // selection must stay on the field being typed into.
@@ -254,16 +266,24 @@ function refreshPreviewContent() {
         reportStructure();
         drawOverlays();
         if (
+          refreshEpoch === contentRefreshEpoch &&
+          contentRefreshInFlightCount === 0 &&
           typeof pendingPresentationTokens !== "undefined" &&
           pendingPresentationTokens.size > 0
         ) {
           requestAnimationFrame(() => {
+            if (refreshEpoch !== contentRefreshEpoch || isContentRefreshPending()) return;
             flushPendingPresentationTokens();
           });
         }
       })
       .catch(() => {
-        if (typeof pendingPresentationTokens !== "undefined") {
+        contentRefreshInFlightCount = Math.max(0, contentRefreshInFlightCount - 1);
+        if (
+          refreshEpoch === contentRefreshEpoch &&
+          contentRefreshInFlightCount === 0 &&
+          typeof pendingPresentationTokens !== "undefined"
+        ) {
           for (const entry of pendingPresentationTokens.values()) {
             postPresentationAck(entry.token, "not-applied", "section-missing");
           }
@@ -1693,8 +1713,9 @@ if (channel) {
         }
         reportStructure();
         drawOverlays();
-      } else if (pendingPresentationTokens.size > 0) {
+      } else if (pendingPresentationTokens.size > 0 && !isContentRefreshPending()) {
         requestAnimationFrame(() => {
+          if (isContentRefreshPending()) return;
           flushPendingPresentationTokens();
         });
       }
