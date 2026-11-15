@@ -1,4 +1,10 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Browser,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import {
   EDITOR_PATH,
@@ -739,17 +745,7 @@ for (const theme of [
       ) {
         await enableSelection(page);
       }
-      await heading.scrollIntoViewIfNeeded();
-      const point = await exposedCanvasPoint(page);
-      if (point) {
-        await page.mouse.move(point.x, point.y);
-        for (let step = 0; step < 6; step += 1) {
-          const box = await heading.boundingBox();
-          if (!box || box.y + box.height <= 600) break;
-          await page.mouse.wheel(0, 300);
-          await page.waitForTimeout(150);
-        }
-      }
+      await scrollIntoExposedCanvas(page, heading);
       expect(await clickExposedElement(page, heading)).not.toBeNull();
       await settleSelection(page);
       await openContentTab(page);
@@ -1037,6 +1033,23 @@ async function listAllFiles(page: Page, scope: ThemeScope) {
 }
 
 /** Edits the home page's introduction heading through the Inspector. */
+async function scrollIntoExposedCanvas(
+  page: Page,
+  target: Locator,
+) {
+  await target.scrollIntoViewIfNeeded();
+  const point = await exposedCanvasPoint(page);
+  if (point) {
+    await page.mouse.move(point.x, point.y);
+    for (let step = 0; step < 6; step += 1) {
+      const box = await target.boundingBox();
+      if (!box || box.y + box.height <= 600) break;
+      await page.mouse.wheel(0, 300);
+      await page.waitForTimeout(150);
+    }
+  }
+}
+
 async function editHeading(page: Page, editorPath: string, value: string) {
   await page.goto(editorPath, { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
@@ -1054,7 +1067,7 @@ async function editHeading(page: Page, editorPath: string, value: string) {
   ) {
     await enableSelection(page);
   }
-  await heading.scrollIntoViewIfNeeded();
+  await scrollIntoExposedCanvas(page, heading);
   expect(await clickExposedElement(page, heading)).not.toBeNull();
   await settleSelection(page);
   await openContentTab(page);
