@@ -1037,14 +1037,29 @@ async function scrollIntoExposedCanvas(
   page: Page,
   target: Locator,
 ) {
+  await expect
+    .poll(
+      () =>
+        page
+          .locator("iframe")
+          .first()
+          .evaluate((frame) => getComputedStyle(frame).pointerEvents)
+          .catch(() => "none"),
+      { message: "the canvas never accepted input", timeout: 60_000 },
+    )
+    .not.toBe("none");
   await target.scrollIntoViewIfNeeded();
   const point = await exposedCanvasPoint(page);
   if (point) {
     await page.mouse.move(point.x, point.y);
-    for (let step = 0; step < 6; step += 1) {
+    for (let step = 0; step < 12; step += 1) {
+      const frameBox = await page.locator("iframe").first().boundingBox();
       const box = await target.boundingBox();
-      if (!box || box.y + box.height <= 600) break;
-      await page.mouse.wheel(0, 300);
+      if (!frameBox || !box) break;
+      const topBound = frameBox.y + 8;
+      const bottomBound = Math.min(frameBox.y + frameBox.height - 8, 600);
+      if (box.y >= topBound && box.y + box.height <= bottomBound) break;
+      await page.mouse.wheel(0, box.y < topBound ? -250 : 300);
       await page.waitForTimeout(150);
     }
   }
