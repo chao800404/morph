@@ -7139,6 +7139,7 @@ export function VisualEditorShell({
   previewSelectionFieldRef.current = previewSelectionField;
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
+  const resyncUnackedSectionPresentationRef = useRef<() => void>(() => {});
 
   // A preview that reads content on its server shows a saved edit only once
   // the drafts are synced into it and it confirms reading them (A6b-2,
@@ -7168,6 +7169,7 @@ export function VisualEditorShell({
         postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
           type: "morph:storefront-preview-refresh-content",
         });
+        resyncUnackedSectionPresentationRef.current();
         schedulePreviewRemeasureRef.current();
       },
       // Text typed on the canvas lives only in the page until committed;
@@ -14307,6 +14309,69 @@ export function VisualEditorShell({
   // (`createInstanceContentReplay`). Its page renders from the snapshot of
   // the last start, which this tab's saves since then do not reach. Only
   // content messages: no save, no start, no baseline moved.
+  const replayBoundSections = useCallback(
+    (isCurrent?: () => boolean, onlyUnacked = false) => {
+      if (onlyUnacked) {
+        if (
+          !frameShowsEditorPageRef.current() ||
+          !previewFrameRecordRef.current?.capabilities.has(
+            "section-presentation-ack-v1",
+          )
+        ) {
+          return;
+        }
+      }
+      const sourceGeneration = currentContentSourceGeneration();
+      for (const [sectionId, binding] of sectionModelRef.current.bindings) {
+        const templateId = binding.templateId;
+        if (onlyUnacked) {
+          const sectionKey = sectionPresentationKey(templateId, sectionId);
+          if (acknowledgedSectionPresentationRef.current.has(sectionKey)) {
+            continue;
+          }
+          let hasPending = false;
+          for (const pending of pendingSectionPresentationRef.current.values()) {
+            if (pending.sectionKey === sectionKey) {
+              hasPending = true;
+              break;
+            }
+          }
+          if (hasPending) continue;
+        }
+        const key = contentKeyFor(templateId, sectionId);
+        const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
+        // A hidden section is replayed as hidden, with no props: its
+        // stored values stay with the editor (`previewSectionPost`).
+        const section = previewSectionPost({
+          snapshot: contentSnapshotsRef.current.get(
+            routeTemplateIdsRef.current.get(templateId) ?? templateId,
+          ),
+          sectionId,
+          pending: pendingPropsMapRef.current.get(key),
+          unconfirmed: unconfirmedContentRef.current.get(key),
+          sourceGeneration,
+          missingBasis:
+            routePathFromTemplatePlaceholder(keyTemplateId) !== null
+              ? unnamedCopyBasis(keyTemplateId)
+              : undefined,
+        });
+        syncPreviewSectionProps(
+          sectionId,
+          section?.props
+            ? (parsePreviewSectionProps(section.props) ?? undefined)
+            : undefined,
+          section?.enabled ?? true,
+          undefined,
+          isCurrent,
+        );
+      }
+    },
+    [currentContentSourceGeneration, syncPreviewSectionProps],
+  );
+  resyncUnackedSectionPresentationRef.current = () => {
+    replayBoundSections(undefined, true);
+  };
+
   useEffect(() => {
     const replay = createInstanceContentReplay({
       readLatest: async () => {
@@ -14335,36 +14400,7 @@ export function VisualEditorShell({
       replay: (_frame, isCurrent) => {
         // Replayed: a replay armed for a lost inline edit is settled (C5).
         stepCanvasDeferral({ type: "replay-settled" });
-        const sourceGeneration = currentContentSourceGeneration();
-        for (const [sectionId, binding] of sectionModelRef.current.bindings) {
-          const templateId = binding.templateId;
-          const key = contentKeyFor(templateId, sectionId);
-          const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
-          // A hidden section is replayed as hidden, with no props: its
-          // stored values stay with the editor (`previewSectionPost`).
-          const section = previewSectionPost({
-            snapshot: contentSnapshotsRef.current.get(
-              routeTemplateIdsRef.current.get(templateId) ?? templateId,
-            ),
-            sectionId,
-            pending: pendingPropsMapRef.current.get(key),
-            unconfirmed: unconfirmedContentRef.current.get(key),
-            sourceGeneration,
-            missingBasis:
-              routePathFromTemplatePlaceholder(keyTemplateId) !== null
-                ? unnamedCopyBasis(keyTemplateId)
-                : undefined,
-          });
-          syncPreviewSectionProps(
-            sectionId,
-            section?.props
-              ? (parsePreviewSectionProps(section.props) ?? undefined)
-              : undefined,
-            section?.enabled ?? true,
-            undefined,
-            isCurrent,
-          );
-        }
+        replayBoundSections(isCurrent, false);
       },
       onReadFailed: () => {
         stepCanvasDeferral({ type: "replay-settled" });
