@@ -3118,7 +3118,7 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     });
   });
 
-  it("saves an edit typed after unfollowed frame navigation once an in-flight route-document creation adopts the document", async () => {
+  it("holds an edit typed after unfollowed frame navigation once an in-flight route-document creation adopts the document, then saves it after returning to original route and receiving valid ack", async () => {
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -3133,6 +3133,13 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     );
 
     await openOn(headingReport);
+    await waitFor(() => {
+      expect(
+        screen.queryAllByText(/Preview syncing\. Content writes are paused/),
+      ).toHaveLength(0);
+    });
+    disablePresentationAcks();
+
     await type("Default heading", "First");
     await waitFor(() => expect(firstHeld).toBe(true));
 
@@ -3152,26 +3159,65 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     await expectAdopted();
     await flushFrames();
 
-    // If VisualEditorShell sent a presentation token while the frame is on
-    // /unfollowed/elsewhere, the real bridge responds with section-missing.
-    for (const msg of posted.slice(postedBeforeRelease)) {
-      if (
-        msg.type === "morph:storefront-preview-update-section-props" &&
-        msg.presentationToken
-      ) {
-        const token = msg.presentationToken as { operationId: string };
-        await fromPreview({
-          type: "morph:storefront-preview-section-presentation-ack",
-          operationId: token.operationId,
-          token,
-          status: "not-applied",
-          reason: "section-missing",
-        });
-      }
-    }
+    // While the frame remains on /unfollowed/elsewhere, no section props/tokens are posted there.
+    expect(
+      posted
+        .slice(postedBeforeRelease)
+        .filter((msg) => msg.type === "morph:storefront-preview-update-section-props"),
+    ).toHaveLength(0);
+
     fireEvent.blur(field);
     await pause();
 
+    expect((field as HTMLInputElement).value).toBe("Second");
+    expect(
+      screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+    ).toBeGreaterThan(0);
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "First" },
+    });
+
+    // Returning to the original route emits a fresh presentation request for the newly adopted document.
+    const postedBeforeReturn = posted.length;
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+
+    const postReturnTokens = posted
+      .slice(postedBeforeReturn)
+      .filter(
+        (
+          msg,
+        ): msg is Record<string, unknown> & {
+          presentationToken: Record<string, unknown> & { operationId: string };
+        } =>
+          msg.type === "morph:storefront-preview-update-section-props" &&
+          Boolean(msg.presentationToken),
+      )
+      .map((msg) => msg.presentationToken);
+    expect(postReturnTokens.length).toBeGreaterThan(0);
+
+    const fresh = postReturnTokens[postReturnTokens.length - 1]!;
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: fresh.operationId,
+      token: fresh,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      expectedDraftGeneration: 2,
+      props: { heading: "Second" },
+    });
     expect(server.route).toMatchObject({
       generation: 3,
       props: { heading: "Second" },
@@ -3603,10 +3649,13 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
 
   it("controlled cross-page save after valid pre-navigation ack: typing and blurring while frame stays on unfollowed route does not post section props to unfollowed route or revoke presentationReady, and saves once", async () => {
     await openOn(headingReport);
-    disablePresentationAcks();
-
     // Wait for initial presentation ack to settle so page is confirmed before navigation.
-    await pause();
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Preview syncing\. Content writes are paused/),
+      ).toBeNull();
+    });
+    disablePresentationAcks();
 
     await fromPreview({
       type: "morph:storefront-preview-structure",
@@ -3639,16 +3688,17 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
       }
     }
 
-    fireEvent.blur(field);
-    await pause();
-
     const offPageSectionPosts = posted
       .slice(postedBeforeTyping)
       .filter((msg) => msg.type === "morph:storefront-preview-update-section-props");
     expect(offPageSectionPosts).toHaveLength(0);
     expect(
-      screen.queryByText(/Preview syncing\. Content writes are paused/),
-    ).toBeNull();
+      screen.queryAllByText(/Preview syncing\. Content writes are paused/),
+    ).toHaveLength(0);
+
+    fireEvent.blur(field);
+    await pause();
+
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toMatchObject({
       expectedDraftGeneration: 1,
