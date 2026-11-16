@@ -36,6 +36,7 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import {
   answerLatestRouteRequest,
   createLiveFrame,
+  disablePresentationAcks,
   frameEnvelope,
 } from "@/lib/test-utils/preview-frame-handshake";
 import {
@@ -3267,7 +3268,7 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     }
   });
 
-  it("controlled race recovery: returning to original route and receiving valid ack lets Second save without duplicate writes or borrowed basis", async () => {
+  it("controlled race (delayed pre-navigation ack): delivering the withheld ack after returning to original route lets Second save once at expectedDraftGeneration 2", async () => {
     await openOn(headingReport);
 
     const originalDispatch = window.dispatchEvent.bind(window);
@@ -3353,5 +3354,143 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
       withholdAppliedAck = false;
       dispatchSpy.mockRestore();
     }
+  });
+
+  it("controlled race real recovery: returning to original route emits a fresh presentation request, replies with new ack, and saves Second once at expectedDraftGeneration 2", async () => {
+    await openOn(headingReport);
+    disablePresentationAcks();
+
+    const steps: string[] = [];
+    const seenTokens: Array<{
+      operationId: string;
+      token: Record<string, unknown>;
+    }> = [];
+    let postedBaseline = posted.length;
+
+    const collectNewPosts = () => {
+      for (; postedBaseline < posted.length; postedBaseline += 1) {
+        const msg = posted[postedBaseline]!;
+        if (
+          msg.type === "morph:storefront-preview-update-section-props" &&
+          msg.presentationToken
+        ) {
+          const token = msg.presentationToken as Record<string, unknown> & {
+            operationId: string;
+          };
+          seenTokens.push({ operationId: token.operationId, token });
+          steps.push(`post:update-section-props:${token.operationId}`);
+          if (seenTokens.length > 20) {
+            throw new Error(
+              `Presentation post cap exceeded: ${steps.join(" -> ")}`,
+            );
+          }
+        } else {
+          steps.push(`post:${String(msg.type)}`);
+        }
+      }
+    };
+
+    // 1. Save First; do NOT ack its presentationToken (simulates ack lost before navigation).
+    steps.push("action:type-First");
+    await type("Default heading", "First");
+    await pause();
+    collectNewPosts();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "First" },
+    });
+    const preNavTokenCount = seenTokens.length;
+    expect(preNavTokenCount).toBeGreaterThan(0);
+
+    // 2. Frame self-navigates to an unfollowed route.
+    steps.push("frame:nav-unfollowed");
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    // 3. Author types Second and blurs while on unfollowed route: draft kept, no write sent.
+    steps.push("action:type-Second-and-blur");
+    const field = (await screen.findAllByDisplayValue("First"))[0]!;
+    fireEvent.input(field, { target: { value: "Second" } });
+    fireEvent.blur(field);
+    await pause();
+    collectNewPosts();
+
+    expect((field as HTMLInputElement).value).toBe("Second");
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "First" },
+    });
+
+    // 4. Frame returns to the original route. Before any new ack, Second stays held and unsent.
+    const beforeReturnTokenCount = seenTokens.length;
+    steps.push("frame:nav-back-to-original");
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    expect((field as HTMLInputElement).value).toBe("Second");
+    expect(sent()).toHaveLength(1);
+
+    // 5. Observe a fresh presentation request emitted after returning to original route.
+    const postReturnTokens = seenTokens.slice(beforeReturnTokenCount);
+    expect(
+      postReturnTokens.length,
+      `Expected fresh presentation request after returning to ${ROUTE_PATH}; steps=${steps.join(" -> ")}`,
+    ).toBeGreaterThan(0);
+
+    const fresh = postReturnTokens[postReturnTokens.length - 1]!;
+    steps.push(`ack:applied:${fresh.operationId}`);
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: fresh.operationId,
+      token: fresh.token,
+      status: "applied",
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    try {
+      await waitFor(() => {
+        expect(
+          screen.queryByText(/Preview syncing\. Content writes are paused/),
+        ).toBeNull();
+      });
+    } catch (error) {
+      throw new Error(
+        `Syncing banner stayed after ack; steps=${steps.join(" -> ")}; postReturn=${JSON.stringify(
+          postReturnTokens.map((t) => ({
+            op: t.operationId,
+            sectionId: t.token.sectionId,
+            basis: t.token.documentBasis,
+            rev: t.token.presentationRevision,
+          })),
+        )}`,
+        { cause: error },
+      );
+    }
+    await pause();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      expectedDraftGeneration: 2,
+      props: { heading: "Second" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 3,
+      props: { heading: "Second" },
+    });
   });
 });
