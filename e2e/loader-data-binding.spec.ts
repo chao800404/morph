@@ -1529,11 +1529,11 @@ export const getRetryPage = createServerFn().handler(() =>
 
   const sectionRows = (page: Page) =>
     page.locator(
-      '[data-sidebar="menu-item"] button:has([data-editor-tree-icon="section"])',
+      '[data-sidebar="menu-item"]:not([data-dnd-placeholder]):not([data-dnd-placeholder] *) button:has([data-editor-tree-icon="section"])',
     );
   const sortableSectionRows = (page: Page) =>
     page.locator(
-      '[data-editor-tree-sortable="true"] button:has([data-editor-tree-icon="section"])',
+      '[data-editor-tree-sortable="true"]:not([data-dnd-placeholder]):not([data-dnd-placeholder] *) button:has([data-editor-tree-icon="section"])',
     );
   const sectionOrder = async (page: Page) =>
     (await sectionRows(page).allInnerTexts())
