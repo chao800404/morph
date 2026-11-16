@@ -3444,14 +3444,38 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     expect((field as HTMLInputElement).value).toBe("Second");
     expect(sent()).toHaveLength(1);
 
-    // 5. Observe a fresh presentation request emitted after returning to original route.
+    // 5. Duplicate structure on the same route must not emit another presentation request.
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 3,
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    // 6. Observe a single fresh presentation request emitted after returning to original route.
     const postReturnTokens = seenTokens.slice(beforeReturnTokenCount);
     expect(
-      postReturnTokens.length,
-      `Expected fresh presentation request after returning to ${ROUTE_PATH}; steps=${steps.join(" -> ")}`,
-    ).toBeGreaterThan(0);
+      postReturnTokens,
+      `Expected 1 fresh presentation request after returning to ${ROUTE_PATH}; steps=${steps.join(" -> ")}`,
+    ).toHaveLength(1);
 
-    const fresh = postReturnTokens[postReturnTokens.length - 1]!;
+    // 7. A late ack for an old pre-navigation / off-page token must be ignored.
+    const stale = seenTokens[preNavTokenCount - 1]!;
+    steps.push(`ack:stale:${stale.operationId}`);
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: stale.operationId,
+      token: stale.token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    // 8. Reply with a fresh applied ack for the new post-return token -> Second saves once at expectedDraftGeneration 2.
+    const fresh = postReturnTokens[0]!;
     steps.push(`ack:applied:${fresh.operationId}`);
     await fromPreview({
       type: "morph:storefront-preview-section-presentation-ack",
@@ -3460,28 +3484,8 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
       status: "applied",
     });
     await flushFrames();
-    collectNewPosts();
-
-    try {
-      await waitFor(() => {
-        expect(
-          screen.queryByText(/Preview syncing\. Content writes are paused/),
-        ).toBeNull();
-      });
-    } catch (error) {
-      throw new Error(
-        `Syncing banner stayed after ack; steps=${steps.join(" -> ")}; postReturn=${JSON.stringify(
-          postReturnTokens.map((t) => ({
-            op: t.operationId,
-            sectionId: t.token.sectionId,
-            basis: t.token.documentBasis,
-            rev: t.token.presentationRevision,
-          })),
-        )}`,
-        { cause: error },
-      );
-    }
     await pause();
+    collectNewPosts();
 
     expect(sent()).toHaveLength(2);
     expect(sent()[1]).toMatchObject({
@@ -3491,6 +3495,109 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     expect(server.route).toMatchObject({
       generation: 3,
       props: { heading: "Second" },
+    });
+
+    // 9. Ack the post-save presentation token for Second so the syncing banner clears.
+    const postSaveTokens = seenTokens.slice(beforeReturnTokenCount + 1);
+    expect(postSaveTokens.length).toBeGreaterThan(0);
+    const postSave = postSaveTokens[postSaveTokens.length - 1]!;
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: postSave.operationId,
+      token: postSave.token,
+      status: "applied",
+    });
+    await flushFrames();
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Preview syncing\. Content writes are paused/),
+      ).toBeNull();
+    });
+    expect(sent()).toHaveLength(2);
+  });
+
+  it("controlled race real recovery with external server change: returning to original route and receiving new ack still refuses Second on conflict", async () => {
+    await openOn(headingReport);
+    disablePresentationAcks();
+
+    const seenTokens: Array<{
+      operationId: string;
+      token: Record<string, unknown>;
+    }> = [];
+    let postedBaseline = posted.length;
+    const collectNewPosts = () => {
+      for (; postedBaseline < posted.length; postedBaseline += 1) {
+        const msg = posted[postedBaseline]!;
+        if (
+          msg.type === "morph:storefront-preview-update-section-props" &&
+          msg.presentationToken
+        ) {
+          const token = msg.presentationToken as Record<string, unknown> & {
+            operationId: string;
+          };
+          seenTokens.push({ operationId: token.operationId, token });
+        }
+      }
+    };
+
+    await type("Default heading", "First");
+    await pause();
+    collectNewPosts();
+    expect(sent()).toHaveLength(1);
+
+    // Frame navigates away; meanwhile another writer advances server generation to 5.
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+    server.route = {
+      generation: 5,
+      props: { heading: "Theirs" },
+    };
+
+    const field = (await screen.findAllByDisplayValue("First"))[0]!;
+    fireEvent.input(field, { target: { value: "Second" } });
+    fireEvent.blur(field);
+    await pause();
+    collectNewPosts();
+    expect(sent()).toHaveLength(1);
+
+    const beforeReturnTokenCount = seenTokens.length;
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    const postReturnTokens = seenTokens.slice(beforeReturnTokenCount);
+    expect(postReturnTokens).toHaveLength(1);
+
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: postReturnTokens[0]!.operationId,
+      token: postReturnTokens[0]!.token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+
+    // Recovery sends Second with its original basis (expectedDraftGeneration: 2) and is
+    // refused by the server's generation 5 without overwriting Theirs.
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      expectedDraftGeneration: 2,
+      props: { heading: "Second" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 5,
+      props: { heading: "Theirs" },
     });
   });
 });
