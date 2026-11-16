@@ -3600,4 +3600,63 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
       props: { heading: "Theirs" },
     });
   });
+
+  it("controlled cross-page save after valid pre-navigation ack: typing and blurring while frame stays on unfollowed route does not post section props to unfollowed route or revoke presentationReady, and saves once", async () => {
+    await openOn(headingReport);
+    disablePresentationAcks();
+
+    // Wait for initial presentation ack to settle so page is confirmed before navigation.
+    await pause();
+
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+
+    const postedBeforeTyping = posted.length;
+    const field = (await screen.findAllByDisplayValue("Default heading"))[0]!;
+    fireEvent.input(field, { target: { value: "Typed while elsewhere" } });
+
+    // Simulate real bridge on /unfollowed/elsewhere: any section-props post sent there is section-missing.
+    for (const msg of posted.slice(postedBeforeTyping)) {
+      if (
+        msg.type === "morph:storefront-preview-update-section-props" &&
+        msg.presentationToken
+      ) {
+        const token = msg.presentationToken as Record<string, unknown> & {
+          operationId: string;
+        };
+        await fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: token.operationId,
+          token,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+      }
+    }
+
+    fireEvent.blur(field);
+    await pause();
+
+    const offPageSectionPosts = posted
+      .slice(postedBeforeTyping)
+      .filter((msg) => msg.type === "morph:storefront-preview-update-section-props");
+    expect(offPageSectionPosts).toHaveLength(0);
+    expect(
+      screen.queryByText(/Preview syncing\. Content writes are paused/),
+    ).toBeNull();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      expectedDraftGeneration: 1,
+      props: { heading: "Typed while elsewhere" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "Typed while elsewhere" },
+    });
+  });
 });
