@@ -14402,7 +14402,7 @@ export function VisualEditorShell({
     [currentContentSourceGeneration, syncPreviewSectionProps],
   );
   resyncUnackedSectionPresentationRef.current = () => {
-    replayBoundSections(undefined, "skip-pending");
+    replayBoundSections(undefined, "replace-pending");
   };
   resyncReturnedPagePresentationRef.current = () => {
     replayBoundSections(undefined, "replace-pending");
