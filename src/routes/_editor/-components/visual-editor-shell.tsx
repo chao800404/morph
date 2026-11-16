@@ -14026,6 +14026,9 @@ export function VisualEditorShell({
       ) {
         return;
       }
+      if (!frameShowsEditorPageRef.current()) {
+        return;
+      }
       // Decided as it is posted, from what the editor holds now: a section
       // held as hidden is told it is hidden and nothing else, whatever this
       // post was composed from. Only the message is changed; what is saved,
