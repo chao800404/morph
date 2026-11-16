@@ -260,6 +260,14 @@ export function enablePresentationAcks(address: PreviewFrameAddress) {
   startCurrentBridgePump(frame, address);
 }
 
+/** Disable helper auto-applied presentation acks while keeping identity and heartbeat. */
+export function disablePresentationAcks() {
+  const frame = frameWindow();
+  const bridge = bridgeOf(frame);
+  if (!bridge) return;
+  bridge.presentationAcks = false;
+}
+
 /**
  * Apply acknowledgements as soon as the editor posts them, without replacing
  * the test's transport mock implementation. A real frame receives these

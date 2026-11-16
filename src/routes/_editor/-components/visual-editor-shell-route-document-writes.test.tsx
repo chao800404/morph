@@ -3266,4 +3266,92 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
       dispatchSpy.mockRestore();
     }
   });
+
+  it("controlled race recovery: returning to original route and receiving valid ack lets Second save without duplicate writes or borrowed basis", async () => {
+    await openOn(headingReport);
+
+    const originalDispatch = window.dispatchEvent.bind(window);
+    let withholdAppliedAck = true;
+    const heldAckEvents: Event[] = [];
+    const dispatchSpy = vi
+      .spyOn(window, "dispatchEvent")
+      .mockImplementation((event: Event) => {
+        if (
+          withholdAppliedAck &&
+          event instanceof MessageEvent &&
+          event.data?.type ===
+            "morph:storefront-preview-section-presentation-ack" &&
+          event.data?.status === "applied"
+        ) {
+          heldAckEvents.push(event);
+          return true;
+        }
+        return originalDispatch(event);
+      });
+
+    try {
+      await type("Default heading", "First");
+      await pause();
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+
+      // Frame self-navigates to an unfollowed route before ack arrives.
+      await fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/unfollowed/elsewhere",
+        frameNavigationEpoch: 1,
+      });
+      await flushFrames();
+
+      const field = (await screen.findAllByDisplayValue("First"))[0]!;
+      fireEvent.input(field, { target: { value: "Second" } });
+      fireEvent.blur(field);
+      await pause();
+
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+
+      // Frame returns to the original route and the withheld valid ack is delivered.
+      withholdAppliedAck = false;
+      await fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: ROUTE_PATH,
+        frameNavigationEpoch: 2,
+      });
+      act(() => {
+        for (const event of heldAckEvents.splice(0)) {
+          originalDispatch(event);
+        }
+      });
+      await flushFrames();
+
+      await waitFor(() => {
+        expect(
+          screen.queryByText(/Preview syncing\. Content writes are paused/),
+        ).toBeNull();
+      });
+      await pause();
+
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        expectedDraftGeneration: 2,
+        props: { heading: "Second" },
+      });
+      expect(server.route).toMatchObject({
+        generation: 3,
+        props: { heading: "Second" },
+      });
+    } finally {
+      withholdAppliedAck = false;
+      dispatchSpy.mockRestore();
+    }
+  });
 });

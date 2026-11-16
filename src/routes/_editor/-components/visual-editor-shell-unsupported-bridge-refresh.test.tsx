@@ -25,6 +25,7 @@ import {
 import {
   answerFramePings,
   answerLatestRouteRequest,
+  disablePresentationAcks,
   frameEnvelope,
   modelCurrentBridge,
   reloadFrameDocument,
@@ -487,11 +488,15 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       },
     } as never);
 
+    let postCount = 0;
     vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
       if (
         message.type === "morph:storefront-preview-update-section-props" &&
         message.presentationToken
       ) {
+        if (++postCount > 20) {
+          throw new Error(`LOOP detected on ${message.sectionId} enabled=${String(message.enabled)}`);
+        }
         const token = message.presentationToken;
         queueMicrotask(() => {
           fromPreview({
@@ -506,6 +511,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
 
     await renderShell("fp-current-build");
     sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    disablePresentationAcks();
     answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
     fromPreview({
       type: "morph:storefront-preview-structure",
@@ -576,11 +582,15 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       },
     } as never);
 
+    let postCount = 0;
     vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
       if (
         message.type === "morph:storefront-preview-update-section-props" &&
         message.presentationToken
       ) {
+        if (++postCount > 20) {
+          throw new Error(`LOOP detected on ${message.sectionId} enabled=${String(message.enabled)}`);
+        }
         const token = message.presentationToken;
         queueMicrotask(() => {
           fromPreview({
@@ -659,6 +669,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
 
     await renderShell("fp-current-build", noPropsContext, boundTree);
     sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    disablePresentationAcks();
     answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
     fromPreview({
       type: "morph:storefront-preview-structure",
@@ -727,11 +738,15 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       },
     } as never);
 
+    let postCount = 0;
     vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
       if (
         message.type === "morph:storefront-preview-update-section-props" &&
         message.presentationToken
       ) {
+        if (++postCount > 20) {
+          throw new Error(`LOOP detected on ${message.sectionId} enabled=${String(message.enabled)}`);
+        }
         const token = message.presentationToken;
         queueMicrotask(() => {
           fromPreview({
@@ -765,6 +780,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
 
     await renderShell("fp-current-build", hiddenContext);
     sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    disablePresentationAcks();
     answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
     fromPreview({
       type: "morph:storefront-preview-structure",
@@ -921,6 +937,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
 
     await renderShell("fp-current-build", hiddenContext, tree(), "invalidate");
     sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    disablePresentationAcks();
     answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
     fromPreview({
       type: "morph:storefront-preview-structure",
@@ -974,5 +991,251 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
         screen.queryByText(/Preview syncing\. Content writes are paused/),
       ).toBeNull();
     });
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-verify or affect the new page when Start content sync finishes after frame navigated away, and does not loop if re-verification fails", async () => {
+    let releaseSync!: () => void;
+    const syncGate = new Promise<void>((resolve) => {
+      releaseSync = resolve;
+    });
+    vi.mocked(syncThemePreviewContent).mockImplementation(async () => {
+      await syncGate;
+      return {
+        success: true,
+        message: "ok",
+        data: { ticket: 15 },
+      } as never;
+    });
+    vi.mocked(confirmThemePreviewContent).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { applied: true },
+    } as never);
+
+    let blockShowAck = false;
+    let postCount = 0;
+    vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
+      if (
+        message.type === "morph:storefront-preview-update-section-props" &&
+        message.presentationToken
+      ) {
+        if (++postCount > 20) {
+          throw new Error(`LOOP detected on ${message.sectionId} enabled=${String(message.enabled)}`);
+        }
+        const token = message.presentationToken;
+        const status =
+          blockShowAck && message.enabled === true ? "not-applied" : "applied";
+        queueMicrotask(() => {
+          fromPreview({
+            type: "morph:storefront-preview-section-presentation-ack",
+            operationId: token.operationId,
+            token,
+            status,
+            ...(status === "not-applied" ? { reason: "section-missing" } : {}),
+          });
+        });
+      }
+    });
+
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: {
+        templateId: "template-1",
+        draftGeneration: 2,
+        version: 2,
+      },
+    });
+
+    const hiddenContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [
+              { id: "hero", type: "hero", enabled: false, props: { heading: "Welcome" } },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+
+    await renderShell("fp-current-build", hiddenContext, tree(), "invalidate");
+    sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    disablePresentationAcks();
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+      routePath: "/",
+    });
+
+    const showBtn = await screen.findByRole("button", { name: /^Show section / });
+    blockShowAck = true;
+    fireEvent.click(showBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+      ).toBeGreaterThan(0);
+    });
+
+    // Frame navigates to another route while syncThemePreviewContent is still in flight.
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+
+    const callsBeforeRelease = vi.mocked(postEditorToPreviewMessage).mock.calls.length;
+    await act(async () => {
+      releaseSync();
+      await syncGate;
+    });
+
+    await waitFor(() => {
+      const postCalls = vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.slice(callsBeforeRelease)
+        .map(([, msg]) => msg);
+      expect(
+        postCalls.some((msg) => msg.type === "morph:storefront-preview-refresh-content"),
+      ).toBe(true);
+    });
+
+    const postReleaseSectionUpdates = vi
+      .mocked(postEditorToPreviewMessage)
+      .mock.calls.slice(callsBeforeRelease)
+      .map(([, msg]) => msg)
+      .filter((msg) => msg.type === "morph:storefront-preview-update-section-props");
+    expect(postReleaseSectionUpdates).toHaveLength(0);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(syncThemePreviewContent)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not loop when re-verification after Start content sync refresh still receives not-applied", async () => {
+    let releaseSync!: () => void;
+    const syncGate = new Promise<void>((resolve) => {
+      releaseSync = resolve;
+    });
+    vi.mocked(syncThemePreviewContent).mockImplementation(async () => {
+      await syncGate;
+      return {
+        success: true,
+        message: "ok",
+        data: { ticket: 16 },
+      } as never;
+    });
+    vi.mocked(confirmThemePreviewContent).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { applied: true },
+    } as never);
+
+    let blockShowAck = false;
+    let postCount = 0;
+    vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
+      if (
+        message.type === "morph:storefront-preview-update-section-props" &&
+        message.presentationToken
+      ) {
+        if (++postCount > 20) {
+          throw new Error(`LOOP detected on ${message.sectionId} enabled=${String(message.enabled)}`);
+        }
+        const token = message.presentationToken;
+        const status =
+          blockShowAck && message.enabled === true ? "not-applied" : "applied";
+        // Always reject with section-missing even on re-verification.
+        queueMicrotask(() => {
+          fromPreview({
+            type: "morph:storefront-preview-section-presentation-ack",
+            operationId: token.operationId,
+            token,
+            status,
+            ...(status === "not-applied" ? { reason: "section-missing" } : {}),
+          });
+        });
+      }
+    });
+
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: {
+        templateId: "template-1",
+        draftGeneration: 2,
+        version: 2,
+      },
+    });
+
+    const hiddenContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [
+              { id: "hero", type: "hero", enabled: false, props: { heading: "Welcome" } },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+
+    await renderShell("fp-current-build", hiddenContext, tree(), "invalidate");
+    sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    disablePresentationAcks();
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+      routePath: "/",
+    });
+
+    const showBtn = await screen.findByRole("button", { name: /^Show section / });
+    blockShowAck = true;
+    fireEvent.click(showBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+      ).toBeGreaterThan(0);
+    });
+
+    await act(async () => {
+      releaseSync();
+      await syncGate;
+    });
+
+    await waitFor(() => {
+      const refreshIdx = vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.findIndex(
+          ([, msg]) => msg.type === "morph:storefront-preview-refresh-content",
+        );
+      expect(refreshIdx).toBeGreaterThan(-1);
+    });
+
+    // Give microtasks a chance to settle; only 1 re-verification update is sent (no loop).
+    await new Promise((r) => setTimeout(r, 30));
+    const refreshIdx = vi
+      .mocked(postEditorToPreviewMessage)
+      .mock.calls.findIndex(
+        ([, msg]) => msg.type === "morph:storefront-preview-refresh-content",
+      );
+    const reverifyUpdates = vi
+      .mocked(postEditorToPreviewMessage)
+      .mock.calls.slice(refreshIdx + 1)
+      .map(([, msg]) => msg)
+      .filter((msg) => msg.type === "morph:storefront-preview-update-section-props");
+    expect(reverifyUpdates).toHaveLength(1);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(syncThemePreviewContent)).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+    ).toBeGreaterThan(0);
   });
 });
