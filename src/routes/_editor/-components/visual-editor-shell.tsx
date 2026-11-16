@@ -7140,6 +7140,7 @@ export function VisualEditorShell({
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
   const resyncUnackedSectionPresentationRef = useRef<() => void>(() => {});
+  const resyncReturnedPagePresentationRef = useRef<() => void>(() => {});
 
   // A preview that reads content on its server shows a saved edit only once
   // the drafts are synced into it and it confirms reading them (A6b-2,
@@ -12468,6 +12469,24 @@ export function VisualEditorShell({
           previewReadyRoundRef.current,
           message.routePath,
         );
+        const previousFrameRoute = frameRouteRef.current;
+        const frameRecord = previewFrameRecordRef.current;
+        const returnedToEditorPage =
+          message.routePath !== undefined &&
+          previewStructureMatchesRoute(message.routePath, search.routePath) &&
+          previousFrameRoute !== null &&
+          previousFrameRoute.key === previewKey &&
+          previousFrameRoute.round === previewReadyRoundRef.current &&
+          previousFrameRoute.routePath !== null &&
+          !previewStructureMatchesRoute(
+            previousFrameRoute.routePath,
+            search.routePath,
+          ) &&
+          frameRecord !== null &&
+          frameRecord.previewKey === previewKey &&
+          frameRecord.readyRound === previewReadyRoundRef.current &&
+          frameRecord.documentId !== null &&
+          frameRecord.capabilities.has("section-presentation-ack-v1");
         if (message.routePath !== undefined) {
           frameRouteRef.current = {
             key: previewKey,
@@ -12550,6 +12569,9 @@ export function VisualEditorShell({
           routePath: search.routePath ?? "/",
           nodes: message.nodes,
         });
+        if (returnedToEditorPage) {
+          resyncReturnedPagePresentationRef.current();
+        }
         return;
       }
       if (message.type === "morph:storefront-preview-route-applied") {
@@ -14310,8 +14332,11 @@ export function VisualEditorShell({
   // the last start, which this tab's saves since then do not reach. Only
   // content messages: no save, no start, no baseline moved.
   const replayBoundSections = useCallback(
-    (isCurrent?: () => boolean, onlyUnacked = false) => {
-      if (onlyUnacked) {
+    (
+      isCurrent?: () => boolean,
+      unackedMode: false | "skip-pending" | "replace-pending" = false,
+    ) => {
+      if (unackedMode !== false) {
         if (
           !frameShowsEditorPageRef.current() ||
           !previewFrameRecordRef.current?.capabilities.has(
@@ -14324,19 +14349,27 @@ export function VisualEditorShell({
       const sourceGeneration = currentContentSourceGeneration();
       for (const [sectionId, binding] of sectionModelRef.current.bindings) {
         const templateId = binding.templateId;
-        if (onlyUnacked) {
+        if (unackedMode !== false) {
           const sectionKey = sectionPresentationKey(templateId, sectionId);
           if (acknowledgedSectionPresentationRef.current.has(sectionKey)) {
             continue;
           }
-          let hasPending = false;
-          for (const pending of pendingSectionPresentationRef.current.values()) {
-            if (pending.sectionKey === sectionKey) {
-              hasPending = true;
-              break;
+          if (unackedMode === "skip-pending") {
+            let hasPending = false;
+            for (const pending of pendingSectionPresentationRef.current.values()) {
+              if (pending.sectionKey === sectionKey) {
+                hasPending = true;
+                break;
+              }
+            }
+            if (hasPending) continue;
+          } else {
+            for (const [opId, pending] of pendingSectionPresentationRef.current) {
+              if (pending.sectionKey === sectionKey) {
+                pendingSectionPresentationRef.current.delete(opId);
+              }
             }
           }
-          if (hasPending) continue;
         }
         const key = contentKeyFor(templateId, sectionId);
         const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
@@ -14369,7 +14402,10 @@ export function VisualEditorShell({
     [currentContentSourceGeneration, syncPreviewSectionProps],
   );
   resyncUnackedSectionPresentationRef.current = () => {
-    replayBoundSections(undefined, true);
+    replayBoundSections(undefined, "skip-pending");
+  };
+  resyncReturnedPagePresentationRef.current = () => {
+    replayBoundSections(undefined, "replace-pending");
   };
 
   useEffect(() => {
