@@ -1238,4 +1238,181 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
     ).toBeGreaterThan(0);
   });
+
+  it("replaces still-pending pre-sync Show token when Start content sync finishes before pre-sync not-applied arrives", async () => {
+    let releaseSync!: () => void;
+    const syncGate = new Promise<void>((resolve) => {
+      releaseSync = resolve;
+    });
+    vi.mocked(syncThemePreviewContent).mockImplementation(async () => {
+      await syncGate;
+      return {
+        success: true,
+        message: "ok",
+        data: { ticket: 17 },
+      } as never;
+    });
+    vi.mocked(confirmThemePreviewContent).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { applied: true },
+    } as never);
+
+    let syncedOnce = false;
+    let holdPreSyncShowToken: {
+      operationId: string;
+      token: Record<string, unknown>;
+    } | null = null;
+    let postCount = 0;
+    vi.mocked(postEditorToPreviewMessage).mockImplementation((_target, message) => {
+      if (message.type === "morph:storefront-preview-refresh-content") {
+        syncedOnce = true;
+      }
+      if (
+        message.type === "morph:storefront-preview-update-section-props" &&
+        message.presentationToken
+      ) {
+        if (++postCount > 20) {
+          throw new Error(
+            `LOOP detected on ${message.sectionId} enabled=${String(message.enabled)}`,
+          );
+        }
+        const token = message.presentationToken as Record<string, unknown> & {
+          operationId: string;
+        };
+        if (message.enabled === true && !syncedOnce && !holdPreSyncShowToken) {
+          // Hold the initial Show token while still pending until after refresh-content runs.
+          holdPreSyncShowToken = { operationId: token.operationId, token };
+          return;
+        }
+        queueMicrotask(() => {
+          fromPreview({
+            type: "morph:storefront-preview-section-presentation-ack",
+            operationId: token.operationId,
+            token,
+            status: "applied",
+          });
+        });
+      }
+    });
+
+    let currentEnabled = false;
+    let currentGen = 1;
+    vi.mocked(getThemeEditor).mockImplementation(async () => ({
+      success: true,
+      data: {
+        ...context,
+        templates: [
+          {
+            ...context.templates[0],
+            draftGeneration: currentGen,
+            version: currentGen,
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  enabled: currentEnabled,
+                  props: { heading: "Welcome" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    }) as never);
+    updateSectionProps.mockImplementation(
+      async ({ data }: { data: { enabled?: boolean; props?: { enabled?: boolean } } }) => {
+        if (typeof data?.enabled === "boolean") {
+          currentEnabled = data.enabled;
+        } else if (typeof data?.props?.enabled === "boolean") {
+          currentEnabled = data.props.enabled;
+        }
+        currentGen += 1;
+        return {
+          success: true,
+          data: {
+            templateId: "template-1",
+            draftGeneration: currentGen,
+            version: currentGen,
+          },
+        };
+      },
+    );
+
+    const hiddenContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [
+              { id: "hero", type: "hero", enabled: false, props: { heading: "Welcome" } },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+
+    await renderShell("fp-current-build", hiddenContext, tree(), "invalidate");
+    sendReady(["selection-field-section", "section-presentation-ack-v1"]);
+    disablePresentationAcks();
+    answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+      routePath: "/",
+    });
+
+    const showBtn = await screen.findByRole("button", { name: /^Show section / });
+    fireEvent.click(showBtn);
+
+    await waitFor(() => {
+      expect(holdPreSyncShowToken).not.toBeNull();
+    });
+
+    // Sync completes and sends refresh-content BEFORE the held pre-sync Show token gets its not-applied ack.
+    await act(async () => {
+      releaseSync();
+      await syncGate;
+    });
+
+    await waitFor(() => {
+      const refreshIdx = vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.findIndex(
+          ([, msg]) => msg.type === "morph:storefront-preview-refresh-content",
+        );
+      expect(refreshIdx).toBeGreaterThan(-1);
+      const reverifyUpdates = vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.slice(refreshIdx + 1)
+        .map(([, msg]) => msg)
+        .filter(
+          (msg) =>
+            msg.type === "morph:storefront-preview-update-section-props" &&
+            msg.sectionId === "hero" &&
+            Boolean(msg.presentationToken),
+        );
+      expect(reverifyUpdates.length).toBeGreaterThan(0);
+    });
+
+    // Late pre-sync not-applied arrives after refresh-content; must be ignored and not lock the editor.
+    fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: holdPreSyncShowToken!.operationId,
+      token: holdPreSyncShowToken!.token,
+      status: "not-applied",
+      reason: "section-missing",
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Preview syncing\. Content writes are paused/),
+      ).toBeNull();
+    });
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
 });
