@@ -5054,6 +5054,7 @@ export function VisualEditorShell({
    * effect is not listening to, nothing is shown.
    */
   const frameShowsEditorPageRef = useRef<() => boolean>(() => false);
+  const frameOnAnotherRouteRef = useRef<() => boolean>(() => false);
   /**
    * The page the frame last named, in a structure report or a route answer,
    * and the frame and ready round that named it; null for a frame that
@@ -12079,6 +12080,20 @@ export function VisualEditorShell({
       if (previewIsSingleDocumentRef.current !== true || !named) return false;
       return latestRouteRequestAnswered(round);
     };
+    const frameOnAnotherRoute = () => {
+      const frame = frameRouteRef.current;
+      const round = previewReadyRoundRef.current;
+      return (
+        frame !== null &&
+        frame.key === previewKey &&
+        frame.round === round &&
+        frame.routePath !== null &&
+        !previewStructureMatchesRoute(
+          frame.routePath,
+          currentSearchRoutePathRef.current,
+        )
+      );
+    };
     /**
      * Whether the canvas is unavailable here, rather than on another page:
      * a Theme of another framework whose frame has named no page in this
@@ -12576,6 +12591,11 @@ export function VisualEditorShell({
       }
       if (message.type === "morph:storefront-preview-route-applied") {
         const superseded = message.status === "superseded";
+        frameRouteRef.current = {
+          key: previewKey,
+          round: previewReadyRoundRef.current,
+          routePath: message.routePath,
+        };
         // Only a genuinely applied route releases content replay; a superseded
         // answer only retires the stale wait so the editor can follow the frame.
         if (!superseded) {
@@ -12586,11 +12606,6 @@ export function VisualEditorShell({
             message.routePath,
           );
         }
-        frameRouteRef.current = {
-          key: previewKey,
-          round: previewReadyRoundRef.current,
-          routePath: message.routePath,
-        };
         // Answered only by this frame, in this ready round, for the latest
         // request: an id alone carries over from the frame before.
         const routeRequest = lastRouteRequestRef.current;
@@ -12845,11 +12860,15 @@ export function VisualEditorShell({
 
     // The same predicate, for the Inspector's live typing.
     frameShowsEditorPageRef.current = frameShowsEditorPage;
+    frameOnAnotherRouteRef.current = frameOnAnotherRoute;
     window.addEventListener("message", handlePreviewSelection);
     return () => {
       window.removeEventListener("message", handlePreviewSelection);
       if (frameShowsEditorPageRef.current === frameShowsEditorPage) {
         frameShowsEditorPageRef.current = () => false;
+      }
+      if (frameOnAnotherRouteRef.current === frameOnAnotherRoute) {
+        frameOnAnotherRouteRef.current = () => false;
       }
     };
   }, [
@@ -14026,7 +14045,7 @@ export function VisualEditorShell({
       ) {
         return;
       }
-      if (!frameShowsEditorPageRef.current()) {
+      if (frameOnAnotherRouteRef.current()) {
         return;
       }
       // Decided as it is posted, from what the editor holds now: a section
@@ -14154,7 +14173,7 @@ export function VisualEditorShell({
       stillCurrent?: () => boolean,
     ) => {
       if (stillCurrent && !stillCurrent()) return;
-      if (!frameShowsEditorPageRef.current()) return;
+      if (frameOnAnotherRouteRef.current()) return;
       const revisions = previewPropsRevisionRef.current;
       const revision = (revisions.get(sectionId) ?? 0) + 1;
       revisions.set(sectionId, revision);
