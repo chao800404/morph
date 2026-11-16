@@ -14154,6 +14154,7 @@ export function VisualEditorShell({
       stillCurrent?: () => boolean,
     ) => {
       if (stillCurrent && !stillCurrent()) return;
+      if (!frameShowsEditorPageRef.current()) return;
       const revisions = previewPropsRevisionRef.current;
       const revision = (revisions.get(sectionId) ?? 0) + 1;
       revisions.set(sectionId, revision);
