@@ -272,4 +272,49 @@ describe("a Client-only preview (memory history) counting frame navigations", ()
       status: "applied",
     });
   });
+
+  /**
+   * TanStack Router subscribes to its history before the bridge does: on a
+   * navigation it takes up the new location at once, and its matches follow
+   * only once the route has loaded. In between, the leaf match still names
+   * the page being left.
+   */
+  function routerWithLateMatches(initial = "/") {
+    const history = createMemoryHistory({ initialEntries: [initial] });
+    let location = { pathname: initial };
+    let matched = initial;
+    history.subscribe(() => {
+      location = { pathname: history.location.pathname };
+      const arriving = history.location.pathname;
+      queueMicrotask(() => {
+        matched = arriving;
+      });
+    });
+    return {
+      history,
+      navigate: vi.fn(async ({ to }: { to: string }) => {
+        history.push(to);
+      }),
+      get state() {
+        return {
+          location,
+          matches: [{ fullPath: matched, pathname: matched }],
+        };
+      },
+    };
+  }
+
+  it("withdraws for the page arrived at, never for the page the router's matches still show", async () => {
+    const router = routerWithLateMatches("/");
+    const page = clientPreview(router);
+    page.reportStructure();
+    page.applyEditorRoute(setRoute("/home", 1, "author"));
+    await settle();
+    expect(page.withdrawn).toEqual(["/home"]);
+
+    await router.navigate({ to: "/other" });
+    await settle();
+
+    expect(page.withdrawn).toEqual(["/home", "/other"]);
+  });
 });
