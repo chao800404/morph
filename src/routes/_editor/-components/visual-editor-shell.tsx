@@ -15563,6 +15563,10 @@ export function VisualEditorShell({
         return;
       }
       const frame = previewFrameRecordRef.current;
+      // Only the section's own presentation acknowledged in this ready round
+      // and still its latest: the acknowledged map is emptied on every
+      // ready, and a newer post replaces the latest. What a frame applied in
+      // an earlier round, or before a newer post, proves nothing now.
       const fallbackToken =
         !sectionPresentationReadyRef.current &&
         !frameShowsEditorPageRef.current() &&
@@ -15582,14 +15586,7 @@ export function VisualEditorShell({
               sectionId,
               latest: latestSectionPresentationRef.current,
               acknowledged: acknowledgedSectionPresentationRef.current,
-            }) ??
-            appliedSectionPresentationRef.current.get(
-              sectionPresentationKey(
-                currentSearchRoutePathRef.current ?? "/",
-                sectionId,
-              ),
-            ) ??
-            null)
+            }))
           : null;
       const proof =
         captureCurrentSectionPresentationProof(keyTemplateId, sectionId) ??
@@ -15618,6 +15615,16 @@ export function VisualEditorShell({
         presentedGeneration === null ||
         basisGen === undefined ||
         presentedGeneration > basisGen
+      ) {
+        return;
+      }
+      // A presentation of the route before its document existed proves only
+      // the write that creates it, onto the document as created. Once the
+      // document has moved past that, it is no proof for the next write: the
+      // draft stays held until the document itself is presented.
+      if (
+        proof.token.documentBasis.kind === "new-document" &&
+        basisGen !== ROUTE_DOCUMENT_CREATED_GENERATION
       ) {
         return;
       }
