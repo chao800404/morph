@@ -83,7 +83,7 @@ function page(sectionId: string) {
   const section = document.createElement("section");
   section.setAttribute("data-storefront-section-id", sectionId);
   section.textContent = sectionId;
-  main.append(section);
+  main.appendChild(section);
   return main;
 }
 
@@ -134,7 +134,7 @@ describe("watching the page for structure changes", () => {
     served.id = "root";
     served.setAttribute("data-storefront-preview-root", "true");
     document.body.replaceChildren(served);
-    served.append(page("home-card"));
+    served.appendChild(page("home-card"));
     const watcher = structureWatcher();
     stop = watcher.disconnect;
     await settle();
@@ -154,7 +154,7 @@ describe("watching the page for structure changes", () => {
     const served = document.createElement("div");
     served.id = "root";
     document.body.replaceChildren(served);
-    served.append(page("home-card"));
+    served.appendChild(page("home-card"));
     const watcher = structureWatcher();
     stop = watcher.disconnect;
     await settle();
