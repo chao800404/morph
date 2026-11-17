@@ -2943,28 +2943,36 @@ describe("Q3: the field the author types in, across the page taking up its route
       first.release();
     });
     await expectAdopted();
-    await waitForPresentationReady();
-    expect(sent()).toHaveLength(1);
-    expect(server.route).toEqual({
-      generation: 2,
-      props: { heading: "Value 1" },
+    // The author left the field (a commit) while the first write was out,
+    // and the checks held it then. Once the route Document is presented and
+    // acknowledged, that commit goes once, on the generation the first write
+    // answered, with no second blur.
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 1 more" },
     });
     expect(field.value).toBe("Value 1 more");
     await pause();
-    expect(sent()).toHaveLength(1);
+    expect(sent()).toHaveLength(2);
+    expect(server.route).toEqual({
+      generation: 3,
+      props: { heading: "Value 1 more" },
+    });
 
-    // The text entered against the placeholder was not auto-saved. Once the
-    // route Document is presented, a new edit carries a current proof.
+    // A new edit on the presented Document carries a current proof.
     await waitFor(() => expect(field.disabled).toBe(false));
     act(() => {
       field.focus();
     });
     fireEvent.input(field, { target: { value: `${field.value} again` } });
     fireEvent.blur(field);
-    await waitFor(() => expect(sent()).toHaveLength(2));
+    await waitFor(() => expect(sent()).toHaveLength(3));
     await pause();
+    expect(sent()).toHaveLength(3);
 
-    expect(sent()[1]!.props.heading).toBe("Value 1 more again");
+    expect(sent()[2]!.props.heading).toBe("Value 1 more again");
     expect(
       sent().filter((write) =>
         String(write.props.heading).startsWith("Default heading"),
@@ -3968,7 +3976,8 @@ describe("the off-page blur release uses only a still-current proof", () => {
     ).toBeGreaterThan(0);
 
     // Back on the editor's page, the created document is presented and
-    // acknowledged; the draft is saved once, on its original basis.
+    // acknowledged; the draft the author already left is saved once, on its
+    // original basis, with no second blur.
     await fromPreview({
       type: "morph:storefront-preview-structure",
       nodes: [],
@@ -3976,13 +3985,10 @@ describe("the off-page blur release uses only a still-current proof", () => {
       frameNavigationEpoch: 2,
     });
     await flushFrames();
-    await waitForPresentationReady();
+    await waitFor(() => expect(sent()).toHaveLength(2));
     expect(screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE)).toHaveLength(
       0,
     );
-    // The author leaves the field again, now on the editor's page.
-    await blurCard();
-    await waitFor(() => expect(sent()).toHaveLength(2));
     expect(sent()[1]).toMatchObject({
       templateId: ROUTE_DOC_ID,
       expectedDraftGeneration: 2,
@@ -4048,7 +4054,9 @@ describe("the off-page blur release uses only a still-current proof", () => {
       frameNavigationEpoch: 2,
     });
     await flushFrames();
-    await waitForPresentationReady();
+    // The draft the author already left goes once that presentation is
+    // acknowledged.
+    await waitFor(() => expect(sent()).toHaveLength(2));
     expect(
       posted
         .slice(postedBeforeReturn)
@@ -4067,8 +4075,6 @@ describe("the off-page blur release uses only a still-current proof", () => {
           );
         }),
     ).toBe(true);
-    await blurCard();
-    await waitFor(() => expect(sent()).toHaveLength(2));
     expect(sent()[1]).toMatchObject({
       templateId: ROUTE_DOC_ID,
       expectedDraftGeneration: 2,
@@ -4141,15 +4147,22 @@ describe("a draft the author left while the frame was elsewhere", () => {
       screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
     ).toBeGreaterThan(0);
   }
-  /** The frame is back on the page; its presentation is acknowledged. */
-  async function frameReturns(epoch = 2) {
+  /**
+   * The frame is back on the page and its presentation is acknowledged;
+   * unless `sends`, nothing is written, so the page settles ready.
+   */
+  async function frameReturns(sends = false) {
     await fromPreview({
       type: "morph:storefront-preview-structure",
       nodes: [],
       routePath: ROUTE_PATH,
-      frameNavigationEpoch: epoch,
+      frameNavigationEpoch: 2,
     });
     await flushFrames();
+    if (sends) {
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      return;
+    }
     await waitForPresentationReady();
     await pause();
   }
@@ -4173,10 +4186,9 @@ describe("a draft the author left while the frame was elsewhere", () => {
 
   it("is saved once by the acknowledgement after the return, with no second blur; a repeated acknowledgement writes nothing more", async () => {
     await draftWhileElsewhere(true);
-    await frameReturns();
-    await waitFor(() => expect(sent()).toHaveLength(2));
+    await frameReturns(true);
     savedOnce("Value 2");
-    expect(storedHeading()).toBe("Value 2");
+    await waitFor(() => expect(storedHeading()).toBe("Value 2"));
 
     const token = latestSlotToken();
     expect(token).toBeTruthy();
@@ -4287,8 +4299,7 @@ describe("a draft the author left while the frame was elsewhere", () => {
   it("a continued write that gets no answer is not sent again by a later acknowledgement", async () => {
     await draftWhileElsewhere(true);
     const lost = holdNextWrite();
-    await frameReturns();
-    await waitFor(() => expect(sent()).toHaveLength(2));
+    await frameReturns(true);
     await act(async () => {
       lost.lose();
       await settleMicrotasks();

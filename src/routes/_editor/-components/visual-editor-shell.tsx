@@ -37,6 +37,7 @@ import {
   contentEntryStatusPaths,
   changedListPaths,
   hasUnconfirmedContentForList as hasUnconfirmedListWrite,
+  draftIsAsCommitted,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { resolveSectionContentDeclaration } from "@/lib/storefront/editor/section-content-declaration";
@@ -3207,6 +3208,25 @@ export function VisualEditorShell({
   );
   /** Assigned below, where the content write path is defined. */
   const releasePresentationHeldDraftsRef = useRef<() => void>(() => {});
+  /**
+   * Leaving a field commits it. A commit the write checks held back (the
+   * frame elsewhere, say) is kept here under the draft's key: the section,
+   * the document it was typed for, and the very field edits that were left
+   * (`draftIsAsCommitted`). The next valid acknowledgement sends it once,
+   * through the blur's own checks (`continueCommittedContentDraftsRef`).
+   */
+  const contentCommitIntentRef = useRef(
+    new Map<
+      string,
+      Readonly<{
+        sectionId: string;
+        documentId: string;
+        fields: NonNullable<PendingContentEntry["fields"]>;
+      }>
+    >(),
+  );
+  /** Assigned below, beside the held-draft release. */
+  const continueCommittedContentDraftsRef = useRef<() => void>(() => {});
   /**
    * The frame on screen named no section-presentation-ack-v1 and the bounded
    * wait for one ran out (Task 40 item 3): content edits stay paused, and
@@ -12275,6 +12295,11 @@ export function VisualEditorShell({
         }
         if (refreshSectionPresentationReady()) {
           releasePresentationHeldDraftsRef.current();
+          // A draft the author already committed by leaving its field, held
+          // by the checks then, goes on now through those same checks.
+          if (message.status === "applied") {
+            continueCommittedContentDraftsRef.current();
+          }
         }
         return;
       }
@@ -15500,6 +15525,17 @@ export function VisualEditorShell({
                 )?.sourceGeneration ?? null),
       });
       if (!staged) return;
+      // New input to a field the author had left: that commit is over, and
+      // only leaving the field again commits what is there now.
+      const committedIntent = contentCommitIntentRef.current.get(key);
+      if (
+        committedIntent &&
+        Object.keys(committedIntent.fields).some(
+          (path) => staged.fields?.[path] !== committedIntent.fields[path],
+        )
+      ) {
+        contentCommitIntentRef.current.delete(key);
+      }
       pendingPropsMapRef.current.set(
         key,
         presentationReadyAtInput
@@ -15571,22 +15607,58 @@ export function VisualEditorShell({
 
   contentChangeRef.current = handleSectionPropsChange;
 
-  const handleSectionContentBlur = useCallback(
-    (sectionId: string) => {
+  /**
+   * What leaving a field does for a held draft: sends it when every check
+   * below passes. Refused after the draft is known to be one this path
+   * commits, it says so with the commit to remember (the very field edits
+   * left, and the document they were typed for). The acknowledgement that
+   * later continues that commit runs exactly these checks again.
+   */
+  const sendCommittedHeldDraft = useCallback(
+    (
+      sectionId: string,
+    ):
+      | { sent: true; key: string }
+      | {
+          sent: false;
+          commit?: {
+            key: string;
+            sectionId: string;
+            documentId: string;
+            fields: NonNullable<PendingContentEntry["fields"]>;
+          };
+        } => {
       const templateId = templateIdForSection(sectionId);
-      if (!templateId) return;
+      if (!templateId) return { sent: false };
       const key = contentKeyFor(templateId, sectionId);
       const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
       const held = pendingPropsMapRef.current.get(key);
-      if (!held || (!held.presentationBlocked && held.presentationProof)) return;
-      if (routePathFromTemplatePlaceholder(keyTemplateId) === null) return;
+      if (!held || (!held.presentationBlocked && held.presentationProof)) {
+        return { sent: false };
+      }
+      if (routePathFromTemplatePlaceholder(keyTemplateId) === null) {
+        return { sent: false };
+      }
       const createdTemplateId = routeTemplateIdsRef.current.get(keyTemplateId);
       if (
         !createdTemplateId ||
         !routeDocumentsCreatedHereRef.current.has(createdTemplateId)
       ) {
-        return;
+        return { sent: false };
       }
+      const heldFields = held.fields;
+      const refused = () =>
+        heldFields
+          ? {
+              sent: false as const,
+              commit: {
+                key,
+                sectionId,
+                documentId: createdTemplateId,
+                fields: heldFields,
+              },
+            }
+          : { sent: false as const };
       const frame = previewFrameRecordRef.current;
       // Only the section's own presentation acknowledged in this ready round
       // and still its latest: the acknowledged map is emptied on every
@@ -15627,7 +15699,7 @@ export function VisualEditorShell({
         !proof ||
         !isSectionPresentationProofCurrent(proof, keyTemplateId, sectionId)
       ) {
-        return;
+        return refused();
       }
       const basisGen = contentBasisFor(createdTemplateId);
       const presentedGeneration =
@@ -15641,7 +15713,7 @@ export function VisualEditorShell({
         basisGen === undefined ||
         presentedGeneration > basisGen
       ) {
-        return;
+        return refused();
       }
       // A presentation of the route before its document existed proves only
       // the write that creates it, onto the document as created. Once the
@@ -15651,14 +15723,14 @@ export function VisualEditorShell({
         proof.token.documentBasis.kind === "new-document" &&
         basisGen !== ROUTE_DOCUMENT_CREATED_GENERATION
       ) {
-        return;
+        return refused();
       }
       if (
         unconfirmedContentRef.current.size > 0 ||
         key in contentConflictsRef.current ||
         failedContentKeysRef.current.has(key)
       ) {
-        return;
+        return refused();
       }
       const snapshot = contentSnapshotsRef.current.get(createdTemplateId);
       const sourceGen = currentContentSourceGeneration();
@@ -15677,7 +15749,7 @@ export function VisualEditorShell({
           );
         })
       ) {
-        return;
+        return refused();
       }
       pendingPropsMapRef.current.set(key, {
         ...held,
@@ -15689,6 +15761,7 @@ export function VisualEditorShell({
       void commitSectionPending(keyTemplateId, key).catch(() => {
         // Mutation UI reports the error; the shared queue keeps the input.
       });
+      return { sent: true, key };
     },
     [
       captureCurrentSectionPresentationProof,
@@ -15701,6 +15774,82 @@ export function VisualEditorShell({
       unnamedCopyBasis,
     ],
   );
+  /**
+   * Whether a remembered commit still stands: the draft under its key is
+   * held and is still exactly what was left, and the section is still on
+   * the document it was typed for.
+   */
+  const contentCommitIntentHolds = useCallback(
+    (
+      key: string,
+      intent: Readonly<{
+        sectionId: string;
+        documentId: string;
+        fields: NonNullable<PendingContentEntry["fields"]>;
+      }>,
+    ) => {
+      const held = pendingPropsMapRef.current.get(key);
+      if (!held || (!held.presentationBlocked && held.presentationProof)) {
+        return false;
+      }
+      if (!draftIsAsCommitted(held, intent.fields)) return false;
+      const shownIn = templateIdForSection(intent.sectionId);
+      return (
+        shownIn !== null &&
+        (routeTemplateIdsRef.current.get(shownIn) ?? shownIn) ===
+          intent.documentId
+      );
+    },
+    [templateIdForSection],
+  );
+  const handleSectionContentBlur = useCallback(
+    (sectionId: string) => {
+      const result = sendCommittedHeldDraft(sectionId);
+      if (result.sent) {
+        contentCommitIntentRef.current.delete(result.key);
+        return;
+      }
+      if (result.commit) {
+        const { key, ...intent } = result.commit;
+        contentCommitIntentRef.current.set(key, intent);
+      }
+    },
+    [sendCommittedHeldDraft],
+  );
+  /**
+   * A commit held back when the author left the field goes on once the
+   * page's presentation is acknowledged again: taken first, so a repeated
+   * acknowledgement finds nothing to send, then sent through the blur's own
+   * checks. Refused again, the draft is still the one left and still held
+   * with its notice, so the commit stays for the next acknowledgement, and
+   * leaving the field again works as before. A send that was made is never
+   * remembered again: a failure or an unanswered write keeps its own
+   * recovery (try again, the unanswered save).
+   */
+  continueCommittedContentDraftsRef.current = () => {
+    for (const [key, intent] of Array.from(contentCommitIntentRef.current)) {
+      contentCommitIntentRef.current.delete(key);
+      if (!contentCommitIntentHolds(key, intent)) continue;
+      const result = sendCommittedHeldDraft(intent.sectionId);
+      if (
+        !result.sent &&
+        result.commit?.key === key &&
+        contentCommitIntentHolds(key, intent)
+      ) {
+        contentCommitIntentRef.current.set(key, intent);
+      }
+    }
+  };
+  // The editor on another document: a commit made for one it no longer
+  // shows the section on is over. Back on that document, only leaving the
+  // field again commits.
+  useEffect(() => {
+    for (const [key, intent] of Array.from(contentCommitIntentRef.current)) {
+      if (!contentCommitIntentHolds(key, intent)) {
+        contentCommitIntentRef.current.delete(key);
+      }
+    }
+  }, [sectionModel, contentCommitIntentHolds]);
   /**
    * Held drafts the canvas was shown (`presentationReleasable`) go once the
    * page's presentation is acknowledged again: each takes the proof of the

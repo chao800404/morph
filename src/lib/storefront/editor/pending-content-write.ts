@@ -67,6 +67,30 @@ export type PendingContentEntry = {
 };
 
 /**
+ * Whether a held draft is still exactly the one the author left: the same
+ * field edits, each the very edit object that was held when they left the
+ * field. Any input since (to that field, or to a sibling field never left)
+ * stages a new edit, and a draft replaced or discarded holds other edits or
+ * none: each is another draft, which that commit does not cover.
+ */
+export function draftIsAsCommitted(
+  entry: PendingContentEntry | undefined,
+  committed: Readonly<Record<string, PendingFieldEdit>>,
+): boolean {
+  const held = entry?.fields;
+  if (!held) return false;
+  const paths = Object.keys(held);
+  return (
+    paths.length === Object.keys(committed).length &&
+    paths.every(
+      (path) =>
+        Object.prototype.hasOwnProperty.call(committed, path) &&
+        held[path] === committed[path],
+    )
+  );
+}
+
+/**
  * A write as it was sent, frozen: its props, removed keys and generations
  * are what a read-back is compared with and what a retry sends again, so
  * nothing typed after it may change them.
