@@ -784,12 +784,11 @@ test.describe("a route document adopted after the frame moved by itself", () => 
       await expect(page.getByText(/Preview syncing/)).toHaveCount(0, {
         timeout: 30_000,
       });
-      expect((await storedOn(page)).route).toBe(live);
 
-      // Leaving the field again saves the draft once, on its original basis,
-      // to the section it was typed for, in the route's document.
-      await titleField(page).focus();
-      await titleField(page).press("Tab");
+      // The author already committed the draft by leaving the field while the
+      // frame was elsewhere. The acknowledgement of the real re-presentation
+      // saves it once, on its original basis, to the section it was typed
+      // for, in the route's document: no second focus and Tab.
       await expect
         .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
         .toBe(typed);
