@@ -1415,4 +1415,221 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
     });
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * Start content sync, "replace-pending": the section tokens still waiting
+   * are dropped before the section is posted again. Controlled cases for the
+   * window that opens there: the re-post may carry no token, and the frame
+   * may move meanwhile. Nothing may unlock writes falsely, nothing the
+   * author did is dropped, and the author has a way out.
+   */
+  describe("Start content sync replacing pending section tokens", () => {
+    type TokenPost = {
+      presentationToken: Record<string, unknown> & { operationId: string };
+    };
+    const syncingBanner = () =>
+      screen.queryAllByText(/Preview syncing\. Content writes are paused/);
+    const tokenPostsSince = (from: number) =>
+      vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.slice(from)
+        .map(([, message]) => message)
+        .filter(
+          (message) =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            Boolean(message.presentationToken),
+        ) as unknown as TokenPost[];
+    const callCount = () =>
+      vi.mocked(postEditorToPreviewMessage).mock.calls.length;
+    const ack = (
+      posted: TokenPost,
+      answer: Record<string, unknown> = { status: "applied" },
+    ) =>
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: posted.presentationToken.operationId,
+        token: posted.presentationToken,
+        ...answer,
+      });
+    function gatedSync(ticket: number) {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      vi.mocked(syncThemePreviewContent).mockImplementation(async () => {
+        await gate;
+        return { success: true, message: "ok", data: { ticket } } as never;
+      });
+      vi.mocked(confirmThemePreviewContent).mockResolvedValue({
+        success: true,
+        message: "ok",
+        data: { applied: true },
+      } as never);
+      return async () => {
+        await act(async () => {
+          release();
+          await gate;
+        });
+      };
+    }
+    const hiddenContext = () =>
+      ({
+        ...context,
+        templates: [
+          {
+            ...context.templates[0],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  enabled: false,
+                  props: { heading: "Welcome" },
+                },
+              ],
+            },
+          },
+        ],
+      }) as unknown as StorefrontThemeEditorDTO;
+    const refreshPosted = () =>
+      waitFor(() =>
+        expect(
+          vi
+            .mocked(postEditorToPreviewMessage)
+            .mock.calls.some(
+              ([, message]) =>
+                message.type === "morph:storefront-preview-refresh-content",
+            ),
+        ).toBe(true),
+      );
+    /** The frame comes up on the editor's page; it acknowledges nothing by itself. */
+    async function openWithSilentFrame(capabilities: string[]) {
+      vi.mocked(postEditorToPreviewMessage).mockImplementation(() => {});
+      await renderShell("fp-current-build", hiddenContext(), tree(), "invalidate");
+      sendReady(capabilities);
+      disablePresentationAcks();
+      answerLatestRouteRequest({
+        origin: PREVIEW_ORIGIN,
+        session: PREVIEW_SESSION,
+      });
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+      });
+    }
+
+    it("the frame moves to another page before the re-posted token is acknowledged: writes stay paused, and returning with a fresh acknowledgement unlocks them", async () => {
+      const releaseSync = gatedSync(21);
+      await openWithSilentFrame([
+        "selection-field-section",
+        "section-presentation-ack-v1",
+      ]);
+      // The page's first presentation is acknowledged: writes open.
+      await waitFor(() => expect(tokenPostsSince(0).length).toBeGreaterThan(0));
+      for (const posted of tokenPostsSince(0)) ack(posted);
+      await waitFor(() => expect(syncingBanner()).toHaveLength(0));
+
+      // Show: one write, and a presentation of it that is not acknowledged.
+      const beforeShow = callCount();
+      fireEvent.click(
+        await screen.findByRole("button", { name: /^Show section / }),
+      );
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(tokenPostsSince(beforeShow).length).toBeGreaterThan(0),
+      );
+      await waitFor(() => expect(syncingBanner().length).toBeGreaterThan(0));
+      const replaced = tokenPostsSince(beforeShow);
+
+      // The sync finishes: the pending tokens are replaced by a re-post.
+      const beforeRefresh = callCount();
+      await releaseSync();
+      await refreshPosted();
+      await waitFor(() =>
+        expect(tokenPostsSince(beforeRefresh).length).toBeGreaterThan(0),
+      );
+      const reposted = tokenPostsSince(beforeRefresh).at(-1)!;
+
+      // The frame moves away before acknowledging it; the bridge on the
+      // other page answers that the section is not there.
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/unfollowed/elsewhere",
+        frameNavigationEpoch: 1,
+      });
+      ack(reposted, { status: "not-applied", reason: "section-missing" });
+      // A late "applied" for a token the re-post replaced changes nothing.
+      for (const stale of replaced) ack(stale);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(syncingBanner().length, "no false unlock").toBeGreaterThan(0);
+      expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+      // The way out: the frame returns to the editor's page, the section is
+      // presented again, and that presentation's acknowledgement unlocks.
+      const beforeReturn = callCount();
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+        frameNavigationEpoch: 2,
+      });
+      await waitFor(() =>
+        expect(tokenPostsSince(beforeReturn).length).toBeGreaterThan(0),
+      );
+      const fresh = tokenPostsSince(beforeReturn).at(-1)!;
+      expect(fresh.presentationToken.operationId).not.toBe(
+        reposted.presentationToken.operationId,
+      );
+      ack(fresh);
+      await waitFor(() => expect(syncingBanner()).toHaveLength(0));
+      expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    });
+
+    it("a frame that cannot acknowledge: nothing is written, so no sync runs and no token is dropped; the manual reload stays offered", async () => {
+      // The service still serves a bridge without the capability.
+      vi.mocked(startThemePreviewServer).mockResolvedValue({
+        success: true,
+        message: "Live Preview server ready",
+        data: {
+          url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+          workspaceFingerprint: "fp-current-build",
+          bridgeCapabilities: ["selection-field-section"],
+        },
+      } as never);
+      gatedSync(22);
+      await openWithSilentFrame(["selection-field-section"]);
+      await waitFor(() =>
+        expect(screen.getByTestId("preview-presentation-unconfirmable")).toBeTruthy(),
+      );
+      const before = callCount();
+      fireEvent.click(
+        await screen.findByRole("button", { name: /^Show section / }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(updateSectionProps, "no false unlock").not.toHaveBeenCalled();
+      expect(syncThemePreviewContent).not.toHaveBeenCalled();
+      expect(tokenPostsSince(before)).toHaveLength(0);
+      expect(
+        vi
+          .mocked(postEditorToPreviewMessage)
+          .mock.calls.slice(before)
+          .some(
+            ([, message]) =>
+              message.type === "morph:storefront-preview-refresh-content",
+          ),
+      ).toBe(false);
+      expect(
+        screen.getByTestId("preview-presentation-unconfirmable").textContent,
+      ).toContain(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE);
+      // The way out stays: the author can reload the preview.
+      expect(screen.getByRole("button", { name: "Reload preview" })).toBeTruthy();
+    });
+  });
 });
