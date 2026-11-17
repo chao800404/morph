@@ -694,6 +694,54 @@ function canvasY(): string | null {
   return null;
 }
 
+/**
+ * Holds the content write's 300 ms debounce, and only it: every other timer
+ * (the frame's acknowledgements, React's, the transport's) keeps running on
+ * the real clock, so nothing else has to be cleared afterwards. `fire()`
+ * runs the held debounce callbacks still set, as their timers running out
+ * would; `restore()` puts back exactly the two functions replaced here.
+ */
+function holdContentDebounce() {
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const held = new Map<object, () => void>();
+  const setSpy = vi
+    .spyOn(globalThis, "setTimeout")
+    .mockImplementation(((
+      handler: (...args: unknown[]) => void,
+      timeout?: number,
+      ...args: unknown[]
+    ) => {
+      if (timeout === 300 && typeof handler === "function") {
+        const handle = {};
+        held.set(handle, () => handler(...args));
+        return handle;
+      }
+      return realSetTimeout(handler, timeout, ...args);
+    }) as unknown as typeof setTimeout);
+  const clearSpy = vi
+    .spyOn(globalThis, "clearTimeout")
+    .mockImplementation(((handle?: unknown) => {
+      if (typeof handle === "object" && handle !== null && held.has(handle)) {
+        held.delete(handle);
+        return;
+      }
+      realClearTimeout(handle as Parameters<typeof clearTimeout>[0]);
+    }) as typeof clearTimeout);
+  return {
+    count: () => held.size,
+    fire() {
+      const due = [...held.values()];
+      held.clear();
+      for (const run of due) run();
+    },
+    restore() {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    },
+  };
+}
+
 /** Lets the reveal's frame, and the transform's own frame, run. */
 async function flushFrames() {
   await act(async () => {
@@ -8442,17 +8490,10 @@ function Home() {
     fireEvent.input(field, { target: { value } });
     fireEvent.blur(field);
   };
-  // Past the content write's 300 ms debounce and its answer.
-  const settle = async () => {
-    if (vi.isFakeTimers()) {
-      await act(async () => {
-        vi.advanceTimersByTime(1_200);
-        await Promise.resolve();
-      });
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
-  };
+  // Past the content write's 300 ms debounce and its answer. Real time
+  // only: a test that controls the debounce holds that timer alone
+  // (`holdContentDebounce`) and fires it itself.
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 1_200));
 
   it("gives the default rows their ids before the first edit, and saves the whole list", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
@@ -9775,23 +9816,26 @@ function Home() {
         const add = (await screen.findByRole("button", {
           name: "Add entry",
         })) as HTMLButtonElement;
-        // The preview update temporarily pauses Content controls. Hold the
-        // 300 ms save debounce while waiting for its DOM-commit acknowledgement
-        // so the list action deterministically joins the same pending entry.
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        // The preview update temporarily pauses Content controls. The 300 ms
+        // save debounce is held while its DOM-commit acknowledgement comes
+        // back, so the list action joins the same pending entry; only that
+        // timer is held, and it is run here, once.
+        const debounce = holdContentDebounce();
         try {
           fireEvent.input(heading, { target: { value: "New" } });
           fireEvent.blur(heading);
           await flushFrames();
-          expect(add.disabled).toBe(false);
+          await waitFor(() => expect(add.disabled).toBe(false));
           fireEvent.click(add);
+          expect(sent(), "nothing leaves inside the debounce").toHaveLength(0);
+          expect(debounce.count(), "one debounce, for the section").toBe(1);
           await act(async () => {
-            vi.advanceTimersByTime(300);
+            debounce.fire();
           });
         } finally {
-          vi.clearAllTimers();
-          vi.useRealTimers();
+          debounce.restore();
         }
+        await waitFor(() => expect(sent()).toHaveLength(1));
         await settle();
         expect(sent(), "one write for both keys").toHaveLength(1);
         expect(Object.keys(sent()[0]!.props as object).sort()).toEqual([
@@ -9812,6 +9856,119 @@ function Home() {
         await reread(editor.receive);
         return editor;
       }
+      /**
+       * The heading's debounce runs out before the frame acknowledges the
+       * heading's preview: its write leaves alone, on the proof taken at the
+       * input. The Add the author presses once the acknowledgement is back
+       * is a second write, after the first, on the copy the first answered,
+       * with its own history entry. Nothing merges them.
+       */
+      describe("an Add pressed after the heading's write already left", () => {
+        const depth = () =>
+          document
+            .querySelector("[data-editor-undo-depth]")
+            ?.getAttribute("data-editor-undo-depth") ?? null;
+        /** The frame acknowledges, after its DOM commit, what it was posted. */
+        const acknowledge = (message: Record<string, unknown>) => {
+          const token = message.presentationToken as { operationId: string };
+          const frame = document.querySelector("iframe");
+          act(() => {
+            window.dispatchEvent(
+              new MessageEvent("message", {
+                data: frameEnvelope({
+                  type: "morph:storefront-preview-section-presentation-ack",
+                  previewSession: PREVIEW_SESSION,
+                  operationId: token.operationId,
+                  token: message.presentationToken,
+                  status: "applied",
+                }),
+                origin: PREVIEW_ORIGIN,
+                source: frame?.contentWindow ?? null,
+              }),
+            );
+          });
+        };
+
+        it("is a second write, in order, at the generation the first answered, and a second history entry", async () => {
+          stored = { ...STORED };
+          await openSection({ ...STORED });
+          const heading = (await screen.findAllByDisplayValue("Hello"))[0]!;
+          const add = (await screen.findByRole("button", {
+            name: "Add entry",
+          })) as HTMLButtonElement;
+          expect(depth()).toBe("0");
+          // The frame receives the section posts but has not acknowledged
+          // them yet.
+          const withheld: Array<Record<string, unknown>> = [];
+          postPreviewMessage.mockImplementation(
+            (target: unknown, message: Record<string, unknown>) => {
+              if (
+                message.type ===
+                  "morph:storefront-preview-update-section-props" &&
+                message.presentationToken
+              ) {
+                posted.push(message);
+                withheld.push(message);
+                return;
+              }
+              recordPreviewMessage(target, message);
+            },
+          );
+          const debounce = holdContentDebounce();
+          try {
+            fireEvent.input(heading, { target: { value: "New" } });
+            fireEvent.blur(heading);
+            await flushFrames();
+            expect(withheld.length, "the heading's preview is posted").toBe(1);
+            expect(debounce.count()).toBe(1);
+            // The debounce runs out first: the heading's write leaves alone.
+            await act(async () => {
+              debounce.fire();
+            });
+            await waitFor(() => expect(depth()).toBe("1"));
+            expect(sent()).toHaveLength(1);
+            expect(sent()[0]).toMatchObject({
+              props: { heading: "New" },
+              expectedDraftGeneration: 1,
+              expectedSourceGeneration: 1,
+            });
+            expect(Object.keys(sent()[0]!.props as object)).toEqual([
+              "heading",
+            ]);
+            expect(stored).toEqual({ heading: "New" });
+
+            // Then the frame acknowledges what it was posted, and the author
+            // presses Add.
+            postPreviewMessage.mockImplementation(recordPreviewMessage);
+            for (const message of withheld.splice(0)) acknowledge(message);
+            await waitFor(() => expect(add.disabled).toBe(false));
+            fireEvent.click(add);
+            expect(sent(), "the Add waits out its own debounce").toHaveLength(1);
+            expect(debounce.count()).toBe(1);
+            await act(async () => {
+              debounce.fire();
+            });
+          } finally {
+            debounce.restore();
+          }
+          await waitFor(() => expect(sent()).toHaveLength(2));
+          const second = sent()[1]!;
+          expect(second).toMatchObject({
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+          });
+          expect(
+            (second.props as { items?: unknown[] }).items,
+            "the Add's entry, with the drawn defaults",
+          ).toHaveLength(3);
+          await waitFor(() => expect(depth()).toBe("2"));
+          await settle();
+          expect(sent(), "exactly two writes").toHaveLength(2);
+          expect(depth(), "two history entries").toBe("2");
+          expect(stored.heading).toBe("New");
+          expect(stored.items as unknown[]).toHaveLength(3);
+        });
+      });
       describe("an unanswered ordinary content write", () => {
         const depth = () =>
           document
@@ -10495,11 +10652,6 @@ function Home() {
          * be recorded before Undo is pressed).
          */
         it("input of the section still pending when Undo is pressed is saved first, as its own entry; that Undo then refuses", async () => {
-          vi.useFakeTimers({
-            toFake: ["setTimeout", "clearTimeout"],
-            shouldAdvanceTime: true,
-          });
-          try {
           const notice = notices();
           const { receive } = await storedFieldEdit();
           // Typed, and Undo pressed inside the 300 ms debounce.
@@ -10558,10 +10710,6 @@ function Home() {
           expect(
             sent().every((data) => data.expectedSourceGeneration === 1),
           ).toBe(true);
-          } finally {
-            vi.clearAllTimers();
-            vi.useRealTimers();
-          }
         });
 
         // The same rule on the reset path (the undo of a first Add).
