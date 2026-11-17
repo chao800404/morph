@@ -38,6 +38,8 @@ import {
   createLiveFrame,
   disablePresentationAcks,
   frameEnvelope,
+  LIVE_FRAME_CAPABILITIES,
+  reloadFrameDocument,
 } from "@/lib/test-utils/preview-frame-handshake";
 import {
   livePreviewPlatformFiles,
@@ -3841,5 +3843,140 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
       generation: 3,
       props: { heading: "Second" },
     });
+  });
+});
+
+
+
+/**
+ * The blur release of a placeholder-keyed draft while the frame is not on
+ * the editor's page may use only a proof that is still current: acknowledged
+ * in this ready round, by this document, and still the latest presentation
+ * of the section. A token applied in an earlier ready round, or one a newer
+ * presentation of the section has superseded, is not a proof of what the
+ * frame shows now: the draft is kept and nothing is written.
+ */
+describe("the off-page blur release uses only a still-current proof", () => {
+  const ELSEWHERE = "/unfollowed/elsewhere";
+  const moveFrameElsewhere = async (epoch: number) => {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ELSEWHERE,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+  /**
+   * Value 2 is typed while the first write is unanswered, so it is held
+   * under the route placeholder; the first write then answers and the page
+   * takes up the document this editor created, its presentation confirmed.
+   */
+  async function placeholderDraftAfterAdoption() {
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    expect(sent()).toHaveLength(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await waitForPresentationReady();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+  }
+  const blurCard = async () => {
+    await act(async () => {
+      fireEvent.focus(cardFields()[0]!);
+      fireEvent.blur(cardFields()[0]!);
+    });
+    await pause();
+  };
+
+  it("control: on the editor's page, with the presentation confirmed, the blur saves the held draft once", async () => {
+    await placeholderDraftAfterAdoption();
+    await blurCard();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+  });
+
+  it("an applied token from an earlier ready round is no proof in a frame that reloaded and moved elsewhere", async () => {
+    await placeholderDraftAfterAdoption();
+    disablePresentationAcks();
+    // The frame reloads: a new document, a new ready round, which never
+    // acknowledges the editor's page before the author moves it away.
+    reloadFrameDocument();
+    await fromPreview({
+      type: "morph:storefront-preview-ready",
+      capabilities: [...LIVE_FRAME_CAPABILITIES],
+    });
+    await flushFrames();
+    await moveFrameElsewhere(1);
+
+    await blurCard();
+
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+  });
+
+  it("a new-document acknowledgement from before the page took up the created document is no proof for the next write while the frame is elsewhere; returning and a fresh acknowledgement save it once", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    // The frame leaves while the first write is out; the page takes up the
+    // created document while it is elsewhere.
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await flushFrames();
+
+    await blurCard();
+
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(
+      screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+    ).toBeGreaterThan(0);
+
+    // Back on the editor's page, the created document is presented and
+    // acknowledged; the draft is saved once, on its original basis.
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    await waitForPresentationReady();
+    // The author leaves the field again, now on the editor's page.
+    await blurCard();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(storedHeading()).toBe("Value 2");
   });
 });
