@@ -928,7 +928,13 @@ function StaticRoute() {
   }
 
   async function selectHomeCard(page: Page) {
-    await enableSelection(page);
+    // A page switch can leave the pointer tool on; it is turned on only
+    // when it is off.
+    const selecting = page.getByRole("button", {
+      name: "Disable section selection",
+    });
+    if (!(await selecting.isVisible())) await enableSelection(page);
+    await expect(selecting).toBeVisible();
     expect(
       await clickExposedElement(page, cardTitle(page, SLOT)),
     ).not.toBeNull();
