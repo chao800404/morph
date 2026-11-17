@@ -950,6 +950,48 @@ describe("a content save that fails", () => {
     });
   });
 
+  it("keeps the proof an input was made with when the frame later withdraws what it shows", async () => {
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 2, droppedProps: [] },
+    } as never);
+    renderShell();
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Welcome");
+    await flushFrames();
+
+    // Typed while the page is presented and acknowledged: the write's basis
+    // is the proof taken at this input.
+    fireEvent.input(field, { target: { value: "Typed while presented" } });
+    fireEvent.blur(field);
+    await flushFrames();
+    const shown = messagesOfType("morph:storefront-preview-update-section-props")
+      .filter((message) => message.sectionId === "hero")
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+    expect(shown).toBeTruthy();
+    expect(updateSectionProps).not.toHaveBeenCalled();
+
+    // Before the input's debounce runs out, the frame says it no longer
+    // shows that presentation (as it does when it navigates back to the
+    // page). That is about what is on screen now, not about the basis the
+    // author typed on.
+    fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: shown!.operationId,
+      token: shown,
+      status: "not-applied",
+      reason: "superseded",
+    });
+
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(updateSectionProps.mock.calls[0]![0].data.props).toEqual({
+      heading: "Typed while presented",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
+
   it("says so when the server refuses the write", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
     updateSectionProps.mockResolvedValue({

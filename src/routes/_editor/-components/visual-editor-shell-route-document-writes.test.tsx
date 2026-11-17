@@ -3992,4 +3992,89 @@ describe("the off-page blur release uses only a still-current proof", () => {
     expect(sent()).toHaveLength(2);
     expect(storedHeading()).toBe("Value 2");
   });
+
+  it("a new-document acknowledgement the frame withdrew is never taken as a proof of the created document", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await flushFrames();
+
+    // The frame withdraws the route's new-document presentation it had
+    // acknowledged before it moved (as it does on arriving back there).
+    const newDocument = posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === SLOT &&
+          (
+            (message.presentationToken as Record<string, unknown> | undefined)
+              ?.documentBasis as Record<string, unknown> | undefined
+          )?.kind === "new-document",
+      )
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+    expect(newDocument).toBeTruthy();
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: newDocument!.operationId,
+      token: newDocument,
+      status: "not-applied",
+      reason: "superseded",
+    });
+    await flushFrames();
+
+    await blurCard();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+
+    // Only the created document's own presentation, acknowledged after the
+    // return, lets the draft go: once, on the basis it was typed on.
+    const postedBeforeReturn = posted.length;
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    await waitForPresentationReady();
+    expect(
+      posted
+        .slice(postedBeforeReturn)
+        .some((message) => {
+          const token = message.presentationToken as
+            | Record<string, unknown>
+            | undefined;
+          const basis = token?.documentBasis as
+            | Record<string, unknown>
+            | undefined;
+          return (
+            message.type === "morph:storefront-preview-update-section-props" &&
+            token?.templateId === ROUTE_DOC_ID &&
+            basis?.kind === "existing" &&
+            basis.draftGeneration === 2
+          );
+        }),
+    ).toBe(true);
+    await blurCard();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    await pause();
+    expect(sent()).toHaveLength(2);
+  });
 });
