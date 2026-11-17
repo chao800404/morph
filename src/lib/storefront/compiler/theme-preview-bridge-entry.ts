@@ -598,29 +598,57 @@ let lastCommittedRouteLocation =
   typeof location !== "undefined" ? location.pathname + location.search : "";
 let subscribedEpochRouter = null;
 
+/**
+ * Where the frame is, as its router committed it to its own history; the
+ * page's address without a router. Under browser history (Full Start) the
+ * two are the same. A Client-only preview runs the router on memory
+ * history, where the page's address never moves whatever page is shown, so
+ * only the router's history says a navigation happened.
+ */
+function committedFrameLocation(router) {
+  const committed = documentNavigation ? undefined : router?.history?.location;
+  if (committed && typeof committed.pathname === "string") {
+    return {
+      pathname: committed.pathname,
+      key:
+        committed.pathname +
+        (typeof committed.search === "string" ? committed.search : ""),
+    };
+  }
+  return {
+    pathname: location.pathname,
+    key: location.pathname + location.search,
+  };
+}
+
 function syncFrameNavigationEpoch() {
   if (typeof location === "undefined") return frameNavigationEpoch;
   const router =
     typeof window !== "undefined" ? window.__morphPreviewRouter : undefined;
-  if (
-    router &&
-    router !== subscribedEpochRouter &&
-    typeof router.history?.subscribe === "function"
-  ) {
+  if (router && router !== subscribedEpochRouter) {
+    const firstRouter = subscribedEpochRouter === null;
     subscribedEpochRouter = router;
-    router.history.subscribe(() => {
-      syncFrameNavigationEpoch();
-    });
+    if (typeof router.history?.subscribe === "function") {
+      router.history.subscribe(() => {
+        syncFrameNavigationEpoch();
+      });
+    }
+    // Taking up the first router is not a navigation: the page is where its
+    // history already is (a Client-only build is served from an address
+    // that is no page of the Theme at all).
+    if (firstRouter) {
+      lastCommittedRouteLocation = committedFrameLocation(router).key;
+    }
   }
-  const currentLocation = location.pathname + location.search;
-  if (currentLocation !== lastCommittedRouteLocation) {
-    lastCommittedRouteLocation = currentLocation;
+  const committed = committedFrameLocation(router);
+  if (committed.key !== lastCommittedRouteLocation) {
+    lastCommittedRouteLocation = committed.key;
     frameNavigationEpoch += 1;
     const routerLocation = router?.state?.location?.pathname;
     const currentRoute =
-      routerLocation === location.pathname
-        ? (currentRoutePattern() ?? location.pathname)
-        : location.pathname;
+      routerLocation === committed.pathname
+        ? (currentRoutePattern() ?? committed.pathname)
+        : committed.pathname;
     withdrawAppliedPresentationAcks(currentRoute);
   }
   return frameNavigationEpoch;
