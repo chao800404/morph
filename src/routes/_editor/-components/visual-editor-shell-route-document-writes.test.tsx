@@ -3709,4 +3709,137 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
       props: { heading: "Typed while elsewhere" },
     });
   });
+
+  it("pauses cross-page writes under Option A when pre-navigation ack only proved new-document and route adoption lands after frame navigation, then saves after returning and acking existing doc", async () => {
+    await openOn(headingReport);
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Preview syncing\. Content writes are paused/),
+      ).toBeNull();
+    });
+
+    holdReads();
+    try {
+      const postedBeforeFirstSave = posted.length;
+      await type("Default heading", "First");
+      await pause();
+
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+      expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+
+      // Wait for pre-navigation presentation ack on ROUTE_PATH while readCreatedDocument is still in-flight.
+      await waitFor(() => {
+        expect(
+          screen.queryByText(/Preview syncing\. Content writes are paused/),
+        ).toBeNull();
+      });
+
+      const preNavTokens = posted
+        .slice(postedBeforeFirstSave)
+        .filter(
+          (
+            msg,
+          ): msg is Record<string, unknown> & {
+            presentationToken: Record<string, unknown>;
+          } =>
+            msg.type === "morph:storefront-preview-update-section-props" &&
+            Boolean(msg.presentationToken),
+        )
+        .map((msg) => ({
+          sectionId: msg.sectionId,
+          templateId: msg.presentationToken.templateId,
+          documentBasis: msg.presentationToken.documentBasis,
+          routePath: msg.presentationToken.routePath,
+        }));
+      expect(preNavTokens).toEqual([
+        {
+          sectionId: SLOT,
+          templateId: `route-template:${ROUTE_PATH}`,
+          documentBasis: {
+            kind: "new-document",
+            createEpoch: `route-template:${ROUTE_PATH}`,
+          },
+          routePath: ROUTE_PATH,
+        },
+      ]);
+
+      // Frame navigates to an unfollowed route before getStorefrontThemeEditor lands.
+      await fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/unfollowed/elsewhere",
+        frameNavigationEpoch: 1,
+      });
+      await flushFrames();
+
+      // Now getStorefrontThemeEditor lands and adopts ROUTE_DOC_ID while the frame is already on /unfollowed/elsewhere.
+      await releaseReads();
+      await expectAdopted();
+      await flushFrames();
+    } finally {
+      await releaseReads();
+    }
+
+    // Under Option A, pre-navigation new-document ack does not authorize existing doc writes; writes pause until returning.
+    expect(
+      screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+    ).toBeGreaterThan(0);
+
+    await type("First", "Second");
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "First" },
+    });
+
+    // Returning to the original route re-presents ROUTE_DOC_ID and releases the held write once at generation 2 -> 3.
+    const postedBeforeReturn = posted.length;
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    await pause();
+
+    const postReturnTokens = posted
+      .slice(postedBeforeReturn)
+      .filter(
+        (
+          msg,
+        ): msg is Record<string, unknown> & {
+          presentationToken: Record<string, unknown>;
+        } =>
+          msg.type === "morph:storefront-preview-update-section-props" &&
+          Boolean(msg.presentationToken),
+      )
+      .map((msg) => msg.presentationToken);
+    expect(
+      postReturnTokens.some(
+        (token) =>
+          token.templateId === ROUTE_DOC_ID &&
+          (token.documentBasis as Record<string, unknown>)?.kind === "existing" &&
+          (token.documentBasis as Record<string, unknown>)?.draftGeneration === 2,
+      ),
+    ).toBe(true);
+
+    await waitFor(() => {
+      expect(sent()).toHaveLength(2);
+    });
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Second" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 3,
+      props: { heading: "Second" },
+    });
+  });
 });
