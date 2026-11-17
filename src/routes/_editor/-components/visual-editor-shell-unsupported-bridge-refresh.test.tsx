@@ -18,6 +18,7 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  PREVIEW_OTHER_PAGE_PAUSED_MESSAGE,
   PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS,
   PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE,
   VisualEditorShell,
@@ -1566,7 +1567,12 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       await act(async () => {
         await Promise.resolve();
       });
-      expect(syncingBanner().length, "no false unlock").toBeGreaterThan(0);
+      // No false unlock: paused, and (Option A notice) the notice says the
+      // frame is on another page, the draft is kept, and to return.
+      expect(
+        screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+        "no false unlock",
+      ).toBeGreaterThan(0);
       expect(updateSectionProps).toHaveBeenCalledTimes(1);
 
       // The way out: the frame returns to the editor's page, the section is
@@ -1587,6 +1593,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       );
       ack(fresh);
       await waitFor(() => expect(syncingBanner()).toHaveLength(0));
+      expect(screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE)).toHaveLength(0);
       expect(updateSectionProps).toHaveBeenCalledTimes(1);
     });
 

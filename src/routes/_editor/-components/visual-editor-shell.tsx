@@ -3216,6 +3216,12 @@ export function VisualEditorShell({
     useState(false);
   /** Bumped whenever a ready replaces the frame record. */
   const [frameRecordSequence, setFrameRecordSequence] = useState(0);
+  /**
+   * The frame, in this ready round, named a page other than the editor's:
+   * what the paused notice says. Read only for that notice; the write path
+   * decides from the frame's own reports, as before.
+   */
+  const [frameShowsOtherPage, setFrameShowsOtherPage] = useState(false);
   const presentationUnconfirmableRef = useRef(false);
   presentationUnconfirmableRef.current = presentationUnconfirmable;
   const presentationHoldMessage = () =>
@@ -5062,6 +5068,11 @@ export function VisualEditorShell({
    */
   const frameShowsEditorPageRef = useRef<() => boolean>(() => false);
   const frameOnAnotherRouteRef = useRef<() => boolean>(() => false);
+  // The editor's own page can change too (and a ready ends the round the
+  // frame's report was for): the paused notice is read again then.
+  useEffect(() => {
+    setFrameShowsOtherPage(frameOnAnotherRouteRef.current());
+  }, [search.routePath, frameRecordSequence]);
   /**
    * The page the frame last named, in a structure report or a route answer,
    * and the frame and ready round that named it; null for a frame that
@@ -12868,9 +12879,16 @@ export function VisualEditorShell({
     // The same predicate, for the Inspector's live typing.
     frameShowsEditorPageRef.current = frameShowsEditorPage;
     frameOnAnotherRouteRef.current = frameOnAnotherRoute;
+    // After each message is handled: whether the frame now names another
+    // page, for the paused notice only.
+    const noteFrameShowsOtherPage = () =>
+      setFrameShowsOtherPage(frameOnAnotherRoute());
     window.addEventListener("message", handlePreviewSelection);
+    window.addEventListener("message", noteFrameShowsOtherPage);
+    noteFrameShowsOtherPage();
     return () => {
       window.removeEventListener("message", handlePreviewSelection);
+      window.removeEventListener("message", noteFrameShowsOtherPage);
       if (frameShowsEditorPageRef.current === frameShowsEditorPage) {
         frameShowsEditorPageRef.current = () => false;
       }
@@ -19337,7 +19355,9 @@ export function VisualEditorShell({
           documentPresentationPausedReason={
             presentationUnconfirmable
               ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
-              : null
+              : frameShowsOtherPage
+                ? PREVIEW_OTHER_PAGE_PAUSED_MESSAGE
+                : null
           }
           context={routeBackedContext}
           search={search}
@@ -19918,7 +19938,9 @@ export function VisualEditorShell({
           documentPresentationPausedReason={
             presentationUnconfirmable
               ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
-              : null
+              : frameShowsOtherPage
+                ? PREVIEW_OTHER_PAGE_PAUSED_MESSAGE
+                : null
           }
           inspectorDocumentKey={inspectorDocumentKey}
           style={RIGHT_PANEL_STYLE}
