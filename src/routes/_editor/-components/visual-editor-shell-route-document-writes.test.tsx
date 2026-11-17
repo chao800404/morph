@@ -4078,3 +4078,232 @@ describe("the off-page blur release uses only a still-current proof", () => {
     expect(sent()).toHaveLength(2);
   });
 });
+
+/**
+ * Leaving a field commits what is in it. While the frame shows another page
+ * the commit is held (Option A): the draft is kept and nothing is written.
+ * The commit is remembered, bound to the very field edits that were left and
+ * to the document they were typed for. The next valid acknowledgement after
+ * the frame is back sends it once, through the same checks a blur runs, with
+ * no second blur. Anything else stays unsent: input that was never left, a
+ * field typed into again, a sibling field never left, a document changed
+ * elsewhere, a source that changed, an acknowledgement of an old round, the
+ * editor on another document. A refused or failed send keeps the draft, and
+ * leaving the field again still works.
+ */
+describe("a draft the author left while the frame was elsewhere", () => {
+  const ELSEWHERE = "/unfollowed/elsewhere";
+  const moveFrameElsewhere = async (epoch: number) => {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ELSEWHERE,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+  const leaveField = async (index = 0) => {
+    await act(async () => {
+      fireEvent.focus(cardFields()[index]!);
+      fireEvent.blur(cardFields()[index]!);
+    });
+    await pause();
+  };
+  /**
+   * Value 2 is typed while the first write is out, the frame leaves, and
+   * the page takes up the document this editor created while it is away.
+   * With `leave`, the author then leaves the field: held, nothing written.
+   */
+  async function draftWhileElsewhere(
+    leave: boolean,
+    report: Record<string, unknown> = headingReport,
+  ) {
+    await openOn(report);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await flushFrames();
+    if (leave) await leaveField();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    ).toBeGreaterThan(0);
+  }
+  /** The frame is back on the page; its presentation is acknowledged. */
+  async function frameReturns(epoch = 2) {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+    await waitForPresentationReady();
+    await pause();
+  }
+  const latestSlotToken = () =>
+    posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === SLOT &&
+          message.presentationToken,
+      )
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+  const savedOnce = (heading: string) => {
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading },
+    });
+  };
+
+  it("is saved once by the acknowledgement after the return, with no second blur; a repeated acknowledgement writes nothing more", async () => {
+    await draftWhileElsewhere(true);
+    await frameReturns();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    savedOnce("Value 2");
+    expect(storedHeading()).toBe("Value 2");
+
+    const token = latestSlotToken();
+    expect(token).toBeTruthy();
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: token!.operationId,
+      token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    expect(sent()).toHaveLength(2);
+  });
+
+  it("input that was never left is not sent on the return; leaving it then saves it", async () => {
+    await draftWhileElsewhere(false);
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    savedOnce("Value 2");
+  });
+
+  it("the field typed into again after it was left is not sent on the return", async () => {
+    await draftWhileElsewhere(true);
+    typeInCard(0, "Value 3");
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 3");
+
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    savedOnce("Value 3");
+  });
+
+  it("a document changed elsewhere while away is not written over", async () => {
+    await draftWhileElsewhere(true);
+    await outsideWriteRead((route) => {
+      route.props = { ...(route.props ?? {}), heading: "Theirs" };
+      route.generation += 1;
+    });
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Theirs");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+
+  it("a source that changed since the input is not written", async () => {
+    await draftWhileElsewhere(true);
+    act(() => {
+      useThemeWorkspaceStore.getState().setBaseSourceGeneration(2, {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+      });
+    });
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+
+  it("an acknowledgement from an earlier ready round sends nothing", async () => {
+    await draftWhileElsewhere(true);
+    const before = latestSlotToken();
+    expect(before).toBeTruthy();
+    disablePresentationAcks();
+    reloadFrameDocument();
+    await fromPreview({
+      type: "morph:storefront-preview-ready",
+      capabilities: [...LIVE_FRAME_CAPABILITIES],
+    });
+    await flushFrames();
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 0,
+    });
+    await flushFrames();
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: before!.operationId,
+      token: before,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+
+  it("the editor on another document drops the commit; back on the page, the return sends nothing", async () => {
+    await draftWhileElsewhere(true);
+    act(() => host.go?.({ routePath: "/", templateId: undefined }));
+    await flushFrames();
+    await pause();
+    act(() => host.go?.({ routePath: ROUTE_PATH, templateId: ROUTE_DOC_ID }));
+    await flushFrames();
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+  });
+
+  it("a continued write that gets no answer is not sent again by a later acknowledgement", async () => {
+    await draftWhileElsewhere(true);
+    const lost = holdNextWrite();
+    await frameReturns();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await act(async () => {
+      lost.lose();
+      await settleMicrotasks();
+    });
+    await pause();
+    const token = latestSlotToken();
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: token!.operationId,
+      token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+});
