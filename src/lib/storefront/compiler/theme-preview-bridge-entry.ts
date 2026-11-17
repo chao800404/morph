@@ -644,9 +644,13 @@ function syncFrameNavigationEpoch() {
   if (committed.key !== lastCommittedRouteLocation) {
     lastCommittedRouteLocation = committed.key;
     frameNavigationEpoch += 1;
-    const routerLocation = router?.state?.location?.pathname;
+    // The route pattern only once the router's matches have reached the
+    // committed location: the router takes up a new location before its
+    // matches follow, and until then the leaf still names the page left.
+    const matches = documentNavigation ? undefined : router?.state?.matches;
+    const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
     const currentRoute =
-      routerLocation === committed.pathname
+      leaf?.pathname === committed.pathname
         ? (currentRoutePattern() ?? committed.pathname)
         : committed.pathname;
     withdrawAppliedPresentationAcks(currentRoute);
