@@ -8443,7 +8443,16 @@ function Home() {
     fireEvent.blur(field);
   };
   // Past the content write's 300 ms debounce and its answer.
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 1_200));
+  const settle = async () => {
+    if (vi.isFakeTimers()) {
+      await act(async () => {
+        vi.advanceTimersByTime(1_200);
+        await Promise.resolve();
+      });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+  };
 
   it("gives the default rows their ids before the first edit, and saves the whole list", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
@@ -9766,14 +9775,23 @@ function Home() {
         const add = (await screen.findByRole("button", {
           name: "Add entry",
         })) as HTMLButtonElement;
-        // The preview update temporarily pauses Content controls. Wait for its
-        // DOM-commit acknowledgement, still inside the 300 ms debounce, so
-        // the list action joins the same pending entry.
-        fireEvent.input(heading, { target: { value: "New" } });
-        fireEvent.blur(heading);
-        await flushFrames();
-        await waitFor(() => expect(add.disabled).toBe(false));
-        fireEvent.click(add);
+        // The preview update temporarily pauses Content controls. Hold the
+        // 300 ms save debounce while waiting for its DOM-commit acknowledgement
+        // so the list action deterministically joins the same pending entry.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          fireEvent.input(heading, { target: { value: "New" } });
+          fireEvent.blur(heading);
+          await flushFrames();
+          expect(add.disabled).toBe(false);
+          fireEvent.click(add);
+          await act(async () => {
+            vi.advanceTimersByTime(300);
+          });
+        } finally {
+          vi.clearAllTimers();
+          vi.useRealTimers();
+        }
         await settle();
         expect(sent(), "one write for both keys").toHaveLength(1);
         expect(Object.keys(sent()[0]!.props as object).sort()).toEqual([
@@ -10477,6 +10495,11 @@ function Home() {
          * be recorded before Undo is pressed).
          */
         it("input of the section still pending when Undo is pressed is saved first, as its own entry; that Undo then refuses", async () => {
+          vi.useFakeTimers({
+            toFake: ["setTimeout", "clearTimeout"],
+            shouldAdvanceTime: true,
+          });
+          try {
           const notice = notices();
           const { receive } = await storedFieldEdit();
           // Typed, and Undo pressed inside the 300 ms debounce.
@@ -10535,6 +10558,10 @@ function Home() {
           expect(
             sent().every((data) => data.expectedSourceGeneration === 1),
           ).toBe(true);
+          } finally {
+            vi.clearAllTimers();
+            vi.useRealTimers();
+          }
         });
 
         // The same rule on the reset path (the undo of a first Add).
