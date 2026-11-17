@@ -674,6 +674,13 @@ export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
  */
 export const PREVIEW_PRESENTATION_SYNCING_MESSAGE =
   "Not saved yet: the preview is still syncing, so nothing was sent. Your change is kept, and Try again saves it once the preview has caught up.";
+/**
+ * Said while content writes wait because the frame shows another page than
+ * the one being edited: what was typed is kept, and is saved once the frame
+ * is back on that page and confirms what it shows there (Option A).
+ */
+export const PREVIEW_OTHER_PAGE_PAUSED_MESSAGE =
+  "Content writes are paused while the preview shows another page. Your draft is kept; return the preview to the page you are editing to save it.";
 /** Said where the frame cannot acknowledge what it shows (Task 40 item 3). */
 export const PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE =
   "This preview cannot confirm what it shows, so content edits are paused. Your changes are kept; nothing was saved.";

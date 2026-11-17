@@ -55,6 +55,7 @@ import {
 } from "./editor-template";
 import { UNCONFIRMED_SAVE_HOLD } from "./editor-unconfirmed-saves-notice";
 import {
+  PREVIEW_OTHER_PAGE_PAUSED_MESSAGE,
   PREVIEW_PRESENTATION_SYNCING_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
@@ -724,6 +725,9 @@ const saveStatus = () =>
     ?.getAttribute("aria-label");
 async function waitForPresentationReady() {
   await waitFor(() => {
+    expect(screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE)).toHaveLength(
+      0,
+    );
     expect(
       screen.queryByText("Preview syncing. Content writes are paused."),
     ).toBeNull();
@@ -3172,8 +3176,10 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     await pause();
 
     expect((field as HTMLInputElement).value).toBe("Second");
+    // Option A notice (2026-11-17): paused because the frame is on another
+    // page, the notice says the draft is kept and to return to the page.
     expect(
-      screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
     ).toBeGreaterThan(0);
     expect(sent()).toHaveLength(1);
     expect(server.route).toMatchObject({
@@ -3292,8 +3298,10 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
       fireEvent.blur(field);
       await pause();
 
+      // Option A notice (2026-11-17): paused because the frame is on
+      // another page, the notice says the draft is kept and to return.
       const syncingBanners = screen.queryAllByText(
-        /Preview syncing\. Content writes are paused/,
+        PREVIEW_OTHER_PAGE_PAUSED_MESSAGE,
       );
       expect({
         fieldValue: (field as HTMLInputElement).value,
@@ -3305,7 +3313,7 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
         fieldValue: "Second",
         fieldDisabled: false,
         syncingBannerTexts: expect.arrayContaining([
-          expect.stringContaining("Preview syncing. Content writes are paused"),
+          PREVIEW_OTHER_PAGE_PAUSED_MESSAGE,
         ]),
         sentCount: 1,
         serverRoute: { generation: 2, props: { heading: "First" } },
@@ -3787,8 +3795,9 @@ describe("frame self-navigation to an unfollowed route while editing the editor'
     }
 
     // Under Option A, pre-navigation new-document ack does not authorize existing doc writes; writes pause until returning.
+    // Option A notice (2026-11-17): it says the draft is kept and to return.
     expect(
-      screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
     ).toBeGreaterThan(0);
 
     await type("First", "Second");
@@ -3953,8 +3962,9 @@ describe("the off-page blur release uses only a still-current proof", () => {
     expect(cardFields()[0]!.value).toBe("Value 2");
     expect(sent()).toHaveLength(1);
     expect(storedHeading()).toBe("Value 1");
+    // The notice says why: the draft is kept, and to return to the page.
     expect(
-      screen.queryAllByText(/Preview syncing\. Content writes are paused/).length,
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
     ).toBeGreaterThan(0);
 
     // Back on the editor's page, the created document is presented and
@@ -3967,6 +3977,9 @@ describe("the off-page blur release uses only a still-current proof", () => {
     });
     await flushFrames();
     await waitForPresentationReady();
+    expect(screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE)).toHaveLength(
+      0,
+    );
     // The author leaves the field again, now on the editor's page.
     await blurCard();
     await waitFor(() => expect(sent()).toHaveLength(2));
