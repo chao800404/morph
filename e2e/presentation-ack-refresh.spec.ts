@@ -706,9 +706,47 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
 
       const field = await heroContentField(page, 0);
       const updated = `${MARKER} late-ack ${Date.now()}`;
+      const writeResponse = page.waitForResponse(
+        (response) =>
+          isServerFn(response.url(), "updateStorefrontThemeSectionProps") &&
+          response.ok(),
+        { timeout: 20_000 },
+      );
       await field.fill(updated);
       await expect(field).toHaveValue(updated);
-      await page.waitForTimeout(1_500);
+      await field.press("Tab");
+      await writeResponse;
+
+      const ids = new URL(page.url()).pathname.match(
+        /\/store\/([^/]+)\/themes\/([^/]+)\/editor/,
+      );
+      expect(ids).toBeTruthy();
+      await expect
+        .poll(
+          async () =>
+            page.evaluate(
+              async ([storefrontId, themeId]) => {
+                const fns = await import(
+                  /* @vite-ignore */ "/src/server/storefront/storefront-themes.serverFn.ts"
+                );
+                const res = await fns.getStorefrontThemeEditor({
+                  data: { storefrontId, themeId },
+                });
+                const templates = res?.data?.templates ?? [];
+                for (const template of templates) {
+                  for (const section of template?.document?.sections ?? []) {
+                    if (section?.id === "starter-hero") {
+                      return section?.props?.eyebrow;
+                    }
+                  }
+                }
+                return undefined;
+              },
+              [ids![1], ids![2]] as const,
+            ),
+          { timeout: 20_000 },
+        )
+        .toBe(updated);
 
       await page.reload({ waitUntil: "domcontentloaded" });
       await openEditor(page);
