@@ -127,6 +127,10 @@ async function signedInPage(browser: Browser) {
   return context.newPage();
 }
 
+/** What the editor says while writes wait for the author to return. */
+const OTHER_PAGE_PAUSED =
+  /the preview shows another page\. Your draft is kept/;
+
 const cardTitle = (page: Page, slot: string) =>
   previewFrame(page).locator(
     `[data-storefront-section-id="${slot}"] [data-storefront-field="title"]`,
@@ -540,6 +544,13 @@ test.describe("the editor adopting a route document it just created", () => {
  * always takes up the route document after the move. Taking up its own
  * document is the editor completing its address, not the author switching
  * pages: the frame stays where it moved.
+ *
+ * Option A (user decision 2026-11-17): the document was taken up while the
+ * frame showed another page, so nothing has presented it. What the author
+ * typed is kept and not written, and the editor says why: return to the page
+ * being edited. Back there, the frame presents the document and its own
+ * acknowledgement is the proof; the draft is then saved once, on the basis it
+ * was made on. No acknowledgement is replayed or injected.
  */
 test.describe("a route document adopted after the frame moved by itself", () => {
   test.describe.configure({ mode: "serial" });
@@ -646,10 +657,20 @@ test.describe("a route document adopted after the frame moved by itself", () => 
   const urlTemplateId = (page: Page) =>
     new URL(page.url()).searchParams.get("templateId");
 
-  test("a route document adopted after the frame moved by itself leaves the frame where it moved", async ({
+  test("a route document adopted after the frame moved by itself leaves the frame where it moved; the draft is kept unsaved until the author returns, then saved once", async ({
     page,
   }) => {
     test.setTimeout(240_000);
+    // Every content write, in order with the frame's return.
+    const events: string[] = [];
+    const writeBodies: string[] = [];
+    page.on("request", (request) => {
+      if (!isServerFn(request.url(), "updateStorefrontThemeSectionProps")) {
+        return;
+      }
+      events.push("write");
+      writeBodies.push(request.postData() ?? "");
+    });
     await page.goto(
       `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
       { waitUntil: "domcontentloaded" },
@@ -726,8 +747,48 @@ test.describe("a route document adopted after the frame moved by itself", () => 
       await expect(cardTitle(page, SLOT)).toHaveCount(0);
       await expect(cardTitle(page, OTHER_SLOT)).toHaveText(otherBefore ?? "");
 
-      // Leaving the field saves what was typed, to the section it was typed
-      // for, in the route's document.
+      // Leaving the field while the frame is elsewhere writes nothing: the
+      // created document was never presented, so the draft is kept, and the
+      // editor says it waits for the author to return to the page.
+      await titleField(page).press("Tab");
+      await expect(page.getByText(OTHER_PAGE_PAUSED).first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(titleField(page)).toHaveValue(typed);
+      expect((await storedOn(page)).route).toBe(live);
+      // The frame has not been sent back.
+      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible();
+      await expect(cardTitle(page, SLOT)).toHaveCount(0);
+
+      // The author returns the frame to the page being edited, as a link
+      // inside it would. The frame presents the route's document and
+      // acknowledges it; writes open again.
+      events.push("returned");
+      await previewFrame(page)
+        .locator("body")
+        .evaluate((_body, to) => {
+          const router = (
+            window as unknown as {
+              __morphPreviewRouter?: {
+                navigate(options: { to: string }): unknown;
+              };
+            }
+          ).__morphPreviewRouter;
+          if (!router) throw new Error("the preview exposes no router");
+          void router.navigate({ to });
+        }, HOME_ROUTE);
+      await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText(OTHER_PAGE_PAUSED)).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      await expect(page.getByText(/Preview syncing/)).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      expect((await storedOn(page)).route).toBe(live);
+
+      // Leaving the field again saves the draft once, on its original basis,
+      // to the section it was typed for, in the route's document.
+      await titleField(page).focus();
       await titleField(page).press("Tab");
       await expect
         .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
@@ -736,10 +797,20 @@ test.describe("a route document adopted after the frame moved by itself", () => 
       expect(stored.routeTemplateId).toBe(created);
       expect(stored.elsewhere).toEqual([]);
       expect(stored.other).toEqual([]);
-
-      // And the frame has still not been sent back.
-      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible();
-      await expect(cardTitle(page, SLOT)).toHaveCount(0);
+      expect(events).toEqual(["write", "returned", "write"]);
+      expect(writeBodies[1]).toContain(typed);
+      // Saved on the copy the first write answered (generation 2): the
+      // document is now at 3, one step past it.
+      const read = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+        ...own!,
+      })) as {
+        success: boolean;
+        data?: { templates: Array<{ id: string; draftGeneration?: number }> };
+      };
+      expect(
+        read.data!.templates.find((template) => template.id === created)
+          ?.draftGeneration,
+      ).toBe(3);
     } finally {
       // Never leave the answer waiting, whatever failed above.
       held.release();
