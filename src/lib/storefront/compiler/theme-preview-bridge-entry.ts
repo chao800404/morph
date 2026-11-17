@@ -1325,11 +1325,14 @@ if (channel) {
   };
   observeStructureRoot(previewStructureRoot);
 
-  // A Theme that owns its document shell is mounted on \`document\`, and React
-  // replaces \`<html>\` on its first commit. The node being watched is then
-  // detached: still a perfectly good element, observed forever, reporting
-  // nothing, while the page the author sees is somewhere else entirely. So the
-  // root is re-resolved whenever the one in hand has left the document.
+  // A Theme that owns its document shell is mounted on \`document\`. React may
+  // replace \`<html>\` on its first commit, or keep \`<html>\` and \`<body>\` and
+  // replace what is in the body, which takes the served \`<div id="root">\`
+  // with it. Either way the node being watched is then detached: still a
+  // perfectly good element, observed forever, reporting nothing, while the
+  // page the author sees, and every later route change on it, is somewhere
+  // else entirely. So the root is re-resolved whenever the one in hand has
+  // left the document, at whatever depth it was removed from.
   const reattachStructureRootIfDetached = () => {
     if (previewStructureRoot.isConnected) return;
     previewStructureRoot = resolveStructureRoot();
@@ -1340,7 +1343,7 @@ if (channel) {
   const documentObserver = new MutationObserver(
     reattachStructureRootIfDetached,
   );
-  documentObserver.observe(document, { childList: true, subtree: false });
+  documentObserver.observe(document, { childList: true, subtree: true });
 
   scheduleStructureReport();
 
