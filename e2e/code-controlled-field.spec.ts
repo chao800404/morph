@@ -14,6 +14,7 @@ import {
   isServerFunctionCall,
   openContentTab,
   previewFrame,
+  SAMPLE_OFFSETS,
   settleSelection,
 } from "./helpers";
 import { THEMES, serverFn } from "./native-acceptance";
@@ -1048,21 +1049,83 @@ async function scrollIntoExposedCanvas(
       { message: "the canvas never accepted input", timeout: 60_000 },
     )
     .not.toBe("none");
-  await target.scrollIntoViewIfNeeded();
+  await target.evaluate((el) =>
+    el.scrollIntoView({ block: "center", inline: "center" }),
+  );
+  const hitTarget = async () => {
+    const frameBox = await page.locator("iframe").first().boundingBox();
+    const box = await target.boundingBox();
+    if (!frameBox || !box) return { hit: false, reason: "no-box", frameBox, box };
+    const misses: Record<string, unknown>[] = [];
+    for (const [dx, dy] of SAMPLE_OFFSETS) {
+      const pt = { x: box.x + box.width * dx, y: box.y + box.height * dy };
+      const parentHit = await page.evaluate((at) => {
+        const el = document.elementFromPoint(at.x, at.y);
+        return el
+          ? { tagName: el.tagName, id: el.id || null, role: el.getAttribute("role") }
+          : null;
+      }, pt);
+      if (parentHit?.tagName !== "IFRAME") {
+        misses.push({ dx, dy, pt, parentHit });
+        continue;
+      }
+      const innerHit = await target.evaluate(
+        (element, at) => {
+          const hit = document.elementFromPoint(at.x, at.y);
+          return {
+            isItself: hit === element,
+            contained: hit ? element.contains(hit) : false,
+            hitTag: hit?.tagName ?? null,
+            hitField: hit?.getAttribute("data-storefront-field") ?? null,
+          };
+        },
+        { x: pt.x - frameBox.x, y: pt.y - frameBox.y },
+      );
+      if (innerHit.isItself) return { hit: true as const, frameBox, box };
+      misses.push({ dx, dy, pt, parentHit, innerHit });
+    }
+    return { hit: false as const, frameBox, box, misses };
+  };
+
   const point = await exposedCanvasPoint(page);
   if (point) {
     await page.mouse.move(point.x, point.y);
     for (let step = 0; step < 12; step += 1) {
-      const frameBox = await page.locator("iframe").first().boundingBox();
-      const box = await target.boundingBox();
-      if (!frameBox || !box) break;
+      const status = await hitTarget();
+      if (status.hit) {
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            ),
+        );
+        if ((await hitTarget()).hit) return;
+      }
+      const box = status.box;
+      const frameBox = status.frameBox;
+      if (!box || !frameBox) break;
       const topBound = frameBox.y + 8;
-      const bottomBound = Math.min(frameBox.y + frameBox.height - 8, 600);
-      if (box.y >= topBound && box.y + box.height <= bottomBound) break;
       await page.mouse.wheel(0, box.y < topBound ? -250 : 300);
-      await page.waitForTimeout(150);
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
     }
   }
+  await expect
+    .poll(
+      async () => {
+        const status = await hitTarget();
+        if (!status.hit) {
+          console.log("[scrollIntoExposedCanvas] miss:", JSON.stringify(status));
+        }
+        return status.hit;
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(true);
 }
 
 async function editHeading(page: Page, editorPath: string, value: string) {
