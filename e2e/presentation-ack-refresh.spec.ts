@@ -725,10 +725,8 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
         .poll(
           async () =>
             page.evaluate(
-              async ([storefrontId, themeId]) => {
-                const fns = await import(
-                  /* @vite-ignore */ "/src/server/storefront/storefront-themes.serverFn.ts"
-                );
+              async ([modulePath, storefrontId, themeId]) => {
+                const fns = await import(/* @vite-ignore */ modulePath);
                 const res = await fns.getStorefrontThemeEditor({
                   data: { storefrontId, themeId },
                 });
@@ -742,7 +740,11 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
                 }
                 return undefined;
               },
-              [ids![1], ids![2]] as const,
+              [
+                "/src/server/storefront/storefront-themes.serverFn.ts",
+                ids![1],
+                ids![2],
+              ] as const,
             ),
           { timeout: 20_000 },
         )
