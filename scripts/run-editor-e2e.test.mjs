@@ -1109,6 +1109,31 @@ describe("the e2e runner's sidecar swap", () => {
     },
   );
 
+  it(
+    "with swap mode off, swap settings left in the shell do not reach the suite",
+    { timeout: 90_000 },
+    async () => {
+      const result = await swapRun({
+        MORPH_E2E_SIDECAR_SWAP_FROM: "",
+        FAKE_SIDECAR_LISTEN: "",
+        FAKE_SWAP_WAIT_MS: "1500",
+        // What a shell might still hold from an earlier swap run.
+        MORPH_E2E_SIDECAR_SWAP: "1",
+        MORPH_E2E_SIDECAR_SWAP_NONCE: "left-in-the-shell",
+        MORPH_E2E_SIDECAR_SWAP_TIMEOUT_MS: "5000",
+      });
+      assert.equal(result.code, 0, output(result));
+      assert.equal(result.sidecars.length, 1);
+      assert.deepEqual(result.swap.env, {
+        swap: null,
+        runId: null,
+        nonce: null,
+        timeoutMs: null,
+      });
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
   describe("refuses before starting anything", () => {
     const cases = [
       {
