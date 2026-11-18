@@ -502,6 +502,104 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
     expect(updateSectionProps).not.toHaveBeenCalled();
   });
 
+  describe("a refresh held during composition belongs to the frame round it was decided for", () => {
+    const ACK_SERVING = {
+      success: true,
+      message: "Live Preview server ready",
+      data: {
+        url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+        workspaceFingerprint: "fp-new-build",
+        servingBridge: servingOf([
+          "selection-field-section",
+          "section-presentation-ack-v1",
+        ]),
+        bridgeCapabilities: [
+          "selection-field-section",
+          "section-presentation-ack-v1",
+        ],
+      },
+    };
+    const cachedFingerprint = (client: QueryClient) =>
+      (
+        client.getQueryData(
+          themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
+        ) as { data?: { workspaceFingerprint?: string } } | undefined
+      )?.data?.workspaceFingerprint;
+
+    async function composingOnOldFrame() {
+      vi.mocked(startThemePreviewServer).mockResolvedValue(ACK_SERVING as never);
+      const client = await renderShell("fp-old-build");
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+      });
+      const row = await screen.findByText("h1");
+      act(() => {
+        row.closest("button")?.click();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+      const input = await screen.findByDisplayValue("Welcome");
+      const firstIframe = currentIframe();
+      fireEvent.compositionStart(input);
+      sendReady(["selection-field-section"]);
+      // The answer arrives while composing: the refresh is held.
+      await waitFor(() => {
+        expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+      });
+      expect(currentIframe()).toBe(firstIframe);
+      return { client, input, firstIframe };
+    }
+
+    it("is dropped when a newer round of the frame replaced the one it was decided for", async () => {
+      const info = vi.spyOn(console, "info");
+      const { client, input, firstIframe } = await composingOnOldFrame();
+      // The frame reloads by itself and comes up again, still unable to
+      // acknowledge: a newer round than the one the answer was for.
+      reloadFrameDocument();
+      sendReady(["selection-field-section"]);
+      fireEvent.compositionEnd(input, { data: "中文" });
+      // Long enough for the held refresh to have run if it were going to:
+      // it runs in the effect that composition ending triggers.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      // No reload, and the older answer did not replace the cached one.
+      expect(currentIframe()).toBe(firstIframe);
+      expect(cachedFingerprint(client)).toBe("fp-old-build");
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      expect(
+        info.mock.calls.filter((call) =>
+          String(call[0]).startsWith("[preview-bridge] held refresh dropped"),
+        ),
+      ).toHaveLength(1);
+      // The frame on screen is offered the manual reload instead.
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Reload preview" })).toBeTruthy();
+      });
+    });
+
+    it("refreshes exactly once when the frame it was decided for is still on screen", async () => {
+      const info = vi.spyOn(console, "info");
+      const { client, input, firstIframe } = await composingOnOldFrame();
+      fireEvent.compositionEnd(input, { data: "中文" });
+      await waitFor(() => {
+        expect(currentIframe()).not.toBe(firstIframe);
+      });
+      const refreshed = currentIframe();
+      expect(cachedFingerprint(client)).toBe("fp-new-build");
+      await act(async () => {});
+      expect(currentIframe()).toBe(refreshed);
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+      expect(
+        info.mock.calls.filter((call) =>
+          String(call[0]).startsWith("[preview-bridge] held refresh dropped"),
+        ),
+      ).toEqual([]);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+  });
+
   it("re-sends presentation tokens and re-enables content editing after manual Refresh preview reloads the frame", async () => {
     vi.mocked(startThemePreviewServer).mockResolvedValue({
       success: true,
