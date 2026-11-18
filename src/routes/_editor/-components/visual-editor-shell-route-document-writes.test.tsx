@@ -11,7 +11,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { type ComponentProps, useMemo, useState } from "react";
+import { type ComponentProps, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   afterEach,
@@ -58,6 +58,7 @@ import {
   PREVIEW_OTHER_PAGE_PAUSED_MESSAGE,
   PREVIEW_PRESENTATION_SYNCING_MESSAGE,
   VisualEditorShell,
+  type EditorNavigationGuard,
 } from "./visual-editor-shell";
 
 /**
@@ -494,11 +495,40 @@ const host: {
   routeGeneration?: number | null;
   /** Moves the editor's address, as a link or the page picker would. */
   go?: (next: Partial<StorefrontThemeEditorSearch>) => void;
+  /**
+   * Set before rendering: the shell's own page switches ask its leave guard
+   * first and move the address only once it lets them, as the editor
+   * route's `useBlocker` does.
+   */
+  guarded?: boolean;
 } = {};
 function Host({ initial }: { initial: StorefrontThemeEditorSearch }) {
   const query = useQuery({ ...detailQuery(), staleTime: Infinity });
   const [search, setSearch] = useState(initial);
+  const searchNow = useRef(search);
+  searchNow.current = search;
+  const guardRef = useRef<EditorNavigationGuard | null>(null);
   host.go = (next) => setSearch((previous) => ({ ...previous, ...next }));
+  const onSearchChange = (next: Partial<StorefrontThemeEditorSearch>) => {
+    const current = searchNow.current;
+    const merged = { ...current, ...next };
+    if (
+      !host.guarded ||
+      !guardRef.current ||
+      (merged.routePath || "/") === (current.routePath || "/")
+    ) {
+      setSearch((previous) => ({ ...previous, ...next }));
+      return;
+    }
+    void guardRef
+      .current("switch-page", {
+        current: { pathname: "/editor", search: { ...current } },
+        next: { pathname: "/editor", search: { ...merged } },
+      })
+      .then((blocked) => {
+        if (!blocked) setSearch(merged);
+      });
+  };
   const data = query.data as
     { success: boolean; data?: StorefrontThemeEditorDTO } | undefined;
   const editorContext = data?.success ? data.data : undefined;
@@ -518,9 +548,8 @@ function Host({ initial }: { initial: StorefrontThemeEditorSearch }) {
     <VisualEditorShell
       context={editorContext}
       search={normalized}
-      onSearchChange={(next) =>
-        setSearch((previous) => ({ ...previous, ...next }))
-      }
+      onSearchChange={onSearchChange}
+      {...(host.guarded ? { navigationGuardRef: guardRef } : {})}
     />
   );
 }
@@ -774,6 +803,7 @@ beforeEach(() => {
   lastFrame = null;
   readGate = null;
   host.search = undefined;
+  host.guarded = false;
   renameOutcome.settled = undefined;
   server = { route: null };
   useThemeWorkspaceStore.setState({
@@ -4507,5 +4537,553 @@ describe("a draft the author left while the frame was elsewhere", () => {
     await waitFor(() => expect(sent()).toHaveLength(2));
     await pause();
     savedOnce("Value 2");
+  });
+
+  /**
+   * The frame withdraws every acknowledgement it gave, as the bridge does
+   * when it cannot tell which page it arrived at: the page left loses its
+   * acknowledgement too. Recovery is the return and a new acknowledgement.
+   */
+  const withdrawEveryAck = async () => {
+    const tokens = posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.presentationToken,
+      )
+      .map(
+        (message) => message.presentationToken as { operationId: string },
+      );
+    for (const token of tokens) {
+      await fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "superseded",
+      });
+    }
+    await flushFrames();
+  };
+
+  it("after the frame withdraws every acknowledgement while away, the left draft is kept and unsent; the return's new acknowledgement saves it once on its original basis", async () => {
+    await draftWhileElsewhere(true);
+    await withdrawEveryAck();
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    ).toBeGreaterThan(0);
+
+    await frameReturns(true);
+    savedOnce("Value 2");
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(storedHeading()).toBe("Value 2");
+  });
+
+  const pickPage = async (routePath: string) => {
+    act(() => {
+      screen.getByTitle(`Preview ${routePath}`).click();
+    });
+    await flushFrames();
+  };
+  /** The page switch asks about the kept draft; the author keeps it and switches. */
+  const switchKeepingDraft = async () => {
+    const keep = await screen.findByRole("button", {
+      name: "Switch, keep draft unsaved",
+    });
+    act(() => keep.click());
+    await flushFrames();
+  };
+  /** The frame answers the editor's latest set-route and reports that page. */
+  const frameAnswersFrom = async (routePath: string, epoch: number) => {
+    act(() => {
+      answerLatestRouteRequest(FRAME);
+    });
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+
+  it("a re-pick while the frame has not answered the earlier pick sends nothing; picking another page and then this one, keeping the draft, brings the frame back with the draft kept and nothing written over", async () => {
+    host.guarded = true;
+    await draftWhileElsewhere(true);
+
+    // The author picks the page the editor shows: the frame is sent back.
+    const before = routeRequests().length;
+    await pickPage(ROUTE_PATH);
+    expect(routeRequests().slice(before)).toHaveLength(1);
+    expect(routeRequests().at(-1)).toMatchObject({
+      routePath: ROUTE_PATH,
+      navigationIntent: "author",
+    });
+    // Before answering, the frame moves on by itself; picking the shown page
+    // again sends nothing (the known limit).
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/other",
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    await pickPage(ROUTE_PATH);
+    expect(routeRequests().slice(before)).toHaveLength(1);
+    expect(sent()).toHaveLength(1);
+
+    // The recovery: another page, then this one again.
+    await pickPage("/");
+    await switchKeepingDraft();
+    await waitFor(() => expect(host.search?.routePath ?? "/").toBe("/"));
+    expect(routeRequests().at(-1)?.routePath ?? "/").toBe("/");
+    await frameAnswersFrom("/", 3);
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    await pickPage(ROUTE_PATH);
+    await switchKeepingDraft();
+    await waitFor(() => expect(host.search?.routePath).toBe(ROUTE_PATH));
+    expect(routeRequests().at(-1)?.routePath).toBe(ROUTE_PATH);
+    await frameAnswersFrom(ROUTE_PATH, 4);
+    await waitForPresentationReady();
+    await pause();
+
+    // Back on the page, presented and acknowledged: nothing was written for
+    // the kept draft on the way, and the commit made before the switch is
+    // over (the editor was on another document).
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(saveStatus()).toBe("Unsaved");
+
+    // The kept draft is what the canvas shows. (The Inspector field, opened
+    // again on the selection, shows the stored value: a display gap that is
+    // reported, not pinned here.)
+    const canvasHeading = () =>
+      (
+        posted
+          .filter(
+            (message) =>
+              message.type === "morph:storefront-preview-update-section-props" &&
+              message.sectionId === SLOT,
+          )
+          .at(-1)?.props as Record<string, unknown> | undefined
+      )?.heading;
+    await select(headingReport);
+    expect(canvasHeading()).toBe("Value 2");
+    expect(saveStatus()).toBe("Unsaved");
+
+    // Leaving the field again saves the kept draft once, on its basis.
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    savedOnce("Value 2");
+    expect(storedHeading()).toBe("Value 2");
+  });
+});
+
+/**
+ * Off-page saves, step by step: an existing document whose page the frame
+ * never acknowledged, a route document already taken up under its real id
+ * when the frame left, and an existing document's acknowledged page after
+ * the frame withdraws every acknowledgement it gave.
+ *
+ * Each case reads at every step the draft in the field, the notice, the
+ * writes actually sent, and what each was sent on: the document generation
+ * (`expectedDraftGeneration`) and the field's source generation
+ * (`expectedSourceGeneration`). The basis an input was typed on is not on
+ * the request; a document changed elsewhere while away shows which basis is
+ * used: a write on the original basis is refused, one on a basis taken from
+ * the later acknowledgement would go through.
+ */
+describe("off-page saves, step by step", () => {
+  const ELSEWHERE = "/unfollowed/elsewhere";
+  const ACK = "morph:storefront-preview-section-presentation-ack";
+  const moveFrame = async (routePath: string, epoch: number) => {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+  /** While on, every applied acknowledgement from the frame is lost. */
+  let withholding = false;
+  const withholdAppliedAcks = () => {
+    withholding = true;
+    const original = window.dispatchEvent.bind(window);
+    vi.spyOn(window, "dispatchEvent").mockImplementation((event: Event) => {
+      if (
+        withholding &&
+        event instanceof MessageEvent &&
+        event.data?.type === ACK &&
+        event.data?.status === "applied"
+      ) {
+        return true;
+      }
+      return original(event);
+    });
+  };
+  const heading = () => cardFields()[0]!;
+  /** The author clicks into the heading and types there, not leaving it. */
+  const typeInHeading = (value: string) => {
+    fireEvent.focus(heading());
+    fireEvent.input(heading(), { target: { value } });
+  };
+  /** The author leaves the heading. */
+  const leaveHeading = async () => {
+    await act(async () => {
+      fireEvent.blur(heading());
+    });
+    await pause();
+  };
+  const notice = () => ({
+    otherPage: screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    syncing: screen.queryAllByText(/Preview syncing\./).length,
+    notSavedYet: screen.queryAllByText(PREVIEW_PRESENTATION_SYNCING_MESSAGE)
+      .length,
+  });
+  const writes = () =>
+    sent().map((write) => ({
+      templateId: write.templateId,
+      expectedDraftGeneration: write.expectedDraftGeneration,
+      expectedSourceGeneration: write.expectedSourceGeneration,
+      props: write.props,
+    }));
+  const latestSlotToken = () =>
+    posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === SLOT &&
+          message.presentationToken,
+      )
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+  const ackAgain = async () => {
+    const token = latestSlotToken();
+    expect(token).toBeTruthy();
+    await fromPreview({
+      type: ACK,
+      operationId: token!.operationId,
+      token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+  };
+
+  describe("an existing document whose page the frame never acknowledged", () => {
+    /**
+     * The route's document exists at generation 3. The frame comes up on
+     * the page, but no applied acknowledgement from it ever arrives; then it
+     * moves to a page the editor does not follow.
+     */
+    async function neverAcknowledgedThenAway() {
+      server.route = { generation: 3, props: { heading: "Stored" } };
+      withholdAppliedAcks();
+      await openOn(headingReport);
+      expect(host.search?.templateId).toBe(ROUTE_DOC_ID);
+      expect(heading().value).toBe("Stored");
+      await moveFrame(ELSEWHERE, 1);
+      await pause();
+      expect(sent()).toHaveLength(0);
+    }
+    /** The frame comes back to the page; its acknowledgements arrive now. */
+    async function returnAcknowledged() {
+      withholding = false;
+      await moveFrame(ROUTE_PATH, 2);
+      await waitForPresentationReady();
+      await pause();
+    }
+
+    it("input never left: nothing is sent on the return; the draft stays in the field; leaving it then saves it once on generation 3", async () => {
+      await neverAcknowledgedThenAway();
+      typeInHeading("Typed away");
+      await pause();
+      expect(sent()).toHaveLength(0);
+      expect(heading().value).toBe("Typed away");
+
+      await returnAcknowledged();
+      expect(sent()).toHaveLength(0);
+      expect(heading().value).toBe("Typed away");
+      expect(server.route).toMatchObject({
+        generation: 3,
+        props: { heading: "Stored" },
+      });
+
+      await leaveHeading();
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await pause();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+    });
+
+    it("input left while away: held, kept and said, nothing sent; the return's acknowledgement sends it once on generation 3; a repeated acknowledgement sends nothing more", async () => {
+      await neverAcknowledgedThenAway();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      expect(sent()).toHaveLength(0);
+      expect(heading().value).toBe("Typed away");
+      expect(notice().otherPage).toBeGreaterThan(0);
+
+      await returnAcknowledged();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+      expect(server.route).toMatchObject({
+        generation: 4,
+        props: { heading: "Typed away" },
+      });
+      expect(notice()).toMatchObject({ otherPage: 0 });
+
+      await ackAgain();
+      expect(sent()).toHaveLength(1);
+    });
+
+    it("input left while away, the document changed elsewhere and read meanwhile: the return's acknowledgement writes nothing over it; the draft is kept", async () => {
+      await neverAcknowledgedThenAway();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      await outsideWriteRead((route) => {
+        route.props = { ...(route.props ?? {}), heading: "Theirs" };
+        route.generation += 1;
+      });
+
+      await returnAcknowledged();
+      expect(sent()).toHaveLength(0);
+      expect(server.route).toMatchObject({
+        generation: 4,
+        props: { heading: "Theirs" },
+      });
+      expect(heading().value).toBe("Typed away");
+    });
+
+    it("input left while away, the document changed elsewhere and not read: the one write goes on generation 3 and is refused; nothing is written over it", async () => {
+      await neverAcknowledgedThenAway();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      server.route!.props = { heading: "Theirs" };
+      server.route!.generation = 4;
+
+      await returnAcknowledged();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+      expect(server.route).toMatchObject({
+        generation: 4,
+        props: { heading: "Theirs" },
+      });
+      expect(heading().value).toBe("Typed away");
+    });
+  });
+
+  describe("a route document taken up under its real id while the frame is away", () => {
+    /**
+     * The first write creates the document (generation 2 once stored) and
+     * its new-document presentation is acknowledged; the frame leaves before
+     * the editor's read of the document lands, and the page takes it up
+     * under its real id while the frame is away.
+     */
+    async function adoptedWhileAway() {
+      await openOn(headingReport);
+      await waitForPresentationReady();
+      holdReads();
+      try {
+        await type("Default heading", "First");
+        await pause();
+        expect(sent()).toHaveLength(1);
+        await waitForPresentationReady();
+        await moveFrame(ELSEWHERE, 1);
+        await releaseReads();
+        await expectAdopted();
+        await flushFrames();
+      } finally {
+        await releaseReads();
+      }
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+    }
+
+    it("input left while away: held, kept and said, nothing sent; the return's acknowledgement of the document sends it once on generation 2; a repeated acknowledgement sends nothing more", async () => {
+      await adoptedWhileAway();
+      typeInHeading("Second");
+      await leaveHeading();
+      expect(sent()).toHaveLength(1);
+      expect(heading().value).toBe("Second");
+      expect(notice().otherPage).toBeGreaterThan(0);
+
+      await moveFrame(ROUTE_PATH, 2);
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(writes()[1]).toEqual({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+        props: { heading: "Second" },
+      });
+      expect(server.route).toMatchObject({
+        generation: 3,
+        props: { heading: "Second" },
+      });
+      // What let it go: the document's own presentation, at generation 2.
+      expect(
+        posted.some((message) => {
+          const token = message.presentationToken as
+            | Record<string, unknown>
+            | undefined;
+          const basis = token?.documentBasis as
+            | Record<string, unknown>
+            | undefined;
+          return (
+            token?.templateId === ROUTE_DOC_ID &&
+            basis?.kind === "existing" &&
+            basis.draftGeneration === 2
+          );
+        }),
+      ).toBe(true);
+
+      await ackAgain();
+      expect(sent()).toHaveLength(2);
+    });
+
+    it("input never left: nothing is sent on the return; leaving it then saves it once on generation 2", async () => {
+      await adoptedWhileAway();
+      typeInHeading("Second");
+      await pause();
+      expect(sent()).toHaveLength(1);
+
+      await moveFrame(ROUTE_PATH, 2);
+      await waitForPresentationReady();
+      await pause();
+      expect(sent()).toHaveLength(1);
+      expect(heading().value).toBe("Second");
+
+      await leaveHeading();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(writes()[1]).toEqual({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+        props: { heading: "Second" },
+      });
+    });
+
+    it("input left while away, the document changed elsewhere and read meanwhile: the return writes nothing over it; the draft is kept", async () => {
+      await adoptedWhileAway();
+      typeInHeading("Second");
+      await leaveHeading();
+      await outsideWriteRead((route) => {
+        route.props = { ...(route.props ?? {}), heading: "Theirs" };
+        route.generation += 1;
+      });
+
+      await moveFrame(ROUTE_PATH, 2);
+      await waitForPresentationReady();
+      await pause();
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 3,
+        props: { heading: "Theirs" },
+      });
+      expect(heading().value).toBe("Second");
+    });
+  });
+
+  describe("an existing document acknowledged before the frame left, after the frame withdraws every acknowledgement", () => {
+    async function acknowledgedThenAway() {
+      server.route = { generation: 3, props: { heading: "Stored" } };
+      await openOn(headingReport);
+      await waitForPresentationReady();
+      expect(host.search?.templateId).toBe(ROUTE_DOC_ID);
+      await moveFrame(ELSEWHERE, 1);
+    }
+    const withdrawEveryAck = async () => {
+      const tokens = posted
+        .filter(
+          (message) =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            message.presentationToken,
+        )
+        .map(
+          (message) => message.presentationToken as { operationId: string },
+        );
+      for (const token of tokens) {
+        await fromPreview({
+          type: ACK,
+          operationId: token.operationId,
+          token,
+          status: "not-applied",
+          reason: "superseded",
+        });
+      }
+      await flushFrames();
+    };
+
+    it("control: with the acknowledgement standing, input left while away saves at once, on generation 3", async () => {
+      await acknowledgedThenAway();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+    });
+
+    it("withdrawn: input left while away is held, kept and said, nothing sent; the return's new acknowledgement saves it once on generation 3", async () => {
+      await acknowledgedThenAway();
+      await withdrawEveryAck();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      expect(sent()).toHaveLength(0);
+      expect(heading().value).toBe("Typed away");
+      expect(notice().otherPage).toBeGreaterThan(0);
+
+      await moveFrame(ROUTE_PATH, 2);
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await pause();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+      expect(server.route).toMatchObject({
+        generation: 4,
+        props: { heading: "Typed away" },
+      });
+      await ackAgain();
+      expect(sent()).toHaveLength(1);
+    });
   });
 });
