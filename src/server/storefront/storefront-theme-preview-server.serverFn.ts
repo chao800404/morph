@@ -1,9 +1,7 @@
 import {
   PREVIEW_BRIDGE_SOURCE_HASH,
 } from "@/lib/storefront/compiler/preview-bridge-sources.generated";
-import {
-  THEME_PREVIEW_BRIDGE_CAPABILITIES,
-} from "@/lib/storefront/compiler/theme-preview-bridge-entry";
+import { parsePreviewServing } from "@/lib/storefront/editor/preview-serving";
 import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
 import {
   parsePreviewServedInstance,
@@ -311,7 +309,14 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       entry ?? "",
       String(sourceGeneration),
     ]);
-    const bridgeCapabilities = [...THEME_PREVIEW_BRIDGE_CAPABILITIES];
+    // What the transport says it laid out and is serving, parsed and passed
+    // on. Nothing is filled in here: a transport that reports none, or one
+    // this Core cannot read, leaves the bridge unknown, and unknown is never
+    // read as "supports". It unlocks no write either; those wait for the
+    // page's own acknowledgement.
+    const servingBridge = parsePreviewServing(
+      (started as { serving?: unknown }).serving,
+    );
 
     return ok("Live Preview server ready", {
       previewId,
@@ -329,7 +334,10 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       timings: started.timings,
       hoistedContentFields: started.hoistedContentFields,
       workspaceFingerprint,
-      bridgeCapabilities,
+      servingBridge,
+      ...(servingBridge
+        ? { bridgeCapabilities: [...servingBridge.bridge.capabilities] }
+        : {}),
       // Whether the editor syncs saved content into this preview, and how the
       // canvas shows it once the preview confirms (A6b-2).
       contentRefresh: previewContentRefresh({

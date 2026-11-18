@@ -12,6 +12,7 @@ import {
   formatPreviewServedInstance,
   type PreviewServedInstance,
 } from "../editor/preview-protocol";
+import type { PreviewServing } from "../editor/preview-serving";
 import {
   isLoopbackPreviewHostname,
   LOCAL_PREVIEW_HOST,
@@ -183,6 +184,12 @@ type RunningPreview = Readonly<{
    * Start preview's child process).
    */
   servedInstance: PreviewServedInstance | null;
+  /**
+   * What a start reports serving: the bridge its plan laid out, bound to
+   * `servedInstance`. Kept with the server, so a reuse reports the record
+   * rather than a new reading. Null where the plan's bridge is unknown.
+   */
+  serving: PreviewServing | null;
 }>;
 
 
@@ -612,6 +619,8 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             hoistedContentFields: prepared.hoistedContentFields,
             warnings: prepared.previewWarnings,
             logs,
+            // The same files, so the same bridge, on the same server.
+            serving: existing.serving,
           };
         }
         if (existing) {
@@ -731,6 +740,9 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               framework,
               input.previewRuntime,
             );
+            const childServing: PreviewServing | null = prepared.previewBridge
+              ? { bridge: prepared.previewBridge, instance: null }
+              : null;
             this.running.set(input.previewId, {
               root,
               workspaceFingerprint: prepared.workspaceFingerprint,
@@ -742,6 +754,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               instance,
               // Served by the child process, which names nothing.
               servedInstance: null,
+              serving: childServing,
             });
             return {
               ok: true,
@@ -765,6 +778,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               hoistedContentFields: prepared.hoistedContentFields,
               warnings: prepared.previewWarnings,
               logs,
+              serving: childServing,
             };
           } catch (error) {
             return {
@@ -862,6 +876,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             framework,
             input.previewRuntime,
           );
+          // Bound to the instance this server names on every response.
+          const serving: PreviewServing | null = prepared.previewBridge
+            ? { bridge: prepared.previewBridge, instance: servedInstance }
+            : null;
           this.running.set(input.previewId, {
             root,
             workspaceFingerprint: prepared.workspaceFingerprint,
@@ -876,6 +894,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             confirmsContent: false,
             instance: null,
             servedInstance,
+            serving,
           });
 
           return {
@@ -903,6 +922,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             hoistedContentFields: prepared.hoistedContentFields,
             warnings: prepared.previewWarnings,
             logs,
+            serving,
           };
         } catch (error) {
           if (server) await this.closeServer(server).catch(() => {});

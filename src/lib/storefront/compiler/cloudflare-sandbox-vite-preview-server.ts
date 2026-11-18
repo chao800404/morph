@@ -2,6 +2,7 @@ import {
   resolveThemeFramework,
   type ThemeFrameworkAdapter,
 } from "../theme-framework";
+import type { PreviewServing } from "../editor/preview-serving";
 import {
   parsePreviewRequestTraceRecords,
   PREVIEW_REQUEST_TRACE_ENV,
@@ -322,6 +323,13 @@ export type StartPreviewServerResult =
       /** Preview behaviour that will differ from the build, and why. */
       warnings: ReadonlyArray<{ path: string; message: string }>;
       logs: readonly string[];
+      /**
+       * The bridge this start's plan laid out and the instance serving it.
+       * Null (or absent, from an older transport) is unknown. It names what
+       * was written and started, nothing more: a write still waits for the
+       * page's own acknowledgement.
+       */
+      serving?: PreviewServing | null;
     }>
   | Readonly<{
       ok: false;
@@ -1143,6 +1151,16 @@ export class CloudflareSandboxVitePreviewServer {
           );
         }
       }
+      // Which bridge is on disk is known only for a workspace this start
+      // committed, or one whose marker already named this plan. The container's
+      // Vite names no instance on its responses, so the instance stays unknown.
+      const servingBridge =
+        workspaceReused || applied.committed === true
+          ? (prepared.previewBridge ?? null)
+          : null;
+      const serving: PreviewServing | null = servingBridge
+        ? { bridge: servingBridge, instance: null }
+        : null;
       const workspaceMs = Date.now() - workspaceStartedAt;
 
       // Authorize the URL before the server exists, so a process that becomes
@@ -1229,6 +1247,7 @@ export class CloudflareSandboxVitePreviewServer {
           hoistedContentFields: prepared.hoistedContentFields,
           warnings: prepared.previewWarnings,
           logs,
+          serving,
         };
       }
 
@@ -1435,6 +1454,7 @@ export class CloudflareSandboxVitePreviewServer {
         hoistedContentFields: prepared.hoistedContentFields,
         warnings: prepared.previewWarnings,
         logs,
+        serving,
       };
     } catch (error) {
       if (session) {
