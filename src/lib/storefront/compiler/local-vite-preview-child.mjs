@@ -8,11 +8,24 @@
 // never ran its request middleware until the process was new. The container
 // transport already runs one Vite process per start; this is the same shape.
 //
-// argv: <root> <host> <port>. Sends { type: "ready", port } once listening,
-// { type: "error", message } on failure, and exits when the parent goes away.
+// argv: <root> <host> <port> [<served timing>]. Sends
+// { type: "ready", port, servedTiming } once listening, { type: "error",
+// message } on failure, and exits when the parent goes away.
+//
+// <served timing> is the `Server-Timing` value naming the instance the parent
+// minted for this server. It is put on every response this server gives, as
+// the in-process server does, and echoed on the ready so the parent can
+// register it. Only the exact shape a parent mints is used; anything else is
+// neither put on a response nor confirmed (servedTiming: null).
 import { createServer } from "vite";
 
-const [root, host, port] = process.argv.slice(2);
+const [root, host, port, servedTimingArg] = process.argv.slice(2);
+
+const SERVED_TIMING = /^morph-instance;desc="[A-Za-z0-9-]{8,64}\.[1-9]\d*"$/;
+const servedTiming =
+  typeof servedTimingArg === "string" && SERVED_TIMING.test(servedTimingArg)
+    ? servedTimingArg
+    : null;
 
 async function main() {
   const server = await createServer({
@@ -27,6 +40,23 @@ async function main() {
       watch: { usePolling: false },
     },
     clearScreen: false,
+    // Set as each request arrives. The Worker's rendered document keeps it
+    // (local-vite-preview-server.start-instance.test.ts) unless the Theme's
+    // Worker sets its own `Server-Timing`, which replaces it: the page then
+    // cannot name its server and reports that, never another instance.
+    plugins: servedTiming
+      ? [
+          {
+            name: "morph-preview-served-instance",
+            configureServer(dev) {
+              dev.middlewares.use((_request, response, next) => {
+                response.setHeader("Server-Timing", servedTiming);
+                next();
+              });
+            },
+          },
+        ]
+      : [],
   });
   if (server.config.server.watch?.usePolling) {
     throw new Error("LOCAL_PREVIEW_POLLING_WATCHER: the resolved config polls.");
@@ -48,7 +78,7 @@ async function main() {
   };
   process.on("SIGTERM", close);
   process.on("disconnect", close);
-  process.send?.({ type: "ready", port: boundPort });
+  process.send?.({ type: "ready", port: boundPort, servedTiming });
 }
 
 main().catch((error) => {
