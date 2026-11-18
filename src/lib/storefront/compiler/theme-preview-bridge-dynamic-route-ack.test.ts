@@ -45,7 +45,12 @@ function matchFor(pathname: string): Match {
  * `arrive` can also hand the router a page's matches after the frame has
  * moved on, as a late resolution would.
  */
-function productRouter(initial = "/", reportsResolution = true) {
+function productRouter(
+  initial = "/",
+  reportsResolution = true,
+  /** The router can say from its route tree which route a path matches. */
+  routeTree = false,
+) {
   const history = createMemoryHistory({ initialEntries: [initial] });
   let location = { pathname: initial };
   let leaf = matchFor(initial);
@@ -69,6 +74,13 @@ function productRouter(initial = "/", reportsResolution = true) {
           if (event === "onResolved") resolved.push(listener);
           return () => {};
         }
+      : undefined,
+    // As TanStack Router's `getMatchedRoutes`: the route its tree matches
+    // for a path, whatever its matches say now.
+    getMatchedRoutes: routeTree
+      ? (pathname: string) => ({
+          foundRoute: { fullPath: matchFor(pathname).fullPath },
+        })
       : undefined,
     hold: (pathname: string) => held.add(pathname),
     arrive: (pathname: string) => {
@@ -134,6 +146,8 @@ function clientPreview(router: ReturnType<typeof productRouter>) {
     "restoreSelectedSection",
     "selectionEnabled",
     "previewSectionSelector",
+    "requestAnimationFrame",
+    "isContentRefreshPending",
     `let appliedRoutePath = null;
     let selectedItem = null;
     let hoveredItem = null;
@@ -165,6 +179,9 @@ function clientPreview(router: ReturnType<typeof productRouter>) {
     () => {},
     false,
     (sectionId: string) => `[data-section-id="${sectionId}"]`,
+    // The next frame, as a timer; no content refresh is under way here.
+    (callback: () => void) => setTimeout(callback, 0),
+    () => false,
   ) as {
     applyEditorRoute: (message: Posted) => void;
     reportStructure: () => void;
@@ -221,8 +238,8 @@ function token(operationId: string, routePath = PRODUCT) {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** The author opened /products/shirt and its section's ack is standing. */
-async function shirtPresented(reportsResolution = true) {
-  const router = productRouter("/", reportsResolution);
+async function shirtPresented(reportsResolution = true, routeTree = false) {
+  const router = productRouter("/", reportsResolution, routeTree);
   const page = clientPreview(router);
   page.reportStructure();
   page.applyEditorRoute({
@@ -384,5 +401,64 @@ describe("an arrival the bridge cannot identify", () => {
     page.present("op-hat");
     expect(page.standing()).toEqual(["op-hat"]);
     expect(page.withdrawn()).toEqual(["op-shirt"]);
+  });
+});
+
+/**
+ * The window between the committed page and its matches, under a router
+ * whose route tree names the route a path matches (TanStack Router's
+ * `getMatchedRoutes`). Shirt's leaf is still the one rendered, and it names
+ * the same pattern as hat: an acknowledgement for that pattern proves
+ * nothing about hat, the page the frame has committed.
+ */
+describe("a dynamic route's pages while the committed page's matches are on their way", () => {
+  it("withdraws shirt's ack as soon as hat is committed, before hat's matches arrive", async () => {
+    const { router, page } = await shirtPresented(true, true);
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    await settle();
+
+    expect(page.standing(), "no write may go out on shirt's ack").toEqual([]);
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+  });
+
+  it("acknowledges a section presented in the window only once hat's matches arrive, and once", async () => {
+    const { router, page } = await shirtPresented(true, true);
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    await settle();
+    page.present("op-window");
+    await settle();
+    expect(page.standing(), "shirt's leaf is not hat").toEqual([]);
+
+    router.arrive("/products/hat");
+    await settle();
+    await settle();
+    expect(page.standing()).toEqual(["op-window"]);
+    expect(
+      page.posted.filter(
+        (message) =>
+          message.operationId === "op-window" && message.status === "applied",
+      ),
+    ).toHaveLength(1);
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+  });
+
+  it("control: the page left for another route keeps its ack, and is still acknowledged in the window", async () => {
+    const router = productRouter("/", true, true);
+    const page = clientPreview(router);
+    page.reportStructure();
+    page.present("op-home", "/");
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    await settle();
+    page.present("op-home-again", "/");
+    await settle();
+
+    expect(page.standing()).toEqual(["op-home", "op-home-again"]);
+    expect(page.withdrawn()).toEqual([]);
   });
 });
