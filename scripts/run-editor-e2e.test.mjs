@@ -179,6 +179,11 @@ if (tool === "vite") {
       writeFileSync(dir + "/sidecar-swap.request.tmp", JSON.stringify(body));
       renameSync(dir + "/sidecar-swap.request.tmp", dir + "/sidecar-swap.request");
       const deadline = Date.now() + Number(process.env.FAKE_SWAP_WAIT_MS || 45000);
+      // With a planted answer, wait until the runner has taken the request,
+      // so what is checked is how it treats the planted answer.
+      while (process.env.FAKE_SWAP_PRESEED_DONE && existsSync(dir + "/sidecar-swap.request") && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       while (Date.now() < deadline) {
         for (const kind of ["done", "failed"]) {
           const file = dir + "/sidecar-swap." + requestId + "." + kind;
@@ -262,6 +267,8 @@ if (process.env.FAKE_PID_DIR) {
 }
 if (process.env.FAKE_SIDECAR_LOG) {
   appendFileSync(process.env.FAKE_SIDECAR_LOG, JSON.stringify({ pid: process.pid, cwd: process.cwd(), startedAt: Date.now() }) + "\\n");
+  // One line of output, so the runner's sidecar log has something in it.
+  console.log("fake sidecar in " + process.cwd());
 }
 if (process.env.FAKE_SIDECAR_IGNORE_TERM_IN === process.cwd()) {
   process.on("SIGTERM", () => {});
@@ -1026,6 +1033,14 @@ describe("the e2e runner's sidecar swap", () => {
       assert.equal(
         JSON.parse(await readFile(`${result.files.report}.sidecar-2-process.json`, "utf8")).pid,
         second.pid,
+      );
+      assert.match(
+        await readFile(`${result.files.report}.sidecar.log`, "utf8"),
+        new RegExp(`fake sidecar in ${oldRoot()}\\n`),
+      );
+      assert.match(
+        await readFile(`${result.files.report}.sidecar-2.log`, "utf8"),
+        new RegExp(`fake sidecar in ${scratch}\\n`),
       );
       assert.deepEqual(result.leftBehind, []);
     },
