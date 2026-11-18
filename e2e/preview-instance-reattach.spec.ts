@@ -839,6 +839,9 @@ test.describe("a real sidecar swap under an open editor", () => {
       timeout: 60_000,
     });
     let keptText: string | null = null;
+    // Acknowledgements that count for the edit: after it was made. The new
+    // frame also acknowledges the content replayed into it, earlier.
+    let ackAfter = firstNewAt;
     if (editedBeforeSwap) {
       // The edit continues on the new frame, if it was waiting for one.
       await expect
@@ -852,10 +855,15 @@ test.describe("a real sidecar swap under an open editor", () => {
       const field = await heroContentField(page, 0);
       original = await field.inputValue();
       marker = `${MARKER} real swap after ${Date.now()}`;
+      ackAfter = Date.now();
       await field.fill(marker);
       await field.press("Tab");
       await expect(field).toHaveValue(marker);
       note("edited the field on the new frame");
+      await expect
+        .poll(() => writes.filter((write) => write.carriesMarker).length, { timeout: 45_000 })
+        .toBeGreaterThan(0)
+        .catch(() => note("no write of the edit within 45 s"));
     }
     await expect
       .poll(
@@ -864,7 +872,7 @@ test.describe("a real sidecar swap under an open editor", () => {
             (ack) =>
               ack.previewDocument === newDocument &&
               ack.status === "applied" &&
-              ack.at > firstNewAt,
+              ack.at > ackAfter,
           ),
         { timeout: 45_000 },
       )
@@ -901,6 +909,7 @@ test.describe("a real sidecar swap under an open editor", () => {
       writes: writes.map((write) => ({ ...write, at: rel(write.at) })),
       writesPausedBeforeSwap: pausedBefore,
       editedBeforeSwap,
+      acksCountFrom: rel(ackAfter),
       keptText,
       sameFrameElement: sameElement,
       originalElementConnected: originalConnected,
@@ -924,7 +933,7 @@ test.describe("a real sidecar swap under an open editor", () => {
     expect(after.some((ready) => ready.ack), "the new frame can acknowledge").toBe(true);
     expect(markerWrites.length, "the edit was never sent twice").toBeLessThanOrEqual(1);
     expect(
-      appliedOnNew.some((ack) => ack.at > firstNewAt),
+      appliedOnNew.some((ack) => ack.at > ackAfter),
       "the new frame acknowledged an edit",
     ).toBe(true);
     if (editedBeforeSwap) expect(keptText, "the author's text was kept").toBe(marker);
