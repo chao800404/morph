@@ -1348,6 +1348,24 @@ describe("the e2e runner's sidecar swap", () => {
         },
       );
       assert.equal(result.code, 130, output(result));
+      // A sidecar started after the teardown took its list outlives the
+      // runner, and can announce itself only after the runner has exited, so
+      // it is looked for again a little later; any found is killed here.
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      const late = (await readFile(result.files.sidecars, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      for (const sidecar of late.slice(1)) {
+        for (const target of [-sidecar.pid, sidecar.pid]) {
+          try {
+            process.kill(target, "SIGKILL");
+          } catch {
+            /* Already gone. */
+          }
+        }
+      }
+      assert.equal(late.length, 1, JSON.stringify(late));
       assert.equal(result.sidecars.length, 1, JSON.stringify(result.sidecars));
       assert.equal(existsSync(stateDir), false);
       assert.deepEqual(result.leftBehind, []);
