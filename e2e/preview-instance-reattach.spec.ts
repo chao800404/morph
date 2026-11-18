@@ -12,7 +12,6 @@ import {
   enableSelection,
   isServerFunctionCall,
   openContentTab,
-  openEditor,
   previewFrame,
 } from "./helpers";
 import {
@@ -733,8 +732,14 @@ test.describe("a real sidecar swap under an open editor", () => {
     });
     await page.addInitScript(recordSwapMessages);
 
-    // The editor on the old sidecar.
-    await openEditor(page);
+    // The editor on the old sidecar. Not `openEditor`: with a bridge that
+    // cannot acknowledge, the editor pauses edits and its section tree never
+    // becomes sortable, which `openEditor` waits for.
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    await expect(page.locator("iframe").first()).toBeAttached({ timeout: 90_000 });
+    await expect(
+      previewFrame(page).locator("[data-storefront-section-id]").first(),
+    ).toBeAttached({ timeout: 90_000 });
     await expect
       .poll(async () => (await swapMessages(page)).readies.length, { timeout: 120_000 })
       .toBeGreaterThan(0);
@@ -753,14 +758,32 @@ test.describe("a real sidecar swap under an open editor", () => {
       "the old service reports no serving bridge",
     ).toBe(true);
 
-    // The author's edit, committed by leaving the field.
-    const field = await heroContentField(page, 0);
-    const original = await field.inputValue();
-    marker = `${MARKER} real swap ${Date.now()}`;
-    await field.fill(marker);
-    await field.press("Tab");
-    await expect(field).toHaveValue(marker);
-    note(`edited and left the field; writes so far ${JSON.stringify(writes)}`);
+    // The author's edit, committed by leaving the field, if the old frame
+    // lets the author reach one; with sections disabled it cannot be made,
+    // and is not faked.
+    const heroButton = page.getByRole("button", { name: "hero", exact: true });
+    const heroEnabled = await heroButton.isEnabled().catch(() => false);
+    note(
+      `before the swap: hero section button enabled ${heroEnabled}; paused notice ${await page
+        .getByText(/content edits are paused/)
+        .first()
+        .textContent()
+        .catch(() => null)}`,
+    );
+    let editedBeforeSwap = false;
+    let original = "";
+    if (heroEnabled) {
+      const field = await heroContentField(page, 0);
+      original = await field.inputValue();
+      marker = `${MARKER} real swap ${Date.now()}`;
+      await field.fill(marker);
+      await field.press("Tab");
+      await expect(field).toHaveValue(marker);
+      editedBeforeSwap = true;
+      note(`edited and left the field; writes so far ${JSON.stringify(writes)}`);
+    } else {
+      note("no edit before the swap: the old frame leaves every section disabled");
+    }
     const frameBefore = await page.locator("iframe").first().elementHandle();
     expect(frameBefore, "the editor shows a preview frame").not.toBeNull();
     const pausedBefore = await page
@@ -798,22 +821,43 @@ test.describe("a real sidecar swap under an open editor", () => {
       .poll(async () => (await newReadies()).some((ready) => ready.ack), { timeout: 120_000 })
       .toBe(true);
     const newDocument = (await newReadies()).find((ready) => ready.ack)!.previewDocument;
-    // The edit continues on the new frame, if it was waiting for one.
-    await expect
-      .poll(() => writes.filter((write) => write.carriesMarker).length, { timeout: 45_000 })
-      .toBeGreaterThan(0)
-      .catch(() => note("no write of the edit within 45 s of the new frame"));
+    const firstNewAt = (await newReadies())[0].at;
+    // The sections come back once the new frame has reported its structure.
+    await expect(page.locator("[data-editor-tree-sortable]").first()).toBeAttached({
+      timeout: 60_000,
+    });
+    let keptText: string | null = null;
+    if (editedBeforeSwap) {
+      // The edit continues on the new frame, if it was waiting for one.
+      await expect
+        .poll(() => writes.filter((write) => write.carriesMarker).length, { timeout: 45_000 })
+        .toBeGreaterThan(0)
+        .catch(() => note("no write of the edit within 45 s of the new frame"));
+      const field = await heroContentField(page, 0);
+      keptText = await field.inputValue();
+    } else {
+      // An edit on the new frame, for its own acknowledgement.
+      const field = await heroContentField(page, 0);
+      original = await field.inputValue();
+      marker = `${MARKER} real swap after ${Date.now()}`;
+      await field.fill(marker);
+      await field.press("Tab");
+      await expect(field).toHaveValue(marker);
+      note("edited the field on the new frame");
+    }
     await expect
       .poll(
         async () =>
           (await swapMessages(page)).acks.some(
-            (ack) => ack.previewDocument === newDocument && ack.status === "applied",
+            (ack) =>
+              ack.previewDocument === newDocument &&
+              ack.status === "applied" &&
+              ack.at > firstNewAt,
           ),
         { timeout: 45_000 },
       )
       .toBe(true)
       .catch(() => note("no applied acknowledgement from the new frame within 45 s"));
-    await expect(field).toHaveValue(marker);
 
     const sameElement = await page
       .evaluate((element) => element === document.querySelector("iframe"), frameBefore!)
@@ -844,6 +888,8 @@ test.describe("a real sidecar swap under an open editor", () => {
       markerWrites: markerWrites.map((write) => ({ ...write, at: rel(write.at) })),
       writes: writes.map((write) => ({ ...write, at: rel(write.at) })),
       writesPausedBeforeSwap: pausedBefore,
+      editedBeforeSwap,
+      keptText,
       sameFrameElement: sameElement,
       originalElementConnected: originalConnected,
     };
@@ -854,18 +900,21 @@ test.describe("a real sidecar swap under an open editor", () => {
     );
 
     // Put the field back, as the other cases do.
-    await field.fill(original);
-    await field.press("Tab");
-    await expect(field).toHaveValue(original);
+    const restore = await heroContentField(page, 0);
+    await restore.fill(original);
+    await restore.press("Tab");
+    await expect(restore).toHaveValue(original);
 
-    // Judged on the trace: one new frame, which acknowledges; the author's
-    // text kept; the edit written at most once, and acknowledged on the new
-    // frame when it was written after it.
+    // Judged on the trace: one new frame, which acknowledges an edit; the
+    // author's text kept when there was one before the swap; the edit
+    // written at most once.
     expect(summary.newDocumentsAfterSwap, "the frame reloaded exactly once").toHaveLength(1);
     expect(after.some((ready) => ready.ack), "the new frame can acknowledge").toBe(true);
     expect(markerWrites.length, "the edit was never sent twice").toBeLessThanOrEqual(1);
-    if (markerWrites.length === 1 && firstNew && markerWrites[0].at > firstNew.at) {
-      expect(appliedOnNew.length, "the new frame acknowledged the edit").toBeGreaterThan(0);
-    }
+    expect(
+      appliedOnNew.some((ack) => ack.at > firstNewAt),
+      "the new frame acknowledged an edit",
+    ).toBe(true);
+    if (editedBeforeSwap) expect(keptText, "the author's text was kept").toBe(marker);
   });
 });

@@ -29,7 +29,17 @@ test("the preview comes from the expected transport", async ({ page }) => {
   );
   test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
 
-  await openEditor(page);
+  if (process.env.MORPH_E2E_SIDECAR_SWAP === "1") {
+    // The runner's sidecar swap mode (never CI): the first sidecar serves an
+    // older bridge, which cannot acknowledge, so the editor pauses edits and
+    // never makes its section tree sortable, and `openEditor` would wait for
+    // that forever. The transport is read the same way, from the frame's
+    // source, as soon as the frame is there.
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    await expect(page.locator("iframe").first()).toBeAttached({ timeout: 90_000 });
+  } else {
+    await openEditor(page);
+  }
   const source = await page.locator("iframe").first().getAttribute("src");
   expect(source, "the preview frame should have a source").toBeTruthy();
   const host = new URL(source!).hostname;
