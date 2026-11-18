@@ -538,10 +538,11 @@ describe.each(RUNTIMES)("$name", (runtime) => {
         expect(router.history.location.pathname).toBe("/products/hat/");
         const page = preview(runtime, router);
         page.reportStructure();
+        page.present("op-hat", PRODUCT);
         await arrive(router, "/");
         await nextFrame();
         page.present("op-home", "/");
-        page.present("op-product-elsewhere", PRODUCT);
+        expect(page.standing()).toEqual(["op-hat", "op-home"]);
 
         router.history.back();
         await until(() => router.history.location.pathname === "/products/hat/");
@@ -550,7 +551,7 @@ describe.each(RUNTIMES)("$name", (runtime) => {
         await nextFrame();
 
         expect(page.standing()).toEqual(["op-home"]);
-        expect(page.withdrawn()).toEqual(["op-product-elsewhere"]);
+        expect(page.withdrawn()).toEqual(["op-hat"]);
       });
     }
   });
@@ -568,6 +569,26 @@ describe.each(RUNTIMES)("$name", (runtime) => {
 
       expect(page.standing()).toEqual(["op-home"]);
       expect(page.withdrawn()).toEqual(["op-shirt"]);
+    });
+
+    it("a page without params left for another (/about/): the page left is not taken for the arrival; home keeps its ack", async () => {
+      const { router } = themeRouter(runtime);
+      await mount(router);
+      const page = preview(runtime, router);
+      page.reportStructure();
+      page.present("op-home", "/");
+
+      pushHistory(router, "/about/");
+      await until(() => router.history.location.pathname === "/about/");
+      expect(page.standing(), "at commit, home's leaf is not /about/").toEqual(
+        ["op-home"],
+      );
+      await until(() => resolved(router));
+      await nextFrame();
+
+      expect(leafOf(router).routeId).toBe("/about");
+      expect(page.standing()).toEqual(["op-home"]);
+      expect(page.withdrawn()).toEqual([]);
     });
 
     it("an encoded slash: leaving /products/a%2Fb for /products/a/b is no arrival at the page left, and the unmatched page pauses every ack", async () => {
