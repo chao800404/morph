@@ -4322,6 +4322,55 @@ describe("a draft the author left while the frame was elsewhere", () => {
       expect(storedHeading()).toBe("Value 1");
       expect(cardFields()[0]!.value).toBe("Value 2");
     });
+
+    it("a write with no answer before it is not sent again by the refresh or the new frame's acknowledgement; Try again reads it back first and resends it once at the generation it was sent at", async () => {
+      await openOn(headingReport);
+      await waitForPresentationReady();
+      const first = holdNextWrite();
+      await type("Default heading", "Value 1");
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await act(async () => {
+        first.lose();
+        await settleMicrotasks();
+      });
+      await pause();
+      const unconfirmed = () =>
+        document
+          .querySelector("[data-editor-unconfirmed-saves]")
+          ?.getAttribute("data-editor-unconfirmed-saves");
+      expect(saveStatus()).toBe("Save failed");
+      expect(unconfirmed()).toBe("1");
+
+      await oldBridgeThenRefresh();
+      await refreshedFrameAcknowledges(false);
+      // Still the one request, still unconfirmed: neither the refresh nor
+      // the new frame's acknowledgement sent it again.
+      expect(sent()).toHaveLength(1);
+      expect(saveStatus()).toBe("Save failed");
+      expect(unconfirmed()).toBe("1");
+
+      // Not landed: the created document is still at the generation it was
+      // sent at (as in G2c), so the read-back decides by generation.
+      expect(server.route).toEqual({ generation: 1, props: null });
+      server.route = { generation: 1, props: {} };
+      const readsBefore = getThemeEditor.mock.calls.length;
+      pressTryAgain();
+      await waitFor(() =>
+        expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore),
+      );
+      await pause();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: sent()[0]!.expectedDraftGeneration,
+        props: { heading: "Value 1" },
+      });
+      // Read back before it was sent again.
+      const readOrder = getThemeEditor.mock.invocationCallOrder[readsBefore]!;
+      const resendOrder = updateSectionProps.mock.invocationCallOrder[1]!;
+      expect(readOrder).toBeLessThan(resendOrder);
+      expect(storedHeading()).toBe("Value 1");
+    });
   });
 
   it("input that was never left is not sent on the return; leaving it then saves it", async () => {

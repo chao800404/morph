@@ -2034,6 +2034,60 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       ).toBe(false);
     });
 
+    // An inline edit open on the old frame's canvas holds the one refresh,
+    // so the page under it is not replaced while it is unfinished. What it
+    // ends with on the old frame is not written there, and the new frame's
+    // acknowledgement does not send it either: it stays a draft.
+    it("an inline edit open on the old frame holds the refresh until it ends; its text stays a draft, written neither on the old frame nor after the new frame acknowledges", async () => {
+      const { firstIframe, answer } = await oldFrameWithHeldCheck();
+      // The old page says it is on the editor's page, as a page an author
+      // can edit on does.
+      answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+      });
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: true,
+      });
+      await answer();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      // Unfinished: the frame is still the old one, and nothing is written.
+      expect(currentIframe()).toBe(firstIframe);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+
+      fromPreview({
+        type: "morph:storefront-preview-commit-inline-text",
+        sectionId: "hero",
+        fieldKey: "heading",
+        fieldPath: "heading",
+        value: "Typed on the old frame",
+        originalValue: "Welcome",
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      // Taken as the author's input, and held: nothing is written.
+      expect(screen.getByDisplayValue("Typed on the old frame")).toBeTruthy();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      fromPreview({
+        type: "morph:storefront-preview-inline-text-editing",
+        editing: false,
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(screen.getByDisplayValue("Typed on the old frame")).toBeTruthy();
+      await newFrameAcknowledges(firstIframe);
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      expect(screen.getByDisplayValue("Typed on the old frame")).toBeTruthy();
+    });
+
     it("control: with nothing left before the refresh, the new frame's acknowledgement opens writes for new input", async () => {
       const { firstIframe, answer } = await oldFrameWithHeldCheck();
       await answer();
