@@ -4685,6 +4685,74 @@ describe("a draft the author left while the frame was elsewhere", () => {
     savedOnce("Value 2");
     expect(storedHeading()).toBe("Value 2");
   });
+
+  /** The card's heading as the canvas was last told it. */
+  const canvasHeadingNow = () =>
+    (
+      posted
+        .filter(
+          (message) =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            message.sectionId === SLOT,
+        )
+        .at(-1)?.props as Record<string, unknown> | undefined
+    )?.heading;
+  /**
+   * Value 1 is saved and confirmed; Value 2 is left in the field while the
+   * frame is elsewhere, and held. The author switches to another page keeping
+   * the draft, comes back, and the frame presents the page again. Returns the
+   * number of writes sent before the heading is selected again.
+   */
+  async function backOnThePageWithTheDraft() {
+    host.guarded = true;
+    await draftWhileElsewhere(true);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
+    expect(sent()[0]).toMatchObject({ props: { heading: "Value 1" } });
+
+    await pickPage("/");
+    await switchKeepingDraft();
+    await waitFor(() => expect(host.search?.routePath ?? "/").toBe("/"));
+    await frameAnswersFrom("/", 2);
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    await pickPage(ROUTE_PATH);
+    await switchKeepingDraft();
+    await waitFor(() => expect(host.search?.routePath).toBe(ROUTE_PATH));
+    await frameAnswersFrom(ROUTE_PATH, 3);
+    await waitForPresentationReady();
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    return sent().length;
+  }
+
+  it("back on the page and the heading selected again, the Inspector shows the kept draft; leaving the field without typing saves it once, on its original basis", async () => {
+    const before = await backOnThePageWithTheDraft();
+
+    await select(headingReport);
+    await pause();
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(canvasHeadingNow()).toBe("Value 2");
+    expect(storedHeading()).toBe("Value 1");
+    expect(saveStatus()).toBe("Unsaved");
+    expect(sent(), "selecting again sends nothing").toHaveLength(before);
+
+    // Into the field and out again, nothing typed.
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(before + 1));
+    await pause();
+    expect(sent()).toHaveLength(before + 1);
+    expect(sent().at(-1)).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+  });
 });
 
 /**
