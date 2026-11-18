@@ -2495,6 +2495,185 @@ describe("a list both writers changed", () => {
     expect(updateSectionProps).toHaveBeenCalledTimes(2);
   });
 
+  // The Inspector opening a section while the editor keeps an unsaved draft
+  // of it shows that draft, as the canvas does, and only there: never in a
+  // same-id section of another document, another section, a sibling field,
+  // or after the draft was discarded.
+  describe("a kept draft when the Inspector opens a section again", () => {
+    const section = (
+      id: string,
+      name: string,
+      heading: string,
+      subheading: string,
+    ) => ({
+      id,
+      name,
+      type: "hero",
+      enabled: true,
+      componentRef: stylePatchTarget.filePath,
+      props: { heading, subheading },
+    });
+    const pages = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          id: "template-1",
+          type: "index",
+          name: "Home",
+          draftGeneration: 1,
+          document: {
+            version: 1,
+            sections: [
+              section("hero", "Featured", "Home heading", "Home sub"),
+              section("other", "Other", "Other heading", "Other sub"),
+            ],
+          },
+        },
+        {
+          ...context.templates[0],
+          id: "template-2",
+          type: "page",
+          name: "About",
+          draftGeneration: 1,
+          document: {
+            version: 1,
+            sections: [section("hero", "Featured", "About heading", "About sub")],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    const source = `export const contentFields = {
+        heading: { type: "text", label: "Heading" },
+        subheading: { type: "text", label: "Subheading" },
+      } as const;
+      export function Hero({ heading = "Default heading", subheading = "Default sub" }) {
+        return <section><h1>{heading}</h1><p>{subheading}</p></section>;
+      }`;
+    const about = {
+      ...baseSearch,
+      template: "page",
+      templateId: "template-2",
+      section: "hero",
+    } as StorefrontThemeEditorSearch;
+
+    /**
+     * Home's hero heading is typed and left; its write is refused as moved,
+     * so the draft is kept, unsaved, under Home's hero.
+     */
+    async function keepHomeHeadingDraft() {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      const client = readyQueryClient();
+      const view = renderShellWithHero(source, "hero", pages, client);
+      const show = (search: StorefrontThemeEditorSearch) =>
+        view.rerender(
+          <QueryClientProvider client={client}>
+            <VisualEditorShell
+              context={pages}
+              search={search}
+              onSearchChange={vi.fn()}
+            />
+          </QueryClientProvider>,
+        );
+      await openSection("Featured");
+      updateSectionProps.mockResolvedValueOnce({
+        success: false,
+        message: "Template draft was modified concurrently.",
+        error: "TEMPLATE_DRAFT_CONFLICT",
+      } as never);
+      const field = await screen.findByDisplayValue("Home heading");
+      fireEvent.input(field, { target: { value: "Kept draft" } });
+      fireEvent.blur(field);
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+      expect(updateSectionProps.mock.calls[0]![0].data).toMatchObject({
+        templateId: "template-1",
+        sectionId: "hero",
+        props: { heading: "Kept draft" },
+      });
+      expect(screen.getByDisplayValue("Kept draft")).toBeTruthy();
+      return { show };
+    }
+
+    it("the section opened again on its own page shows the kept draft, and nothing is sent", async () => {
+      await keepHomeHeadingDraft();
+      await openSection("Other");
+      expect(screen.getByDisplayValue("Other heading")).toBeTruthy();
+      await openSection("Featured");
+      expect(screen.getByDisplayValue("Kept draft")).toBeTruthy();
+      expect(screen.queryByDisplayValue("Home heading")).toBeNull();
+      expect(saveStatus()).toBe("Out of date");
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    });
+
+    it("another document's section of the same id and fields never shows it", async () => {
+      const { show } = await keepHomeHeadingDraft();
+      show(about);
+      await flushFrames();
+      await openSection("Featured");
+      expect(screen.getByDisplayValue("About heading")).toBeTruthy();
+      expect(screen.getByDisplayValue("About sub")).toBeTruthy();
+      expect(screen.queryByDisplayValue("Kept draft")).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    });
+
+    it("another section of the same document never shows it", async () => {
+      await keepHomeHeadingDraft();
+      await openSection("Other");
+      expect(screen.getByDisplayValue("Other heading")).toBeTruthy();
+      expect(screen.getByDisplayValue("Other sub")).toBeTruthy();
+      expect(screen.queryByDisplayValue("Kept draft")).toBeNull();
+    });
+
+    it("a sibling field of the section shows its own value", async () => {
+      await keepHomeHeadingDraft();
+      await openSection("Other");
+      await openSection("Featured");
+      expect(screen.getByDisplayValue("Home sub")).toBeTruthy();
+      expect(screen.queryByDisplayValue("Default sub")).toBeNull();
+      // At most the heading's own field shows the draft.
+      expect(
+        screen.queryAllByDisplayValue("Kept draft").length,
+      ).toBeLessThanOrEqual(1);
+    });
+
+    it("after the draft is discarded, the section opened again shows the stored copy, with no notice and nothing sent", async () => {
+      const { rows, listContext, remoteWith, client, source } =
+        declaredListFixture();
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      renderShellWithHero(source, "hero", listContext, client);
+      await openSection("Featured");
+      await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 0);
+      await discardItems();
+      await waitFor(() => expect(removeButtons()).toHaveLength(3));
+      const sentAfterDiscard = updateSectionProps.mock.calls.length;
+      // The editor's document now holds the latest copy the discard loaded,
+      // as the route's data does once it is refetched.
+      const stored = listContext.templates[0]!.document.sections.find(
+        (candidate) => candidate.id === "hero",
+      )!;
+      Object.assign(stored.props, { items: rows("C", "A", "B") });
+
+      await openSection("Other");
+      await openSection("Featured");
+      expect(removeButtons()).toHaveLength(3);
+      expect(
+        ["C", "A", "B"].map((title) => screen.queryAllByDisplayValue(title).length),
+      ).toEqual([1, 1, 1]);
+      expect(document.querySelector("[data-list-not-saved]")).toBeNull();
+      expect(
+        screen.queryByRole("button", {
+          name: /discard unsaved changes to items/i,
+        }),
+      ).toBeNull();
+      expect(saveStatus()).not.toBe("Out of date");
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(updateSectionProps).toHaveBeenCalledTimes(sentAfterDiscard);
+    });
+  });
+
   // Task 41 R3-1: "Discard mine…" acts only on this page's documents. A list
   // held on another page is discarded from that page, by its own control.
   it("does not offer another page's held list in this page's Discard mine", async () => {
