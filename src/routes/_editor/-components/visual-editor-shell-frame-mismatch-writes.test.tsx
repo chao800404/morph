@@ -1574,3 +1574,172 @@ describe("undo and redo after a page switch", () => {
     });
   });
 });
+
+/**
+ * A dynamic route's pages while the frame moves between them: the author
+ * has /products/shirt on screen, its section presented and acknowledged; a
+ * link inside the frame then commits /products/hat, and the router's matches
+ * for hat are still on their way.
+ *
+ * In that window the bridge still names the route pattern the matches name
+ * (/products/$slug, shirt's leaf, the same pattern as hat's), with the
+ * navigation's new epoch, and it still acknowledges what it is sent for that
+ * pattern: shirt's section is the one in its document. The withdrawal of the
+ * pattern's acknowledgements waits until hat's matches arrive. The frame is
+ * played here sending exactly that.
+ */
+describe("the window between a dynamic route's committed page and its matches", () => {
+  const PRODUCT = "/products/$slug";
+  // Every page under /products/ shares the product document.
+  const { routePath: _pageRoute, ...pageShape } = pageDocument(PRODUCT);
+  const productDocument = {
+    ...pageShape,
+    id: "template-product",
+    type: "product",
+    name: "Product",
+  };
+  const productContext = {
+    ...context,
+    templates: [...context.templates, productDocument],
+  } as unknown as StorefrontThemeEditorDTO;
+  const productFiles = [
+    ...FILES,
+    file(
+      "src/routes/products/$slug.tsx",
+      pageSource(PRODUCT).replaceAll('from "../', 'from "../../'),
+    ),
+  ];
+  const productSearch = {
+    template: "product",
+    templateId: "template-product",
+    routePath: PRODUCT,
+    viewport: "desktop",
+  } as StorefrontThemeEditorSearch;
+  const ACK = "morph:storefront-preview-section-presentation-ack";
+  const sectionPosts = () =>
+    log.filter(
+      (message) =>
+        message.type === "morph:storefront-preview-update-section-props" &&
+        (message as { presentationToken?: unknown }).presentationToken,
+    ) as Array<
+      Posted & { presentationToken: { operationId: string } & Posted }
+    >;
+  const writes = () =>
+    updateSectionProps.mock.calls.map((call) => {
+      const data = (
+        call[0] as {
+          data: {
+            templateId: string;
+            props: Record<string, unknown>;
+            expectedDraftGeneration: number;
+            expectedSourceGeneration?: number;
+          };
+        }
+      ).data;
+      return {
+        templateId: data.templateId,
+        props: data.props,
+        expectedDraftGeneration: data.expectedDraftGeneration,
+        expectedSourceGeneration: data.expectedSourceGeneration,
+      };
+    });
+
+  /** Shirt on screen, the hero selected, its presentation acknowledged. */
+  async function shirtOnScreen() {
+    updateSectionProps.mockImplementation(async () => ({
+      success: true,
+      message: "ok",
+      data: {
+        draftGeneration: 2,
+        droppedProps: [],
+        document: productDocument.document,
+      },
+    }));
+    vi.mocked(listStorefrontThemeFiles).mockImplementation(
+      async () =>
+        ({ success: true, message: "ok", data: tree(productFiles) }) as never,
+    );
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: productContext,
+    });
+    const harness = await settled(productSearch, productContext, productFiles);
+    enableSelection();
+    report(PRODUCT, [
+      {
+        id: "hero:node:heading",
+        parentId: null,
+        sectionId: "hero",
+        label: "Heading",
+        kind: "heading",
+        tagName: "h2",
+        target: {
+          sectionId: "hero",
+          nodeId: "hero:node:heading",
+          elementKey: "heading",
+          fieldKey: "heading",
+          fieldPath: "heading",
+          isSection: false,
+        },
+      },
+    ]);
+    frameSelects("hero");
+    await tick(10);
+    expect(selectedInInspector()).toBe("hero");
+    expect(shownRoute(harness)).toBe(PRODUCT);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    return harness;
+  }
+  /** Hat committed, its matches still on their way: the bridge's report then. */
+  const hatCommitted = async () => {
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: PRODUCT,
+      frameNavigationEpoch: 1,
+    });
+    await tick(0);
+  };
+  /** Hat's matches arrive: every acknowledgement given for the pattern is withdrawn. */
+  const hatArrives = async () => {
+    for (const post of sectionPosts()) {
+      fromPreview({
+        type: ACK,
+        operationId: post.presentationToken.operationId,
+        token: post.presentationToken,
+        status: "not-applied",
+        reason: "superseded",
+      });
+    }
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: PRODUCT,
+      frameNavigationEpoch: 1,
+    });
+    await tick(20);
+  };
+
+  it("characterization: an Inspector edit in the window is written at once, on an acknowledgement given before hat's matches arrived", async () => {
+    await shirtOnScreen();
+    const acknowledgedBefore = sectionPosts().length;
+    expect(acknowledgedBefore).toBeGreaterThan(0);
+
+    await hatCommitted();
+    await editInInspector("Edited during the move");
+
+    expect(writes()).toEqual([
+      {
+        templateId: "template-product",
+        props: { heading: "Edited during the move" },
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      },
+    ]);
+
+    await hatArrives();
+    await tick(400);
+    expect(writes()).toHaveLength(1);
+  });
+});
