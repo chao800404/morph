@@ -393,6 +393,33 @@ function portInUse(port) {
 }
 
 /**
+ * Whether something listens on `port` at any address the sidecar origin's
+ * host names, for the swap's handover: `localhost` is both 127.0.0.1 and
+ * ::1, and a listener left on either still answers the origin. An address
+ * this machine does not have cannot be listened on, so it is not held.
+ */
+async function portHeldOn(hostname, port) {
+  const addresses =
+    hostname === "localhost" ? ["127.0.0.1", "::1"] : [hostname.replace(/^\[|\]$/g, "")];
+  for (const address of addresses) {
+    const held = await new Promise((resolve) => {
+      const probe = createServer();
+      probe.once("error", (error) =>
+        resolve(
+          !["EADDRNOTAVAIL", "EAFNOSUPPORT"].includes(
+            /** @type {NodeJS.ErrnoException} */ (error).code ?? "",
+          ),
+        ),
+      );
+      probe.once("listening", () => probe.close(() => resolve(false)));
+      probe.listen(port, address);
+    });
+    if (held) return true;
+  }
+  return false;
+}
+
+/**
  * `env` is a plain set of additions, matching `start` below. It was once an
  * options bag whose `env` key was merged, and calling it with the additions
  * directly put them where `spawnSync` ignored them: the run stayed green while
@@ -1253,6 +1280,7 @@ async function checkSidecarSwap(extra) {
   return {
     from,
     origin: url.origin,
+    hostname: url.hostname,
     port: Number(url.port),
     timeoutMs: Number(SIDECAR_SWAP_TIMEOUT_SETTING),
   };
@@ -1325,8 +1353,8 @@ function openSidecarSwap({ swap, report, secrets, oldSidecar }) {
     // Only now that it is gone: until here, a teardown still stops it.
     const index = started.indexOf(oldEntry);
     if (index >= 0) started.splice(index, 1);
-    if (await portInUse(swap.port)) {
-      return refuse(requestId, "PORT_NOT_RELEASED", `something still listens on ${swap.port}`);
+    if (await portHeldOn(swap.hostname, swap.port)) {
+      return refuse(requestId, "PORT_NOT_RELEASED", `something still listens on ${swap.hostname}:${swap.port}`);
     }
     const portFreeAt = Date.now();
     // Checked and started in one synchronous step, so a teardown that has
@@ -1341,15 +1369,22 @@ function openSidecarSwap({ swap, report, secrets, oldSidecar }) {
       if (child.exitCode !== null || child.signalCode !== null) {
         return refuse(requestId, "NEW_SIDECAR_EXITED", `code ${child.exitCode}, signal ${child.signalCode}`);
       }
-      const answered = await fetch(swap.origin, {
-        redirect: "manual",
-        signal: AbortSignal.timeout(Math.max(1, Math.min(1_000, remaining()))),
-      }).then(
-        (response) => response.status > 0,
-        () => false,
-      );
+      // Ready only once the new sidecar has said itself that it listens (the
+      // line its record notes) and the origin answers while it is still
+      // running: an answer alone could come from something else.
+      const answered =
+        recorder.record.listeningAt !== null &&
+        (await fetch(swap.origin, {
+          redirect: "manual",
+          signal: AbortSignal.timeout(Math.max(1, Math.min(1_000, remaining()))),
+        }).then(
+          (response) => response.status > 0,
+          () => false,
+        )) &&
+        child.exitCode === null &&
+        child.signalCode === null;
       if (answered) break;
-      if (remaining() === 0) return refuse(requestId, "TIMEOUT", "the new sidecar did not answer");
+      if (remaining() === 0) return refuse(requestId, "TIMEOUT", "the new sidecar did not say it listens and answer");
       if (cancelled()) return refuse(requestId, "CANCELLED", "the run is ending");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -1660,9 +1695,9 @@ async function main() {
     if (swap) {
       // Otherwise the handover check below could be answered by whatever
       // already held the port.
-      if (await portInUse(swap.port)) {
+      if (await portHeldOn(swap.hostname, swap.port)) {
         throw new Error(
-          `SIDECAR_SWAP_PORT_IN_USE: something already listens on ${swap.port}, the sidecar origin's port. Stop it first.`,
+          `SIDECAR_SWAP_PORT_IN_USE: something already listens on ${swap.hostname}:${swap.port}, the sidecar origin's port. Stop it first.`,
         );
       }
       // Its own root under its own checkout. See `oldPreviewWorkspaces`.
