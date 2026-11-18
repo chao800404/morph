@@ -683,7 +683,7 @@ test.describe("a real sidecar swap under an open editor", () => {
       navigations.push({ at: Date.now(), url: frame.url() });
       note(`frame navigated ${frame.url()}`);
     });
-    const startAnswers: Array<{ at: number; servingBridge: boolean }> = [];
+    const startAnswers: Array<{ at: number; ackCapability: boolean }> = [];
     let marker = "";
     const writes: Array<{
       at: number;
@@ -715,10 +715,16 @@ test.describe("a real sidecar swap under an open editor", () => {
       if (name === "startThemePreviewServer" || name === "touchThemePreviewServer") {
         void response.text().then(
           (body) => {
-            const servingBridge = body.includes("servingBridge");
-            if (name === "startThemePreviewServer") startAnswers.push({ at: Date.now(), servingBridge });
+            // The key is always in the answer; what it holds is what counts,
+            // and the editor's own decision line says how it read it.
+            const at = body.indexOf("servingBridge");
+            const servingBridge = at < 0 ? "absent" : body.slice(at, at + 160);
+            const ackCapability = body.includes("section-presentation-ack-v1");
+            if (name === "startThemePreviewServer") {
+              startAnswers.push({ at: Date.now(), ackCapability });
+            }
             note(
-              `${name} answered ${response.status()}: servingBridge ${servingBridge}, ack capability ${body.includes("section-presentation-ack-v1")}, servedInstance ${body.includes("servedInstance")}`,
+              `${name} answered ${response.status()}: ack capability ${ackCapability}, servedInstance ${body.includes("servedInstance")}, servingBridge ${servingBridge}`,
             );
           },
           () => note(`${name} answered ${response.status()}, body unreadable`),
@@ -754,8 +760,14 @@ test.describe("a real sidecar swap under an open editor", () => {
     expect(before.readies.every((ready) => !ready.ack), "the old bridge cannot acknowledge").toBe(true);
     expect(startAnswers.length).toBeGreaterThan(0);
     expect(
-      startAnswers.every((answer) => !answer.servingBridge),
-      "the old service reports no serving bridge",
+      startAnswers.every((answer) => !answer.ackCapability),
+      "nothing the old service answered names the acknowledging capability",
+    ).toBe(true);
+    expect(
+      lines.some((line) =>
+        line.text.startsWith("[preview-bridge] frame cannot acknowledge; serving unknown"),
+      ),
+      "the editor read what is serving as unknown",
     ).toBe(true);
 
     // The author's edit, committed by leaving the field, if the old frame
