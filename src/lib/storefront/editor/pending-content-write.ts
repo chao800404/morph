@@ -91,6 +91,20 @@ export function draftIsAsCommitted(
 }
 
 /**
+ * Whether input staged after the author left a field ends that commit: it
+ * does unless the draft still holds exactly the edits that were left (a
+ * field re-emitting its value stages nothing). Input to a sibling the commit
+ * never held ends it too, so a later drop of that sibling's edit does not
+ * bring the commit back.
+ */
+export function inputEndsCommit(
+  staged: PendingContentEntry,
+  committed: Readonly<Record<string, PendingFieldEdit>>,
+): boolean {
+  return !draftIsAsCommitted(staged, committed);
+}
+
+/**
  * A write as it was sent, frozen: its props, removed keys and generations
  * are what a read-back is compared with and what a retry sends again, so
  * nothing typed after it may change them.

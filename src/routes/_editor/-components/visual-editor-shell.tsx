@@ -38,6 +38,7 @@ import {
   changedListPaths,
   hasUnconfirmedContentForList as hasUnconfirmedListWrite,
   draftIsAsCommitted,
+  inputEndsCommit,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { resolveSectionContentDeclaration } from "@/lib/storefront/editor/section-content-declaration";
@@ -15575,15 +15576,11 @@ export function VisualEditorShell({
                 )?.sourceGeneration ?? null),
       });
       if (!staged) return;
-      // New input to a field the author had left: that commit is over, and
-      // only leaving the field again commits what is there now.
+      // New input after the author left a field, to it or to a sibling the
+      // commit never held: that commit is over, and only leaving a field
+      // again commits what is there now.
       const committedIntent = contentCommitIntentRef.current.get(key);
-      if (
-        committedIntent &&
-        Object.keys(committedIntent.fields).some(
-          (path) => staged.fields?.[path] !== committedIntent.fields[path],
-        )
-      ) {
+      if (committedIntent && inputEndsCommit(staged, committedIntent.fields)) {
         contentCommitIntentRef.current.delete(key);
       }
       pendingPropsMapRef.current.set(
