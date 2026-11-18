@@ -274,6 +274,81 @@ function markOldFingerprintInBody(body: string) {
   return stripCapabilityFromBody(body).replace(/"[0-9a-f]{64}"/, `"${"0".repeat(64)}"`);
 }
 
+/**
+ * The first start's answer, made to look like an older service's: one that
+ * reports no serving bridge at all. Its `servingBridge` is left out, and with
+ * it `bridgeCapabilities`, which is only ever read from that report; its first
+ * digest is another one. Nothing then says which bridge laid out the frame
+ * that answer framed, so the frame's previous version is unknown to the
+ * editor. Simulated: no real bridge or service changes.
+ *
+ * The answer is the server function's serialized tree; the two keys are taken
+ * out of the object that holds them, with their values. If something else in
+ * the answer refers to a value taken out, the answer is refused instead.
+ */
+function asOlderServiceAnswer(body: string): string {
+  type Props = { k: unknown[]; v: unknown[] };
+  const tree = JSON.parse(body) as unknown;
+  const removedIds = new Set<number>();
+  let omitted = 0;
+  let digest = false;
+  const idsIn = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (!Array.isArray(node) && typeof record.i === "number") {
+      removedIds.add(record.i);
+    }
+    for (const value of Object.values(record)) idsIn(value);
+  };
+  const omit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    const props = record.p as Partial<Props> | undefined;
+    if (props && Array.isArray(props.k) && Array.isArray(props.v)) {
+      for (let index = props.k.length - 1; index >= 0; index -= 1) {
+        const key = props.k[index];
+        if (key === "servingBridge" || key === "bridgeCapabilities") {
+          idsIn(props.v[index]);
+          props.k.splice(index, 1);
+          props.v.splice(index, 1);
+          if (key === "servingBridge") omitted += 1;
+        } else if (key === "workspaceFingerprint") {
+          const value = props.v[index] as { t?: unknown; s?: unknown };
+          if (value?.t === 1 && typeof value.s === "string") {
+            value.s = "0".repeat(64);
+            digest = true;
+          }
+        }
+      }
+    }
+    for (const value of Object.values(record)) omit(value);
+  };
+  const refersToRemoved = (node: unknown): boolean => {
+    if (!node || typeof node !== "object") return false;
+    const record = node as Record<string, unknown>;
+    // An indexed value (t 4) names an earlier node by its id.
+    if (
+      record.t === 4 &&
+      typeof record.i === "number" &&
+      removedIds.has(record.i)
+    ) {
+      return true;
+    }
+    return Object.values(record).some(refersToRemoved);
+  };
+  omit(tree);
+  if (omitted !== 1 || !digest || refersToRemoved(tree)) {
+    throw new Error(
+      `could not make an older service's answer (servingBridge omitted ${omitted}, digest ${digest})`,
+    );
+  }
+  const out = JSON.stringify(tree);
+  if (out.includes("servingBridge") || out.includes("bridgeCapabilities")) {
+    throw new Error("the older service's answer still names a serving bridge");
+  }
+  return out;
+}
+
 test.describe("presentation ack and unsupported bridge refresh", () => {
   test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
   restoreHeroAfterFailure();
@@ -323,6 +398,8 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     const rejectedAcks: string[] = [];
     let strippedInitialBridge = 0;
     let startCalls = 0;
+    /** What the first start's answer was made into; null until it is. */
+    let olderServiceAnswer: string | null = null;
     // The editor's own account of each decision about the frame's bridge.
     const bridgeDecisions: string[] = [];
 
@@ -355,9 +432,17 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       ) {
         startCalls += 1;
         if (startCalls === 1) {
+          // The service that framed the first page is an older one: it
+          // says nothing about the bridge it serves.
           const response = await route.fetch();
-          const body = markOldFingerprintInBody(await response.text());
-          return route.fulfill({ response, body });
+          try {
+            const body = asOlderServiceAnswer(await response.text());
+            olderServiceAnswer = "no serving report";
+            return route.fulfill({ response, body });
+          } catch (error) {
+            olderServiceAnswer = String(error);
+            return route.abort();
+          }
         }
       }
       return route.fallback();
@@ -365,6 +450,11 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
 
     try {
       await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+      await expect.poll(() => olderServiceAnswer, { timeout: 45_000 }).not.toBeNull();
+      expect(
+        olderServiceAnswer,
+        "the first start answered as an older service, with no serving report",
+      ).toBe("no serving report");
       await expect
         .poll(
           async () => {
