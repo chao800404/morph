@@ -275,6 +275,12 @@ if (process.env.FAKE_SIDECAR_IGNORE_TERM_IN === process.cwd()) {
 }
 if (process.env.FAKE_SIDECAR_LISTEN === "1") {
   const port = Number(new URL(process.env.MORPH_LOCAL_THEME_PREVIEW_ORIGIN).port);
+  if (process.env.FAKE_SIDECAR_ALSO_HOLD_V6_IN === process.cwd()) {
+    // The same port on ::1, held outside this sidecar's group.
+    const v6 = spawn(process.execPath, ["-e", "require('node:http').createServer((q, s) => s.end()).listen(" + port + ", '::1')"], { detached: true, stdio: "ignore" });
+    v6.unref();
+    if (process.env.FAKE_PID_DIR) writeFileSync(process.env.FAKE_PID_DIR + "/" + v6.pid, "port holder");
+  }
   if (process.env.FAKE_SIDECAR_HOLD_PORT_IN === process.cwd()) {
     const holder = spawn(process.execPath, ["-e", "require('node:http').createServer((q, s) => s.end()).listen(" + port + ", '127.0.0.1')"], { detached: true, stdio: "ignore" });
     holder.unref();
@@ -289,7 +295,13 @@ if (process.env.FAKE_SIDECAR_LISTEN === "1") {
         console.error("fake sidecar: " + error.code);
         process.exit(9);
       })
-      .listen(port, "127.0.0.1");
+      .listen(port, "127.0.0.1", () => {
+        // The line the real sidecar prints once it listens; held back by
+        // one started in FAKE_SIDECAR_SILENT_IN, which answers without it.
+        if (process.env.FAKE_SIDECAR_SILENT_IN !== process.cwd()) {
+          console.log("morph local preview sidecar listening on " + process.env.MORPH_LOCAL_THEME_PREVIEW_ORIGIN);
+        }
+      });
   }
 }
 const root = process.env.MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT ?? "";
@@ -953,14 +965,14 @@ describe("the e2e runner's sidecar swap", () => {
    * One swap-mode run. The sidecar origin is a free port of its own, so the
    * fake sidecars really listen and the handover is a real port handover.
    */
-  async function swapRun(env = {}, onStarted, extraArgs) {
+  async function swapRun(env = {}, onStarted, extraArgs, originHost = "127.0.0.1") {
     caseNumber += 1;
     const dir = path.join(scratch, `swap-case-${caseNumber}`);
     await mkdir(dir, { recursive: true });
     const port = await freePort();
     await writeFile(
       sidecarEnv(),
-      `MORPH_LOCAL_THEME_PREVIEW_ORIGIN=http://127.0.0.1:${port}\nMORPH_LOCAL_THEME_PREVIEW_TOKEN=runner-test-token-unused\n`,
+      `MORPH_LOCAL_THEME_PREVIEW_ORIGIN=http://${originHost}:${port}\nMORPH_LOCAL_THEME_PREVIEW_TOKEN=runner-test-token-unused\n`,
     );
     const files = {
       sidecars: path.join(dir, "sidecars.jsonl"),
@@ -1360,6 +1372,55 @@ describe("the e2e runner's sidecar swap", () => {
       // only thing left.
       assert.equal(result.leftBehind.length, 1, JSON.stringify(result.leftBehind));
       assert.match(result.leftBehind[0], /^port holder \d+$/);
+    },
+  );
+
+  it(
+    "checks the handover on every address the origin's host names: a localhost origin still held on ::1 is not released",
+    { timeout: 90_000 },
+    async (t) => {
+      const ipv6 = await new Promise((resolve) => {
+        const probe = createServer();
+        probe.once("error", () => resolve(false));
+        probe.listen(0, "::1", () => probe.close(() => resolve(true)));
+      });
+      if (!ipv6) {
+        t.skip("this machine has no ::1 to hold a port on");
+        return;
+      }
+      // The old sidecar serves on 127.0.0.1 and leaves a holder on ::1.
+      const result = await swapRun(
+        { FAKE_SIDECAR_ALSO_HOLD_V6_IN: oldRoot() },
+        undefined,
+        undefined,
+        "localhost",
+      );
+      assert.equal(result.code, 1, output(result));
+      const [failed] = result.swap.results;
+      assert.equal(failed.kind, "failed", JSON.stringify(failed));
+      assert.equal(failed.reason, "PORT_NOT_RELEASED");
+      assert.equal(result.sidecars.length, 1);
+      assert.equal(result.leftBehind.length, 1, JSON.stringify(result.leftBehind));
+      assert.match(result.leftBehind[0], /^port holder \d+$/);
+    },
+  );
+
+  it(
+    "takes the new sidecar as ready only once it has said itself that it listens",
+    { timeout: 90_000 },
+    async () => {
+      // The new sidecar answers on the origin but never says it listens, as
+      // something else answering in its place would.
+      const result = await swapRun({
+        FAKE_SIDECAR_SILENT_IN: scratch,
+        MORPH_E2E_SIDECAR_SWAP_TIMEOUT_MS: "3000",
+      });
+      assert.equal(result.code, 1, output(result));
+      const [failed] = result.swap.results;
+      assert.equal(failed.kind, "failed", JSON.stringify(failed));
+      assert.equal(failed.reason, "TIMEOUT");
+      assert.equal(result.sidecars.length, 2);
+      assert.deepEqual(result.leftBehind, []);
     },
   );
 
