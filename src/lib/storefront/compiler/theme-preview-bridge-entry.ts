@@ -171,10 +171,16 @@ function flushPendingPresentationTokens() {
   // take back an ack given below for the page now on screen.
   settleArrivalWithdrawal(false);
   const currentRoute = currentRoutePattern() ?? location.pathname;
+  // The route of a page the router has committed and not rendered yet: what
+  // is presented for it waits until it is on screen.
+  const arriving = pendingArrivalWithdrawal?.pattern;
   const entries = Array.from(pendingPresentationTokens.entries());
   for (const [sectionId, entry] of entries) {
     const latest = pendingPresentationTokens.get(sectionId);
     if (!latest || latest.token.operationId !== entry.token.operationId) {
+      continue;
+    }
+    if (arriving !== undefined && entry.token.routePath === arriving) {
       continue;
     }
     pendingPresentationTokens.delete(sectionId);
@@ -208,6 +214,19 @@ function withdrawAppliedPresentationAcks(currentRoute) {
     postPresentationAck(token, "not-applied", "superseded");
     postedAppliedPresentationAcks.delete(sectionId);
   }
+}
+
+/**
+ * What waited for a committed page to be on screen is flushed on the next
+ * frame once it is, unless a content refresh is under way: that refresh
+ * flushes it when it is done.
+ */
+function flushArrivedPresentationTokens() {
+  if (pendingPresentationTokens.size === 0) return;
+  requestAnimationFrame(() => {
+    if (isContentRefreshPending()) return;
+    flushPendingPresentationTokens();
+  });
 }
 
 function flushEarlyPresentationTokens() {
@@ -606,6 +625,27 @@ function currentRoutePattern() {
     : undefined;
 }
 
+/**
+ * The route pattern the router's own route tree matches for a path
+ * (TanStack Router's getMatchedRoutes), for a location it has committed
+ * before its matches follow. Undefined when the router cannot say.
+ */
+function routeTreePattern(router, pathname) {
+  if (documentNavigation || typeof router?.getMatchedRoutes !== "function") {
+    return undefined;
+  }
+  let found;
+  try {
+    found = router.getMatchedRoutes(pathname)?.foundRoute;
+  } catch {
+    return undefined;
+  }
+  const pattern = found?.fullPath ?? found?.id;
+  return typeof pattern === "string" && pattern.startsWith("/")
+    ? pattern
+    : undefined;
+}
+
 let frameNavigationEpoch = 0;
 let lastCommittedRouteLocation =
   typeof location !== "undefined" ? location.pathname + location.search : "";
@@ -684,10 +724,16 @@ function syncFrameNavigationEpoch() {
     } else if (documentNavigation || !router) {
       withdrawAppliedPresentationAcks(committed.pathname);
     } else {
+      // The route tree can name the page committed before its matches
+      // arrive: what was acknowledged for that route proves nothing about it
+      // from now, and what is presented for it waits until it is on screen.
+      const arrival = routeTreePattern(router, committed.pathname);
+      if (arrival !== undefined) withdrawAppliedPresentationAcks(arrival);
       pendingArrivalWithdrawal = {
         epoch: frameNavigationEpoch,
         key: committed.key,
         pathname: committed.pathname,
+        pattern: arrival,
       };
       // A router that cannot say when it resolved leaves the arrival unknown.
       if (typeof router.subscribe !== "function") {
@@ -714,6 +760,7 @@ function settleArrivalWithdrawal(routerResolved) {
     committedFrameLocation(router).key !== pending.key
   ) {
     pendingArrivalWithdrawal = null;
+    if (pending.pattern !== undefined) flushArrivedPresentationTokens();
     return;
   }
   const matches = router?.state?.matches;
@@ -721,11 +768,13 @@ function settleArrivalWithdrawal(routerResolved) {
   if (leaf?.pathname === pending.pathname) {
     pendingArrivalWithdrawal = null;
     withdrawAppliedPresentationAcks(currentRoutePattern() ?? pending.pathname);
+    if (pending.pattern !== undefined) flushArrivedPresentationTokens();
     return;
   }
   if (routerResolved) {
     pendingArrivalWithdrawal = null;
     withdrawAppliedPresentationAcks(null);
+    if (pending.pattern !== undefined) flushArrivedPresentationTokens();
   }
 }
 
