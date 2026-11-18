@@ -266,7 +266,7 @@ if (process.env.FAKE_PID_DIR) {
   writeFileSync(process.env.FAKE_PID_DIR + "/" + process.pid, "sidecar");
 }
 if (process.env.FAKE_SIDECAR_LOG) {
-  appendFileSync(process.env.FAKE_SIDECAR_LOG, JSON.stringify({ pid: process.pid, cwd: process.cwd(), startedAt: Date.now() }) + "\\n");
+  appendFileSync(process.env.FAKE_SIDECAR_LOG, JSON.stringify({ pid: process.pid, cwd: process.cwd(), root: process.env.MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT ?? null, startedAt: Date.now() }) + "\\n");
   // One line of output, so the runner's sidecar log has something in it.
   console.log("fake sidecar in " + process.cwd());
 }
@@ -938,6 +938,9 @@ describe("the e2e runner's sidecar swap", () => {
     await writeFile(path.join(scratch, "package.json"), MANIFEST);
     await writeFile(path.join(scratch, "pnpm-lock.yaml"), LOCKFILE);
     await oldCheckout("old-root");
+    // Something in the old checkout's previews that is not any run's.
+    await mkdir(path.join(oldRoot(), ".morph-previews", "someone-elses"), { recursive: true });
+    await writeFile(path.join(oldRoot(), ".morph-previews", "someone-elses", "kept.json"), "{}");
   });
   after(async () => {
     await rm(path.join(scratch, "package.json"), { force: true });
@@ -992,6 +995,31 @@ describe("the e2e runner's sidecar swap", () => {
 
   const output = (result) => result.stderr + result.stdout.slice(-3000);
 
+  /** This run's workspace roots (`e2e-run-*`) left under a checkout. */
+  async function runRootsIn(checkout) {
+    const names = await readdir(path.join(checkout, ".morph-previews")).catch(() => []);
+    return names.filter((name) => name.startsWith("e2e-run-"));
+  }
+
+  /** The old sidecar's root is under the old checkout, the new one's under this one. */
+  function assertOwnRoots(sidecars) {
+    assert.equal(sidecars.length, 2, JSON.stringify(sidecars));
+    const [first, second] = sidecars;
+    assert.equal(path.dirname(first.root ?? ""), path.join(oldRoot(), ".morph-previews"), JSON.stringify(first));
+    assert.equal(path.dirname(second.root ?? ""), path.join(scratch, ".morph-previews"), JSON.stringify(second));
+    for (const sidecar of sidecars) assert.match(path.basename(sidecar.root), /^e2e-run-/);
+  }
+
+  /** Every root the run's sidecars were given is gone, and only those. */
+  async function assertRootsRemoved(sidecars) {
+    for (const sidecar of sidecars) {
+      assert.equal(existsSync(sidecar.root), false, `${sidecar.root} is still there`);
+    }
+    assert.deepEqual(await runRootsIn(oldRoot()), []);
+    assert.deepEqual(await runRootsIn(scratch), []);
+    assert.ok(existsSync(path.join(oldRoot(), ".morph-previews", "someone-elses", "kept.json")));
+  }
+
   it(
     "swaps once: the old sidecar has stopped and released the port before the new one starts, and the result is bound to this run",
     { timeout: 90_000 },
@@ -1042,6 +1070,11 @@ describe("the e2e runner's sidecar swap", () => {
         await readFile(`${result.files.report}.sidecar-2.log`, "utf8"),
         new RegExp(`fake sidecar in ${scratch}\\n`),
       );
+      // Each sidecar lays out workspaces in a root of this run's own under
+      // its own checkout, so each resolves its own toolchain; both are gone
+      // after the teardown, and nothing else in either directory is touched.
+      assertOwnRoots(result.sidecars);
+      await assertRootsRemoved(result.sidecars);
       assert.deepEqual(result.leftBehind, []);
     },
   );
@@ -1058,6 +1091,11 @@ describe("the e2e runner's sidecar swap", () => {
       assert.equal(result.code, 0, output(result));
       assert.equal(result.sidecars.length, 1);
       assert.equal(result.sidecars[0].cwd, scratch);
+      // The one root under this checkout, as before; none in the old one.
+      assert.equal(path.dirname(result.sidecars[0].root), path.join(scratch, ".morph-previews"));
+      assert.match(path.basename(result.sidecars[0].root), /^e2e-run-/);
+      assert.equal(existsSync(result.sidecars[0].root), false);
+      assert.deepEqual(await runRootsIn(oldRoot()), []);
       assert.deepEqual(result.swap.env, {
         swap: null,
         runId: null,
@@ -1272,6 +1310,13 @@ describe("the e2e runner's sidecar swap", () => {
       assert.ok(failed.answeredAt - failed.requestedAt < 6_000, JSON.stringify(failed));
       assert.equal(result.sidecars.length, 1);
       assert.match(result.stderr, /SIDECAR_SWAP_FAILED: .*TIMEOUT/);
+      // The old sidecar's own root, under its checkout, removed with the
+      // one under this checkout once it had been stopped.
+      assert.equal(
+        path.dirname(result.sidecars[0].root ?? ""),
+        path.join(oldRoot(), ".morph-previews"),
+      );
+      await assertRootsRemoved(result.sidecars);
       assert.deepEqual(result.leftBehind, []);
     },
   );
@@ -1368,6 +1413,12 @@ describe("the e2e runner's sidecar swap", () => {
       assert.equal(late.length, 1, JSON.stringify(late));
       assert.equal(result.sidecars.length, 1, JSON.stringify(result.sidecars));
       assert.equal(existsSync(stateDir), false);
+      // Interrupted too, both checkouts are left without this run's roots.
+      assert.equal(
+        path.dirname(result.sidecars[0].root ?? ""),
+        path.join(oldRoot(), ".morph-previews"),
+      );
+      await assertRootsRemoved(result.sidecars);
       assert.deepEqual(result.leftBehind, []);
     },
   );
