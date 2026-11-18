@@ -6677,14 +6677,64 @@ export function VisualEditorShell({
       const routeTemplate =
         templateForRoute(context.templates, route.path) ??
         borrowableTemplate(context.templates, activeTemplate);
+      // The page the editor already shows, while the frame is on another
+      // one: the editor's route does not change, so the route sync that
+      // answers a switch never runs. This pick is the author's navigation
+      // back, sent the way the leave guard sends the frame back. Only for
+      // this frame and document in this ready round, after it named another
+      // page and answered the latest route request, and with no switch
+      // waiting on a save.
+      const frame = frameRouteRef.current;
+      const frameRecord = previewFrameRecordRef.current;
+      const routeRequest = lastRouteRequestRef.current;
+      const previewKeyNow = previewKeyRef.current;
+      const roundNow = previewReadyRoundRef.current;
+      const sendFrameBack =
+        !!routeTemplate &&
+        routeTemplate.id === activeTemplateIdRef.current &&
+        editorRoutePathsMatch(
+          route.path,
+          currentSearchRoutePathRef.current ?? "/",
+        ) &&
+        !leaveGuard.waiting &&
+        previewKeyNow !== null &&
+        frameRecord !== null &&
+        frameRecord.previewKey === previewKeyNow &&
+        frameRecord.readyRound === roundNow &&
+        frameRecord.documentId !== null &&
+        frame !== null &&
+        frame.key === previewKeyNow &&
+        frame.round === roundNow &&
+        frame.routePath !== null &&
+        !previewStructureMatchesRoute(
+          frame.routePath,
+          currentSearchRoutePathRef.current,
+        ) &&
+        routeRequest !== null &&
+        routeRequest.key === previewKeyNow &&
+        routeRequest.round === roundNow &&
+        routeRequest.id === routeRequestIdRef.current &&
+        routeRequest.answered;
+      if (sendFrameBack) {
+        // The switch this pick replaces, if the frame started one, is over.
+        frameFollowRef.current = null;
+        frameFollowOriginRef.current = null;
+      }
       if (routeTemplate) {
         onSearchChange(toEditorRouteSearch(routeTemplate, route.path));
       }
+      if (sendFrameBack) returnFrameToPageRef.current();
       if (editorModeRef.current === "code") {
         handleJumpToCode(route.sourcePath, 1, 1);
       }
     },
-    [activeTemplate, context.templates, handleJumpToCode, onSearchChange],
+    [
+      activeTemplate,
+      context.templates,
+      handleJumpToCode,
+      leaveGuard,
+      onSearchChange,
+    ],
   );
 
   /** Explicit request for a route's source, from the page row's own control. */
