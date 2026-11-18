@@ -257,3 +257,67 @@ describe("a dynamic route's presentation acks when the frame moves between its p
     expect(page.withdrawn()).toEqual(["op-shirt"]);
   });
 });
+
+describe("rapid navigation between a dynamic route's pages, with matches arriving late", () => {
+  it("shirt, hat, sock with every page's matches late: sock's arrival withdraws shirt's ack, and hat's late matches leave sock's ack standing", async () => {
+    const { router, page } = await shirtPresented();
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    router.hold("/products/sock");
+    await router.navigate({ to: "/products/sock" });
+    await settle();
+
+    router.arrive("/products/sock");
+    await settle();
+    expect(page.standing()).toEqual([]);
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+
+    page.present("op-sock");
+    expect(page.standing()).toEqual(["op-sock"]);
+
+    // Hat's matches, for a page the frame has already left, come in last.
+    router.arrive("/products/hat");
+    await settle();
+
+    expect(page.standing(), "sock's ack is sock's").toEqual(["op-sock"]);
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+  });
+
+  it("control: shirt, hat (matches late), sock (matches at once): hat's late matches leave sock's ack standing", async () => {
+    const { router, page } = await shirtPresented();
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    await router.navigate({ to: "/products/sock" });
+    await settle();
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+
+    page.present("op-sock");
+    router.arrive("/products/hat");
+    await settle();
+
+    expect(page.standing(), "sock's ack is sock's").toEqual(["op-sock"]);
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+  });
+
+  it("control: shirt, hat (matches late), back to shirt: hat's late matches leave the new shirt ack standing", async () => {
+    const { router, page } = await shirtPresented();
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    router.history.back();
+    await settle();
+    expect(router.history.location.pathname).toBe("/products/shirt");
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+
+    page.present("op-shirt-again");
+    router.arrive("/products/hat");
+    await settle();
+
+    expect(page.standing(), "the shirt shown now acknowledged it").toEqual([
+      "op-shirt-again",
+    ]);
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+  });
+});
