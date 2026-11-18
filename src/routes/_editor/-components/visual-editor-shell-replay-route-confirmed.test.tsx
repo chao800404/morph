@@ -725,8 +725,25 @@ describe("the replay after a frame reload on a route that is not the home page",
     // Only that: the frame is kept, nothing is reloaded, started or saved.
     expect(document.querySelector("iframe")).toBe(frame);
     expect(reloadLines()).toHaveLength(1);
-    // Probes startThemePreviewServer once when ready lacks section-presentation-ack-v1.
-    expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+    // Neither frame's bridge can acknowledge, so each asks, once, on its own
+    // ready, what is serving: the first frame before the reload, and the one
+    // the reload brought up after it. Those two questions are the only calls
+    // to startThemePreviewServer; nothing else starts the preview, and the
+    // service names no serving bridge, so neither question refreshes.
+    const notRefreshing =
+      "[preview-bridge] frame cannot acknowledge; serving unknown, previous version unknown: not refreshing";
+    expect(
+      infoLines.filter(
+        (line) =>
+          line.startsWith("[preview-bridge]") ||
+          line.startsWith("[preview-instance] reload frame"),
+      ),
+    ).toEqual([
+      notRefreshing,
+      `[preview-instance] reload frame | served by ${SESSION}.1, serving ${SESSION}.2`,
+      notRefreshing,
+    ]);
+    expect(startThemePreviewServer).toHaveBeenCalledTimes(2);
     expect(updateSectionProps).not.toHaveBeenCalled();
     expect(
       vi.mocked(touchThemePreviewServer).mock.calls.length,
