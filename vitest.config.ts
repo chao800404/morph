@@ -89,6 +89,7 @@ const THEME_BUILD_TESTS = [
   "src/lib/storefront/service/build-preview/local-build-preview-worker.test.ts",
   "src/lib/storefront/service/build-preview/build-preview-chain.test.ts",
   "src/lib/storefront/compiler/local-vite-preview-server.public-isolation.test.ts",
+  "src/lib/storefront/compiler/local-vite-preview-server.start-instance.test.ts",
 ];
 
 /**
