@@ -12,9 +12,15 @@ import {
   enableSelection,
   isServerFunctionCall,
   openContentTab,
+  openEditor,
   previewFrame,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
+import {
+  MARKER,
+  execLocalD1,
+  heroContentField,
+} from "./helpers/editor-writes-paused";
+import { isSidecarSwapRun, requestSidecarSwap } from "./helpers/sidecar-swap";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -518,5 +524,259 @@ test.describe("a preview frame whose server another tab replaced", () => {
     expect(contentSaves).toHaveLength(1);
     await expect(field).toHaveValue(pending);
     expect(routeDocumentCreations).toEqual([]);
+  });
+});
+
+type SwapReady = {
+  at: number;
+  previewDocument: string;
+  ack: boolean;
+  served: string;
+};
+type SwapAck = { at: number; previewDocument: string; status: string };
+
+/**
+ * Records, in the editor's own window only, each ready and acknowledgement
+ * a preview frame posts to it. Observation only.
+ */
+function recordSwapMessages() {
+  if (window.top !== window) return;
+  const state = { readies: [] as SwapReady[], acks: [] as SwapAck[] };
+  (window as unknown as { __swapMessages: typeof state }).__swapMessages = state;
+  window.addEventListener("message", (event) => {
+    const data = event.data as Record<string, unknown> | null;
+    if (!data || typeof data !== "object") return;
+    const previewDocument =
+      typeof data.previewDocument === "string" ? data.previewDocument : "";
+    if (data.type === "morph:storefront-preview-ready") {
+      const served = data.servedInstance as
+        | { kind?: string; instance?: { session?: string; serial?: number } }
+        | undefined;
+      state.readies.push({
+        at: Date.now(),
+        previewDocument,
+        ack:
+          Array.isArray(data.capabilities) &&
+          data.capabilities.includes("section-presentation-ack-v1"),
+        served:
+          served?.kind === "known"
+            ? `known:${served.instance?.session}.${served.instance?.serial}`
+            : (served?.kind ?? "none"),
+      });
+    } else if (data.type === "morph:storefront-preview-section-presentation-ack") {
+      state.acks.push({
+        at: Date.now(),
+        previewDocument,
+        status: typeof data.status === "string" ? data.status : "",
+      });
+    }
+  });
+}
+
+const swapMessages = (page: Page) =>
+  page.evaluate(
+    () =>
+      (window as unknown as { __swapMessages?: { readies: SwapReady[]; acks: SwapAck[] } })
+        .__swapMessages ?? { readies: [], acks: [] },
+  );
+
+/**
+ * The real swap: the run's first sidecar comes from another checkout (main),
+ * whose bridge cannot acknowledge and whose service reports no serving
+ * bridge; mid-test the runner replaces it with this checkout's. Nothing is
+ * routed or rewritten: the editor stays open on one page, and what it, the
+ * frame and Vite say is only listened to. The first reload of the frame after
+ * the swap is attributed to what caused it, and only the editor's bounded
+ * refresh counts for this case.
+ *
+ * Runs only in the runner's swap mode; every other run, CI's included,
+ * skips it.
+ */
+test.describe("a real sidecar swap under an open editor", () => {
+  test.skip(
+    !isSidecarSwapRun(),
+    "Only in the e2e runner's sidecar swap mode (MORPH_E2E_SIDECAR_SWAP_FROM), which CI never sets.",
+  );
+
+  test("the old sidecar's frame is refreshed once by the bounded refresh, and the new frame acknowledges", async ({
+    page,
+  }) => {
+    test.setTimeout(420_000);
+    const t0 = Date.now();
+    const timeline: string[] = [];
+    const note = (line: string) => {
+      const entry = `+${Date.now() - t0}ms ${line}`;
+      timeline.push(entry);
+      console.log(`[real swap] ${entry}`);
+    };
+    let swappedAt = 0;
+    const editorLines: Array<{ at: number; text: string }> = [];
+    page.on("console", (message) => {
+      const text = message.text();
+      if (
+        text.startsWith("[preview-bridge]") ||
+        text.startsWith("[preview-instance]") ||
+        text.includes("[vite]")
+      ) {
+        editorLines.push({ at: Date.now(), text });
+        let where = "?";
+        try {
+          where = new URL(message.location().url).host || "?";
+        } catch {
+          /* No location. */
+        }
+        note(`console from ${where}: ${text}`);
+      }
+    });
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) {
+        note(`editor page navigated ${frame.url()}`);
+        return;
+      }
+      note(`frame navigated ${frame.url()}`);
+    });
+    const startAnswers: Array<{ at: number; servingBridge: boolean; ack: boolean }> = [];
+    page.on("response", (response) => {
+      const url = response.url();
+      for (const name of ["startThemePreviewServer", "touchThemePreviewServer"]) {
+        if (!isServerFunctionCall(url, name)) continue;
+        void response.text().then(
+          (body) => {
+            const servingBridge = body.includes("servingBridge");
+            const ack = body.includes("section-presentation-ack-v1");
+            if (name === "startThemePreviewServer") {
+              startAnswers.push({ at: Date.now(), servingBridge, ack });
+            }
+            note(
+              `${name} answered ${response.status()}: servingBridge ${servingBridge}, ack capability ${ack}, servedInstance ${body.includes("servedInstance")}`,
+            );
+          },
+          () => note(`${name} answered ${response.status()}, body unreadable`),
+        );
+      }
+    });
+    await page.addInitScript(recordSwapMessages);
+
+    // A: the editor on the old sidecar.
+    await openEditor(page);
+    await expect.poll(async () => (await swapMessages(page)).readies.length, {
+      timeout: 120_000,
+    }).toBeGreaterThan(0);
+    // The editor's own decision about this frame's bridge, before the swap.
+    await expect
+      .poll(() => editorLines.filter((line) => line.text.startsWith("[preview-bridge]")).length, {
+        timeout: 60_000,
+        message: "the editor said nothing about the old frame's bridge",
+      })
+      .toBeGreaterThan(0)
+      .catch(() => note("no [preview-bridge] decision before the swap"));
+    const before = await swapMessages(page);
+    note(`before the swap: readies ${JSON.stringify(before.readies)}`);
+    note(`before the swap: start answers ${JSON.stringify(startAnswers)}`);
+    const frameBefore = await page.locator("iframe").first().elementHandle();
+    expect(frameBefore, "the editor shows a preview frame").not.toBeNull();
+    expect(before.readies.every((ready) => !ready.ack), "the old bridge cannot acknowledge").toBe(true);
+    expect(startAnswers.length).toBeGreaterThan(0);
+    expect(
+      startAnswers.every((answer) => !answer.servingBridge),
+      "the old service reports no serving bridge",
+    ).toBe(true);
+
+    // C: the runner swaps the sidecar.
+    note("requesting the swap");
+    const done = await requestSidecarSwap();
+    swappedAt = Date.now();
+    note(`swap done: ${JSON.stringify(done)}`);
+
+    // What happens on its own: the first reload after the swap, whatever
+    // causes it, then a frame that can acknowledge.
+    const reloaded = async () => {
+      const now = await swapMessages(page);
+      return now.readies.filter((ready) => ready.at > swappedAt).length;
+    };
+    let authorReturned = false;
+    try {
+      await expect.poll(reloaded, { timeout: 120_000 }).toBeGreaterThan(0);
+    } catch {
+      // Nothing on its own: the author comes back to the tab, as the
+      // instance reattach case has it, and the editor's sync asks again.
+      authorReturned = true;
+      note("no new ready within 120 s of the swap; the author returns to the tab");
+      await returnToTab(page);
+      await expect.poll(reloaded, { timeout: 120_000 }).toBeGreaterThan(0);
+    }
+    await expect
+      .poll(async () => (await swapMessages(page)).readies.some((r) => r.at > swappedAt && r.ack), {
+        timeout: 120_000,
+      })
+      .toBe(true);
+    const sameElement = await page
+      .evaluate(
+        (element) => element === document.querySelector("iframe"),
+        frameBefore!,
+      )
+      .catch(() => false);
+    const stillConnected = await frameBefore!.evaluate((element) => element.isConnected).catch(() => false);
+    note(`frame element after: same as before ${sameElement}, original still connected ${stillConnected}`);
+
+    // The new frame's own acknowledgement of a real edit.
+    const after = await swapMessages(page);
+    const newDocument = after.readies.filter((ready) => ready.at > swappedAt && ready.ack).at(-1)!
+      .previewDocument;
+    const field = await heroContentField(page, 0);
+    const original = await field.inputValue();
+    const updated = `${MARKER} real swap ${Date.now()}`;
+    await field.fill(updated);
+    await expect(field).toHaveValue(updated);
+    await expect
+      .poll(
+        async () =>
+          (await swapMessages(page)).acks.some(
+            (ack) => ack.previewDocument === newDocument && ack.status === "applied",
+          ),
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+    await field.fill(original);
+    await expect(field).toHaveValue(original);
+
+    const final = await swapMessages(page);
+    const afterSwap = editorLines.filter((line) => line.at > swappedAt);
+    const firstReadyAfter = final.readies.find((ready) => ready.at > swappedAt)!;
+    const before1st = afterSwap.filter((line) => line.at <= firstReadyAfter.at);
+    const bounded = editorLines.filter((line) =>
+      line.text.includes("previous version unknown: refreshing once"),
+    );
+    const instanceReloads = afterSwap.filter((line) =>
+      line.text.startsWith("[preview-instance] reload frame"),
+    );
+    const viteLines = afterSwap.filter((line) => line.text.includes("[vite]"));
+    const summary = {
+      swap: done,
+      authorReturned,
+      readies: final.readies.map((ready) => ({ ...ready, at: ready.at - t0 })),
+      acks: final.acks.map((ack) => ({ ...ack, at: ack.at - t0 })),
+      linesBeforeFirstReadyAfterSwap: before1st.map((line) => `+${line.at - t0}ms ${line.text}`),
+      boundedRefreshLines: bounded.map((line) => `+${line.at - t0}ms ${line.text}`),
+      instanceReloadLines: instanceReloads.map((line) => `+${line.at - t0}ms ${line.text}`),
+      viteLines: viteLines.map((line) => `+${line.at - t0}ms ${line.text}`),
+      sameFrameElement: sameElement,
+      originalElementConnected: stillConnected,
+    };
+    console.log(`[real swap] summary ${JSON.stringify(summary)}`);
+    test.info().annotations.push(
+      { type: "real swap summary", description: JSON.stringify(summary) },
+      { type: "real swap timeline", description: timeline.join("\n") },
+    );
+
+    // The acceptance: the first reload after the swap is the bounded
+    // refresh, made once, and nothing else reloaded the frame before it.
+    expect(
+      before1st.filter((line) => line.text.includes("refreshing once")),
+      "the bounded refresh decided the first reload after the swap",
+    ).toHaveLength(1);
+    expect(instanceReloads.filter((line) => line.at <= firstReadyAfter.at)).toEqual([]);
+    expect(viteLines.filter((line) => line.at <= firstReadyAfter.at)).toEqual([]);
+    expect(bounded).toHaveLength(1);
   });
 });
