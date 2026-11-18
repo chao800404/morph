@@ -555,6 +555,32 @@ test.describe("the editor adopting a route document it just created", () => {
 test.describe("a route document adopted after the frame moved by itself", () => {
   test.describe.configure({ mode: "serial" });
 
+  /** A page the editor follows, to switch to and back from. */
+  const ASIDE_ROUTE = "/selection-field-aside";
+  const ASIDE_SLOT = "selection-field-aside-card";
+  const OPTION_A_FILES = [
+    ...FILES,
+    {
+      path: "src/routes/selection-field-aside.tsx",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import FieldCard from "../components/FieldCard";
+
+export const Route = createFileRoute("${ASIDE_ROUTE}")({
+  component: AsideRoute,
+});
+
+function AsideRoute() {
+  return (
+    <main>
+      <FieldCard {...content("${ASIDE_SLOT}")} />
+    </main>
+  );
+}
+`,
+    },
+  ];
+
   let own: ThemeScope | null = null;
   let homeTemplateId: string | null = null;
 
@@ -572,7 +598,7 @@ test.describe("a route document adopted after the frame moved by itself", () => 
     homeTemplateId = result.data!.templates.find(
       (template) => template.type === "index",
     )!.id;
-    const saved = await writeThemeFiles(page, own, FILES);
+    const saved = await writeThemeFiles(page, own, OPTION_A_FILES);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
     await page.context().close();
   });
@@ -584,7 +610,7 @@ test.describe("a route document adopted after the frame moved by itself", () => 
     const removed = await removeThemeFiles(
       page,
       own,
-      FILES.map((file) => file.path),
+      OPTION_A_FILES.map((file) => file.path),
     );
     expect(removed.success, JSON.stringify(removed)).toBe(true);
     await page.context().close();
@@ -814,6 +840,196 @@ test.describe("a route document adopted after the frame moved by itself", () => 
       // Never leave the answer waiting, whatever failed above.
       held.release();
     }
+  });
+
+  /**
+   * A content write's `expectedDraftGeneration`, read from the request as the
+   * client serialized it: a plain JSON object, or seroval's node tree, where
+   * an object's keys and values are in `p.k` / `p.v` and a number is
+   * `{ t: 0, s: n }`.
+   */
+  function expectedDraftGenerationOf(body: string): number | undefined {
+    const numberOf = (node: unknown): number | undefined => {
+      if (typeof node === "number") return node;
+      if (node && typeof node === "object" && "s" in node) {
+        const s = (node as { s: unknown }).s;
+        return typeof s === "number" ? s : undefined;
+      }
+      return undefined;
+    };
+    const visit = (node: unknown): number | undefined => {
+      if (!node || typeof node !== "object") return undefined;
+      if (Array.isArray(node)) {
+        for (const item of node) {
+          const found = visit(item);
+          if (found !== undefined) return found;
+        }
+        return undefined;
+      }
+      const record = node as Record<string, unknown>;
+      const plain = numberOf(record.expectedDraftGeneration);
+      if (plain !== undefined) return plain;
+      const p = record.p as { k?: unknown; v?: unknown } | undefined;
+      if (p && Array.isArray(p.k) && Array.isArray(p.v)) {
+        const index = p.k.indexOf("expectedDraftGeneration");
+        if (index >= 0) {
+          const value = numberOf(p.v[index]);
+          if (value !== undefined) return value;
+        }
+      }
+      for (const value of Object.values(record)) {
+        const found = visit(value);
+        if (found !== undefined) return found;
+      }
+      return undefined;
+    };
+    try {
+      return visit(JSON.parse(body));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Picks a page in the editor; the leave guard asks about the kept draft. */
+  async function pickPageKeepingDraft(page: Page, routePath: string) {
+    await page.locator(`button[title="Preview ${routePath}"]`).click();
+    await page
+      .getByRole("button", { name: "Switch, keep draft unsaved" })
+      .click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("routePath"), {
+        timeout: 30_000,
+      })
+      .toBe(routePath);
+  }
+
+  test("back on the page after a switch that kept the draft, the field selected again shows the draft; leaving it without typing saves it once, on its original basis", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const writeBodies: string[] = [];
+    page.on("request", (request) => {
+      if (isServerFn(request.url(), "updateStorefrontThemeSectionProps")) {
+        writeBodies.push(request.postData() ?? "");
+      }
+    });
+    const saveStatus = page.locator("[data-editor-save-status]");
+    await page.goto(
+      `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
+    const selectCard = async () => {
+      // A page switch can leave the pointer tool on; it is turned on only
+      // when it is off.
+      const selecting = page.getByRole("button", {
+        name: "Disable section selection",
+      });
+      if (!(await selecting.isVisible())) await enableSelection(page);
+      await expect(selecting).toBeVisible();
+      expect(
+        await clickExposedElement(page, cardTitle(page, SLOT)),
+      ).not.toBeNull();
+      await openContentTab(page);
+      await expect(titleField(page)).toBeVisible();
+    };
+    await selectCard();
+
+    // Value 1 is saved and confirmed.
+    const value1 = `value 1 ${Date.now()}`;
+    await titleField(page).fill(value1);
+    await expect(cardTitle(page, SLOT)).toHaveText(value1, { timeout: 30_000 });
+    await titleField(page).press("Tab");
+    await expect
+      .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
+      .toBe(value1);
+    await expect(page.getByText(/Preview syncing/)).toHaveCount(0, {
+      timeout: 30_000,
+    });
+    expect(writeBodies).toHaveLength(1);
+    // The copy Value 2 is typed on: the document as that save left it.
+    const routeTemplateId = (await storedOn(page)).routeTemplateId;
+    const generationOf = async () => {
+      const read = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+        ...own!,
+      })) as {
+        success: boolean;
+        data?: { templates: Array<{ id: string; draftGeneration?: number }> };
+      };
+      return read.data!.templates.find(
+        (template) => template.id === routeTemplateId,
+      )?.draftGeneration;
+    };
+    const basis = await generationOf();
+    expect(typeof basis).toBe("number");
+
+    // The frame moves by itself; Value 2 is typed and left there: held.
+    await previewFrame(page)
+      .locator("body")
+      .evaluate((_body, to) => {
+        const router = (
+          window as unknown as {
+            __morphPreviewRouter?: { navigate(options: { to: string }): unknown };
+          }
+        ).__morphPreviewRouter;
+        if (!router) throw new Error("the preview exposes no router");
+        void router.navigate({ to });
+      }, OTHER_PATH);
+    await expect(cardTitle(page, OTHER_SLOT)).toBeVisible({ timeout: 30_000 });
+    await expect(titleField(page)).toBeVisible();
+    const value2 = `value 2 ${Date.now()}`;
+    await titleField(page).fill(value2);
+    await titleField(page).press("Tab");
+    await expect(page.getByText(OTHER_PAGE_PAUSED).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    expect((await storedOn(page)).route).toBe(value1);
+    expect(writeBodies).toHaveLength(1);
+
+    // Another page, keeping the draft; then this page again.
+    await pickPageKeepingDraft(page, ASIDE_ROUTE);
+    await expect(cardTitle(page, ASIDE_SLOT)).toBeVisible({ timeout: 30_000 });
+    await pickPageKeepingDraft(page, HOME_ROUTE);
+    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(OTHER_PAGE_PAUSED)).toHaveCount(0, {
+      timeout: 30_000,
+    });
+    await expect(page.getByText(/Preview syncing/)).toHaveCount(0, {
+      timeout: 30_000,
+    });
+
+    // Selected again: the Inspector and the canvas show the kept Value 2,
+    // the server still holds Value 1, the draft is said to be unsaved, and
+    // nothing was written.
+    await selectCard();
+    await expect(titleField(page)).toHaveValue(value2);
+    await expect(cardTitle(page, SLOT)).toHaveText(value2, { timeout: 30_000 });
+    await expect(saveStatus).toHaveAttribute("aria-label", "Unsaved");
+    expect((await storedOn(page)).route).toBe(value1);
+    expect(await generationOf()).toBe(basis);
+    expect(writeBodies, "selecting again writes nothing").toHaveLength(1);
+
+    // Into the field and out again, nothing typed: Value 2 is saved once,
+    // on the copy it was typed on.
+    await titleField(page).focus();
+    await titleField(page).press("Tab");
+    await expect
+      .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
+      .toBe(value2);
+    expect(await generationOf()).toBe(basis! + 1);
+    expect(writeBodies).toHaveLength(2);
+    expect(writeBodies[1]).toContain(value2);
+    expect(
+      expectedDraftGenerationOf(writeBodies[1]!),
+      `the write's own basis, from: ${writeBodies[1]}`,
+    ).toBe(basis);
+    const stored = await storedOn(page);
+    expect(stored.elsewhere).toEqual([]);
+    expect(stored.other).toEqual([]);
+    expect(writeBodies).toHaveLength(2);
   });
 });
 
