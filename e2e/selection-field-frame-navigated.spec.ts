@@ -914,14 +914,16 @@ function AsideRoute() {
       }
     });
     const saveStatus = page.locator("[data-editor-save-status]");
+    // The aside route has no document yet: its first write creates one, as
+    // the home route's did in the case above.
     await page.goto(
-      `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
+      `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(ASIDE_ROUTE)}`,
       { waitUntil: "domcontentloaded" },
     );
     await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
       timeout: 45_000,
     });
-    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
+    await expect(cardTitle(page, ASIDE_SLOT)).toBeVisible({ timeout: 90_000 });
     const selectCard = async () => {
       // A page switch can leave the pointer tool on; it is turned on only
       // when it is off.
@@ -931,69 +933,104 @@ function AsideRoute() {
       if (!(await selecting.isVisible())) await enableSelection(page);
       await expect(selecting).toBeVisible();
       expect(
-        await clickExposedElement(page, cardTitle(page, SLOT)),
+        await clickExposedElement(page, cardTitle(page, ASIDE_SLOT)),
       ).not.toBeNull();
       await openContentTab(page);
       await expect(titleField(page)).toBeVisible();
     };
     await selectCard();
 
-    // Value 1 is saved and confirmed.
-    const value1 = `value 1 ${Date.now()}`;
-    await titleField(page).fill(value1);
-    await expect(cardTitle(page, SLOT)).toHaveText(value1, { timeout: 30_000 });
-    await titleField(page).press("Tab");
-    await expect
-      .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
-      .toBe(value1);
-    await expect(page.getByText(/Preview syncing/)).toHaveCount(0, {
-      timeout: 30_000,
-    });
-    expect(writeBodies).toHaveLength(1);
-    // The copy Value 2 is typed on: the document as that save left it.
-    const routeTemplateId = (await storedOn(page)).routeTemplateId;
-    const generationOf = async () => {
+    /** The aside route's document: its id, generation and stored title. */
+    const asideStored = async () => {
       const read = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
         ...own!,
-      })) as {
-        success: boolean;
-        data?: { templates: Array<{ id: string; draftGeneration?: number }> };
+      })) as { success: boolean; data?: { templates: StoredTemplate[] } };
+      expect(read.success, JSON.stringify(read)).toBe(true);
+      const route = read.data!.templates.find(
+        (template) => template.routePath === ASIDE_ROUTE,
+      ) as (StoredTemplate & { draftGeneration?: number }) | undefined;
+      return {
+        id: route?.id ?? null,
+        generation: route?.draftGeneration,
+        title: route?.document.sections.find(
+          (section) => section.id === ASIDE_SLOT,
+        )?.props?.title,
+        elsewhere: read
+          .data!.templates.filter((template) => template !== route)
+          .map(
+            (template) =>
+              template.document.sections.find(
+                (section) => section.id === ASIDE_SLOT,
+              )?.props?.title,
+          )
+          .filter((title) => title !== undefined),
       };
-      return read.data!.templates.find(
-        (template) => template.id === routeTemplateId,
-      )?.draftGeneration;
     };
-    const basis = await generationOf();
-    expect(typeof basis).toBe("number");
 
-    // The frame moves by itself; Value 2 is typed and left there: held.
-    await previewFrame(page)
-      .locator("body")
-      .evaluate((_body, to) => {
-        const router = (
-          window as unknown as {
-            __morphPreviewRouter?: { navigate(options: { to: string }): unknown };
-          }
-        ).__morphPreviewRouter;
-        if (!router) throw new Error("the preview exposes no router");
-        void router.navigate({ to });
-      }, OTHER_PATH);
-    await expect(cardTitle(page, OTHER_SLOT)).toBeVisible({ timeout: 30_000 });
-    await expect(titleField(page)).toBeVisible();
+    // Value 1, the route's first write, creates its document; its answer is
+    // held while the frame moves by itself and Value 2 is typed.
+    const held = await holdNextPropsWrite(page);
+    let basis: number | undefined;
+    const value1 = `value 1 ${Date.now()}`;
     const value2 = `value 2 ${Date.now()}`;
-    await titleField(page).fill(value2);
-    await titleField(page).press("Tab");
-    await expect(page.getByText(OTHER_PAGE_PAUSED).first()).toBeVisible({
-      timeout: 30_000,
-    });
-    expect((await storedOn(page)).route).toBe(value1);
-    expect(writeBodies).toHaveLength(1);
+    try {
+      await titleField(page).fill(value1);
+      await expect(cardTitle(page, ASIDE_SLOT)).toHaveText(value1);
+      await titleField(page).press("Tab");
+      await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
+
+      await previewFrame(page)
+        .locator("body")
+        .evaluate((_body, to) => {
+          const router = (
+            window as unknown as {
+              __morphPreviewRouter?: {
+                navigate(options: { to: string }): unknown;
+              };
+            }
+          ).__morphPreviewRouter;
+          if (!router) throw new Error("the preview exposes no router");
+          void router.navigate({ to });
+        }, OTHER_PATH);
+      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(titleField(page)).toBeVisible();
+      await titleField(page).fill(value2);
+      expect(held.answered).toBe(false);
+
+      // Value 1 is answered and confirmed; the editor takes up the created
+      // document while the frame is elsewhere.
+      held.release();
+      await expect.poll(() => held.answered, { timeout: 30_000 }).toBe(true);
+      const created = await asideStored();
+      expect(created.id).not.toBeNull();
+      expect(created.title).toBe(value1);
+      await expect
+        .poll(() => urlTemplateId(page), { timeout: 30_000 })
+        .toBe(created.id);
+      // The copy Value 2 was typed on: the document as Value 1 left it.
+      basis = created.generation;
+      expect(typeof basis).toBe("number");
+
+      // Value 2 is left while the frame is elsewhere: held, not written.
+      await titleField(page).press("Tab");
+      await expect(page.getByText(OTHER_PAGE_PAUSED).first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(titleField(page)).toHaveValue(value2);
+      expect((await asideStored()).title).toBe(value1);
+      expect(writeBodies).toHaveLength(1);
+    } finally {
+      // Never leave the answer waiting, whatever failed above.
+      held.release();
+    }
 
     // Another page, keeping the draft; then this page again.
-    await pickPageKeepingDraft(page, ASIDE_ROUTE);
-    await expect(cardTitle(page, ASIDE_SLOT)).toBeVisible({ timeout: 30_000 });
     await pickPageKeepingDraft(page, HOME_ROUTE);
     await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 30_000 });
+    await pickPageKeepingDraft(page, ASIDE_ROUTE);
+    await expect(cardTitle(page, ASIDE_SLOT)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(OTHER_PAGE_PAUSED)).toHaveCount(0, {
       timeout: 30_000,
     });
@@ -1006,10 +1043,13 @@ function AsideRoute() {
     // nothing was written.
     await selectCard();
     await expect(titleField(page)).toHaveValue(value2);
-    await expect(cardTitle(page, SLOT)).toHaveText(value2, { timeout: 30_000 });
+    await expect(cardTitle(page, ASIDE_SLOT)).toHaveText(value2, {
+      timeout: 30_000,
+    });
     await expect(saveStatus).toHaveAttribute("aria-label", "Unsaved");
-    expect((await storedOn(page)).route).toBe(value1);
-    expect(await generationOf()).toBe(basis);
+    const beforeLeaving = await asideStored();
+    expect(beforeLeaving.title).toBe(value1);
+    expect(beforeLeaving.generation).toBe(basis);
     expect(writeBodies, "selecting again writes nothing").toHaveLength(1);
 
     // Into the field and out again, nothing typed: Value 2 is saved once,
@@ -1017,18 +1057,17 @@ function AsideRoute() {
     await titleField(page).focus();
     await titleField(page).press("Tab");
     await expect
-      .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
+      .poll(async () => (await asideStored()).title, { timeout: 30_000 })
       .toBe(value2);
-    expect(await generationOf()).toBe(basis! + 1);
+    const after = await asideStored();
+    expect(after.generation).toBe(basis! + 1);
+    expect(after.elsewhere).toEqual([]);
     expect(writeBodies).toHaveLength(2);
     expect(writeBodies[1]).toContain(value2);
     expect(
       expectedDraftGenerationOf(writeBodies[1]!),
       `the write's own basis, from: ${writeBodies[1]}`,
     ).toBe(basis);
-    const stored = await storedOn(page);
-    expect(stored.elsewhere).toEqual([]);
-    expect(stored.other).toEqual([]);
     expect(writeBodies).toHaveLength(2);
   });
 });
