@@ -3499,7 +3499,7 @@ export default function Grid({ columns = 3 }: { columns?: number }) {
     updatedAt: "2026-11-19T00:00:00.000Z",
   };
   const view = (
-    props: Record<string, unknown>,
+    props: { columns: number },
     onPropsChange: ReturnType<typeof vi.fn>,
     resourceKey = "storefront-1:theme-1:template-1:document:0",
   ) => (
