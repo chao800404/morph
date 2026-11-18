@@ -4989,7 +4989,18 @@ export function VisualEditorShell({
   /** `${scope}::${buildId}` of every serving build this tab refreshed for. */
   const unsupportedBridgeAttemptedRef = useRef(new Set<string>());
   const unsupportedBridgeReloadingRef = useRef(false);
-  const deferredUnsupportedRefreshRef = useRef<(() => void) | null>(null);
+  /**
+   * A refresh decided while the author was composing or editing inline,
+   * held until that ends, with the frame round it was decided for: it runs
+   * only if that round is still the one on screen and still cannot
+   * acknowledge.
+   */
+  const deferredUnsupportedRefreshRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+    record: object;
+    run: () => void;
+  } | null>(null);
   /** A check of what is serving is out, for the frame round it names. */
   const unsupportedBridgeCheckRef = useRef<{
     previewKey: string;
@@ -5407,7 +5418,35 @@ export function VisualEditorShell({
       const pending = deferredUnsupportedRefreshRef.current;
       if (pending) {
         deferredUnsupportedRefreshRef.current = null;
-        pending();
+        const frame = previewFrameRecordRef.current;
+        const ack = "section-presentation-ack-v1";
+        if (
+          frame !== null &&
+          frame === pending.record &&
+          frame.previewKey === pending.previewKey &&
+          frame.readyRound === pending.readyRound &&
+          previewKeyRef.current === pending.previewKey &&
+          !frame.capabilities.has(ack)
+        ) {
+          pending.run();
+        } else {
+          // Decided for a round no longer on screen, or one that can now
+          // acknowledge: its answer is not this frame's. A frame still unable
+          // to acknowledge, which no check decided for, is offered the
+          // manual reload.
+          console.info(
+            "[preview-bridge] held refresh dropped: the frame round it was decided for is no longer on screen or can acknowledge",
+          );
+          if (
+            frame !== null &&
+            frame.previewKey === previewKeyRef.current &&
+            !frame.capabilities.has(ack)
+          ) {
+            unsupportedBridgeFailedRef.current = true;
+            setUnsupportedRefreshFailed(true);
+            setPresentationUnconfirmable(true);
+          }
+        }
       }
     }
   }, [inlineEditOpen, inspectorComposing]);
@@ -5596,7 +5635,12 @@ export function VisualEditorShell({
           setPreviewRevision((revision) => revision + 1);
         };
         if (inspectorComposingRef.current || inlineEditOpenRef.current) {
-          deferredUnsupportedRefreshRef.current = runReload;
+          deferredUnsupportedRefreshRef.current = {
+            previewKey: checkedPreviewKey,
+            readyRound: frame.readyRound,
+            record: frame,
+            run: runReload,
+          };
         } else {
           runReload();
         }
