@@ -646,6 +646,55 @@ function routeTreePattern(router, pathname) {
     : undefined;
 }
 
+/**
+ * Whether the router's matches have reached a path it committed: the leaf it
+ * shows is the match its route tree makes for that path.
+ *
+ * The committed path keeps the spelling it was given, the leaf the one the
+ * router matched: its route tree trims a trailing slash before matching and
+ * gives params back decoded, and the leaf puts them back encoded, so
+ * /products/hat/ is shown as /products/hat and /products/a@b as
+ * /products/a%40b. Where the spellings differ, the route tree is asked about
+ * both, and they are one page only when it matches them to the leaf's route
+ * with the same params. Neither path is rewritten here: an encoded slash
+ * stays inside its param, and a path the tree matches only in part (a page
+ * it does not have) keeps the rest it could not match as a param no leaf
+ * has, so it is no arrival.
+ *
+ * Only whether the matches have arrived is decided here. Which navigation
+ * they arrived for is the committed location's own key and epoch.
+ */
+function matchesReachedPath(router, pathname) {
+  const matches = router?.state?.matches;
+  const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
+  if (typeof leaf?.pathname !== "string") return false;
+  if (leaf.pathname === pathname) return true;
+  if (typeof router.getMatchedRoutes !== "function") return false;
+  let shown;
+  let committed;
+  try {
+    shown = router.getMatchedRoutes(leaf.pathname);
+    committed = router.getMatchedRoutes(pathname);
+  } catch {
+    return false;
+  }
+  const routeId = committed?.foundRoute?.id;
+  if (
+    routeId === undefined ||
+    routeId !== leaf.routeId ||
+    shown?.foundRoute?.id !== routeId
+  ) {
+    return false;
+  }
+  const params = committed.routeParams ?? {};
+  const shownParams = shown.routeParams ?? {};
+  const names = Object.keys(params);
+  return (
+    names.length === Object.keys(shownParams).length &&
+    names.every((name) => params[name] === shownParams[name])
+  );
+}
+
 let frameNavigationEpoch = 0;
 let lastCommittedRouteLocation =
   typeof location !== "undefined" ? location.pathname + location.search : "";
@@ -715,9 +764,7 @@ function syncFrameNavigationEpoch() {
     // matches follow, and until then the leaf still names the page left.
     // The committed path is no stand-in for the pattern: on a dynamic route
     // (/products/$slug) it never equals the route the acks name.
-    const matches = documentNavigation ? undefined : router?.state?.matches;
-    const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
-    if (leaf?.pathname === committed.pathname) {
+    if (!documentNavigation && matchesReachedPath(router, committed.pathname)) {
       withdrawAppliedPresentationAcks(
         currentRoutePattern() ?? committed.pathname,
       );
@@ -763,9 +810,7 @@ function settleArrivalWithdrawal(routerResolved) {
     if (pending.pattern !== undefined) flushArrivedPresentationTokens();
     return;
   }
-  const matches = router?.state?.matches;
-  const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
-  if (leaf?.pathname === pending.pathname) {
+  if (matchesReachedPath(router, pending.pathname)) {
     pendingArrivalWithdrawal = null;
     withdrawAppliedPresentationAcks(currentRoutePattern() ?? pending.pathname);
     if (pending.pattern !== undefined) flushArrivedPresentationTokens();
