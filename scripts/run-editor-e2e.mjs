@@ -324,6 +324,15 @@ let stateDir = null;
  */
 let previewWorkspaces = null;
 /**
+ * The old sidecar's workspaces in swap mode: a root of this run's own under
+ * the old checkout's `.morph-previews/`, removed by the teardown like the one
+ * above. A sidecar's toolchain is its own checkout's, and it refuses a
+ * workspace that resolves `vite` from another checkout
+ * (`LOCAL_PREVIEW_TOOLCHAIN_ROOT_MISMATCH`), so the old sidecar cannot share
+ * this checkout's root. Null outside swap mode.
+ */
+let oldPreviewWorkspaces = null;
+/**
  * The machine's one E2E slot (`e2e-machine-lock.mjs`), held from before the
  * port check until teardown is done, so the next run starts on a machine this
  * one has left.
@@ -740,22 +749,25 @@ async function runTeardown() {
   // Only once every child has stopped, so nothing is still writing in it; and
   // only this run's directory: anything else in `.morph-previews/` is not this
   // run's. A directory that could not be removed is reported and left, and the
-  // rest of the teardown still runs.
-  if (previewWorkspaces) {
+  // rest of the teardown still runs. In swap mode the old checkout's root is
+  // treated the same way.
+  for (const workspaces of [previewWorkspaces, oldPreviewWorkspaces]) {
+    if (!workspaces) continue;
     if (!stoppedAll) {
-      log(`kept ${previewWorkspaces}: a process this run started may still be using it`);
+      log(`kept ${workspaces}: a process this run started may still be using it`);
     } else {
       try {
-        await rm(previewWorkspaces, { recursive: true, force: true });
-        log(`removed ${previewWorkspaces}`);
+        await rm(workspaces, { recursive: true, force: true });
+        log(`removed ${workspaces}`);
       } catch (error) {
         log(
-          `could not remove ${previewWorkspaces}: ${error instanceof Error ? error.message : error}`,
+          `could not remove ${workspaces}: ${error instanceof Error ? error.message : error}`,
         );
       }
     }
-    previewWorkspaces = null;
   }
+  previewWorkspaces = null;
+  oldPreviewWorkspaces = null;
   if (stateDir) {
     await rm(stateDir, { recursive: true, force: true });
     log(`removed ${stateDir}`);
@@ -1120,7 +1132,7 @@ function sidecarRecord(report, tag, secrets) {
  * by the swap; it also makes the env file path absolute, so a sidecar started
  * in another checkout reads this checkout's origin and token.
  */
-function launchSidecar(recorder, name, cwd) {
+function launchSidecar(recorder, name, cwd, workspaces = previewWorkspaces) {
   const sidecar = start(
     name,
     "node",
@@ -1130,7 +1142,7 @@ function launchSidecar(recorder, name, cwd) {
     ],
     {
       MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE: "1",
-      MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT: previewWorkspaces,
+      MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT: workspaces,
     },
     (line, stream) => recorder.line(line, stream),
     cwd,
@@ -1197,9 +1209,10 @@ async function checkSidecarSwap(extra) {
   if (!modules?.isDirectory()) {
     refuse("NODE_MODULES_MISSING", `${from} has no node_modules directory.`);
   }
-  // Both sidecars lay out workspaces in one root, and a Theme workspace
-  // resolves packages from the directories above it, so the two checkouts
-  // must install the same packages.
+  // Each sidecar lays out workspaces under its own checkout and a Theme
+  // workspace resolves packages from the directories above it, so the same
+  // Theme is served by the same packages before and after the swap only if
+  // the two checkouts install the same ones.
   for (const file of ["package.json", "pnpm-lock.yaml"]) {
     const [ours, theirs] = await Promise.all(
       [file, path.join(from, file)].map((name) => readFile(name).catch(() => null)),
@@ -1644,9 +1657,20 @@ async function main() {
           `SIDECAR_SWAP_PORT_IN_USE: something already listens on ${swap.port}, the sidecar origin's port. Stop it first.`,
         );
       }
+      // Its own root under its own checkout. See `oldPreviewWorkspaces`.
+      await mkdir(path.join(swap.from, ".morph-previews"), { recursive: true });
+      oldPreviewWorkspaces = await mkdtemp(
+        path.join(swap.from, ".morph-previews", "e2e-run-"),
+      );
+      log(`old sidecar workspaces in ${oldPreviewWorkspaces}`);
       log(`starting the old sidecar from ${swap.from}`);
     }
-    firstSidecar = launchSidecar(sidecarRecorder, "sidecar", swap?.from);
+    firstSidecar = launchSidecar(
+      sidecarRecorder,
+      "sidecar",
+      swap?.from,
+      swap ? oldPreviewWorkspaces : previewWorkspaces,
+    );
     if (swap) await waitForOk(swap.origin, "the old sidecar");
   } else {
     // Nothing to start: the Worker reaches a container through its own binding,
