@@ -59,9 +59,13 @@ export function parsePreviewBridgeCapabilities(
 }
 
 /**
- * A transport's `serving` report as it arrived over the wire, or null for
- * anything missing or malformed. Null is "unknown": no capability is filled
- * in for it here or by any caller.
+ * A transport's `serving` report as it arrived over the wire. Null when there
+ * is no well-formed `bridge` (not a record, no bridge, a malformed build id,
+ * or a capability list that is missing, unknown or repeats an entry). A valid
+ * bridge with a missing or malformed `instance` is kept, as
+ * `{ bridge, instance: null }`: the bridge is known, the instance it was
+ * served by is not. Either way "unknown" is never filled in: no capability or
+ * instance is assumed here or by any caller.
  */
 export function parsePreviewServing(value: unknown): PreviewServing | null {
   if (!isRecord(value) || !isRecord(value.bridge)) return null;
