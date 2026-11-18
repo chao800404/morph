@@ -27,8 +27,9 @@ export const START_PREVIEW_SHARDS = [
   ["spread-override-binding.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts"],
   // navigation-matrix: shard 3 was the shortest Start shard job of main run
   // 41267736430 (10m53s, against 19m44s and 17m45s); the spec's Start preview
-  // cells took ~2.6 min locally.
-  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts", "navigation-matrix.spec.ts", "history-back-controlled-repro.spec.ts"],
+  // cells took ~2.6 min locally. selection-field-frame-navigated: accepted
+  // on full Start by the user's decision; added to this, the shortest shard.
+  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts", "navigation-matrix.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
