@@ -200,8 +200,9 @@ async function renderShell(
   customContext: StorefrontThemeEditorDTO = context,
   customTree = tree(),
   contentRefresh?: "invalidate" | "reload",
+  initialAnswer?: unknown,
 ) {
-  const initialServer = {
+  const initialServer = (initialAnswer ?? {
     success: true,
     message: "Live Preview server ready",
     data: {
@@ -210,7 +211,7 @@ async function renderShell(
       bridgeCapabilities: ["selection-field-section", "code-default-selection", "astro-identity-v2"],
       ...(contentRefresh ? { contentRefresh } : {}),
     },
-  } as never;
+  }) as never;
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
@@ -250,6 +251,17 @@ function fromPreview(data: Record<string, unknown>) {
     );
   });
   answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+}
+
+/**
+ * A start answer's serving report, as the server function passes it on: a
+ * build the editor has no record of, served by an instance it cannot name.
+ */
+function servingOf(capabilities: string[]) {
+  return {
+    bridge: { buildId: "d".repeat(64), capabilities },
+    instance: null,
+  };
 }
 
 function sendReady(capabilities: string[]) {
@@ -318,6 +330,12 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       data: {
         url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
         workspaceFingerprint: "fp-new-build",
+        servingBridge: servingOf([
+          "selection-field-section",
+          "code-default-selection",
+          "astro-identity-v2",
+          "section-presentation-ack-v1",
+        ]),
         bridgeCapabilities: [
           "selection-field-section",
           "code-default-selection",
@@ -357,6 +375,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       data: {
         url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
         workspaceFingerprint: "fp-old-build",
+        servingBridge: servingOf(["selection-field-section"]),
         bridgeCapabilities: ["selection-field-section"],
       },
     } as never);
@@ -388,6 +407,10 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       data: {
         url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
         workspaceFingerprint: "fp-new-build",
+        servingBridge: servingOf([
+          "selection-field-section",
+          "section-presentation-ack-v1",
+        ]),
         bridgeCapabilities: [
           "selection-field-section",
           "section-presentation-ack-v1",
@@ -438,6 +461,10 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       data: {
         url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
         workspaceFingerprint: "fp-new-build",
+        servingBridge: servingOf([
+          "selection-field-section",
+          "section-presentation-ack-v1",
+        ]),
         bridgeCapabilities: [
           "selection-field-section",
           "section-presentation-ack-v1",
@@ -1605,6 +1632,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
         data: {
           url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
           workspaceFingerprint: "fp-current-build",
+          servingBridge: servingOf(["selection-field-section"]),
           bridgeCapabilities: ["selection-field-section"],
         },
       } as never);
@@ -1637,6 +1665,447 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       ).toContain(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE);
       // The way out stays: the author can reload the preview.
       expect(screen.getByRole("button", { name: "Reload preview" })).toBeTruthy();
+    });
+  });
+
+  /**
+   * What the start answers say is serving, against what served the frame on
+   * screen. Only "the service confirms the acknowledging bridge, and the
+   * frame's version is unknown" refreshes, once per serving build.
+   */
+  describe("the serving decision", () => {
+    const ACK_CAPABILITY = "section-presentation-ack-v1";
+    const BUILD_OLD = "a".repeat(64);
+    const BUILD_NEW = "b".repeat(64);
+    const OLD_INSTANCE = { session: "sidecar-old-0001", serial: 1 };
+    const NEW_INSTANCE = { session: "sidecar-new-0002", serial: 1 };
+    type Instance = typeof OLD_INSTANCE;
+    type Serving = Readonly<{
+      buildId: string;
+      ack: boolean;
+      instance: Instance | null;
+    }>;
+    const capabilitiesOf = (ack: boolean) => [
+      "selection-field-section",
+      "code-default-selection",
+      ...(ack ? [ACK_CAPABILITY] : []),
+    ];
+    /** A start answer in the shape the server function returns it. */
+    const startAnswer = (serving: Serving | null, fingerprint = "fp-check") =>
+      ({
+        success: true,
+        message: "Live Preview server ready",
+        data: {
+          url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+          workspaceFingerprint: fingerprint,
+          servingBridge: serving
+            ? {
+                bridge: {
+                  buildId: serving.buildId,
+                  capabilities: capabilitiesOf(serving.ack),
+                },
+                instance: serving.instance,
+              }
+            : null,
+          ...(serving ? { bridgeCapabilities: capabilitiesOf(serving.ack) } : {}),
+        },
+      }) as never;
+    async function renderServedBy(
+      initial: Serving | null,
+      fingerprint = "fp-initial",
+    ) {
+      return renderShell(
+        fingerprint,
+        context,
+        tree(),
+        undefined,
+        startAnswer(initial, fingerprint),
+      );
+    }
+    /** The frame's ready, naming the instance its responses came from. */
+    const readyServedBy = (capabilities: string[], instance: Instance | null) =>
+      sendFrameReady(
+        { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+        capabilities,
+        instance ? { servedInstance: { kind: "known", instance } } : {},
+      );
+    async function expectRefreshed(firstIframe: Element | null) {
+      await waitFor(() => {
+        expect(currentIframe()).not.toBe(firstIframe);
+      });
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+    }
+    async function expectStopped(firstIframe: Element | null) {
+      await waitFor(() => {
+        expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("preview-presentation-unconfirmable").textContent,
+        ).toContain("Could not update the preview.");
+      });
+      expect(currentIframe()).toBe(firstIframe);
+      expect(firstIframe?.isConnected).toBe(true);
+      expect(screen.getByRole("button", { name: "Reload preview" })).toBeTruthy();
+    }
+
+    type Row = "supports" | "does not" | "unknown";
+    type Column = "changed" | "same" | "unknown";
+    const answerFor = (row: Row, column: Column): Serving | null => {
+      if (row === "unknown") return null;
+      return {
+        buildId: BUILD_NEW,
+        ack: row === "supports",
+        instance: column === "same" ? OLD_INSTANCE : NEW_INSTANCE,
+      };
+    };
+    const cells: Array<[Row, Column, boolean]> = [];
+    for (const row of ["supports", "does not", "unknown"] as const) {
+      for (const column of ["changed", "same", "unknown"] as const) {
+        cells.push([row, column, row === "supports" && column === "unknown"]);
+      }
+    }
+
+    it.each(cells)(
+      "serving %s, previous version %s: refreshes = %s",
+      async (row, column, refreshes) => {
+        vi.mocked(startThemePreviewServer).mockResolvedValue(
+          startAnswer(answerFor(row, column)),
+        );
+        // changed: this tab was told the frame's instance served an older
+        // build. same: the answer names the frame's own instance. unknown:
+        // the frame names no instance this tab was told anything about.
+        await renderServedBy(
+          column === "changed"
+            ? { buildId: BUILD_OLD, ack: false, instance: OLD_INSTANCE }
+            : null,
+        );
+        const firstIframe = currentIframe();
+        readyServedBy(
+          ["selection-field-section"],
+          column === "unknown" ? null : OLD_INSTANCE,
+        );
+        if (refreshes) {
+          await expectRefreshed(firstIframe);
+        } else {
+          await expectStopped(firstIframe);
+        }
+      },
+    );
+
+    it("unknown: a start that fails stops without a refresh", async () => {
+      vi.mocked(startThemePreviewServer).mockResolvedValue({
+        success: false,
+        message: "The Live Preview server could not start.",
+      } as never);
+      await renderServedBy(null);
+      const firstIframe = currentIframe();
+      readyServedBy(["selection-field-section"], null);
+      await expectStopped(firstIframe);
+    });
+
+    it("a frame naming an instance this tab has no record of is unknown, and the confirmed service refreshes it once", async () => {
+      vi.mocked(startThemePreviewServer).mockResolvedValue(
+        startAnswer({ buildId: BUILD_NEW, ack: true, instance: NEW_INSTANCE }),
+      );
+      await renderServedBy(null);
+      const firstIframe = currentIframe();
+      readyServedBy(["selection-field-section"], OLD_INSTANCE);
+      await expectRefreshed(firstIframe);
+    });
+
+    it("container: a service that names no instance is never the frame's; it refreshes once, and the new ready with the capability unlocks nothing until the frame acknowledges", async () => {
+      vi.mocked(startThemePreviewServer).mockResolvedValue(
+        startAnswer({ buildId: BUILD_NEW, ack: true, instance: null }),
+      );
+      vi.mocked(postEditorToPreviewMessage).mockImplementation(() => {});
+      await renderServedBy({ buildId: BUILD_NEW, ack: true, instance: null });
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+      });
+      const firstIframe = currentIframe();
+      readyServedBy(["selection-field-section"], null);
+      await expectRefreshed(firstIframe);
+
+      reloadFrameDocument();
+      readyServedBy(["selection-field-section", ACK_CAPABILITY], null);
+      // The new frame says it can acknowledge; it has acknowledged nothing.
+      disablePresentationAcks();
+      answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+      });
+      const row = await screen.findByText("h1");
+      act(() => {
+        row.closest("button")?.click();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+      const input = await screen.findByDisplayValue("Welcome");
+      fireEvent.input(input, { target: { value: "Not yet acknowledged" } });
+      fireEvent.blur(input);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      });
+      expect(updateSectionProps, "no write before the frame's own ack").not.toHaveBeenCalled();
+      expect(screen.getByDisplayValue("Not yet acknowledged")).toBeTruthy();
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+    });
+
+    it("a Theme save moves the fingerprint, not the bridge: after the one refresh for a build, a later frame without the capability is not refreshed again", async () => {
+      vi.mocked(startThemePreviewServer).mockResolvedValue(
+        startAnswer(
+          { buildId: BUILD_NEW, ack: true, instance: NEW_INSTANCE },
+          "fp-check-1",
+        ),
+      );
+      const client = await renderServedBy(null);
+      const firstIframe = currentIframe();
+      readyServedBy(["selection-field-section"], null);
+      await expectRefreshed(firstIframe);
+      const secondIframe = currentIframe();
+
+      // The refreshed frame still cannot acknowledge: stopped, manual.
+      reloadFrameDocument();
+      readyServedBy(["selection-field-section"], null);
+      await waitFor(() => {
+        expect(screen.getByTestId("preview-presentation-unconfirmable")).toBeTruthy();
+      });
+
+      // A Theme save: the next answers carry a new fingerprint (the source
+      // generation is in it) and the same serving build.
+      client.setQueryData(
+        themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
+        startAnswer(
+          { buildId: BUILD_NEW, ack: true, instance: NEW_INSTANCE },
+          "fp-after-save-1",
+        ),
+      );
+      vi.mocked(startThemePreviewServer).mockResolvedValue(
+        startAnswer(
+          { buildId: BUILD_NEW, ack: true, instance: NEW_INSTANCE },
+          "fp-after-save-2",
+        ),
+      );
+      reloadFrameDocument();
+      readyServedBy(["selection-field-section"], null);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("preview-presentation-unconfirmable").textContent,
+        ).toContain("Could not update the preview.");
+      });
+      expect(currentIframe()).toBe(secondIframe);
+      expect(screen.getByRole("button", { name: "Reload preview" })).toBeTruthy();
+    });
+
+    it("a refreshed frame naming another instance than the one that answered is logged, not refreshed again, and unlocks nothing by itself", async () => {
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      vi.mocked(startThemePreviewServer).mockResolvedValue(
+        startAnswer({ buildId: BUILD_NEW, ack: true, instance: NEW_INSTANCE }),
+      );
+      await renderServedBy(null);
+      const firstIframe = currentIframe();
+      readyServedBy(["selection-field-section"], null);
+      await expectRefreshed(firstIframe);
+      const secondIframe = currentIframe();
+
+      reloadFrameDocument();
+      readyServedBy(["selection-field-section", ACK_CAPABILITY], OLD_INSTANCE);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect(currentIframe()).toBe(secondIframe);
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+      expect(
+        info.mock.calls.some(([line]) =>
+          String(line).includes("[preview-bridge] refreshed frame"),
+        ),
+      ).toBe(true);
+      info.mockRestore();
+    });
+  });
+
+  /**
+   * The author's work across the one refresh: a field already left (its
+   * draft, document and basis) goes on once after the new frame's own
+   * acknowledgement; input after that, or never left, stays a draft.
+   */
+  describe("drafts across the bounded refresh", () => {
+    const ACK_CAPABILITY = "section-presentation-ack-v1";
+    const supportedAnswer = {
+      success: true,
+      message: "Live Preview server ready",
+      data: {
+        url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+        workspaceFingerprint: "fp-check",
+        servingBridge: {
+          bridge: {
+            buildId: "c".repeat(64),
+            capabilities: ["selection-field-section", ACK_CAPABILITY],
+          },
+          instance: { session: "sidecar-new-0002", serial: 1 },
+        },
+        bridgeCapabilities: ["selection-field-section", ACK_CAPABILITY],
+      },
+    } as never;
+    const writes = () =>
+      updateSectionProps.mock.calls.map(
+        ([call]) =>
+          (call as { data: Record<string, unknown> }).data as {
+            templateId: string;
+            props: Record<string, unknown>;
+            expectedDraftGeneration?: number;
+          },
+      );
+
+    /**
+     * The old frame is up without the capability; the check is held until
+     * `answer` is called, so the author can work in the meantime.
+     */
+    async function oldFrameWithHeldCheck() {
+      let answer!: () => Promise<void>;
+      const gate = new Promise<void>((resolve) => {
+        answer = async () => {
+          await act(async () => {
+            resolve();
+            await gate;
+          });
+        };
+      });
+      vi.mocked(startThemePreviewServer).mockImplementation(async () => {
+        await gate;
+        return supportedAnswer;
+      });
+      await renderShell("fp-initial");
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+      });
+      const row = await screen.findByText("h1");
+      act(() => {
+        row.closest("button")?.click();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+      const input = await screen.findByDisplayValue("Welcome");
+      const firstIframe = currentIframe();
+      sendReady(["selection-field-section"]);
+      await waitFor(() => {
+        expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+      });
+      return { input, firstIframe, answer };
+    }
+    /** The new frame comes up, can acknowledge, and acknowledges. */
+    async function newFrameAcknowledges(firstIframe: Element | null) {
+      await waitFor(() => {
+        expect(currentIframe()).not.toBe(firstIframe);
+      });
+      reloadFrameDocument();
+      sendReady(["selection-field-section", ACK_CAPABILITY]);
+      answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId("preview-presentation-unconfirmable")).toBeNull();
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+    }
+
+    it("a field left before the refresh is written once after the new frame acknowledges, on the basis it was typed on", async () => {
+      const { input, firstIframe, answer } = await oldFrameWithHeldCheck();
+      fireEvent.input(input, { target: { value: "Left before refresh" } });
+      fireEvent.blur(input);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      });
+      expect(updateSectionProps, "nothing while the old frame is up").not.toHaveBeenCalled();
+
+      await answer();
+      await newFrameAcknowledges(firstIframe);
+      expect(writes()).toEqual([
+        expect.objectContaining({
+          templateId: "template-1",
+          props: expect.objectContaining({ heading: "Left before refresh" }),
+          expectedDraftGeneration: 1,
+        }),
+      ]);
+
+      // A repeated acknowledgement writes nothing more.
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [heroNode],
+        routePath: "/",
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      });
+      expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    });
+
+    it("input after the field was left, during the refresh, ends that commit: nothing is written after the new frame acknowledges; the draft is kept", async () => {
+      const { input, firstIframe, answer } = await oldFrameWithHeldCheck();
+      fireEvent.input(input, { target: { value: "Left before refresh" } });
+      fireEvent.blur(input);
+      fireEvent.focus(input);
+      fireEvent.input(input, { target: { value: "Typed again during refresh" } });
+
+      await answer();
+      await newFrameAcknowledges(firstIframe);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      expect(screen.getByDisplayValue("Typed again during refresh")).toBeTruthy();
+    });
+
+    it("input never left stays a draft: nothing is written after the new frame acknowledges", async () => {
+      const { input, firstIframe, answer } = await oldFrameWithHeldCheck();
+      fireEvent.input(input, { target: { value: "Never left" } });
+
+      await answer();
+      await newFrameAcknowledges(firstIframe);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      expect(screen.getByDisplayValue("Never left")).toBeTruthy();
+
+      // Leaving it now, on the acknowledged frame, saves it once, on the
+      // basis it was typed on.
+      fireEvent.blur(screen.getByDisplayValue("Never left"));
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      });
+      expect(writes()).toEqual([
+        expect.objectContaining({
+          templateId: "template-1",
+          props: expect.objectContaining({ heading: "Never left" }),
+          expectedDraftGeneration: 1,
+        }),
+      ]);
+    });
+
+    it("control: with nothing left before the refresh, the new frame's acknowledgement opens writes for new input", async () => {
+      const { firstIframe, answer } = await oldFrameWithHeldCheck();
+      await answer();
+      await newFrameAcknowledges(firstIframe);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      const field = screen.getByDisplayValue("Welcome");
+      fireEvent.input(field, { target: { value: "Typed after the ack" } });
+      fireEvent.blur(field);
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      expect(writes()[0]).toEqual(
+        expect.objectContaining({
+          props: expect.objectContaining({ heading: "Typed after the ack" }),
+          expectedDraftGeneration: 1,
+        }),
+      );
     });
   });
 });
