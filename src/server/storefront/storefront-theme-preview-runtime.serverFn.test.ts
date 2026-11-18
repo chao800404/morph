@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
   env: {} as Record<string, unknown>,
 }));
 
+const source = vi.hoisted(() => ({ generation: 7 }));
+
 const dal = vi.hoisted(() => ({
   setPreviewRuntime: vi.fn(),
   findEditorContext: vi.fn(),
@@ -101,7 +103,7 @@ vi.mock("./preview-media-urls", () => ({
 }));
 vi.mock("@/lib/storefront/storage/theme-storage.server", () => ({
   themeSourceStore: {
-    getSourceGeneration: async () => 7,
+    getSourceGeneration: async () => source.generation,
     getWorkspaceSnapshot: async () => [
       { path: "src/routes/index.tsx", content: "", version: 1 },
     ],
@@ -406,17 +408,34 @@ describe("the runtime startThemePreviewServer starts the preview with", () => {
     expect(dal.start).not.toHaveBeenCalled();
   });
 
-  it("reports workspaceFingerprint and bridgeCapabilities from the materialized preview workspace", async () => {
+  // The capabilities a start reports are the transport's report of the bridge
+  // it laid out, passed on as received. They are never filled in from this
+  // Worker's own constants: the bridge a page loads is the one the transport
+  // wrote, which an older or newer transport may not share with this Core.
+  // (This replaces a test that pinned the constant fill-in.)
+  const SERVING_WITHOUT_ACK = {
+    bridge: {
+      buildId: "b".repeat(64),
+      capabilities: ["selection-field-section", "code-default-selection"],
+    },
+    instance: { session: "5e1f0c3a-6b9d-4c1e-9f00-0123456789ab", serial: 2 },
+  };
+  const startedWith = (extra: Record<string, unknown>) => ({
+    ok: true,
+    url: "https://preview.example",
+    processId: "proc-1",
+    attemptId: "attempt-1",
+    readyMs: 10,
+    timings: {},
+    hoistedContentFields: {},
+    ...extra,
+  });
+
+  it("passes the transport's serving report on as received", async () => {
     dal.findEditorContext.mockResolvedValue(editorContext("start"));
-    dal.start.mockResolvedValueOnce({
-      ok: true,
-      url: "https://preview.example",
-      processId: "proc-1",
-      attemptId: "attempt-1",
-      readyMs: 10,
-      timings: {},
-      hoistedContentFields: {},
-    });
+    dal.start.mockResolvedValueOnce(
+      startedWith({ serving: SERVING_WITHOUT_ACK }),
+    );
     const result = await call(startThemePreviewServer, {
       storefrontId: STOREFRONT,
       themeId: THEME,
@@ -425,13 +444,66 @@ describe("the runtime startThemePreviewServer starts the preview with", () => {
       success: true,
       data: {
         workspaceFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-        bridgeCapabilities: expect.arrayContaining([
-          "selection-field-section",
-          "code-default-selection",
-          "astro-identity-v2",
-          "section-presentation-ack-v1",
-        ]),
+        servingBridge: SERVING_WITHOUT_ACK,
+        bridgeCapabilities: SERVING_WITHOUT_ACK.bridge.capabilities,
       },
     });
+  });
+
+  it.each([
+    ["a transport that reports no serving", {}],
+    ["a null serving", { serving: null }],
+    [
+      "a malformed serving",
+      { serving: { bridge: { buildId: "nope", capabilities: [] } } },
+    ],
+    [
+      "a serving with an unknown capability",
+      {
+        serving: {
+          bridge: { buildId: "c".repeat(64), capabilities: ["future-capability"] },
+          instance: null,
+        },
+      },
+    ],
+  ])("reports the bridge as unknown for %s", async (_label, extra) => {
+    dal.findEditorContext.mockResolvedValue(editorContext("start"));
+    dal.start.mockResolvedValueOnce(startedWith(extra));
+    const result = (await call(startThemePreviewServer, {
+      storefrontId: STOREFRONT,
+      themeId: THEME,
+    })) as { success: boolean; data?: Record<string, unknown> };
+    expect(result.success).toBe(true);
+    expect(result.data?.servingBridge).toBeNull();
+    // Unknown is not "supports": no capability is filled in for it.
+    expect(result.data?.bridgeCapabilities).toBeUndefined();
+  });
+
+  it("keeps the bridge identity when only the Theme's source generation changed", async () => {
+    dal.findEditorContext.mockResolvedValue(editorContext("start"));
+    source.generation = 7;
+    dal.start.mockResolvedValueOnce(
+      startedWith({ serving: SERVING_WITHOUT_ACK }),
+    );
+    const first = (await call(startThemePreviewServer, {
+      storefrontId: STOREFRONT,
+      themeId: THEME,
+    })) as { data?: Record<string, any> };
+    source.generation = 8;
+    dal.start.mockResolvedValueOnce(
+      startedWith({ serving: SERVING_WITHOUT_ACK }),
+    );
+    const second = (await call(startThemePreviewServer, {
+      storefrontId: STOREFRONT,
+      themeId: THEME,
+    })) as { data?: Record<string, any> };
+    source.generation = 7;
+    // The workspace fingerprint follows the saved source; the bridge does not.
+    expect(second.data?.workspaceFingerprint).not.toBe(
+      first.data?.workspaceFingerprint,
+    );
+    expect(second.data?.servingBridge?.bridge.buildId).toBe(
+      first.data?.servingBridge?.bridge.buildId,
+    );
   });
 });
