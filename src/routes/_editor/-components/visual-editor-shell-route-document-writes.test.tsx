@@ -670,6 +670,7 @@ async function canvasReport(selector: string, index: number) {
 
 let headingReport: Awaited<ReturnType<typeof canvasReport>>;
 let secondRowReport: Awaited<ReturnType<typeof canvasReport>>;
+let firstRowReport: Awaited<ReturnType<typeof canvasReport>>;
 
 /** Opens the editor on the route and selects `report`'s element in Content. */
 async function openOn(report: Record<string, unknown>) {
@@ -765,6 +766,7 @@ beforeAll(async () => {
   }
   headingReport = await canvasReport("h2", 0);
   secondRowReport = await canvasReport("h3", 1);
+  firstRowReport = await canvasReport("h3", 0);
 });
 
 beforeEach(() => {
@@ -4316,5 +4318,194 @@ describe("a draft the author left while the frame was elsewhere", () => {
     await pause();
     expect(sent()).toHaveLength(2);
     expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+
+  // The blur commits the section's draft as it is then: a sibling typed
+  // before the blur goes with it; input after the blur does not.
+  const typeWithoutLeaving = (index: number, value: string) => {
+    const field = cardFields()[index];
+    if (!field) throw new Error(`typeWithoutLeaving: no card field ${index}`);
+    fireEvent.input(field, { target: { value } });
+  };
+  /** What the author is shown about the held draft. */
+  const heldState = () => ({
+    status: saveStatus(),
+    errors: vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    loadLatest: screen.queryAllByRole("button", {
+      name: "Load latest, keep mine",
+    }).length,
+    tryAgain: screen.queryAllByRole("button", { name: "Try again" }).length,
+  });
+  /**
+   * Row b's title is typed, not left, while the first write is out; row a
+   * is then selected, so its title is read from the source too. The frame
+   * leaves and the page takes up its document while away; with `before`,
+   * row a's title is typed into there, not left. The author then leaves
+   * row b's title.
+   */
+  async function rowDraftWhileElsewhere(before?: string) {
+    await openOn(secondRowReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Two", "Two v1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeWithoutLeaving(1, "Two v2");
+    await select(firstRowReport);
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await flushFrames();
+    if (before !== undefined) typeWithoutLeaving(0, before);
+    await leaveField(1);
+    expect(sent()).toHaveLength(1);
+  }
+
+  it("a sibling typed before the blur, never left itself, is saved with it by the return", async () => {
+    await rowDraftWhileElsewhere("One typed");
+    await frameReturns(true);
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+    });
+    expect(rowsOf(sent()[1]!).map(([, title]) => title)).toEqual([
+      "One typed",
+      "Two v2",
+    ]);
+  });
+
+  it("a sibling typed after the blur is not sent on the return; the whole draft is kept and the next blur sends it", async () => {
+    await rowDraftWhileElsewhere();
+    typeWithoutLeaving(0, "One typed");
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields().map((field) => field.value)).toEqual([
+      "One typed",
+      "Two v2",
+    ]);
+
+    await leaveField(0);
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+    });
+    expect(rowsOf(sent()[1]!).map(([, title]) => title)).toEqual([
+      "One typed",
+      "Two v2",
+    ]);
+  });
+
+  // Only the return's own source check stops this one before the write
+  // path: without it the write path refuses later, as a failed save.
+  it("source changed: the return refuses before any write; the draft is kept and Try again is left", async () => {
+    await draftWhileElsewhere(true);
+    act(() => {
+      useThemeWorkspaceStore.getState().setBaseSourceGeneration(2, {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+      });
+    });
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(heldState()).toEqual({
+      status: "Unsaved",
+      errors: [],
+      loadLatest: 0,
+      tryAgain: 1,
+    });
+  });
+
+  // Only the return's own check of the document's range stops this one
+  // before the write path: without it the write path refuses later, as a
+  // conflict.
+  it("document changed elsewhere (basis): the return refuses before any write; the draft is kept and Try again is left", async () => {
+    await draftWhileElsewhere(true);
+    await outsideWriteRead((route) => {
+      route.props = { ...(route.props ?? {}), heading: "Theirs" };
+      route.generation += 1;
+    });
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Theirs");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(heldState()).toEqual({
+      status: "Unsaved",
+      errors: [],
+      loadLatest: 0,
+      tryAgain: 1,
+    });
+  });
+
+  it("conflict: the return sends nothing; the draft is kept and the conflict's Load latest, keep mine is left", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release(conflictAnswer());
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await flushFrames();
+    await leaveField();
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(heldState()).toMatchObject({ status: "Out of date", loadLatest: 1 });
+  });
+
+  // The write path refuses this one by itself too (an earlier unanswered
+  // save holds every later one), so it pins the outcome, not which check.
+  it("unconfirmed: an earlier write with no answer holds the return; nothing is sent, the draft is kept and Try again is left", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.lose();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await flushFrames();
+    await leaveField();
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(heldState()).toMatchObject({ status: "Save failed", tryAgain: 1 });
+  });
+
+  it("the editor on another document and back: the return sends nothing, and leaving the field then saves the kept draft once", async () => {
+    await draftWhileElsewhere(true);
+    act(() => host.go?.({ routePath: "/", templateId: undefined }));
+    await flushFrames();
+    await pause();
+    act(() => host.go?.({ routePath: ROUTE_PATH, templateId: ROUTE_DOC_ID }));
+    await flushFrames();
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(heldState()).toMatchObject({ status: "Unsaved", tryAgain: 1 });
+
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    savedOnce("Value 2");
   });
 });
