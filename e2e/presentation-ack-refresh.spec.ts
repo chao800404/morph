@@ -26,6 +26,8 @@ function isPreviewSubresource(page: Page, request: Request) {
 type PreviewReadyObservation = {
   previewDocument: string;
   hasAckCapability: boolean;
+  /** What the ready said served the page: `known:<instance>`, `mixed`, `missing` or `none`. */
+  servedInstance: string;
 };
 
 type PreviewAckObservation = {
@@ -52,6 +54,7 @@ async function observePreviewLifecycle(page: Page) {
       readyEvents: [] as Array<{
         previewDocument: string;
         hasAckCapability: boolean;
+        servedInstance: string;
       }>,
       acks: [] as Array<{
         previewDocument: string;
@@ -74,11 +77,20 @@ async function observePreviewLifecycle(page: Page) {
         const capabilities = Array.isArray(data.capabilities)
           ? data.capabilities
           : [];
+        const served = data.servedInstance as
+          | { kind?: unknown; instance?: { session?: unknown; serial?: unknown } }
+          | undefined;
         state.readyEvents.push({
           previewDocument,
           hasAckCapability: capabilities.includes(
             "section-presentation-ack-v1",
           ),
+          servedInstance:
+            served?.kind === "known"
+              ? `known:${String(served.instance?.session)}.${String(served.instance?.serial)}`
+              : typeof served?.kind === "string"
+                ? served.kind
+                : "none",
         });
       } else if (
         data.type === "morph:storefront-preview-section-presentation-ack"
@@ -250,6 +262,14 @@ function stripCapabilityFromBody(body: string) {
   );
 }
 
+/**
+ * The first start's answer, made to look like an older service's: no
+ * acknowledging capability, and another first digest. Stripping the
+ * capability names "selection-field-section" twice in the serving report's
+ * list, which the editor cannot read, so the report counts as absent — as
+ * from a service that reports no serving bridge — and the frame it laid out
+ * has no known version. Simulated: no real bridge or service changes.
+ */
 function markOldFingerprintInBody(body: string) {
   return stripCapabilityFromBody(body).replace(/"[0-9a-f]{64}"/, `"${"0".repeat(64)}"`);
 }
@@ -303,9 +323,12 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     const rejectedAcks: string[] = [];
     let strippedInitialBridge = 0;
     let startCalls = 0;
+    // The editor's own account of each decision about the frame's bridge.
+    const bridgeDecisions: string[] = [];
 
     page.on("console", (msg) => {
       const text = msg.text();
+      if (text.startsWith("[preview-bridge]")) bridgeDecisions.push(text);
       if (
         text.includes("rejected by validation") &&
         text.includes("section-presentation-ack")
@@ -364,6 +387,27 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       ).toBeAttached({ timeout: 45_000 });
 
       const afterRefresh = await readLifecycle();
+      const servedBy = afterRefresh.readyEvents
+        .map((event) => `${event.hasAckCapability ? "ack" : "no-ack"}:${event.servedInstance}`)
+        .join(" ");
+      test.info().annotations.push(
+        { type: "ready served instances", description: servedBy },
+        { type: "bridge decisions", description: bridgeDecisions.join(" | ") },
+      );
+      console.log(`[simulated swap] ready served instances: ${servedBy}`);
+      console.log(
+        `[simulated swap] bridge decisions: ${bridgeDecisions.join(" | ")}`,
+      );
+      // The refresh is the bounded one, decided on a confirmed service and
+      // an unknown previous version, and made once.
+      expect(
+        bridgeDecisions.filter((line) =>
+          line.includes("previous version unknown: refreshing once"),
+        ),
+      ).toHaveLength(1);
+      expect(
+        bridgeDecisions.filter((line) => line.includes("not refreshing")),
+      ).toEqual([]);
       expect(strippedInitialBridge).toBe(1);
       expect(startCalls).toBeGreaterThanOrEqual(2);
       expect(afterRefresh.distinctDocuments).toHaveLength(2);
