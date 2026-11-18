@@ -1931,11 +1931,7 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
     });
   });
 
-  /**
-   * The author's work across the one refresh: a field already left (its
-   * draft, document and basis) goes on once after the new frame's own
-   * acknowledgement; input after that, or never left, stays a draft.
-   */
+  /** The Inspector's content field across the one refresh. */
   describe("drafts across the bounded refresh", () => {
     const ACK_CAPABILITY = "section-presentation-ack-v1";
     const supportedAnswer = {
@@ -2022,73 +2018,20 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       });
     }
 
-    it("a field left before the refresh is written once after the new frame acknowledges, on the basis it was typed on", async () => {
+    // The old frame cannot acknowledge, so the Inspector's content field is
+    // disabled on it from its ready to the refresh: nothing is typed or
+    // left there through the Inspector. A commit left before the refresh,
+    // on a frame that could acknowledge, is the route-document file's case.
+    it("the old frame keeps the content field disabled, so nothing is typed or left there; the refresh writes nothing, and the new frame's acknowledgement opens the field", async () => {
       const { input, firstIframe, answer } = await oldFrameWithHeldCheck();
-      fireEvent.input(input, { target: { value: "Left before refresh" } });
-      fireEvent.blur(input);
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-      });
-      expect(updateSectionProps, "nothing while the old frame is up").not.toHaveBeenCalled();
-
-      await answer();
-      await newFrameAcknowledges(firstIframe);
-      expect(writes()).toEqual([
-        expect.objectContaining({
-          templateId: "template-1",
-          props: expect.objectContaining({ heading: "Left before refresh" }),
-          expectedDraftGeneration: 1,
-        }),
-      ]);
-
-      // A repeated acknowledgement writes nothing more.
-      fromPreview({
-        type: "morph:storefront-preview-structure",
-        nodes: [heroNode],
-        routePath: "/",
-      });
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 600));
-      });
-      expect(updateSectionProps).toHaveBeenCalledTimes(1);
-    });
-
-    it("input after the field was left, during the refresh, ends that commit: nothing is written after the new frame acknowledges; the draft is kept", async () => {
-      const { input, firstIframe, answer } = await oldFrameWithHeldCheck();
-      fireEvent.input(input, { target: { value: "Left before refresh" } });
-      fireEvent.blur(input);
-      fireEvent.focus(input);
-      fireEvent.input(input, { target: { value: "Typed again during refresh" } });
+      expect((input as HTMLTextAreaElement).disabled).toBe(true);
 
       await answer();
       await newFrameAcknowledges(firstIframe);
       expect(updateSectionProps).not.toHaveBeenCalled();
-      expect(screen.getByDisplayValue("Typed again during refresh")).toBeTruthy();
-    });
-
-    it("input never left stays a draft: nothing is written after the new frame acknowledges", async () => {
-      const { input, firstIframe, answer } = await oldFrameWithHeldCheck();
-      fireEvent.input(input, { target: { value: "Never left" } });
-
-      await answer();
-      await newFrameAcknowledges(firstIframe);
-      expect(updateSectionProps).not.toHaveBeenCalled();
-      expect(screen.getByDisplayValue("Never left")).toBeTruthy();
-
-      // Leaving it now, on the acknowledged frame, saves it once, on the
-      // basis it was typed on.
-      fireEvent.blur(screen.getByDisplayValue("Never left"));
-      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 600));
-      });
-      expect(writes()).toEqual([
-        expect.objectContaining({
-          templateId: "template-1",
-          props: expect.objectContaining({ heading: "Never left" }),
-          expectedDraftGeneration: 1,
-        }),
-      ]);
+      expect(
+        (screen.getByDisplayValue("Welcome") as HTMLTextAreaElement).disabled,
+      ).toBe(false);
     });
 
     it("control: with nothing left before the refresh, the new frame's acknowledgement opens writes for new input", async () => {

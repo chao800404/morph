@@ -403,6 +403,7 @@ import {
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
   EDITOR_CAPABILITIES,
+  formatPreviewServedInstance,
   parsePreviewSectionProps,
   parsePreviewServedInstance,
   sameSectionPresentationToken,
@@ -410,11 +411,18 @@ import {
   type PreviewCatalogResponseBody,
   type PreviewEditableNode,
   type PreviewSectionProps,
+  type PreviewServedInstanceReport,
   type SectionPresentationProof,
   type SectionPresentationToken,
   type PreviewSelectionRestoreTarget,
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
+import {
+  parsePreviewServing,
+  previousPreviewBridgeVersion,
+  type PreviewBridgeIdentity,
+  type PreviewServing,
+} from "@/lib/storefront/editor/preview-serving";
 import {
   currentAcknowledgedSectionPresentation,
   isSectionPresentationPagePresented,
@@ -3179,6 +3187,8 @@ export function VisualEditorShell({
     readyRound: number;
     capabilities: ReadonlySet<PreviewCapability>;
     documentId: string | null;
+    /** What this round's ready said served the page; null when it said nothing. */
+    servedInstance: PreviewServedInstanceReport | null;
   } | null>(null);
   const [sectionPresentationReady, setSectionPresentationReady] =
     useState(false);
@@ -4976,9 +4986,24 @@ export function VisualEditorShell({
   const inspectorComposingRef = useRef(false);
   const [unsupportedRefreshFailed, setUnsupportedRefreshFailed] =
     useState(false);
+  /** `${scope}::${buildId}` of every serving build this tab refreshed for. */
   const unsupportedBridgeAttemptedRef = useRef(new Set<string>());
   const unsupportedBridgeReloadingRef = useRef(false);
   const deferredUnsupportedRefreshRef = useRef<(() => void) | null>(null);
+  /** A check of what is serving is out, for the frame round it names. */
+  const unsupportedBridgeCheckRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+  } | null>(null);
+  /** The serving report the one refresh was made on, until its frame is up. */
+  const unsupportedRefreshServingRef = useRef<PreviewServing | null>(null);
+  /**
+   * What serving reports this tab got said, by the instance they named: how
+   * an earlier frame's version can be known. Bounded; the oldest goes first.
+   */
+  const servingByInstanceRef = useRef(
+    new Map<string, PreviewBridgeIdentity>(),
+  );
   /** Called with true when the edit was finished, false when it was lost. */
   const inlineEditEndedRef = useRef(new Set<(finished: boolean) => void>());
   /** The finish this editor asked for and has not seen answered; one at most. */
@@ -5351,6 +5376,32 @@ export function VisualEditorShell({
   previewServerDataRef.current = previewServer.data;
   const unsupportedBridgeFailedRef = useRef(false);
 
+  // Every serving report this tab gets, by the instance it named: the start
+  // that laid out the frame on screen, and each check below. A report that
+  // names no instance (a container) is not kept: it is never any frame's.
+  const rememberServing = useCallback((serving: PreviewServing | null) => {
+    if (!serving?.instance) return;
+    const seen = servingByInstanceRef.current;
+    const id = formatPreviewServedInstance(serving.instance);
+    seen.delete(id);
+    seen.set(id, serving.bridge);
+    while (seen.size > 8) {
+      const oldest = seen.keys().next().value;
+      if (oldest === undefined) break;
+      seen.delete(oldest);
+    }
+  }, []);
+  useEffect(() => {
+    rememberServing(
+      previewServer.data?.success === true
+        ? parsePreviewServing(
+            (previewServer.data.data as { servingBridge?: unknown })
+              .servingBridge,
+          )
+        : null,
+    );
+  }, [previewServer.data, rememberServing]);
+
   useEffect(() => {
     if (!inspectorComposing && !inlineEditOpen) {
       const pending = deferredUnsupportedRefreshRef.current;
@@ -5367,6 +5418,31 @@ export function VisualEditorShell({
       return;
     }
     if (record.capabilities.has("section-presentation-ack-v1")) {
+      const refreshedOn = unsupportedRefreshServingRef.current;
+      if (unsupportedBridgeReloadingRef.current && refreshedOn) {
+        // Which instance served the refreshed frame decides nothing: writes
+        // wait for this frame's own acknowledgement, as any frame's do. It
+        // is said, so a frame served by another instance than the one that
+        // answered is not taken for the refresh it was meant to be.
+        const served = record.servedInstance;
+        const answered = refreshedOn.instance
+          ? formatPreviewServedInstance(refreshedOn.instance)
+          : null;
+        const frameInstance =
+          served?.kind === "known"
+            ? formatPreviewServedInstance(served.instance)
+            : null;
+        if (answered === null) {
+          console.info(
+            "[preview-bridge] refreshed frame can acknowledge; the service named no instance, so which one served it is unknown",
+          );
+        } else if (frameInstance !== answered) {
+          console.info(
+            `[preview-bridge] refreshed frame served by ${frameInstance ?? served?.kind ?? "an unnamed instance"}, not ${answered} that answered; not refreshing again`,
+          );
+        }
+      }
+      unsupportedRefreshServingRef.current = null;
       unsupportedBridgeReloadingRef.current = false;
       unsupportedBridgeFailedRef.current = false;
       deferredUnsupportedRefreshRef.current = null;
@@ -5376,6 +5452,10 @@ export function VisualEditorShell({
     }
 
     if (unsupportedBridgeReloadingRef.current) {
+      console.info(
+        "[preview-bridge] refreshed frame still cannot acknowledge: stopped",
+      );
+      unsupportedRefreshServingRef.current = null;
       unsupportedBridgeReloadingRef.current = false;
       unsupportedBridgeFailedRef.current = true;
       setUnsupportedRefreshFailed(true);
@@ -5387,16 +5467,23 @@ export function VisualEditorShell({
       return;
     }
 
+    // The one refresh is per serving build, read from what the service says
+    // it laid out, never from the fingerprint: a Theme save moves that and
+    // leaves the bridge as it was.
     const serverData = previewServerDataRef.current?.success
       ? previewServerDataRef.current.data
       : null;
-    const currentFingerprint = serverData?.workspaceFingerprint ?? null;
     const baseScope = previewUrlRef.current ?? previewKey;
-    const buildKey =
-      currentFingerprint ?? `${baseScope}:${serverData?.url ?? ""}`;
-    const attemptKey = `${baseScope}::${buildKey}`;
+    const knownServing = parsePreviewServing(
+      (serverData as { servingBridge?: unknown } | null)?.servingBridge,
+    );
 
-    if (unsupportedBridgeAttemptedRef.current.has(attemptKey)) {
+    if (
+      knownServing &&
+      unsupportedBridgeAttemptedRef.current.has(
+        `${baseScope}::${knownServing.bridge.buildId}`,
+      )
+    ) {
       if (unsupportedBridgeFailedRef.current) {
         setUnsupportedRefreshFailed(true);
         setPresentationUnconfirmable(true);
@@ -5421,42 +5508,90 @@ export function VisualEditorShell({
       return () => clearTimeout(timer);
     }
 
+    // One question at a time for a frame: its answer decides for whatever
+    // round is on screen when it comes.
+    if (unsupportedBridgeCheckRef.current?.previewKey === previewKey) return;
+
     setPresentationUnconfirmable(false);
     setUnsupportedRefreshFailed(false);
     unsupportedBridgeFailedRef.current = false;
-    unsupportedBridgeAttemptedRef.current.add(attemptKey);
+    unsupportedBridgeCheckRef.current = {
+      previewKey,
+      readyRound: record.readyRound,
+    };
     const checkedPreviewKey = previewKey;
     const storefrontId = context.storefront.id;
     const themeId = context.theme.id;
+    const settleCheck = () => {
+      if (unsupportedBridgeCheckRef.current?.previewKey === checkedPreviewKey) {
+        unsupportedBridgeCheckRef.current = null;
+      }
+    };
+    const stop = (line: string) => {
+      console.info(line);
+      unsupportedBridgeFailedRef.current = true;
+      setUnsupportedRefreshFailed(true);
+      setPresentationUnconfirmable(true);
+    };
     void startThemePreviewServer({
       data: { storefrontId, themeId },
     }).then(
       (result) => {
+        settleCheck();
         if (previewKeyRef.current !== checkedPreviewKey) return;
-        const nextData = result?.success ? result.data : null;
-        const supportsAck =
-          Array.isArray(nextData?.bridgeCapabilities) &&
-          nextData.bridgeCapabilities.includes("section-presentation-ack-v1");
-        const nextFingerprint = nextData?.workspaceFingerprint ?? null;
-        const buildChanged =
-          currentFingerprint === null ||
-          (nextFingerprint !== null && nextFingerprint !== currentFingerprint);
-        if (!supportsAck || !buildChanged) {
-          unsupportedBridgeFailedRef.current = true;
-          setUnsupportedRefreshFailed(true);
-          setPresentationUnconfirmable(true);
+        const frame = previewFrameRecordRef.current;
+        if (
+          !frame ||
+          frame.previewKey !== checkedPreviewKey ||
+          frame.capabilities.has("section-presentation-ack-v1")
+        ) {
           return;
         }
-        if (nextFingerprint) {
-          unsupportedBridgeAttemptedRef.current.add(
-            `${baseScope}::${nextFingerprint}`,
+        // Refreshed only when the service now serving says, in its own
+        // report, that its bridge acknowledges, and what served this frame
+        // is unknown. A frame on that very instance, or on one known to
+        // have served another build, is not refreshed: the old frame says
+        // what it is, and a refresh would not change it. The capability
+        // unlocks nothing; only the new frame's own acknowledgement does.
+        const nextData = result?.success ? result.data : null;
+        const current = parsePreviewServing(
+          (nextData as { servingBridge?: unknown } | null)?.servingBridge,
+        );
+        const previous = previousPreviewBridgeVersion(
+          frame.servedInstance,
+          current,
+          servingByInstanceRef.current,
+        );
+        rememberServing(current);
+        const supports =
+          current?.bridge.capabilities.includes(
+            "section-presentation-ack-v1",
+          ) ?? false;
+        const serving =
+          current === null ? "unknown" : supports ? "supports" : "does not";
+        if (!current || !supports || previous !== "unknown") {
+          stop(
+            `[preview-bridge] frame cannot acknowledge; serving ${serving}, previous version ${previous}: not refreshing`,
           );
+          return;
         }
+        const attemptKey = `${baseScope}::${current.bridge.buildId}`;
+        if (unsupportedBridgeAttemptedRef.current.has(attemptKey)) {
+          stop(
+            "[preview-bridge] frame cannot acknowledge; already refreshed once for this serving build: not refreshing",
+          );
+          return;
+        }
+        unsupportedBridgeAttemptedRef.current.add(attemptKey);
+        console.info(
+          `[preview-bridge] frame cannot acknowledge; serving supports, previous version unknown: refreshing once for build ${current.bridge.buildId.slice(0, 12)}`,
+        );
         const runReload = () => {
           queryClient.setQueryData(
             themePreviewServerQueries.forTheme(storefrontId, themeId).queryKey,
             result,
           );
+          unsupportedRefreshServingRef.current = current;
           unsupportedBridgeReloadingRef.current = true;
           setPreviewRevision((revision) => revision + 1);
         };
@@ -5467,10 +5602,11 @@ export function VisualEditorShell({
         }
       },
       () => {
+        settleCheck();
         if (previewKeyRef.current !== checkedPreviewKey) return;
-        unsupportedBridgeFailedRef.current = true;
-        setUnsupportedRefreshFailed(true);
-        setPresentationUnconfirmable(true);
+        stop(
+          "[preview-bridge] frame cannot acknowledge; asking what is serving failed: not refreshing",
+        );
       },
     );
   }, [
@@ -5479,6 +5615,7 @@ export function VisualEditorShell({
     context.storefront.id,
     context.theme.id,
     queryClient,
+    rememberServing,
   ]);
   const previewFrameReady =
     previewLifecycle.key && previewLifecycle.readySequence > 0
@@ -12525,6 +12662,7 @@ export function VisualEditorShell({
           readyRound: previewReadyRoundRef.current,
           capabilities: new Set(message.capabilities ?? []),
           documentId,
+          servedInstance: message.servedInstance ?? null,
         };
         setFrameRecordSequence((sequence) => sequence + 1);
         // Tell this document what the editor can read back, only when this

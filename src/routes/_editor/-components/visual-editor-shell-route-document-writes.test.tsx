@@ -40,6 +40,7 @@ import {
   frameEnvelope,
   LIVE_FRAME_CAPABILITIES,
   reloadFrameDocument,
+  sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 import {
   livePreviewPlatformFiles,
@@ -126,6 +127,19 @@ vi.mock(
     publishStorefrontThemeTemplate: publishTemplate,
     prepareInitialStorefrontThemeTemplateDraft: prepareInitialDraft,
     promoteStorefrontThemeText: promoteText,
+  }),
+);
+/**
+ * What the editor asks when a frame cannot acknowledge: which bridge the
+ * service is serving. Only the cases that bring up such a frame answer it;
+ * the editor's own start is the query data `renderEditor` sets.
+ */
+const startPreviewServer = vi.hoisted(() => vi.fn());
+vi.mock(
+  "@/server/storefront/storefront-theme-preview-server.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    startThemePreviewServer: startPreviewServer,
   }),
 );
 vi.mock(
@@ -4233,6 +4247,81 @@ describe("a draft the author left while the frame was elsewhere", () => {
     await flushFrames();
     await pause();
     expect(sent()).toHaveLength(2);
+  });
+
+  describe("across the one refresh of a frame that cannot acknowledge", () => {
+    /**
+     * The frame's page reloads onto a bridge older than the acknowledgement
+     * (its ready names none, and no instance); the service answers that it
+     * now serves one that acknowledges. The editor refreshes the frame once.
+     */
+    async function oldBridgeThenRefresh(during?: () => void) {
+      startPreviewServer.mockReset();
+      startPreviewServer.mockResolvedValue({
+        success: true,
+        message: "Live Preview server ready",
+        data: {
+          url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+          servingBridge: {
+            bridge: {
+              buildId: "e".repeat(64),
+              capabilities: [...LIVE_FRAME_CAPABILITIES],
+            },
+            instance: null,
+          },
+          bridgeCapabilities: [...LIVE_FRAME_CAPABILITIES],
+        },
+      });
+      const before = document.querySelector("iframe");
+      act(() => {
+        reloadFrameDocument();
+      });
+      sendFrameReady(FRAME, ["selection-field-section"]);
+      await flushFrames();
+      during?.();
+      await pause();
+      expect(sent(), "nothing is written while the old frame is up").toHaveLength(1);
+      await waitFor(() =>
+        expect(document.querySelector("iframe")).not.toBe(before),
+      );
+      expect(startPreviewServer).toHaveBeenCalledTimes(1);
+    }
+    /** The refreshed frame comes up on the editor's page and acknowledges. */
+    async function refreshedFrameAcknowledges(sends: boolean) {
+      await frameUp();
+      if (sends) {
+        await waitFor(() => expect(sent()).toHaveLength(2));
+      } else {
+        await waitForPresentationReady();
+      }
+      await pause();
+    }
+
+    it("a field left before it is kept, not sent while the old frame is up, and saved once by the new frame's acknowledgement, on its original basis", async () => {
+      await draftWhileElsewhere(true);
+      await oldBridgeThenRefresh();
+      await refreshedFrameAcknowledges(true);
+      savedOnce("Value 2");
+      expect(startPreviewServer).toHaveBeenCalledTimes(1);
+    });
+
+    it("input during it ends that commit: nothing is sent after the new frame acknowledges, and the draft is kept", async () => {
+      await draftWhileElsewhere(true);
+      await oldBridgeThenRefresh(() => typeInCard(0, "Value 3"));
+      await refreshedFrameAcknowledges(false);
+      expect(sent()).toHaveLength(1);
+      expect(storedHeading()).toBe("Value 1");
+      expect(cardFields()[0]!.value).toBe("Value 3");
+    });
+
+    it("input never left stays a draft: nothing is sent after the new frame acknowledges", async () => {
+      await draftWhileElsewhere(false);
+      await oldBridgeThenRefresh();
+      await refreshedFrameAcknowledges(false);
+      expect(sent()).toHaveLength(1);
+      expect(storedHeading()).toBe("Value 1");
+      expect(cardFields()[0]!.value).toBe("Value 2");
+    });
   });
 
   it("input that was never left is not sent on the return; leaving it then saves it", async () => {

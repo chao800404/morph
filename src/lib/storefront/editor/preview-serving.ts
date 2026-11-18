@@ -1,8 +1,10 @@
 import {
   PREVIEW_CAPABILITIES,
+  formatPreviewServedInstance,
   parsePreviewServedInstance,
   type PreviewCapability,
   type PreviewServedInstance,
+  type PreviewServedInstanceReport,
 } from "./preview-protocol";
 
 /**
@@ -72,6 +74,38 @@ export function parsePreviewServing(value: unknown): PreviewServing | null {
       ? null
       : parsePreviewServedInstance(value.instance);
   return { bridge: { buildId, capabilities: parsed }, instance };
+}
+
+/**
+ * What is known about the bridge an earlier frame was served, against the
+ * serving report `current`:
+ *
+ * - `same`: the frame names the instance `current` names, or an instance
+ *   this tab was told served the same build;
+ * - `changed`: an instance this tab was told served another build;
+ * - `unknown`: anything else — no known report from the frame, a frame
+ *   loaded from two instances, an instance this tab has no record of, no
+ *   readable serving report. Unknown is never read as either of the others.
+ *
+ * `seen` holds what serving reports said, by the instance they named; a
+ * report that named none (a container) is never in it.
+ */
+export function previousPreviewBridgeVersion(
+  frame: PreviewServedInstanceReport | null,
+  current: PreviewServing | null,
+  seen: ReadonlyMap<string, PreviewBridgeIdentity>,
+): "same" | "changed" | "unknown" {
+  if (!current || frame?.kind !== "known") return "unknown";
+  const served = formatPreviewServedInstance(frame.instance);
+  if (
+    current.instance &&
+    formatPreviewServedInstance(current.instance) === served
+  ) {
+    return "same";
+  }
+  const recorded = seen.get(served);
+  if (!recorded) return "unknown";
+  return recorded.buildId === current.bridge.buildId ? "same" : "changed";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
