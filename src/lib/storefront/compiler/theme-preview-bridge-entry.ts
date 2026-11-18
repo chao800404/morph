@@ -167,6 +167,9 @@ function isSectionPresentationCommitted(sectionId, enabled) {
 
 function flushPendingPresentationTokens() {
   if (pendingPresentationTokens.size === 0) return;
+  // An arrival whose withdrawal is still due is settled first, so it cannot
+  // take back an ack given below for the page now on screen.
+  settleArrivalWithdrawal(false);
   const currentRoute = currentRoutePattern() ?? location.pathname;
   const entries = Array.from(pendingPresentationTokens.entries());
   for (const [sectionId, entry] of entries) {
@@ -188,10 +191,20 @@ function flushPendingPresentationTokens() {
   }
 }
 
+/**
+ * Withdraws the acknowledgements given for the route the frame arrived at.
+ * Null when that route cannot be told: then none of them is kept.
+ */
 function withdrawAppliedPresentationAcks(currentRoute) {
   if (postedAppliedPresentationAcks.size === 0) return;
   for (const [sectionId, token] of postedAppliedPresentationAcks.entries()) {
-    if (token.routePath && token.routePath !== currentRoute) continue;
+    if (
+      currentRoute !== null &&
+      token.routePath &&
+      token.routePath !== currentRoute
+    ) {
+      continue;
+    }
     postPresentationAck(token, "not-applied", "superseded");
     postedAppliedPresentationAcks.delete(sectionId);
   }
@@ -597,6 +610,13 @@ let frameNavigationEpoch = 0;
 let lastCommittedRouteLocation =
   typeof location !== "undefined" ? location.pathname + location.search : "";
 let subscribedEpochRouter = null;
+/**
+ * The withdrawal for a navigation whose matches had not yet reached the
+ * location it committed. It belongs to that navigation alone: once the frame
+ * has committed another location it is dropped, so matches arriving late for
+ * a page already left never take back what the page on screen acknowledged.
+ */
+let pendingArrivalWithdrawal = null;
 
 /**
  * Where the frame is, as its router committed it to its own history; the
@@ -633,6 +653,12 @@ function syncFrameNavigationEpoch() {
         syncFrameNavigationEpoch();
       });
     }
+    if (typeof router.subscribe === "function") {
+      router.subscribe("onResolved", () => {
+        syncFrameNavigationEpoch();
+        settleArrivalWithdrawal(true);
+      });
+    }
     // Taking up the first router is not a navigation: the page is where its
     // history already is (a Client-only build is served from an address
     // that is no page of the Theme at all).
@@ -647,15 +673,60 @@ function syncFrameNavigationEpoch() {
     // The route pattern only once the router's matches have reached the
     // committed location: the router takes up a new location before its
     // matches follow, and until then the leaf still names the page left.
+    // The committed path is no stand-in for the pattern: on a dynamic route
+    // (/products/$slug) it never equals the route the acks name.
     const matches = documentNavigation ? undefined : router?.state?.matches;
     const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
-    const currentRoute =
-      leaf?.pathname === committed.pathname
-        ? (currentRoutePattern() ?? committed.pathname)
-        : committed.pathname;
-    withdrawAppliedPresentationAcks(currentRoute);
+    if (leaf?.pathname === committed.pathname) {
+      withdrawAppliedPresentationAcks(
+        currentRoutePattern() ?? committed.pathname,
+      );
+    } else if (documentNavigation || !router) {
+      withdrawAppliedPresentationAcks(committed.pathname);
+    } else {
+      pendingArrivalWithdrawal = {
+        epoch: frameNavigationEpoch,
+        key: committed.key,
+        pathname: committed.pathname,
+      };
+      // A router that cannot say when it resolved leaves the arrival unknown.
+      if (typeof router.subscribe !== "function") {
+        settleArrivalWithdrawal(true);
+      }
+    }
   }
+  settleArrivalWithdrawal(false);
   return frameNavigationEpoch;
+}
+
+/**
+ * Withdraws for the pending arrival once the router's matches name it, with
+ * the route pattern they matched. When the router has resolved without
+ * naming it, the route arrived at cannot be told, and no ack is kept: that
+ * only pauses writes until the section is presented and acknowledged again.
+ */
+function settleArrivalWithdrawal(routerResolved) {
+  const pending = pendingArrivalWithdrawal;
+  if (!pending) return;
+  const router = window.__morphPreviewRouter;
+  if (
+    pending.epoch !== frameNavigationEpoch ||
+    committedFrameLocation(router).key !== pending.key
+  ) {
+    pendingArrivalWithdrawal = null;
+    return;
+  }
+  const matches = router?.state?.matches;
+  const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
+  if (leaf?.pathname === pending.pathname) {
+    pendingArrivalWithdrawal = null;
+    withdrawAppliedPresentationAcks(currentRoutePattern() ?? pending.pathname);
+    return;
+  }
+  if (routerResolved) {
+    pendingArrivalWithdrawal = null;
+    withdrawAppliedPresentationAcks(null);
+  }
 }
 
 if (typeof window !== "undefined") {

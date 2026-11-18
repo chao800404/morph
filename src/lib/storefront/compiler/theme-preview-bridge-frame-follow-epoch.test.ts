@@ -39,7 +39,10 @@ function memoryRouter(initial = "/") {
     navigate,
     get state() {
       const pathname = history.location.pathname;
-      return { location: { pathname }, matches: [{ fullPath: pathname }] };
+      return {
+        location: { pathname },
+        matches: [{ fullPath: pathname, pathname }],
+      };
     },
   };
 }
@@ -277,17 +280,20 @@ describe("a Client-only preview (memory history) counting frame navigations", ()
    * TanStack Router subscribes to its history before the bridge does: on a
    * navigation it takes up the new location at once, and its matches follow
    * only once the route has loaded. In between, the leaf match still names
-   * the page being left.
+   * the page being left. Once they are in, it reports the navigation
+   * resolved.
    */
   function routerWithLateMatches(initial = "/") {
     const history = createMemoryHistory({ initialEntries: [initial] });
     let location = { pathname: initial };
     let matched = initial;
+    const resolved: Array<() => void> = [];
     history.subscribe(() => {
       location = { pathname: history.location.pathname };
       const arriving = history.location.pathname;
       queueMicrotask(() => {
         matched = arriving;
+        resolved.forEach((listener) => listener());
       });
     });
     return {
@@ -295,6 +301,10 @@ describe("a Client-only preview (memory history) counting frame navigations", ()
       navigate: vi.fn(async ({ to }: { to: string }) => {
         history.push(to);
       }),
+      subscribe: (event: string, listener: () => void) => {
+        if (event === "onResolved") resolved.push(listener);
+        return () => {};
+      },
       get state() {
         return {
           location,
