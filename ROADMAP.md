@@ -411,17 +411,17 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     - CI 與 E2E：容器網路介面不配 IPv6 link-local 位址（#382）；13 支 spec 改用 `execLocalD1` 寫入一次性 Theme（#383、#385，SQLITE_BUSY 批次 A，只降低已知衝突）。
   - 上面的容器 target 只在本機鎖定的容器驗收中跑過（各 PR 的紀錄），**CI 還不執行它們**。CI 的分片會跳過這些 title，例如 A7 在分片 5 被跳過。
   - 2026-11-10～11-17 的進度：
-    - 【已合併】#394（main merge commit `970f6a6`）：一般內容未確認寫入恢復（透過讀回已落地內容分類）。
+    - 【已合併】#394（main merge commit `970f6a6`）：一般內容未確認寫入恢復——僅當文件 generation 恰好前進一格且讀回存在送出內容時分類為 landed；前進兩格以上視為 moved，由作者使用「Load latest, keep mine」。
     - 【已合併】#395（main merge commit `9798507`）：Style replay 因果回執（nullable migration 0083 `0083_style_replay_causal_receipt.sql`）。
     - 【Draft，首次 CI 已通過】#396（Stage 3）：兩次隔離的 container run 與 handover 檢查已通過首次 CI，證據已核對；授權只涵蓋推送、建立 Draft 與首次 CI，尚未核准 Ready 或合併。
-    - 【已合併】#397（main merge commit `a28fe71`）：列表單獨丟棄與保留被拒絕列表為未儲存。
+    - 【已合併】#397（main merge commit `a28fe71`）：單獨丟棄列表；被拒絕的列表寫入保持未儲存。
     - 【已合併】#398（main merge commit `6718e57`）：防止過期 frame-follow set-route 拉回 history 導航。
     - 【進行中（Draft，未合併）】#399（presentation token 協定，PR1+PR2）。
     - 【暫緩】client hidden placeholder：等待 #376／#377。
     - 【本機完成，未推送】hydration／debounce 修正：base `798d363`，測試 commit `b961ad7`、修正 `d306eb1`；瀏覽器 E2E 尚待安排。
     - 【設計完成，未實作】Content write id：暫維持 #394 分類，先定可驗證的請求期限與回執保留契約。
   - 進行中：
-    - 沒有版本依據的寫入拒絕，第 2 階段：presentation token 與 iframe 套用確認；協定方向已核准，仍待設計與實作分拆。
+    - 沒有版本依據的寫入拒絕，第 2 階段：presentation token 與 iframe 套用確認；目前於 Draft #399 進行中（尚未合併）。
     - Stage 3 CI 接線，依 v3 計畫：
       - 只接 preview-access P2／P3 兩個 title，放在同一個容器 job，維持 30 分鐘上限；
       - 兩次 runner 呼叫之間加 fail-closed 的交接檢查；
@@ -439,7 +439,7 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     2. Stage 3 CI 接線。
     3. 一般內容未確認寫入的追蹤修正。
     4. 列表「未儲存」提示與「只丟指定列表」。
-    5. 第 2 階段：presentation token 與 iframe 套用確認，共四個 PR。
+    5. 第 2 階段：presentation token 與 iframe 套用確認（原訂共四個 PR，其中 PR1 與 PR2 已合併為 Draft #399）。
     6. section 入口，先移除 section 模式的列內輸入。
     - 另外排：M3 的 client 隱藏佔位、Style undo／redo 與 #388 的整合。
     - 之後：在凍結的 main 上整體驗收 → 另外授權的雲端驗收。
