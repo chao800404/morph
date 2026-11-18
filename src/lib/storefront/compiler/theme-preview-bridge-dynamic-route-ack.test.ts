@@ -45,7 +45,7 @@ function matchFor(pathname: string): Match {
  * `arrive` can also hand the router a page's matches after the frame has
  * moved on, as a late resolution would.
  */
-function productRouter(initial = "/") {
+function productRouter(initial = "/", reportsResolution = true) {
   const history = createMemoryHistory({ initialEntries: [initial] });
   let location = { pathname: initial };
   let leaf = matchFor(initial);
@@ -64,14 +64,23 @@ function productRouter(initial = "/") {
     navigate: vi.fn(async ({ to }: { to: string }) => {
       history.push(to);
     }),
-    subscribe: (event: string, listener: () => void) => {
-      if (event === "onResolved") resolved.push(listener);
-      return () => {};
-    },
+    subscribe: reportsResolution
+      ? (event: string, listener: () => void) => {
+          if (event === "onResolved") resolved.push(listener);
+          return () => {};
+        }
+      : undefined,
     hold: (pathname: string) => held.add(pathname),
     arrive: (pathname: string) => {
       held.delete(pathname);
       arrive(pathname);
+    },
+    /**
+     * The router resolves without matches that name the committed location
+     * (a page it could not match): the arrival cannot be told.
+     */
+    resolveUnmatched: () => {
+      queueMicrotask(() => resolved.forEach((listener) => listener()));
     },
     get state() {
       return { location, matches: [leaf] };
@@ -212,8 +221,8 @@ function token(operationId: string) {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** The author opened /products/shirt and its section's ack is standing. */
-async function shirtPresented() {
-  const router = productRouter("/");
+async function shirtPresented(reportsResolution = true) {
+  const router = productRouter("/", reportsResolution);
   const page = clientPreview(router);
   page.reportStructure();
   page.applyEditorRoute({
@@ -318,6 +327,42 @@ describe("rapid navigation between a dynamic route's pages, with matches arrivin
     expect(page.standing(), "the shirt shown now acknowledged it").toEqual([
       "op-shirt-again",
     ]);
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+  });
+});
+
+describe("an arrival the bridge cannot identify", () => {
+  it("withdraws the acks it cannot rule out when the router resolves without matching the committed page; a new ack stands again", async () => {
+    const { router, page } = await shirtPresented();
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    router.resolveUnmatched();
+    await settle();
+
+    expect(page.standing(), "writes pause rather than go out on shirt's ack").toEqual(
+      [],
+    );
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+
+    page.present("op-hat");
+    expect(page.standing()).toEqual(["op-hat"]);
+  });
+
+  it("withdraws them at once under a router that cannot say when its matches arrive; a new ack stands again", async () => {
+    const { router, page } = await shirtPresented(false);
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    await settle();
+
+    expect(page.standing()).toEqual([]);
+    expect(page.withdrawn()).toEqual(["op-shirt"]);
+
+    router.arrive("/products/hat");
+    await settle();
+    page.present("op-hat");
+    expect(page.standing()).toEqual(["op-hat"]);
     expect(page.withdrawn()).toEqual(["op-shirt"]);
   });
 });
