@@ -28,11 +28,13 @@ import {
   CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
   HISTORY_OTHER_PAGE_MESSAGE,
   PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
 import {
   answerFramePings,
+  disablePresentationAcks,
   frameEnvelope,
   LIVE_FRAME_CAPABILITIES,
   modelCurrentBridge,
@@ -1581,12 +1583,13 @@ describe("undo and redo after a page switch", () => {
  * link inside the frame then commits /products/hat, and the router's matches
  * for hat are still on their way.
  *
- * In that window the bridge still names the route pattern the matches name
+ * In that window the bridge names the route pattern the matches name
  * (/products/$slug, shirt's leaf, the same pattern as hat's), with the
- * navigation's new epoch, and it still acknowledges what it is sent for that
- * pattern: shirt's section is the one in its document. The withdrawal of the
- * pattern's acknowledgements waits until hat's matches arrive. The frame is
- * played here sending exactly that.
+ * navigation's new epoch. When the router's route tree names hat's route,
+ * the bridge withdraws the pattern's acknowledgements as hat is committed
+ * and acknowledges nothing presented for it until hat is on screen
+ * (`theme-preview-bridge-dynamic-route-ack.test.ts`). The frame is played
+ * here sending exactly that.
  */
 describe("the window between a dynamic route's committed page and its matches", () => {
   const PRODUCT = "/products/$slug";
@@ -1691,18 +1694,23 @@ describe("the window between a dynamic route's committed page and its matches", 
     expect(updateSectionProps).not.toHaveBeenCalled();
     return harness;
   }
-  /** Hat committed, its matches still on their way: the bridge's report then. */
-  const hatCommitted = async () => {
-    fromPreview({
-      type: "morph:storefront-preview-structure",
-      nodes: [],
-      routePath: PRODUCT,
-      frameNavigationEpoch: 1,
-    });
-    await tick(0);
+  /** Every section the frame was sent, by its latest presentation. */
+  const latestBySection = () => {
+    const latest = new Map<string, { operationId: string } & Posted>();
+    for (const post of sectionPosts()) {
+      latest.set(String(post.sectionId), post.presentationToken);
+    }
+    return Array.from(latest.values());
   };
-  /** Hat's matches arrive: every acknowledgement given for the pattern is withdrawn. */
-  const hatArrives = async () => {
+  /**
+   * Hat committed, its matches still on their way, as the bridge does it
+   * when the router's route tree names hat's route: every acknowledgement
+   * for the pattern is withdrawn at once, the report names the pattern with
+   * the new epoch, and nothing presented now is acknowledged until hat is
+   * on screen.
+   */
+  const hatCommitted = async () => {
+    disablePresentationAcks();
     for (const post of sectionPosts()) {
       fromPreview({
         type: ACK,
@@ -1720,15 +1728,43 @@ describe("the window between a dynamic route's committed page and its matches", 
     });
     await tick(20);
   };
+  /** Hat's matches arrive: what waited for hat is acknowledged, once each. */
+  const hatArrives = async () => {
+    for (const token of latestBySection()) {
+      fromPreview({
+        type: ACK,
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+    }
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: PRODUCT,
+      frameNavigationEpoch: 1,
+    });
+    await tick(20);
+  };
 
-  it("characterization: an Inspector edit in the window is written at once, on an acknowledgement given before hat's matches arrived", async () => {
+  it("an Inspector edit in the window is held, kept and said; once hat is acknowledged it is written once, on the generation it was typed on", async () => {
     await shirtOnScreen();
-    const acknowledgedBefore = sectionPosts().length;
-    expect(acknowledgedBefore).toBeGreaterThan(0);
+    expect(sectionPosts().length).toBeGreaterThan(0);
 
     await hatCommitted();
     await editInInspector("Edited during the move");
 
+    expect(writes()).toEqual([]);
+    expect(
+      screen.queryAllByDisplayValue("Edited during the move").length,
+    ).toBeGreaterThan(0);
+    expect(toast.warning).toHaveBeenCalledWith(
+      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+      expect.anything(),
+    );
+
+    await hatArrives();
+    await tick(400);
     expect(writes()).toEqual([
       {
         templateId: "template-product",
@@ -1738,6 +1774,7 @@ describe("the window between a dynamic route's committed page and its matches", 
       },
     ]);
 
+    // A repeated acknowledgement writes nothing more.
     await hatArrives();
     await tick(400);
     expect(writes()).toHaveLength(1);
