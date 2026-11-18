@@ -973,7 +973,7 @@ describe("the route-document exception to the version basis", () => {
     expect(updateSectionProps).not.toHaveBeenCalled();
   });
 
-  // Task 40 item 5: the stage-1 refusal is reached with a valid presentation
+  // The stage-1 refusal is reached with a valid presentation
   // proof (the route acknowledged as having no document yet) and no basis,
   // from each entry that can be used on such a route.
   const missingBasisSaid = () =>

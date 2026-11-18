@@ -37,7 +37,7 @@ export function usePreviewDocument(
     setPreviewDocument(document);
     // The preview is reset to this copy: whatever it acknowledged as shown
     // is no longer shown, so those acknowledgements are withdrawn, and any
-    // still waiting for a commit will not be one (Task 40 item 7). The
+    // still waiting for a commit will not be one. The
     // editor presents the section again on a withdrawal.
     const pending = pendingPresentationAcksRef.current;
     for (let index = 0; index < pending.length; index += 1) {

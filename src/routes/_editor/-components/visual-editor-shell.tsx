@@ -680,7 +680,7 @@ export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
  * Said when a Content write is held for the preview's presentation. True
  * either way it ends: an edit the canvas was shown is saved by itself once
  * the preview acknowledges it, and every held change has Try again once the
- * page is acknowledged (Task 40 item 2).
+ * page is acknowledged.
  */
 export const PREVIEW_PRESENTATION_SYNCING_MESSAGE =
   "Not saved yet: the preview is still syncing, so nothing was sent. Your change is kept, and Try again saves it once the preview has caught up.";
@@ -691,7 +691,7 @@ export const PREVIEW_PRESENTATION_SYNCING_MESSAGE =
  */
 export const PREVIEW_OTHER_PAGE_PAUSED_MESSAGE =
   "Content writes are paused while the preview shows another page. Your draft is kept; return the preview to the page you are editing to save it.";
-/** Said where the frame cannot acknowledge what it shows (Task 40 item 3). */
+/** Said where the frame cannot acknowledge what it shows. */
 export const PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE =
   "This preview cannot confirm what it shows, so content edits are paused. Your changes are kept; nothing was saved.";
 /** How long a frame with no acknowledgement capability is waited for. */
@@ -2083,7 +2083,7 @@ export function VisualEditorShell({
         pending.has(key),
       ),
       // Held for the preview's presentation (not sent): an explicit save
-      // sends it once the page is acknowledged again (Task 40 item 2).
+      // sends it once the page is acknowledged again.
       held: Array.from(pending.values()).some(
         (entry) => entry.presentationBlocked === true,
       ),
@@ -3240,7 +3240,7 @@ export function VisualEditorShell({
   const continueCommittedContentDraftsRef = useRef<() => void>(() => {});
   /**
    * The frame on screen named no section-presentation-ack-v1 and the bounded
-   * wait for one ran out (Task 40 item 3): content edits stay paused, and
+   * wait for one ran out: content edits stay paused, and
    * what is said is that this preview cannot confirm what it shows.
    */
   const [presentationUnconfirmable, setPresentationUnconfirmable] =
@@ -3362,7 +3362,7 @@ export function VisualEditorShell({
        */
       recordAnswered?: (answeredDraftGeneration: unknown) => void,
     ) => {
-      // A resend of an unanswered write (Task 40 item 1) is not gated on the
+      // A resend of an unanswered write is not gated on the
       // presentation: it is the frozen write the server may already hold,
       // sent as first sent at its original draft and source generations,
       // so CAS refuses it if the document moved. Its presentation was proven
@@ -3374,7 +3374,7 @@ export function VisualEditorShell({
       const heldSection = replay?.entry ?? heldBeforePresentationCheck;
       // The proof the input was made with, while it is still current. One
       // a reload or a new ready round ended is replaced, on an explicit save
-      // only, by the presentation acknowledged now (Task 40 item 2); a
+      // only, by the presentation acknowledged now; a
       // write on its own timer never borrows a later proof.
       const heldProof = heldSection?.presentationProof;
       const presentationProof =
@@ -3571,7 +3571,7 @@ export function VisualEditorShell({
                   !replay?.resend && madeBeforeDocument && !writeSnapshot;
                 const entry = prepare();
                 // The presentation proven is the one the write's basis was
-                // made on (Task 40 item 4): one older than the basis is
+                // made on (the proof must match the write basis): one older than the basis is
                 // refused, before anything is sent, as a missing basis is.
                 if (
                   !replay &&
@@ -12395,7 +12395,7 @@ export function VisualEditorShell({
           message.operationId,
         );
         const documentVerdict = previewDocumentOf(event);
-        // A withdrawal (Task 40 item 7): the frame no longer shows what it
+        // A withdrawal of presentation acknowledgement: the frame no longer shows what it
         // acknowledged for this token (its document was reset to the server
         // copy). Only for the token acknowledged now, from the frame, round
         // and document it came from; the section is presented again, and
@@ -15033,7 +15033,7 @@ export function VisualEditorShell({
       const restore = { ...options.restore };
       reportAuthenticatedUserActivity();
       // A resend goes as first sent, CAS-guarded, without a fresh proof
-      // (Task 40 item 1; see `commitSectionPending`).
+      // (an unanswered write resend bypasses the presentation gate; see `commitSectionPending`).
       const presentationGated = !options.resend;
       const presentationTemplateId = templateIdForSection(sectionId);
       const presentationProof =
@@ -15092,7 +15092,7 @@ export function VisualEditorShell({
         return { success: false, message: MISSING_BASIS_MESSAGE };
       }
       // The press was made on what the acknowledged presentation showed
-      // (Task 40 item 4): a basis newer than that is refused before sending.
+      // (the proof must match the write basis): a basis newer than that is refused before sending.
       if (
         authorPress &&
         presentationProof &&
@@ -15606,9 +15606,9 @@ export function VisualEditorShell({
       // 1. Instant 0ms visual sync to iframe canvas
       // A held input is shown too when the frame on screen can acknowledge
       // what it shows: the round that acknowledges it is what releases it
-      // (Task 40 items 2 and 6), and a post still waiting on signing is
+      // (coalesced presentation release), and a post still waiting on signing is
       // superseded, so rapid edits coalesce into its one post. A frame that
-      // cannot acknowledge is told nothing new (task 32), and an older
+      // cannot acknowledge is told nothing new, and an older
       // signing callback is stopped from restoring stale props.
       const frameRecord = previewFrameRecordRef.current;
       const frameCanAcknowledge = Boolean(
@@ -15753,8 +15753,8 @@ export function VisualEditorShell({
         if (existingTimer) pendingPropsTimersRef.current.delete(key);
         // Held, not sent, and shown (above): the round that acknowledges
         // the section as the editor now holds it is the proof this input is
-        // released with (`releasePresentationHeldDrafts`, Task 40 items 2
-        // and 6). An input previewed on its element only, with no section
+        // released with (`releasePresentationHeldDrafts`,
+        // coalesced presentation release). An input previewed on its element only, with no section
         // post waiting to carry it, gets one, so that round exists.
         if (
           shownWhileHeld &&
@@ -16050,7 +16050,7 @@ export function VisualEditorShell({
    * Held drafts the canvas was shown (`presentationReleasable`) go once the
    * page's presentation is acknowledged again: each takes the proof of the
    * round that now shows it, and is sent on its usual debounce, as typed
-   * input is (Task 40 items 2 and 6). Nothing without a proof; nothing a
+   * input is. Nothing without a proof; nothing a
    * conflict, a failed save or an earlier unanswered write holds (the write
    * path refuses the last one itself).
    */
@@ -20090,7 +20090,7 @@ export function VisualEditorShell({
 
             {presentationUnconfirmable ? (
               // The existing recovery surface, with the true reason: this
-              // frame cannot acknowledge what it shows (Task 40 item 3).
+              // frame cannot acknowledge what it shows.
               <div
                 role="alert"
                 data-testid="preview-presentation-unconfirmable"

@@ -51,7 +51,7 @@ type EditorAssistantPanelProps = {
   contentResetEpoch?: number;
   /** Current page-wide iframe apply barrier for Document writes. */
   documentPresentationReady?: boolean;
-  /** Said instead of "syncing" when the preview cannot confirm (Task 40 item 3). */
+  /** Said instead of "syncing" when the preview cannot confirm presentation. */
   documentPresentationPausedReason?: string | null;
   /**
    * Which document the Inspector's inputs hold content of, for keying them:

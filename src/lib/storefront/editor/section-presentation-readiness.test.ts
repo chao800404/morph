@@ -110,7 +110,7 @@ describe("section presentation readiness", () => {
   });
 });
 
-// Task 40 item 4: the proof is compared with the basis the write sends.
+// The proof is compared with the basis the write sends.
 describe("whether an acknowledged presentation shows a write's basis", () => {
   const existing = (draftGeneration: number) =>
     ({ kind: "existing", draftGeneration }) as const;

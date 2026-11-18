@@ -68,7 +68,7 @@ export function isSectionPresentationPagePresented(args: {
 
 /**
  * Whether the presentation a proof acknowledged shows the copy a write says
- * it was made on (Task 40 item 4). `bases` are the copies the write's
+ * it was made on. `bases` are the copies the write's
  * fields were first made on (`basisDraftGeneration`); the newest decides.
  *
  * - A presentation older than that basis showed the author something other

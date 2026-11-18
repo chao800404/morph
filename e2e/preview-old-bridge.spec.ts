@@ -522,7 +522,7 @@ test.describe("the editor on a preview page running an older bridge", () => {
           }
         }
 
-        // 2. What the editor does with it (Task 32: missing `section-presentation-ack-v1`
+        // 2. What the editor does with it (missing `section-presentation-ack-v1`
         // pauses writes & sorting, shows unconfirmable notice + Reload preview, and
         // sends zero writes while paused).
         const writesWhileOld: string[] = [];

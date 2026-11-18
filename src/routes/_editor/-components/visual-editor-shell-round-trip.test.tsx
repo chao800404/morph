@@ -873,7 +873,7 @@ describe("a content save that fails", () => {
     expect(updateSectionProps).not.toHaveBeenCalled();
   });
 
-  it("says, after a bounded wait, that a frame which cannot acknowledge pauses content edits (Task 40 item 3)", async () => {
+  it("says, after a bounded wait, that a frame which cannot acknowledge pauses content edits", async () => {
     vi.spyOn(toast, "warning").mockImplementation(() => "");
     renderShell(readyQueryClient(), bridgeWithoutPresentationAck);
     await selectHeading();
@@ -901,7 +901,7 @@ describe("a content save that fails", () => {
     expect(screen.getByDisplayValue("Held, unconfirmable")).toBeTruthy();
   }, 15_000);
 
-  it("re-presents a section whose acknowledgement the frame withdrew (Task 40 item 7)", async () => {
+  it("re-presents a section whose acknowledgement the frame withdrew", async () => {
     updateSectionProps.mockResolvedValue({
       success: true,
       data: { draftGeneration: 2, droppedProps: [] },
@@ -1160,7 +1160,7 @@ describe("a content save that fails", () => {
     );
   });
 
-  it("resends an unanswered write once, at its frozen basis, after the frame reloaded (Task 40 item 1)", async () => {
+  it("resends an unanswered write once, at its frozen basis, after the frame reloaded", async () => {
     // The write was sent with the proof of the old ready round. A reload
     // ends that round, but the resend is the same write the server may
     // already hold, sent as first sent and guarded by CAS at its original
@@ -8134,7 +8134,7 @@ function Home() {
     await releaseQueued();
 
     expect(sent()).toHaveLength(0);
-    // Task 40 item 6: held while the canvas presents the read copy, then
+    // Held while the canvas presents the read copy, then
     // released with that round's proof and refused as made on the older
     // copy (out of date), never sent over theirs; keep mine then saves it.
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
@@ -8171,7 +8171,7 @@ function Home() {
     });
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect(sent()).toHaveLength(0);
-    // Task 40 item 6: restored to its keep-mine recovery.
+    // Restored to its keep-mine recovery.
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(screen.getAllByDisplayValue("Mine typed").length).toBeGreaterThan(0);
 
@@ -8227,7 +8227,7 @@ function Home() {
     await new Promise((resolve) => setTimeout(resolve, 1_200));
 
     expect(sent()).toHaveLength(0);
-    // Task 40 item 6: restored to its keep-mine recovery.
+    // Restored to its keep-mine recovery.
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(screen.getAllByDisplayValue("中文").length).toBeGreaterThan(0);
     await keepMineAndExpectSaved(client, editorContext, fixture, "中文");
@@ -11158,7 +11158,7 @@ function Home() {
           expect(historyButtons()).toEqual({ undo: false, redo: true });
         });
 
-        it("same generation, after the frame reloaded: sent once, as first sent, on Check and save (Task 40 item 1)", async () => {
+        it("same generation, after the frame reloaded: sent once, as first sent, on Check and save", async () => {
           // The reset's resend is the frozen write at its original
           // generations, CAS-guarded: a reload's new ready round does not
           // drop it, even when the new frame cannot acknowledge anything.

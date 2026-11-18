@@ -158,7 +158,7 @@ export type EditorSectionsPanelProps = {
   ) => Promise<SectionReorderResult | void>;
   onToggleSectionEnabled?: (sectionId: string, enabled: boolean) => void;
   documentPresentationReady?: boolean;
-  /** Said instead of "syncing" when the preview cannot confirm (Task 40 item 3). */
+  /** Said instead of "syncing" when the preview cannot confirm presentation. */
   documentPresentationPausedReason?: string | null;
   editableNodes?: readonly PreviewEditableNode[];
   activeSelection?: EditorSelectionDescriptor | null;

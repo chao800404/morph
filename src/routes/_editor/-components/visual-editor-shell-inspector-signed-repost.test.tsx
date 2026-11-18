@@ -520,7 +520,7 @@ describe("an Inspector text edit while the section's media is being signed", () 
     expect(savedProps()[0]).toMatchObject({ subheading: "Sub newer" });
   });
 
-  // Task 40 item 6: the coalescing guarantee is restored. Rapid edits
+  // The coalescing guarantee is restored. Rapid edits
   // while the section's media is signing end in one post with the last
   // text, and are saved (released once the page is acknowledged again),
   // never left as "Not saved".
@@ -535,7 +535,7 @@ describe("an Inspector text edit while the section's media is being signed", () 
     await releaseSigning();
 
     const after = sectionPosts(before);
-    // Task 40 items 2 & 6: the held edits coalesce into one signed post
+    // The held edits coalesce into one signed post
     // ("Sub newest", never "Sub newer" or unsigned), and acking it
     // immediately releases and saves the held draft, which reconciles the
     // saved generation with one matching post-save post.

@@ -1363,7 +1363,7 @@ describe("a refused hide the author discards", () => {
       value: "B edited",
       originalValue: "B",
     });
-    // Merge of task 31 into the presentation gate (task 32): the inline
+    // Hidden-value protection together with the presentation gate: the inline
     // commit is presented first; Hide is pressed once its acknowledgement is
     // in (still inside the debounce), as the hidden-section tests do, so the
     // hide joins the same write as before.
@@ -1620,7 +1620,7 @@ describe("text typed on the canvas while a show is answered", () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 350));
       // Blur released the held canvas post; once the mock iframe acknowledges
-      // it during the wait, `releasePresentationHeldDrafts` (Task 40 item 2)
+      // it during the wait, `releasePresentationHeldDrafts`
       // saves the held typed text once (Show + released `{ heading: TYPED }`).
       expect(updateSectionProps).toHaveBeenCalledTimes(2);
       expect(updateSectionProps.mock.calls[1]?.[0]?.data).toMatchObject({

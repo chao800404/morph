@@ -178,7 +178,7 @@ describe("preview document presentation acknowledgement", () => {
     expect(headingAtAck).toBe("Latest");
   });
 
-  // Task 40 item 7: a reset to the server copy replaces what was
+  // A reset to the server copy replaces what was
   // acknowledged, so the frame withdraws that acknowledgement.
   it("withdraws an applied acknowledgement when the document prop resets the preview", async () => {
     const view = render(<PreviewDocument document={initialDocument} />);

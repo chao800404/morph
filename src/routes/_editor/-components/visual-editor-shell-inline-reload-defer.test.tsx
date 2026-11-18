@@ -572,7 +572,7 @@ describe("text typed on the canvas when the preview server is replaced", () => {
     expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
     expect(updateSectionProps).not.toHaveBeenCalled();
 
-    // Task 40 item 2: the replacement frame comes up and acknowledges the
+    // The replacement frame comes up and acknowledges the
     // page, the held draft included. The draft is released with that new
     // round's proof and saved once; an explicit save after it adds nothing.
     fromPreview({
@@ -1505,7 +1505,7 @@ describe("the frame brought up after the reload", () => {
     });
   });
 
-  // Task 40 item 2 changes what task 32 pinned here ("without resending the
+  // Releasing on the post-reload acknowledgement replaces the earlier hold-only behaviour here ("without resending the
   // write"): the retained draft, reprojected and acknowledged by the active
   // document, is released with that round's proof and saved once.
   it("reprojects the retained draft to the active document and saves it once under the new round's proof", async () => {
