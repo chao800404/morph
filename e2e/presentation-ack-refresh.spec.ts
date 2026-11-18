@@ -551,22 +551,32 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       const field = await heroContentField(page, 0);
       const original = await field.inputValue();
       const updated = `${MARKER} swap ${Date.now()}`;
+      // Only acknowledgements that arrive after this edit count: the
+      // refreshed frame also acknowledges what it presents on load.
+      const acksBeforeEdit = (await readLifecycle()).acks.length;
       await field.fill(updated);
       await expect(field).toHaveValue(updated);
+      // Leaving the field commits the edit; the frame acknowledges a
+      // committed edit, not keystrokes still being typed.
+      await field.press("Tab");
       await expect
         .poll(
           async () => {
             const snap = await readLifecycle();
-            return snap.acks.some(
-              (ack) =>
-                ack.previewDocument === refreshedDoc &&
-                ack.status === "applied",
-            );
+            return snap.acks
+              .slice(acksBeforeEdit)
+              .some(
+                (ack) =>
+                  ack.previewDocument === refreshedDoc &&
+                  ack.status === "applied",
+              );
           },
           { timeout: 20_000 },
         )
         .toBe(true);
       await field.fill(original);
+      await field.press("Tab");
+      await expect(field).toHaveValue(original);
       expect(rejectedAcks).toEqual([]);
     } finally {
       await page.unrouteAll({ behavior: "ignoreErrors" });
