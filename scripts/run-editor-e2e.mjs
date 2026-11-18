@@ -221,6 +221,14 @@ const SIDECAR_SWAP = SIDECAR_SWAP_FROM !== "";
 /** From the request being taken until the new sidecar answers. */
 const SIDECAR_SWAP_TIMEOUT_SETTING =
   process.env.MORPH_E2E_SIDECAR_SWAP_TIMEOUT_MS ?? "60000";
+// Swap mode off: whatever swap setting the shell still holds is removed
+// before any child inherits this environment, so the suite (which reads
+// `MORPH_E2E_SIDECAR_SWAP`) sees a run with no swap at all.
+if (!SIDECAR_SWAP) {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("MORPH_E2E_SIDECAR_SWAP")) delete process.env[key];
+  }
+}
 const SIDECAR_SWAP_MAX_TIMEOUT_MS = 600_000;
 const SIDECAR_SWAP_POLL_MS = 200;
 const SIDECAR_SWAP_REQUEST = "sidecar-swap.request";
