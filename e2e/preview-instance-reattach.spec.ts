@@ -843,11 +843,13 @@ test.describe("a real sidecar swap under an open editor", () => {
     // frame also acknowledges the content replayed into it, earlier.
     let ackAfter = firstNewAt;
     if (editedBeforeSwap) {
-      // The edit continues on the new frame, if it was waiting for one.
+      // The edit continues on the new frame.
       await expect
-        .poll(() => writes.filter((write) => write.carriesMarker).length, { timeout: 45_000 })
-        .toBeGreaterThan(0)
-        .catch(() => note("no write of the edit within 45 s of the new frame"));
+        .poll(() => writes.filter((write) => write.carriesMarker).length, {
+          timeout: 45_000,
+          message: "the author's edit was written after the new frame came up",
+        })
+        .toBeGreaterThan(0);
       const field = await heroContentField(page, 0);
       keptText = await field.inputValue();
     } else {
@@ -861,9 +863,11 @@ test.describe("a real sidecar swap under an open editor", () => {
       await expect(field).toHaveValue(marker);
       note("edited the field on the new frame");
       await expect
-        .poll(() => writes.filter((write) => write.carriesMarker).length, { timeout: 45_000 })
-        .toBeGreaterThan(0)
-        .catch(() => note("no write of the edit within 45 s"));
+        .poll(() => writes.filter((write) => write.carriesMarker).length, {
+          timeout: 45_000,
+          message: "the edit made on the new frame was written",
+        })
+        .toBeGreaterThan(0);
     }
     await expect
       .poll(
@@ -874,10 +878,12 @@ test.describe("a real sidecar swap under an open editor", () => {
               ack.status === "applied" &&
               ack.at > ackAfter,
           ),
-        { timeout: 45_000 },
+        {
+          timeout: 45_000,
+          message: "the new frame acknowledged the edit as applied",
+        },
       )
-      .toBe(true)
-      .catch(() => note("no applied acknowledgement from the new frame within 45 s"));
+      .toBe(true);
 
     const sameElement = await page
       .evaluate((element) => element === document.querySelector("iframe"), frameBefore!)
@@ -920,22 +926,26 @@ test.describe("a real sidecar swap under an open editor", () => {
       { type: "real swap timeline", description: timeline.join("\n") },
     );
 
+    // Judged on the trace, all of it taken before the field is put back, so
+    // the restore's own write and acknowledgement cannot count: one new
+    // frame, which acknowledges; the author's edit written exactly once and
+    // acknowledged as applied by the new frame after it was made; the
+    // author's text kept when it was made before the swap.
+    expect(summary.newDocumentsAfterSwap, "the frame reloaded exactly once").toHaveLength(1);
+    expect(after.some((ready) => ready.ack), "the new frame can acknowledge").toBe(true);
+    expect(markerWrites.length, "the edit was written exactly once").toBe(1);
+    expect(
+      appliedOnNew.some((ack) => ack.at > ackAfter),
+      "the new frame acknowledged the edit",
+    ).toBe(true);
+    if (editedBeforeSwap) expect(keptText, "the author's text was kept").toBe(marker);
+
     // Put the field back, as the other cases do.
     const restore = await heroContentField(page, 0);
     await restore.fill(original);
     await restore.press("Tab");
     await expect(restore).toHaveValue(original);
-
-    // Judged on the trace: one new frame, which acknowledges an edit; the
-    // author's text kept when there was one before the swap; the edit
-    // written at most once.
-    expect(summary.newDocumentsAfterSwap, "the frame reloaded exactly once").toHaveLength(1);
-    expect(after.some((ready) => ready.ack), "the new frame can acknowledge").toBe(true);
-    expect(markerWrites.length, "the edit was never sent twice").toBeLessThanOrEqual(1);
-    expect(
-      appliedOnNew.some((ack) => ack.at > ackAfter),
-      "the new frame acknowledged an edit",
-    ).toBe(true);
-    if (editedBeforeSwap) expect(keptText, "the author's text was kept").toBe(marker);
+    // And still exactly once once the restore has gone out.
+    expect(writes.filter((write) => write.carriesMarker)).toHaveLength(1);
   });
 });
