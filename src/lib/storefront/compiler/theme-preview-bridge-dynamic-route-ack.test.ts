@@ -197,18 +197,18 @@ function clientPreview(router: ReturnType<typeof productRouter>) {
       )
       .map((ack) => ack.operationId);
   /** The editor presents the section on the page the frame shows. */
-  const present = (operationId: string) => {
-    bridge.queuePresentationToken("hero", true, token(operationId));
+  const present = (operationId: string, routePath = PRODUCT) => {
+    bridge.queuePresentationToken("hero", true, token(operationId, routePath));
     bridge.flushPendingPresentationTokens();
   };
   return { ...bridge, posted, standing, withdrawn, present };
 }
 
-function token(operationId: string) {
+function token(operationId: string, routePath = PRODUCT) {
   return {
     workspaceKey: "storefront-1:theme-1",
-    templateId: "template-product",
-    routePath: PRODUCT,
+    templateId: routePath === PRODUCT ? "template-product" : "template-home",
+    routePath,
     sectionId: "hero",
     documentBasis: { kind: "existing", draftGeneration: 1 },
     overlayRevision: 1,
@@ -328,6 +328,26 @@ describe("rapid navigation between a dynamic route's pages, with matches arrivin
       "op-shirt-again",
     ]);
     expect(page.withdrawn()).toEqual(["op-shirt"]);
+  });
+
+  it("control: a page left before the rapid moves keeps its ack; hat's withdrawal, overtaken by sock, does not fall back on it", async () => {
+    const router = productRouter("/");
+    const page = clientPreview(router);
+    page.reportStructure();
+    // The author's page, acknowledged before the frame moved off it: the
+    // basis of a legal save while the frame is elsewhere.
+    page.present("op-home", "/");
+
+    router.hold("/products/hat");
+    await router.navigate({ to: "/products/hat" });
+    await router.navigate({ to: "/products/sock" });
+    await settle();
+    page.present("op-sock");
+    router.arrive("/products/hat");
+    await settle();
+
+    expect(page.standing()).toEqual(["op-home", "op-sock"]);
+    expect(page.withdrawn()).toEqual([]);
   });
 });
 
