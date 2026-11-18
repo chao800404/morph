@@ -955,6 +955,186 @@ describe("a fast /b then /c inside the frame", () => {
   });
 });
 
+/**
+ * The author picks, in the page list, the page the editor already shows,
+ * while the frame is on another one.
+ *
+ * The order is fixed: the frame went to /b by itself and the editor's switch
+ * there is still loading (the router heads to /b, `search` is still Home);
+ * the author then picks Home. That pick replaces the load, so the editor's
+ * route never changes and the route sync that answers a switch never runs.
+ * The pick itself is what sends the frame back, once, as the author's own
+ * navigation. Each set-route is read from what the editor posts.
+ */
+describe("the author picks the page the editor shows while the frame is elsewhere", () => {
+  const frameOn = (routePath: string, frameNavigationEpoch: number) =>
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath,
+      frameNavigationEpoch,
+    });
+  /** The frame on /b by itself, the editor's switch there still loading. */
+  async function followStillLoading() {
+    const harness = await settled();
+    harness.holdLoads();
+    frameOn("/b", 7);
+    await tick(0);
+    // Precondition: the router heads to /b, the editor still shows Home, and
+    // nothing has been sent to the frame for the move.
+    expect(routesAsked(harness)).toEqual(["/b"]);
+    expect(shownRoute(harness)).toBe("/");
+    return harness;
+  }
+  const pickHome = async () => {
+    act(() => {
+      screen.getByTitle("Preview /").click();
+    });
+    await tick(0);
+  };
+
+  it("sends the frame back to Home once, as the author's navigation", async () => {
+    const harness = await followStillLoading();
+    const before = routeRequests().length;
+
+    await pickHome();
+
+    expect(shownRoute(harness)).toBe("/");
+    const sent = routeRequests().slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.routePath ?? "/").toBe("/");
+    expect(sent[0]!.navigationIntent).toBe("author");
+    expect(sent[0]!).not.toHaveProperty("followEpoch");
+
+    // The frame answers from Home; nothing more is sent or asked.
+    await frameAnswers("/");
+    await tick(0);
+    expect(routeRequests().slice(before)).toHaveLength(1);
+    expect(routesAsked(harness).filter((path) => path === "/b")).toHaveLength(
+      1,
+    );
+  });
+
+  it("the superseded load to /b finishing after the pick does not take the canvas back to /b", async () => {
+    const harness = await followStillLoading();
+    const before = routeRequests().length;
+    await pickHome();
+    expect(routeRequests().slice(before)).toHaveLength(1);
+
+    // The load the pick replaced finishes now.
+    harness.finishLoad();
+    await tick(0);
+    await tick(0);
+
+    expect(shownRoute(harness)).toBe("/");
+    expect(routesAsked(harness).filter((path) => path === "/b")).toHaveLength(
+      1,
+    );
+    const sent = routeRequests().slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent.map((request) => request.routePath ?? "/")).not.toContain(
+      "/b",
+    );
+    // The frame, sent Home, answers from there.
+    await frameAnswers("/");
+    expect(shownRoute(harness)).toBe("/");
+    expect(routeRequests().slice(before)).toHaveLength(1);
+  });
+
+  it("a late /b report from the frame, after the author's set-route, is not followed", async () => {
+    const harness = await followStillLoading();
+    const before = routeRequests().length;
+    await pickHome();
+    const authorRequest = latestRequest();
+    expect(routeRequests().slice(before)).toEqual([authorRequest]);
+
+    // Sent by the frame before it took the author's set-route.
+    frameOn("/b", 7);
+    await tick(0);
+    frameOn("/b", 7);
+    await tick(0);
+    expect(routesAsked(harness).filter((path) => path === "/b")).toHaveLength(
+      1,
+    );
+    expect(shownRoute(harness)).toBe("/");
+    expect(routeRequests().slice(before)).toEqual([authorRequest]);
+    expect(
+      routeRequests()
+        .slice(before)
+        .filter((request) => request.navigationIntent === "frame-follow"),
+    ).toEqual([]);
+
+    // Then its answer, from Home, and the report that follows it.
+    applied(authorRequest!.routeRequestId, "/");
+    frameOn("/", 8);
+    await tick(0);
+    expect(shownRoute(harness)).toBe("/");
+    expect(routeRequests().slice(before)).toEqual([authorRequest]);
+    expect(routesAsked(harness).filter((path) => path === "/b")).toHaveLength(
+      1,
+    );
+  });
+
+  it("sends nothing when the frame is already on Home", async () => {
+    const harness = await settled();
+    const before = routeRequests().length;
+    await pickHome();
+    await tick(0);
+    expect(shownRoute(harness)).toBe("/");
+    expect(routeRequests().slice(before)).toEqual([]);
+  });
+
+  it("without a pick, nothing sends the frame back from a page the editor does not follow to", async () => {
+    const harness = await settled();
+    const before = routeRequests().length;
+    frameOn("/products/$handle", 3);
+    await tick(0);
+    frameOn("/products/$handle", 3);
+    await tick(20);
+    expect(routesAsked(harness)).toEqual([]);
+    expect(shownRoute(harness)).toBe("/");
+    expect(routeRequests().slice(before)).toEqual([]);
+  });
+
+  it("sends nothing while a page switch waits on a save", async () => {
+    let finishSave!: (value: unknown) => void;
+    updateSectionProps.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    const harness = await settled();
+    // An edit on Home still waiting out its debounce.
+    report("/", [heroNode]);
+    const heading = await screen.findByText("h1");
+    act(() => {
+      heading.closest("button")?.click();
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "Hello",
+      originalValue: "Welcome",
+    });
+    await tick(0);
+    const before = routeRequests().length;
+    // The frame goes to /b; the switch there waits on the save of Home.
+    frameOn("/b", 4);
+    await tick(0);
+    expect(routesAsked(harness)).toEqual(["/b"]);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(shownRoute(harness)).toBe("/");
+
+    await pickHome();
+    expect(routeRequests().slice(before)).toEqual([]);
+    expect(finishSave).toBeTypeOf("function");
+  });
+});
+
 describe("frame-follow navigationIntent and followEpoch", () => {
   it("preserves the structure frameNavigationEpoch across async route load and sends frame-follow", async () => {
     const harness = await settled();
