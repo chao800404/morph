@@ -413,7 +413,7 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
   - 2026-11-10～11-17 的進度：
     - 【已合併】#394（main merge commit `970f6a6`）：一般內容未確認寫入恢復——僅當文件 generation 恰好前進一格且讀回存在送出內容時分類為 landed；前進兩格以上視為 moved，由作者使用「Load latest, keep mine」。
     - 【已合併】#395（main merge commit `9798507`）：Style replay 因果回執（nullable migration 0083 `0083_style_replay_causal_receipt.sql`）。
-    - 【Draft，首次 CI 已通過】#396（Stage 3）：兩次隔離的 container run 與 handover 檢查已通過首次 CI，證據已核對；授權只涵蓋推送、建立 Draft 與首次 CI，尚未核准 Ready 或合併。
+    - 【Draft，首次 CI 已通過】#396（Stage 3）：兩次隔離的 container run 與 handover 檢查已通過首次 CI，證據已核對；授權只涵蓋推送、建立 Draft 與首次 CI，尚未核准 Ready 或合併；#399 合併後需先以 main 刷新再送審。
     - 【已合併】#397（main merge commit `a28fe71`）：單獨丟棄列表；被拒絕的列表寫入保持未儲存。
     - 【已合併】#398（main merge commit `6718e57`）：防止過期 frame-follow set-route 拉回 history 導航。
     - 【進行中（Draft，未合併）】#399（presentation token 協定，PR1+PR2）。
