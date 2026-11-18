@@ -388,6 +388,9 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       });
       await field.fill(updated);
       await expect(field).toHaveValue(updated);
+      // Leaving the field commits the edit; the frame acknowledges a
+      // committed edit, not keystrokes still being typed.
+      await field.press("Tab");
       // The edit is acknowledged as applied by the frame.
       await expect
         .poll(
@@ -407,6 +410,7 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       expect(rejectedAcks).toEqual([]);
 
       await field.fill(original);
+      await field.press("Tab");
       await expect(field).toHaveValue(original);
     } finally {
       await context.close();
