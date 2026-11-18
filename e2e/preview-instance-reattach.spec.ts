@@ -142,14 +142,19 @@ const cardTitle = (page: Page, slot: string) =>
     `[data-storefront-section-id="${slot}"] [data-storefront-field="title"]`,
   );
 
-const previewFrameOf = (page: Page): Frame | undefined =>
-  page
-    .frames()
-    .find((frame) => frame.url().includes("__morph-theme-preview__"));
+/**
+ * The frame in the editor's preview iframe now: the element `previewFrame`
+ * reads, found the way the other preview specs find it. Not by URL, which
+ * differs by runtime (the client dev server's base path is not Start's).
+ */
+async function previewFrameOf(page: Page): Promise<Frame | undefined> {
+  const handle = await page.locator("iframe").first().elementHandle();
+  return (await handle?.contentFrame()) ?? undefined;
+}
 
 /** A mark set in the frame's own window: gone once the frame is replaced. */
 async function frameMark(page: Page): Promise<string | null> {
-  const frame = previewFrameOf(page);
+  const frame = await previewFrameOf(page);
   if (!frame) return null;
   return frame
     .evaluate(() =>
@@ -159,7 +164,7 @@ async function frameMark(page: Page): Promise<string | null> {
 }
 
 async function markFrame(page: Page, mark: string) {
-  const frame = previewFrameOf(page);
+  const frame = await previewFrameOf(page);
   expect(frame, "the tab has a preview frame").toBeDefined();
   await frame!.evaluate((id) => {
     (window as { __reattachMark?: string }).__reattachMark = id;
