@@ -410,6 +410,12 @@ type EditorStyleInspectorProps = {
    * focused, so what the author types there counts as made on that copy.
    */
   contentBasis?: () => number | undefined;
+  /**
+   * What the editor still holds unsaved for this section of the document
+   * shown, read when the panel starts showing it; see
+   * `useInspectorContentProps`. Display only.
+   */
+  heldContentProps?: () => Record<string, unknown> | undefined;
   /** Called when a focused content input blurs. */
   onContentBlur?: () => void;
   /**
@@ -908,6 +914,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onListResetApplied,
   onDiscardListConflict,
   contentBasis,
+  heldContentProps,
   onContentBlur,
   inlineTextCommit = null,
   onJumpToCode,
@@ -959,6 +966,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     resourceKey,
     sectionId: section.id,
     sectionProps: section.props,
+    heldProps: heldContentProps,
   });
   // A list reset is for the panel showing that list when the discard made it:
   // that panel's own copy still holds the discarded rows. A panel mounted

@@ -15269,6 +15269,17 @@ export function VisualEditorShell({
     },
     [contentBasisFor, templateIdForSection],
   );
+  /**
+   * The unsaved input this editor holds for a section of the page shown, as
+   * the canvas is rebuilt from it (`canvasRebuildSourceRef.pendingProps`:
+   * the section's pending entry, under the key the write path uses for this
+   * page's document). The Inspector shows it when it opens the section, so
+   * a field opened again shows what the canvas shows. Read only.
+   */
+  const heldContentForSection = useCallback(
+    (sectionId: string) => canvasRebuildSourceRef.current.pendingProps(sectionId),
+    [],
+  );
 
   /** See `provenFieldSourceGeneration`. */
   const provenFieldGeneration = useCallback(
@@ -20277,6 +20288,7 @@ export function VisualEditorShell({
           onSectionPropsChange={handleSectionPropsChange}
           onSectionContentBlur={handleSectionContentBlur}
           contentBasisForSection={contentBasisForSection}
+          heldContentForSection={heldContentForSection}
           inlineTextCommit={inlineTextCommit}
           onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}

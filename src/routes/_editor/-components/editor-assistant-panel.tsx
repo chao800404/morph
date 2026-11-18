@@ -141,6 +141,10 @@ type EditorAssistantPanelProps = {
   onSectionContentBlur?: (sectionId: string) => void;
   /** See the Inspector's `contentBasis`; asked by the section's id. */
   contentBasisForSection?: (sectionId: string) => number | undefined;
+  /** See the Inspector's `heldContentProps`; asked by the section's id. */
+  heldContentForSection?: (
+    sectionId: string,
+  ) => Record<string, unknown> | undefined;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
   inlineTextCommit?: InspectorInlineTextCommit | null;
   /** Per-list recovery status for the Inspector's Content tab. */
@@ -278,6 +282,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onSectionPropsChange,
   onSectionContentBlur,
   contentBasisForSection,
+  heldContentForSection,
   inlineTextCommit,
   listWriteStatuses,
   listReset,
@@ -428,6 +433,15 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         ? contentBasisForSection?.(storedSection.id)
         : undefined,
     [contentBasisForSection, storedSection],
+  );
+  // Only a Document section has held input to show; a stand-in shows none.
+  const storedSectionId = storedSection?.id;
+  const inspectorHeldContent = useMemo(
+    () =>
+      contentStore === "document" && storedSectionId && heldContentForSection
+        ? () => heldContentForSection(storedSectionId)
+        : undefined,
+    [contentStore, heldContentForSection, storedSectionId],
   );
 
   useEffect(() => {
@@ -639,6 +653,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 onListResetApplied={onListResetApplied}
                 onDiscardListConflict={onDiscardListConflict}
                 contentBasis={inspectorContentBasis}
+                heldContentProps={inspectorHeldContent}
                 inlineTextCommit={inlineTextCommit}
                 onJumpToCode={onJumpToCode}
                 selectionSourceCurrent={selectionSourceCurrent}

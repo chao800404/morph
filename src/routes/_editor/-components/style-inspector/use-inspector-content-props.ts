@@ -27,6 +27,15 @@ export function useInspectorContentProps(args: {
   resourceKey: string;
   sectionId: string;
   sectionProps: unknown;
+  /**
+   * The input the editor still holds for this section of this document and
+   * has not saved (its pending entry's props), read when the panel starts
+   * showing the section: on mount and on a switch of section or document.
+   * Shown over the stored props, key by key, so a field opened again shows
+   * the kept draft the canvas shows, and every other field its own value.
+   * The stored props stay the baseline; nothing is written from here.
+   */
+  heldProps?: () => InspectorContentProps | undefined;
 }): {
   contentResourceKey: string;
   localProps: InspectorContentProps;
@@ -42,6 +51,15 @@ export function useInspectorContentProps(args: {
   externalEpochs: Readonly<Record<string, number>>;
 } {
   const { resourceKey, sectionId, sectionProps } = args;
+  const heldPropsRef = useRef(args.heldProps);
+  heldPropsRef.current = args.heldProps;
+  /** The stored props with the held input on top, as the panel opens them. */
+  const withHeld = (incoming: InspectorContentProps): InspectorContentProps => {
+    const held = heldPropsRef.current?.();
+    return held && Object.keys(held).length > 0
+      ? { ...incoming, ...held }
+      : incoming;
+  };
   // Kept by identity across renders. The rebase effect below depends on it and
   // sets state, so a fresh `{}` per render for a section without props made
   // every render schedule the next one, until React stopped it with "Maximum
@@ -55,8 +73,9 @@ export function useInspectorContentProps(args: {
         : {},
     [sectionProps],
   );
-  const [localProps, setLocalProps] =
-    useState<InspectorContentProps>(incomingProps);
+  const [localProps, setLocalProps] = useState<InspectorContentProps>(() =>
+    withHeld(incomingProps),
+  );
   const localPropsRef = useRef(localProps);
   const serverBaselineRef = useRef<InspectorContentProps>(incomingProps);
   const contentResourceKey = `${resourceKey}:${sectionId}`;
@@ -70,11 +89,13 @@ export function useInspectorContentProps(args: {
     serverBaselineRef.current = incomingProps;
 
     // Switching sections replaces everything; there is no edit in progress
-    // that belongs to the new one.
+    // in this panel that belongs to the new one. What the editor still holds
+    // for it is shown, as on mount.
     if (contentResourceKey !== lastContentResourceKeyRef.current) {
       lastContentResourceKeyRef.current = contentResourceKey;
-      localPropsRef.current = incomingProps;
-      setLocalProps(incomingProps);
+      const opened = withHeld(incomingProps);
+      localPropsRef.current = opened;
+      setLocalProps(opened);
       return;
     }
 
@@ -106,7 +127,7 @@ export function useInspectorContentProps(args: {
   const props =
     contentResourceKey === lastContentResourceKeyRef.current
       ? localProps
-      : incomingProps;
+      : withHeld(incomingProps);
 
   return {
     contentResourceKey,
