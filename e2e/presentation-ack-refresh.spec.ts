@@ -374,8 +374,33 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       const original = await field.inputValue();
       const updated = `${MARKER} ack ${Date.now()}`;
 
+      // The frame's acknowledgements from the edit on, read in the editor's
+      // own window. Observation only.
+      await page.evaluate(() => {
+        const acks: Array<{ status: string }> = [];
+        (window as unknown as { __normalEditAcks: typeof acks }).__normalEditAcks = acks;
+        window.addEventListener("message", (event) => {
+          const data = event.data as { type?: unknown; status?: unknown } | null;
+          if (data?.type === "morph:storefront-preview-section-presentation-ack") {
+            acks.push({ status: typeof data.status === "string" ? data.status : "" });
+          }
+        });
+      });
       await field.fill(updated);
       await expect(field).toHaveValue(updated);
+      // The edit is acknowledged as applied by the frame.
+      await expect
+        .poll(
+          () =>
+            page.evaluate(() =>
+              (
+                (window as unknown as { __normalEditAcks?: Array<{ status: string }> })
+                  .__normalEditAcks ?? []
+              ).some((ack) => ack.status === "applied"),
+            ),
+          { timeout: 20_000 },
+        )
+        .toBe(true);
       await expect(
         page.getByText("Preview syncing. Content writes are paused."),
       ).toHaveCount(0, { timeout: 20_000 });
