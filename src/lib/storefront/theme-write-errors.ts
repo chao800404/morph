@@ -35,6 +35,14 @@ export const SELECTION_SOURCE_CONFLICT_MESSAGE =
   "The source code has changed. Select the field again. Your changes are kept.";
 
 /**
+ * A Design write the Theme's recorded framework does not take
+ * (`designWritesUnavailableReason`): the DAL raises it as
+ * `THEME_FRAMEWORK_UNAVAILABLE: reason`, and a server function answers it
+ * with the reason. The code page creation already answers with.
+ */
+export const THEME_FRAMEWORK_UNAVAILABLE = "THEME_FRAMEWORK_UNAVAILABLE";
+
+/**
  * A content write the source cannot be confirmed for *right now* (M2 C7):
  * the `.astro` parser could not be asked or did not answer in its contract,
  * or the preview's instance identity or component version is not the saved

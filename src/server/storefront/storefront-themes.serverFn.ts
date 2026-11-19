@@ -5,6 +5,7 @@ import {
   SELECTION_SOURCE_CONFLICT_MESSAGE,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
+  THEME_FRAMEWORK_UNAVAILABLE,
   parseSectionSourceRefusal,
 } from "@/lib/storefront/theme-write-errors";
 import { parseRejectedContentField } from "@/lib/storefront/theme-content-capabilities";
@@ -390,6 +391,11 @@ export const updateStorefrontThemeRenderPolicy = createServerFn({
       if (message.includes(TEMPLATE_DRAFT_GENERATION_MISMATCH)) {
         return fail("Template draft was modified concurrently.", {
           error: TEMPLATE_DRAFT_CONFLICT,
+        });
+      }
+      if (message.startsWith(`${THEME_FRAMEWORK_UNAVAILABLE}: `)) {
+        return fail(message.slice(THEME_FRAMEWORK_UNAVAILABLE.length + 2), {
+          error: THEME_FRAMEWORK_UNAVAILABLE,
         });
       }
       if (message.startsWith("RENDER_POLICY_SCOPE_MISMATCH:")) {

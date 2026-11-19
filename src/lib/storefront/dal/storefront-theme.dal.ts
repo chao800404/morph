@@ -4,6 +4,7 @@ import {
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
+  THEME_FRAMEWORK_UNAVAILABLE,
   sectionSourceRefusalMessage,
 } from "@/lib/storefront/theme-write-errors";
 import { getDb } from "@/db";
@@ -1075,7 +1076,13 @@ export const storefrontThemeDal = {
     const template = context?.templates.find(
       (item) => item.id === input.templateId,
     );
-    if (!template) return null;
+    if (!context || !template) return null;
+    // A Document-level Design write: refused on a framework Design cannot
+    // judge (C5: on Astro only section props and route Documents are open).
+    const unavailable = designWritesUnavailableReason(context.theme.framework);
+    if (unavailable) {
+      throw new Error(`${THEME_FRAMEWORK_UNAVAILABLE}: ${unavailable}`);
+    }
     if ((input.setting.scope === "website") !== (template.type === "layout")) {
       throw new Error(
         "RENDER_POLICY_SCOPE_MISMATCH: Website defaults belong to the layout document; page overrides belong to page documents.",

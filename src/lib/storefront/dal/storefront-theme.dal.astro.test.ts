@@ -1165,6 +1165,22 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     expect(stored("tpl-about")).toEqual(before);
     warn.mockRestore();
   });
+
+  it("refuses a rendering policy write on an Astro Theme (L8), and writes nothing", async () => {
+    const before = stored("tpl-about");
+    await expect(
+      storefrontThemeDal.updateRenderPolicy({
+        storefrontId: STOREFRONT,
+        themeId: THEME,
+        templateId: "tpl-about",
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 3,
+        setting: { scope: "page", policy: { mode: "ssr" } },
+        createdBy: "user-1",
+      }),
+    ).rejects.toThrow(/^THEME_FRAMEWORK_UNAVAILABLE: /);
+    expect(stored("tpl-about")).toEqual(before);
+  });
 });
 
 /**

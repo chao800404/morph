@@ -9,7 +9,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * storefront-themes-starter-upgrade-framework.test.ts.
  */
 
-const dal = vi.hoisted(() => ({ updateSectionProps: vi.fn() }));
+const dal = vi.hoisted(() => ({
+  updateSectionProps: vi.fn(),
+  updateRenderPolicy: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-start", () => {
   type Validator = (data: unknown) => unknown;
@@ -38,7 +41,7 @@ vi.mock("@/lib/storefront/dal/storefront-theme.dal", () => ({
   storefrontThemeDal: dal,
 }));
 
-const { updateStorefrontThemeSectionProps } =
+const { updateStorefrontThemeSectionProps, updateStorefrontThemeRenderPolicy } =
   await import("./storefront-themes.serverFn");
 
 type Result = {
@@ -151,5 +154,35 @@ describe("updateStorefrontThemeSectionProps carries an Astro write's identity to
     expect(dal.updateSectionProps.mock.calls[0]![0]).not.toHaveProperty(
       "presentationToken",
     );
+  });
+});
+
+describe("updateStorefrontThemeRenderPolicy answers a framework refusal by its code (L8)", () => {
+  it("answers THEME_FRAMEWORK_UNAVAILABLE with the DAL's reason", async () => {
+    dal.updateRenderPolicy.mockRejectedValue(
+      new Error(
+        "THEME_FRAMEWORK_UNAVAILABLE: Design cannot change astro Themes yet. Edit the source in Code mode.",
+      ),
+    );
+    const result = await (
+      updateStorefrontThemeRenderPolicy as unknown as (args: {
+        data: unknown;
+      }) => Promise<Result>
+    )({
+      data: {
+        storefrontId: input.storefrontId,
+        themeId: input.themeId,
+        templateId: input.templateId,
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+        setting: { scope: "page", policy: { mode: "ssr" } },
+      },
+    });
+    expect(result).toMatchObject({
+      success: false,
+      error: "THEME_FRAMEWORK_UNAVAILABLE",
+      message:
+        "Design cannot change astro Themes yet. Edit the source in Code mode.",
+    });
   });
 });
