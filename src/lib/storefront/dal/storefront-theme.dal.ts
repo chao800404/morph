@@ -173,6 +173,38 @@ export function designWritesUnavailableReason(
   return `Design cannot change ${framework} Themes yet. Edit the source in Code mode.`;
 }
 
+/**
+ * The Design writes judged per operation and framework (M2 C5), replacing
+ * #346's blanket refusal for exactly these two on an Astro Theme:
+ *
+ * - `section-props`: Astro only through Core's own proof on the snapshot it
+ *   writes against: parse → Astro B1 profile → instance identity and
+ *   component digest → field allowlist → the same Document CAS as Start
+ *   (`resolveAstroSectionWrite`).
+ * - `route-document-create`: an empty row for a page the Astro registry
+ *   lists (kind route, not an endpoint, not dynamic). Writes no content,
+ *   so it needs no parser.
+ *
+ * Every other operation (reorder, rename, add, bind, delete, text
+ * promotion, page files) still asks `designWritesUnavailableReason`, which
+ * refuses Astro. `via` names the path a permitted write takes.
+ */
+export type DesignWriteOperation = "section-props" | "route-document-create";
+
+export function designWriteCapability(
+  framework: string | null | undefined,
+  // Named at every call so the operations stay explicit; both answer alike.
+  _operation: DesignWriteOperation,
+):
+  | Readonly<{ ok: true; via: "start" | "astro" }>
+  | Readonly<{ ok: false; reason: string }> {
+  if (framework === "astro") return { ok: true, via: "astro" };
+  const unavailable = designWritesUnavailableReason(framework);
+  return unavailable
+    ? { ok: false, reason: unavailable }
+    : { ok: true, via: "start" };
+}
+
 export const LEGACY_LAYOUT_DESIGN_WRITE_REASON =
   "This layout does not read Design content. Upgrade the Starter to edit it here, or edit it in Code mode.";
 
@@ -408,6 +440,132 @@ async function readThemeSourceGeneration(
     .bind(themeId, storefrontId)
     .first<{ generation: number }>();
   return row ? row.generation : null;
+}
+
+/**
+ * The page an Astro Theme's registry lists at `routePath`: a route, not an
+ * endpoint, not dynamic (the registry's `dynamic` alone decides, Q6).
+ */
+function astroPageAt(
+  files: readonly { path: string; content: string }[],
+  routePath: string,
+):
+  | Readonly<{ ok: true; record: ThemeRouteRegistry["routes"][number] }>
+  | Readonly<{ ok: false; reason: string }> {
+  const routes = themeRoutesFor("astro", files);
+  const record = routes.ok
+    ? routes.registry.routes.find(
+        (candidate) =>
+          candidate.kind === "route" &&
+          !candidate.isEndpoint &&
+          candidate.path === routePath,
+      )
+    : undefined;
+  if (!record) {
+    return {
+      ok: false,
+      reason: `${routePath} is not a page in the saved Theme source.`,
+    };
+  }
+  if (record.dynamic) {
+    return {
+      ok: false,
+      reason: `${routePath} has route parameters, so it has no content document of its own.`,
+    };
+  }
+  return { ok: true, record };
+}
+
+/**
+ * N1: the `index` template of an Astro Theme, created empty when it has
+ * none, under the same ownership check as a route document and only while
+ * the saved source has a home page. Content is still proven when written.
+ * Idempotent: an existing `index` template is returned as it is, and of two
+ * racing creators the unique (theme, type, name) index lets one insert land
+ * and the other reads it back.
+ */
+async function ensureAstroHomeTemplate(data: {
+  storefrontId: string;
+  themeId: string;
+}): Promise<
+  | Readonly<{
+      ok: true;
+      createdByThisCall: boolean;
+      template: Readonly<{
+        id: string;
+        routePath: string;
+        draftGeneration: number;
+        draftRevisionId: string | null;
+      }>;
+    }>
+  | Readonly<{ ok: false; reason: string }>
+> {
+  const owned = await readOwnedTheme(data.storefrontId, data.themeId);
+  if (!owned) return { ok: false, reason: "Theme not found." };
+  if (owned.themeFramework !== "astro") {
+    return { ok: false, reason: "/ stores its content in the index template." };
+  }
+  const page = astroPageAt(
+    await listThemeSourceFiles(data.storefrontId, data.themeId),
+    "/",
+  );
+  if (!page.ok) return page;
+  const db = await getDb();
+  const readExisting = async () => {
+    const [row] = await db
+      .select({
+        id: storefrontThemeTemplates.id,
+        draftGeneration: storefrontThemeTemplates.draftGeneration,
+        draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+      })
+      .from(storefrontThemeTemplates)
+      .where(
+        and(
+          eq(storefrontThemeTemplates.themeId, data.themeId),
+          eq(storefrontThemeTemplates.type, "index"),
+          isNull(storefrontThemeTemplates.deletedAt),
+        ),
+      )
+      .orderBy(asc(storefrontThemeTemplates.createdAt))
+      .limit(1);
+    return row
+      ? {
+          ok: true as const,
+          createdByThisCall: false,
+          template: {
+            id: row.id,
+            routePath: "/",
+            draftGeneration: row.draftGeneration ?? 1,
+            draftRevisionId: row.draftRevisionId,
+          },
+        }
+      : null;
+  };
+  const existing = await readExisting();
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  try {
+    await db.insert(storefrontThemeTemplates).values({
+      id,
+      themeId: data.themeId,
+      type: "index",
+      // The name the Starter gives its home template.
+      name: "Default",
+      document: { version: 1, sections: [] },
+      createdAt: now,
+      updatedAt: now,
+    });
+  } catch (error) {
+    const created = await readExisting();
+    if (created) return created;
+    throw error;
+  }
+  return {
+    ok: true,
+    createdByThisCall: true,
+    template: { id, routePath: "/", draftGeneration: 1, draftRevisionId: null },
+  };
 }
 
 async function listThemeSourceFiles(storefrontId: string, themeId: string) {
@@ -1484,6 +1642,18 @@ export const storefrontThemeDal = {
     | Readonly<{ ok: false; reason: string }>
   > {
     const target = contentTargetForRoutePath(data.routePath);
+    // N1: an Astro Theme's home page stores its content in the `index`
+    // template, which no other product path creates for it.
+    if (
+      target.kind === "template" &&
+      target.type === "index" &&
+      normalizeRoutePath(data.routePath) === "/"
+    ) {
+      const owned = await readOwnedTheme(data.storefrontId, data.themeId);
+      if (owned?.themeFramework === "astro") {
+        return ensureAstroHomeTemplate(data);
+      }
+    }
     if (target.kind === "template") {
       return {
         ok: false,
@@ -1512,22 +1682,31 @@ export const storefrontThemeDal = {
       )
       .limit(1);
     if (!theme) return { ok: false, reason: "Theme not found." };
-    // A route document is checked against Start's route files, which another
-    // framework's Theme does not render (or does not have).
-    const unavailable = designWritesUnavailableReason(theme.framework);
-    if (unavailable) return { ok: false, reason: unavailable };
-
-    const registry = buildThemeRouteRegistry(
-      await listThemeSourceFiles(data.storefrontId, data.themeId),
+    // A route document is checked against the routes of the framework the
+    // Theme records: Start's route files, or an Astro Theme's pages (C5;
+    // no parser: the row is empty, and content is proven when written).
+    // Any other framework is refused.
+    const capability = designWriteCapability(
+      theme.framework,
+      "route-document-create",
     );
-    if (
-      !registry.valid ||
-      !findBoundTemplateRoute(registry, target.routePath)
-    ) {
-      return {
-        ok: false,
-        reason: `${target.routePath} is not a route in the saved Theme source.`,
-      };
+    if (!capability.ok) return { ok: false, reason: capability.reason };
+
+    const files = await listThemeSourceFiles(data.storefrontId, data.themeId);
+    if (capability.via === "astro") {
+      const page = astroPageAt(files, target.routePath);
+      if (!page.ok) return page;
+    } else {
+      const registry = buildThemeRouteRegistry(files);
+      if (
+        !registry.valid ||
+        !findBoundTemplateRoute(registry, target.routePath)
+      ) {
+        return {
+          ok: false,
+          reason: `${target.routePath} is not a route in the saved Theme source.`,
+        };
+      }
     }
 
     const readExisting = async () => {

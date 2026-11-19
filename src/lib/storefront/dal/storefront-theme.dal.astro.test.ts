@@ -546,3 +546,139 @@ describe("the editor context of an Astro Theme", () => {
     }
   });
 });
+
+describe("an Astro page's own Document (D7 create, C5) and the home template (N1)", () => {
+  const ensure = (routePath: string, overrides: Partial<{ storefrontId: string; themeId: string }> = {}) =>
+    storefrontThemeDal.ensureRouteTemplate({
+      storefrontId: STOREFRONT,
+      themeId: THEME,
+      routePath,
+      ...overrides,
+    });
+  const templates = () =>
+    sqlite
+      .prepare(
+        "SELECT theme_id, type, name, route_path, document, draft_revision_id, draft_generation FROM storefront_theme_templates ORDER BY type, name",
+      )
+      .all();
+
+  it("creates /about's Document empty, without asking the parser", async () => {
+    delete mock.env.ASTRO_PARSER;
+    const result = await ensure("/about");
+    expect(result).toMatchObject({
+      ok: true,
+      createdByThisCall: true,
+      template: { routePath: "/about", draftGeneration: 1, draftRevisionId: null },
+    });
+    expect(templates()).toEqual([
+      {
+        theme_id: THEME,
+        type: "page",
+        name: "/about",
+        route_path: "/about",
+        document: '{"version":1,"sections":[]}',
+        draft_revision_id: null,
+        draft_generation: 1,
+      },
+    ]);
+    // Idempotent: the second call finds it.
+    const again = await ensure("/about/");
+    expect(again).toMatchObject({
+      ok: true,
+      createdByThisCall: false,
+      template: { id: result.ok ? result.template.id : "" },
+    });
+    expect(templates()).toHaveLength(1);
+  });
+
+  it("refuses a dynamic page, an endpoint and a path with no page, and creates nothing", async () => {
+    await expect(ensure("/blog/[slug]")).resolves.toEqual({
+      ok: false,
+      reason: expect.stringMatching(/route parameters/),
+    });
+    await expect(ensure("/api")).resolves.toEqual({
+      ok: false,
+      reason: "/api is not a page in the saved Theme source.",
+    });
+    await expect(ensure("/nowhere")).resolves.toEqual({
+      ok: false,
+      reason: "/nowhere is not a page in the saved Theme source.",
+    });
+    expect(templates()).toEqual([]);
+  });
+
+  it("refuses another storefront's Theme and a deleted one, and creates nothing", async () => {
+    await expect(ensure("/about", { themeId: "theme-b" })).resolves.toEqual({
+      ok: false,
+      reason: "Theme not found.",
+    });
+    await expect(ensure("/", { themeId: "theme-b" })).resolves.toMatchObject({
+      ok: false,
+    });
+    sqlite.exec("UPDATE storefront_themes SET deleted_at = 'then' WHERE id = 'theme-a'");
+    await expect(ensure("/about")).resolves.toEqual({
+      ok: false,
+      reason: "Theme not found.",
+    });
+    await expect(ensure("/")).resolves.toMatchObject({ ok: false });
+    expect(templates()).toEqual([]);
+  });
+
+  it("creates the home page's index template once, empty, and returns it after (N1)", async () => {
+    delete mock.env.ASTRO_PARSER;
+    const first = await ensure("/");
+    expect(first).toMatchObject({
+      ok: true,
+      createdByThisCall: true,
+      template: { routePath: "/", draftGeneration: 1, draftRevisionId: null },
+    });
+    const second = await ensure("/");
+    expect(second).toMatchObject({
+      ok: true,
+      createdByThisCall: false,
+      template: { id: first.ok ? first.template.id : "" },
+    });
+    expect(templates()).toEqual([
+      {
+        theme_id: THEME,
+        type: "index",
+        name: "Default",
+        route_path: null,
+        document: '{"version":1,"sections":[]}',
+        draft_revision_id: null,
+        draft_generation: 1,
+      },
+    ]);
+  });
+
+  it("returns an index template the Theme already has, whatever its name", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates (id, theme_id, type, name, document, draft_generation, created_at, updated_at)
+      VALUES ('tpl-home', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}', 4, 'now', 'now');
+    `);
+    await expect(ensure("/")).resolves.toMatchObject({
+      ok: true,
+      createdByThisCall: false,
+      template: { id: "tpl-home", draftGeneration: 4 },
+    });
+    expect(templates()).toHaveLength(1);
+  });
+
+  it("creates no home template for an Astro Theme without a home page", async () => {
+    sqlite.exec(`DELETE FROM storefront_theme_files WHERE id = 'theme-a:${INDEX}'`);
+    await expect(ensure("/")).resolves.toEqual({
+      ok: false,
+      reason: "/ is not a page in the saved Theme source.",
+    });
+    expect(templates()).toEqual([]);
+  });
+
+  it("still refuses / for a Start Theme: its home Document comes from the Starter", async () => {
+    sqlite.exec("UPDATE storefront_themes SET framework = 'tanstack-start' WHERE id = 'theme-a'");
+    await expect(ensure("/")).resolves.toEqual({
+      ok: false,
+      reason: "/ stores its content in the index template.",
+    });
+    expect(templates()).toEqual([]);
+  });
+});

@@ -3682,7 +3682,10 @@ export default function SiteHeader() { return <header />; }`;
       unchanged("template-astro-structure");
     });
 
-    it("refuses a route document on an Astro Theme before reading its routes", async () => {
+    // Since M2 C5 an Astro Theme's route documents are judged by its own
+    // pages (storefront-theme.dal.astro.test.ts); one with no page at the
+    // path is refused, and nothing is created.
+    it("refuses a route document an Astro Theme has no page for, and creates nothing", async () => {
       sqlite.exec(
         "UPDATE storefront_themes SET framework = 'astro' WHERE id = 'theme-a'",
       );
@@ -3693,7 +3696,27 @@ export default function SiteHeader() { return <header />; }`;
       });
       expect(result).toEqual({
         ok: false,
-        reason: expect.stringMatching(/Design cannot change astro Themes yet/),
+        reason: "/about is not a page in the saved Theme source.",
+      });
+      expect(
+        sqlite
+          .prepare("SELECT COUNT(*) AS count FROM storefront_theme_templates")
+          .get(),
+      ).toEqual({ count: 0 });
+    });
+
+    it("still refuses a route document on a Theme of a framework Morph does not know", async () => {
+      sqlite.exec(
+        "UPDATE storefront_themes SET framework = 'next' WHERE id = 'theme-a'",
+      );
+      const result = await storefrontThemeDal.ensureRouteTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        routePath: "/about",
+      });
+      expect(result).toEqual({
+        ok: false,
+        reason: expect.stringMatching(/Design cannot change next Themes yet/),
       });
     });
 
