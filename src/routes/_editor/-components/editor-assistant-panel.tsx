@@ -145,6 +145,8 @@ type EditorAssistantPanelProps = {
   heldContentForSection?: (
     sectionId: string,
   ) => Record<string, unknown> | undefined;
+  /** See the Inspector's `acceptedContentProps`; asked by the section's id. */
+  acceptedPropsForSection?: (sectionId: string) => Record<string, unknown>;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
   inlineTextCommit?: InspectorInlineTextCommit | null;
   /** Per-list recovery status for the Inspector's Content tab. */
@@ -283,6 +285,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onSectionContentBlur,
   contentBasisForSection,
   heldContentForSection,
+  acceptedPropsForSection,
   inlineTextCommit,
   listWriteStatuses,
   listReset,
@@ -442,6 +445,15 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         ? () => heldContentForSection(storedSectionId)
         : undefined,
     [contentStore, heldContentForSection, storedSectionId],
+  );
+  // The section the Inspector's content writes go to (see
+  // `handleInspectorPropsChange`), and only while they go to its Document.
+  const inspectorAcceptedContentProps = useCallback(
+    () =>
+      contentStore === "document" && storedSection
+        ? acceptedPropsForSection?.(storedSection.id)
+        : undefined,
+    [acceptedPropsForSection, contentStore, storedSection],
   );
 
   useEffect(() => {
@@ -654,6 +666,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 onDiscardListConflict={onDiscardListConflict}
                 contentBasis={inspectorContentBasis}
                 heldContentProps={inspectorHeldContent}
+                acceptedContentProps={inspectorAcceptedContentProps}
                 inlineTextCommit={inlineTextCommit}
                 onJumpToCode={onJumpToCode}
                 selectionSourceCurrent={selectionSourceCurrent}

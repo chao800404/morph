@@ -190,4 +190,82 @@ describe("useInspectorContentProps", () => {
       expect(result.current.props).toEqual({ title: "Stored", body: "Body" });
     });
   });
+
+  describe("an input made on an accepted copy newer than the one shown", () => {
+    const render = () =>
+      renderHook(
+        ({ props }) =>
+          useInspectorContentProps({
+            resourceKey: "store:theme",
+            sectionId: "hero",
+            sectionProps: props,
+          }),
+        {
+          initialProps: {
+            props: { title: "Original", body: "Body" } as Record<
+              string,
+              unknown
+            >,
+          },
+        },
+      );
+    /** The author leaves `title` as `value`, as `handleFieldChange` does. */
+    const authorSets = (
+      result: ReturnType<typeof render>["result"],
+      value: string,
+      accepted: Record<string, unknown> | undefined,
+    ) =>
+      act(() => {
+        result.current.noteLocalInput("title", accepted);
+        const next = { ...result.current.localPropsRef.current, title: value };
+        result.current.localPropsRef.current = next;
+        result.current.setLocalProps(next);
+      });
+
+    it("keeps the earlier value typed back when the answered write renders", () => {
+      const { result, rerender } = render();
+      // W1 ("Edited") was answered; the shown copy is still "Original".
+      authorSets(result, "Edited", { title: "Original", body: "Body" });
+      authorSets(result, "Original", { title: "Edited", body: "Body" });
+      rerender({ props: { title: "Edited", body: "Body" } });
+
+      expect(result.current.props).toEqual({ title: "Original", body: "Body" });
+      expect(result.current.externalEpochs).toEqual({});
+    });
+
+    it("without an accepted copy, rebases as before", () => {
+      const { result, rerender } = render();
+      authorSets(result, "Edited", undefined);
+      authorSets(result, "Original", undefined);
+      rerender({ props: { title: "Edited", body: "Body" } });
+
+      expect(result.current.props).toEqual({ title: "Edited", body: "Body" });
+      expect(result.current.externalEpochs).toEqual({ title: 1 });
+    });
+
+    it("moves only the changed key: another key still takes a newer server value", () => {
+      const { result, rerender } = render();
+      authorSets(result, "Original", {
+        title: "Edited",
+        body: "Accepted body",
+      });
+      rerender({ props: { title: "Edited", body: "Their body" } });
+
+      expect(result.current.props).toEqual({
+        title: "Original",
+        body: "Their body",
+      });
+      expect(result.current.externalEpochs).toEqual({ body: 1 });
+    });
+
+    it("a value equal to the accepted copy is not kept over a later change", () => {
+      const { result, rerender } = render();
+      // No change against the accepted copy: someone else's later value wins.
+      authorSets(result, "Original", { title: "Original", body: "Body" });
+      rerender({ props: { title: "Theirs", body: "Body" } });
+
+      expect(result.current.props).toEqual({ title: "Theirs", body: "Body" });
+      expect(result.current.externalEpochs).toEqual({ title: 1 });
+    });
+  });
 });
