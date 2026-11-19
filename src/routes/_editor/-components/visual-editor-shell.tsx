@@ -13635,6 +13635,38 @@ export function VisualEditorShell({
   }, [sectionPropsSnapshot]);
 
   /**
+   * The stored props of one section in the newest copy this editor has
+   * accepted of its document (`newestAcceptedCopy`).
+   *
+   * A write's answer reaches the accepted snapshot before its pending input
+   * is dropped, while the editor context only catches up on the next render.
+   * Read from the context alone in between, an input is compared with the
+   * copy from before that write: typing the earlier value back looks like no
+   * change, and is neither sent nor held. The snapshot is read only when it is
+   * strictly newer, so a later read of someone else's change still wins.
+   */
+  const acceptedSectionProps = useCallback(
+    (sectionId: string): Record<string, unknown> => {
+      const templateId = templateIdForSection(sectionId) ?? activeTemplate?.id;
+      if (!templateId) return sectionPropsSnapshot(sectionId);
+      const newest = newestAcceptedCopy({
+        templateId: routeTemplateIdsRef.current.get(templateId) ?? templateId,
+        snapshots: contentSnapshotsRef.current,
+        contextTemplates: context.templates,
+      });
+      return newest.from === "snapshot"
+        ? snapshotSectionProps(newest.snapshot, sectionId)
+        : sectionPropsSnapshot(sectionId);
+    },
+    [
+      activeTemplate?.id,
+      context.templates,
+      sectionPropsSnapshot,
+      templateIdForSection,
+    ],
+  );
+
+  /**
    * Removes this page's value for declared fields, so the component's own
    * default renders again.
    *
@@ -14199,8 +14231,11 @@ export function VisualEditorShell({
       // A real change means the author is still here, and a navigation
       // waiting on the save is cancelled. A field re-emitting the value it
       // already holds (on blur, say, as focus moves to the question) is not.
+      // "Stored" here and below is the newest accepted copy: a write answered
+      // but not yet rendered is what the input is compared with and staged on.
+      const storedProps = acceptedSectionProps(sectionId);
       const heldProps = {
-        ...sectionPropsSnapshot(sectionId),
+        ...storedProps,
         ...existingProps,
       };
       if (
@@ -14215,16 +14250,13 @@ export function VisualEditorShell({
       // began — not the previous keystroke. Captured once per debounce window so
       // typing a word is one undo, not one per character.
       if (!pendingPropsMapRef.current.has(key)) {
-        pendingPropsBaselineRef.current.set(
-          key,
-          sectionPropsSnapshot(sectionId),
-        );
+        pendingPropsBaselineRef.current.set(key, { ...storedProps });
       }
       const staged = stageContentFields({
         pending: prior,
         sectionId,
         next: nextProps,
-        stored: sectionPropsSnapshot(sectionId),
+        stored: storedProps,
         routePath: routePathForTemplate(templateId),
         inputPath: options?.inputFieldPath,
         listActionPath: options?.listActionPath,
@@ -14268,10 +14300,10 @@ export function VisualEditorShell({
       pendingPropsTimersRef.current.set(key, timer);
     },
     [
+      acceptedSectionProps,
       commitSectionPending,
       contentKeyFor,
       leaveGuard,
-      sectionPropsSnapshot,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       supersedeAwaitingSignedPost,
@@ -14289,21 +14321,14 @@ export function VisualEditorShell({
   contentChangeRef.current = handleSectionPropsChange;
   // C5: what a section an inline commit landed on is rebuilt from when the
   // held posts are sent — the newest copy this editor has accepted, decided
-  // by `newestAcceptedCopy` exactly as the commit handler below reads it,
-  // with the section's pending input on top. Read only; asked once per
-  // section, when the edit ends.
+  // by `newestAcceptedCopy` (`acceptedSectionProps`) exactly as the commit
+  // handler below and the Inspector's input path read it, with the section's
+  // pending input on top. Read only; asked once per section, when the edit
+  // ends.
   canvasRebuildSourceRef.current = {
     storedCopy: (sectionId) => {
       if (!activeTemplate) return undefined;
-      const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
-      const newest = newestAcceptedCopy({
-        templateId: routeTemplateIdsRef.current.get(templateId) ?? templateId,
-        snapshots: contentSnapshotsRef.current,
-        contextTemplates: context.templates,
-      });
-      return newest.from === "snapshot"
-        ? snapshotSectionProps(newest.snapshot, sectionId)
-        : sectionPropsSnapshot(sectionId);
+      return acceptedSectionProps(sectionId);
     },
     pendingProps: (sectionId) => {
       if (!activeTemplate) return undefined;
@@ -14359,10 +14384,6 @@ export function VisualEditorShell({
         templateIdForSection(message.sectionId) ?? activeTemplate.id,
         message.sectionId,
       );
-      const currentProps = {
-        ...sectionPropsSnapshot(message.sectionId),
-        ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
-      };
       // Typing over text is an edit of the field only when the text was the
       // stored value. The preview checks this before an edit begins; it is
       // asked again here, against this editor's own copy of the field the
@@ -14379,30 +14400,17 @@ export function VisualEditorShell({
       // reading the context alone in between compares the page's text with
       // the copy from before that write. The snapshot is read only when it
       // is strictly newer (`newestAcceptedCopy`), so a later read of someone
-      // else's change still refuses.
-      const ownerId =
-        routeTemplateIdsRef.current.get(
-          templateIdForSection(message.sectionId) ?? activeTemplate.id,
-        ) ??
-        templateIdForSection(message.sectionId) ??
-        activeTemplate.id;
-      const newest = newestAcceptedCopy({
-        templateId: ownerId,
-        snapshots: contentSnapshotsRef.current,
-        contextTemplates: context.templates,
-      });
-      const storedProps =
-        newest.from === "snapshot"
-          ? snapshotSectionProps(newest.snapshot, message.sectionId)
-          : sectionPropsSnapshot(message.sectionId);
-      const comparedProps = {
-        ...storedProps,
+      // else's change still refuses. The commit below is built on the same
+      // copy, so it never carries the context's older values for the other
+      // fields of the section.
+      const currentProps = {
+        ...acceptedSectionProps(message.sectionId),
         ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
       };
       if (
         !inlineTextMatchesStoredValue(
           message.originalValue,
-          getFieldPathValue(comparedProps, message.fieldPath),
+          getFieldPathValue(currentProps, message.fieldPath),
         )
       ) {
         setRefusedInlineText({
@@ -14458,13 +14466,13 @@ export function VisualEditorShell({
       inlineTextCommitHandlerRef.current = () => {};
     };
   }, [
+    acceptedSectionProps,
     activeSelection,
     activeTemplate,
     activeRouteSections,
     handleSectionPropsChange,
     isSelectionMode,
     sectionModel.sharedSectionIds,
-    sectionPropsSnapshot,
     stepCanvasDeferral,
     templateIdForSection,
   ]);
@@ -18449,6 +18457,7 @@ export function VisualEditorShell({
           onSwitchThemeLinkElement={handleSwitchThemeLinkElement}
           onSectionPropsChange={handleSectionPropsChange}
           contentBasisForSection={contentBasisForSection}
+          acceptedPropsForSection={acceptedSectionProps}
           inlineTextCommit={inlineTextCommit}
           onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}

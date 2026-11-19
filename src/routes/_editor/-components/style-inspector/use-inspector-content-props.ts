@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   rebaseContentProps,
   sameContentValue,
@@ -40,6 +40,21 @@ export function useInspectorContentProps(args: {
    * Keys the author changed are kept as they are and never counted.
    */
   externalEpochs: Readonly<Record<string, number>>;
+  /**
+   * The author changed top-level `key`, on `accepted`: the newest copy of
+   * the section the editor has accepted, when the shell names one.
+   *
+   * The baseline a later server copy is rebased against is otherwise the
+   * last copy this hook was handed. A write answered but not yet rendered is
+   * newer than that one; an input made on it (typing the earlier value back,
+   * say) would look unchanged against the older baseline, and the rendered
+   * answer would replace it. So the changed key's baseline moves up to the
+   * accepted copy's value. Only that key, and never past what was accepted.
+   */
+  noteLocalInput: (
+    key: string,
+    accepted: InspectorContentProps | undefined,
+  ) => void;
 } {
   const { resourceKey, sectionId, sectionProps } = args;
   // Kept by identity across renders. The rebase effect below depends on it and
@@ -103,6 +118,17 @@ export function useInspectorContentProps(args: {
     }
   }, [contentResourceKey, incomingProps]);
 
+  const noteLocalInput = useCallback(
+    (key: string, accepted: InspectorContentProps | undefined) => {
+      if (!accepted) return;
+      const baseline = { ...serverBaselineRef.current };
+      if (Object.hasOwn(accepted, key)) baseline[key] = accepted[key];
+      else delete baseline[key];
+      serverBaselineRef.current = baseline;
+    },
+    [],
+  );
+
   const props =
     contentResourceKey === lastContentResourceKeyRef.current
       ? localProps
@@ -115,5 +141,6 @@ export function useInspectorContentProps(args: {
     localPropsRef,
     props,
     externalEpochs,
+    noteLocalInput,
   };
 }
