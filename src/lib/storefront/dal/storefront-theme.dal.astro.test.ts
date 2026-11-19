@@ -1048,6 +1048,60 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     expect(stored("tpl-about")).toEqual(before);
   });
 
+  /**
+   * Replaces tpl-about's `intro` row, as another writer could have left it:
+   * in the template row and in its draft revision, which is the Document
+   * the editor context reads.
+   */
+  const storeIntroRow = (row: Record<string, unknown>) => {
+    const document = JSON.stringify({
+      ...ABOUT_DOC,
+      sections: [row, ABOUT_DOC.sections[1]],
+    });
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_templates SET document = ? WHERE id = ?",
+      )
+      .run(document, "tpl-about");
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_template_revisions SET document = ? WHERE id = ?",
+      )
+      .run(document, REVISION);
+  };
+
+  it("refuses a stored row of another component under the section's id (M1), and writes nothing", async () => {
+    const request = await identityOf("/about", "intro");
+    // A Start Starter row: its type, ref and props are not this instance's.
+    storeIntroRow({
+      id: "intro",
+      type: "hero",
+      componentRef: "starter-hero",
+      enabled: true,
+      props: { heading: "Start heading", ctaHref: "/shop" },
+    });
+    const before = stored("tpl-about");
+    await expect(write(request)).rejects.toThrow(
+      /^SECTION_SOURCE_UNCONFIRMED: section-row-mismatch: /,
+    );
+    expect(stored("tpl-about")).toEqual(before);
+  });
+
+  it("refuses a stored row with no component ref under the section's id (M1), and writes nothing", async () => {
+    const request = await identityOf("/about", "intro");
+    storeIntroRow({
+      id: "intro",
+      type: "hero",
+      enabled: true,
+      props: { title: "Intro" },
+    });
+    const before = stored("tpl-about");
+    await expect(write(request)).rejects.toThrow(
+      /^SECTION_SOURCE_UNCONFIRMED: section-row-mismatch: /,
+    );
+    expect(stored("tpl-about")).toEqual(before);
+  });
+
   it("refuses a Markdown or HTML page as a capability limit before the parser is asked (L1), and writes nothing", async () => {
     const request = await identityOf("/about", "intro");
     seedFiles(THEME, STOREFRONT, [

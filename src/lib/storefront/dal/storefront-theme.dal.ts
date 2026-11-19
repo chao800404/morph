@@ -760,9 +760,26 @@ async function resolveAstroSectionWrite(args: {
   // type Core derived for the instance, never the Document's or the
   // client's. Nothing else of the Document changes.
   const document = args.template.document;
-  const baseDocument: StorefrontPageDocument = document.sections.some(
+  const storedRow = document.sections.find(
     (section) => section.id === args.sectionId,
-  )
+  );
+  // A stored row under this id written for another component (a Starter
+  // row on a Theme recorded as Astro, a row with no ref) keeps a type and
+  // props nothing here proved. Re-pointing it at this instance would spread
+  // those props into a component that never declared them, so it is
+  // refused, never converted (M1); Code mode stays available.
+  if (storedRow && storedRow.componentRef !== stored.componentRef) {
+    throw refuse(
+      "capability-limit",
+      "section-row-mismatch",
+      `the document's section "${args.sectionId}" was stored for ${
+        storedRow.componentRef
+          ? `component ${storedRow.componentRef}`
+          : "no component"
+      }, not ${stored.componentRef}, which renders it now`,
+    );
+  }
+  const baseDocument: StorefrontPageDocument = storedRow
     ? document
     : {
         ...document,
