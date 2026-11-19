@@ -21,6 +21,7 @@ import {
   renameStorefrontThemeSectionInputSchema,
   updateStorefrontThemeSectionPropsInputSchema,
   ensureStorefrontThemeRouteTemplateInputSchema,
+  readStorefrontThemeRouteBindingsInputSchema,
   promoteStorefrontThemeTextInputSchema,
   updateStorefrontThemeRenderPolicyInputSchema,
   reviewStorefrontStarterUpgradeInputSchema,
@@ -152,6 +153,39 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
         error,
         "GET_FAILED",
         "Failed to fetch storefront theme editor",
+      );
+    }
+  });
+
+/**
+ * The binding view of one page of an Astro Theme (M2 C3): which component
+ * instances Core confirms render which Document sections and fields, read
+ * from the saved source at the generation the editor holds. Read-only; it
+ * grants no write: a section write reads the source again and checks every
+ * step itself. Behind the same administrator check as the editor read.
+ */
+export const readThemeRouteBindings = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(readStorefrontThemeRouteBindingsInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    try {
+      const result = await storefrontThemeDal.readRouteBindings(input.data);
+      if (result.status === "not-found") {
+        return fail("Storefront theme not found", { error: "NOT_FOUND" });
+      }
+      if (result.status === "unsupported") {
+        return fail(result.reason, { error: "ROUTE_BINDINGS_UNAVAILABLE" });
+      }
+      return ok("Route bindings read", result.view);
+    } catch (error) {
+      return failure(
+        "Read theme route bindings error",
+        error,
+        "GET_FAILED",
+        "Failed to read this page's bindings",
       );
     }
   });

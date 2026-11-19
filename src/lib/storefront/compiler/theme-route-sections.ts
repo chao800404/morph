@@ -196,6 +196,70 @@ function sectionTypeFromRef(
   return kebabCase(componentName) || "section";
 }
 
+/**
+ * The manifest's component refs, by the source file each one names.
+ */
+function manifestRefsBySource(
+  files: readonly ThemeSourceFile[],
+): Map<string, string[]> {
+  const refsBySource = new Map<string, string[]>();
+  for (const [componentRef, sourcePath] of readComponentSourcePaths(
+    readManifestContent(files),
+  )) {
+    const normalized = normalizePath(sourcePath);
+    refsBySource.set(normalized, [
+      ...(refsBySource.get(normalized) ?? []),
+      componentRef,
+    ]);
+  }
+  return refsBySource;
+}
+
+/**
+ * The ref a section rendered by `sourcePath` (imported as `imported`, the
+ * export name or `default`) is stored under: the manifest's one ref for that
+ * file, the one whose suffix names the export when it has several, or else
+ * the source path itself. One rule for every framework's routes.
+ */
+function pickSourceComponentRef(
+  refsBySource: ReadonlyMap<string, readonly string[]>,
+  sourcePath: string,
+  imported: string,
+): string {
+  const refs = refsBySource.get(sourcePath) ?? [];
+  return refs.length === 1
+    ? refs[0]!
+    : (refs.find((ref) =>
+        imported === "default"
+          ? ref.endsWith(".default")
+          : ref.endsWith(`.${imported}`),
+      ) ?? sourcePath);
+}
+
+/**
+ * The stored identity of a section a source instance renders: its component
+ * ref and section type, by the same rule Start's route sections use. For a
+ * framework whose instances Core finds by its own analysis (Astro), not by
+ * `content(slot)`.
+ */
+export function sourceSectionIdentity(args: {
+  files: readonly ThemeSourceFile[];
+  componentSourcePath: string;
+  /** `default` or the named export the call site imports. */
+  componentExport: string | null;
+  componentName: string;
+}): Readonly<{ componentRef: string; sectionType: string }> {
+  const componentRef = pickSourceComponentRef(
+    manifestRefsBySource(args.files),
+    normalizePath(args.componentSourcePath),
+    args.componentExport ?? "default",
+  );
+  return {
+    componentRef,
+    sectionType: sectionTypeFromRef(componentRef, args.componentName),
+  };
+}
+
 function readManifestContent(files: readonly ThemeSourceFile[]): string | null {
   const content = files.find(
     (file) => normalizePath(file.path) === "morph.theme.json",
@@ -376,15 +440,7 @@ function parsePositionedSections(
     }
   }
 
-  const manifestSources = readComponentSourcePaths(readManifestContent(files));
-  const refsBySource = new Map<string, string[]>();
-  for (const [componentRef, sourcePath] of manifestSources) {
-    const normalized = normalizePath(sourcePath);
-    refsBySource.set(normalized, [
-      ...(refsBySource.get(normalized) ?? []),
-      componentRef,
-    ]);
-  }
+  const refsBySource = manifestRefsBySource(files);
 
   const diagnostics: string[] = [];
   const sections: PositionedSection[] = [];
@@ -450,15 +506,11 @@ function parsePositionedSections(
       return;
     }
     seenSlots.add(slotId);
-    const refs = refsBySource.get(imported.sourcePath) ?? [];
-    const componentRef =
-      refs.length === 1
-        ? refs[0]!
-        : (refs.find((ref) =>
-            imported.imported === "default"
-              ? ref.endsWith(".default")
-              : ref.endsWith(`.${imported.imported}`),
-          ) ?? imported.sourcePath);
+    const componentRef = pickSourceComponentRef(
+      refsBySource,
+      imported.sourcePath,
+      imported.imported,
+    );
     sections.push({
       slotId,
       sectionType: sectionTypeFromRef(componentRef, componentName),

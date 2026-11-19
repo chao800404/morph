@@ -8,6 +8,33 @@ import type { ThemePreviewRuntime } from "@/lib/storefront/theme-preview-runtime
 import type { ThemeRouteSectionResult } from "../compiler/theme-route-sections";
 
 /**
+ * The route structure of a template whose framework Core reads through the
+ * `.astro` parser (Astro). Never derived while the editor context is read:
+ * that would call the parser on every save refetch, preview read and write
+ * precondition (M2 plan v2 §5.1). The structure is the route's binding view
+ * (`readThemeRouteBindings`), read on its own. Explicit, not `null`: null
+ * reads as "the Document owns the structure".
+ */
+export type SourceAnalysisRouteStructure = Readonly<{
+  kind: "source-analysis";
+  via: "route-bindings";
+}>;
+
+export const SOURCE_ANALYSIS_ROUTE_STRUCTURE: SourceAnalysisRouteStructure =
+  Object.freeze({ kind: "source-analysis", via: "route-bindings" });
+
+/** Whether a template's structure is left to the route binding view. */
+export function isSourceAnalysisRouteStructure(
+  structure: unknown,
+): structure is SourceAnalysisRouteStructure {
+  return (
+    typeof structure === "object" &&
+    structure !== null &&
+    (structure as { kind?: unknown }).kind === "source-analysis"
+  );
+}
+
+/**
  * Where a Theme stands against the current Starter, from its stored version.
  * `pending`: the version is missing or not a positive whole number, so
  * nothing says which Starter the files came from. Never shown as the latest.
@@ -80,8 +107,13 @@ export interface StorefrontThemeEditorDTO {
      */
     routePath?: string | null;
     document: StorefrontPageDocument;
-    /** Source-derived view only; never a replacement for the stored document. */
-    routeStructure?: ThemeRouteSectionResult | null;
+    /**
+     * Source-derived view only; never a replacement for the stored document.
+     * `SourceAnalysisRouteStructure` on an Astro Theme: read the route's
+     * binding view instead.
+     */
+    routeStructure?:
+      ThemeRouteSectionResult | SourceAnalysisRouteStructure | null;
     draftRevisionId: string | null;
     publishedRevisionId: string | null;
     draftGeneration: number;

@@ -20,7 +20,21 @@ import {
   storefrontPages,
   storefrontPageRevisions,
 } from "@/db/storefront.schema";
-import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import {
+  SOURCE_ANALYSIS_ROUTE_STRUCTURE,
+  isSourceAnalysisRouteStructure,
+  type StorefrontThemeEditorDTO,
+} from "@/lib/storefront/dto/storefront-theme.dto";
+import { themeRoutesFor } from "@/lib/storefront/theme-framework/theme-routes";
+import { astroParserBindingFrom } from "@/lib/storefront/source-language/astro-parser-client";
+import { astroSourceDigest } from "@/lib/storefront/source-language/astro-instance-identity";
+import {
+  astroBindingRefusal,
+  astroRouteBindingsView,
+  readAstroRoute,
+  refusedAstroRouteBindingsView,
+  type AstroRouteBindingsView,
+} from "@/lib/storefront/source-language/astro-route-bindings";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontThemeBuildDal } from "./storefront-theme-build.dal";
@@ -50,6 +64,7 @@ import {
 import { templateSectionWriteBase } from "../content/template-section-write-base";
 import {
   contentTargetForRoutePath,
+  normalizeRoutePath,
   routeTemplatePathForRequest,
   templateTypeForRoutePath,
 } from "@/lib/storefront/theme-template-routes";
@@ -339,6 +354,60 @@ export function resolveSectionSourceComponent(args: {
     deriveThemeRouteSections(args.files, route.sourcePath),
     route.sourcePath,
   );
+}
+
+/**
+ * The Theme, only if it belongs to this storefront and neither is deleted:
+ * the ownership check every editor read starts from (`findEditorContext`,
+ * `readRouteBindings`). Null otherwise.
+ */
+async function readOwnedTheme(storefrontId: string, themeId: string) {
+  const db = await getDb();
+  const [context] = await db
+    .select({
+      storefrontId: storefronts.id,
+      storefrontName: storefronts.name,
+      storefrontDomain: storefronts.domain,
+      storefrontStatus: storefronts.status,
+      activeReleaseId: storefronts.activeReleaseId,
+      themeId: storefrontThemes.id,
+      themeName: storefrontThemes.name,
+      themeStatus: storefrontThemes.status,
+      themeReleaseGeneration: storefrontThemes.releaseGeneration,
+      themeFramework: storefrontThemes.framework,
+      themePreviewRuntime: storefrontThemes.previewRuntime,
+      themeSourceGeneration: storefrontThemes.sourceGeneration,
+    })
+    .from(storefrontThemes)
+    .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
+    .where(
+      and(
+        eq(storefronts.id, storefrontId),
+        eq(storefrontThemes.id, themeId),
+        isNull(storefronts.deletedAt),
+        isNull(storefrontThemes.deletedAt),
+      ),
+    )
+    .limit(1);
+  return context ?? null;
+}
+
+/** The Theme's source generation now, under the same ownership join; null when gone. */
+async function readThemeSourceGeneration(
+  storefrontId: string,
+  themeId: string,
+): Promise<number | null> {
+  const row = await env.DATABASE.prepare(
+    `SELECT th.source_generation AS generation
+       FROM storefront_themes th
+       INNER JOIN storefronts s ON s.id = th.storefront_id
+      WHERE th.id = ?1 AND s.id = ?2
+        AND th.deleted_at IS NULL AND s.deleted_at IS NULL
+      LIMIT 1`,
+  )
+    .bind(themeId, storefrontId)
+    .first<{ generation: number }>();
+  return row ? row.generation : null;
 }
 
 async function listThemeSourceFiles(storefrontId: string, themeId: string) {
@@ -806,31 +875,7 @@ export const storefrontThemeDal = {
     themeId: string,
   ): Promise<StorefrontThemeEditorDTO | null> {
     const db = await getDb();
-    const [context] = await db
-      .select({
-        storefrontId: storefronts.id,
-        storefrontName: storefronts.name,
-        storefrontDomain: storefronts.domain,
-        storefrontStatus: storefronts.status,
-        activeReleaseId: storefronts.activeReleaseId,
-        themeId: storefrontThemes.id,
-        themeName: storefrontThemes.name,
-        themeStatus: storefrontThemes.status,
-        themeReleaseGeneration: storefrontThemes.releaseGeneration,
-        themeFramework: storefrontThemes.framework,
-        themePreviewRuntime: storefrontThemes.previewRuntime,
-      })
-      .from(storefrontThemes)
-      .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
-      .where(
-        and(
-          eq(storefronts.id, storefrontId),
-          eq(storefrontThemes.id, themeId),
-          isNull(storefronts.deletedAt),
-          isNull(storefrontThemes.deletedAt),
-        ),
-      )
-      .limit(1);
+    const context = await readOwnedTheme(storefrontId, themeId);
 
     if (!context) return null;
 
@@ -952,11 +997,17 @@ export const storefrontThemeDal = {
             ),
             template.id,
           ).value,
-          routeStructure: deriveTemplateRouteStructure({
-            type: template.type,
-            routePath: template.routePath,
-            files: themeSourceFiles,
-          }),
+          // An Astro page's structure is its binding view, read on its own
+          // (`readRouteBindings`): never the parser here, and never Start's
+          // reading of files that framework does not render.
+          routeStructure:
+            context.themeFramework === "astro"
+              ? SOURCE_ANALYSIS_ROUTE_STRUCTURE
+              : deriveTemplateRouteStructure({
+                  type: template.type,
+                  routePath: template.routePath,
+                  files: themeSourceFiles,
+                }),
           draftRevisionId: template.draftRevisionId,
           publishedRevisionId: template.publishedRevisionId,
           draftGeneration: template.draftGeneration ?? 1,
@@ -1002,6 +1053,131 @@ export const storefrontThemeDal = {
             : null,
       },
       templates,
+    };
+  },
+
+  /**
+   * The read-only binding view of one page of an Astro Theme (M2 plan v2
+   * C3, §5.1): what Core confirms from the saved source about which
+   * component instances render which Document sections and fields. Writes
+   * nothing and grants nothing: a write reads the source again and checks
+   * every step itself.
+   *
+   * Ownership is the editor context's own (`readOwnedTheme`). The source
+   * generation is read before the files and again after the analysis; a
+   * view is returned only when both reads agree with each other and with
+   * `expectedSourceGeneration`, otherwise a `source-stale` refusal carrying
+   * the generation now stored, never a half-old view.
+   *
+   * - `not-found`: no such Theme in this storefront (or deleted).
+   * - `unsupported`: not an Astro Theme, or no page at `routePath` in the
+   *   saved source (an endpoint is not a page).
+   * - `view`: the view, `confirmed` or refused with its class and reason.
+   */
+  async readRouteBindings(data: {
+    storefrontId: string;
+    themeId: string;
+    routePath: string;
+    expectedSourceGeneration: number;
+  }): Promise<
+    | Readonly<{ status: "not-found" }>
+    | Readonly<{ status: "unsupported"; reason: string }>
+    | Readonly<{ status: "view"; view: AstroRouteBindingsView }>
+  > {
+    const owned = await readOwnedTheme(data.storefrontId, data.themeId);
+    if (!owned) return { status: "not-found" };
+    if (owned.themeFramework !== "astro") {
+      return {
+        status: "unsupported",
+        reason: "Route bindings are read for Astro Themes only.",
+      };
+    }
+    const routePath = normalizeRoutePath(data.routePath);
+    const before = owned.themeSourceGeneration;
+    const stale = (generation: number, detail: string) => ({
+      status: "view" as const,
+      view: refusedAstroRouteBindingsView({
+        routePath,
+        routeFile: null,
+        sourceGeneration: generation,
+        routeSourceDigest: null,
+        refusal: astroBindingRefusal(
+          "temporarily-unconfirmable",
+          "source-stale",
+          detail,
+        ),
+      }),
+    });
+    if (before !== data.expectedSourceGeneration) {
+      return stale(
+        before,
+        `the saved source is at generation ${before}, not ${data.expectedSourceGeneration}`,
+      );
+    }
+    const files = await listThemeSourceFiles(data.storefrontId, data.themeId);
+    const routes = themeRoutesFor(owned.themeFramework, files);
+    const record = routes.ok
+      ? routes.registry.routes.find(
+          (candidate) =>
+            candidate.kind === "route" &&
+            !candidate.isEndpoint &&
+            candidate.path === routePath,
+        )
+      : undefined;
+    const reading = record
+      ? await readAstroRoute({
+          binding: astroParserBindingFrom(env),
+          files,
+          route: {
+            path: record.path,
+            sourcePath: record.sourcePath,
+            dynamic: record.dynamic,
+          },
+        })
+      : null;
+    const after = await readThemeSourceGeneration(
+      data.storefrontId,
+      data.themeId,
+    );
+    if (after === null) return { status: "not-found" };
+    if (after !== before) {
+      return stale(
+        after,
+        `the saved source changed from generation ${before} to ${after} while it was read`,
+      );
+    }
+    if (!record || !reading) {
+      return {
+        status: "unsupported",
+        reason: `${routePath} is not a page in the saved Theme source.`,
+      };
+    }
+    if (!reading.ok) {
+      const routeSource = files.find(
+        (file) => file.path === record.sourcePath,
+      )?.content;
+      return {
+        status: "view",
+        view: refusedAstroRouteBindingsView({
+          routePath,
+          routeFile: record.sourcePath,
+          sourceGeneration: before,
+          routeSourceDigest:
+            routeSource === undefined
+              ? null
+              : await astroSourceDigest(routeSource),
+          refusal: reading,
+        }),
+      };
+    }
+    return {
+      status: "view",
+      view: await astroRouteBindingsView({
+        routePath,
+        sourceGeneration: before,
+        files,
+        reading,
+      }),
     };
   },
 
@@ -1126,6 +1302,9 @@ export const storefrontThemeDal = {
 
     // The editor cannot choose a position for content it cannot bind. Refuse
     // the whole reorder, without writing, rather than moving or losing it.
+    // Structure left to source analysis is never reordered here (Astro is
+    // refused above); held to that rather than read as "no structure".
+    if (isSourceAnalysisRouteStructure(template.routeStructure)) return null;
     const structure = template.routeStructure;
     const routeOwnsOrder =
       structure && (structure.hasContentImport || structure.sections.length > 0);
