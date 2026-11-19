@@ -8,6 +8,7 @@ import {
   previewedThemeRefusal,
   recordedThemeRefusal,
 } from "../../scripts/e2e-preview-runtime-guard.mjs";
+import { execLocalD1 } from "./editor-writes-paused";
 
 /**
  * The Live Preview runtime the Themes a run uses should record (R-0, R1),
@@ -159,7 +160,7 @@ export function recordThemePreviewRuntime(scope: {
 }): void {
   const themeId = sqlId(scope.themeId);
   const storefrontId = sqlId(scope.storefrontId);
-  d1(
+  execLocalD1(
     `UPDATE storefront_themes SET preview_runtime = ${recordedPreviewRuntimeSql()} WHERE id = '${themeId}' AND storefront_id = '${storefrontId}'`,
   );
   const rows = d1(

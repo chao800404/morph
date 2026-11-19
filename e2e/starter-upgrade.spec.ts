@@ -15,6 +15,7 @@ import {
   previewFrame,
   settleSelection,
 } from "./helpers";
+import { execLocalD1 } from "./helpers/editor-writes-paused";
 import {
   expectHydrated,
   savedField,
@@ -146,7 +147,7 @@ function d1(sql: string): Array<Record<string, unknown>> {
 }
 
 function setStarterVersion(version: number) {
-  d1(
+  execLocalD1(
     `UPDATE storefront_themes SET metadata = json_set(COALESCE(metadata, '{}'), '$.starterTemplateVersion', ${Number(version)}) WHERE id = '${scope!.themeId}'`,
   );
 }
@@ -188,7 +189,7 @@ async function save(page: Page, files: Array<{ path: string; content: string }>)
 const OLDER = STOREFRONT_STARTER_TEMPLATE_VERSION - 1;
 
 function clearStarterVersion() {
-  d1(
+  execLocalD1(
     `UPDATE storefront_themes SET metadata = json_remove(COALESCE(metadata, '{}'), '$.starterTemplateVersion') WHERE id = '${scope!.themeId}'`,
   );
 }

@@ -17,6 +17,7 @@ import {
   previewFrame,
   settleSelection,
 } from "./helpers";
+import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   themeScopeFromEditorPath,
@@ -189,24 +190,13 @@ const OVERRIDE_FILES = [
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
   const now = new Date().toISOString();
-  await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--command",
+  execLocalD1(
     `INSERT INTO storefront_themes
     (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
     VALUES ('${created.themeId}', '${created.storefrontId}',
       'spread-override-binding-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
-  ]);
+  );
   verifyRecordedThemePreviewRuntime(created);
   return created;
 }

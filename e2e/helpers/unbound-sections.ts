@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { expect, type Page } from "@playwright/test";
 import { EDITOR_PATH } from "../helpers";
+import { execLocalD1 } from "./editor-writes-paused";
 import { THEMES, serverFn } from "../native-acceptance";
 import {
   themeScopeFromEditorPath,
@@ -82,11 +83,10 @@ export async function unboundSectionsFixture(page: Page) {
     themeId: randomUUID(),
   };
   const now = new Date().toISOString();
-  const inserted = await localSql(`INSERT INTO storefront_themes
+  execLocalD1(`INSERT INTO storefront_themes
     (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
     VALUES (${literal(scope.themeId)}, ${literal(scope.storefrontId)}, 'unbound-content', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`);
-  expect(inserted.every((result) => result.success)).toBe(true);
   verifyRecordedThemePreviewRuntime(scope);
   const initialized = (await serverFn(
     page,
@@ -132,7 +132,7 @@ function Page() {
   const templateId = ensured.data!.id;
   // Fixture from before the route changed to explicit props. No fallback in
   // the Theme hides a missing hero; the first browser render must read it.
-  await localSql(`UPDATE storefront_theme_templates SET document = ${literal(JSON.stringify(UNBOUND_DOCUMENT))}
+  execLocalD1(`UPDATE storefront_theme_templates SET document = ${literal(JSON.stringify(UNBOUND_DOCUMENT))}
     WHERE id = ${literal(templateId)} AND theme_id = ${literal(scope.themeId)} AND draft_revision_id IS NULL;`);
   const readStored = async () => {
     const result =
