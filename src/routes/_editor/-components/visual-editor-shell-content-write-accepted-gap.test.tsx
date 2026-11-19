@@ -11,7 +11,7 @@ import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-t
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import { createLiveFrame, frameEnvelope } from "@/lib/test-utils/preview-frame-handshake";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
@@ -203,6 +203,7 @@ function renderEditor() {
       <EditorRoute />
     </QueryClientProvider>,
   );
+  liveFrame.ready();
 }
 
 function fromPreview(data: Record<string, unknown>) {
@@ -211,7 +212,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -224,6 +225,10 @@ const settle = () =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
+    // The current-frame bridge acknowledges a section only after its
+    // presentation post has been committed. Let its mocked post-commit pump
+    // run before this helper interacts with the section.
+    await vi.advanceTimersByTimeAsync(10);
   });
 /** Past the 300 ms debounce, with the write and its refetch answered. */
 const debounceRuns = async () => {
