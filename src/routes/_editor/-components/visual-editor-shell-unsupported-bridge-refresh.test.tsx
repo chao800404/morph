@@ -579,6 +579,70 @@ describe("bounded auto-refresh when preview bridge lacks section-presentation-ac
       });
     });
 
+    it("dropped without running, it does not use up the one refresh for its build: a later round of the same build is refreshed once, by itself", async () => {
+      const { input, firstIframe } = await composingOnOldFrame();
+      reloadFrameDocument();
+      sendReady(["selection-field-section"]);
+      fireEvent.compositionEnd(input, { data: "中文" });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      // Dropped: nothing reloaded, and the frame on screen is offered the
+      // manual reload, as before.
+      expect(currentIframe()).toBe(firstIframe);
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Reload preview" })).toBeTruthy();
+      });
+
+      // A later round of the same build, still unable to acknowledge.
+      reloadFrameDocument();
+      sendReady(["selection-field-section"]);
+      await waitFor(() => {
+        expect(currentIframe()).not.toBe(firstIframe);
+      });
+      const refreshed = currentIframe();
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(2);
+
+      // That refresh ran, so it is the one: the refreshed frame, still
+      // unable to acknowledge, is not refreshed again.
+      reloadFrameDocument();
+      sendReady(["selection-field-section"]);
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Reload preview" })).toBeTruthy();
+      });
+      reloadFrameDocument();
+      sendReady(["selection-field-section"]);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      expect(currentIframe()).toBe(refreshed);
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(2);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("run once the composition ends, it is the one refresh for its build: later rounds that still cannot acknowledge are not refreshed again", async () => {
+      const { input, firstIframe } = await composingOnOldFrame();
+      fireEvent.compositionEnd(input, { data: "中文" });
+      await waitFor(() => {
+        expect(currentIframe()).not.toBe(firstIframe);
+      });
+      const refreshed = currentIframe();
+
+      reloadFrameDocument();
+      sendReady(["selection-field-section"]);
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Reload preview" })).toBeTruthy();
+      });
+      reloadFrameDocument();
+      sendReady(["selection-field-section"]);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      expect(currentIframe()).toBe(refreshed);
+      expect(startThemePreviewServer).toHaveBeenCalledTimes(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
     it("refreshes exactly once when the frame it was decided for is still on screen", async () => {
       const info = vi.spyOn(console, "info");
       const { client, input, firstIframe } = await composingOnOldFrame();

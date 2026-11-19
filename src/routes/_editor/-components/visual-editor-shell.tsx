@@ -4994,14 +4994,27 @@ export function VisualEditorShell({
    * A refresh decided while the author was composing or editing inline,
    * held until that ends, with the frame round it was decided for: it runs
    * only if that round is still the one on screen and still cannot
-   * acknowledge.
+   * acknowledge. `attemptKey` is the serving build it was counted against
+   * (`unsupportedBridgeAttemptedRef`).
    */
   const deferredUnsupportedRefreshRef = useRef<{
     previewKey: string;
     readyRound: number;
     record: object;
+    attemptKey: string;
     run: () => void;
   } | null>(null);
+  /**
+   * A held refresh let go without running. It never refreshed anything, so
+   * it no longer counts as the one refresh for its serving build: a later
+   * round of the same build can still be refreshed once by itself.
+   */
+  const dropDeferredUnsupportedRefresh = useCallback(() => {
+    const pending = deferredUnsupportedRefreshRef.current;
+    if (!pending) return;
+    deferredUnsupportedRefreshRef.current = null;
+    unsupportedBridgeAttemptedRef.current.delete(pending.attemptKey);
+  }, []);
   /** A check of what is serving is out, for the frame round it names. */
   const unsupportedBridgeCheckRef = useRef<{
     previewKey: string;
@@ -5418,7 +5431,6 @@ export function VisualEditorShell({
     if (!inspectorComposing && !inlineEditOpen) {
       const pending = deferredUnsupportedRefreshRef.current;
       if (pending) {
-        deferredUnsupportedRefreshRef.current = null;
         const frame = previewFrameRecordRef.current;
         const ack = "section-presentation-ack-v1";
         if (
@@ -5429,12 +5441,15 @@ export function VisualEditorShell({
           previewKeyRef.current === pending.previewKey &&
           !frame.capabilities.has(ack)
         ) {
+          deferredUnsupportedRefreshRef.current = null;
           pending.run();
         } else {
           // Decided for a round no longer on screen, or one that can now
           // acknowledge: its answer is not this frame's. A frame still unable
           // to acknowledge, which no check decided for, is offered the
-          // manual reload.
+          // manual reload. Not having run, it does not use up the one
+          // refresh for its build: a later round can still get it.
+          dropDeferredUnsupportedRefresh();
           console.info(
             "[preview-bridge] held refresh dropped: the frame round it was decided for is no longer on screen or can acknowledge",
           );
@@ -5450,7 +5465,7 @@ export function VisualEditorShell({
         }
       }
     }
-  }, [inlineEditOpen, inspectorComposing]);
+  }, [dropDeferredUnsupportedRefresh, inlineEditOpen, inspectorComposing]);
 
   useEffect(() => {
     const record = previewFrameRecordRef.current;
@@ -5485,7 +5500,7 @@ export function VisualEditorShell({
       unsupportedRefreshServingRef.current = null;
       unsupportedBridgeReloadingRef.current = false;
       unsupportedBridgeFailedRef.current = false;
-      deferredUnsupportedRefreshRef.current = null;
+      dropDeferredUnsupportedRefresh();
       setUnsupportedRefreshFailed(false);
       setPresentationUnconfirmable(false);
       return;
@@ -5640,6 +5655,7 @@ export function VisualEditorShell({
             previewKey: checkedPreviewKey,
             readyRound: frame.readyRound,
             record: frame,
+            attemptKey,
             run: runReload,
           };
         } else {
@@ -5659,6 +5675,7 @@ export function VisualEditorShell({
     frameRecordSequence,
     context.storefront.id,
     context.theme.id,
+    dropDeferredUnsupportedRefresh,
     queryClient,
     rememberServing,
   ]);
