@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  contentFieldsComponentPath,
   contentFieldsSidecarPath,
   isContentFieldsSidecarPath,
   readComponentContentFields,
@@ -159,5 +160,122 @@ ${declaration}`,
         (globalThis as Record<string, unknown>).__sidecarRan,
       ).toBeUndefined();
     });
+  });
+});
+
+// M2 plan v2 §3 (PR-C): an `.astro` component declares its fields only in its
+// sibling `<Name>.fields.ts`. The `.astro` file itself is never read as
+// JavaScript: Babel cannot parse a template, and finding the frontmatter is
+// the Astro parser's job (Core never looks for `---` itself).
+describe("an .astro component's content fields", () => {
+  const astroPath = "src/components/Hero.astro";
+  const astroSource = `---
+const { title, desc } = Astro.props;
+---
+<h1>{title}</h1>
+<p>{desc}</p>
+`;
+  const sidecar = `export const contentFields = {
+  title: { type: "text", label: "Title" },
+  desc: { type: "textarea", label: "Description" },
+} as const;`;
+
+  it("names Hero.fields.ts as the sibling of Hero.astro", () => {
+    expect(contentFieldsSidecarPath(astroPath)).toBe(
+      "src/components/Hero.fields.ts",
+    );
+    expect(
+      contentFieldsComponentPath("src/components/Hero.fields.ts", [
+        "src/components/Hero.fields.ts",
+        astroPath,
+      ]),
+    ).toBe(astroPath);
+  });
+
+  it("still has none for an .astro file outside src/", () => {
+    expect(contentFieldsSidecarPath("public/Hero.astro")).toBeNull();
+  });
+
+  it("reads the sibling declaration", () => {
+    const result = readComponentContentFields({
+      path: astroPath,
+      source: astroSource,
+      sidecar,
+    });
+    expect(result).toMatchObject({
+      declaration: "valid",
+      origin: "sidecar",
+      duplicate: null,
+    });
+    expect(result.fields).toEqual({
+      title: { type: "text", label: "Title" },
+      desc: { type: "textarea", label: "Description" },
+    });
+  });
+
+  it("has no declaration without a sibling, even when the file reads as one", () => {
+    // Valid JavaScript declaring contentFields: a .tsx with this text would be
+    // `valid`. An .astro file is not read as JavaScript at all.
+    const result = readComponentContentFields({
+      path: astroPath,
+      source: declaration,
+    });
+    expect(result).toMatchObject({
+      declaration: "absent",
+      fields: null,
+      origin: null,
+      duplicate: null,
+    });
+  });
+
+  it("never touches a parsed source AST handed in for an .astro file", () => {
+    const untouchable = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("the .astro source AST was read");
+        },
+      },
+    ) as never;
+    const result = readComponentContentFields({
+      path: astroPath,
+      source: astroSource,
+      sidecar,
+      parsedSourceAst: untouchable,
+    });
+    expect(result.declaration).toBe("valid");
+  });
+
+  it("uses only the sibling when the .astro text also looks like a declaration", () => {
+    // No "declared in both" reconciliation: the .astro text is not a
+    // declaration Morph reads, so it can neither duplicate nor contradict.
+    const result = readComponentContentFields({
+      path: astroPath,
+      source: `export const contentFields = { other: { type: "text" } } as const;`,
+      sidecar,
+    });
+    expect(result).toMatchObject({
+      declaration: "valid",
+      origin: "sidecar",
+      duplicate: null,
+    });
+    expect(Object.keys(result.fields ?? {})).toEqual(["title", "desc"]);
+  });
+
+  it("refuses an unreadable or empty sibling as for any component", () => {
+    expect(
+      readComponentContentFields({
+        path: astroPath,
+        source: astroSource,
+        sidecar: null,
+      }).declaration,
+    ).toBe("invalid");
+    expect(
+      readComponentContentFields({
+        path: astroPath,
+        source: astroSource,
+        sidecar: "export const other = 1;",
+      }).declaration,
+    ).toBe("invalid");
   });
 });
