@@ -42,6 +42,8 @@ import {
   prepareSourcesForLivePreview,
 } from "@/lib/storefront/source-language/tsx-source-language";
 import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.generated";
+import { previewBridgeIdentity } from "./preview-bridge-identity";
+import type { PreviewBridgeIdentity } from "../editor/preview-serving";
 import {
   THEME_MORPH_SDK_MODULES,
   themeMorphSdkAliasesSource,
@@ -300,6 +302,12 @@ export type PrepareThemeWorkspaceResult =
       workspaceFiles: readonly ThemeWorkspacePlanFile[];
       /** Changes whenever any generated or authored workspace byte changes. */
       workspaceFingerprint: string;
+      /**
+       * The preview bridge these files lay out, read from them: null for a
+       * build, and for a plan whose bridge cannot be read (unknown). Absent
+       * from a planner that does not lay one out.
+       */
+      previewBridge?: PreviewBridgeIdentity | null;
     }>
   | Readonly<{
       ok: false;
@@ -1138,6 +1146,12 @@ sourcemap: false,
         : { path, binary: content },
   );
   const workspaceFingerprint = themeWorkspaceFingerprint(workspaceFiles);
+  // Read back from the very files returned, so what a transport reports is
+  // the bridge it is about to lay out.
+  const previewBridge =
+    mode === "preview-server"
+      ? previewBridgeIdentity(workspaceFiles, workspaceRoot, { startPreview })
+      : null;
 
   return {
     ok: true,
@@ -1150,6 +1164,7 @@ sourcemap: false,
     previewWarnings: bindings?.warnings ?? [],
     workspaceFiles,
     workspaceFingerprint,
+    previewBridge,
   };
 }
 

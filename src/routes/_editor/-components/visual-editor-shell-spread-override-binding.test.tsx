@@ -32,7 +32,10 @@ import {
   mountLivePreview,
   renderLivePreviewRoute,
 } from "@/lib/test-utils/live-preview-render";
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  createLiveFrame,
+  frameEnvelope,
+} from "@/lib/test-utils/preview-frame-handshake";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { VisualEditorShell } from "./visual-editor-shell";
@@ -303,7 +306,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),

@@ -306,6 +306,7 @@ function frameReady() {
         data: {
           type: "morph:storefront-preview-ready",
           previewSession: PREVIEW_SESSION,
+          capabilities: ["selection-field-section", "section-presentation-ack-v1"],
         },
         origin: PREVIEW_ORIGIN,
         source: current?.contentWindow ?? null,
@@ -426,6 +427,7 @@ function frameReadyOutsideAct() {
       data: {
         type: "morph:storefront-preview-ready",
         previewSession: PREVIEW_SESSION,
+        capabilities: ["selection-field-section", "section-presentation-ack-v1"],
       },
       origin: PREVIEW_ORIGIN,
       source: current?.contentWindow ?? null,

@@ -9,6 +9,11 @@ import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-t
 import { postEditorToPreviewMessage } from "@/lib/storefront/editor/preview-protocol";
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
+import {
+  answerFramePings,
+  enablePresentationAcks,
+  frameEnvelope,
+} from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { listStorefrontThemeFiles } from "@/server/storefront/storefront-theme-files.serverFn";
 import {
@@ -358,7 +363,7 @@ const currentWindow = () =>
   document.querySelector("iframe")?.contentWindow ?? null;
 const event = (data: Record<string, unknown>) =>
   new MessageEvent("message", {
-    data: { ...data, previewSession: PREVIEW_SESSION },
+    data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
     origin: PREVIEW_ORIGIN,
     source: currentWindow(),
   });
@@ -366,6 +371,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(event(data));
   });
+  answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
 }
 const applied = (
   routeRequestId: number | undefined,
@@ -382,6 +388,7 @@ const tick = (ms = 20) =>
   act(async () => {
     if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(ms);
     else await new Promise((resolve) => setTimeout(resolve, ms));
+    answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
   });
 
 /** The style revision the editor last sent the frame; 0 before any. */
@@ -545,8 +552,10 @@ const selectedInInspector = () =>
 async function frameUp(answer: boolean) {
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
   enableSelection();
+  enablePresentationAcks({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
   fromPreview({
     type: "morph:storefront-preview-ready",
+    capabilities: ["section-presentation-ack-v1"],
     servedInstance: {
       kind: "known",
       instance: { session: SESSION, serial: 1 },

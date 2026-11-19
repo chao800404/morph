@@ -19,6 +19,48 @@ export type { PreviewSpacingOverlayMode } from "./spacing-overlay";
 export type PreviewSectionProps =
   StorefrontPageDocument["sections"][number]["props"];
 
+export type SectionPresentationToken = Readonly<{
+  workspaceKey: string;
+  templateId: string;
+  routePath: string;
+  sectionId: string;
+  documentBasis:
+    | Readonly<{ kind: "existing"; draftGeneration: number }>
+    | Readonly<{ kind: "new-document"; createEpoch: string }>;
+  overlayRevision: number;
+  presentationRevision: number;
+  operationId: string;
+}>;
+
+export type SectionPresentationProof = Readonly<{
+  token: SectionPresentationToken;
+  previewKey: string;
+  readyRound: number;
+  previewDocumentId: string;
+}>;
+
+export function sameSectionPresentationToken(
+  left: SectionPresentationToken,
+  right: SectionPresentationToken,
+) {
+  return (
+    left.workspaceKey === right.workspaceKey &&
+    left.templateId === right.templateId &&
+    left.routePath === right.routePath &&
+    left.sectionId === right.sectionId &&
+    left.documentBasis.kind === right.documentBasis.kind &&
+    (left.documentBasis.kind === "existing"
+      ? right.documentBasis.kind === "existing" &&
+        left.documentBasis.draftGeneration ===
+          right.documentBasis.draftGeneration
+      : right.documentBasis.kind === "new-document" &&
+        left.documentBasis.createEpoch === right.documentBasis.createEpoch) &&
+    left.overlayRevision === right.overlayRevision &&
+    left.presentationRevision === right.presentationRevision &&
+    left.operationId === right.operationId
+  );
+}
+
 export type PreviewCatalogResponseBody = JsonValue;
 
 const MAX_PREVIEW_CATALOG_RESPONSE_CHARS = 16 * 1024 * 1024;
@@ -324,6 +366,7 @@ export type EditorToPreviewMessage =
       sectionId: string;
       props?: PreviewSectionProps;
       enabled?: boolean;
+      presentationToken?: SectionPresentationToken;
       /**
        * Keys removed after \`props\` is merged, so the component's own default
        * renders again. Merging alone can only add or replace a value.
@@ -485,6 +528,7 @@ export const PREVIEW_CAPABILITIES = [
   "selection-field-section",
   "code-default-selection",
   "astro-identity-v2",
+  "section-presentation-ack-v1",
 ] as const;
 export type PreviewCapability = (typeof PREVIEW_CAPABILITIES)[number];
 
@@ -551,6 +595,13 @@ export type PreviewToEditorMessage =
        * editor sends it nothing that needs one.
        */
       capabilities?: PreviewCapability[];
+    }
+  | {
+      type: "morph:storefront-preview-section-presentation-ack";
+      operationId: string;
+      token: SectionPresentationToken;
+      status: "applied" | "not-applied";
+      reason?: "section-missing" | "superseded";
     }
   | {
       /**
@@ -1154,6 +1205,60 @@ const PREVIEW_STYLE_SNAPSHOT_KEYS = [
   "justifyContent",
 ] as const satisfies readonly (keyof PreviewStyleSnapshot)[];
 
+function parseSectionPresentationToken(
+  value: unknown,
+): SectionPresentationToken | null {
+  if (!isRecord(value)) return null;
+  const basis = value.documentBasis;
+  let documentBasis: SectionPresentationToken["documentBasis"];
+  if (
+    isRecord(basis) &&
+    basis.kind === "existing" &&
+    Number.isSafeInteger(basis.draftGeneration) &&
+    Number(basis.draftGeneration) > 0
+  ) {
+    documentBasis = {
+      kind: "existing",
+      draftGeneration: Number(basis.draftGeneration),
+    };
+  } else if (
+    isRecord(basis) &&
+    basis.kind === "new-document" &&
+    isBoundedString(basis.createEpoch, 100) &&
+    basis.createEpoch.length > 0
+  ) {
+    documentBasis = { kind: "new-document", createEpoch: basis.createEpoch };
+  } else {
+    return null;
+  }
+  if (
+    !isBoundedString(value.workspaceKey, 200) ||
+    value.workspaceKey.length === 0 ||
+    !isBoundedString(value.templateId, 100) ||
+    value.templateId.length === 0 ||
+    !isBoundedString(value.routePath, 512) ||
+    !value.routePath.startsWith("/") ||
+    !isBoundedString(value.sectionId, 100) ||
+    value.sectionId.length === 0 ||
+    !isSafeRevision(value.overlayRevision) ||
+    !isSafeRevision(value.presentationRevision) ||
+    !isBoundedString(value.operationId, 200) ||
+    value.operationId.length === 0
+  ) {
+    return null;
+  }
+  return {
+    workspaceKey: value.workspaceKey,
+    templateId: value.templateId,
+    routePath: value.routePath,
+    sectionId: value.sectionId,
+    documentBasis,
+    overlayRevision: Number(value.overlayRevision),
+    presentationRevision: Number(value.presentationRevision),
+    operationId: value.operationId,
+  };
+}
+
 function isStyleSnapshot(value: unknown): value is PreviewStyleSnapshot {
   return (
     isStringRecord(value) &&
@@ -1313,12 +1418,24 @@ export function parseEditorToPreviewMessage(
           value.props === undefined
             ? undefined
             : parsePreviewSectionProps(value.props);
+        const presentationToken =
+          value.presentationToken === undefined
+            ? undefined
+            : parseSectionPresentationToken(value.presentationToken);
         if (value.props !== undefined && props === null) return null;
+        if (
+          value.presentationToken !== undefined &&
+          (!presentationToken ||
+            presentationToken.sectionId !== value.sectionId)
+        ) {
+          return null;
+        }
         return {
           type: value.type,
           sectionId: value.sectionId,
           props: props ?? undefined,
           enabled: value.enabled,
+          ...(presentationToken ? { presentationToken } : {}),
           ...(value.resetKeys === undefined
             ? {}
             : { resetKeys: value.resetKeys as string[] }),
@@ -1494,6 +1611,38 @@ export function parsePreviewToEditorMessage(
         ...(report ? { servedInstance: report } : {}),
         ...(capabilities.length > 0 ? { capabilities } : {}),
       };
+    }
+    case "morph:storefront-preview-section-presentation-ack": {
+      const token = parseSectionPresentationToken(value.token);
+      if (
+        !token ||
+        !isBoundedString(value.operationId, 200) ||
+        value.operationId.length === 0 ||
+        value.operationId !== token.operationId
+      ) {
+        return null;
+      }
+      if (value.status === "applied" && value.reason === undefined) {
+        return {
+          type: value.type,
+          operationId: value.operationId,
+          token,
+          status: value.status,
+        };
+      }
+      if (
+        value.status === "not-applied" &&
+        (value.reason === "section-missing" || value.reason === "superseded")
+      ) {
+        return {
+          type: value.type,
+          operationId: value.operationId,
+          token,
+          status: value.status,
+          reason: value.reason,
+        };
+      }
+      return null;
     }
     case "morph:storefront-preview-reset-canvas":
       return { type: value.type };

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
+import { planThemeSandboxWorkspace } from "./theme-sandbox-workspace";
 import {
   PREVIEW_SERVED_INSTANCE_TIMING,
   formatPreviewServedInstance,
@@ -228,6 +229,48 @@ export default function Page() {
     expect(otherInstance!.session).not.toBe(oneInstance!.session);
     expect(otherInstance!.serial).toBe(1);
     expect(namedBy(await fetch(started.url))).toEqual(otherInstance);
+  }, 180_000);
+
+  it("reports the bridge it laid out, bound to the instance serving it", async () => {
+    const server = newServer();
+    const started = await start(server);
+    const planned = planThemeSandboxWorkspace({
+      files: [{ path: "src/pages/index.tsx", content: PAGE }],
+      entry: "src/pages/index.tsx",
+      buildId: "theme-a-user-1",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "preview-server",
+    });
+    if (!planned.ok) expect.fail(planned.errorMessage);
+    expect(planned.previewBridge).toBeTruthy();
+    const instance = server.servedInstanceFor("theme-a-user-1");
+    expect(instance).not.toBeNull();
+    expect(started.serving).toEqual({
+      bridge: planned.previewBridge,
+      instance,
+    });
+    // The instance it reports is the one its responses name.
+    expect(namedBy(await fetch(started.url))).toEqual(started.serving!.instance);
+  }, 120_000);
+
+  it("reports the same serving for a reused server, and the next instance with the same bridge for a replaced one", async () => {
+    const server = newServer();
+    const first = await start(server);
+    const again = await start(server);
+    expect(again.timings.reusedProcess).toBe(true);
+    expect(again.serving).toEqual(first.serving);
+    expect(first.serving).toBeTruthy();
+
+    const replaced = await start(server, PAGE.replace("Hello", "Goodbye"));
+    expect(replaced.timings.reusedProcess).toBe(false);
+    expect(replaced.serving!.bridge).toEqual(first.serving!.bridge);
+    expect(replaced.serving!.instance).toEqual({
+      session: first.serving!.instance!.session,
+      serial: first.serving!.instance!.serial + 1,
+    });
+    expect(replaced.serving!.instance).toEqual(
+      server.servedInstanceFor("theme-a-user-1"),
+    );
   }, 180_000);
 
   it("leaves the client-only content snapshot and its instance as they were", async () => {

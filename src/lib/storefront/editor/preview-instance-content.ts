@@ -84,8 +84,16 @@ export function instanceReplaySection(args: {
   pending: PendingContentEntry | undefined;
   unconfirmed: PendingContentEntry | undefined;
   sourceGeneration: number;
+  missingBasis?: number;
 }): InstanceReplaySection | null {
-  const { snapshot, sectionId, pending, unconfirmed, sourceGeneration } = args;
+  const {
+    snapshot,
+    sectionId,
+    pending,
+    unconfirmed,
+    sourceGeneration,
+    missingBasis,
+  } = args;
   const accepted: SnapshotSection | undefined = snapshot?.sections.find(
     (section) => section.id === sectionId,
   );
@@ -127,8 +135,9 @@ export function instanceReplaySection(args: {
           stored[root] === undefined
             ? { ...stored, [root]: pending.props[root] }
             : stored;
+        const basis = field.basisDraftGeneration ?? missingBasis;
         if (
-          !basisWithinOwnRange(snapshot, field.basisDraftGeneration) ||
+          !basisWithinOwnRange(snapshot, basis) ||
           !rowsStillMatch(base, path, field.rows)
         ) {
           continue;
@@ -220,10 +229,33 @@ export function previewSectionPost(args: {
   pending: PendingContentEntry | undefined;
   unconfirmed: PendingContentEntry | undefined;
   sourceGeneration: number;
+  missingBasis?: number;
 }): PreviewSectionPost | null {
   if (previewSectionHidden(args)) return { props: undefined, enabled: false };
   const section = instanceReplaySection(args);
   return section ? { props: section.props, enabled: true } : null;
+}
+
+/**
+ * Whether the section's post (`previewSectionPost`) is the accepted copy
+ * alone: nothing the editor holds on top of it — a pending field, a hide or
+ * show not yet answered — would change what the page shows.
+ *
+ * A page rendered from that accepted copy is then told what it already
+ * shows, and its layout cannot move. Compared as posted values, so a
+ * difference in key order only counts as a change (one measurement more),
+ * never the other way round.
+ */
+export function previewSectionPostShowsAccepted(
+  args: Parameters<typeof previewSectionPost>[0],
+): boolean {
+  const post = previewSectionPost(args);
+  const accepted = previewSectionPost({
+    ...args,
+    pending: undefined,
+    unconfirmed: undefined,
+  });
+  return JSON.stringify(post) === JSON.stringify(accepted);
 }
 
 /** The frame, ready round and route a replay is for. */

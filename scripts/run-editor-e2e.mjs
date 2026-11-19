@@ -18,6 +18,9 @@
  *   MORPH_E2E_ASTRO_PARSER=1 node scripts/run-editor-e2e.mjs ...
  *     also runs the `.astro` parser Worker behind Core's ASTRO_PARSER binding
  *     (see `WITH_ASTRO_PARSER`)
+ *   MORPH_E2E_SIDECAR_SWAP_FROM=/abs/old/checkout node scripts/run-editor-e2e.mjs -- e2e/x.spec.ts
+ *     starts the old checkout's sidecar and lets the spec ask for it to be
+ *     replaced by this checkout's, once (see `SIDECAR_SWAP_FROM`)
  *
  * Reads `.env.e2e` for E2E_EMAIL, E2E_PASSWORD and E2E_EDITOR_PATH, and
  * `.dev.vars.local_preview_e2e` for the sidecar origin and token. Neither is
@@ -30,9 +33,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import {
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -188,6 +194,44 @@ const ASTRO_PARSER_CHECK_PATH = "/_morph/e2e/astro-parser-binding-check";
 /** How long a `binding-failed` from Core is waited out after the parser is up. */
 const ASTRO_PARSER_BINDING_GRACE_MS = 15_000;
 const SIDECAR_ENV_FILE = ".dev.vars.local_preview_e2e";
+/**
+ * Sidecar swap mode: an absolute path to another checkout whose sidecar this
+ * run starts first, for a spec that has to watch an open preview survive the
+ * service behind it being replaced by this checkout's.
+ *
+ * The swap goes through this runner rather than around it, so the new sidecar
+ * is started, tracked by the machine lock, recorded and torn down like every
+ * other child. The spec asks by writing `sidecar-swap.request` in the state
+ * directory, carrying this run's id and nonce (handed only to this run's
+ * Playwright) and a request id of its own; the answer is
+ * `sidecar-swap.<request id>.done` or `.failed`, carrying the run id back.
+ * One swap per run. A request from another run, for anything but the swap, a
+ * second one, or one whose answer is already there, is refused, and a refusal
+ * fails the run. The swap has a time limit; the old sidecar's group is empty,
+ * its process has exited and its port is free before the new one starts. A
+ * swap-mode run in which the suite never asked fails too: an unexercised swap
+ * is not a pass.
+ *
+ * Narrow on purpose: the local-sidecar transport, named spec files and no
+ * shard, so CI's runs and their minimum-count floor never meet it; CI never
+ * sets it. Unset or empty, nothing here changes.
+ */
+const SIDECAR_SWAP_FROM = process.env.MORPH_E2E_SIDECAR_SWAP_FROM ?? "";
+const SIDECAR_SWAP = SIDECAR_SWAP_FROM !== "";
+/** From the request being taken until the new sidecar answers. */
+const SIDECAR_SWAP_TIMEOUT_SETTING =
+  process.env.MORPH_E2E_SIDECAR_SWAP_TIMEOUT_MS ?? "60000";
+// Swap mode off: whatever swap setting the shell still holds is removed
+// before any child inherits this environment, so the suite (which reads
+// `MORPH_E2E_SIDECAR_SWAP`) sees a run with no swap at all.
+if (!SIDECAR_SWAP) {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("MORPH_E2E_SIDECAR_SWAP")) delete process.env[key];
+  }
+}
+const SIDECAR_SWAP_MAX_TIMEOUT_MS = 600_000;
+const SIDECAR_SWAP_POLL_MS = 200;
+const SIDECAR_SWAP_REQUEST = "sidecar-swap.request";
 /** Where the setup project stores the signed-in browser state. */
 const STORAGE_STATE = "e2e/.auth/user.json";
 const READY_TIMEOUT_MS = 120_000;
@@ -288,6 +332,15 @@ let stateDir = null;
  */
 let previewWorkspaces = null;
 /**
+ * The old sidecar's workspaces in swap mode: a root of this run's own under
+ * the old checkout's `.morph-previews/`, removed by the teardown like the one
+ * above. A sidecar's toolchain is its own checkout's, and it refuses a
+ * workspace that resolves `vite` from another checkout
+ * (`LOCAL_PREVIEW_TOOLCHAIN_ROOT_MISMATCH`), so the old sidecar cannot share
+ * this checkout's root. Null outside swap mode.
+ */
+let oldPreviewWorkspaces = null;
+/**
  * The machine's one E2E slot (`e2e-machine-lock.mjs`), held from before the
  * port check until teardown is done, so the next run starts on a machine this
  * one has left.
@@ -337,6 +390,33 @@ function portInUse(port) {
     probe.once("listening", () => probe.close(() => resolve(false)));
     probe.listen(port, "127.0.0.1");
   });
+}
+
+/**
+ * Whether something listens on `port` at any address the sidecar origin's
+ * host names, for the swap's handover: `localhost` is both 127.0.0.1 and
+ * ::1, and a listener left on either still answers the origin. An address
+ * this machine does not have cannot be listened on, so it is not held.
+ */
+async function portHeldOn(hostname, port) {
+  const addresses =
+    hostname === "localhost" ? ["127.0.0.1", "::1"] : [hostname.replace(/^\[|\]$/g, "")];
+  for (const address of addresses) {
+    const held = await new Promise((resolve) => {
+      const probe = createServer();
+      probe.once("error", (error) =>
+        resolve(
+          !["EADDRNOTAVAIL", "EAFNOSUPPORT"].includes(
+            /** @type {NodeJS.ErrnoException} */ (error).code ?? "",
+          ),
+        ),
+      );
+      probe.once("listening", () => probe.close(() => resolve(false)));
+      probe.listen(port, address);
+    });
+    if (held) return true;
+  }
+  return false;
 }
 
 /**
@@ -405,8 +485,10 @@ async function runWhileServing(name, command, args, env = {}) {
   }
 }
 
-function start(name, command, args, env, onLine) {
+/** `cwd` is for the sidecar swap only; every other child inherits this one's. */
+function start(name, command, args, env, onLine, cwd) {
   const child = spawn(command, args, {
+    ...(cwd === undefined ? {} : { cwd }),
     // Piped only when someone is reading. A dev server's output is what a
     // developer watches when a run goes wrong, so it is echoed either way; the
     // pipe exists because one line of it is evidence this run has to assert on.
@@ -702,22 +784,25 @@ async function runTeardown() {
   // Only once every child has stopped, so nothing is still writing in it; and
   // only this run's directory: anything else in `.morph-previews/` is not this
   // run's. A directory that could not be removed is reported and left, and the
-  // rest of the teardown still runs.
-  if (previewWorkspaces) {
+  // rest of the teardown still runs. In swap mode the old checkout's root is
+  // treated the same way.
+  for (const workspaces of [previewWorkspaces, oldPreviewWorkspaces]) {
+    if (!workspaces) continue;
     if (!stoppedAll) {
-      log(`kept ${previewWorkspaces}: a process this run started may still be using it`);
+      log(`kept ${workspaces}: a process this run started may still be using it`);
     } else {
       try {
-        await rm(previewWorkspaces, { recursive: true, force: true });
-        log(`removed ${previewWorkspaces}`);
+        await rm(workspaces, { recursive: true, force: true });
+        log(`removed ${workspaces}`);
       } catch (error) {
         log(
-          `could not remove ${previewWorkspaces}: ${error instanceof Error ? error.message : error}`,
+          `could not remove ${workspaces}: ${error instanceof Error ? error.message : error}`,
         );
       }
     }
-    previewWorkspaces = null;
   }
+  previewWorkspaces = null;
+  oldPreviewWorkspaces = null;
   if (stateDir) {
     await rm(stateDir, { recursive: true, force: true });
     log(`removed ${stateDir}`);
@@ -1054,10 +1139,365 @@ async function confirmAstroParserBinding(report) {
   }
 }
 
+/**
+ * A sidecar's record files, kept beside the report. `tag` is "" for the first
+ * sidecar, which keeps the names it always had, and "-2" for the one a swap
+ * starts.
+ */
+function sidecarRecord(report, tag, secrets) {
+  // Written in the state directory while the run lasts, because Playwright
+  // empties its output directory when it starts, and that is where the
+  // report usually is. The teardown copies both beside the report, so CI
+  // uploads them with it, pass or fail.
+  const logFile = path.join(stateDir, `sidecar${tag}.log`);
+  const processFile = path.join(stateDir, `sidecar${tag}-process.json`);
+  // Only when the report lives outside the state directory: a copy into it
+  // would be removed with it.
+  if (process.env.MORPH_E2E_REPORT_PATH) {
+    keptAfterTeardown.push(
+      { from: logFile, to: `${report}.sidecar${tag}.log` },
+      { from: processFile, to: `${report}.sidecar${tag}-process.json` },
+    );
+  }
+  return createSidecarRecorder({ logFile, processFile, secrets });
+}
+
+/**
+ * Starts a sidecar through `start`, like every other child. `cwd` is set only
+ * by the swap; it also makes the env file path absolute, so a sidecar started
+ * in another checkout reads this checkout's origin and token.
+ */
+function launchSidecar(recorder, name, cwd, workspaces = previewWorkspaces) {
+  const sidecar = start(
+    name,
+    "node",
+    [
+      `--env-file-if-exists=${cwd === undefined ? SIDECAR_ENV_FILE : path.resolve(SIDECAR_ENV_FILE)}`,
+      "scripts/theme-preview-sidecar.mjs",
+    ],
+    {
+      MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE: "1",
+      MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT: workspaces,
+    },
+    (line, stream) => recorder.line(line, stream),
+    cwd,
+  );
+  recorder.started(sidecar.pid);
+  sidecar.on("exit", (code, signal) => {
+    recorder.exited(code, signal, sidecar.stopping);
+    log(
+      `${name} pid ${sidecar.pid} exited (code ${code}, signal ${signal}${
+        sidecar.stopping ? ", stopped by this runner" : ", not stopped by this runner"
+      })`,
+    );
+  });
+  return sidecar;
+}
+
+/**
+ * Checks a swap-mode run before anything is started or waited for, and returns
+ * what the swap needs. See `SIDECAR_SWAP_FROM`.
+ */
+async function checkSidecarSwap(extra) {
+  /** @type {(reason: string, detail: string) => never} */
+  const refuse = (reason, detail) => {
+    throw new Error(`SIDECAR_SWAP_REFUSED: ${reason}: ${detail}`);
+  };
+  if (!USES_SIDECAR) {
+    refuse("TRANSPORT", `the swap replaces the local sidecar, and this run's transport is ${TRANSPORT}.`);
+  }
+  if (extra.some((argument) => argument.startsWith("--shard"))) {
+    refuse("SHARD", "a shard is a CI suite with a minimum-count floor; name the spec files instead.");
+  }
+  if (!extra.some((argument) => /\.spec\.ts(?::\d+)*$/.test(argument))) {
+    refuse("NO_SPEC", "name the spec files that ask for the swap; a whole suite is never run in swap mode.");
+  }
+  if (
+    !/^[1-9]\d*$/.test(SIDECAR_SWAP_TIMEOUT_SETTING) ||
+    Number(SIDECAR_SWAP_TIMEOUT_SETTING) > SIDECAR_SWAP_MAX_TIMEOUT_MS
+  ) {
+    refuse(
+      "TIMEOUT_SETTING",
+      `MORPH_E2E_SIDECAR_SWAP_TIMEOUT_MS must be a whole number of milliseconds from 1 to ${SIDECAR_SWAP_MAX_TIMEOUT_MS}, not "${SIDECAR_SWAP_TIMEOUT_SETTING}".`,
+    );
+  }
+  if (!path.isAbsolute(SIDECAR_SWAP_FROM)) {
+    refuse("NOT_ABSOLUTE", `MORPH_E2E_SIDECAR_SWAP_FROM must be an absolute path, not "${SIDECAR_SWAP_FROM}".`);
+  }
+  let from = "";
+  try {
+    from = await realpath(SIDECAR_SWAP_FROM);
+    if (!(await lstat(from)).isDirectory()) throw new Error("not a directory");
+  } catch {
+    refuse("NOT_A_DIRECTORY", `${SIDECAR_SWAP_FROM} is not a directory.`);
+  }
+  if (from === (await realpath(process.cwd()))) {
+    refuse("SAME_CHECKOUT", `${SIDECAR_SWAP_FROM} is this checkout; the old sidecar has to come from another one.`);
+  }
+  if (!existsSync(path.join(from, "scripts", "theme-preview-sidecar.mjs"))) {
+    refuse("NO_SIDECAR", `${from} has no scripts/theme-preview-sidecar.mjs.`);
+  }
+  const modules = await lstat(path.join(from, "node_modules")).catch(() => null);
+  if (modules?.isSymbolicLink()) {
+    refuse("NODE_MODULES_SYMLINK", `${from}/node_modules is a symlink; the old checkout needs an install of its own.`);
+  }
+  if (!modules?.isDirectory()) {
+    refuse("NODE_MODULES_MISSING", `${from} has no node_modules directory.`);
+  }
+  // Each sidecar lays out workspaces under its own checkout and a Theme
+  // workspace resolves packages from the directories above it, so the same
+  // Theme is served by the same packages before and after the swap only if
+  // the two checkouts install the same ones.
+  for (const file of ["package.json", "pnpm-lock.yaml"]) {
+    const [ours, theirs] = await Promise.all(
+      [file, path.join(from, file)].map((name) => readFile(name).catch(() => null)),
+    );
+    if (!ours || !theirs || !ours.equals(theirs)) {
+      refuse("MANIFEST_DIFFERS", `${file} is missing or differs between ${from} and this checkout.`);
+    }
+  }
+  const origin = existsSync(SIDECAR_ENV_FILE)
+    ? parseEnvFile(await readFile(SIDECAR_ENV_FILE, "utf8"))
+        .MORPH_LOCAL_THEME_PREVIEW_ORIGIN ?? ""
+    : "";
+  let url = null;
+  try {
+    url = new URL(origin);
+  } catch {
+    /* Refused below. */
+  }
+  if (
+    !url ||
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "localhost"].includes(url.hostname) ||
+    url.port === ""
+  ) {
+    refuse(
+      "ORIGIN",
+      `${SIDECAR_ENV_FILE} must set MORPH_LOCAL_THEME_PREVIEW_ORIGIN to a loopback http origin with a port, so the handover can be checked on it.`,
+    );
+  }
+  return {
+    from,
+    origin: url.origin,
+    hostname: url.hostname,
+    port: Number(url.port),
+    timeoutMs: Number(SIDECAR_SWAP_TIMEOUT_SETTING),
+  };
+}
+
+/**
+ * Serves the one sidecar swap a swap-mode run may ask for, while the suite
+ * runs. See `SIDECAR_SWAP_FROM`.
+ *
+ * `close` stops taking requests and waits for one in progress, which is
+ * bounded by the time limit; it never throws, so a failing suite's own error
+ * is the one the run ends on. `verify` then fails a run whose swap failed or
+ * never happened.
+ */
+function openSidecarSwap({ swap, report, secrets, oldSidecar }) {
+  const runId = randomUUID();
+  const nonce = randomUUID();
+  const failures = [];
+  let current = oldSidecar;
+  let swapStarted = false;
+  let swapped = false;
+  let closed = false;
+  let taken = 0;
+  let inflight = null;
+  const file = (name) => path.join(stateDir ?? "", name);
+  const cancelled = () => closed || teardown !== null;
+
+  async function answer(requestId, kind, body) {
+    if (!stateDir) return;
+    const name = `sidecar-swap.${requestId}.${kind}`;
+    try {
+      // Whole or not at all: the spec never reads half an answer.
+      await writeFile(file(`${name}.tmp`), `${JSON.stringify({ runId, requestId, ...body })}\n`);
+      await rename(file(`${name}.tmp`), file(name));
+    } catch (error) {
+      log(`could not answer sidecar swap ${requestId}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  /** Records a refusal or failure; answers it when the request can be addressed. */
+  async function refuse(requestId, reason, detail = "", { answerable = true } = {}) {
+    failures.push(`${requestId ?? "(no request id)"} ${reason}${detail ? ` (${detail})` : ""}`);
+    console.error(
+      `[e2e] sidecar swap failed: ${requestId ?? "(no request id)"} ${reason}${detail ? `: ${detail}` : ""}`,
+    );
+    if (requestId && answerable) await answer(requestId, "failed", { reason, detail });
+  }
+
+  async function performSwap(requestId) {
+    const deadline = Date.now() + swap.timeoutMs;
+    const remaining = () => Math.max(0, deadline - Date.now());
+    const oldEntry = started.find((entry) => entry.child === current);
+    if (!oldEntry) return refuse(requestId, "CANCELLED", "the old sidecar is no longer this run's to stop");
+    const oldPid = oldEntry.child.pid;
+    log(`sidecar swap ${requestId}: stopping the old sidecar (pid ${oldPid}, ${swap.from})`);
+    // The runner's own stop: the whole group, SIGKILL after the grace, and
+    // true only once the group is empty.
+    let stopped = false;
+    const stopping = stop(oldEntry).then((ok) => {
+      stopped = ok;
+    });
+    if (!(await settlesWithin(stopping, remaining()))) {
+      return refuse(requestId, "TIMEOUT", "the old sidecar had not stopped");
+    }
+    if (!stopped) return refuse(requestId, "OLD_SIDECAR_DID_NOT_STOP");
+    if (!(await settlesWithin(oldEntry.exited, remaining()))) {
+      return refuse(requestId, "TIMEOUT", "the old sidecar's exit was not reported");
+    }
+    const stoppedAt = Date.now();
+    // Only now that it is gone: until here, a teardown still stops it.
+    const index = started.indexOf(oldEntry);
+    if (index >= 0) started.splice(index, 1);
+    if (await portHeldOn(swap.hostname, swap.port)) {
+      return refuse(requestId, "PORT_NOT_RELEASED", `something still listens on ${swap.hostname}:${swap.port}`);
+    }
+    const portFreeAt = Date.now();
+    // Checked and started in one synchronous step, so a teardown that has
+    // begun can never miss a sidecar started after it took its list.
+    if (cancelled()) return refuse(requestId, "CANCELLED", "the run is ending");
+    if (remaining() === 0) return refuse(requestId, "TIMEOUT", "no time left to start the new sidecar");
+    const recorder = sidecarRecord(report, "-2", secrets);
+    const child = launchSidecar(recorder, "sidecar-2", process.cwd());
+    current = child;
+    log(`sidecar swap ${requestId}: started the new sidecar (pid ${child.pid}, ${process.cwd()})`);
+    for (;;) {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return refuse(requestId, "NEW_SIDECAR_EXITED", `code ${child.exitCode}, signal ${child.signalCode}`);
+      }
+      // Ready only once the new sidecar has said itself that it listens (the
+      // line its record notes) and the origin answers while it is still
+      // running: an answer alone could come from something else.
+      const answered =
+        recorder.record.listeningAt !== null &&
+        (await fetch(swap.origin, {
+          redirect: "manual",
+          signal: AbortSignal.timeout(Math.max(1, Math.min(1_000, remaining()))),
+        }).then(
+          (response) => response.status > 0,
+          () => false,
+        )) &&
+        child.exitCode === null &&
+        child.signalCode === null;
+      if (answered) break;
+      if (remaining() === 0) return refuse(requestId, "TIMEOUT", "the new sidecar did not say it listens and answer");
+      if (cancelled()) return refuse(requestId, "CANCELLED", "the run is ending");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const readyAt = Date.now();
+    swapped = true;
+    await answer(requestId, "done", {
+      oldPid,
+      newPid: child.pid,
+      oldCwd: swap.from,
+      newCwd: process.cwd(),
+      stoppedAt,
+      portFreeAt,
+      readyAt,
+    });
+    log(`sidecar swap ${requestId} done: pid ${oldPid} stopped, pid ${child.pid} answering on ${swap.origin}`);
+  }
+
+  async function handle(takenPath) {
+    let request = null;
+    try {
+      request = JSON.parse(await readFile(takenPath, "utf8"));
+    } catch {
+      /* Refused below. */
+    }
+    const requestId =
+      typeof request?.requestId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(request.requestId)
+        ? request.requestId
+        : null;
+    if (!requestId) return refuse(null, "MALFORMED", "a request needs a requestId of letters, digits, - and _");
+    if (
+      existsSync(file(`sidecar-swap.${requestId}.done`)) ||
+      existsSync(file(`sidecar-swap.${requestId}.failed`))
+    ) {
+      // Not this run's answer, and not overwritten either: the spec may
+      // already have read it.
+      return refuse(requestId, "RESULT_PREEXISTS", "an answer this runner did not write is already there", {
+        answerable: false,
+      });
+    }
+    const keys = Object.keys(request).sort().join(",");
+    if (keys !== "action,nonce,requestId,runId" || request.action !== "swap-sidecar") {
+      return refuse(requestId, "OUT_OF_SCOPE", "the only request is { action: \"swap-sidecar\", runId, nonce, requestId }");
+    }
+    if (request.runId !== runId || request.nonce !== nonce) {
+      return refuse(requestId, "RUN_MISMATCH", "the request is not from this run");
+    }
+    if (swapStarted) return refuse(requestId, "DUPLICATE", "one swap per run");
+    swapStarted = true;
+    return performSwap(requestId);
+  }
+
+  async function poll() {
+    if (cancelled() || !stateDir) return;
+    const requestPath = file(SIDECAR_SWAP_REQUEST);
+    if (!existsSync(requestPath)) return;
+    // Renamed before it is read, so each request is taken exactly once.
+    const takenPath = file(`${SIDECAR_SWAP_REQUEST}.taken-${taken + 1}`);
+    try {
+      await rename(requestPath, takenPath);
+    } catch {
+      return;
+    }
+    taken += 1;
+    await handle(takenPath);
+  }
+
+  const timer = setInterval(() => {
+    if (inflight) return;
+    inflight = poll()
+      .catch((error) =>
+        refuse(null, "INTERNAL", error instanceof Error ? error.message : String(error)),
+      )
+      .finally(() => {
+        inflight = null;
+      });
+  }, SIDECAR_SWAP_POLL_MS);
+  timer.unref();
+  log(`sidecar swap mode: run ${runId}, old sidecar from ${swap.from}, time limit ${swap.timeoutMs} ms`);
+
+  return {
+    suiteEnv: {
+      MORPH_E2E_SIDECAR_SWAP: "1",
+      MORPH_E2E_RUN_ID: runId,
+      MORPH_E2E_SIDECAR_SWAP_NONCE: nonce,
+      MORPH_E2E_SIDECAR_SWAP_TIMEOUT_MS: String(swap.timeoutMs),
+    },
+    async close() {
+      closed = true;
+      clearInterval(timer);
+      await inflight;
+      if (stateDir && existsSync(file(SIDECAR_SWAP_REQUEST))) {
+        await refuse(null, "UNTAKEN_REQUEST", "a request arrived after the suite ended");
+      }
+    },
+    verify() {
+      if (failures.length > 0) {
+        throw new Error(`SIDECAR_SWAP_FAILED: ${failures.join("; ")}`);
+      }
+      if (!swapped) {
+        throw new Error(
+          "SIDECAR_SWAP_NOT_REQUESTED: the run was started in swap mode and the suite never asked for the swap, so nothing here exercised it.",
+        );
+      }
+    },
+  };
+}
+
 async function main() {
   const passed = process.argv.slice(2);
   const extra = passed[0] === "--" ? passed.slice(1) : passed;
   const selection = editorShardArguments(extra);
+  // Before anything is started or waited for. See `SIDECAR_SWAP_FROM`.
+  const swap = SIDECAR_SWAP ? await checkSidecarSwap(extra) : null;
   if (USES_SIDECAR && !existsSync(SIDECAR_ENV_FILE)) {
     throw new Error(
       `MISSING_SIDECAR_ENV: ${SIDECAR_ENV_FILE} holds MORPH_LOCAL_THEME_PREVIEW_ORIGIN and MORPH_LOCAL_THEME_PREVIEW_TOKEN, which the Worker and the sidecar must agree on.`,
@@ -1238,56 +1678,43 @@ async function main() {
     : path.join(stateDir, "playwright-report.json");
   await mkdir(path.dirname(report), { recursive: true });
 
+  /** The sidecar a swap replaces; null without one. */
+  let firstSidecar = null;
+  const sidecarSecrets = [];
   if (USES_SIDECAR) {
     log("starting the preview sidecar");
-    // Written in the state directory while the run lasts, because Playwright
-    // empties its output directory when it starts, and that is where the
-    // report usually is. The teardown copies both beside the report, so CI
-    // uploads them with it, pass or fail.
-    const sidecarLog = path.join(stateDir, "sidecar.log");
-    const sidecarProcess = path.join(stateDir, "sidecar-process.json");
-    // Only when the report lives outside the state directory: a copy into it
-    // would be removed with it.
-    if (process.env.MORPH_E2E_REPORT_PATH) {
-      keptAfterTeardown.push(
-        { from: sidecarLog, to: `${report}.sidecar.log` },
-        { from: sidecarProcess, to: `${report}.sidecar-process.json` },
-      );
-    }
-    const sidecarRecorder = createSidecarRecorder({
-      logFile: sidecarLog,
-      processFile: sidecarProcess,
-      secrets: [
-        parseEnvFile(await readFile(SIDECAR_ENV_FILE, "utf8"))
-          .MORPH_LOCAL_THEME_PREVIEW_TOKEN,
-        process.env.E2E_PASSWORD,
-      ],
-    });
+    sidecarSecrets.push(
+      parseEnvFile(await readFile(SIDECAR_ENV_FILE, "utf8"))
+        .MORPH_LOCAL_THEME_PREVIEW_TOKEN,
+      process.env.E2E_PASSWORD,
+    );
+    const sidecarRecorder = sidecarRecord(report, "", sidecarSecrets);
     await mkdir(".morph-previews", { recursive: true });
     previewWorkspaces = await mkdtemp(path.resolve(".morph-previews", "e2e-run-"));
     log(`sidecar workspaces in ${previewWorkspaces}`);
-    const sidecar = start(
-      "sidecar",
-      "node",
-      [
-        `--env-file-if-exists=${SIDECAR_ENV_FILE}`,
-        "scripts/theme-preview-sidecar.mjs",
-      ],
-      {
-        MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE: "1",
-        MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT: previewWorkspaces,
-      },
-      (line, stream) => sidecarRecorder.line(line, stream),
-    );
-    sidecarRecorder.started(sidecar.pid);
-    sidecar.on("exit", (code, signal) => {
-      sidecarRecorder.exited(code, signal, sidecar.stopping);
-      log(
-        `sidecar pid ${sidecar.pid} exited (code ${code}, signal ${signal}${
-          sidecar.stopping ? ", stopped by this runner" : ", not stopped by this runner"
-        })`,
+    if (swap) {
+      // Otherwise the handover check below could be answered by whatever
+      // already held the port.
+      if (await portHeldOn(swap.hostname, swap.port)) {
+        throw new Error(
+          `SIDECAR_SWAP_PORT_IN_USE: something already listens on ${swap.hostname}:${swap.port}, the sidecar origin's port. Stop it first.`,
+        );
+      }
+      // Its own root under its own checkout. See `oldPreviewWorkspaces`.
+      await mkdir(path.join(swap.from, ".morph-previews"), { recursive: true });
+      oldPreviewWorkspaces = await mkdtemp(
+        path.join(swap.from, ".morph-previews", "e2e-run-"),
       );
-    });
+      log(`old sidecar workspaces in ${oldPreviewWorkspaces}`);
+      log(`starting the old sidecar from ${swap.from}`);
+    }
+    firstSidecar = launchSidecar(
+      sidecarRecorder,
+      "sidecar",
+      swap?.from,
+      swap ? oldPreviewWorkspaces : previewWorkspaces,
+    );
+    if (swap) await waitForOk(swap.origin, "the old sidecar");
   } else {
     // Nothing to start: the Worker reaches a container through its own binding,
     // and Docker has to be running for that binding to resolve.
@@ -1374,8 +1801,17 @@ async function main() {
   // This existing log is the runner's boundary: dependency messages from Vite
   // before Playwright is launched are startup work and are not late events.
   suiteStarted = true;
+  const sidecarSwap = swap
+    ? openSidecarSwap({
+        swap,
+        report,
+        secrets: sidecarSecrets,
+        oldSidecar: firstSidecar,
+      })
+    : null;
   try {
     await runWhileServing("playwright", "npx", suite, {
+      ...(sidecarSwap ? sidecarSwap.suiteEnv : {}),
       // Asserted as a precondition, so a run that silently fell back to the
       // container transport fails instead of passing for the wrong reason.
       E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,
@@ -1390,6 +1826,8 @@ async function main() {
     });
   } finally {
     suiteStarted = false;
+    // Never throws: a failing suite's own error is the one the run ends on.
+    await sidecarSwap?.close();
     try {
       await writeFile(
         lateReoptimizationReport,
@@ -1408,6 +1846,8 @@ async function main() {
       );
     }
   }
+
+  sidecarSwap?.verify();
 
   await verifyPublishedRelease();
 

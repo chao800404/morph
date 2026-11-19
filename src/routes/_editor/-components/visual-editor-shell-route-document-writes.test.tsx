@@ -11,7 +11,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { type ComponentProps, useMemo, useState } from "react";
+import { type ComponentProps, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   afterEach,
@@ -36,6 +36,11 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import {
   answerLatestRouteRequest,
   createLiveFrame,
+  disablePresentationAcks,
+  frameEnvelope,
+  LIVE_FRAME_CAPABILITIES,
+  reloadFrameDocument,
+  sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 import {
   livePreviewPlatformFiles,
@@ -50,7 +55,12 @@ import {
   routeTemplatePlaceholderId,
 } from "./editor-template";
 import { UNCONFIRMED_SAVE_HOLD } from "./editor-unconfirmed-saves-notice";
-import { VisualEditorShell } from "./visual-editor-shell";
+import {
+  PREVIEW_OTHER_PAGE_PAUSED_MESSAGE,
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+  VisualEditorShell,
+  type EditorNavigationGuard,
+} from "./visual-editor-shell";
 
 /**
  * Consecutive content writes to a route document this editor creates.
@@ -117,6 +127,19 @@ vi.mock(
     publishStorefrontThemeTemplate: publishTemplate,
     prepareInitialStorefrontThemeTemplateDraft: prepareInitialDraft,
     promoteStorefrontThemeText: promoteText,
+  }),
+);
+/**
+ * What the editor asks when a frame cannot acknowledge: which bridge the
+ * service is serving. Only the cases that bring up such a frame answer it;
+ * the editor's own start is the query data `renderEditor` sets.
+ */
+const startPreviewServer = vi.hoisted(() => vi.fn());
+vi.mock(
+  "@/server/storefront/storefront-theme-preview-server.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    startThemePreviewServer: startPreviewServer,
   }),
 );
 vi.mock(
@@ -486,11 +509,40 @@ const host: {
   routeGeneration?: number | null;
   /** Moves the editor's address, as a link or the page picker would. */
   go?: (next: Partial<StorefrontThemeEditorSearch>) => void;
+  /**
+   * Set before rendering: the shell's own page switches ask its leave guard
+   * first and move the address only once it lets them, as the editor
+   * route's `useBlocker` does.
+   */
+  guarded?: boolean;
 } = {};
 function Host({ initial }: { initial: StorefrontThemeEditorSearch }) {
   const query = useQuery({ ...detailQuery(), staleTime: Infinity });
   const [search, setSearch] = useState(initial);
+  const searchNow = useRef(search);
+  searchNow.current = search;
+  const guardRef = useRef<EditorNavigationGuard | null>(null);
   host.go = (next) => setSearch((previous) => ({ ...previous, ...next }));
+  const onSearchChange = (next: Partial<StorefrontThemeEditorSearch>) => {
+    const current = searchNow.current;
+    const merged = { ...current, ...next };
+    if (
+      !host.guarded ||
+      !guardRef.current ||
+      (merged.routePath || "/") === (current.routePath || "/")
+    ) {
+      setSearch((previous) => ({ ...previous, ...next }));
+      return;
+    }
+    void guardRef
+      .current("switch-page", {
+        current: { pathname: "/editor", search: { ...current } },
+        next: { pathname: "/editor", search: { ...merged } },
+      })
+      .then((blocked) => {
+        if (!blocked) setSearch(merged);
+      });
+  };
   const data = query.data as
     { success: boolean; data?: StorefrontThemeEditorDTO } | undefined;
   const editorContext = data?.success ? data.data : undefined;
@@ -510,9 +562,8 @@ function Host({ initial }: { initial: StorefrontThemeEditorSearch }) {
     <VisualEditorShell
       context={editorContext}
       search={normalized}
-      onSearchChange={(next) =>
-        setSearch((previous) => ({ ...previous, ...next }))
-      }
+      onSearchChange={onSearchChange}
+      {...(host.guarded ? { navigationGuardRef: guardRef } : {})}
     />
   );
 }
@@ -582,7 +633,7 @@ function dispatchFromFrame(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -596,7 +647,7 @@ async function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -662,6 +713,7 @@ async function canvasReport(selector: string, index: number) {
 
 let headingReport: Awaited<ReturnType<typeof canvasReport>>;
 let secondRowReport: Awaited<ReturnType<typeof canvasReport>>;
+let firstRowReport: Awaited<ReturnType<typeof canvasReport>>;
 
 /** Opens the editor on the route and selects `report`'s element in Content. */
 async function openOn(report: Record<string, unknown>) {
@@ -698,6 +750,7 @@ async function select(report: Record<string, unknown>) {
 /** Types into the first field showing `shown`, and leaves it. */
 async function type(shown: string, value: string) {
   const field = (await screen.findAllByDisplayValue(shown))[0]!;
+  await waitFor(() => expect(field.matches(":disabled")).toBe(false));
   fireEvent.input(field, { target: { value } });
   fireEvent.blur(field);
 }
@@ -714,6 +767,21 @@ const saveStatus = () =>
   document
     .querySelector("[data-editor-save-status]")
     ?.getAttribute("aria-label");
+async function waitForPresentationReady() {
+  await waitFor(() => {
+    expect(screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE)).toHaveLength(
+      0,
+    );
+    expect(
+      screen.queryByText("Preview syncing. Content writes are paused."),
+    ).toBeNull();
+    expect(
+      screen.queryByText(
+        "Preview syncing. Content writes are paused until every section confirms its current preview was applied.",
+      ),
+    ).toBeNull();
+  });
+}
 
 /**
  * A read of the Theme arrives while a write is still out. The editor's own
@@ -741,6 +809,7 @@ beforeAll(async () => {
   }
   headingReport = await canvasReport("h2", 0);
   secondRowReport = await canvasReport("h3", 1);
+  firstRowReport = await canvasReport("h3", 0);
 });
 
 beforeEach(() => {
@@ -748,6 +817,7 @@ beforeEach(() => {
   lastFrame = null;
   readGate = null;
   host.search = undefined;
+  host.guarded = false;
   renameOutcome.settled = undefined;
   server = { route: null };
   useThemeWorkspaceStore.setState({
@@ -902,6 +972,47 @@ describe("the route-document exception to the version basis", () => {
     await pause(1_500);
     expect(updateSectionProps).not.toHaveBeenCalled();
   });
+
+  // The stage-1 refusal is reached with a valid presentation
+  // proof (the route acknowledged as having no document yet) and no basis,
+  // from each entry that can be used on such a route.
+  const missingBasisSaid = () =>
+    vi
+      .mocked(toast.error)
+      .mock.calls.map((call) => String(call[0]))
+      .includes(MISSING_BASIS_MESSAGE);
+
+  it("Show / Hide, the ensure finding an existing generation-1 document: no write, the stage-1 refusal said", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    server.route = { generation: 1, props: null };
+    fireEvent.click(
+      screen.getAllByRole("button", { name: `Hide section ${SLOT}` })[0]!,
+    );
+    await pause(1_500);
+
+    expect(updateSectionProps, "no content write").not.toHaveBeenCalled();
+    expect(server.route).toEqual({ generation: 1, props: null });
+    expect(missingBasisSaid()).toBe(true);
+    expect(saveStatus()).toBe("Out of date");
+  });
+
+  it("a canvas reorder, the ensure finding an existing generation-1 document: no write, the stage-1 refusal said", async () => {
+    await openOn(secondRowReport);
+    await waitForPresentationReady();
+    server.route = { generation: 1, props: null };
+    await fromPreview({
+      type: "morph:storefront-preview-commit-array-item-reorder",
+      sectionId: SLOT,
+      draggedFieldPath: "items.1",
+      targetFieldPath: "items.0",
+    });
+    await pause(1_500);
+
+    expect(updateSectionProps, "no content write").not.toHaveBeenCalled();
+    expect(server.route).toEqual({ generation: 1, props: null });
+    expect(missingBasisSaid()).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -990,6 +1101,7 @@ describe("the selection when the page takes up the route document it created", (
     expect(liveTyped("Value 1")).toHaveLength(1);
     await readWhileOut();
     await expectAdopted();
+    await waitForPresentationReady();
 
     // No click, no Inspector reopened: the author goes on typing.
     typeInCard(0, "Value 2");
@@ -1023,6 +1135,76 @@ describe("the selection when the page takes up the route document it created", (
     });
     await waitFor(() => expect(cardFields()).toHaveLength(0));
     expect(liveTyped("Value 2")).toHaveLength(0);
+  });
+
+  it("never disables or blurs the focused Inspector input while the page takes up its route document and the author keeps typing", async () => {
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "first");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+
+    const field = cardFields()[0]!;
+    act(() => {
+      field.focus();
+    });
+    expect(document.activeElement).toBe(field);
+
+    let disabledCount = 0;
+    const observer = new MutationObserver(() => {
+      if (field.disabled) {
+        disabledCount += 1;
+        field.blur();
+      }
+    });
+    observer.observe(field, { attributes: true, attributeFilter: ["disabled"] });
+
+    try {
+      act(() => {
+        fireEvent.input(field, { target: { value: "first still typing" } });
+      });
+      await readWhileOut();
+      await expectAdopted();
+
+      expect(disabledCount).toBe(0);
+      expect(field.disabled).toBe(false);
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("first still typing");
+
+      act(() => {
+        fireEvent.input(field, {
+          target: { value: "first still typing more" },
+        });
+      });
+      expect(disabledCount).toBe(0);
+      expect(field.disabled).toBe(false);
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("first still typing more");
+      expect(liveTyped("first still typing more")).toHaveLength(1);
+
+      await act(async () => {
+        first.release();
+      });
+      await waitForPresentationReady();
+      expect(disabledCount).toBe(0);
+      expect(field.disabled).toBe(false);
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("first still typing more");
+
+      act(() => {
+        fireEvent.blur(field);
+      });
+      await pause();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        sectionId: SLOT,
+        expectedDraftGeneration: 2,
+        props: { heading: "first still typing more" },
+      });
+      expect(disabledCount).toBe(0);
+    } finally {
+      observer.disconnect();
+    }
   });
 });
 
@@ -1094,6 +1276,7 @@ describe("the second edit on a route document this editor just created", () => {
     // edit is staged and queued under it, not under the placeholder.
     await readWhileOut();
     await expectAdopted();
+    await waitForPresentationReady();
 
     typeInCard(0, "Value 2");
     await pause();
@@ -1118,6 +1301,39 @@ describe("the second edit on a route document this editor just created", () => {
     expect(server.route!.generation).toBe(3);
     expect(saveStatus()).toBe("Unpublished");
   });
+
+  it("placeholder-keyed edit typed while the first save is unanswered is saved on blur after route adoption", async () => {
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+
+    // Type while the first write is still unanswered and the editor is still on the placeholder.
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    expect(sent()).toHaveLength(1);
+
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await waitForPresentationReady();
+
+    await act(async () => {
+      fireEvent.focus(cardFields()[0]!);
+      fireEvent.blur(cardFields()[0]!);
+    });
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      sectionId: SLOT,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+  });
 });
 
 describe("G1: someone else's change to the new document", () => {
@@ -1128,6 +1344,7 @@ describe("G1: someone else's change to the new document", () => {
     expect(sent()).toHaveLength(1);
     expect(server.route!.generation).toBe(2);
     await expectAdopted();
+    await waitForPresentationReady();
   }
 
   it("refuses the second edit when an outside change at generation 4 is read before it leaves", async () => {
@@ -1176,6 +1393,7 @@ describe("G1: someone else's change to the new document", () => {
     await waitFor(() => expect(sent()).toHaveLength(1));
     await readWhileOut();
     await expectAdopted();
+    await waitForPresentationReady();
     typeInCard(0, "Value 2");
     await pause();
     expect(sent()).toHaveLength(1);
@@ -1226,6 +1444,7 @@ describe("G2: a result that is not known", () => {
     await waitFor(() => expect(sent()).toHaveLength(1));
     await readWhileOut();
     await expectAdopted();
+    await waitForPresentationReady();
     typeInCard(0, "Value 2");
     await pause();
     expect(sent()).toHaveLength(1);
@@ -1378,7 +1597,7 @@ describe("G3: row identity on the new document", () => {
    * selected, so the Inspector still shows the rows' titles, row b's as
    * saved.
    */
-  function typeInSelectedRow(value: string) {
+  async function typeInSelectedRow(value: string) {
     expect(cardFields().map((field) => field.value)).toEqual([
       "One",
       "Two edited",
@@ -1408,7 +1627,7 @@ describe("G3: row identity on the new document", () => {
   it("refuses an edit to row b when the rows are read back reordered before it leaves", async () => {
     await firstRowWriteLanded();
     holdDebounce();
-    typeInSelectedRow("Two again");
+    await typeInSelectedRow("Two again");
     await outsideWriteRead((route) => {
       const items = route.props!.items as unknown[];
       route.props = { ...route.props, items: [items[1], items[0]] };
@@ -1424,7 +1643,7 @@ describe("G3: row identity on the new document", () => {
   it("mirror: with the rows unchanged the edit goes to row b, by the answered ids", async () => {
     const { one, two } = await firstRowWriteLanded();
     holdDebounce();
-    typeInSelectedRow("Two again");
+    await typeInSelectedRow("Two again");
     await releaseDebounce();
 
     expect(sent()).toHaveLength(2);
@@ -1440,12 +1659,13 @@ describe("G3: row identity on the new document", () => {
 });
 
 describe("the pre-step flush across the placeholder and the real id", () => {
-  it("sends content still keyed by the placeholder before the step, and the step goes on", async () => {
+  it("does not flush placeholder-keyed content across route adoption before a fresh preview proof", async () => {
     await openOn(headingReport);
     holdReads();
     const first = holdNextWrite();
     await type("Default heading", "Value 1");
     await waitFor(() => expect(sent()).toHaveLength(1));
+    await waitForPresentationReady();
     // Typed while the page is still on the placeholder: kept under it. Its
     // debounce never runs here; only the flush can send it.
     expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
@@ -1458,10 +1678,13 @@ describe("the pre-step flush across the placeholder and the real id", () => {
     });
     await releaseReads();
     await expectAdopted();
+    await waitForPresentationReady();
 
     fireEvent.click(screen.getByRole("button", { name: "Rename the card" }));
     await pause(300);
-    // The flush waits on the first write, queued under the placeholder.
+    // The input was produced while the frame still represented the
+    // placeholder document. Route adoption invalidates that presentation
+    // proof, so a section action must not flush it under the real id.
     expect(sent()).toHaveLength(1);
     expect(renameSection).not.toHaveBeenCalled();
     await act(async () => {
@@ -1469,19 +1692,19 @@ describe("the pre-step flush across the placeholder and the real id", () => {
     });
     await waitFor(() => expect(renameOutcome.settled).toBeDefined());
 
-    expect(renameOutcome.settled).toEqual({ ok: true });
-    expect(sent()).toHaveLength(2);
-    expect(sent()[1]).toMatchObject({
-      templateId: ROUTE_DOC_ID,
-      expectedDraftGeneration: 2,
-      props: { heading: "Value 2" },
+    expect(renameOutcome.settled).toEqual({
+      ok: false,
+      message: PREVIEW_PRESENTATION_SYNCING_MESSAGE,
     });
-    expect(renameSection).toHaveBeenCalledTimes(1);
-    expect(renameSection.mock.calls[0]![0].data).toMatchObject({
-      templateId: ROUTE_DOC_ID,
-      sectionId: SLOT,
-      expectedDraftGeneration: 3,
-    });
+    expect(sent()).toHaveLength(1);
+    expect(renameSection).not.toHaveBeenCalled();
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]?.value).toBe("Value 2");
+    await pause();
+    // Neither the released answer nor the preview becoming ready retries the
+    // stale input on the author's behalf.
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
   });
 
   /** The first write, under the placeholder, is refused or fails. */
@@ -1572,8 +1795,6 @@ describe("the pre-step flush across the placeholder and the real id", () => {
 
 const CONFLICT_HELD = heldContentMessage({ hasListConflict: false });
 const FAILED_HELD = "Content changed while saving. Retry before continuing.";
-const COMPOSE_REFUSED =
-  "This section changed elsewhere since you edited it. Your changes are kept.";
 
 /** Every request the server was asked for, by kind. */
 const calls = () => ({
@@ -1644,6 +1865,16 @@ function pressKeepMine() {
     screen.getByRole("button", { name: "Load latest, keep mine" }).click();
   });
 }
+async function confirmKeepMine() {
+  pressKeepMine();
+  await pause();
+  if (screen.queryByRole("button", { name: "Load latest, keep mine" })) {
+    await waitForPresentationReady();
+    if (screen.queryByRole("button", { name: "Load latest, keep mine" })) {
+      pressKeepMine();
+    }
+  }
+}
 function pressTryAgain() {
   act(() => {
     screen.getByRole("button", { name: "Try again" }).click();
@@ -1697,6 +1928,11 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       expect(server.route!.generation).toBe(3);
 
       pressKeepMine();
+      await pause();
+      if (sent().length === 1) {
+        await waitForPresentationReady();
+        pressKeepMine();
+      }
       await waitFor(() => expect(sent()).toHaveLength(2));
       await pause();
       expect(sent()).toHaveLength(2);
@@ -1727,7 +1963,7 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       expect(storedHeading()).toBe("Theirs");
       expect(screen.getAllByDisplayValue("Value 2").length).toBeGreaterThan(0);
 
-      pressKeepMine();
+      await confirmKeepMine();
       await waitFor(() => expect(sent()).toHaveLength(2));
       await pause();
       expect(sent()).toHaveLength(2);
@@ -1879,6 +2115,12 @@ describe("A: the pre-step flush holds refused and failed content under every id"
 
       pressKeepMine();
       await releaseReads();
+      await expectAdopted();
+      await waitForPresentationReady();
+      // The readback moved the page to a newer Document. Keep mine rebases
+      // the draft, then waits until that Document is presented before the
+      // author confirms the write again.
+      if (sent().length === 1) pressKeepMine();
       await waitFor(() => expect(sent()).toHaveLength(2));
       await pause();
       expect(sent()).toHaveLength(2);
@@ -1963,7 +2205,7 @@ describe("A: the pre-step flush holds refused and failed content under every id"
       expect(updateSectionProps).not.toHaveBeenCalled();
       expect(server.route).toEqual({ generation: 1, props: null });
 
-      pressKeepMine();
+      await confirmKeepMine();
       await waitFor(() => expect(sent()).toHaveLength(1));
       await pause();
       expect(sent()).toHaveLength(1);
@@ -2012,7 +2254,7 @@ describe("B: a lost ensure answer, then the author goes on", () => {
     expect(updateSectionProps).not.toHaveBeenCalled();
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(2);
 
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expect(sent()).toHaveLength(1);
@@ -2059,7 +2301,7 @@ describe("B: a lost ensure answer, then the author goes on", () => {
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(server.route).toEqual({ generation: 1, props: null });
 
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expect(sent()).toHaveLength(1);
@@ -2073,12 +2315,12 @@ describe("B: a lost ensure answer, then the author goes on", () => {
   });
 });
 
-describe("C: placeholder-keyed content sent after an outside change", () => {
+describe("C: placeholder-keyed content during an outside document change", () => {
   /**
    * The first write lands (generation 2) while the read after it is held, so
    * the page stays on the placeholder and the next input is keyed by it. Its
    * answer is taken only once that read returns (the content mutation's
-   * success awaits the Theme read), so the input has no recorded basis.
+   * success awaits the Theme read), so the input has no accepted source basis.
    */
   async function landedOnPlaceholder() {
     await openOn(headingReport);
@@ -2092,46 +2334,33 @@ describe("C: placeholder-keyed content sent after an outside change", () => {
   const theirsAt4 = () => {
     server.route = { generation: 4, props: { heading: "Theirs" } };
   };
-  function expectRefusedOverTheirs() {
+  function expectUnsentOverTheirs() {
     expect(sent()).toHaveLength(1);
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
     expect(server.route).toEqual({
       generation: 4,
       props: { heading: "Theirs" },
     });
-    expect(saveStatus()).toBe("Out of date");
-    expect(
-      screen.getByRole("button", { name: "Load latest, keep mine" }),
-    ).toBeTruthy();
   }
 
-  it("typed while the first answer waits on its read, sent by the debounce: refused, kept, out of date; Keep mine sends once", async () => {
+  it("does not send placeholder-keyed input after the outside document is read while its preview is syncing", async () => {
     await landedOnPlaceholder();
     holdDebounce();
     typeInCard(0, "Value 2");
     theirsAt4();
     await releaseReadsUntil(4);
     await releaseDebounce();
-    expectRefusedOverTheirs();
+    expectUnsentOverTheirs();
+    expect(saveStatus()).toBe("Unsaved");
+    expect(cardFields()[0]?.value).toBe("Value 2");
+    await expectAdopted();
+    await waitForPresentationReady();
     await pause();
-    expectRefusedOverTheirs();
-
-    // Kept: the author's explicit recovery sends what they typed, once. (The
-    // field itself shows the stored value after adoption, the separate
-    // stale-field-display issue, Q3.)
-    pressKeepMine();
-    await waitFor(() => expect(sent()).toHaveLength(2));
-    await pause();
-    expect(sent()).toHaveLength(2);
-    expect(sent()[1]).toMatchObject({
-      templateId: ROUTE_DOC_ID,
-      expectedDraftGeneration: 4,
-      props: { heading: "Value 2" },
-    });
-    expect(storedHeading()).toBe("Value 2");
+    expectUnsentOverTheirs();
+    expect(cardFields()[0]?.value).toBe("Value 2");
   });
 
-  it("typed while the first answer waits on its read, sent by the pre-step flush: refused, the step stops, kept", async () => {
+  it("stops a pre-step flush for placeholder input whose preview is still syncing", async () => {
     await landedOnPlaceholder();
     holdDebounce();
     typeInCard(0, "Value 2");
@@ -2142,13 +2371,16 @@ describe("C: placeholder-keyed content sent after an outside change", () => {
 
     const outcome = await rename();
     expect(outcome.ok).toBe(false);
-    expect(outcome.message).toBe(COMPOSE_REFUSED);
+    expect(outcome.message).toBe(PREVIEW_PRESENTATION_SYNCING_MESSAGE);
     await pause();
     expect(renameSection).not.toHaveBeenCalled();
-    expectRefusedOverTheirs();
+    expectUnsentOverTheirs();
+    await waitForPresentationReady();
+    await pause();
+    expectUnsentOverTheirs();
   });
 
-  it("typed before the first answer (no basis recorded), sent by the debounce: refused, kept, out of date", async () => {
+  it("keeps no-basis placeholder input unsent after a newer document is read", async () => {
     await openOn(headingReport);
     holdReads();
     const first = holdNextWrite();
@@ -2164,7 +2396,12 @@ describe("C: placeholder-keyed content sent after an outside change", () => {
     theirsAt4();
     await releaseReadsUntil(4);
     await releaseDebounce();
-    expectRefusedOverTheirs();
+    expectUnsentOverTheirs();
+    expect(saveStatus()).toBe("Unsaved");
+    await expectAdopted();
+    await waitForPresentationReady();
+    await pause();
+    expectUnsentOverTheirs();
   });
 });
 
@@ -2183,7 +2420,7 @@ describe("D: steps that flush first stop on held content", () => {
     expect(toast.error).toHaveBeenCalledWith(`Cannot build: ${CONFLICT_HELD}`);
     // Kept: the explicit recovery sends the typed text once; the build does
     // not go on by itself.
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(2));
     await pause();
     expect(sent()[1]).toMatchObject({
@@ -2232,7 +2469,7 @@ describe("D: steps that flush first stop on held content", () => {
     );
     // Kept: the explicit recovery sends the typed text once; the publish
     // does not go on by itself.
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(2));
     await pause();
     expect(sent()[1]).toMatchObject({
@@ -2279,7 +2516,7 @@ describe("E: generation 1 is not proof this tab created the document", () => {
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     expect(screen.getAllByDisplayValue("Value 1").length).toBeGreaterThan(0);
 
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expect(sent()).toHaveLength(1);
@@ -2308,7 +2545,7 @@ describe("E: generation 1 is not proof this tab created the document", () => {
     });
     expect(saveStatus()).toBe("Out of date");
 
-    pressKeepMine();
+    await confirmKeepMine();
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expect(sent()).toHaveLength(1);
@@ -2408,7 +2645,7 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     expect(server.route!.generation).toBe(3);
   });
 
-  it("F2b: placeholder-keyed input typed after the creating write's answer while the read its ensure started is still out, with NO outside change, is sent at 2 (not refused as made on 1)", async () => {
+  it("F2b: placeholder-keyed input stays unsent until the accepted route document is presented", async () => {
     // The read the first write's ensure started is slower than the write:
     // the first copy this tab holds is the one the write's answer brought,
     // at 2, and the input is typed on the placeholder before that read
@@ -2422,6 +2659,7 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     expect(sent()).toHaveLength(1);
     expect(server.route!.generation).toBe(2);
     expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+    await waitForPresentationReady();
     holdDebounce();
     typeInCard(0, "Value 2");
     // Held by the debounce: the second edit has not left yet.
@@ -2435,20 +2673,36 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
 
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
     expect(saveStatus()).not.toBe("Out of date");
+    await expectAdopted();
+    await waitForPresentationReady();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    // The previous value remains in the input; only a new edit made against
+    // the confirmed route Document can be written.
+    expect(cardFields()[0]?.value).toBe("Value 2");
+    await waitFor(() => expect(cardFields()[0]?.disabled).toBe(false));
+    typeInCard(0, "Value 2 confirmed");
+    await pause();
     expect(sent()).toHaveLength(2);
     expect(sent()[1]).toMatchObject({
       templateId: ROUTE_DOC_ID,
       expectedDraftGeneration: 2,
-      props: { heading: "Value 2" },
+      props: { heading: "Value 2 confirmed" },
     });
-    expect(storedHeading()).toBe("Value 2");
+    expect(storedHeading()).toBe("Value 2 confirmed");
     expect(server.route).toEqual({
       generation: 3,
-      props: { heading: "Value 2" },
+      props: { heading: "Value 2 confirmed" },
     });
   });
 
-  it("F3: after Keep mine on a placeholder-keyed refusal, the rebased basis decides: sent once at the latest generation", async () => {
+  it("F3: no-basis placeholder input stays unsent after a newer copy is presented", async () => {
     await openOn(headingReport);
     holdReads();
     const first = holdNextWrite();
@@ -2464,22 +2718,30 @@ describe("F: the creation basis applies only to placeholder-keyed input", () => 
     await releaseReadsUntil(4);
     await releaseDebounce();
     expect(sent()).toHaveLength(1);
-    expect(saveStatus()).toBe("Out of date");
-
-    pressKeepMine();
-    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(saveStatus()).toBe("Unsaved");
+    expect(server.route).toEqual({
+      generation: 4,
+      props: { heading: "Theirs" },
+    });
+    await expectAdopted();
+    await waitForPresentationReady();
     await pause();
-    expect(sent()).toHaveLength(2);
-    expect(sent()[1]).toMatchObject({
-      templateId: ROUTE_DOC_ID,
-      expectedDraftGeneration: 4,
-      props: { heading: "Value 2" },
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({
+      generation: 4,
+      props: { heading: "Theirs" },
+    });
+    expect(cardFields()[0]?.value).toBe("Value 2");
+    // The source basis was unknown when this draft began. Presenting a newer
+    // copy does not silently rebase it or create a new write opportunity.
+    await waitFor(() => expect(cardFields()[0]?.disabled).toBe(false));
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toEqual({
+      generation: 4,
+      props: { heading: "Theirs" },
     });
     expect(ensureRouteTemplate).toHaveBeenCalledTimes(1);
-    expect(server.route).toMatchObject({
-      generation: 5,
-      props: { heading: "Value 2" },
-    });
   });
 });
 
@@ -2502,10 +2764,16 @@ describe("R1: one section, one pending edit across the page taking up its route 
     if (screen.queryByRole("button", { name: "Try again" })) {
       pressTryAgain();
       await pause();
+      if (screen.queryByRole("button", { name: "Try again" })) {
+        await waitForPresentationReady();
+        if (screen.queryByRole("button", { name: "Try again" })) {
+          pressTryAgain();
+          await pause();
+        }
+      }
     }
     if (screen.queryByRole("button", { name: "Load latest, keep mine" })) {
-      pressKeepMine();
-      await pause();
+      await confirmKeepMine();
     }
   }
 
@@ -2610,7 +2878,8 @@ describe("Q3: the field the author types in, across the page taking up its route
   /** Row b's title, among the rows' titles the row selection shows. */
   const rowB = () => cardFields()[1] as HTMLInputElement | undefined;
 
-  function typeKeeping(field: HTMLInputElement, value: string) {
+  async function typeKeeping(field: HTMLInputElement, value: string) {
+    await waitFor(() => expect(field.disabled).toBe(false));
     act(() => {
       field.focus();
     });
@@ -2628,8 +2897,8 @@ describe("Q3: the field the author types in, across the page taking up its route
    * no longer rebuilds the input; they do not show the first edit of rows
    * without ids keeps it.
    */
-  function beginInRowB(value: string): HTMLInputElement {
-    typeKeeping(rowB()!, value);
+  async function beginInRowB(value: string): Promise<HTMLInputElement> {
+    await typeKeeping(rowB()!, value);
     const field = rowB()!;
     act(() => {
       field.focus();
@@ -2650,22 +2919,25 @@ describe("Q3: the field the author types in, across the page taking up its route
     ]);
   }
 
-  it("row b while the first write is unanswered: the same input keeps text, focus and caret; the appended text is stored", async () => {
+  it("row b keeps the same input through route adoption, then appends on the confirmed preview", async () => {
     await openOn(secondRowReport);
     const first = holdNextWrite();
     expect(rowB()!.value).toBe("Two");
-    const field = beginInRowB("Two edited");
+    const field = await beginInRowB("Two edited");
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
     expectSameField(field, "Two edited");
 
-    typeKeeping(field, `${field.value} more`);
     await act(async () => {
       first.release();
     });
+    await expectAdopted();
+    await waitForPresentationReady();
+    expectSameField(field, "Two edited");
+
+    await typeKeeping(field, `${field.value} more`);
     await waitFor(() => expect(sent()).toHaveLength(2));
     await pause();
-    await expectAdopted();
 
     expectSameField(field, "Two edited more");
     expect(rowsOf(sent()[1]!).map(([, title]) => title)).toEqual([
@@ -2681,12 +2953,12 @@ describe("Q3: the field the author types in, across the page taking up its route
 
   it("row b after the first answer landed: the same input keeps text, focus and caret; the appended text is stored", async () => {
     await openOn(secondRowReport);
-    const field = beginInRowB("Two edited");
+    const field = await beginInRowB("Two edited");
     await pause();
     await expectAdopted();
     expectSameField(field, "Two edited");
 
-    typeKeeping(field, `${field.value} more`);
+    await typeKeeping(field, `${field.value} more`);
     await pause();
     expectSameField(field, "Two edited more");
     expect(
@@ -2696,16 +2968,18 @@ describe("Q3: the field the author types in, across the page taking up its route
     ).toEqual(["One", "Two edited more"]);
   });
 
-  it("the heading (saved on leaving the field) while the first write is unanswered: it shows the author's text, and appending builds on it", async () => {
+  it("keeps the heading draft across route adoption, then saves a fresh edit on the confirmed preview", async () => {
     await openOn(headingReport);
     const first = holdNextWrite();
     await type("Default heading", "Value 1");
     await waitFor(() => expect(sent()).toHaveLength(1));
     await pause();
+    await waitForPresentationReady();
     const field = cardFields()[0] as HTMLTextAreaElement;
     expect(field.value).toBe("Value 1");
 
     // The author goes back into the field and appends to what is shown.
+    await waitFor(() => expect(field.disabled).toBe(false));
     act(() => {
       field.focus();
     });
@@ -2714,33 +2988,60 @@ describe("Q3: the field the author types in, across the page taking up its route
     await act(async () => {
       first.release();
     });
-    await waitFor(() => expect(sent()).toHaveLength(2));
-    await pause();
     await expectAdopted();
+    // The author left the field (a commit) while the first write was out,
+    // and the checks held it then. Once the route Document is presented and
+    // acknowledged, that commit goes once, on the generation the first write
+    // answered, with no second blur.
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 1 more" },
+    });
+    expect(field.value).toBe("Value 1 more");
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(server.route).toEqual({
+      generation: 3,
+      props: { heading: "Value 1 more" },
+    });
 
-    expect(sent()[1]!.props.heading).toBe("Value 1 more");
+    // A new edit on the presented Document carries a current proof.
+    await waitFor(() => expect(field.disabled).toBe(false));
+    act(() => {
+      field.focus();
+    });
+    fireEvent.input(field, { target: { value: `${field.value} again` } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(sent()).toHaveLength(3));
+    await pause();
+    expect(sent()).toHaveLength(3);
+
+    expect(sent()[2]!.props.heading).toBe("Value 1 more again");
     expect(
       sent().filter((write) =>
         String(write.props.heading).startsWith("Default heading"),
       ),
     ).toHaveLength(0);
-    expect(storedHeading()).toBe("Value 1 more");
-    expect((cardFields()[0] as HTMLTextAreaElement).value).toBe("Value 1 more");
+    expect(storedHeading()).toBe("Value 1 more again");
+    expect((cardFields()[0] as HTMLTextAreaElement).value).toBe(
+      "Value 1 more again",
+    );
   });
 
   it("synthetic composition events (jsdom, not a real IME): a composition open across the page taking up the document ends in the same input and is stored", async () => {
     await openOn(secondRowReport);
     const first = holdNextWrite();
-    const field = beginInRowB("Two edited");
+    const field = await beginInRowB("Two edited");
     await waitFor(() => expect(sent()).toHaveLength(1));
 
     fireEvent.compositionStart(field);
-    fireEvent.input(field, { target: { value: "Two edited 新" } });
     await act(async () => {
       first.release();
     });
-    await pause();
     await expectAdopted();
+    await waitForPresentationReady();
     expect(field.isConnected).toBe(true);
     expect(rowB()).toBe(field);
     expect(document.activeElement).toBe(field);
@@ -2854,5 +3155,2141 @@ describe("only an answered write with a valid document makes the first copy", ()
     await pause();
     sentOnceOntoCreatedDocument();
     expect(sourceBaseline()).toEqual(before);
+  });
+});
+
+describe("frame self-navigation to an unfollowed route while editing the editor's page", () => {
+  it("keeps the Inspector field enabled and saves edits after the frame navigates to an unfollowed route", async () => {
+    await openOn(headingReport);
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+
+    await type("Default heading", "After nav");
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      props: { heading: "After nav" },
+    });
+  });
+
+  it("holds an edit typed after unfollowed frame navigation once an in-flight route-document creation adopts the document, then saves it after returning to original route and receiving valid ack", async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstHeld = false;
+    updateSectionProps.mockImplementationOnce(
+      async ({ data }: { data: WriteRequest }) => {
+        firstHeld = true;
+        await firstGate;
+        return applyWrite(data);
+      },
+    );
+
+    await openOn(headingReport);
+    await waitFor(() => {
+      expect(
+        screen.queryAllByText(/Preview syncing\. Content writes are paused/),
+      ).toHaveLength(0);
+    });
+    disablePresentationAcks();
+
+    await type("Default heading", "First");
+    await waitFor(() => expect(firstHeld).toBe(true));
+
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+
+    const field = (await screen.findAllByDisplayValue("First"))[0]!;
+    await waitFor(() => expect(field.matches(":disabled")).toBe(false));
+    fireEvent.input(field, { target: { value: "Second" } });
+    const postedBeforeRelease = posted.length;
+    releaseFirst();
+    await expectAdopted();
+    await flushFrames();
+
+    // While the frame remains on /unfollowed/elsewhere, no section props/tokens are posted there.
+    expect(
+      posted
+        .slice(postedBeforeRelease)
+        .filter((msg) => msg.type === "morph:storefront-preview-update-section-props"),
+    ).toHaveLength(0);
+
+    fireEvent.blur(field);
+    await pause();
+
+    expect((field as HTMLInputElement).value).toBe("Second");
+    // Option A notice (2026-11-17): paused because the frame is on another
+    // page, the notice says the draft is kept and to return to the page.
+    expect(
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    ).toBeGreaterThan(0);
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "First" },
+    });
+
+    // Returning to the original route emits a fresh presentation request for the newly adopted document.
+    const postedBeforeReturn = posted.length;
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+
+    const postReturnTokens = posted
+      .slice(postedBeforeReturn)
+      .filter(
+        (
+          msg,
+        ): msg is Record<string, unknown> & {
+          presentationToken: Record<string, unknown> & { operationId: string };
+        } =>
+          msg.type === "morph:storefront-preview-update-section-props" &&
+          Boolean(msg.presentationToken),
+      )
+      .map((msg) => msg.presentationToken);
+    expect(postReturnTokens.length).toBeGreaterThan(0);
+
+    const fresh = postReturnTokens[postReturnTokens.length - 1]!;
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: fresh.operationId,
+      token: fresh,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      expectedDraftGeneration: 2,
+      props: { heading: "Second" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 3,
+      props: { heading: "Second" },
+    });
+  });
+
+  it("still blocks writes if the frame booted on an unfollowed route and never presented the editor's page", async () => {
+    renderEditor();
+    await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
+    await flushFrames();
+    await fromPreview({
+      type: "morph:storefront-preview-ready",
+      capabilities: [
+        "selection-field-section",
+        "code-default-selection",
+        "section-presentation-ack-v1",
+      ],
+    });
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 0,
+    });
+    await flushFrames();
+    expect(screen.queryByDisplayValue("Default heading")).toBeNull();
+    expect(sent()).toHaveLength(0);
+  });
+
+  it("controlled race: save lands, ack withheld, frame self-navigates to unfollowed route, continue typing and blur", async () => {
+    await openOn(headingReport);
+
+    const originalDispatch = window.dispatchEvent.bind(window);
+    let withholdAppliedAck = true;
+    const dispatchSpy = vi
+      .spyOn(window, "dispatchEvent")
+      .mockImplementation((event: Event) => {
+        if (
+          withholdAppliedAck &&
+          event instanceof MessageEvent &&
+          event.data?.type ===
+            "morph:storefront-preview-section-presentation-ack" &&
+          event.data?.status === "applied"
+        ) {
+          return true;
+        }
+        return originalDispatch(event);
+      });
+
+    try {
+      await type("Default heading", "First");
+      await pause();
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+
+      await fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/unfollowed/elsewhere",
+        frameNavigationEpoch: 1,
+      });
+      await flushFrames();
+
+      const field = (await screen.findAllByDisplayValue("First"))[0]!;
+      expect(field.matches(":disabled")).toBe(false);
+      fireEvent.input(field, { target: { value: "Second" } });
+      fireEvent.blur(field);
+      await pause();
+
+      // Option A notice (2026-11-17): paused because the frame is on
+      // another page, the notice says the draft is kept and to return.
+      const syncingBanners = screen.queryAllByText(
+        PREVIEW_OTHER_PAGE_PAUSED_MESSAGE,
+      );
+      expect({
+        fieldValue: (field as HTMLInputElement).value,
+        fieldDisabled: field.matches(":disabled"),
+        syncingBannerTexts: syncingBanners.map((el) => el.textContent),
+        sentCount: sent().length,
+        serverRoute: server.route,
+      }).toEqual({
+        fieldValue: "Second",
+        fieldDisabled: false,
+        syncingBannerTexts: expect.arrayContaining([
+          PREVIEW_OTHER_PAGE_PAUSED_MESSAGE,
+        ]),
+        sentCount: 1,
+        serverRoute: { generation: 2, props: { heading: "First" } },
+      });
+    } finally {
+      withholdAppliedAck = false;
+      dispatchSpy.mockRestore();
+    }
+  });
+
+  it("controlled race (delayed pre-navigation ack): delivering the withheld ack after returning to original route lets Second save once at expectedDraftGeneration 2", async () => {
+    await openOn(headingReport);
+
+    const originalDispatch = window.dispatchEvent.bind(window);
+    let withholdAppliedAck = true;
+    const heldAckEvents: Event[] = [];
+    const dispatchSpy = vi
+      .spyOn(window, "dispatchEvent")
+      .mockImplementation((event: Event) => {
+        if (
+          withholdAppliedAck &&
+          event instanceof MessageEvent &&
+          event.data?.type ===
+            "morph:storefront-preview-section-presentation-ack" &&
+          event.data?.status === "applied"
+        ) {
+          heldAckEvents.push(event);
+          return true;
+        }
+        return originalDispatch(event);
+      });
+
+    try {
+      await type("Default heading", "First");
+      await pause();
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+
+      // Frame self-navigates to an unfollowed route before ack arrives.
+      await fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/unfollowed/elsewhere",
+        frameNavigationEpoch: 1,
+      });
+      await flushFrames();
+
+      const field = (await screen.findAllByDisplayValue("First"))[0]!;
+      fireEvent.input(field, { target: { value: "Second" } });
+      fireEvent.blur(field);
+      await pause();
+
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+
+      // Frame returns to the original route and the withheld valid ack is delivered.
+      withholdAppliedAck = false;
+      await fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: ROUTE_PATH,
+        frameNavigationEpoch: 2,
+      });
+      act(() => {
+        for (const event of heldAckEvents.splice(0)) {
+          originalDispatch(event);
+        }
+      });
+      await flushFrames();
+
+      await waitFor(() => {
+        expect(
+          screen.queryByText(/Preview syncing\. Content writes are paused/),
+        ).toBeNull();
+      });
+      await pause();
+
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        expectedDraftGeneration: 2,
+        props: { heading: "Second" },
+      });
+      expect(server.route).toMatchObject({
+        generation: 3,
+        props: { heading: "Second" },
+      });
+    } finally {
+      withholdAppliedAck = false;
+      dispatchSpy.mockRestore();
+    }
+  });
+
+  it("controlled race real recovery: returning to original route emits a fresh presentation request, replies with new ack, and saves Second once at expectedDraftGeneration 2", async () => {
+    await openOn(headingReport);
+    disablePresentationAcks();
+
+    const steps: string[] = [];
+    const seenTokens: Array<{
+      operationId: string;
+      token: Record<string, unknown>;
+    }> = [];
+    let postedBaseline = posted.length;
+
+    const collectNewPosts = () => {
+      for (; postedBaseline < posted.length; postedBaseline += 1) {
+        const msg = posted[postedBaseline]!;
+        if (
+          msg.type === "morph:storefront-preview-update-section-props" &&
+          msg.presentationToken
+        ) {
+          const token = msg.presentationToken as Record<string, unknown> & {
+            operationId: string;
+          };
+          seenTokens.push({ operationId: token.operationId, token });
+          steps.push(`post:update-section-props:${token.operationId}`);
+          if (seenTokens.length > 20) {
+            throw new Error(
+              `Presentation post cap exceeded: ${steps.join(" -> ")}`,
+            );
+          }
+        } else {
+          steps.push(`post:${String(msg.type)}`);
+        }
+      }
+    };
+
+    // 1. Save First; do NOT ack its presentationToken (simulates ack lost before navigation).
+    steps.push("action:type-First");
+    await type("Default heading", "First");
+    await pause();
+    collectNewPosts();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "First" },
+    });
+    const preNavTokenCount = seenTokens.length;
+    expect(preNavTokenCount).toBeGreaterThan(0);
+
+    // 2. Frame self-navigates to an unfollowed route.
+    steps.push("frame:nav-unfollowed");
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    // 3. Author types Second and blurs while on unfollowed route: draft kept, no write sent.
+    steps.push("action:type-Second-and-blur");
+    const field = (await screen.findAllByDisplayValue("First"))[0]!;
+    fireEvent.input(field, { target: { value: "Second" } });
+    fireEvent.blur(field);
+    await pause();
+    collectNewPosts();
+
+    expect((field as HTMLInputElement).value).toBe("Second");
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "First" },
+    });
+
+    // 4. Frame returns to the original route. Before any new ack, Second stays held and unsent.
+    const beforeReturnTokenCount = seenTokens.length;
+    steps.push("frame:nav-back-to-original");
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    expect((field as HTMLInputElement).value).toBe("Second");
+    expect(sent()).toHaveLength(1);
+
+    // 5. Duplicate structure on the same route must not emit another presentation request.
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 3,
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    // 6. Observe a single fresh presentation request emitted after returning to original route.
+    const postReturnTokens = seenTokens.slice(beforeReturnTokenCount);
+    expect(
+      postReturnTokens,
+      `Expected 1 fresh presentation request after returning to ${ROUTE_PATH}; steps=${steps.join(" -> ")}`,
+    ).toHaveLength(1);
+
+    // 7. A late ack for an old pre-navigation / off-page token must be ignored.
+    const stale = seenTokens[preNavTokenCount - 1]!;
+    steps.push(`ack:stale:${stale.operationId}`);
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: stale.operationId,
+      token: stale.token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    // 8. Reply with a fresh applied ack for the new post-return token -> Second saves once at expectedDraftGeneration 2.
+    const fresh = postReturnTokens[0]!;
+    steps.push(`ack:applied:${fresh.operationId}`);
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: fresh.operationId,
+      token: fresh.token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    collectNewPosts();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      expectedDraftGeneration: 2,
+      props: { heading: "Second" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 3,
+      props: { heading: "Second" },
+    });
+
+    // 9. Ack the post-save presentation token for Second so the syncing banner clears.
+    const postSaveTokens = seenTokens.slice(beforeReturnTokenCount + 1);
+    expect(postSaveTokens.length).toBeGreaterThan(0);
+    const postSave = postSaveTokens[postSaveTokens.length - 1]!;
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: postSave.operationId,
+      token: postSave.token,
+      status: "applied",
+    });
+    await flushFrames();
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Preview syncing\. Content writes are paused/),
+      ).toBeNull();
+    });
+    expect(sent()).toHaveLength(2);
+  });
+
+  it("controlled race real recovery with external server change: returning to original route and receiving new ack still refuses Second on conflict", async () => {
+    await openOn(headingReport);
+    disablePresentationAcks();
+
+    const seenTokens: Array<{
+      operationId: string;
+      token: Record<string, unknown>;
+    }> = [];
+    let postedBaseline = posted.length;
+    const collectNewPosts = () => {
+      for (; postedBaseline < posted.length; postedBaseline += 1) {
+        const msg = posted[postedBaseline]!;
+        if (
+          msg.type === "morph:storefront-preview-update-section-props" &&
+          msg.presentationToken
+        ) {
+          const token = msg.presentationToken as Record<string, unknown> & {
+            operationId: string;
+          };
+          seenTokens.push({ operationId: token.operationId, token });
+        }
+      }
+    };
+
+    await type("Default heading", "First");
+    await pause();
+    collectNewPosts();
+    expect(sent()).toHaveLength(1);
+
+    // Frame navigates away; meanwhile another writer advances server generation to 5.
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+    server.route = {
+      generation: 5,
+      props: { heading: "Theirs" },
+    };
+
+    const field = (await screen.findAllByDisplayValue("First"))[0]!;
+    fireEvent.input(field, { target: { value: "Second" } });
+    fireEvent.blur(field);
+    await pause();
+    collectNewPosts();
+    expect(sent()).toHaveLength(1);
+
+    const beforeReturnTokenCount = seenTokens.length;
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    collectNewPosts();
+
+    const postReturnTokens = seenTokens.slice(beforeReturnTokenCount);
+    expect(postReturnTokens).toHaveLength(1);
+
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: postReturnTokens[0]!.operationId,
+      token: postReturnTokens[0]!.token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+
+    // Recovery sends Second with its original basis (expectedDraftGeneration: 2) and is
+    // refused by the server's generation 5 without overwriting Theirs.
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      expectedDraftGeneration: 2,
+      props: { heading: "Second" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 5,
+      props: { heading: "Theirs" },
+    });
+  });
+
+  it("controlled cross-page save after valid pre-navigation ack: typing and blurring while frame stays on unfollowed route does not post section props to unfollowed route or revoke presentationReady, and saves once", async () => {
+    await openOn(headingReport);
+    // Wait for initial presentation ack to settle so page is confirmed before navigation.
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Preview syncing\. Content writes are paused/),
+      ).toBeNull();
+    });
+    disablePresentationAcks();
+
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/elsewhere",
+      frameNavigationEpoch: 1,
+    });
+    await flushFrames();
+
+    const postedBeforeTyping = posted.length;
+    const field = (await screen.findAllByDisplayValue("Default heading"))[0]!;
+    fireEvent.input(field, { target: { value: "Typed while elsewhere" } });
+
+    // Simulate real bridge on /unfollowed/elsewhere: any section-props post sent there is section-missing.
+    for (const msg of posted.slice(postedBeforeTyping)) {
+      if (
+        msg.type === "morph:storefront-preview-update-section-props" &&
+        msg.presentationToken
+      ) {
+        const token = msg.presentationToken as Record<string, unknown> & {
+          operationId: string;
+        };
+        await fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: token.operationId,
+          token,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+      }
+    }
+
+    const offPageSectionPosts = posted
+      .slice(postedBeforeTyping)
+      .filter((msg) => msg.type === "morph:storefront-preview-update-section-props");
+    expect(offPageSectionPosts).toHaveLength(0);
+    expect(
+      screen.queryAllByText(/Preview syncing\. Content writes are paused/),
+    ).toHaveLength(0);
+
+    fireEvent.blur(field);
+    await pause();
+
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      expectedDraftGeneration: 1,
+      props: { heading: "Typed while elsewhere" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "Typed while elsewhere" },
+    });
+  });
+
+  it("pauses cross-page writes under Option A when pre-navigation ack only proved new-document and route adoption lands after frame navigation, then saves after returning and acking existing doc", async () => {
+    await openOn(headingReport);
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Preview syncing\. Content writes are paused/),
+      ).toBeNull();
+    });
+
+    holdReads();
+    try {
+      const postedBeforeFirstSave = posted.length;
+      await type("Default heading", "First");
+      await pause();
+
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+      expect(host.search?.templateId).not.toBe(ROUTE_DOC_ID);
+
+      // Wait for pre-navigation presentation ack on ROUTE_PATH while readCreatedDocument is still in-flight.
+      await waitFor(() => {
+        expect(
+          screen.queryByText(/Preview syncing\. Content writes are paused/),
+        ).toBeNull();
+      });
+
+      const preNavTokens = posted
+        .slice(postedBeforeFirstSave)
+        .filter(
+          (
+            msg,
+          ): msg is Record<string, unknown> & {
+            presentationToken: Record<string, unknown>;
+          } =>
+            msg.type === "morph:storefront-preview-update-section-props" &&
+            Boolean(msg.presentationToken),
+        )
+        .map((msg) => ({
+          sectionId: msg.sectionId,
+          templateId: msg.presentationToken.templateId,
+          documentBasis: msg.presentationToken.documentBasis,
+          routePath: msg.presentationToken.routePath,
+        }));
+      expect(preNavTokens).toEqual([
+        {
+          sectionId: SLOT,
+          templateId: `route-template:${ROUTE_PATH}`,
+          documentBasis: {
+            kind: "new-document",
+            createEpoch: `route-template:${ROUTE_PATH}`,
+          },
+          routePath: ROUTE_PATH,
+        },
+      ]);
+
+      // Frame navigates to an unfollowed route before getStorefrontThemeEditor lands.
+      await fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/unfollowed/elsewhere",
+        frameNavigationEpoch: 1,
+      });
+      await flushFrames();
+
+      // Now getStorefrontThemeEditor lands and adopts ROUTE_DOC_ID while the frame is already on /unfollowed/elsewhere.
+      await releaseReads();
+      await expectAdopted();
+      await flushFrames();
+    } finally {
+      await releaseReads();
+    }
+
+    // Under Option A, pre-navigation new-document ack does not authorize existing doc writes; writes pause until returning.
+    // Option A notice (2026-11-17): it says the draft is kept and to return.
+    expect(
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    ).toBeGreaterThan(0);
+
+    await type("First", "Second");
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "First" },
+    });
+
+    // Returning to the original route re-presents ROUTE_DOC_ID and releases the held write once at generation 2 -> 3.
+    const postedBeforeReturn = posted.length;
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    await pause();
+
+    const postReturnTokens = posted
+      .slice(postedBeforeReturn)
+      .filter(
+        (
+          msg,
+        ): msg is Record<string, unknown> & {
+          presentationToken: Record<string, unknown>;
+        } =>
+          msg.type === "morph:storefront-preview-update-section-props" &&
+          Boolean(msg.presentationToken),
+      )
+      .map((msg) => msg.presentationToken);
+    expect(
+      postReturnTokens.some(
+        (token) =>
+          token.templateId === ROUTE_DOC_ID &&
+          (token.documentBasis as Record<string, unknown>)?.kind === "existing" &&
+          (token.documentBasis as Record<string, unknown>)?.draftGeneration === 2,
+      ),
+    ).toBe(true);
+
+    await waitFor(() => {
+      expect(sent()).toHaveLength(2);
+    });
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Second" },
+    });
+    expect(server.route).toMatchObject({
+      generation: 3,
+      props: { heading: "Second" },
+    });
+  });
+});
+
+
+
+/**
+ * The blur release of a placeholder-keyed draft while the frame is not on
+ * the editor's page may use only a proof that is still current: acknowledged
+ * in this ready round, by this document, and still the latest presentation
+ * of the section. A token applied in an earlier ready round, or one a newer
+ * presentation of the section has superseded, is not a proof of what the
+ * frame shows now: the draft is kept and nothing is written.
+ */
+describe("the off-page blur release uses only a still-current proof", () => {
+  const ELSEWHERE = "/unfollowed/elsewhere";
+  const moveFrameElsewhere = async (epoch: number) => {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ELSEWHERE,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+  /**
+   * Value 2 is typed while the first write is unanswered, so it is held
+   * under the route placeholder; the first write then answers and the page
+   * takes up the document this editor created, its presentation confirmed.
+   */
+  async function placeholderDraftAfterAdoption() {
+    await openOn(headingReport);
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    expect(sent()).toHaveLength(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await waitForPresentationReady();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+  }
+  const blurCard = async () => {
+    await act(async () => {
+      fireEvent.focus(cardFields()[0]!);
+      fireEvent.blur(cardFields()[0]!);
+    });
+    await pause();
+  };
+
+  it("control: on the editor's page, with the presentation confirmed, the blur saves the held draft once", async () => {
+    await placeholderDraftAfterAdoption();
+    await blurCard();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+  });
+
+  it("an applied token from an earlier ready round is no proof in a frame that reloaded and moved elsewhere", async () => {
+    await placeholderDraftAfterAdoption();
+    disablePresentationAcks();
+    // The frame reloads: a new document, a new ready round, which never
+    // acknowledges the editor's page before the author moves it away.
+    reloadFrameDocument();
+    await fromPreview({
+      type: "morph:storefront-preview-ready",
+      capabilities: [...LIVE_FRAME_CAPABILITIES],
+    });
+    await flushFrames();
+    await moveFrameElsewhere(1);
+
+    await blurCard();
+
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+  });
+
+  it("a new-document acknowledgement from before the page took up the created document is no proof for the next write while the frame is elsewhere; returning and a fresh acknowledgement save it once", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    // The frame leaves while the first write is out; the page takes up the
+    // created document while it is elsewhere.
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await flushFrames();
+
+    await blurCard();
+
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    // The notice says why: the draft is kept, and to return to the page.
+    expect(
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    ).toBeGreaterThan(0);
+
+    // Back on the editor's page, the created document is presented and
+    // acknowledged; the draft the author already left is saved once, on its
+    // original basis, with no second blur.
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE)).toHaveLength(
+      0,
+    );
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(storedHeading()).toBe("Value 2");
+  });
+
+  it("a new-document acknowledgement the frame withdrew is never taken as a proof of the created document", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await flushFrames();
+
+    // The frame withdraws the route's new-document presentation it had
+    // acknowledged before it moved (as it does on arriving back there).
+    const newDocument = posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === SLOT &&
+          (
+            (message.presentationToken as Record<string, unknown> | undefined)
+              ?.documentBasis as Record<string, unknown> | undefined
+          )?.kind === "new-document",
+      )
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+    expect(newDocument).toBeTruthy();
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: newDocument!.operationId,
+      token: newDocument,
+      status: "not-applied",
+      reason: "superseded",
+    });
+    await flushFrames();
+
+    await blurCard();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+
+    // Only the created document's own presentation, acknowledged after the
+    // return, lets the draft go: once, on the basis it was typed on.
+    const postedBeforeReturn = posted.length;
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    // The draft the author already left goes once that presentation is
+    // acknowledged.
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(
+      posted
+        .slice(postedBeforeReturn)
+        .some((message) => {
+          const token = message.presentationToken as
+            | Record<string, unknown>
+            | undefined;
+          const basis = token?.documentBasis as
+            | Record<string, unknown>
+            | undefined;
+          return (
+            message.type === "morph:storefront-preview-update-section-props" &&
+            token?.templateId === ROUTE_DOC_ID &&
+            basis?.kind === "existing" &&
+            basis.draftGeneration === 2
+          );
+        }),
+    ).toBe(true);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    await pause();
+    expect(sent()).toHaveLength(2);
+  });
+});
+
+/**
+ * Leaving a field commits what is in it. While the frame shows another page
+ * the commit is held (Option A): the draft is kept and nothing is written.
+ * The commit is remembered, bound to the very field edits that were left and
+ * to the document they were typed for. The next valid acknowledgement after
+ * the frame is back sends it once, through the same checks a blur runs, with
+ * no second blur. Anything else stays unsent: input that was never left, a
+ * field typed into again, a sibling field never left, a document changed
+ * elsewhere, a source that changed, an acknowledgement of an old round, the
+ * editor on another document. A refused or failed send keeps the draft, and
+ * leaving the field again still works.
+ */
+describe("a draft the author left while the frame was elsewhere", () => {
+  const ELSEWHERE = "/unfollowed/elsewhere";
+  const moveFrameElsewhere = async (epoch: number) => {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ELSEWHERE,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+  const leaveField = async (index = 0) => {
+    await act(async () => {
+      fireEvent.focus(cardFields()[index]!);
+      fireEvent.blur(cardFields()[index]!);
+    });
+    await pause();
+  };
+  /**
+   * Value 2 is typed while the first write is out, the frame leaves, and
+   * the page takes up the document this editor created while it is away.
+   * With `leave`, the author then leaves the field: held, nothing written.
+   */
+  async function draftWhileElsewhere(
+    leave: boolean,
+    report: Record<string, unknown> = headingReport,
+  ) {
+    await openOn(report);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await flushFrames();
+    if (leave) await leaveField();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    ).toBeGreaterThan(0);
+  }
+  /**
+   * The frame is back on the page and its presentation is acknowledged;
+   * unless `sends`, nothing is written, so the page settles ready.
+   */
+  async function frameReturns(sends = false) {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    if (sends) {
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      return;
+    }
+    await waitForPresentationReady();
+    await pause();
+  }
+  const latestSlotToken = () =>
+    posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === SLOT &&
+          message.presentationToken,
+      )
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+  const savedOnce = (heading: string) => {
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading },
+    });
+  };
+
+  it("is saved once by the acknowledgement after the return, with no second blur; a repeated acknowledgement writes nothing more", async () => {
+    await draftWhileElsewhere(true);
+    await frameReturns(true);
+    savedOnce("Value 2");
+    await waitFor(() => expect(storedHeading()).toBe("Value 2"));
+
+    const token = latestSlotToken();
+    expect(token).toBeTruthy();
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: token!.operationId,
+      token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    expect(sent()).toHaveLength(2);
+  });
+
+  describe("across the one refresh of a frame that cannot acknowledge", () => {
+    /**
+     * The frame's page reloads onto a bridge older than the acknowledgement
+     * (its ready names none, and no instance); the service answers that it
+     * now serves one that acknowledges. The editor refreshes the frame once.
+     */
+    async function oldBridgeThenRefresh(during?: () => void) {
+      startPreviewServer.mockReset();
+      startPreviewServer.mockResolvedValue({
+        success: true,
+        message: "Live Preview server ready",
+        data: {
+          url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+          servingBridge: {
+            bridge: {
+              buildId: "e".repeat(64),
+              capabilities: [...LIVE_FRAME_CAPABILITIES],
+            },
+            instance: null,
+          },
+          bridgeCapabilities: [...LIVE_FRAME_CAPABILITIES],
+        },
+      });
+      const before = document.querySelector("iframe");
+      act(() => {
+        reloadFrameDocument();
+      });
+      sendFrameReady(FRAME, ["selection-field-section"]);
+      await flushFrames();
+      during?.();
+      await pause();
+      expect(sent(), "nothing is written while the old frame is up").toHaveLength(1);
+      await waitFor(() =>
+        expect(document.querySelector("iframe")).not.toBe(before),
+      );
+      expect(startPreviewServer).toHaveBeenCalledTimes(1);
+    }
+    /** The refreshed frame comes up on the editor's page and acknowledges. */
+    async function refreshedFrameAcknowledges(sends: boolean) {
+      await frameUp();
+      if (sends) {
+        await waitFor(() => expect(sent()).toHaveLength(2));
+      } else {
+        await waitForPresentationReady();
+      }
+      await pause();
+    }
+
+    it("a field left before it is kept, not sent while the old frame is up, and saved once by the new frame's acknowledgement, on its original basis", async () => {
+      await draftWhileElsewhere(true);
+      await oldBridgeThenRefresh();
+      await refreshedFrameAcknowledges(true);
+      savedOnce("Value 2");
+      expect(startPreviewServer).toHaveBeenCalledTimes(1);
+    });
+
+    it("input during it ends that commit: nothing is sent after the new frame acknowledges, and the draft is kept", async () => {
+      await draftWhileElsewhere(true);
+      await oldBridgeThenRefresh(() => typeInCard(0, "Value 3"));
+      await refreshedFrameAcknowledges(false);
+      expect(sent()).toHaveLength(1);
+      expect(storedHeading()).toBe("Value 1");
+      expect(cardFields()[0]!.value).toBe("Value 3");
+    });
+
+    it("input never left stays a draft: nothing is sent after the new frame acknowledges", async () => {
+      await draftWhileElsewhere(false);
+      await oldBridgeThenRefresh();
+      await refreshedFrameAcknowledges(false);
+      expect(sent()).toHaveLength(1);
+      expect(storedHeading()).toBe("Value 1");
+      expect(cardFields()[0]!.value).toBe("Value 2");
+    });
+
+    it("a write with no answer before it is not sent again by the refresh or the new frame's acknowledgement; Try again reads it back first and resends it once at the generation it was sent at", async () => {
+      await openOn(headingReport);
+      await waitForPresentationReady();
+      const first = holdNextWrite();
+      await type("Default heading", "Value 1");
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await act(async () => {
+        first.lose();
+        await settleMicrotasks();
+      });
+      await pause();
+      const unconfirmed = () =>
+        document
+          .querySelector("[data-editor-unconfirmed-saves]")
+          ?.getAttribute("data-editor-unconfirmed-saves");
+      expect(saveStatus()).toBe("Save failed");
+      expect(unconfirmed()).toBe("1");
+
+      await oldBridgeThenRefresh();
+      await refreshedFrameAcknowledges(false);
+      // Still the one request, still unconfirmed: neither the refresh nor
+      // the new frame's acknowledgement sent it again.
+      expect(sent()).toHaveLength(1);
+      expect(saveStatus()).toBe("Save failed");
+      expect(unconfirmed()).toBe("1");
+
+      // Not landed: the created document is still at the generation it was
+      // sent at (as in G2c), so the read-back decides by generation.
+      expect(server.route).toEqual({ generation: 1, props: null });
+      server.route = { generation: 1, props: {} };
+      const readsBefore = getThemeEditor.mock.calls.length;
+      pressTryAgain();
+      await waitFor(() =>
+        expect(getThemeEditor.mock.calls.length).toBeGreaterThan(readsBefore),
+      );
+      await pause();
+      expect(sent()).toHaveLength(2);
+      expect(sent()[1]).toMatchObject({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: sent()[0]!.expectedDraftGeneration,
+        props: { heading: "Value 1" },
+      });
+      // Read back before it was sent again.
+      const readOrder = getThemeEditor.mock.invocationCallOrder[readsBefore]!;
+      const resendOrder = updateSectionProps.mock.invocationCallOrder[1]!;
+      expect(readOrder).toBeLessThan(resendOrder);
+      expect(storedHeading()).toBe("Value 1");
+    });
+  });
+
+  it("input that was never left is not sent on the return; leaving it then saves it", async () => {
+    await draftWhileElsewhere(false);
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    savedOnce("Value 2");
+  });
+
+  it("the field typed into again after it was left is not sent on the return", async () => {
+    await draftWhileElsewhere(true);
+    typeInCard(0, "Value 3");
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 3");
+
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    savedOnce("Value 3");
+  });
+
+  it("a document changed elsewhere while away is not written over", async () => {
+    await draftWhileElsewhere(true);
+    await outsideWriteRead((route) => {
+      route.props = { ...(route.props ?? {}), heading: "Theirs" };
+      route.generation += 1;
+    });
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Theirs");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+
+  it("a source that changed since the input is not written", async () => {
+    await draftWhileElsewhere(true);
+    act(() => {
+      useThemeWorkspaceStore.getState().setBaseSourceGeneration(2, {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+      });
+    });
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+
+  it("an acknowledgement from an earlier ready round sends nothing", async () => {
+    await draftWhileElsewhere(true);
+    const before = latestSlotToken();
+    expect(before).toBeTruthy();
+    disablePresentationAcks();
+    reloadFrameDocument();
+    await fromPreview({
+      type: "morph:storefront-preview-ready",
+      capabilities: [...LIVE_FRAME_CAPABILITIES],
+    });
+    await flushFrames();
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: ROUTE_PATH,
+      frameNavigationEpoch: 0,
+    });
+    await flushFrames();
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: before!.operationId,
+      token: before,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+
+  it("the editor on another document drops the commit; back on the page, the return sends nothing", async () => {
+    await draftWhileElsewhere(true);
+    act(() => host.go?.({ routePath: "/", templateId: undefined }));
+    await flushFrames();
+    await pause();
+    act(() => host.go?.({ routePath: ROUTE_PATH, templateId: ROUTE_DOC_ID }));
+    await flushFrames();
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+  });
+
+  it("a continued write that gets no answer is not sent again by a later acknowledgement", async () => {
+    await draftWhileElsewhere(true);
+    const lost = holdNextWrite();
+    await frameReturns(true);
+    await act(async () => {
+      lost.lose();
+      await settleMicrotasks();
+    });
+    await pause();
+    const token = latestSlotToken();
+    await fromPreview({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: token!.operationId,
+      token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+  });
+
+  // The blur commits the section's draft as it is then: a sibling typed
+  // before the blur goes with it; input after the blur does not.
+  const typeWithoutLeaving = (index: number, value: string) => {
+    const field = cardFields()[index];
+    if (!field) throw new Error(`typeWithoutLeaving: no card field ${index}`);
+    fireEvent.input(field, { target: { value } });
+  };
+  /** What the author is shown about the held draft. */
+  const heldState = () => ({
+    status: saveStatus(),
+    errors: vi.mocked(toast.error).mock.calls.map((call) => String(call[0])),
+    loadLatest: screen.queryAllByRole("button", {
+      name: "Load latest, keep mine",
+    }).length,
+    tryAgain: screen.queryAllByRole("button", { name: "Try again" }).length,
+  });
+  /**
+   * Row b's title is typed, not left, while the first write is out; row a
+   * is then selected, so its title is read from the source too. The frame
+   * leaves and the page takes up its document while away; with `before`,
+   * row a's title is typed into there, not left. The author then leaves
+   * row b's title.
+   */
+  async function rowDraftWhileElsewhere(before?: string) {
+    await openOn(secondRowReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Two", "Two v1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeWithoutLeaving(1, "Two v2");
+    await select(firstRowReport);
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await expectAdopted();
+    await flushFrames();
+    if (before !== undefined) typeWithoutLeaving(0, before);
+    await leaveField(1);
+    expect(sent()).toHaveLength(1);
+  }
+
+  it("a sibling typed before the blur, never left itself, is saved with it by the return", async () => {
+    await rowDraftWhileElsewhere("One typed");
+    await frameReturns(true);
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+    });
+    expect(rowsOf(sent()[1]!).map(([, title]) => title)).toEqual([
+      "One typed",
+      "Two v2",
+    ]);
+  });
+
+  it("a sibling typed after the blur is not sent on the return; the whole draft is kept and the next blur sends it", async () => {
+    await rowDraftWhileElsewhere();
+    typeWithoutLeaving(0, "One typed");
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields().map((field) => field.value)).toEqual([
+      "One typed",
+      "Two v2",
+    ]);
+
+    await leaveField(0);
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+    });
+    expect(rowsOf(sent()[1]!).map(([, title]) => title)).toEqual([
+      "One typed",
+      "Two v2",
+    ]);
+  });
+
+  // Only the return's own source check stops this one before the write
+  // path: without it the write path refuses later, as a failed save.
+  it("source changed: the return refuses before any write; the draft is kept and Try again is left", async () => {
+    await draftWhileElsewhere(true);
+    act(() => {
+      useThemeWorkspaceStore.getState().setBaseSourceGeneration(2, {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+      });
+    });
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(heldState()).toEqual({
+      status: "Unsaved",
+      errors: [],
+      loadLatest: 0,
+      tryAgain: 1,
+    });
+  });
+
+  // Only the return's own check of the document's range stops this one
+  // before the write path: without it the write path refuses later, as a
+  // conflict.
+  it("document changed elsewhere (basis): the return refuses before any write; the draft is kept and Try again is left", async () => {
+    await draftWhileElsewhere(true);
+    await outsideWriteRead((route) => {
+      route.props = { ...(route.props ?? {}), heading: "Theirs" };
+      route.generation += 1;
+    });
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Theirs");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(heldState()).toEqual({
+      status: "Unsaved",
+      errors: [],
+      loadLatest: 0,
+      tryAgain: 1,
+    });
+  });
+
+  it("conflict: the return sends nothing; the draft is kept and the conflict's Load latest, keep mine is left", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.release(conflictAnswer());
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await flushFrames();
+    await leaveField();
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(heldState()).toMatchObject({ status: "Out of date", loadLatest: 1 });
+  });
+
+  // The write path refuses this one by itself too (an earlier unanswered
+  // save holds every later one), so it pins the outcome, not which check.
+  it("unconfirmed: an earlier write with no answer holds the return; nothing is sent, the draft is kept and Try again is left", async () => {
+    await openOn(headingReport);
+    await waitForPresentationReady();
+    const first = holdNextWrite();
+    await type("Default heading", "Value 1");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    holdDebounce();
+    typeInCard(0, "Value 2");
+    await moveFrameElsewhere(1);
+    await act(async () => {
+      first.lose();
+      await settleMicrotasks();
+    });
+    await releaseDebounce();
+    await flushFrames();
+    await leaveField();
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(heldState()).toMatchObject({ status: "Save failed", tryAgain: 1 });
+  });
+
+  it("the editor on another document and back: the return sends nothing, and leaving the field then saves the kept draft once", async () => {
+    await draftWhileElsewhere(true);
+    act(() => host.go?.({ routePath: "/", templateId: undefined }));
+    await flushFrames();
+    await pause();
+    act(() => host.go?.({ routePath: ROUTE_PATH, templateId: ROUTE_DOC_ID }));
+    await flushFrames();
+    await frameReturns();
+    expect(sent()).toHaveLength(1);
+    expect(heldState()).toMatchObject({ status: "Unsaved", tryAgain: 1 });
+
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    savedOnce("Value 2");
+  });
+
+  /**
+   * The frame withdraws every acknowledgement it gave, as the bridge does
+   * when it cannot tell which page it arrived at: the page left loses its
+   * acknowledgement too. Recovery is the return and a new acknowledgement.
+   */
+  const withdrawEveryAck = async () => {
+    const tokens = posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.presentationToken,
+      )
+      .map(
+        (message) => message.presentationToken as { operationId: string },
+      );
+    for (const token of tokens) {
+      await fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "superseded",
+      });
+    }
+    await flushFrames();
+  };
+
+  it("after the frame withdraws every acknowledgement while away, the left draft is kept and unsent; the return's new acknowledgement saves it once on its original basis", async () => {
+    await draftWhileElsewhere(true);
+    await withdrawEveryAck();
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(
+      screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    ).toBeGreaterThan(0);
+
+    await frameReturns(true);
+    savedOnce("Value 2");
+    await pause();
+    expect(sent()).toHaveLength(2);
+    expect(storedHeading()).toBe("Value 2");
+  });
+
+  const pickPage = async (routePath: string) => {
+    act(() => {
+      screen.getByTitle(`Preview ${routePath}`).click();
+    });
+    await flushFrames();
+  };
+  /** The page switch asks about the kept draft; the author keeps it and switches. */
+  const switchKeepingDraft = async () => {
+    const keep = await screen.findByRole("button", {
+      name: "Switch, keep draft unsaved",
+    });
+    act(() => keep.click());
+    await flushFrames();
+  };
+  /** The frame answers the editor's latest set-route and reports that page. */
+  const frameAnswersFrom = async (routePath: string, epoch: number) => {
+    act(() => {
+      answerLatestRouteRequest(FRAME);
+    });
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+
+  it("a re-pick while the frame has not answered the earlier pick sends nothing; picking another page and then this one, keeping the draft, brings the frame back with the draft kept and nothing written over", async () => {
+    host.guarded = true;
+    await draftWhileElsewhere(true);
+
+    // The author picks the page the editor shows: the frame is sent back.
+    const before = routeRequests().length;
+    await pickPage(ROUTE_PATH);
+    expect(routeRequests().slice(before)).toHaveLength(1);
+    expect(routeRequests().at(-1)).toMatchObject({
+      routePath: ROUTE_PATH,
+      navigationIntent: "author",
+    });
+    // Before answering, the frame moves on by itself; picking the shown page
+    // again sends nothing (the known limit).
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/unfollowed/other",
+      frameNavigationEpoch: 2,
+    });
+    await flushFrames();
+    await pickPage(ROUTE_PATH);
+    expect(routeRequests().slice(before)).toHaveLength(1);
+    expect(sent()).toHaveLength(1);
+
+    // The recovery: another page, then this one again.
+    await pickPage("/");
+    await switchKeepingDraft();
+    await waitFor(() => expect(host.search?.routePath ?? "/").toBe("/"));
+    expect(routeRequests().at(-1)?.routePath ?? "/").toBe("/");
+    await frameAnswersFrom("/", 3);
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    await pickPage(ROUTE_PATH);
+    await switchKeepingDraft();
+    await waitFor(() => expect(host.search?.routePath).toBe(ROUTE_PATH));
+    expect(routeRequests().at(-1)?.routePath).toBe(ROUTE_PATH);
+    await frameAnswersFrom(ROUTE_PATH, 4);
+    await waitForPresentationReady();
+    await pause();
+
+    // Back on the page, presented and acknowledged: nothing was written for
+    // the kept draft on the way, and the commit made before the switch is
+    // over (the editor was on another document).
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    expect(saveStatus()).toBe("Unsaved");
+
+    // The kept draft is what the canvas shows. (The Inspector field, opened
+    // again on the selection, shows the stored value: a display gap that is
+    // reported, not pinned here.)
+    const canvasHeading = () =>
+      (
+        posted
+          .filter(
+            (message) =>
+              message.type === "morph:storefront-preview-update-section-props" &&
+              message.sectionId === SLOT,
+          )
+          .at(-1)?.props as Record<string, unknown> | undefined
+      )?.heading;
+    await select(headingReport);
+    expect(canvasHeading()).toBe("Value 2");
+    expect(saveStatus()).toBe("Unsaved");
+
+    // Leaving the field again saves the kept draft once, on its basis.
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await pause();
+    savedOnce("Value 2");
+    expect(storedHeading()).toBe("Value 2");
+  });
+
+  /** The card's heading as the canvas was last told it. */
+  const canvasHeadingNow = () =>
+    (
+      posted
+        .filter(
+          (message) =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            message.sectionId === SLOT,
+        )
+        .at(-1)?.props as Record<string, unknown> | undefined
+    )?.heading;
+  /**
+   * Value 1 is saved and confirmed; Value 2 is left in the field while the
+   * frame is elsewhere, and held. The author switches to another page keeping
+   * the draft, comes back, and the frame presents the page again. Returns the
+   * number of writes sent before the heading is selected again.
+   */
+  async function backOnThePageWithTheDraft() {
+    host.guarded = true;
+    await draftWhileElsewhere(true);
+    expect(server.route).toMatchObject({
+      generation: 2,
+      props: { heading: "Value 1" },
+    });
+    expect(sent()[0]).toMatchObject({ props: { heading: "Value 1" } });
+
+    await pickPage("/");
+    await switchKeepingDraft();
+    await waitFor(() => expect(host.search?.routePath ?? "/").toBe("/"));
+    await frameAnswersFrom("/", 2);
+    await pause();
+    expect(sent()).toHaveLength(1);
+
+    await pickPage(ROUTE_PATH);
+    await switchKeepingDraft();
+    await waitFor(() => expect(host.search?.routePath).toBe(ROUTE_PATH));
+    await frameAnswersFrom(ROUTE_PATH, 3);
+    await waitForPresentationReady();
+    await pause();
+    expect(sent()).toHaveLength(1);
+    expect(storedHeading()).toBe("Value 1");
+    return sent().length;
+  }
+
+  it("back on the page and the heading selected again, the Inspector shows the kept draft; leaving the field without typing saves it once, on its original basis", async () => {
+    const before = await backOnThePageWithTheDraft();
+
+    await select(headingReport);
+    await pause();
+    expect(cardFields()[0]!.value).toBe("Value 2");
+    expect(canvasHeadingNow()).toBe("Value 2");
+    expect(storedHeading()).toBe("Value 1");
+    expect(saveStatus()).toBe("Unsaved");
+    expect(sent(), "selecting again sends nothing").toHaveLength(before);
+
+    // Into the field and out again, nothing typed.
+    await leaveField();
+    await waitFor(() => expect(sent()).toHaveLength(before + 1));
+    await pause();
+    expect(sent()).toHaveLength(before + 1);
+    expect(sent().at(-1)).toMatchObject({
+      templateId: ROUTE_DOC_ID,
+      expectedDraftGeneration: 2,
+      props: { heading: "Value 2" },
+    });
+    expect(storedHeading()).toBe("Value 2");
+  });
+});
+
+/**
+ * Off-page saves, step by step: an existing document whose page the frame
+ * never acknowledged, a route document already taken up under its real id
+ * when the frame left, and an existing document's acknowledged page after
+ * the frame withdraws every acknowledgement it gave.
+ *
+ * Each case reads at every step the draft in the field, the notice, the
+ * writes actually sent, and what each was sent on: the document generation
+ * (`expectedDraftGeneration`) and the field's source generation
+ * (`expectedSourceGeneration`). The basis an input was typed on is not on
+ * the request; a document changed elsewhere while away shows which basis is
+ * used: a write on the original basis is refused, one on a basis taken from
+ * the later acknowledgement would go through.
+ */
+describe("off-page saves, step by step", () => {
+  const ELSEWHERE = "/unfollowed/elsewhere";
+  const ACK = "morph:storefront-preview-section-presentation-ack";
+  const moveFrame = async (routePath: string, epoch: number) => {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+  /** While on, every applied acknowledgement from the frame is lost. */
+  let withholding = false;
+  const withholdAppliedAcks = () => {
+    withholding = true;
+    const original = window.dispatchEvent.bind(window);
+    vi.spyOn(window, "dispatchEvent").mockImplementation((event: Event) => {
+      if (
+        withholding &&
+        event instanceof MessageEvent &&
+        event.data?.type === ACK &&
+        event.data?.status === "applied"
+      ) {
+        return true;
+      }
+      return original(event);
+    });
+  };
+  const heading = () => cardFields()[0]!;
+  /** The author clicks into the heading and types there, not leaving it. */
+  const typeInHeading = (value: string) => {
+    fireEvent.focus(heading());
+    fireEvent.input(heading(), { target: { value } });
+  };
+  /** The author leaves the heading. */
+  const leaveHeading = async () => {
+    await act(async () => {
+      fireEvent.blur(heading());
+    });
+    await pause();
+  };
+  const notice = () => ({
+    otherPage: screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length,
+    syncing: screen.queryAllByText(/Preview syncing\./).length,
+    notSavedYet: screen.queryAllByText(PREVIEW_PRESENTATION_SYNCING_MESSAGE)
+      .length,
+  });
+  const writes = () =>
+    sent().map((write) => ({
+      templateId: write.templateId,
+      expectedDraftGeneration: write.expectedDraftGeneration,
+      expectedSourceGeneration: write.expectedSourceGeneration,
+      props: write.props,
+    }));
+  const latestSlotToken = () =>
+    posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.sectionId === SLOT &&
+          message.presentationToken,
+      )
+      .at(-1)?.presentationToken as { operationId: string } | undefined;
+  const ackAgain = async () => {
+    const token = latestSlotToken();
+    expect(token).toBeTruthy();
+    await fromPreview({
+      type: ACK,
+      operationId: token!.operationId,
+      token,
+      status: "applied",
+    });
+    await flushFrames();
+    await pause();
+  };
+
+  describe("an existing document whose page the frame never acknowledged", () => {
+    /**
+     * The route's document exists at generation 3. The frame comes up on
+     * the page, but no applied acknowledgement from it ever arrives; then it
+     * moves to a page the editor does not follow.
+     */
+    async function neverAcknowledgedThenAway() {
+      server.route = { generation: 3, props: { heading: "Stored" } };
+      withholdAppliedAcks();
+      await openOn(headingReport);
+      expect(host.search?.templateId).toBe(ROUTE_DOC_ID);
+      expect(heading().value).toBe("Stored");
+      await moveFrame(ELSEWHERE, 1);
+      await pause();
+      expect(sent()).toHaveLength(0);
+    }
+    /** The frame comes back to the page; its acknowledgements arrive now. */
+    async function returnAcknowledged() {
+      withholding = false;
+      await moveFrame(ROUTE_PATH, 2);
+      await waitForPresentationReady();
+      await pause();
+    }
+
+    it("input never left: nothing is sent on the return; the draft stays in the field; leaving it then saves it once on generation 3", async () => {
+      await neverAcknowledgedThenAway();
+      typeInHeading("Typed away");
+      await pause();
+      expect(sent()).toHaveLength(0);
+      expect(heading().value).toBe("Typed away");
+
+      await returnAcknowledged();
+      expect(sent()).toHaveLength(0);
+      expect(heading().value).toBe("Typed away");
+      expect(server.route).toMatchObject({
+        generation: 3,
+        props: { heading: "Stored" },
+      });
+
+      await leaveHeading();
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await pause();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+    });
+
+    it("input left while away: held, kept and said, nothing sent; the return's acknowledgement sends it once on generation 3; a repeated acknowledgement sends nothing more", async () => {
+      await neverAcknowledgedThenAway();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      expect(sent()).toHaveLength(0);
+      expect(heading().value).toBe("Typed away");
+      expect(notice().otherPage).toBeGreaterThan(0);
+
+      await returnAcknowledged();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+      expect(server.route).toMatchObject({
+        generation: 4,
+        props: { heading: "Typed away" },
+      });
+      expect(notice()).toMatchObject({ otherPage: 0 });
+
+      await ackAgain();
+      expect(sent()).toHaveLength(1);
+    });
+
+    it("input left while away, the document changed elsewhere and read meanwhile: the return's acknowledgement writes nothing over it; the draft is kept", async () => {
+      await neverAcknowledgedThenAway();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      await outsideWriteRead((route) => {
+        route.props = { ...(route.props ?? {}), heading: "Theirs" };
+        route.generation += 1;
+      });
+
+      await returnAcknowledged();
+      expect(sent()).toHaveLength(0);
+      expect(server.route).toMatchObject({
+        generation: 4,
+        props: { heading: "Theirs" },
+      });
+      expect(heading().value).toBe("Typed away");
+    });
+
+    it("input left while away, the document changed elsewhere and not read: the one write goes on generation 3 and is refused; nothing is written over it", async () => {
+      await neverAcknowledgedThenAway();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      server.route!.props = { heading: "Theirs" };
+      server.route!.generation = 4;
+
+      await returnAcknowledged();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+      expect(server.route).toMatchObject({
+        generation: 4,
+        props: { heading: "Theirs" },
+      });
+      expect(heading().value).toBe("Typed away");
+    });
+  });
+
+  describe("a route document taken up under its real id while the frame is away", () => {
+    /**
+     * The first write creates the document (generation 2 once stored) and
+     * its new-document presentation is acknowledged; the frame leaves before
+     * the editor's read of the document lands, and the page takes it up
+     * under its real id while the frame is away.
+     */
+    async function adoptedWhileAway() {
+      await openOn(headingReport);
+      await waitForPresentationReady();
+      holdReads();
+      try {
+        await type("Default heading", "First");
+        await pause();
+        expect(sent()).toHaveLength(1);
+        await waitForPresentationReady();
+        await moveFrame(ELSEWHERE, 1);
+        await releaseReads();
+        await expectAdopted();
+        await flushFrames();
+      } finally {
+        await releaseReads();
+      }
+      expect(server.route).toMatchObject({
+        generation: 2,
+        props: { heading: "First" },
+      });
+    }
+
+    it("input left while away: held, kept and said, nothing sent; the return's acknowledgement of the document sends it once on generation 2; a repeated acknowledgement sends nothing more", async () => {
+      await adoptedWhileAway();
+      typeInHeading("Second");
+      await leaveHeading();
+      expect(sent()).toHaveLength(1);
+      expect(heading().value).toBe("Second");
+      expect(notice().otherPage).toBeGreaterThan(0);
+
+      await moveFrame(ROUTE_PATH, 2);
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(writes()[1]).toEqual({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+        props: { heading: "Second" },
+      });
+      expect(server.route).toMatchObject({
+        generation: 3,
+        props: { heading: "Second" },
+      });
+      // What let it go: the document's own presentation, at generation 2.
+      expect(
+        posted.some((message) => {
+          const token = message.presentationToken as
+            | Record<string, unknown>
+            | undefined;
+          const basis = token?.documentBasis as
+            | Record<string, unknown>
+            | undefined;
+          return (
+            token?.templateId === ROUTE_DOC_ID &&
+            basis?.kind === "existing" &&
+            basis.draftGeneration === 2
+          );
+        }),
+      ).toBe(true);
+
+      await ackAgain();
+      expect(sent()).toHaveLength(2);
+    });
+
+    it("input never left: nothing is sent on the return; leaving it then saves it once on generation 2", async () => {
+      await adoptedWhileAway();
+      typeInHeading("Second");
+      await pause();
+      expect(sent()).toHaveLength(1);
+
+      await moveFrame(ROUTE_PATH, 2);
+      await waitForPresentationReady();
+      await pause();
+      expect(sent()).toHaveLength(1);
+      expect(heading().value).toBe("Second");
+
+      await leaveHeading();
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      await pause();
+      expect(writes()[1]).toEqual({
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+        props: { heading: "Second" },
+      });
+    });
+
+    it("input left while away, the document changed elsewhere and read meanwhile: the return writes nothing over it; the draft is kept", async () => {
+      await adoptedWhileAway();
+      typeInHeading("Second");
+      await leaveHeading();
+      await outsideWriteRead((route) => {
+        route.props = { ...(route.props ?? {}), heading: "Theirs" };
+        route.generation += 1;
+      });
+
+      await moveFrame(ROUTE_PATH, 2);
+      await waitForPresentationReady();
+      await pause();
+      expect(sent()).toHaveLength(1);
+      expect(server.route).toMatchObject({
+        generation: 3,
+        props: { heading: "Theirs" },
+      });
+      expect(heading().value).toBe("Second");
+    });
+  });
+
+  describe("an existing document acknowledged before the frame left, after the frame withdraws every acknowledgement", () => {
+    async function acknowledgedThenAway() {
+      server.route = { generation: 3, props: { heading: "Stored" } };
+      await openOn(headingReport);
+      await waitForPresentationReady();
+      expect(host.search?.templateId).toBe(ROUTE_DOC_ID);
+      await moveFrame(ELSEWHERE, 1);
+    }
+    const withdrawEveryAck = async () => {
+      const tokens = posted
+        .filter(
+          (message) =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            message.presentationToken,
+        )
+        .map(
+          (message) => message.presentationToken as { operationId: string },
+        );
+      for (const token of tokens) {
+        await fromPreview({
+          type: ACK,
+          operationId: token.operationId,
+          token,
+          status: "not-applied",
+          reason: "superseded",
+        });
+      }
+      await flushFrames();
+    };
+
+    it("control: with the acknowledgement standing, input left while away saves at once, on generation 3", async () => {
+      await acknowledgedThenAway();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+    });
+
+    it("withdrawn: input left while away is held, kept and said, nothing sent; the return's new acknowledgement saves it once on generation 3", async () => {
+      await acknowledgedThenAway();
+      await withdrawEveryAck();
+      typeInHeading("Typed away");
+      await leaveHeading();
+      expect(sent()).toHaveLength(0);
+      expect(heading().value).toBe("Typed away");
+      expect(notice().otherPage).toBeGreaterThan(0);
+
+      await moveFrame(ROUTE_PATH, 2);
+      await waitFor(() => expect(sent()).toHaveLength(1));
+      await pause();
+      expect(writes()).toEqual([
+        {
+          templateId: ROUTE_DOC_ID,
+          expectedDraftGeneration: 3,
+          expectedSourceGeneration: 1,
+          props: { heading: "Typed away" },
+        },
+      ]);
+      expect(server.route).toMatchObject({
+        generation: 4,
+        props: { heading: "Typed away" },
+      });
+      await ackAgain();
+      expect(sent()).toHaveLength(1);
+    });
   });
 });

@@ -411,6 +411,14 @@ type EditorStyleInspectorProps = {
    */
   contentBasis?: () => number | undefined;
   /**
+   * What the editor still holds unsaved for this section of the document
+   * shown, read when the panel starts showing it; see
+   * `useInspectorContentProps`. Display only.
+   */
+  heldContentProps?: () => Record<string, unknown> | undefined;
+  /** Called when a focused content input blurs. */
+  onContentBlur?: () => void;
+  /**
    * This section's stored props in the newest copy the editor has accepted
    * of its document, read when the author changes a content field. A write
    * answered but not yet rendered is in it, so an input made after that
@@ -913,6 +921,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onListResetApplied,
   onDiscardListConflict,
   contentBasis,
+  heldContentProps,
+  onContentBlur,
   acceptedContentProps,
   inlineTextCommit = null,
   onJumpToCode,
@@ -965,6 +975,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     resourceKey,
     sectionId: section.id,
     sectionProps: section.props,
+    heldProps: heldContentProps,
   });
   const acceptedContentPropsRef = useRef(acceptedContentProps);
   acceptedContentPropsRef.current = acceptedContentProps;
@@ -1099,6 +1110,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const handleContentBlur = (event: React.FocusEvent<HTMLElement>) => {
     if (contentFocusRef.current?.element !== event.target) return;
     contentFocusRef.current = null;
+    onContentBlur?.();
     // After focus settles: moving into another input keeps updates held.
     setTimeout(syncShownEpochs, 0);
   };

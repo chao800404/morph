@@ -204,41 +204,54 @@ function stepScript(block, name) {
   return { step, script: run[1].replace(/^ {10}/gm, "") };
 }
 
-test("only the native-Docker container job gives new interfaces no IPv6 link-local address, before any container exists", () => {
+const CONTAINER_JOBS = [
+  {
+    key: "editor-e2e-container",
+    runStepName: "- name: Run M1 container lifecycle acceptance",
+  },
+  {
+    key: "editor-e2e-container-presentation-ack",
+    runStepName: "- name: Run presentation-ack container acceptance",
+  },
+];
+
+test("only the native-Docker container jobs give new interfaces no IPv6 link-local address, before any container exists", () => {
+  const containerKeys = new Set(CONTAINER_JOBS.map((job) => job.key));
   for (const key of jobKeys(workflow)) {
     const block = withoutComments(jobBlock(workflow, key));
-    if (key === "editor-e2e-container") continue;
+    if (containerKeys.has(key)) continue;
     assert.doesNotMatch(block, /addr_gen_mode|disable_ipv6/, key);
   }
-  const block = withoutComments(jobBlock(workflow, "editor-e2e-container"));
-  const { step, script } = stepScript(block, LINK_LOCAL_STEP);
-  // New interfaces only: never `all`, which would change eth0, lo and docker0.
-  assert.match(
-    script,
-    /^sudo sysctl -w net\.ipv6\.conf\.default\.addr_gen_mode=1$/m,
-  );
-  assert.doesNotMatch(step, /conf\.all\.|disable_ipv6/);
-  // A setting that did not take stops the job.
-  assert.match(
-    script,
-    /sysctl -n net\.ipv6\.conf\.default\.addr_gen_mode\)" != 1/,
-  );
-  assert.match(script, /exit 1/);
-  assert.doesNotMatch(step, /continue-on-error|\|\| true/);
-  const at = (name) => block.indexOf(name);
-  assert.ok(
-    at(LINK_LOCAL_STEP) < at("- name: Record container diagnostics") &&
-      at(LINK_LOCAL_STEP) < at("- name: Run M1 container lifecycle acceptance"),
-    "set before the run creates any container",
-  );
-  const check = stepScript(block, LINK_LOCAL_CHECK);
-  assert.match(check.step, /^ {8}if: always\(\)$/m);
-  assert.ok(
-    at("- name: Run M1 container lifecycle acceptance") <
-      at(LINK_LOCAL_CHECK) &&
-      at(LINK_LOCAL_CHECK) < at("- name: Upload results and failure traces"),
-    "checked after the run, and kept in the uploaded results",
-  );
+  for (const { key, runStepName } of CONTAINER_JOBS) {
+    const block = withoutComments(jobBlock(workflow, key));
+    const { step, script } = stepScript(block, LINK_LOCAL_STEP);
+    // New interfaces only: never `all`, which would change eth0, lo and docker0.
+    assert.match(
+      script,
+      /^sudo sysctl -w net\.ipv6\.conf\.default\.addr_gen_mode=1$/m,
+    );
+    assert.doesNotMatch(step, /conf\.all\.|disable_ipv6/);
+    // A setting that did not take stops the job.
+    assert.match(
+      script,
+      /sysctl -n net\.ipv6\.conf\.default\.addr_gen_mode\)" != 1/,
+    );
+    assert.match(script, /exit 1/);
+    assert.doesNotMatch(step, /continue-on-error|\|\| true/);
+    const at = (name) => block.indexOf(name);
+    assert.ok(
+      at(LINK_LOCAL_STEP) < at("- name: Record container diagnostics") &&
+        at(LINK_LOCAL_STEP) < at(runStepName),
+      `${key}: set before the run creates any container`,
+    );
+    const check = stepScript(block, LINK_LOCAL_CHECK);
+    assert.match(check.step, /^ {8}if: always\(\)$/m);
+    assert.ok(
+      at(runStepName) < at(LINK_LOCAL_CHECK) &&
+        at(LINK_LOCAL_CHECK) < at("- name: Upload results and failure traces"),
+      `${key}: checked after the run, and kept in the uploaded results`,
+    );
+  }
 });
 
 /**

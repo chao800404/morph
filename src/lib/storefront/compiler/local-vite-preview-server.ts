@@ -12,6 +12,7 @@ import {
   formatPreviewServedInstance,
   type PreviewServedInstance,
 } from "../editor/preview-protocol";
+import type { PreviewServing } from "../editor/preview-serving";
 import {
   isLoopbackPreviewHostname,
   LOCAL_PREVIEW_HOST,
@@ -179,10 +180,17 @@ type RunningPreview = Readonly<{
    * every response it gives (`Server-Timing: morph-instance`) so an open page
    * can say which one it was served by. Separate from `instance`, which is
    * the content snapshot's stamp and stays null where nothing confirms
-   * content. Null where this process does not serve the page itself (a
-   * Start preview's child process).
+   * content. A Start child names the one this process handed it, and is
+   * registered only once it confirms it. Null where nothing names one (a
+   * framework's own dev server) or a child did not confirm it.
    */
   servedInstance: PreviewServedInstance | null;
+  /**
+   * What a start reports serving: the bridge its plan laid out, bound to
+   * `servedInstance`. Kept with the server, so a reuse reports the record
+   * rather than a new reading. Null where the plan's bridge is unknown.
+   */
+  serving: PreviewServing | null;
 }>;
 
 
@@ -612,6 +620,8 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             hoistedContentFields: prepared.hoistedContentFields,
             warnings: prepared.previewWarnings,
             logs,
+            // The same files, so the same bridge, on the same server.
+            serving: existing.serving,
           };
         }
         if (existing) {
@@ -724,13 +734,37 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             // Worker names this server and no earlier one on the probe.
             const instance = randomUUID();
             await stampPreviewInstance(root, instance);
-            const child = await this.startChildServer(root, addLog, devServer);
+            // A Start child names the instance this process mints for it on
+            // every response, as the in-process server does, and confirms it
+            // back. A framework's own dev server is handed none.
+            const minted = devServer ? null : this.nextServedInstance(input.previewId);
+            const servedTiming = minted
+              ? `${PREVIEW_SERVED_INSTANCE_TIMING};desc="${formatPreviewServedInstance(minted)}"`
+              : null;
+            const child = await this.startChildServer(
+              root,
+              addLog,
+              devServer,
+              servedTiming,
+            );
+            // Registered only when the child confirmed exactly what it was
+            // handed; anything else leaves it unknown, and the preview serves.
+            const servedInstance =
+              minted && child.servedTiming === servedTiming ? minted : null;
+            if (minted && !servedInstance) {
+              addLog(
+                "Start child did not confirm its served instance; the instance serving this preview is unknown.",
+              );
+            }
             const origin = `http://${LOCAL_PREVIEW_HOST}:${child.port}`;
             const url = withPreviewServerBase(
               origin,
               framework,
               input.previewRuntime,
             );
+            const childServing: PreviewServing | null = prepared.previewBridge
+              ? { bridge: prepared.previewBridge, instance: servedInstance }
+              : null;
             this.running.set(input.previewId, {
               root,
               workspaceFingerprint: prepared.workspaceFingerprint,
@@ -740,8 +774,8 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               server: child.handle,
               confirmsContent: true,
               instance,
-              // Served by the child process, which names nothing.
-              servedInstance: null,
+              servedInstance,
+              serving: childServing,
             });
             return {
               ok: true,
@@ -765,6 +799,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               hoistedContentFields: prepared.hoistedContentFields,
               warnings: prepared.previewWarnings,
               logs,
+              serving: childServing,
             };
           } catch (error) {
             return {
@@ -777,11 +812,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           }
         }
         let server: ViteDevServer | null = null;
-        const servedInstance: PreviewServedInstance = {
-          session: this.servedSession,
-          serial: (this.servedSerials.get(input.previewId) ?? 0) + 1,
-        };
-        this.servedSerials.set(input.previewId, servedInstance.serial);
+        const servedInstance = this.nextServedInstance(input.previewId);
         const servedTiming = `${PREVIEW_SERVED_INSTANCE_TIMING};desc="${formatPreviewServedInstance(servedInstance)}"`;
         try {
           server = await createServer({
@@ -862,6 +893,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             framework,
             input.previewRuntime,
           );
+          // Bound to the instance this server names on every response.
+          const serving: PreviewServing | null = prepared.previewBridge
+            ? { bridge: prepared.previewBridge, instance: servedInstance }
+            : null;
           this.running.set(input.previewId, {
             root,
             workspaceFingerprint: prepared.workspaceFingerprint,
@@ -876,6 +911,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             confirmsContent: false,
             instance: null,
             servedInstance,
+            serving,
           });
 
           return {
@@ -903,6 +939,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             hoistedContentFields: prepared.hoistedContentFields,
             warnings: prepared.previewWarnings,
             logs,
+            serving,
           };
         } catch (error) {
           if (server) await this.closeServer(server).catch(() => {});
@@ -950,6 +987,20 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    */
   servedInstanceFor(previewId: string): PreviewServedInstance | null {
     return this.running.get(previewId)?.servedInstance ?? null;
+  }
+
+  /**
+   * The next instance of `previewId` in this session. Every server this
+   * process starts for a preview takes one, in-process or in a child, so a
+   * serial is never reused for a different server.
+   */
+  private nextServedInstance(previewId: string): PreviewServedInstance {
+    const served: PreviewServedInstance = {
+      session: this.servedSession,
+      serial: (this.servedSerials.get(previewId) ?? 0) + 1,
+    };
+    this.servedSerials.set(previewId, served.serial);
+    return served;
   }
 
   /**
@@ -1289,12 +1340,22 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    * Forks one dev server — a Start preview's Vite, or a framework's own dev
    * server — and waits until it listens. Its output joins this start's log;
    * it exits when this process does.
+   *
+   * A Start child is handed `servedTiming`, the `Server-Timing` value naming
+   * the instance this process minted for it, and answers with what it put
+   * on its responses (`servedTiming` on its ready; null for none). The
+   * caller compares the two.
    */
   private startChildServer(
     root: string,
     addLog: (line: string) => void,
     devServer?: ThemePreviewDevServer,
-  ): Promise<{ port: number; handle: PreviewServerHandle }> {
+    servedTiming: string | null = null,
+  ): Promise<{
+    port: number;
+    handle: PreviewServerHandle;
+    servedTiming: unknown;
+  }> {
     return new Promise((resolve, reject) => {
       const child = fork(
         devServer ? DEV_SERVER_PREVIEW_CHILD : START_PREVIEW_CHILD,
@@ -1303,6 +1364,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           LOCAL_PREVIEW_HOST,
           String(this.port),
           ...(devServer ? [devServer.configPath] : []),
+          ...(!devServer && servedTiming ? [servedTiming] : []),
         ],
         {
           cwd: root,
@@ -1341,13 +1403,19 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           reject(new Error("PREVIEW_SERVER_EXITED: Vite exited before it was ready to serve."));
         }
       });
-      child.on("message", (message: { type?: string; port?: number; message?: string }) => {
+      child.on("message", (message: {
+        type?: string;
+        port?: number;
+        message?: string;
+        servedTiming?: unknown;
+      }) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (message?.type === "ready" && typeof message.port === "number") {
           resolve({
             port: message.port,
+            servedTiming: message.servedTiming ?? null,
             handle: {
               listening: () => alive,
               close: () =>

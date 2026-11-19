@@ -426,3 +426,13 @@ describe("previewOutboundRefusal", () => {
     expect(previewOutboundRefusal(url)).toBeNull();
   });
 });
+
+describe("themePreviewStartClientSource early presentation tokens", () => {
+  it("queues early presentationToken updates before hydration and hands them off to the bridge", () => {
+    const source = themePreviewStartClientSource();
+    expect(source).toContain("presentationToken");
+    expect(source).toContain("__morphEarlyPresentationQueue");
+    expect(source).toContain("__morphFlushEarlyPresentation");
+    expect(source).toContain("superseded");
+  });
+});

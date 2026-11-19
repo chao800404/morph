@@ -5,8 +5,10 @@ import type { PreviewCapability } from "./preview-protocol";
  *
  * `PREVIEW_CAPABILITIES` is the set of known tokens, not a grant: a page
  * advertises only what its own code handles. This page reads
- * `selection-field-section` only; the Theme bridge declares its own list.
+ * `selection-field-section` and `section-presentation-ack-v1`; the Theme
+ * bridge declares its own list.
  */
 export const CLIENT_ONLY_PREVIEW_CAPABILITIES: readonly PreviewCapability[] = [
   "selection-field-section",
+  "section-presentation-ack-v1",
 ];

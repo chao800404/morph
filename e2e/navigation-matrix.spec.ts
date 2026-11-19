@@ -235,6 +235,37 @@ async function assertRuntimeIdentity(page: Page, frame: FrameLocator) {
   return { toolbarLabel, isStartRuntime: EXPECTED_RUNTIME === "start" };
 }
 
+/** The route the editor is on, as its own address names it. */
+function editorRoutePath(page: Page) {
+  return new URL(page.url()).searchParams.get("routePath");
+}
+
+/**
+ * The route the frame's router has committed: the page's own address under
+ * Full Start (browser history), the router's memory history under Client-only.
+ */
+async function frameRoutePath(frame: FrameLocator) {
+  return frame.locator("body").evaluate((_body, runtime) => {
+    if (runtime === "start") return window.location.pathname;
+    return (
+      (
+        window as unknown as {
+          __morphPreviewRouter?: { state?: { location?: { pathname?: string } } };
+        }
+      ).__morphPreviewRouter?.state?.location?.pathname ?? null
+    );
+  }, EXPECTED_RUNTIME);
+}
+
+/** Which of the two pages the frame renders once it has rendered one. */
+async function renderedPage(frame: FrameLocator) {
+  const title = frame.locator(
+    '[data-e2e="nav-matrix-home-title"], [data-e2e="nav-matrix-detail-title"]',
+  );
+  await expect(title.first()).toBeVisible({ timeout: 45_000 });
+  return title.first().getAttribute("data-e2e");
+}
+
 test.describe("Navigation Matrix: Preview and Storefront", () => {
   test.describe.configure({ mode: "serial" });
 
@@ -430,23 +461,58 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
       await expect(detailTitle).toBeVisible({ timeout: 30_000 });
       await expect(detailTitle).toHaveText("Nav Matrix Detail");
 
-      // Reload only the inner iframe.
-      // Expected behavior strictly governed by EXPECTED_RUNTIME:
-      //  - Full Start: Start uses browser history in frame, preserving DETAIL_ROUTE.
-      //  - Client-only: Memory history in frame resets to editor seed HOME_ROUTE.
-      //  - Both: Draft marker survives and top-level editor remains intact.
-      await frame.locator("body").evaluate(() => location.reload());
+      // The link was followed inside the frame; the editor follows the route
+      // the frame committed, so its own address now names the detail route.
+      await expect
+        .poll(() => editorRoutePath(page), { timeout: 30_000 })
+        .toBe(DETAIL_ROUTE);
+      console.log(
+        `[nav-matrix case 4] before iframe reload: runtime=${EXPECTED_RUNTIME} editorRoute=${editorRoutePath(page)} frameRoute=${await frameRoutePath(frame)}`,
+      );
+
+      // Reload only the inner iframe. The operation re-renders the page the
+      // editor and the frame are on; the editor itself is not navigated.
+      //  - Editor route: DETAIL_ROUTE (followed above); the reload leaves it.
+      //  - Frame route after the reload, per runtime:
+      //    - Full Start: the frame's browser history keeps DETAIL_ROUTE in the
+      //      frame's own address.
+      //    - Client-only: the new document's memory history boots on "/", and
+      //      the editor's set-route for the route it is on (DETAIL_ROUTE, since
+      //      it followed the frame) takes the frame there. It used to land on
+      //      HOME_ROUTE only because the editor never heard the frame move.
+      //  - Both: the draft marker survives and the top-level editor stays.
+      // The old document is marked, so nothing below can read it.
+      await frame.locator("body").evaluate(() => {
+        (window as unknown as { __navMatrixBeforeReload?: boolean }).__navMatrixBeforeReload = true;
+        location.reload();
+      });
 
       const frameAfterReload = previewFrame(page);
-      if (EXPECTED_RUNTIME === "start") {
-        const detailAfterReload = frameAfterReload.locator('[data-e2e="nav-matrix-detail-title"]');
-        await expect(detailAfterReload).toBeVisible({ timeout: 45_000 });
-        await expect(detailAfterReload).toHaveText("Nav Matrix Detail");
-      } else {
-        const homeAfterReload = frameAfterReload.locator('[data-e2e="nav-matrix-home-title"]');
-        await expect(homeAfterReload).toBeVisible({ timeout: 45_000 });
-        await expect(homeAfterReload).toHaveText("Nav Matrix Home");
-      }
+      await expect
+        .poll(
+          () =>
+            frameAfterReload
+              .locator("body")
+              .evaluate(
+                () =>
+                  (window as unknown as { __navMatrixBeforeReload?: boolean })
+                    .__navMatrixBeforeReload === true,
+              )
+              .catch(() => true),
+          { timeout: 45_000, message: "the frame should hold a new document" },
+        )
+        .toBe(false);
+      console.log(
+        `[nav-matrix case 4] after iframe reload: runtime=${EXPECTED_RUNTIME} rendered=${await renderedPage(frameAfterReload)} editorRoute=${editorRoutePath(page)} frameRoute=${await frameRoutePath(frameAfterReload)}`,
+      );
+      const detailAfterReload = frameAfterReload.locator('[data-e2e="nav-matrix-detail-title"]');
+      await expect(detailAfterReload).toBeVisible({ timeout: 45_000 });
+      await expect(detailAfterReload).toHaveText("Nav Matrix Detail");
+      await expect(frameAfterReload.locator('[data-e2e="nav-matrix-home-title"]')).toHaveCount(0);
+      await expect
+        .poll(() => frameRoutePath(frameAfterReload), { timeout: 30_000 })
+        .toBe(DETAIL_ROUTE);
+      expect(editorRoutePath(page), "the iframe reload does not move the editor").toBe(DETAIL_ROUTE);
       await expect(frameAfterReload.locator('[data-e2e="nav-matrix-draft-marker"]')).toHaveText(DRAFT_MARKER_TEXT);
 
       // Top-level editor remains intact
@@ -465,26 +531,43 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
       await expect(detailTitle).toBeVisible({ timeout: 30_000 });
       await expect(detailTitle).toHaveText("Nav Matrix Detail");
 
-      // Reload the top-level editor window.
-      // Expected behavior strictly governed by EXPECTED_RUNTIME:
-      //  - Full Start: Frame navigation synced routePath=DETAIL_ROUTE to editor URL, restoring DETAIL_ROUTE.
-      //  - Client-only: Editor URL remained at seed HOME_ROUTE, restoring HOME_ROUTE.
-      //  - Both: Top editor reloads cleanly, draft state is preserved intact, and canvas resets.
+      // The link was followed inside the frame; the editor follows the route
+      // the frame committed, so its own address now names the detail route.
+      await expect
+        .poll(() => editorRoutePath(page), { timeout: 30_000 })
+        .toBe(DETAIL_ROUTE);
+      console.log(
+        `[nav-matrix case 5] before editor reload: runtime=${EXPECTED_RUNTIME} editorRoute=${editorRoutePath(page)} frameRoute=${await frameRoutePath(frame)}`,
+      );
+
+      // Reload the top-level editor window. The operation reopens the editor
+      // at the address it holds, which names the route it is on.
+      //  - Editor route: DETAIL_ROUTE, from its own address. In both runtimes
+      //    the frame's committed route was synced into that address above;
+      //    Client-only used to keep HOME_ROUTE there only because the editor
+      //    never heard the frame move.
+      //  - Frame route after the reload: the editor opens the new frame on
+      //    its route, DETAIL_ROUTE (Full Start in the frame's own address,
+      //    Client-only in its memory history after the editor's set-route).
+      //  - Both: the editor reloads cleanly, the draft state is intact, and
+      //    the canvas resets.
       await page.reload({ waitUntil: "domcontentloaded" });
       await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({ timeout: 45_000 });
       await exitSectionSelectionMode(page);
       await resetCanvasView(page);
+      expect(editorRoutePath(page), "the editor reopens on the route its address names").toBe(DETAIL_ROUTE);
 
       const frameAfterReload = previewFrame(page);
-      if (EXPECTED_RUNTIME === "start") {
-        const detailAfterReload = frameAfterReload.locator('[data-e2e="nav-matrix-detail-title"]');
-        await expect(detailAfterReload).toBeVisible({ timeout: 45_000 });
-        await expect(detailAfterReload).toHaveText("Nav Matrix Detail");
-      } else {
-        const homeAfterReload = frameAfterReload.locator('[data-e2e="nav-matrix-home-title"]');
-        await expect(homeAfterReload).toBeVisible({ timeout: 45_000 });
-        await expect(homeAfterReload).toHaveText("Nav Matrix Home");
-      }
+      console.log(
+        `[nav-matrix case 5] after editor reload: runtime=${EXPECTED_RUNTIME} rendered=${await renderedPage(frameAfterReload)} editorRoute=${editorRoutePath(page)} frameRoute=${await frameRoutePath(frameAfterReload)}`,
+      );
+      const detailAfterReload = frameAfterReload.locator('[data-e2e="nav-matrix-detail-title"]');
+      await expect(detailAfterReload).toBeVisible({ timeout: 45_000 });
+      await expect(detailAfterReload).toHaveText("Nav Matrix Detail");
+      await expect(frameAfterReload.locator('[data-e2e="nav-matrix-home-title"]')).toHaveCount(0);
+      await expect
+        .poll(() => frameRoutePath(frameAfterReload), { timeout: 30_000 })
+        .toBe(DETAIL_ROUTE);
       await expect(frameAfterReload.locator('[data-e2e="nav-matrix-draft-marker"]')).toHaveText(DRAFT_MARKER_TEXT);
     });
 

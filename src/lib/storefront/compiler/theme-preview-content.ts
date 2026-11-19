@@ -329,25 +329,61 @@ export function previewContentForPath(pathname) {
 }
 
 export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
+  function previewValuesEqual(left, right) {
+    if (Object.is(left, right)) return true;
+    if (left === null || right === null || typeof left !== "object" || typeof right !== "object") {
+      return false;
+    }
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+        return false;
+      }
+      for (let i = 0; i < left.length; i += 1) {
+        if (!previewValuesEqual(left[i], right[i])) return false;
+      }
+      return true;
+    }
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    for (const key of leftKeys) {
+      if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+      if (!previewValuesEqual(left[key], right[key])) return false;
+    }
+    return true;
+  }
   const content = currentPreviewContent();
   if (enabled === false) {
+    const hadSlot = Object.prototype.hasOwnProperty.call(content.slots, sectionId);
+    const wasHidden = content.hiddenSlots.includes(sectionId);
     delete content.slots[sectionId];
-    if (!content.hiddenSlots.includes(sectionId)) content.hiddenSlots.push(sectionId);
-    return;
+    if (!wasHidden) content.hiddenSlots.push(sectionId);
+    return hadSlot || !wasHidden;
   }
+  let changed = false;
   if (enabled === true) {
-    content.hiddenSlots = content.hiddenSlots.filter((id) => id !== sectionId);
+    if (content.hiddenSlots.includes(sectionId)) {
+      content.hiddenSlots = content.hiddenSlots.filter((id) => id !== sectionId);
+      changed = true;
+    }
   } else if (content.hiddenSlots.includes(sectionId)) {
     // A hidden slot is written only by a show: a late edit, a signed repost
     // or a reset for it must not put its values back on this page.
-    return;
+    return false;
   }
-  if (props) content.slots[sectionId] = { ...(content.slots[sectionId] || {}), ...props };
-  if (Array.isArray(resetKeys) && content.slots[sectionId]) {
-    const next = { ...content.slots[sectionId] };
+  const previousSlot = content.slots[sectionId];
+  let nextSlot = previousSlot;
+  if (props) nextSlot = { ...(nextSlot || {}), ...props };
+  if (Array.isArray(resetKeys) && nextSlot) {
+    const next = { ...nextSlot };
     for (const key of resetKeys) delete next[key];
-    content.slots[sectionId] = next;
+    nextSlot = next;
   }
+  if (nextSlot !== previousSlot && !previewValuesEqual(previousSlot, nextSlot)) {
+    content.slots[sectionId] = nextSlot;
+    changed = true;
+  }
+  return changed;
 }
 
 // Below \`updatePreviewContent\`: the dev-server plugin copies the resolver

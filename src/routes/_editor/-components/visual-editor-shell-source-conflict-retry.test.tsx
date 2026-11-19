@@ -18,6 +18,8 @@ import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
   answerFramePings,
   frameEnvelope,
+  LIVE_FRAME_CAPABILITIES,
+  sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { listStorefrontThemeFiles } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -62,6 +64,7 @@ import { VisualEditorShell } from "./visual-editor-shell";
 const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
+const FRAME = { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION } as const;
 const SESSION = "aaaaaaaa-1111-4111-8111-111111111111";
 
 const updateSectionProps = vi.hoisted(() => vi.fn());
@@ -405,8 +408,7 @@ async function settled() {
     </QueryClientProvider>,
   );
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
-  fromPreview({
-    type: "morph:storefront-preview-ready",
+  sendFrameReady(FRAME, LIVE_FRAME_CAPABILITIES, {
     servedInstance: {
       kind: "known",
       instance: { session: SESSION, serial: 1 },

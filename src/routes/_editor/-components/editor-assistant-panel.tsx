@@ -49,6 +49,10 @@ type EditorAssistantPanelProps = {
    * makes it read the section afresh instead of sending that copy again.
    */
   contentResetEpoch?: number;
+  /** Current page-wide iframe apply barrier for Document writes. */
+  documentPresentationReady?: boolean;
+  /** Said instead of "syncing" when the preview cannot confirm presentation. */
+  documentPresentationPausedReason?: string | null;
   /**
    * Which document the Inspector's inputs hold content of, for keying them:
    * the active template's id unless the shell says the page's document is
@@ -133,8 +137,14 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /** Called when a focused content input blurs for a document section. */
+  onSectionContentBlur?: (sectionId: string) => void;
   /** See the Inspector's `contentBasis`; asked by the section's id. */
   contentBasisForSection?: (sectionId: string) => number | undefined;
+  /** See the Inspector's `heldContentProps`; asked by the section's id. */
+  heldContentForSection?: (
+    sectionId: string,
+  ) => Record<string, unknown> | undefined;
   /** See the Inspector's `acceptedContentProps`; asked by the section's id. */
   acceptedPropsForSection?: (sectionId: string) => Record<string, unknown>;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
@@ -144,6 +154,7 @@ type EditorAssistantPanelProps = {
   /** Replaces one Inspector list with the exact value read from the server. */
   listReset?: InspectorListReset | null;
   onListResetApplied?: (epoch: number) => void;
+  documentPresentationEstablished?: boolean;
   onDiscardListConflict?: (sectionId: string, fieldPath: string) => void;
   onCodeComponentPropsChange?: (
     filePath: string,
@@ -271,7 +282,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onSectionPropsChange,
+  onSectionContentBlur,
   contentBasisForSection,
+  heldContentForSection,
   acceptedPropsForSection,
   inlineTextCommit,
   listWriteStatuses,
@@ -282,6 +295,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onJumpToCode,
   onTabChange,
   contentResetEpoch = 0,
+  documentPresentationReady = true,
+  documentPresentationEstablished,
+  documentPresentationPausedReason = null,
   inspectorDocumentKey,
   selectionSourceCurrent = false,
 }: EditorAssistantPanelProps) {
@@ -409,16 +425,26 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       contentStore,
       onCodeComponentPropsChange,
       onSectionPropsChange,
+  onSectionContentBlur,
       sourceDefaultRefusal,
       storedSection,
     ],
   );
   const inspectorContentBasis = useCallback(
     () =>
-      documentSection
-        ? contentBasisForSection?.(documentSection.id)
+      storedSection
+        ? contentBasisForSection?.(storedSection.id)
         : undefined,
-    [contentBasisForSection, documentSection],
+    [contentBasisForSection, storedSection],
+  );
+  // Only a Document section has held input to show; a stand-in shows none.
+  const storedSectionId = storedSection?.id;
+  const inspectorHeldContent = useMemo(
+    () =>
+      contentStore === "document" && storedSectionId && heldContentForSection
+        ? () => heldContentForSection(storedSectionId)
+        : undefined,
+    [contentStore, heldContentForSection, storedSectionId],
   );
   // The section the Inspector's content writes go to (see
   // `handleInspectorPropsChange`), and only while they go to its Document.
@@ -580,6 +606,15 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           hidden={!isInspectorTab}
           aria-hidden={!isInspectorTab}
         >
+          {tab === "content" && !documentPresentationReady ? (
+            <p
+              role="status"
+              className="mx-3 mt-3 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+            >
+              {documentPresentationPausedReason ??
+                "Preview syncing. Content writes are paused until every section confirms its current preview was applied."}
+            </p>
+          ) : null}
           {inspectorSection && !(contentRefused && tab === "content") ? (
             <InspectorCodeDefaultContext.Provider
               value={
@@ -594,6 +629,11 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 resourceKey={`${context.storefront.id}:${context.theme.id}:${inspectorDocumentKey ?? activeTemplate?.id ?? ""}:${contentStore}:${contentResetEpoch}`}
                 rowIdTemplateId={activeTemplate?.id}
                 view={tab === "content" ? "content" : "styles"}
+                disabled={
+                  tab === "content" &&
+                  contentStore === "document" &&
+                  !(documentPresentationEstablished ?? documentPresentationReady)
+                }
                 section={inspectorSection}
                 contentStore={contentStore}
                 sourceDefaultRefusal={
@@ -615,11 +655,17 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 onRepairThemeLinkBinding={onRepairThemeLinkBinding}
                 onSwitchThemeLinkElement={onSwitchThemeLinkElement}
                 onPropsChange={handleInspectorPropsChange}
+                onContentBlur={
+                  contentStore === "document" && storedSection
+                    ? () => onSectionContentBlur?.(storedSection.id)
+                    : undefined
+                }
                 listWriteStatuses={listWriteStatuses}
                 listReset={listReset}
                 onListResetApplied={onListResetApplied}
                 onDiscardListConflict={onDiscardListConflict}
                 contentBasis={inspectorContentBasis}
+                heldContentProps={inspectorHeldContent}
                 acceptedContentProps={inspectorAcceptedContentProps}
                 inlineTextCommit={inlineTextCommit}
                 onJumpToCode={onJumpToCode}

@@ -74,6 +74,7 @@ export const EDITOR_SHARDS = [
     // are navigation-matrix-public.spec.ts below. Shard 5 was the shortest
     // shard job of main run 41267736430 (11m27s).
     "navigation-matrix.spec.ts",
+    "presentation-ack-refresh.spec.ts",
     // The files below measured zero seconds: every test in them is gated on
     // an environment the shards do not have (the container transport,
     // MORPH_ASTRO_THEMES=1 or the full Start preview), so they skip on every

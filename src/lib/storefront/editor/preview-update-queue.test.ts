@@ -55,7 +55,7 @@ function emittedUpdateSource(): string {
  * of the function cannot drift from what Morph emits.
  */
 const HIDDEN_BRANCH =
-  /  \} else if \(content\.hiddenSlots\.includes\(sectionId\)\) \{\n(?:    \/\/[^\n]*\n)*    return;\n  \}\n/;
+  /  \} else if \(content\.hiddenSlots\.includes\(sectionId\)\) \{\n(?:    \/\/[^\n]*\n)*    return(?: false)?;\n  \}\n/;
 function pre257UpdateSource(): string {
   const source = emittedUpdateSource();
   if (source.split(HIDDEN_BRANCH).length !== 2) {

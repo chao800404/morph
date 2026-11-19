@@ -290,9 +290,24 @@ documentPreviewRuntimeChannel();
 // without touching the SSR DOM. The bridge takes over after hydration.
 const contentModule = import("/${THEME_PREVIEW_CONTENT_MODULE_PATH}");
 let contentChangedBeforeBridge = false;
+const earlyPresentationQueue = (window.__morphEarlyPresentationQueue =
+  window.__morphEarlyPresentationQueue || []);
 const receiveEarlyContent = (event) => {
   const message = parseEditorToPreviewWindowEvent(event);
   if (message?.type !== "morph:storefront-preview-update-section-props") return;
+  if (message.presentationToken) {
+    for (const queued of earlyPresentationQueue) {
+      if (queued.sectionId === message.sectionId && !queued.superseded) {
+        queued.superseded = true;
+      }
+    }
+    earlyPresentationQueue.push({
+      sectionId: message.sectionId,
+      enabled: message.enabled,
+      presentationToken: message.presentationToken,
+      superseded: false,
+    });
+  }
   void contentModule.then(({ updatePreviewContent }) => {
     updatePreviewContent(message.sectionId, message.props, message.enabled, message.resetKeys);
     contentChangedBeforeBridge = true;
@@ -345,5 +360,6 @@ window.removeEventListener("message", receiveEarlyContent);
 if (contentChangedBeforeBridge && window.__morphPreviewRouter) {
   await window.__morphPreviewRouter.invalidate({ sync: true });
 }
+await window.__morphFlushEarlyPresentation?.();
 `;
 }

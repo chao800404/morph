@@ -37,6 +37,9 @@ export const E2E_ACCEPTANCE_CHECK =
 export const CONTAINER_ACCEPTANCE_CHECK =
   "Editor E2E container lifecycle acceptance";
 
+export const CONTAINER_PRESENTATION_ACK_CHECK =
+  "Editor E2E container presentation-ack acceptance";
+
 /** @param {number} shard @param {number} [count] */
 export const editorShardCheckName = (shard, count = EDITOR_SHARD_COUNT) =>
   `Editor E2E shard ${shard}/${count}`;
@@ -63,6 +66,7 @@ export const EXPECTED_CI_CHECKS = [
   ...EDITOR_SHARD_CHECKS,
   E2E_ACCEPTANCE_CHECK,
   CONTAINER_ACCEPTANCE_CHECK,
+  CONTAINER_PRESENTATION_ACK_CHECK,
 ];
 
 /**

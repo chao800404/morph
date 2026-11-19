@@ -3,6 +3,7 @@ import {
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
 } from "../theme-write-errors";
+import type { SectionPresentationProof } from "./preview-protocol";
 import {
   basisWithinOwnRange,
   rowIdentitiesAt,
@@ -31,6 +32,16 @@ export type PendingFieldEdit = Readonly<{
 export type PendingContentEntry = {
   sectionId: string;
   props: Record<string, unknown>;
+  /** A preview race kept this author input local; only an explicit save may retry it. */
+  presentationBlocked?: boolean;
+  /**
+   * A held input the preview was told about (it is part of every later post
+   * of its section): the next acknowledged presentation of the page releases
+   * it with that proof. Unset for a hold the canvas was not shown.
+   */
+  presentationReleasable?: boolean;
+  /** The committed preview projection this input was made on. */
+  presentationProof?: SectionPresentationProof;
   /** The route the edit was made on; absent for the layout. */
   routePath?: string;
   /** Captured with the edit, never replaced by a later workspace refetch. */
@@ -54,6 +65,44 @@ export type PendingContentEntry = {
    */
   resetProps?: readonly string[];
 };
+
+/**
+ * Whether a held draft is still exactly the one the author left: the same
+ * field edits, each the very edit object that was held when they left the
+ * field. Any input since (to that field, or to a sibling field never left)
+ * stages a new edit, and a draft replaced or discarded holds other edits or
+ * none: each is another draft, which that commit does not cover.
+ */
+export function draftIsAsCommitted(
+  entry: PendingContentEntry | undefined,
+  committed: Readonly<Record<string, PendingFieldEdit>>,
+): boolean {
+  const held = entry?.fields;
+  if (!held) return false;
+  const paths = Object.keys(held);
+  return (
+    paths.length === Object.keys(committed).length &&
+    paths.every(
+      (path) =>
+        Object.prototype.hasOwnProperty.call(committed, path) &&
+        held[path] === committed[path],
+    )
+  );
+}
+
+/**
+ * Whether input staged after the author left a field ends that commit: it
+ * does unless the draft still holds exactly the edits that were left (a
+ * field re-emitting its value stages nothing). Input to a sibling the commit
+ * never held ends it too, so a later drop of that sibling's edit does not
+ * bring the commit back.
+ */
+export function inputEndsCommit(
+  staged: PendingContentEntry,
+  committed: Readonly<Record<string, PendingFieldEdit>>,
+): boolean {
+  return !draftIsAsCommitted(staged, committed);
+}
 
 /**
  * A write as it was sent, frozen: its props, removed keys and generations

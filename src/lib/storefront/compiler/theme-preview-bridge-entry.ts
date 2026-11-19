@@ -19,6 +19,13 @@ import {
  * untrusted side throughout: it reads the DOM and reports, and holds no
  * capability of its own beyond the preview URL it was loaded from.
  */
+export const THEME_PREVIEW_BRIDGE_CAPABILITIES = [
+  "selection-field-section",
+  "code-default-selection",
+  "astro-identity-v2",
+  "section-presentation-ack-v1",
+] as const;
+
 export function themePreviewBridgeEntrySource(): string {
   return `import {
   postPreviewToEditorMessage,
@@ -79,11 +86,7 @@ import {
  * the shared PREVIEW_CAPABILITIES list: a page may only advertise a token
  * after its own code reads the editor message and applies the rule.
  */
-const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = [
-  "selection-field-section",
-  "code-default-selection",
-  "astro-identity-v2",
-];
+const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = ${JSON.stringify(THEME_PREVIEW_BRIDGE_CAPABILITIES, null, 2)};
 
 const channel = documentPreviewRuntimeChannel();
 // A refused selection-field post is said here, in the page, and nowhere else.
@@ -93,17 +96,205 @@ const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
 // context. Re-run the existing router loaders, which read that same snapshot
 // through the preview content endpoint. Coalesce a frame's section messages;
 // never reload the document or introduce a second content provider.
+const pendingPresentationTokens = new Map();
+const postedAppliedPresentationAcks = new Map();
+
+function postPresentationAck(token, status, reason) {
+  if (!channel || !token) return;
+  if (status === "applied") {
+    postPreviewToEditorMessage(
+      {
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      },
+      channel,
+    );
+    return;
+  }
+  if (reason === "superseded") {
+    postPreviewToEditorMessage(
+      {
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "superseded",
+      },
+      channel,
+    );
+    return;
+  }
+  postPreviewToEditorMessage(
+    {
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: token.operationId,
+      token,
+      status: "not-applied",
+      reason: "section-missing",
+    },
+    channel,
+  );
+}
+
+function queuePresentationToken(sectionId, enabled, token) {
+  if (!token) return;
+  const previous = pendingPresentationTokens.get(sectionId);
+  if (previous && previous.token.operationId !== token.operationId) {
+    postPresentationAck(previous.token, "not-applied", "superseded");
+  }
+  pendingPresentationTokens.set(sectionId, { sectionId, enabled, token });
+}
+
+function isSectionPresentationCommitted(sectionId, enabled) {
+  const matches = document.querySelectorAll(previewSectionSelector(sectionId));
+  if (enabled === false) {
+    if (matches.length === 0) return true;
+    return Array.from(matches).every(
+      (element) =>
+        element.hasAttribute("hidden") ||
+        element.hasAttribute("data-morph-section-hidden"),
+    );
+  }
+  if (matches.length !== 1) return false;
+  const element = matches[0];
+  return (
+    !element.hasAttribute("hidden") &&
+    !element.hasAttribute("data-morph-section-hidden")
+  );
+}
+
+function flushPendingPresentationTokens() {
+  if (pendingPresentationTokens.size === 0) return;
+  // An arrival whose withdrawal is still due is settled first, so it cannot
+  // take back an ack given below for the page now on screen.
+  settleArrivalWithdrawal(false);
+  const currentRoute = currentRoutePattern() ?? location.pathname;
+  // The route of a page the router has committed and not rendered yet: what
+  // is presented for it waits until it is on screen.
+  const arriving = pendingArrivalWithdrawal?.pattern;
+  const entries = Array.from(pendingPresentationTokens.entries());
+  for (const [sectionId, entry] of entries) {
+    const latest = pendingPresentationTokens.get(sectionId);
+    if (!latest || latest.token.operationId !== entry.token.operationId) {
+      continue;
+    }
+    if (arriving !== undefined && entry.token.routePath === arriving) {
+      continue;
+    }
+    pendingPresentationTokens.delete(sectionId);
+    if (entry.token.routePath && entry.token.routePath !== currentRoute) {
+      postPresentationAck(entry.token, "not-applied", "section-missing");
+      continue;
+    }
+    if (isSectionPresentationCommitted(sectionId, entry.enabled)) {
+      postedAppliedPresentationAcks.set(entry.token.operationId, entry.token);
+      postPresentationAck(entry.token, "applied");
+    } else {
+      postPresentationAck(entry.token, "not-applied", "section-missing");
+    }
+  }
+}
+
+/**
+ * Withdraws the acknowledgements given for the route the frame arrived at.
+ * Null when that route cannot be told: then none of them is kept.
+ */
+function withdrawAppliedPresentationAcks(currentRoute) {
+  if (postedAppliedPresentationAcks.size === 0) return;
+  for (const [sectionId, token] of postedAppliedPresentationAcks.entries()) {
+    if (
+      currentRoute !== null &&
+      token.routePath &&
+      token.routePath !== currentRoute
+    ) {
+      continue;
+    }
+    postPresentationAck(token, "not-applied", "superseded");
+    postedAppliedPresentationAcks.delete(sectionId);
+  }
+}
+
+/**
+ * What waited for a committed page to be on screen is flushed on the next
+ * frame once it is, unless a content refresh is under way: that refresh
+ * flushes it when it is done.
+ */
+function flushArrivedPresentationTokens() {
+  if (pendingPresentationTokens.size === 0) return;
+  requestAnimationFrame(() => {
+    if (isContentRefreshPending()) return;
+    flushPendingPresentationTokens();
+  });
+}
+
+function flushEarlyPresentationTokens() {
+  const queue = window.__morphEarlyPresentationQueue;
+  if (!Array.isArray(queue) || queue.length === 0) return;
+  const items = queue.splice(0, queue.length);
+  for (const item of items) {
+    if (!item?.presentationToken) continue;
+    if (item.superseded) {
+      postPresentationAck(item.presentationToken, "not-applied", "superseded");
+      continue;
+    }
+    queuePresentationToken(item.sectionId, item.enabled, item.presentationToken);
+  }
+  requestAnimationFrame(() => {
+    flushPendingPresentationTokens();
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.__morphFlushEarlyPresentation = flushEarlyPresentationTokens;
+}
+
 let contentRefreshScheduled = false;
+let contentRefreshEpoch = 0;
+let contentRefreshInFlightCount = 0;
+let latestRefreshSucceededEpoch = 0;
+let latestRefreshFailedEpoch = 0;
+function isContentRefreshPending() {
+  return contentRefreshScheduled || contentRefreshInFlightCount > 0;
+}
+function schedulePendingPresentationFlush(targetEpoch) {
+  if (
+    typeof pendingPresentationTokens === "undefined" ||
+    pendingPresentationTokens.size === 0
+  ) {
+    return;
+  }
+  requestAnimationFrame(() => {
+    if (targetEpoch !== contentRefreshEpoch || isContentRefreshPending()) return;
+    flushPendingPresentationTokens();
+  });
+}
 function refreshPreviewContent() {
+  contentRefreshEpoch += 1;
   if (contentRefreshScheduled) return;
   contentRefreshScheduled = true;
   requestAnimationFrame(() => {
     contentRefreshScheduled = false;
+    const refreshEpoch = contentRefreshEpoch;
     const router = window.__morphPreviewRouter;
-    if (typeof router?.invalidate !== "function") return;
+    if (typeof router?.invalidate !== "function") {
+      if (refreshEpoch > latestRefreshSucceededEpoch) {
+        latestRefreshSucceededEpoch = refreshEpoch;
+      }
+      if (!isContentRefreshPending() && latestRefreshSucceededEpoch === contentRefreshEpoch) {
+        schedulePendingPresentationFlush(contentRefreshEpoch);
+      }
+      return;
+    }
+    contentRefreshInFlightCount += 1;
     void Promise.resolve()
       .then(() => router.invalidate({ sync: true }))
       .then(() => {
+        contentRefreshInFlightCount = Math.max(0, contentRefreshInFlightCount - 1);
+        if (refreshEpoch > latestRefreshSucceededEpoch) {
+          latestRefreshSucceededEpoch = refreshEpoch;
+        }
         // The selected element is re-found, not widened to its section:
         // typing in the Inspector refreshes on every change, and the
         // selection must stay on the field being typed into.
@@ -118,8 +309,28 @@ function refreshPreviewContent() {
         }
         reportStructure();
         drawOverlays();
+        if (!isContentRefreshPending() && latestRefreshSucceededEpoch === contentRefreshEpoch) {
+          schedulePendingPresentationFlush(contentRefreshEpoch);
+        }
       })
       .catch(() => {
+        contentRefreshInFlightCount = Math.max(0, contentRefreshInFlightCount - 1);
+        if (refreshEpoch > latestRefreshFailedEpoch) {
+          latestRefreshFailedEpoch = refreshEpoch;
+        }
+        if (!isContentRefreshPending() && typeof pendingPresentationTokens !== "undefined") {
+          if (
+            latestRefreshFailedEpoch === contentRefreshEpoch &&
+            latestRefreshFailedEpoch > latestRefreshSucceededEpoch
+          ) {
+            for (const entry of pendingPresentationTokens.values()) {
+              postPresentationAck(entry.token, "not-applied", "section-missing");
+            }
+            pendingPresentationTokens.clear();
+          } else if (latestRefreshSucceededEpoch === contentRefreshEpoch) {
+            schedulePendingPresentationFlush(contentRefreshEpoch);
+          }
+        }
         console.warn("[morph-preview] content refresh failed; the previous render may still be visible.");
       });
   });
@@ -414,31 +625,202 @@ function currentRoutePattern() {
     : undefined;
 }
 
+/**
+ * The route pattern the router's own route tree matches for a path
+ * (TanStack Router's getMatchedRoutes), for a location it has committed
+ * before its matches follow. Undefined when the router cannot say.
+ */
+function routeTreePattern(router, pathname) {
+  if (documentNavigation || typeof router?.getMatchedRoutes !== "function") {
+    return undefined;
+  }
+  let found;
+  try {
+    found = router.getMatchedRoutes(pathname)?.foundRoute;
+  } catch {
+    return undefined;
+  }
+  const pattern = found?.fullPath ?? found?.id;
+  return typeof pattern === "string" && pattern.startsWith("/")
+    ? pattern
+    : undefined;
+}
+
+/**
+ * Whether the router's matches have reached a path it committed: the leaf it
+ * shows is the match its route tree makes for that path.
+ *
+ * The committed path keeps the spelling it was given, the leaf the one the
+ * router matched: its route tree trims a trailing slash before matching and
+ * gives params back decoded, and the leaf puts them back encoded, so
+ * /products/hat/ is shown as /products/hat and /products/a@b as
+ * /products/a%40b. Where the spellings differ, the route tree is asked about
+ * both, and they are one page only when it matches them to the leaf's route
+ * with the same params. Neither path is rewritten here: an encoded slash
+ * stays inside its param, and a path the tree matches only in part (a page
+ * it does not have) keeps the rest it could not match as a param no leaf
+ * has, so it is no arrival.
+ *
+ * Only whether the matches have arrived is decided here. Which navigation
+ * they arrived for is the committed location's own key and epoch.
+ */
+function matchesReachedPath(router, pathname) {
+  const matches = router?.state?.matches;
+  const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
+  if (typeof leaf?.pathname !== "string") return false;
+  if (leaf.pathname === pathname) return true;
+  if (typeof router.getMatchedRoutes !== "function") return false;
+  let shown;
+  let committed;
+  try {
+    shown = router.getMatchedRoutes(leaf.pathname);
+    committed = router.getMatchedRoutes(pathname);
+  } catch {
+    return false;
+  }
+  const routeId = committed?.foundRoute?.id;
+  if (
+    routeId === undefined ||
+    routeId !== leaf.routeId ||
+    shown?.foundRoute?.id !== routeId
+  ) {
+    return false;
+  }
+  const params = committed.routeParams ?? {};
+  const shownParams = shown.routeParams ?? {};
+  const names = Object.keys(params);
+  return (
+    names.length === Object.keys(shownParams).length &&
+    names.every((name) => params[name] === shownParams[name])
+  );
+}
+
 let frameNavigationEpoch = 0;
 let lastCommittedRouteLocation =
   typeof location !== "undefined" ? location.pathname + location.search : "";
 let subscribedEpochRouter = null;
+/**
+ * The withdrawal for a navigation whose matches had not yet reached the
+ * location it committed. It belongs to that navigation alone: once the frame
+ * has committed another location it is dropped, so matches arriving late for
+ * a page already left never take back what the page on screen acknowledged.
+ */
+let pendingArrivalWithdrawal = null;
+
+/**
+ * Where the frame is, as its router committed it to its own history; the
+ * page's address without a router. Under browser history (Full Start) the
+ * two are the same. A Client-only preview runs the router on memory
+ * history, where the page's address never moves whatever page is shown, so
+ * only the router's history says a navigation happened.
+ */
+function committedFrameLocation(router) {
+  const committed = documentNavigation ? undefined : router?.history?.location;
+  if (committed && typeof committed.pathname === "string") {
+    return {
+      pathname: committed.pathname,
+      key:
+        committed.pathname +
+        (typeof committed.search === "string" ? committed.search : ""),
+    };
+  }
+  return {
+    pathname: location.pathname,
+    key: location.pathname + location.search,
+  };
+}
 
 function syncFrameNavigationEpoch() {
   if (typeof location === "undefined") return frameNavigationEpoch;
   const router =
     typeof window !== "undefined" ? window.__morphPreviewRouter : undefined;
-  if (
-    router &&
-    router !== subscribedEpochRouter &&
-    typeof router.history?.subscribe === "function"
-  ) {
+  if (router && router !== subscribedEpochRouter) {
+    const firstRouter = subscribedEpochRouter === null;
     subscribedEpochRouter = router;
-    router.history.subscribe(() => {
-      syncFrameNavigationEpoch();
-    });
+    if (typeof router.history?.subscribe === "function") {
+      router.history.subscribe(() => {
+        syncFrameNavigationEpoch();
+      });
+    }
+    if (typeof router.subscribe === "function") {
+      router.subscribe("onResolved", () => {
+        syncFrameNavigationEpoch();
+        settleArrivalWithdrawal(true);
+      });
+    }
+    // Taking up the first router is not a navigation: the page is where its
+    // history already is (a Client-only build is served from an address
+    // that is no page of the Theme at all).
+    if (firstRouter) {
+      lastCommittedRouteLocation = committedFrameLocation(router).key;
+    }
   }
-  const currentLocation = location.pathname + location.search;
-  if (currentLocation !== lastCommittedRouteLocation) {
-    lastCommittedRouteLocation = currentLocation;
+  const committed = committedFrameLocation(router);
+  if (committed.key !== lastCommittedRouteLocation) {
+    lastCommittedRouteLocation = committed.key;
     frameNavigationEpoch += 1;
+    // The route pattern only once the router's matches have reached the
+    // committed location: the router takes up a new location before its
+    // matches follow, and until then the leaf still names the page left.
+    // The committed path is no stand-in for the pattern: on a dynamic route
+    // (/products/$slug) it never equals the route the acks name.
+    if (!documentNavigation && matchesReachedPath(router, committed.pathname)) {
+      withdrawAppliedPresentationAcks(
+        currentRoutePattern() ?? committed.pathname,
+      );
+    } else if (documentNavigation || !router) {
+      withdrawAppliedPresentationAcks(committed.pathname);
+    } else {
+      // The route tree can name the page committed before its matches
+      // arrive: what was acknowledged for that route proves nothing about it
+      // from now, and what is presented for it waits until it is on screen.
+      const arrival = routeTreePattern(router, committed.pathname);
+      if (arrival !== undefined) withdrawAppliedPresentationAcks(arrival);
+      pendingArrivalWithdrawal = {
+        epoch: frameNavigationEpoch,
+        key: committed.key,
+        pathname: committed.pathname,
+        pattern: arrival,
+      };
+      // A router that cannot say when it resolved leaves the arrival unknown.
+      if (typeof router.subscribe !== "function") {
+        settleArrivalWithdrawal(true);
+      }
+    }
   }
+  settleArrivalWithdrawal(false);
   return frameNavigationEpoch;
+}
+
+/**
+ * Withdraws for the pending arrival once the router's matches name it, with
+ * the route pattern they matched. When the router has resolved without
+ * naming it, the route arrived at cannot be told, and no ack is kept: that
+ * only pauses writes until the section is presented and acknowledged again.
+ */
+function settleArrivalWithdrawal(routerResolved) {
+  const pending = pendingArrivalWithdrawal;
+  if (!pending) return;
+  const router = window.__morphPreviewRouter;
+  if (
+    pending.epoch !== frameNavigationEpoch ||
+    committedFrameLocation(router).key !== pending.key
+  ) {
+    pendingArrivalWithdrawal = null;
+    if (pending.pattern !== undefined) flushArrivedPresentationTokens();
+    return;
+  }
+  if (matchesReachedPath(router, pending.pathname)) {
+    pendingArrivalWithdrawal = null;
+    withdrawAppliedPresentationAcks(currentRoutePattern() ?? pending.pathname);
+    if (pending.pattern !== undefined) flushArrivedPresentationTokens();
+    return;
+  }
+  if (routerResolved) {
+    pendingArrivalWithdrawal = null;
+    withdrawAppliedPresentationAcks(null);
+    if (pending.pattern !== undefined) flushArrivedPresentationTokens();
+  }
 }
 
 if (typeof window !== "undefined") {
@@ -1140,11 +1522,14 @@ if (channel) {
   };
   observeStructureRoot(previewStructureRoot);
 
-  // A Theme that owns its document shell is mounted on \`document\`, and React
-  // replaces \`<html>\` on its first commit. The node being watched is then
-  // detached: still a perfectly good element, observed forever, reporting
-  // nothing, while the page the author sees is somewhere else entirely. So the
-  // root is re-resolved whenever the one in hand has left the document.
+  // A Theme that owns its document shell is mounted on \`document\`. React may
+  // replace \`<html>\` on its first commit, or keep \`<html>\` and \`<body>\` and
+  // replace what is in the body, which takes the served \`<div id="root">\`
+  // with it. Either way the node being watched is then detached: still a
+  // perfectly good element, observed forever, reporting nothing, while the
+  // page the author sees, and every later route change on it, is somewhere
+  // else entirely. So the root is re-resolved whenever the one in hand has
+  // left the document, at whatever depth it was removed from.
   const reattachStructureRootIfDetached = () => {
     if (previewStructureRoot.isConnected) return;
     previewStructureRoot = resolveStructureRoot();
@@ -1155,7 +1540,7 @@ if (channel) {
   const documentObserver = new MutationObserver(
     reattachStructureRootIfDetached,
   );
-  documentObserver.observe(document, { childList: true, subtree: false });
+  documentObserver.observe(document, { childList: true, subtree: true });
 
   scheduleStructureReport();
 
@@ -1517,21 +1902,33 @@ if (channel) {
       return;
     }
     if (message?.type === "morph:storefront-preview-update-section-props") {
-      updatePreviewContent(
+      queuePresentationToken(
+        message.sectionId,
+        message.enabled,
+        message.presentationToken,
+      );
+      const changed = updatePreviewContent(
         message.sectionId,
         message.props,
         message.enabled,
         message.resetKeys,
       );
-      refreshPreviewContent();
-      const section = document.querySelector(
-        previewSectionSelector(message.sectionId),
-      );
-      if (section && typeof message.enabled === "boolean") {
-        section.toggleAttribute("hidden", !message.enabled);
+      if (changed) {
+        refreshPreviewContent();
+        const section = document.querySelector(
+          previewSectionSelector(message.sectionId),
+        );
+        if (section && typeof message.enabled === "boolean") {
+          section.toggleAttribute("hidden", !message.enabled);
+        }
+        reportStructure();
+        drawOverlays();
+      } else if (pendingPresentationTokens.size > 0 && !isContentRefreshPending()) {
+        requestAnimationFrame(() => {
+          if (isContentRefreshPending()) return;
+          flushPendingPresentationTokens();
+        });
       }
-      reportStructure();
-      drawOverlays();
       return;
     }
     if (message?.type === "morph:storefront-preview-set-section-order") {

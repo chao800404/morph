@@ -127,6 +127,10 @@ async function signedInPage(browser: Browser) {
   return context.newPage();
 }
 
+/** What the editor says while writes wait for the author to return. */
+const OTHER_PAGE_PAUSED =
+  /the preview shows another page\. Your draft is kept/;
+
 const cardTitle = (page: Page, slot: string) =>
   previewFrame(page).locator(
     `[data-storefront-section-id="${slot}"] [data-storefront-field="title"]`,
@@ -222,6 +226,13 @@ test.describe("typing after the preview moved to another page by itself", () => 
     await expect(cardTitle(page, SLOT)).toHaveText(live);
     await titleField(page).press("Tab");
     await expect.poll(() => storedTitle(page, SLOT)).toBe(live);
+    // Wait for the newly created route document to be adopted by the editor and
+    // for its post-adoption presentation ack to complete on HOME_ROUTE before
+    // the preview frame navigates away on its own.
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("template"))
+      .toBe("page");
+    await expect(page.getByText(/Preview syncing/)).toHaveCount(0);
 
     // The frame moves by itself, as a link inside it would.
     await previewFrame(page)
@@ -533,9 +544,42 @@ test.describe("the editor adopting a route document it just created", () => {
  * always takes up the route document after the move. Taking up its own
  * document is the editor completing its address, not the author switching
  * pages: the frame stays where it moved.
+ *
+ * Option A (user decision 2026-11-17): the document was taken up while the
+ * frame showed another page, so nothing has presented it. What the author
+ * typed is kept and not written, and the editor says why: return to the page
+ * being edited. Back there, the frame presents the document and its own
+ * acknowledgement is the proof; the draft is then saved once, on the basis it
+ * was made on. No acknowledgement is replayed or injected.
  */
 test.describe("a route document adopted after the frame moved by itself", () => {
   test.describe.configure({ mode: "serial" });
+
+  /** A page the editor follows, to switch to and back from. */
+  const ASIDE_ROUTE = "/selection-field-aside";
+  const ASIDE_SLOT = "selection-field-aside-card";
+  const OPTION_A_FILES = [
+    ...FILES,
+    {
+      path: "src/routes/selection-field-aside.tsx",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import FieldCard from "../components/FieldCard";
+
+export const Route = createFileRoute("${ASIDE_ROUTE}")({
+  component: AsideRoute,
+});
+
+function AsideRoute() {
+  return (
+    <main>
+      <FieldCard {...content("${ASIDE_SLOT}")} />
+    </main>
+  );
+}
+`,
+    },
+  ];
 
   let own: ThemeScope | null = null;
   let homeTemplateId: string | null = null;
@@ -554,7 +598,7 @@ test.describe("a route document adopted after the frame moved by itself", () => 
     homeTemplateId = result.data!.templates.find(
       (template) => template.type === "index",
     )!.id;
-    const saved = await writeThemeFiles(page, own, FILES);
+    const saved = await writeThemeFiles(page, own, OPTION_A_FILES);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
     await page.context().close();
   });
@@ -566,7 +610,7 @@ test.describe("a route document adopted after the frame moved by itself", () => 
     const removed = await removeThemeFiles(
       page,
       own,
-      FILES.map((file) => file.path),
+      OPTION_A_FILES.map((file) => file.path),
     );
     expect(removed.success, JSON.stringify(removed)).toBe(true);
     await page.context().close();
@@ -639,10 +683,20 @@ test.describe("a route document adopted after the frame moved by itself", () => 
   const urlTemplateId = (page: Page) =>
     new URL(page.url()).searchParams.get("templateId");
 
-  test("a route document adopted after the frame moved by itself leaves the frame where it moved", async ({
+  test("a route document adopted after the frame moved by itself leaves the frame where it moved; the draft is kept unsaved until the author returns, then saved once", async ({
     page,
   }) => {
     test.setTimeout(240_000);
+    // Every content write, in order with the frame's return.
+    const events: string[] = [];
+    const writeBodies: string[] = [];
+    page.on("request", (request) => {
+      if (!isServerFn(request.url(), "updateStorefrontThemeSectionProps")) {
+        return;
+      }
+      events.push("write");
+      writeBodies.push(request.postData() ?? "");
+    });
     await page.goto(
       `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
       { waitUntil: "domcontentloaded" },
@@ -719,9 +773,48 @@ test.describe("a route document adopted after the frame moved by itself", () => 
       await expect(cardTitle(page, SLOT)).toHaveCount(0);
       await expect(cardTitle(page, OTHER_SLOT)).toHaveText(otherBefore ?? "");
 
-      // Leaving the field saves what was typed, to the section it was typed
-      // for, in the route's document.
+      // Leaving the field while the frame is elsewhere writes nothing: the
+      // created document was never presented, so the draft is kept, and the
+      // editor says it waits for the author to return to the page.
       await titleField(page).press("Tab");
+      await expect(page.getByText(OTHER_PAGE_PAUSED).first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(titleField(page)).toHaveValue(typed);
+      expect((await storedOn(page)).route).toBe(live);
+      // The frame has not been sent back.
+      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible();
+      await expect(cardTitle(page, SLOT)).toHaveCount(0);
+
+      // The author returns the frame to the page being edited, as a link
+      // inside it would. The frame presents the route's document and
+      // acknowledges it; writes open again.
+      events.push("returned");
+      await previewFrame(page)
+        .locator("body")
+        .evaluate((_body, to) => {
+          const router = (
+            window as unknown as {
+              __morphPreviewRouter?: {
+                navigate(options: { to: string }): unknown;
+              };
+            }
+          ).__morphPreviewRouter;
+          if (!router) throw new Error("the preview exposes no router");
+          void router.navigate({ to });
+        }, HOME_ROUTE);
+      await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText(OTHER_PAGE_PAUSED)).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      await expect(page.getByText(/Preview syncing/)).toHaveCount(0, {
+        timeout: 30_000,
+      });
+
+      // The author already committed the draft by leaving the field while the
+      // frame was elsewhere. The acknowledgement of the real re-presentation
+      // saves it once, on its original basis, to the section it was typed
+      // for, in the route's document: no second focus and Tab.
       await expect
         .poll(async () => (await storedOn(page)).route, { timeout: 30_000 })
         .toBe(typed);
@@ -729,14 +822,513 @@ test.describe("a route document adopted after the frame moved by itself", () => 
       expect(stored.routeTemplateId).toBe(created);
       expect(stored.elsewhere).toEqual([]);
       expect(stored.other).toEqual([]);
-
-      // And the frame has still not been sent back.
-      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible();
-      await expect(cardTitle(page, SLOT)).toHaveCount(0);
+      expect(events).toEqual(["write", "returned", "write"]);
+      expect(writeBodies[1]).toContain(typed);
+      // Saved on the copy the first write answered (generation 2): the
+      // document is now at 3, one step past it.
+      const read = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+        ...own!,
+      })) as {
+        success: boolean;
+        data?: { templates: Array<{ id: string; draftGeneration?: number }> };
+      };
+      expect(
+        read.data!.templates.find((template) => template.id === created)
+          ?.draftGeneration,
+      ).toBe(3);
     } finally {
       // Never leave the answer waiting, whatever failed above.
       held.release();
     }
+  });
+
+  /**
+   * A content write's `expectedDraftGeneration`, read from the request as the
+   * client serialized it: a plain JSON object, or seroval's node tree, where
+   * an object's keys and values are in `p.k` / `p.v` and a number is
+   * `{ t: 0, s: n }`.
+   */
+  function expectedDraftGenerationOf(body: string): number | undefined {
+    const numberOf = (node: unknown): number | undefined => {
+      if (typeof node === "number") return node;
+      if (node && typeof node === "object" && "s" in node) {
+        const s = (node as { s: unknown }).s;
+        return typeof s === "number" ? s : undefined;
+      }
+      return undefined;
+    };
+    const visit = (node: unknown): number | undefined => {
+      if (!node || typeof node !== "object") return undefined;
+      if (Array.isArray(node)) {
+        for (const item of node) {
+          const found = visit(item);
+          if (found !== undefined) return found;
+        }
+        return undefined;
+      }
+      const record = node as Record<string, unknown>;
+      const plain = numberOf(record.expectedDraftGeneration);
+      if (plain !== undefined) return plain;
+      const p = record.p as { k?: unknown; v?: unknown } | undefined;
+      if (p && Array.isArray(p.k) && Array.isArray(p.v)) {
+        const index = p.k.indexOf("expectedDraftGeneration");
+        if (index >= 0) {
+          const value = numberOf(p.v[index]);
+          if (value !== undefined) return value;
+        }
+      }
+      for (const value of Object.values(record)) {
+        const found = visit(value);
+        if (found !== undefined) return found;
+      }
+      return undefined;
+    };
+    try {
+      return visit(JSON.parse(body));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Picks a page in the editor; the leave guard asks about the kept draft. */
+  async function pickPageKeepingDraft(page: Page, routePath: string) {
+    await page.locator(`button[title="Preview ${routePath}"]`).click();
+    await page
+      .getByRole("button", { name: "Switch, keep draft unsaved" })
+      .click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("routePath"), {
+        timeout: 30_000,
+      })
+      .toBe(routePath);
+  }
+
+  test("back on the page after a switch that kept the draft, the field selected again shows the draft; leaving it without typing saves it once, on its original basis", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const writeBodies: string[] = [];
+    page.on("request", (request) => {
+      if (isServerFn(request.url(), "updateStorefrontThemeSectionProps")) {
+        writeBodies.push(request.postData() ?? "");
+      }
+    });
+    const saveStatus = page.locator("[data-editor-save-status]");
+    // The aside route has no document yet: its first write creates one, as
+    // the home route's did in the case above.
+    await page.goto(
+      `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(ASIDE_ROUTE)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(cardTitle(page, ASIDE_SLOT)).toBeVisible({ timeout: 90_000 });
+    const selectCard = async () => {
+      // A page switch can leave the pointer tool on; it is turned on only
+      // when it is off.
+      const selecting = page.getByRole("button", {
+        name: "Disable section selection",
+      });
+      if (!(await selecting.isVisible())) await enableSelection(page);
+      await expect(selecting).toBeVisible();
+      expect(
+        await clickExposedElement(page, cardTitle(page, ASIDE_SLOT)),
+      ).not.toBeNull();
+      await openContentTab(page);
+      await expect(titleField(page)).toBeVisible();
+    };
+    await selectCard();
+
+    /** The aside route's document: its id, generation and stored title. */
+    const asideStored = async () => {
+      const read = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+        ...own!,
+      })) as { success: boolean; data?: { templates: StoredTemplate[] } };
+      expect(read.success, JSON.stringify(read)).toBe(true);
+      const route = read.data!.templates.find(
+        (template) => template.routePath === ASIDE_ROUTE,
+      ) as (StoredTemplate & { draftGeneration?: number }) | undefined;
+      return {
+        id: route?.id ?? null,
+        generation: route?.draftGeneration,
+        title: route?.document.sections.find(
+          (section) => section.id === ASIDE_SLOT,
+        )?.props?.title,
+        elsewhere: read
+          .data!.templates.filter((template) => template !== route)
+          .map(
+            (template) =>
+              template.document.sections.find(
+                (section) => section.id === ASIDE_SLOT,
+              )?.props?.title,
+          )
+          .filter((title) => title !== undefined),
+      };
+    };
+
+    // Value 1, the route's first write, creates its document; its answer is
+    // held while the frame moves by itself and Value 2 is typed.
+    const held = await holdNextPropsWrite(page);
+    let basis: number | undefined;
+    const value1 = `value 1 ${Date.now()}`;
+    const value2 = `value 2 ${Date.now()}`;
+    try {
+      await titleField(page).fill(value1);
+      await expect(cardTitle(page, ASIDE_SLOT)).toHaveText(value1);
+      await titleField(page).press("Tab");
+      await expect.poll(() => held.reached, { timeout: 30_000 }).toBe(true);
+
+      await previewFrame(page)
+        .locator("body")
+        .evaluate((_body, to) => {
+          const router = (
+            window as unknown as {
+              __morphPreviewRouter?: {
+                navigate(options: { to: string }): unknown;
+              };
+            }
+          ).__morphPreviewRouter;
+          if (!router) throw new Error("the preview exposes no router");
+          void router.navigate({ to });
+        }, OTHER_PATH);
+      await expect(cardTitle(page, OTHER_SLOT)).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(titleField(page)).toBeVisible();
+      await titleField(page).fill(value2);
+      expect(held.answered).toBe(false);
+
+      // Value 1 is answered and confirmed; the editor takes up the created
+      // document while the frame is elsewhere.
+      held.release();
+      await expect.poll(() => held.answered, { timeout: 30_000 }).toBe(true);
+      const created = await asideStored();
+      expect(created.id).not.toBeNull();
+      expect(created.title).toBe(value1);
+      await expect
+        .poll(() => urlTemplateId(page), { timeout: 30_000 })
+        .toBe(created.id);
+      // The copy Value 2 was typed on: the document as Value 1 left it.
+      basis = created.generation;
+      expect(typeof basis).toBe("number");
+
+      // Value 2 is left while the frame is elsewhere: held, not written.
+      await titleField(page).press("Tab");
+      await expect(page.getByText(OTHER_PAGE_PAUSED).first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(titleField(page)).toHaveValue(value2);
+      expect((await asideStored()).title).toBe(value1);
+      expect(writeBodies).toHaveLength(1);
+    } finally {
+      // Never leave the answer waiting, whatever failed above.
+      held.release();
+    }
+
+    // Another page, keeping the draft; then this page again.
+    await pickPageKeepingDraft(page, HOME_ROUTE);
+    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 30_000 });
+    await pickPageKeepingDraft(page, ASIDE_ROUTE);
+    await expect(cardTitle(page, ASIDE_SLOT)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(OTHER_PAGE_PAUSED)).toHaveCount(0, {
+      timeout: 30_000,
+    });
+    await expect(page.getByText(/Preview syncing/)).toHaveCount(0, {
+      timeout: 30_000,
+    });
+
+    // Selected again: the Inspector and the canvas show the kept Value 2,
+    // the server still holds Value 1, the draft is said to be unsaved, and
+    // nothing was written.
+    await selectCard();
+    await expect(titleField(page)).toHaveValue(value2);
+    await expect(cardTitle(page, ASIDE_SLOT)).toHaveText(value2, {
+      timeout: 30_000,
+    });
+    await expect(saveStatus).toHaveAttribute("aria-label", "Unsaved");
+    const beforeLeaving = await asideStored();
+    expect(beforeLeaving.title).toBe(value1);
+    expect(beforeLeaving.generation).toBe(basis);
+    expect(writeBodies, "selecting again writes nothing").toHaveLength(1);
+
+    // Into the field and out again, nothing typed: Value 2 is saved once,
+    // on the copy it was typed on.
+    await titleField(page).focus();
+    await titleField(page).press("Tab");
+    await expect
+      .poll(async () => (await asideStored()).title, { timeout: 30_000 })
+      .toBe(value2);
+    const after = await asideStored();
+    expect(after.generation).toBe(basis! + 1);
+    expect(after.elsewhere).toEqual([]);
+    expect(writeBodies).toHaveLength(2);
+    expect(writeBodies[1]).toContain(value2);
+    expect(
+      expectedDraftGenerationOf(writeBodies[1]!),
+      `the write's own basis, from: ${writeBodies[1]}`,
+    ).toBe(basis);
+    expect(writeBodies).toHaveLength(2);
+  });
+});
+
+/**
+ * The frame leaves the page being edited and comes back by each real return
+ * path: its own history (back, and forward), and the editor's set-route when
+ * the author picks the page again. A link inside the frame (`router.navigate`)
+ * is the return the Option A case above uses.
+ *
+ * Coming back is heard from what the frame actually committed: once back,
+ * live typing reaches the canvas again and leaving the field saves the value
+ * once. Client-only runs the Theme's router on memory history, so its history
+ * is the router's; Full Start's is the frame's own.
+ */
+test.describe("returning to the edited page by each real return path", () => {
+  test.describe.configure({ mode: "serial" });
+
+  const STATIC_ROUTE = "/selection-field-static";
+  const STATIC_SLOT = "selection-field-static-card";
+  const RETURN_FILES = [
+    ...FILES,
+    {
+      path: "src/routes/selection-field-static.tsx",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import FieldCard from "../components/FieldCard";
+
+export const Route = createFileRoute("${STATIC_ROUTE}")({
+  component: StaticRoute,
+});
+
+function StaticRoute() {
+  return (
+    <main>
+      <FieldCard {...content("${STATIC_SLOT}")} />
+    </main>
+  );
+}
+`,
+    },
+  ];
+  const START = process.env.MORPH_E2E_PREVIEW_RUNTIME === "start";
+
+  let own: ThemeScope | null = null;
+  let homeTemplateId: string | null = null;
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    own = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...own,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    homeTemplateId = result.data!.templates.find(
+      (template) => template.type === "index",
+    )!.id;
+    const saved = await writeThemeFiles(page, own, RETURN_FILES);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    await page.context().close();
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!own) return;
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const removed = await removeThemeFiles(
+      page,
+      own,
+      RETURN_FILES.map((file) => file.path),
+    );
+    expect(removed.success, JSON.stringify(removed)).toBe(true);
+    await page.context().close();
+  });
+
+  async function storedHomeTitle(page: Page): Promise<unknown> {
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...own!,
+    })) as {
+      success: boolean;
+      data?: {
+        templates: Array<{
+          document: {
+            sections: Array<{ id: string; props?: Record<string, unknown> }>;
+          };
+        }>;
+      };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const sections = result
+      .data!.templates.flatMap((template) => template.document.sections)
+      .filter((section) => section.id === SLOT);
+    expect(sections.length).toBeLessThanOrEqual(1);
+    return sections[0]?.props?.title;
+  }
+
+  /** The editor on the home route, its card's title open in Content. */
+  async function openHomeCard(page: Page) {
+    await page.goto(
+      `/store/${own!.storefrontId}/themes/${own!.themeId}/editor?templateId=${homeTemplateId}&routePath=${encodeURIComponent(HOME_ROUTE)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 90_000 });
+    await selectHomeCard(page);
+  }
+
+  async function selectHomeCard(page: Page) {
+    // A page switch can leave the pointer tool on; it is turned on only
+    // when it is off.
+    const selecting = page.getByRole("button", {
+      name: "Disable section selection",
+    });
+    if (!(await selecting.isVisible())) await enableSelection(page);
+    await expect(selecting).toBeVisible();
+    expect(
+      await clickExposedElement(page, cardTitle(page, SLOT)),
+    ).not.toBeNull();
+    await openContentTab(page);
+    await expect(titleField(page)).toBeVisible();
+  }
+
+  /** Live typing reaches the canvas, and leaving the field saves it once. */
+  async function typeAndSaveOnPage(page: Page, label: string) {
+    const value = `${label} ${Date.now()}`;
+    await titleField(page).fill(value);
+    await expect(cardTitle(page, SLOT)).toHaveText(value, { timeout: 30_000 });
+    await titleField(page).press("Tab");
+    await expect
+      .poll(() => storedHomeTitle(page), { timeout: 30_000 })
+      .toBe(value);
+    await expect(page.getByText(/Preview syncing/)).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  }
+
+  /** The frame's own router goes somewhere, as a link inside it would. */
+  async function frameNavigates(page: Page, to: string) {
+    await previewFrame(page)
+      .locator("body")
+      .evaluate((_body, target) => {
+        const router = (
+          window as unknown as {
+            __morphPreviewRouter?: { navigate(options: { to: string }): unknown };
+          }
+        ).__morphPreviewRouter;
+        if (!router) throw new Error("the preview exposes no router");
+        void router.navigate({ to: target });
+      }, to);
+  }
+
+  /**
+   * The frame's own history: the router's memory history on Client-only,
+   * the frame's browser history on Full Start. Never a fallback.
+   */
+  async function frameHistory(page: Page, step: "back" | "forward") {
+    const used = await previewFrame(page)
+      .locator("body")
+      .evaluate(
+        (_body, args) => {
+          if (args.start) {
+            if (args.step === "back") window.history.back();
+            else window.history.forward();
+            return "window.history";
+          }
+          const history = (
+            window as unknown as {
+              __morphPreviewRouter?: {
+                history?: { back(): void; forward(): void };
+              };
+            }
+          ).__morphPreviewRouter?.history;
+          if (!history) throw new Error("the preview exposes no router history");
+          if (args.step === "back") history.back();
+          else history.forward();
+          return "__morphPreviewRouter.history";
+        },
+        { start: START, step },
+      );
+    expect(used).toBe(START ? "window.history" : "__morphPreviewRouter.history");
+  }
+
+  async function frameIsAway(page: Page) {
+    await expect(cardTitle(page, OTHER_SLOT)).toBeVisible({ timeout: 30_000 });
+    await expect(cardTitle(page, SLOT)).toHaveCount(0);
+  }
+
+  async function frameIsHome(page: Page) {
+    await expect(cardTitle(page, SLOT)).toBeVisible({ timeout: 30_000 });
+    await expect(cardTitle(page, OTHER_SLOT)).toHaveCount(0);
+  }
+
+  test("returning by the frame's history back", async ({ page }) => {
+    test.setTimeout(240_000);
+    await openHomeCard(page);
+    await typeAndSaveOnPage(page, "before leaving");
+
+    await frameNavigates(page, OTHER_PATH);
+    await frameIsAway(page);
+    // The editor does not follow a dynamic route: the field stays open.
+    await expect(titleField(page)).toBeVisible();
+
+    await frameHistory(page, "back");
+    await frameIsHome(page);
+    await typeAndSaveOnPage(page, "back by history back");
+  });
+
+  test("returning by the frame's history forward", async ({ page }) => {
+    test.setTimeout(240_000);
+    await openHomeCard(page);
+    await typeAndSaveOnPage(page, "before leaving");
+
+    // Home, then away, then home again by a link; history back leaves it
+    // away, and forward is the way back.
+    await frameNavigates(page, OTHER_PATH);
+    await frameIsAway(page);
+    await frameNavigates(page, HOME_ROUTE);
+    await frameIsHome(page);
+    await frameHistory(page, "back");
+    await frameIsAway(page);
+    await expect(titleField(page)).toBeVisible();
+
+    await frameHistory(page, "forward");
+    await frameIsHome(page);
+    await typeAndSaveOnPage(page, "back by history forward");
+  });
+
+  test("returning by the editor's set-route when the author picks the page again", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    await openHomeCard(page);
+    await typeAndSaveOnPage(page, "before leaving");
+
+    // The frame goes to a page the editor follows.
+    await frameNavigates(page, STATIC_ROUTE);
+    await expect(cardTitle(page, STATIC_SLOT)).toBeVisible({ timeout: 30_000 });
+    await expect(cardTitle(page, SLOT)).toHaveCount(0);
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("routePath"), {
+        timeout: 30_000,
+      })
+      .toBe(STATIC_ROUTE);
+
+    // The author picks the edited page again: the editor's set-route takes
+    // the frame back.
+    await page.locator(`button[title="Preview ${HOME_ROUTE}"]`).click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("routePath"), {
+        timeout: 30_000,
+      })
+      .toBe(HOME_ROUTE);
+    await frameIsHome(page);
+    await selectHomeCard(page);
+    await typeAndSaveOnPage(page, "back by set-route");
   });
 });
 

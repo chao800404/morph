@@ -1,12 +1,20 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Browser,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import {
   EDITOR_PATH,
   clickExposedElement,
   enableSelection,
+  exposedCanvasPoint,
   isServerFunctionCall,
   openContentTab,
   previewFrame,
+  SAMPLE_OFFSETS,
   settleSelection,
 } from "./helpers";
 import { THEMES, serverFn } from "./native-acceptance";
@@ -738,7 +746,7 @@ for (const theme of [
       ) {
         await enableSelection(page);
       }
-      await heading.scrollIntoViewIfNeeded();
+      await scrollIntoExposedCanvas(page, heading);
       expect(await clickExposedElement(page, heading)).not.toBeNull();
       await settleSelection(page);
       await openContentTab(page);
@@ -1025,6 +1033,146 @@ async function listAllFiles(page: Page, scope: ThemeScope) {
   );
 }
 
+/**
+ * Brings `target`, inside the preview frame, to a point of the canvas where a
+ * click reaches it, and waits until it is hit there.
+ *
+ * `scrollIntoView` scrolls every scroll container up to the editor, the
+ * frame's own document included. That is only safe once the editor has sized
+ * the frame to its content: while the frame is still shorter, the scroll
+ * lands inside the frame, and when the frame then grows to its full height
+ * the browser clamps that scroll back and the target moves away from where
+ * it was checked. So the canvas is first waited for until it is as tall as
+ * the frame's content and its height has held still for a few frames.
+ */
+async function scrollIntoExposedCanvas(
+  page: Page,
+  target: Locator,
+) {
+  await expect
+    .poll(
+      () =>
+        page
+          .locator("iframe")
+          .first()
+          .evaluate((frame) => getComputedStyle(frame).pointerEvents)
+          .catch(() => "none"),
+      { message: "the canvas never accepted input", timeout: 60_000 },
+    )
+    .not.toBe("none");
+  // The canvas box is sized from the height the frame reported; the frame
+  // itself is a couple of pixels shorter inside the box's border, so the
+  // frame's content is compared with the box, not with the frame's viewport.
+  const canvasSettled = async () => {
+    const boxes = await page
+      .locator("iframe")
+      .first()
+      .evaluate(
+        (frame) =>
+          new Promise<number[]>((resolve) => {
+            const heights: number[] = [];
+            const sample = () => {
+              heights.push(parseFloat(frame.parentElement?.style.height ?? ""));
+              if (heights.length < 4) requestAnimationFrame(sample);
+              else resolve(heights);
+            };
+            requestAnimationFrame(sample);
+          }),
+      );
+    const content = await target.evaluate(
+      (element) => element.ownerDocument.documentElement.scrollHeight,
+    );
+    const held = boxes.every((height) => height === boxes[0]);
+    const whole = Number.isFinite(boxes[0]) && boxes[0]! >= content - 1;
+    return held && whole
+      ? "stable"
+      : `canvas ${boxes.join(",")} content ${content}`;
+  };
+  await expect
+    .poll(() => canvasSettled().catch((error: unknown) => String(error)), {
+      message: "the canvas never reached the frame's content height and held still",
+      timeout: 30_000,
+    })
+    .toBe("stable");
+  await target.evaluate((el) =>
+    el.scrollIntoView({ block: "center", inline: "center" }),
+  );
+  const hitTarget = async () => {
+    const frameBox = await page.locator("iframe").first().boundingBox();
+    const box = await target.boundingBox();
+    if (!frameBox || !box) return { hit: false, reason: "no-box", frameBox, box };
+    const misses: Record<string, unknown>[] = [];
+    for (const [dx, dy] of SAMPLE_OFFSETS) {
+      const pt = { x: box.x + box.width * dx, y: box.y + box.height * dy };
+      const parentHit = await page.evaluate((at) => {
+        const el = document.elementFromPoint(at.x, at.y);
+        return el
+          ? { tagName: el.tagName, id: el.id || null, role: el.getAttribute("role") }
+          : null;
+      }, pt);
+      if (parentHit?.tagName !== "IFRAME") {
+        misses.push({ dx, dy, pt, parentHit });
+        continue;
+      }
+      const innerHit = await target.evaluate(
+        (element, at) => {
+          const hit = document.elementFromPoint(at.x, at.y);
+          return {
+            isItself: hit === element,
+            contained: hit ? element.contains(hit) : false,
+            hitTag: hit?.tagName ?? null,
+            hitField: hit?.getAttribute("data-storefront-field") ?? null,
+          };
+        },
+        { x: pt.x - frameBox.x, y: pt.y - frameBox.y },
+      );
+      if (innerHit.isItself) return { hit: true as const, frameBox, box };
+      misses.push({ dx, dy, pt, parentHit, innerHit });
+    }
+    return { hit: false as const, frameBox, box, misses };
+  };
+
+  const point = await exposedCanvasPoint(page);
+  if (point) {
+    await page.mouse.move(point.x, point.y);
+    for (let step = 0; step < 12; step += 1) {
+      const status = await hitTarget();
+      if (status.hit) {
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            ),
+        );
+        if ((await hitTarget()).hit) return;
+      }
+      const box = status.box;
+      const frameBox = status.frameBox;
+      if (!box || !frameBox) break;
+      const topBound = frameBox.y + 8;
+      await page.mouse.wheel(0, box.y < topBound ? -250 : 300);
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+    }
+  }
+  await expect
+    .poll(
+      async () => {
+        const status = await hitTarget();
+        if (!status.hit) {
+          console.log("[scrollIntoExposedCanvas] miss:", JSON.stringify(status));
+        }
+        return status.hit;
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(true);
+}
+
 /** Edits the home page's introduction heading through the Inspector. */
 async function editHeading(page: Page, editorPath: string, value: string) {
   await page.goto(editorPath, { waitUntil: "domcontentloaded" });
@@ -1043,7 +1191,7 @@ async function editHeading(page: Page, editorPath: string, value: string) {
   ) {
     await enableSelection(page);
   }
-  await heading.scrollIntoViewIfNeeded();
+  await scrollIntoExposedCanvas(page, heading);
   expect(await clickExposedElement(page, heading)).not.toBeNull();
   await settleSelection(page);
   await openContentTab(page);

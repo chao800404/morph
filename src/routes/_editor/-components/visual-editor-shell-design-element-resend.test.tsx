@@ -22,6 +22,7 @@ import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-s
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
   answerFramePings,
+  enablePresentationAcks,
   frameEnvelope,
 } from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
@@ -370,8 +371,10 @@ async function settled() {
     </QueryClientProvider>,
   );
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
+  enablePresentationAcks({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
   fromPreview({
     type: "morph:storefront-preview-ready",
+    capabilities: ["selection-field-section", "section-presentation-ack-v1"],
     servedInstance: {
       kind: "known",
       instance: { session: SESSION, serial: 1 },
@@ -393,6 +396,9 @@ async function settled() {
   });
   await waitFor(() =>
     expect(lastSectionsPanelProps?.onDeleteEditableNode).toBeTypeOf("function"),
+  );
+  await waitFor(() =>
+    expect(lastSectionsPanelProps?.onReorderSections).toBeTypeOf("function"),
   );
 }
 

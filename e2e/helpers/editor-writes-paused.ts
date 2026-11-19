@@ -173,6 +173,107 @@ export async function readSource(page: Page, path: string) {
   return source;
 }
 
+/**
+ * The store and Theme of the editor `page` shows, and the document it opened
+ * on, read from its address.
+ */
+function editorScope(page: Page) {
+  const url = new URL(page.url());
+  const ids = url.pathname.match(/\/store\/([^/]+)\/themes\/([^/]+)\/editor/);
+  if (!ids) throw new Error(`Not an editor address: ${url.pathname}`);
+  return {
+    storefrontId: ids[1]!,
+    themeId: ids[2]!,
+    templateId: url.searchParams.get("templateId"),
+  };
+}
+
+/*
+ * Read-only checks of what the server holds go through the server functions
+ * themselves, called from a page that is already open, rather than through a
+ * new editor tab. Each editor tab starts the Live Preview, and on the full
+ * Start runtime every start restarts the one preview process the session's
+ * tabs share: a check tab doing that raced the author tab's preview renewal
+ * and left the author's preview failed, so its writes paused, correctly, for
+ * want of a presentation acknowledgement.
+ */
+const THEMES_SERVER_FN_MODULE =
+  "/src/server/storefront/storefront-themes.serverFn.ts";
+const THEME_FILES_SERVER_FN_MODULE =
+  "/src/server/storefront/storefront-theme-files.serverFn.ts";
+
+/**
+ * What the server holds in one prop of one section of the document the
+ * editor `page` opened on. Fails if the read fails, or if that document does
+ * not hold the section exactly once.
+ */
+export async function storedSectionProp(
+  page: Page,
+  sectionId: string,
+  prop: string,
+): Promise<unknown> {
+  const scope = editorScope(page);
+  const read = await page.evaluate(
+    async ({ module, storefrontId, themeId }) => {
+      const fns = await import(/* @vite-ignore */ module);
+      const result = await fns.getStorefrontThemeEditor({
+        data: { storefrontId, themeId },
+      });
+      if (!result?.success) return null;
+      return (
+        (result.data.templates ?? []) as Array<{
+          id: string;
+          document?: { sections?: Array<{ id: string; props?: unknown }> };
+        }>
+      ).map((template) => ({
+        id: template.id,
+        sections: (template.document?.sections ?? []).map((section) => ({
+          id: section.id,
+          props: (section.props ?? null) as Record<string, unknown> | null,
+        })),
+      }));
+    },
+    {
+      module: THEMES_SERVER_FN_MODULE,
+      storefrontId: scope.storefrontId,
+      themeId: scope.themeId,
+    },
+  );
+  expect(read, "the stored Theme was read").not.toBeNull();
+  const templates = scope.templateId
+    ? read!.filter((template) => template.id === scope.templateId)
+    : read!;
+  const sections = templates.flatMap((template) =>
+    template.sections.filter((section) => section.id === sectionId),
+  );
+  expect(sections.length, `stored sections ${sectionId}`).toBe(1);
+  return sections[0]!.props?.[prop];
+}
+
+/** What the server holds in the Theme file `path`. Fails if the read fails. */
+export async function storedThemeFile(page: Page, path: string) {
+  const scope = editorScope(page);
+  const content = await page.evaluate(
+    async ({ module, storefrontId, themeId, path }) => {
+      const fns = await import(/* @vite-ignore */ module);
+      const result = await fns.getStorefrontThemeFile({
+        data: { storefrontId, themeId, path },
+      });
+      return result?.success && typeof result.data.content === "string"
+        ? (result.data.content as string)
+        : null;
+    },
+    {
+      module: THEME_FILES_SERVER_FN_MODULE,
+      storefrontId: scope.storefrontId,
+      themeId: scope.themeId,
+      path,
+    },
+  );
+  expect(content, `the stored ${path} was read`).not.toBeNull();
+  return content!;
+}
+
 export async function editAndSave(page: Page, path: string, next: string) {
   await setMonacoModelValue(page, path, next);
   await page.keyboard.press("Control+s");

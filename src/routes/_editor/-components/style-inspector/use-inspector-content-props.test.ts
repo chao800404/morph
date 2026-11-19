@@ -128,6 +128,69 @@ describe("useInspectorContentProps", () => {
     expect(result.current.externalEpochs).toEqual({ body: 1 });
   });
 
+  describe("held input", () => {
+    const held: Record<string, Record<string, unknown> | undefined> = {};
+    const render = (initial: { sectionId: string; props: unknown }) =>
+      renderHook(
+        ({ sectionId, props }) =>
+          useInspectorContentProps({
+            resourceKey: "store:theme:doc",
+            sectionId,
+            sectionProps: props,
+            heldProps: () => held[sectionId],
+          }),
+        { initialProps: initial },
+      );
+
+    it("is shown over the stored props on mount, key by key", () => {
+      held.hero = { title: "Kept" };
+      const { result } = render({
+        sectionId: "hero",
+        props: { title: "Stored", body: "Body" },
+      });
+      expect(result.current.props).toEqual({ title: "Kept", body: "Body" });
+      delete held.hero;
+    });
+
+    it("is shown when the section opened is switched to, and only that section's", () => {
+      held.hero = { title: "Kept" };
+      const { result, rerender } = render({
+        sectionId: "footer",
+        props: { title: "Footer" },
+      });
+      expect(result.current.props).toEqual({ title: "Footer" });
+      rerender({ sectionId: "hero", props: { title: "Stored", body: "Body" } });
+      expect(result.current.props).toEqual({ title: "Kept", body: "Body" });
+      delete held.hero;
+    });
+
+    it("stays over a newer stored copy, while untouched keys take it and are counted", () => {
+      held.hero = { title: "Kept" };
+      const { result, rerender } = render({
+        sectionId: "hero",
+        props: { title: "Stored", body: "Body" },
+      });
+      rerender({
+        sectionId: "hero",
+        props: { title: "Stored", body: "Their body" },
+      });
+      expect(result.current.props).toEqual({
+        title: "Kept",
+        body: "Their body",
+      });
+      expect(result.current.externalEpochs).toEqual({ body: 1 });
+      delete held.hero;
+    });
+
+    it("none held: the stored props as they are", () => {
+      const { result } = render({
+        sectionId: "hero",
+        props: { title: "Stored", body: "Body" },
+      });
+      expect(result.current.props).toEqual({ title: "Stored", body: "Body" });
+    });
+  });
+
   describe("an input made on an accepted copy newer than the one shown", () => {
     const render = () =>
       renderHook(

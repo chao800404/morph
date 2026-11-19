@@ -21,7 +21,7 @@ type Update = (
   props?: Record<string, unknown>,
   enabled?: boolean,
   resetKeys?: string[],
-) => void;
+) => boolean;
 
 function frame(initial: Content): { content: Content; update: Update } {
   const source = themePreviewContentModuleSource();
@@ -185,5 +185,18 @@ describe("(e) the final content for every order", () => {
       checked += 1;
     }
     expect(checked).toBe(orders.length);
+  });
+});
+
+describe("updatePreviewContent change reporting", () => {
+  it("returns false when a replayed message matches the snapshot state and true when it changes", () => {
+    const hiddenFrame = frame(hiddenInSnapshot());
+    expect(hiddenFrame.update("hero", undefined, false)).toBe(false);
+    expect(hiddenFrame.update("hero", { heading: "Shown" }, true)).toBe(true);
+
+    const visibleFrame = frame(visible());
+    expect(visibleFrame.update("hero", { ...STORED }, true)).toBe(false);
+    expect(visibleFrame.update("hero", { heading: "Updated" }, true)).toBe(true);
+    expect(visibleFrame.update("hero", undefined, false)).toBe(true);
   });
 });

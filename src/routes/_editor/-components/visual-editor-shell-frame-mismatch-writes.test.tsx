@@ -28,14 +28,18 @@ import {
   CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
   HISTORY_OTHER_PAGE_MESSAGE,
   PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
+  PREVIEW_PRESENTATION_SYNCING_MESSAGE,
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
 import {
   answerFramePings,
+  disablePresentationAcks,
   frameEnvelope,
+  LIVE_FRAME_CAPABILITIES,
   modelCurrentBridge,
   reloadFrameDocument,
+  sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
@@ -491,13 +495,16 @@ async function settled(
 ) {
   const harness = renderRouted(initial, initialContext, files);
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
-  fromPreview({
-    type: "morph:storefront-preview-ready",
-    servedInstance: {
-      kind: "known",
-      instance: { session: SESSION, serial: 1 },
+  sendFrameReady(
+    { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+    LIVE_FRAME_CAPABILITIES,
+    {
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
     },
-  });
+  );
   // Precondition: the frame was sent the route on screen. Wait for that
   // request itself, with its id, rather than reading the log one tick after
   // ready: under load the request can arrive later, and an absent request
@@ -515,7 +522,9 @@ async function settled(
   });
   applied(request!.routeRequestId, expected);
   report(expected);
-  await tick(0);
+  // The live bridge acknowledges each section only after its DOM commit;
+  // drain that ack pump before an interaction whose proof must be current.
+  await tick(10);
   return harness;
 }
 
@@ -723,13 +732,16 @@ async function frameReloadedUnnamed() {
   const harness = await settled(pageSearch("/b"));
   enableSelection();
   reloadFrameDocument();
-  fromPreview({
-    type: "morph:storefront-preview-ready",
-    servedInstance: {
-      kind: "known",
-      instance: { session: SESSION, serial: 1 },
+  sendFrameReady(
+    { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+    LIVE_FRAME_CAPABILITIES,
+    {
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
     },
-  });
+  );
   await tick(0);
   // Precondition: the new round's request went out, unanswered, unreported.
   expect(latestRequest()?.routePath).toBe("/b");
@@ -1080,6 +1092,10 @@ export default function Layout({ children }) {
         ],
       });
     });
+    // The list preview must apply the staged values before the drag captures
+    // its presentation proof; keep the ordinary save debounce pending.
+    await tick(0);
+    expect(updateSectionProps).not.toHaveBeenCalled();
     // Reorder before the pending edit's ordinary debounce sends it. The view
     // owns the virtual slot; the raw Document must not fabricate it on read.
     ENTRIES["commit-array-item-reorder"]!.send();
@@ -1316,13 +1332,16 @@ describe("every frame message that writes or moves the Inspector", () => {
     renderRouted(pageSearch("/b"));
     await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
     enableSelection();
-    fromPreview({
-      type: "morph:storefront-preview-ready",
-      servedInstance: {
-        kind: "known",
-        instance: { session: SESSION, serial: 1 },
+    sendFrameReady(
+      { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+      LIVE_FRAME_CAPABILITIES,
+      {
+        servedInstance: {
+          kind: "known",
+          instance: { session: SESSION, serial: 1 },
+        },
       },
-    });
+    );
     await tick(0);
     applied(latestRequest()?.routeRequestId, null);
     await tick(0);
@@ -1555,5 +1574,209 @@ describe("undo and redo after a page switch", () => {
       expect(server.heading("template-b")).toBe(SAME);
       expect(server.heading("template-c")).toBe("C heading");
     });
+  });
+});
+
+/**
+ * A dynamic route's pages while the frame moves between them: the author
+ * has /products/shirt on screen, its section presented and acknowledged; a
+ * link inside the frame then commits /products/hat, and the router's matches
+ * for hat are still on their way.
+ *
+ * In that window the bridge names the route pattern the matches name
+ * (/products/$slug, shirt's leaf, the same pattern as hat's), with the
+ * navigation's new epoch. When the router's route tree names hat's route,
+ * the bridge withdraws the pattern's acknowledgements as hat is committed
+ * and acknowledges nothing presented for it until hat is on screen
+ * (`theme-preview-bridge-dynamic-route-ack.test.ts`). The frame is played
+ * here sending exactly that.
+ */
+describe("the window between a dynamic route's committed page and its matches", () => {
+  const PRODUCT = "/products/$slug";
+  // Every page under /products/ shares the product document.
+  const { routePath: _pageRoute, ...pageShape } = pageDocument(PRODUCT);
+  const productDocument = {
+    ...pageShape,
+    id: "template-product",
+    type: "product",
+    name: "Product",
+  };
+  const productContext = {
+    ...context,
+    templates: [...context.templates, productDocument],
+  } as unknown as StorefrontThemeEditorDTO;
+  const productFiles = [
+    ...FILES,
+    file(
+      "src/routes/products/$slug.tsx",
+      pageSource(PRODUCT).replaceAll('from "../', 'from "../../'),
+    ),
+  ];
+  const productSearch = {
+    template: "product",
+    templateId: "template-product",
+    routePath: PRODUCT,
+    viewport: "desktop",
+  } as StorefrontThemeEditorSearch;
+  const ACK = "morph:storefront-preview-section-presentation-ack";
+  const sectionPosts = () =>
+    log.filter(
+      (message) =>
+        message.type === "morph:storefront-preview-update-section-props" &&
+        (message as { presentationToken?: unknown }).presentationToken,
+    ) as Array<
+      Posted & { presentationToken: { operationId: string } & Posted }
+    >;
+  const writes = () =>
+    updateSectionProps.mock.calls.map((call) => {
+      const data = (
+        call[0] as {
+          data: {
+            templateId: string;
+            props: Record<string, unknown>;
+            expectedDraftGeneration: number;
+            expectedSourceGeneration?: number;
+          };
+        }
+      ).data;
+      return {
+        templateId: data.templateId,
+        props: data.props,
+        expectedDraftGeneration: data.expectedDraftGeneration,
+        expectedSourceGeneration: data.expectedSourceGeneration,
+      };
+    });
+
+  /** Shirt on screen, the hero selected, its presentation acknowledged. */
+  async function shirtOnScreen() {
+    updateSectionProps.mockImplementation(async () => ({
+      success: true,
+      message: "ok",
+      data: {
+        draftGeneration: 2,
+        droppedProps: [],
+        document: productDocument.document,
+      },
+    }));
+    vi.mocked(listStorefrontThemeFiles).mockImplementation(
+      async () =>
+        ({ success: true, message: "ok", data: tree(productFiles) }) as never,
+    );
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: productContext,
+    });
+    const harness = await settled(productSearch, productContext, productFiles);
+    enableSelection();
+    report(PRODUCT, [
+      {
+        id: "hero:node:heading",
+        parentId: null,
+        sectionId: "hero",
+        label: "Heading",
+        kind: "heading",
+        tagName: "h2",
+        target: {
+          sectionId: "hero",
+          nodeId: "hero:node:heading",
+          elementKey: "heading",
+          fieldKey: "heading",
+          fieldPath: "heading",
+          isSection: false,
+        },
+      },
+    ]);
+    frameSelects("hero");
+    await tick(10);
+    expect(selectedInInspector()).toBe("hero");
+    expect(shownRoute(harness)).toBe(PRODUCT);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    return harness;
+  }
+  /** Every section the frame was sent, by its latest presentation. */
+  const latestBySection = () => {
+    const latest = new Map<string, { operationId: string } & Posted>();
+    for (const post of sectionPosts()) {
+      latest.set(String(post.sectionId), post.presentationToken);
+    }
+    return Array.from(latest.values());
+  };
+  /**
+   * Hat committed, its matches still on their way, as the bridge does it
+   * when the router's route tree names hat's route: every acknowledgement
+   * for the pattern is withdrawn at once, the report names the pattern with
+   * the new epoch, and nothing presented now is acknowledged until hat is
+   * on screen.
+   */
+  const hatCommitted = async () => {
+    disablePresentationAcks();
+    for (const post of sectionPosts()) {
+      fromPreview({
+        type: ACK,
+        operationId: post.presentationToken.operationId,
+        token: post.presentationToken,
+        status: "not-applied",
+        reason: "superseded",
+      });
+    }
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: PRODUCT,
+      frameNavigationEpoch: 1,
+    });
+    await tick(20);
+  };
+  /** Hat's matches arrive: what waited for hat is acknowledged, once each. */
+  const hatArrives = async () => {
+    for (const token of latestBySection()) {
+      fromPreview({
+        type: ACK,
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+    }
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: PRODUCT,
+      frameNavigationEpoch: 1,
+    });
+    await tick(20);
+  };
+
+  it("an Inspector edit in the window is held, kept and said; once hat is acknowledged it is written once, on the generation it was typed on", async () => {
+    await shirtOnScreen();
+    expect(sectionPosts().length).toBeGreaterThan(0);
+
+    await hatCommitted();
+    await editInInspector("Edited during the move");
+
+    expect(writes()).toEqual([]);
+    expect(
+      screen.queryAllByDisplayValue("Edited during the move").length,
+    ).toBeGreaterThan(0);
+    expect(toast.warning).toHaveBeenCalledWith(
+      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+      expect.anything(),
+    );
+
+    await hatArrives();
+    await tick(400);
+    expect(writes()).toEqual([
+      {
+        templateId: "template-product",
+        props: { heading: "Edited during the move" },
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      },
+    ]);
+
+    // A repeated acknowledgement writes nothing more.
+    await hatArrives();
+    await tick(400);
+    expect(writes()).toHaveLength(1);
   });
 });

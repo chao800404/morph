@@ -28,8 +28,21 @@ const CROSS_BROWSER = (process.env.E2E_BROWSERS ?? "")
   .map((name) => name.trim().toLowerCase())
   .filter(Boolean);
 
+/**
+ * The real sidecar swap case is its own local entry, not part of any suite:
+ * collected only when `scripts/run-editor-e2e.mjs` runs in swap mode (it sets
+ * `MORPH_E2E_SIDECAR_SWAP=1` for the suite it starts with
+ * `MORPH_E2E_SIDECAR_SWAP_FROM`). CI never sets swap mode, so it never lists
+ * the file, and the shard plan does not name it.
+ */
+const SWAP_ONLY =
+  process.env.MORPH_E2E_SIDECAR_SWAP === "1"
+    ? []
+    : [/preview-sidecar-swap\.spec\.ts/];
+
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: SWAP_ONLY,
   // A browser test that races itself is worse than no test: failures stop
   // meaning anything. One worker, no retries, generous per-action timeouts.
   fullyParallel: false,
@@ -80,7 +93,7 @@ export default defineConfig({
       dependencies: ["setup", "preview-transport"],
       // Its own project runs it as this one's precondition; without this it
       // would also run here, after the specs it exists to gate.
-      testIgnore: /preview-transport\.spec\.ts/,
+      testIgnore: [/preview-transport\.spec\.ts/, ...SWAP_ONLY],
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1600, height: 950 },

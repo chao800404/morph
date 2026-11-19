@@ -2,6 +2,7 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { isDirtyWorkspaceMarker } from "./theme-workspace-path";
+import { THEME_PREVIEW_BRIDGE_CAPABILITIES } from "./theme-preview-bridge-entry";
 import { planFencedStart, planFencedWrite } from "./preview-write-fence";
 import {
   applyFencedRequest,
@@ -1396,6 +1397,64 @@ describe("recording what a start decided", () => {
     expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
       "dirty:sync0006",
     );
+  });
+
+  it("reports the bridge of a committed workspace, with the instance unknown", async () => {
+    const harness = createSession("ready");
+    const result = await startWith(harness);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.serving).toEqual({
+      bridge: {
+        buildId: expect.stringMatching(/^[0-9a-f]{64}$/),
+        capabilities: [...THEME_PREVIEW_BRIDGE_CAPABILITIES],
+      },
+      // A container's Vite names no instance on its responses.
+      instance: null,
+    });
+  });
+
+  it("reports the same bridge for a matching workspace it reused", async () => {
+    const harness = createSession("ready");
+    const first = await startWith(harness);
+    withRunningVite(harness);
+    const again = await startWith(harness);
+    expect(first.ok && again.ok).toBe(true);
+    if (!first.ok || !again.ok) return;
+    expect(again.timings.workspaceReused).toBe(true);
+    expect(again.serving).toEqual(first.serving);
+    expect(again.serving?.instance).toBeNull();
+  });
+
+  it("reports no serving for a workspace it could not commit", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    withRunningVite(harness);
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      "dirty:sync0005",
+    );
+    const read = harness.session.readFile!.bind(harness.session);
+    (
+      harness.session as { readFile: PreviewServerSession["readFile"] }
+    ).readFile = async (path, options) => {
+      if (path === "/workspace/src/components/Hero.tsx") {
+        harness.written.set(
+          THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+          "dirty:sync0006",
+        );
+      }
+      return read(path, options);
+    };
+    const log = observe();
+    const result = await startWith(harness);
+    const start = lastStart(log.events());
+    log.restore();
+    expect(start.workspace.committed).toBe(false);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Only that the workspace was written would say which bridge is there.
+    expect(result.serving ?? null).toBeNull();
   });
 
   it("records why it failed closed", async () => {
