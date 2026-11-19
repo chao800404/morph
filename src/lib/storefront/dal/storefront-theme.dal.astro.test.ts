@@ -1078,6 +1078,39 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     expect(fetch.calls).toBe(0);
     expect(stored("tpl-notes")).toEqual(before);
   });
+
+  it("answers a parser binding failure with its reason code, never the binding's own message (L6)", async () => {
+    const request = await identityOf("/about", "intro");
+    const before = stored("tpl-about");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mock.env.ASTRO_PARSER = {
+      fetch: async () => {
+        throw new Error(
+          "connect ECONNREFUSED 10.9.8.7:4431 parser-internal-host",
+        );
+      },
+    };
+    const refusal = await write(request).then(
+      () => null,
+      (error: Error) => error.message,
+    );
+    expect(refusal).toMatch(
+      /^SECTION_SOURCE_UNCONFIRMABLE: parser-binding-failed: /,
+    );
+    expect(refusal).not.toMatch(
+      /ECONNREFUSED|10\.9\.8\.7|parser-internal-host/,
+    );
+    const view = await read({ routePath: "/about" });
+    expect(view).toMatchObject({
+      status: "view",
+      view: { status: { kind: "refused", reason: "parser-binding-failed" } },
+    });
+    expect(JSON.stringify(view)).not.toMatch(
+      /ECONNREFUSED|10\.9\.8\.7|parser-internal-host/,
+    );
+    expect(stored("tpl-about")).toEqual(before);
+    warn.mockRestore();
+  });
 });
 
 /**
