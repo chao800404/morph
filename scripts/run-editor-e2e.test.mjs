@@ -1378,16 +1378,19 @@ describe("the e2e runner's sidecar swap", () => {
   it(
     "checks the handover on every address the origin's host names: a localhost origin still held on ::1 is not released",
     { timeout: 90_000 },
-    async (t) => {
+    async () => {
+      // Required, not optional: CI's runners and the local machines have ::1,
+      // and without it this case would prove nothing about the handover.
       const ipv6 = await new Promise((resolve) => {
         const probe = createServer();
-        probe.once("error", () => resolve(false));
+        probe.once("error", (error) => resolve(String(error)));
         probe.listen(0, "::1", () => probe.close(() => resolve(true)));
       });
-      if (!ipv6) {
-        t.skip("this machine has no ::1 to hold a port on");
-        return;
-      }
+      assert.equal(
+        ipv6,
+        true,
+        `this case needs a ::1 loopback to hold a port on: ${ipv6}`,
+      );
       // The old sidecar serves on 127.0.0.1 and leaves a holder on ::1.
       const result = await swapRun(
         { FAKE_SIDECAR_ALSO_HOLD_V6_IN: oldRoot() },
