@@ -70,7 +70,10 @@ jobs:
     # skips live in the Vitest config and are unchanged. The suite alone took
     # 1166.78 s on main (run 41525655307), so 20 minutes left no room for
     # install and setup; that run was cancelled 0.26 s after its summary.
-    timeout-minutes: 30
+    # After #399 the suite took 1434.21 s on main (run 44562199348, job 24.6
+    # min), and two PR runs (44577336550, 44594103542) were cancelled at 30
+    # minutes with no failing test, so 30 minutes no longer leaves room either.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
