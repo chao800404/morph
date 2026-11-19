@@ -1008,6 +1008,19 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     expect(stored("tpl-about")).toEqual(before);
   });
 
+  it("refuses showing or hiding an Astro section (not a section prop), and writes nothing", async () => {
+    const request = await identityOf("/about", "intro");
+    const before = stored("tpl-about");
+    const fetch = countParserCalls();
+    await expect(
+      write({ ...request, props: { enabled: false } }),
+    ).rejects.toThrow(
+      /^SECTION_SOURCE_UNCONFIRMED: section-visibility-unsupported: /,
+    );
+    expect(fetch.calls).toBe(0);
+    expect(stored("tpl-about")).toEqual(before);
+  });
+
   it("refuses another storefront's Theme as not found, and writes nothing", async () => {
     const request = await identityOf("/about", "intro");
     const before = stored("tpl-about");

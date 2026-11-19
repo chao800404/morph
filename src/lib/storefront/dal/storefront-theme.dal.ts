@@ -2056,6 +2056,17 @@ export const storefrontThemeDal = {
       // the snapshot this write reads (`resolveAstroSectionWrite`); the B1
       // field check, the capability allowlist and the CAS below are the
       // same as Start's.
+      // Section props only (C5): showing or hiding a section is another
+      // operation, and nothing proves an Astro page honours it yet.
+      if (Object.prototype.hasOwnProperty.call(data.props, "enabled")) {
+        throw new Error(
+          sectionSourceRefusalMessage(
+            false,
+            "section-visibility-unsupported",
+            "Design cannot show or hide a section of an Astro page yet. Edit it in Code mode.",
+          ),
+        );
+      }
       const astro = await resolveAstroSectionWrite({
         storefrontId: data.storefrontId,
         themeId: data.themeId,
