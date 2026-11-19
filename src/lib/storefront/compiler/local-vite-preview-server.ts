@@ -29,16 +29,19 @@ import {
 } from "../theme-framework";
 import {
   materializeThemeSandboxWorkspace,
+  themeWorkspaceFingerprint,
   type ThemePreviewRuntime,
   type ThemeWorkspacePlanFile,
   type ThemeWorkspaceWriter,
 } from "./theme-sandbox-workspace";
 import {
+  THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH,
   previewContentDigest,
   previewContentHash,
   previewContentTicket,
   withPreviewInstance,
 } from "./theme-preview-content";
+import { classifyWorkspacePath } from "./preview-server-observation";
 import type { PreviewContentWriteResult } from "./preview-content-write";
 import {
   PREVIEW_CONTENT_TICKET_HEADER,
@@ -151,10 +154,16 @@ type PreviewServerHandle = Readonly<{
 type RunningPreview = Readonly<{
   /** Host path the workspace was laid out in. */
   root: string;
-  workspaceFingerprint: string;
+  /**
+   * `localPreviewReuseKey` of the plan this server was laid out from: what
+   * a later start must match to reuse it. Null once a source sync has
+   * changed the workspace, so no plan can claim to describe it any more and
+   * the next start lays its own files out again.
+   */
+  reuseKey: string | null;
   /**
    * The runtime this server was started for. Reuse needs it to match as
-   * well as the fingerprint: a Theme without Start routes plans the same
+   * well as the reuse key: a Theme without Start routes plans the same
    * files for either runtime, yet a `start` preview runs in a child process
    * at another path, so a matching fingerprint alone could hand a Theme that
    * now records another runtime the server of the old one.
@@ -237,12 +246,56 @@ async function stampPreviewInstance(root: string, instance: string): Promise<voi
   await fs.rename(next, target);
 }
 
+/** The draft content snapshot's module in a workspace (`/workspace/...`). */
+const CONTENT_SNAPSHOT_MODULE_PATH = `/workspace/${THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH}`;
+
+/** A text file a plan lays out, or null when it has none at `filePath`. */
+function plannedText(
+  files: readonly ThemeWorkspacePlanFile[],
+  filePath: string,
+): string | null {
+  const file = files.find((candidate) => candidate.path === filePath);
+  return file && "content" in file ? file.content : null;
+}
+
 /** The draft content snapshot a plan lays out, or null when it has none. */
 function plannedContentText(
   files: readonly ThemeWorkspacePlanFile[],
 ): string | null {
-  const file = files.find((candidate) => candidate.path === CONTENT_DATA_PATH);
-  return file && "content" in file ? file.content : null;
+  return plannedText(files, CONTENT_DATA_PATH);
+}
+
+/** No Theme source paths: only the `preview-content` kind is asked about. */
+const NO_THEME_SOURCE_PATHS: ReadonlySet<string> = new Set();
+
+/**
+ * What decides, in this process, whether a start may reuse the dev server
+ * already running for its preview: the plan's fingerprint without the draft
+ * content snapshot — the two files `classifyWorkspacePath` calls
+ * `preview-content`, the data file and its module.
+ *
+ * Every tab of one author shares a preview, and every start carries a fresh
+ * content ticket, which the snapshot module holds verbatim. Compared whole,
+ * no two starts matched, so each one restarted the dev server, and for those
+ * seconds the other tabs' renewal found nothing serving. Content is data the
+ * running server reads on each request; it is written into the reused server
+ * below under the ticket rule a content sync is, so it needs no restart. The
+ * sandbox transport reaches the same answer from its manifest diff
+ * (`isContentOnlyChange`).
+ *
+ * Local only: the marker on disk is still the whole `workspaceFingerprint`,
+ * which the sandbox transport reads and orders its own writes by.
+ */
+export function localPreviewReuseKey(
+  files: readonly ThemeWorkspacePlanFile[],
+): string {
+  return themeWorkspaceFingerprint(
+    files.filter(
+      (file) =>
+        classifyWorkspacePath(file.path, NO_THEME_SOURCE_PATHS) !==
+        "preview-content",
+    ),
+  );
 }
 
 /** The origin of a URL, or null when it is not one this can read. */
@@ -544,6 +597,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         logs,
       };
     }
+    const reuseKey = localPreviewReuseKey(prepared.workspaceFiles);
 
     // Everything that reads or replaces this preview's workspace or server
     // runs in the preview's one queue, with `writeFiles`: a sync cannot land
@@ -595,16 +649,39 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           input.previewRuntime ?? "client";
         if (
           existing &&
-          existing.workspaceFingerprint === prepared.workspaceFingerprint &&
+          existing.reuseKey !== null &&
+          existing.reuseKey === reuseKey &&
           existing.previewRuntime === previewRuntime
         ) {
-          // The files it names are the ones already there. Its snapshot may
-          // differ only in its ticket, which orders it against content syncs:
-          // written under the same rule as one.
+          // Every file it names apart from the content snapshot is the one
+          // already there. The snapshot may differ in its ticket and in its
+          // content; it is written under the rule a content sync is — only a
+          // higher ticket replaces what is on disk.
           recordLaidOut();
           const plannedContent = plannedContentText(prepared.workspaceFiles);
           if (plannedContent !== null) {
-            await this.writeContentNow(input.previewId, plannedContent);
+            const written = await this.writeContentNow(
+              input.previewId,
+              plannedContent,
+            );
+            // The Worker reads the data file; a page in the browser loads the
+            // snapshot module, so the same snapshot goes there too — but only
+            // when the data file took it, so an older start never puts its
+            // module over the newer content on disk.
+            const plannedModule = plannedText(
+              prepared.workspaceFiles,
+              CONTENT_SNAPSHOT_MODULE_PATH,
+            );
+            if (written.outcome === "written" && plannedModule !== null) {
+              await new LocalThemeWorkspaceWriter({
+                root: existing.root,
+              }).writeFile(CONTENT_SNAPSHOT_MODULE_PATH, plannedModule);
+            }
+            if (written.outcome === "conflict") {
+              addLog(
+                `PREVIEW_CONTENT_TICKET_CONFLICT: this start's snapshot names ticket ${written.ticket} with other content than the one already laid out; the one on disk was kept.`,
+              );
+            }
           }
           return {
             ok: true,
@@ -689,8 +766,8 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             },
           );
           // Committed last, so a partial write can never make a later start trust
-          // an incomplete workspace. The in-memory fingerprint above is what
-          // actually decides reuse in this process; this is the same marker the
+          // an incomplete workspace. The in-memory reuse key is what actually
+          // decides reuse in this process; this is the same marker the
           // sandbox writes, for a start that follows a process restart.
           await writer.writeFile(
             `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
@@ -767,7 +844,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               : null;
             this.running.set(input.previewId, {
               root,
-              workspaceFingerprint: prepared.workspaceFingerprint,
+              reuseKey,
               previewRuntime,
               url,
               origin,
@@ -899,7 +976,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             : null;
           this.running.set(input.previewId, {
             root,
-            workspaceFingerprint: prepared.workspaceFingerprint,
+            reuseKey,
             previewRuntime,
             url,
             origin,
@@ -1481,8 +1558,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    * than by a reload, which is what keeps the state the author is looking at.
    *
    * A fingerprint that matched before this call no longer describes the
-   * workspace, so it is invalidated first: if this throws halfway, the next
-   * start lays the whole plan out again instead of trusting a partial update.
+   * workspace, so it is invalidated first — the marker on disk and the
+   * running server's reuse key both — once any file is about to change: the
+   * next start lays the whole plan out again instead of trusting a partial
+   * update, or files no plan named.
    *
    * The paths the workspace owns are refused by the same two rules the sandbox
    * path refuses them with, before anything is read or written: an editor may
@@ -1581,6 +1660,11 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         continue;
       }
       if (!invalidated) {
+        // In memory too: the reuse key is what a start in this process is
+        // judged by, and the plan it came from no longer describes these
+        // files. Withdrawn before the first write, as the marker is, so a
+        // sync that throws halfway leaves nothing a start could reuse.
+        this.running.set(previewId, { ...running, reuseKey: null });
         await writer.writeFile(
           `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
           "dirty",
