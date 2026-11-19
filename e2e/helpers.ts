@@ -1,4 +1,10 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Frame,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import { startRequestTimeline } from "./request-timeline";
 import { assertPreviewedThemeVerified } from "./helpers/recorded-preview-runtime";
 import {
@@ -34,6 +40,20 @@ export const SAMPLE_OFFSETS: ReadonlyArray<readonly [number, number]> = [
 export function previewFrame(page: Page) {
   assertPreviewedThemeVerified(page);
   return page.frameLocator("iframe");
+}
+
+/**
+ * The canvas document as a Frame, on either preview runtime: the one http
+ * frame not on the editor's origin. A client preview lives under a path on the
+ * preview host and a Start preview at its root, so the URL path cannot tell
+ * them apart; both are on a host of their own, never the editor's.
+ */
+export function previewFrameOf(page: Page): Frame | undefined {
+  const editorOrigin = new URL(page.url()).origin;
+  return page.frames().find((frame) => {
+    const url = frame.url();
+    return url.startsWith("http") && new URL(url).origin !== editorOrigin;
+  });
 }
 
 export function median(values: number[]) {
