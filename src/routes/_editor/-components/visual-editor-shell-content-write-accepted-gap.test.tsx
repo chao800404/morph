@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
@@ -344,6 +345,8 @@ const saveStatus = () =>
 const notices = () => ({
   status: saveStatus(),
   tryAgain: screen.queryByRole("button", { name: "Try again" }) !== null,
+  saveMyChanges: screen.queryByRole("button", { name: "Save my changes" }) !== null,
+  signInExpired: (document.body.textContent ?? "").includes("Your sign-in has expired"),
   unconfirmed:
     document
       .querySelector("[data-editor-unconfirmed-saves]")
@@ -370,6 +373,7 @@ beforeEach(() => {
   posted.length = 0;
   canvasRevision = 0;
   renderedGenerations = [];
+  useEditorWriteGateStore.setState({ gates: {} });
   useThemeWorkspaceStore.setState({
     acceptedGenerations: {},
     observedGenerations: {},
@@ -466,4 +470,189 @@ describe("input after a write was answered, before the context rendered it", () 
     expect(notices().errors).toEqual([]);
     expect(notices().warnings).toEqual([]);
   });
+
+  it("G2 leaving the field in the window without a change sends nothing", async () => {
+    renderEditor();
+    await firstWriteAnsweredContextBehind();
+
+    const field = screen.getByDisplayValue(EDITED);
+    fireEvent.focus(field);
+    fireEvent.blur(field);
+    await releaseNotifications();
+    await debounceRuns();
+    await debounceRuns();
+
+    expect(updateSectionProps, "W1 only").toHaveBeenCalledTimes(1);
+    expect(shownHeading()).toBe(EDITED);
+    expect(await serverRead()).toMatchObject({ heading: EDITED });
+    expect(notices().errors).toEqual([]);
+  });
+
+  it("G3 a canvas commit of the text W1 wrote, in the window, is no change and sends nothing", async () => {
+    renderEditor();
+    await firstWriteAnsweredContextBehind();
+
+    // The heading selected the way the round-trip tests select it.
+    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    await settle();
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: EDITED,
+      originalValue: EDITED,
+    });
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    await releaseNotifications();
+    await debounceRuns();
+    await debounceRuns();
+
+    expect(updateSectionProps, "W1 only: the commit holds W1's text").toHaveBeenCalledTimes(1);
+    expect(await serverRead()).toMatchObject({ heading: EDITED });
+    expect(server.generation).toBe(2);
+    expect(notices().infos).toEqual([]);
+    expect(notices().errors).toEqual([]);
+  });
 });
+
+describe("a second write that is not answered, or not sent, keeps its existing notices in the window", () => {
+  /** W2 gets no answer: the request fails with no response. */
+  const secondWriteUnanswered = () => {
+    const answered = updateSectionProps.getMockImplementation()!;
+    updateSectionProps.mockImplementation(async (args: unknown) => {
+      if (updateSectionProps.mock.calls.length === 2) throw new Error("offline");
+      return answered(args);
+    });
+  };
+  /** Writes stop: the sign-in expired, as a refused write would have said. */
+  const writesPause = () => {
+    act(() => {
+      useEditorWriteGateStore.getState().pause(scope, "AUTH_REQUIRED", "theme");
+    });
+  };
+  /** The author signs in again and chooses to save. */
+  async function resumeWrites() {
+    const gate = useEditorWriteGateStore.getState();
+    const epoch = gate.beginVerification(scope);
+    if (epoch === null) throw new Error("Expected a paused write gate");
+    act(() => {
+      gate.finishVerification(scope, epoch, "verified");
+    });
+    await settle();
+    const save = screen.getByRole("button", { name: "Save my changes" });
+    expect(save.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(save);
+    await debounceRuns();
+    await debounceRuns();
+  }
+
+  it("U0 outside the window (control): what an unanswered input after W1 shows", async () => {
+    secondWriteUnanswered();
+    renderEditor();
+    await firstWriteAnsweredContextBehind();
+    await releaseNotifications();
+    expect(renderedGenerations.at(-1)).toBe(2);
+
+    typeHeading(EDITED, ORIGINAL);
+    await debounceRuns();
+    await debounceRuns();
+
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+    expect(sentAt(1)).toMatchObject({ props: { heading: ORIGINAL }, expectedDraftGeneration: 2 });
+    expect(shownHeading()).toBe(ORIGINAL);
+    expect(notices()).toEqual(UNANSWERED_NOTICES);
+  });
+
+  it("U1 in the window: the same write, the same notices, the input kept", async () => {
+    secondWriteUnanswered();
+    renderEditor();
+    await firstWriteAnsweredContextBehind();
+
+    typeHeading(EDITED, ORIGINAL);
+    await releaseNotifications();
+    await debounceRuns();
+    await debounceRuns();
+
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+    expect(sentAt(1)).toMatchObject({ props: { heading: ORIGINAL }, expectedDraftGeneration: 2 });
+    expect(shownHeading()).toBe(ORIGINAL);
+    expect(notices()).toEqual(UNANSWERED_NOTICES);
+    // Not landed: the server still holds W1's value.
+    expect(await serverRead()).toMatchObject({ heading: EDITED });
+  });
+
+  it("H0 outside the window (control): an input while writes are paused is held, then sent on resume", async () => {
+    renderEditor();
+    await firstWriteAnsweredContextBehind();
+    await releaseNotifications();
+    expect(renderedGenerations.at(-1)).toBe(2);
+
+    writesPause();
+    typeHeading(EDITED, ORIGINAL);
+    await debounceRuns();
+    await debounceRuns();
+
+    expect(updateSectionProps, "held, not sent").toHaveBeenCalledTimes(1);
+    expect(shownHeading()).toBe(ORIGINAL);
+    expect(notices()).toEqual(PAUSED_NOTICES);
+
+    await resumeWrites();
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+    expect(sentAt(1)).toMatchObject({ props: { heading: ORIGINAL }, expectedDraftGeneration: 2 });
+    expect(shownHeading()).toBe(ORIGINAL);
+    expect(await serverRead()).toMatchObject({ heading: ORIGINAL });
+  });
+
+  it("H1 in the window: the input is held with the same notices, then sent once on resume", async () => {
+    renderEditor();
+    await firstWriteAnsweredContextBehind();
+
+    writesPause();
+    typeHeading(EDITED, ORIGINAL);
+    await releaseNotifications();
+    await debounceRuns();
+    await debounceRuns();
+
+    expect(updateSectionProps, "held, not sent").toHaveBeenCalledTimes(1);
+    expect(shownHeading()).toBe(ORIGINAL);
+    expect(notices()).toEqual(PAUSED_NOTICES);
+
+    await resumeWrites();
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+    expect(sentAt(1)).toMatchObject({ props: { heading: ORIGINAL }, expectedDraftGeneration: 2 });
+    expect(shownHeading()).toBe(ORIGINAL);
+    expect(await serverRead()).toMatchObject({ heading: ORIGINAL });
+  });
+});
+
+/**
+ * What the editor shows for an unanswered content write, read from the
+ * control U0 on main's behaviour: the window changes none of it.
+ */
+const UNANSWERED_NOTICES = {
+  status: "Save failed",
+  tryAgain: true,
+  saveMyChanges: false,
+  signInExpired: false,
+  unconfirmed: "1",
+  errors: ["Failed to update section properties"],
+  warnings: [],
+  infos: [],
+};
+/** What the editor shows for a content input held while writes are paused (H0). */
+const PAUSED_NOTICES = {
+  status: "Unsaved",
+  tryAgain: false,
+  saveMyChanges: false,
+  signInExpired: true,
+  unconfirmed: null,
+  errors: [],
+  warnings: [],
+  infos: [],
+};
