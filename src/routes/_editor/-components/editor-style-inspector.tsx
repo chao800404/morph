@@ -983,9 +983,15 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    * The author changed the field at `fieldPath`, made on the newest accepted
    * copy, which may hold a write answered but not yet shown here: the next
    * server copy is rebased against it for that field's top-level key. Every
-   * path that puts an author's input into the local props calls this first,
-   * or a value put back to what it was before that write would be replaced
-   * by the write's value when its copy renders.
+   * path that sets a field to a value calls this first, or a value put back to
+   * what it was before that write would be replaced by the write's value when
+   * its copy renders.
+   *
+   * Local-props writes that do not call it, and why: the instance-style
+   * `itemId` mint (a fresh id can never equal the older baseline), the field
+   * reset removal and the list-reset effect (they remove a key rather than set
+   * a value, and `rebaseContentProps` never keeps a removed key, so a
+   * baseline move cannot help them).
    */
   const noteInputOn = useCallback(
     (fieldPath: string) =>
@@ -2989,9 +2995,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
        * list the Document does not store yet starts from these rows, so the
        * declared defaults are kept and the index pressed is the row drawn.
        */
-      seed?: { key: string; value: unknown },
-      /** The top-level list being written, e.g. `items`. */
-      listKey?: string,
+      seed: { key: string; value: unknown } | undefined,
+      /**
+       * The top-level list being written, e.g. `items`. Required so that a
+       * caller cannot skip moving the list's rebase baseline.
+       */
+      listKey: string,
     ) => {
       if (documentWritesRefusedRef.current) return;
       const result = mutate(seedUnstoredList(localPropsRef.current, seed));
@@ -3006,7 +3015,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         return;
       }
       const next = toStorableContentProps(result.value);
-      if (listKey) noteInputOn(listKey);
+      noteInputOn(listKey);
       localPropsRef.current = next;
       setLocalProps(next);
       // A row selected without an id: the row itself is refused and its list

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorStyleInspector } from "./editor-style-inspector";
 
@@ -28,14 +28,15 @@ const entriesFile = {
   themeId: "theme-1",
   path: ENTRIES_PATH,
   content: `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
   items: {
     type: "array",
     label: "Entries",
     fields: { title: { type: "text", label: "Title" } },
   },
 } as const;
-export default function Entries({ items = [] }: { items?: { id?: string; title?: string }[] }) {
-  return <section>{items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}</section>;
+export default function Entries({ heading, items = [] }: { heading?: string; items?: { id?: string; title?: string }[] }) {
+  return <section><h2>{heading}</h2>{items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}</section>;
 }`,
   mimeType: "text/typescript",
   isEntry: false,
@@ -125,6 +126,27 @@ describe("Inspector write paths in the window after an answered write", () => {
     expect(screen.queryByDisplayValue("Two!"), "W1's row value rendered over the input").toBeNull();
     expect(screen.getByDisplayValue("Two")).toBeTruthy();
   });
+
+  it("control: another field changed by another writer in the window is still adopted, only the edited key is kept", () => {
+    const before = { heading: "H0", items: [ONE, TWO] };
+    const { onPropsChange, accepted, rendersCopy } = renderEntries(before);
+
+    fireEvent.input(screen.getByDisplayValue("Two"), { target: { value: "Two!" } });
+    const afterW1 = onPropsChange.mock.lastCall![0] as Props;
+    expect(afterW1).toEqual({ heading: "H0", items: [ONE, { ...TWO, title: "Two!" }] });
+    // Another writer changed the heading in the same accepted copy.
+    const accepted2 = { ...afterW1, heading: "H1" };
+    accepted.current = accepted2;
+
+    fireEvent.input(screen.getByDisplayValue("Two!"), { target: { value: "Two" } });
+    expect(onPropsChange.mock.lastCall![0]).toEqual(before);
+
+    rendersCopy(accepted2);
+    expect(screen.queryByDisplayValue("Two!"), "the edited key is kept").toBeNull();
+    expect(screen.getByDisplayValue("Two")).toBeTruthy();
+    expect(screen.getByDisplayValue("H1"), "the other field's change is adopted").toBeTruthy();
+    expect(screen.queryByDisplayValue("H0")).toBeNull();
+  });
 });
 
 const GALLERY_PATH = "src/components/Gallery.tsx";
@@ -202,15 +224,12 @@ function renderGallery(initial: Props) {
 async function choosePosition(name: string) {
   const trigger = screen.getByRole("combobox", { name: "Object position" });
   fireEvent.keyDown(trigger, { key: "Enter" });
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  });
-  const option = screen.getByRole("option", { name });
+  const option = await screen.findByRole("option", { name });
   fireEvent.keyDown(option, { key: "Enter" });
   fireEvent.click(option);
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  });
+  await waitFor(() =>
+    expect(screen.queryByRole("option", { name })).toBeNull(),
+  );
 }
 
 describe("the object position control in the window after an answered write", () => {
