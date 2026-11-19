@@ -407,8 +407,9 @@ function asOlderServiceAnswer(body: string): string {
   return out;
 }
 
+test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
+
 test.describe("presentation ack and unsupported bridge refresh", () => {
-  test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
   restoreHeroAfterFailure();
 
   test("normal edit receives accepted section-presentation-ack without validation rejection", async ({
