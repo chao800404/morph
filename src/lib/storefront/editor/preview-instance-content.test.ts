@@ -3,6 +3,7 @@ import {
   createInstanceContentReplay,
   INSTANCE_REPLAY_CONFIRM_TIMEOUT_MS,
   instanceReplaySection,
+  previewSectionPostShowsAccepted,
   type InstanceReplayFrame,
 } from "./preview-instance-content";
 import type { ContentSnapshot } from "./content-write-snapshot";
@@ -205,6 +206,61 @@ describe("instanceReplaySection", () => {
     expect(
       replay({ pending: pending({ heading: field("Typed", { rejected: true }) }) }),
     ).toBeNull();
+  });
+});
+
+describe("previewSectionPostShowsAccepted", () => {
+  const shows = (args: {
+    snapshot?: ContentSnapshot;
+    pending?: PendingContentEntry;
+    unconfirmed?: PendingContentEntry;
+  }) =>
+    previewSectionPostShowsAccepted({
+      snapshot: args.snapshot,
+      sectionId: "hero",
+      pending: args.pending,
+      unconfirmed: args.unconfirmed,
+      sourceGeneration: GEN,
+    });
+
+  it("holds for a section with nothing on top of the accepted copy, shown or hidden", () => {
+    expect(shows({ snapshot: snapshot({ heading: "Saved" }) })).toBe(true);
+    expect(
+      shows({ snapshot: snapshot({ heading: "Saved" }, { enabled: false }) }),
+    ).toBe(true);
+  });
+
+  it("does not hold when a held draft would be put on the canvas", () => {
+    expect(
+      shows({
+        snapshot: snapshot({ heading: "Saved" }),
+        pending: pending({ heading: field("Typed", { basisDraftGeneration: 10 }) }),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not hold when a held hide or show changes the section's visibility", () => {
+    expect(
+      shows({
+        snapshot: snapshot({ heading: "Saved" }),
+        pending: pending({ enabled: field(false) }),
+      }),
+    ).toBe(false);
+    expect(
+      shows({
+        snapshot: snapshot({ heading: "Saved" }, { enabled: false }),
+        unconfirmed: pending({ enabled: field(true) }),
+      }),
+    ).toBe(false);
+  });
+
+  it("holds when the held draft is one the canvas would not show", () => {
+    expect(
+      shows({
+        snapshot: snapshot({ heading: "Saved" }),
+        pending: pending({ heading: field("Typed", { rejected: true }) }),
+      }),
+    ).toBe(true);
   });
 });
 

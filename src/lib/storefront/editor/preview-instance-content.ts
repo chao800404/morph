@@ -236,6 +236,28 @@ export function previewSectionPost(args: {
   return section ? { props: section.props, enabled: true } : null;
 }
 
+/**
+ * Whether the section's post (`previewSectionPost`) is the accepted copy
+ * alone: nothing the editor holds on top of it — a pending field, a hide or
+ * show not yet answered — would change what the page shows.
+ *
+ * A page rendered from that accepted copy is then told what it already
+ * shows, and its layout cannot move. Compared as posted values, so a
+ * difference in key order only counts as a change (one measurement more),
+ * never the other way round.
+ */
+export function previewSectionPostShowsAccepted(
+  args: Parameters<typeof previewSectionPost>[0],
+): boolean {
+  const post = previewSectionPost(args);
+  const accepted = previewSectionPost({
+    ...args,
+    pending: undefined,
+    unconfirmed: undefined,
+  });
+  return JSON.stringify(post) === JSON.stringify(accepted);
+}
+
 /** The frame, ready round and route a replay is for. */
 export type InstanceReplayFrame = Readonly<{
   key: string;

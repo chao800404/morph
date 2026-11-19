@@ -344,6 +344,7 @@ import {
   createInstanceContentReplay,
   previewSectionHidden,
   previewSectionPost,
+  previewSectionPostShowsAccepted,
   type InstanceContentReplay,
 } from "@/lib/storefront/editor/preview-instance-content";
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
@@ -7410,6 +7411,42 @@ export function VisualEditorShell({
   previewSelectionFieldRef.current = previewSelectionField;
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
+  /**
+   * A presentation replay posts every bound section at once. Each section
+   * post on its own schedules a remeasure, and scheduling one starts a new
+   * measurement revision, so a replay of N sections discarded the size answer
+   * already on its way N times over and left the canvas at its old height
+   * until a later answer came back. While a replay runs, its posts only note
+   * here that they were sent; the replay then schedules one remeasure, and
+   * none when it told the frame nothing that can change its layout
+   * (`runPresentationReplayBatch`).
+   */
+  const presentationReplayBatchRef = useRef<{
+    posted: boolean;
+    mayChangeLayout: boolean;
+  } | null>(null);
+  const runPresentationReplayBatch = useCallback(
+    (
+      send: (batch: { posted: boolean; mayChangeLayout: boolean }) => void,
+    ) => {
+      const outer = presentationReplayBatchRef.current;
+      const batch = { posted: false, mayChangeLayout: false };
+      presentationReplayBatchRef.current = batch;
+      try {
+        send(batch);
+      } finally {
+        presentationReplayBatchRef.current = outer;
+      }
+      if (!batch.posted || !batch.mayChangeLayout) return;
+      if (outer) {
+        outer.posted = true;
+        outer.mayChangeLayout = true;
+        return;
+      }
+      schedulePreviewRemeasureRef.current();
+    },
+    [],
+  );
   const resyncUnackedSectionPresentationRef = useRef<() => void>(() => {});
   const resyncReturnedPagePresentationRef = useRef<() => void>(() => {});
 
@@ -14430,8 +14467,14 @@ export function VisualEditorShell({
       // not just a file write. The theme's own `min-h-screen` resolves
       // against the frame, so content that becomes shorter cannot report
       // itself shorter — hiding a section or shortening a heading would
-      // otherwise leave the space it used to occupy behind.
-      schedulePreviewRemeasureRef.current();
+      // otherwise leave the space it used to occupy behind. A replay's posts
+      // are measured once, by the replay (`presentationReplayBatchRef`).
+      const replayBatch = presentationReplayBatchRef.current;
+      if (replayBatch) {
+        replayBatch.posted = true;
+      } else {
+        schedulePreviewRemeasureRef.current();
+      }
     },
     [
       activeTemplate,
@@ -14625,9 +14668,24 @@ export function VisualEditorShell({
     ) {
       return;
     }
-    for (const sectionId of sectionModelRef.current.bindings.keys()) {
-      reconcilePreviewSection(sectionId);
-    }
+    // The first document was rendered from the accepted copy this editor
+    // loaded, so a section whose post is that copy alone is told what it
+    // already shows: its layout, and the size answer already on its way for
+    // it, stay valid. A held draft or an unanswered hide or show on top does
+    // change the page, and the replay then measures once, after its posts.
+    runPresentationReplayBatch((batch) => {
+      const sourceGeneration = currentContentSourceGeneration();
+      for (const sectionId of sectionModelRef.current.bindings.keys()) {
+        const state = previewSectionStateRef.current(sectionId);
+        if (
+          state &&
+          !previewSectionPostShowsAccepted({ ...state, sourceGeneration })
+        ) {
+          batch.mayChangeLayout = true;
+        }
+        reconcilePreviewSection(sectionId);
+      }
+    });
   };
   previewVisibilityRef.current.reconcile = reconcilePreviewSection;
 
@@ -14652,60 +14710,71 @@ export function VisualEditorShell({
           return;
         }
       }
-      const sourceGeneration = currentContentSourceGeneration();
-      for (const [sectionId, binding] of sectionModelRef.current.bindings) {
-        const templateId = binding.templateId;
-        if (unackedMode !== false) {
-          const sectionKey = sectionPresentationKey(templateId, sectionId);
-          if (acknowledgedSectionPresentationRef.current.has(sectionKey)) {
-            continue;
-          }
-          if (unackedMode === "skip-pending") {
-            let hasPending = false;
-            for (const pending of pendingSectionPresentationRef.current.values()) {
-              if (pending.sectionKey === sectionKey) {
-                hasPending = true;
-                break;
+      // The page this replay is for was rendered from a start snapshot, or
+      // has come back to the editor's page, so the editor cannot say it
+      // already shows these values: one remeasure after the posts, never one
+      // per section (`presentationReplayBatchRef`).
+      runPresentationReplayBatch((batch) => {
+        batch.mayChangeLayout = true;
+        const sourceGeneration = currentContentSourceGeneration();
+        for (const [sectionId, binding] of sectionModelRef.current.bindings) {
+          const templateId = binding.templateId;
+          if (unackedMode !== false) {
+            const sectionKey = sectionPresentationKey(templateId, sectionId);
+            if (acknowledgedSectionPresentationRef.current.has(sectionKey)) {
+              continue;
+            }
+            if (unackedMode === "skip-pending") {
+              let hasPending = false;
+              for (const pending of pendingSectionPresentationRef.current.values()) {
+                if (pending.sectionKey === sectionKey) {
+                  hasPending = true;
+                  break;
+                }
+              }
+              if (hasPending) continue;
+            } else {
+              for (const [opId, pending] of pendingSectionPresentationRef.current) {
+                if (pending.sectionKey === sectionKey) {
+                  pendingSectionPresentationRef.current.delete(opId);
+                }
               }
             }
-            if (hasPending) continue;
-          } else {
-            for (const [opId, pending] of pendingSectionPresentationRef.current) {
-              if (pending.sectionKey === sectionKey) {
-                pendingSectionPresentationRef.current.delete(opId);
-              }
-            }
           }
-        }
-        const key = contentKeyFor(templateId, sectionId);
-        const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
-        // A hidden section is replayed as hidden, with no props: its
-        // stored values stay with the editor (`previewSectionPost`).
-        const section = previewSectionPost({
-          snapshot: contentSnapshotsRef.current.get(
-            routeTemplateIdsRef.current.get(templateId) ?? templateId,
-          ),
-          sectionId,
-          pending: pendingPropsMapRef.current.get(key),
-          unconfirmed: unconfirmedContentRef.current.get(key),
-          sourceGeneration,
-          missingBasis:
-            routePathFromTemplatePlaceholder(keyTemplateId) !== null
-              ? unnamedCopyBasis(keyTemplateId)
+          const key = contentKeyFor(templateId, sectionId);
+          const keyTemplateId = key.slice(0, key.length - sectionId.length - 1);
+          // A hidden section is replayed as hidden, with no props: its
+          // stored values stay with the editor (`previewSectionPost`).
+          const section = previewSectionPost({
+            snapshot: contentSnapshotsRef.current.get(
+              routeTemplateIdsRef.current.get(templateId) ?? templateId,
+            ),
+            sectionId,
+            pending: pendingPropsMapRef.current.get(key),
+            unconfirmed: unconfirmedContentRef.current.get(key),
+            sourceGeneration,
+            missingBasis:
+              routePathFromTemplatePlaceholder(keyTemplateId) !== null
+                ? unnamedCopyBasis(keyTemplateId)
+                : undefined,
+          });
+          syncPreviewSectionProps(
+            sectionId,
+            section?.props
+              ? (parsePreviewSectionProps(section.props) ?? undefined)
               : undefined,
-        });
-        syncPreviewSectionProps(
-          sectionId,
-          section?.props
-            ? (parsePreviewSectionProps(section.props) ?? undefined)
-            : undefined,
-          section?.enabled ?? true,
-          undefined,
-          isCurrent,
-        );
-      }
+            section?.enabled ?? true,
+            undefined,
+            isCurrent,
+          );
+        }
+      });
     },
-    [currentContentSourceGeneration, syncPreviewSectionProps],
+    [
+      currentContentSourceGeneration,
+      runPresentationReplayBatch,
+      syncPreviewSectionProps,
+    ],
   );
   resyncUnackedSectionPresentationRef.current = () => {
     replayBoundSections(undefined, "replace-pending");
