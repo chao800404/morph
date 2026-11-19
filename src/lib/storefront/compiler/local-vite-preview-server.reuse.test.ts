@@ -177,6 +177,8 @@ describe("a Start start on the local transport, content against source", () => {
   let forks = 0;
   /** Children closed so far. */
   let closed = 0;
+  /** Makes the n-th stand-in child "die" without a close, as a crash does. */
+  const kills: (() => void)[] = [];
 
   const start = async (
     previewContent: ThemePreviewContentSnapshot,
@@ -209,6 +211,7 @@ describe("a Start start on the local transport, content against source", () => {
     await fs.mkdir(WORKSPACES_ROOT, { recursive: true });
     forks = 0;
     closed = 0;
+    kills.length = 0;
     server = new LocalVitePreviewServer({
       workspacesRoot: WORKSPACES_ROOT,
       toolchainRoot: process.cwd(),
@@ -225,6 +228,9 @@ describe("a Start start on the local transport, content against source", () => {
     ).mockImplementation(async () => {
       forks += 1;
       let alive = true;
+      kills.push(() => {
+        alive = false;
+      });
       return {
         port: 59_000 + forks,
         handle: {
@@ -377,5 +383,83 @@ describe("a Start start on the local transport, content against source", () => {
     const again = await start(await content("A", 2));
     expect(forks).toBe(1);
     expect(again.timings?.reusedProcess).toBe(true);
+  });
+
+  it("does not reuse a child that has died, and starts a new one", async () => {
+    const first = await start(await content("A", 1));
+    expect(forks).toBe(1);
+    kills[0]();
+
+    const again = await start(await content("A", 2));
+    expect(forks).toBe(2);
+    expect(again.timings?.reusedProcess).toBe(false);
+    expect(again.url).not.toBe(first.url);
+    expect(
+      await server.isServing({
+        previewId: PREVIEW_ID,
+        previewHostname: "127.0.0.1",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not bring a stopped preview back when a stop lands inside a source sync", async () => {
+    await start(await content("A", 1));
+    const realReadFile = fs.readFile.bind(fs);
+    let stopped = false;
+    const spy = vi.spyOn(fs, "readFile").mockImplementation(((
+      ...args: Parameters<typeof fs.readFile>
+    ) => {
+      if (!stopped && String(args[0]).endsWith(SOURCE_FILE.path)) {
+        stopped = true;
+        return server.stop(PREVIEW_ID).then(() => realReadFile(...args));
+      }
+      return realReadFile(...args);
+    }) as never);
+    try {
+      await server
+        .writeFiles(PREVIEW_ID, [
+          {
+            path: SOURCE_FILE.path,
+            content: `${SOURCE_FILE.content}
+// synced
+`,
+          },
+        ])
+        .catch(() => {});
+    } finally {
+      spy.mockRestore();
+    }
+    expect(stopped).toBe(true);
+    expect(server.servingPreviewIds()).toEqual([]);
+    expect(
+      await server.isServing({
+        previewId: PREVIEW_ID,
+        previewHostname: "127.0.0.1",
+      }),
+    ).toBe(false);
+  });
+
+  it("lays the snapshot module out by a rename, never by writing the live file", async () => {
+    await start(await content("A", 1));
+    const renames: string[] = [];
+    const realRename = fs.rename.bind(fs);
+    const spy = vi.spyOn(fs, "rename").mockImplementation(((
+      from: string,
+      to: string,
+    ) => {
+      renames.push(String(to));
+      return realRename(from, to);
+    }) as never);
+    try {
+      await start(await content("B", 2));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(renames).toContain(SNAPSHOT_MODULE);
+    expect(await moduleOnDisk()).toContain('"headline":"B"');
+    const left = (await fs.readdir(path.dirname(SNAPSHOT_MODULE))).filter(
+      (name) => name.includes(".next-"),
+    );
+    expect(left).toEqual([]);
   });
 });

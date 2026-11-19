@@ -234,6 +234,16 @@ async function linkToolchainModules(root: string, modules: string): Promise<void
 }
 
 /**
+ * Replaces a file by one rename, so a watcher (Vite's) never reads it
+ * truncated or half written.
+ */
+async function writeFileAtomically(target: string, text: string): Promise<void> {
+  const next = `${target}.next-${randomUUID()}`;
+  await fs.writeFile(next, text);
+  await fs.rename(next, target);
+}
+
+/**
  * Stamps the content file a workspace holds with the dev server about to
  * serve it, by one rename. A workspace without one has nothing to stamp.
  */
@@ -651,7 +661,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           existing &&
           existing.reuseKey !== null &&
           existing.reuseKey === reuseKey &&
-          existing.previewRuntime === previewRuntime
+          existing.previewRuntime === previewRuntime &&
+          // A child that died keeps its entry; reusing it would answer ok
+          // for an address nothing listens on. It falls through to a restart.
+          existing.server.listening()
         ) {
           // Every file it names apart from the content snapshot is the one
           // already there. The snapshot may differ in its ticket and in its
@@ -673,9 +686,13 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               CONTENT_SNAPSHOT_MODULE_PATH,
             );
             if (written.outcome === "written" && plannedModule !== null) {
-              await new LocalThemeWorkspaceWriter({
-                root: existing.root,
-              }).writeFile(CONTENT_SNAPSHOT_MODULE_PATH, plannedModule);
+              await writeFileAtomically(
+                path.join(
+                  existing.root,
+                  THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH,
+                ),
+                plannedModule,
+              );
             }
             if (written.outcome === "conflict") {
               addLog(
@@ -1664,7 +1681,11 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         // judged by, and the plan it came from no longer describes these
         // files. Withdrawn before the first write, as the marker is, so a
         // sync that throws halfway leaves nothing a start could reuse.
-        this.running.set(previewId, { ...running, reuseKey: null });
+        // Only while this entry is still the registered one: a stop that landed
+        // during the reads above has removed it, and must stay removed.
+        if (this.running.get(previewId) === running) {
+          this.running.set(previewId, { ...running, reuseKey: null });
+        }
         await writer.writeFile(
           `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
           "dirty",
