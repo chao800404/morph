@@ -835,7 +835,7 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
   it("case 2: refuses another instance's identity with this section (swapped), and writes nothing", async () => {
     const before = stored("tpl-about");
     await expect(write(await identityOf("/about", "team"))).rejects.toThrow(
-      /^SECTION_SOURCE_UNCONFIRMABLE: preview-identity-mismatch: /,
+      /^SECTION_SOURCE_UNCONFIRMED: section-mismatch: /,
     );
     expect(stored("tpl-about")).toEqual(before);
   });
@@ -979,7 +979,7 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     const before = stored("tpl-about");
     await expect(
       write({ ...(await identityOf("/about", "intro")), routePath: "/" }),
-    ).rejects.toThrow(/^SECTION_SOURCE_UNCONFIRMABLE: route-mismatch: /);
+    ).rejects.toThrow(/^SECTION_SOURCE_UNCONFIRMED: route-mismatch: /);
     expect(stored("tpl-about")).toEqual(before);
   });
 
@@ -1131,6 +1131,20 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     });
     expect(fetch.calls).toBe(0);
     expect(stored("tpl-notes")).toEqual(before);
+  });
+
+  it("refuses a dynamic page's Document by the page lookup's code (L5), and writes nothing", async () => {
+    const request = await identityOf("/about", "intro");
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates (id, theme_id, type, name, route_path, document, created_at, updated_at)
+      VALUES ('tpl-post', 'theme-a', 'page', '/blog/[slug]', '/blog/[slug]', '{"version":1,"sections":[]}', 'now', 'now');
+    `);
+    const fetch = countParserCalls();
+    await expect(
+      write({ ...request, templateId: "tpl-post", routePath: undefined }),
+    ).rejects.toThrow(/^SECTION_SOURCE_UNCONFIRMED: dynamic-route: /);
+    expect(fetch.calls).toBe(0);
+    expect(stored("tpl-post").template.draft_generation).toBe(1);
   });
 
   it("answers a parser binding failure with its reason code, never the binding's own message (L6)", async () => {

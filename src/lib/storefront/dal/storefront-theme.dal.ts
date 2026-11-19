@@ -458,7 +458,11 @@ function astroPageAt(
   routePath: string,
 ):
   | Readonly<{ ok: true; record: ThemeRouteRegistry["routes"][number] }>
-  | Readonly<{ ok: false; reason: string }> {
+  | Readonly<{
+      ok: false;
+      code: "route-missing" | "dynamic-route";
+      reason: string;
+    }> {
   const routes = themeRoutesFor("astro", files);
   const record = routes.ok
     ? routes.registry.routes.find(
@@ -471,12 +475,14 @@ function astroPageAt(
   if (!record) {
     return {
       ok: false,
+      code: "route-missing",
       reason: `${routePath} is not a page in the saved Theme source.`,
     };
   }
   if (record.dynamic) {
     return {
       ok: false,
+      code: "dynamic-route",
       reason: `${routePath} has route parameters, so it has no content document of its own.`,
     };
   }
@@ -516,7 +522,7 @@ async function ensureAstroHomeTemplate(data: {
     await listThemeSourceFiles(data.storefrontId, data.themeId),
     "/",
   );
-  if (!page.ok) return page;
+  if (!page.ok) return { ok: false, reason: page.reason };
   const db = await getDb();
   const readExisting = async () => {
     const [row] = await db
@@ -626,6 +632,25 @@ function astroSectionRefusal(refusal: AstroBindingRefusal): Error {
 }
 
 /**
+ * A write that names another page (`route-mismatch`) or another section
+ * (`section-mismatch`) than Core proves the target to be: an editor defect
+ * or tampering, never a stale preview, so `SECTION_SOURCE_UNCONFIRMED`
+ * (not retryable). The same payload would be refused the same way again.
+ */
+function astroRequestMismatchRefusal(
+  reason: "route-mismatch" | "section-mismatch",
+  detail: string,
+): Error {
+  return new Error(
+    sectionSourceRefusalMessage(
+      false,
+      reason,
+      `This edit names another ${reason === "route-mismatch" ? "page" : "section"} than the one it would change (${detail}). Refresh the editor.`,
+    ),
+  );
+}
+
+/**
  * Everything an Astro section write takes from the source, proven by Core
  * on the one snapshot this write reads (M2 C5; design v2 section 6 step 8,
  * section 8):
@@ -700,21 +725,16 @@ async function resolveAstroSectionWrite(args: {
     args.routePath !== undefined &&
     routeTemplatePathForRequest(args.routePath) !== pagePath
   ) {
-    throw refuse(
-      "temporarily-unconfirmable",
+    // The template decides the page; a request naming another one is an
+    // editor defect that retrying the same payload cannot fix.
+    throw astroRequestMismatchRefusal(
       "route-mismatch",
-      `this document holds content for ${pagePath}, not ${args.routePath}; refresh the editor`,
+      `this document holds content for ${pagePath}, not ${args.routePath}`,
     );
   }
   const files = await listThemeSourceFiles(args.storefrontId, args.themeId);
   const page = astroPageAt(files, pagePath);
-  if (!page.ok) {
-    throw refuse(
-      "capability-limit",
-      page.reason.includes("parameters") ? "dynamic-route" : "route-missing",
-      page.reason,
-    );
-  }
+  if (!page.ok) throw refuse("capability-limit", page.code, page.reason);
   const reading = await readAstroRoute({
     binding: astroParserBindingFrom(env),
     files,
@@ -736,6 +756,9 @@ async function resolveAstroSectionWrite(args: {
     route: reading.identityInput,
   });
   if (!verified.ok) {
+    if (verified.reason === "section-mismatch") {
+      throw astroRequestMismatchRefusal(verified.reason, verified.detail);
+    }
     throw refuse(verified.class, verified.reason, verified.detail);
   }
 
@@ -1938,7 +1961,7 @@ export const storefrontThemeDal = {
     const files = await listThemeSourceFiles(data.storefrontId, data.themeId);
     if (capability.via === "astro") {
       const page = astroPageAt(files, target.routePath);
-      if (!page.ok) return page;
+      if (!page.ok) return { ok: false, reason: page.reason };
     } else {
       const registry = buildThemeRouteRegistry(files);
       if (

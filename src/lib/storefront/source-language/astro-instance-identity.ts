@@ -112,15 +112,18 @@ export type AstroRouteIdentityInput = Readonly<{
  * - `source-stale`: the route's or the component file's digest is not the
  *   snapshot's (the preview shows another version);
  * - `preview-identity-mismatch`: same route version, but the range is not a
- *   boundary candidate (a native/Wasm disagreement, U1), or the write names
- *   another section than the instance's;
+ *   boundary candidate (a native/Wasm disagreement, U1);
  * - `analysis-inconsistent`: the analysis handed in is not of this snapshot
  *   (a caller defect; refused, never repaired).
  *
- * capability limit (Code stays available):
+ * not retryable (classed `capability-limit`; Code stays available):
  * - `no-instance`: a candidate that is not exactly one B1 instance whose
  *   component Core resolves itself (a member tag, a non-import binding such
- *   as `const Fragment = Hero`).
+ *   as `const Fragment = Hero`);
+ * - `section-mismatch`: the write names another section than the
+ *   instance's. Same source, same range: the instance's section cannot
+ *   change by retrying, so this is an editor defect (or tampering), never a
+ *   stale preview.
  */
 export type AstroIdentityRefusalReason =
   | "preview-identity-legacy"
@@ -128,7 +131,8 @@ export type AstroIdentityRefusalReason =
   | "source-stale"
   | "preview-identity-mismatch"
   | "analysis-inconsistent"
-  | "no-instance";
+  | "no-instance"
+  | "section-mismatch";
 
 export type AstroIdentityRefusal = Readonly<{
   ok: false;
@@ -176,7 +180,9 @@ const refuse = (
 ): AstroIdentityRefusal => ({
   ok: false,
   class:
-    reason === "no-instance" ? "capability-limit" : "temporarily-unconfirmable",
+    reason === "no-instance" || reason === "section-mismatch"
+      ? "capability-limit"
+      : "temporarily-unconfirmable",
   reason,
   detail,
 });
@@ -652,7 +658,7 @@ export async function verifyAstroSectionWriteIdentity(args: {
   }
   if (located.instance.section !== args.sectionId) {
     return refuse(
-      "preview-identity-mismatch",
+      "section-mismatch",
       `the instance at ${located.identity.start} is section ${String(located.instance.section)}, not ${args.sectionId}`,
     );
   }
