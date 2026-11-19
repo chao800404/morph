@@ -1133,6 +1133,31 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     expect(stored("tpl-notes")).toEqual(before);
   });
 
+  it("refuses a path two page files map to (L2), and writes nothing", async () => {
+    const request = await identityOf("/about", "intro");
+    seedFiles(THEME, STOREFRONT, [
+      { path: "src/pages/about/index.astro", content: "<p>Other about</p>\n" },
+    ]);
+    const before = stored("tpl-about");
+    const fetch = countParserCalls();
+    await expect(write(request)).rejects.toThrow(
+      /^SECTION_SOURCE_UNCONFIRMED: ambiguous-route: /,
+    );
+    await expect(read({ routePath: "/about" })).resolves.toMatchObject({
+      status: "view",
+      view: {
+        status: {
+          kind: "refused",
+          class: "capability-limit",
+          reason: "ambiguous-route",
+        },
+        instances: [],
+      },
+    });
+    expect(fetch.calls).toBe(0);
+    expect(stored("tpl-about")).toEqual(before);
+  });
+
   it("refuses a dynamic page's Document by the page lookup's code (L5), and writes nothing", async () => {
     const request = await identityOf("/about", "intro");
     sqlite.exec(`

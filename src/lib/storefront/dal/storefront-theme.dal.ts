@@ -490,6 +490,33 @@ function astroPageAt(
 }
 
 /**
+ * The source files of an Astro Theme that map to `routePath` when more than
+ * one does (`about.astro` and `about/index.astro`, or `about.astro` and
+ * `about.md`), else null. Which of them Astro serves is Astro's question,
+ * not one Core answers, so content for such a path is neither read nor
+ * written (refused as `ambiguous-route`, not retryable).
+ */
+function astroRouteAmbiguity(
+  files: readonly { path: string; content: string }[],
+  routePath: string,
+): string[] | null {
+  const routes = themeRoutesFor("astro", files);
+  if (!routes.ok) return null;
+  const sourcePaths = routes.registry.routes
+    .filter(
+      (candidate) => candidate.kind === "route" && candidate.path === routePath,
+    )
+    .map((candidate) => candidate.sourcePath);
+  return sourcePaths.length > 1 ? sourcePaths : null;
+}
+
+const astroAmbiguousRouteDetail = (
+  routePath: string,
+  sourcePaths: readonly string[],
+) =>
+  `${routePath} is served by more than one file (${sourcePaths.join(", ")}); keep one of them`;
+
+/**
  * N1: the `index` template of an Astro Theme, created empty when it has
  * none, under the same ownership check as a route document and only while
  * the saved source has a home page. Content is still proven when written.
@@ -733,6 +760,14 @@ async function resolveAstroSectionWrite(args: {
     );
   }
   const files = await listThemeSourceFiles(args.storefrontId, args.themeId);
+  const ambiguous = astroRouteAmbiguity(files, pagePath);
+  if (ambiguous) {
+    throw refuse(
+      "capability-limit",
+      "ambiguous-route",
+      astroAmbiguousRouteDetail(pagePath, ambiguous),
+    );
+  }
   const page = astroPageAt(files, pagePath);
   if (!page.ok) throw refuse("capability-limit", page.code, page.reason);
   const reading = await readAstroRoute({
@@ -1548,17 +1583,20 @@ export const storefrontThemeDal = {
             candidate.path === routePath,
         )
       : undefined;
-    const reading = record
-      ? await readAstroRoute({
-          binding: astroParserBindingFrom(env),
-          files,
-          route: {
-            path: record.path,
-            sourcePath: record.sourcePath,
-            dynamic: record.dynamic,
-          },
-        })
-      : null;
+    // Two files at one path: refused like the write, before any parse.
+    const ambiguous = astroRouteAmbiguity(files, routePath);
+    const reading =
+      record && !ambiguous
+        ? await readAstroRoute({
+            binding: astroParserBindingFrom(env),
+            files,
+            route: {
+              path: record.path,
+              sourcePath: record.sourcePath,
+              dynamic: record.dynamic,
+            },
+          })
+        : null;
     const after = await readThemeSourceGeneration(
       data.storefrontId,
       data.themeId,
@@ -1569,6 +1607,22 @@ export const storefrontThemeDal = {
         after,
         `the saved source changed from generation ${before} to ${after} while it was read`,
       );
+    }
+    if (ambiguous) {
+      return {
+        status: "view",
+        view: refusedAstroRouteBindingsView({
+          routePath,
+          routeFile: null,
+          sourceGeneration: before,
+          routeSourceDigest: null,
+          refusal: astroBindingRefusal(
+            "capability-limit",
+            "ambiguous-route",
+            astroAmbiguousRouteDetail(routePath, ambiguous),
+          ),
+        }),
+      };
     }
     if (!record || !reading) {
       return {
