@@ -18,6 +18,7 @@ import {
   readSource,
   openHeroInCode,
   sharedEditor,
+  storedThemeFile,
   MARKER,
 } from "./helpers/editor-writes-paused";
 
@@ -76,15 +77,9 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await expect(unconfirmedNotice(page)).toHaveCount(0, { timeout: 30_000 });
       expect(saves.sent).toBe(2);
 
-      const check = await sharedEditor(browser);
-      try {
-        await openHeroInCode(check.page);
-        expect(await readSource(check.page, hero)).toContain(
-          `${MARKER} offline`,
-        );
-      } finally {
-        await check.context.close();
-      }
+      // What the server holds, read through the server rather than a new
+      // editor tab (see `storedThemeFile`).
+      expect(await storedThemeFile(page, hero)).toContain(`${MARKER} offline`);
     } finally {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       await context.close();
@@ -135,14 +130,12 @@ test.describe("unsaved work when the signed-in account changes", () => {
       ).toHaveCount(0);
       expect(await readSource(page, hero)).toContain(`${MARKER} landed`);
 
-      const check = await sharedEditor(browser);
-      try {
-        await openHeroInCode(check.page);
-        const held = await readSource(check.page, hero);
+      {
+        // What the server holds, read through the server rather than a new
+        // editor tab (see `storedThemeFile`).
+        const held = await storedThemeFile(page, hero);
         // Applied once: the marker is there, and only once.
         expect(held.split(`${MARKER} landed`).length - 1).toBe(1);
-      } finally {
-        await check.context.close();
       }
 
       // The next save. This tab did not take the Theme's source generation
@@ -232,14 +225,10 @@ test.describe("unsaved work when the signed-in account changes", () => {
         await page.waitForTimeout(2_000);
         expect(saves.sent).toBe(before + 2);
       }
-      const after = await sharedEditor(browser);
-      try {
-        await openHeroInCode(after.page);
-        const held = await readSource(after.page, hero);
+      {
+        const held = await storedThemeFile(page, hero);
         expect(held.split(`${MARKER} landed`).length - 1).toBe(1);
         expect(held.split(`${MARKER} next`).length - 1).toBe(1);
-      } finally {
-        await after.context.close();
       }
     } finally {
       await page.unrouteAll({ behavior: "ignoreErrors" });

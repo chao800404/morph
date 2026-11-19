@@ -18,8 +18,22 @@ import {
   readSource,
   openHeroInCode,
   sharedEditor,
+  storedSectionProp,
   MARKER,
 } from "./helpers/editor-writes-paused";
+
+/**
+ * The stored prop each Content field these cases write shows, by its tree
+ * row and its place among the section's text inputs in the inspector, as
+ * `sectionContentField` finds it: the hero's first input is its eyebrow and
+ * its second its action label (heading and description are text areas);
+ * editorial-intro's first is its label.
+ */
+const STORED_FIELDS: Record<string, { sectionId: string; prop: string }> = {
+  "hero:0": { sectionId: "starter-hero", prop: "eyebrow" },
+  "hero:1": { sectionId: "starter-hero", prop: "actionLabel" },
+  "editorial-intro:0": { sectionId: "starter-introduction", prop: "label" },
+};
 
 async function expectConflictNotice(page: Page, timeout = 30_000) {
   const theme = page.getByText("Remote source changes detected in this theme");
@@ -158,17 +172,12 @@ test.describe("unsaved work when the signed-in account changes", () => {
         finish: async () => {
           // Whatever the path, the author's newest edit and the other tab's
           // are both what the server holds, once each.
-          const check = await sharedEditor(browser);
-          try {
-            await expect(await heroContentField(check.page, 0)).toHaveValue(
-              value("next"),
-            );
-            await expect(
-              await sectionContentField(check.page, other.section, other.index),
-            ).toHaveValue(value("theirs"));
-          } finally {
-            await check.context.close();
-          }
+          await expect
+            .poll(() => storedField(page, "hero", 0))
+            .toBe(value("next"));
+          await expect
+            .poll(() => storedField(page, other.section, other.index))
+            .toBe(value("theirs"));
         },
         cleanup: async () => {
           await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -222,16 +231,15 @@ test.describe("unsaved work when the signed-in account changes", () => {
     expect(writes.sent - before, "writes for the next edit").toBe(1);
   }
 
-  /** What the server holds in one of a section's fields, read from a new tab. */
-  async function storedField(browser: Browser, section: string, index: number) {
-    const check = await sharedEditor(browser);
-    try {
-      return await (
-        await sectionContentField(check.page, section, index)
-      ).inputValue();
-    } finally {
-      await check.context.close();
-    }
+  /**
+   * What the server holds in one of a section's fields, read through the
+   * server rather than a new editor tab (see `storedSectionProp`), from
+   * `page`, which is already open.
+   */
+  function storedField(page: Page, section: string, index: number) {
+    const field = STORED_FIELDS[`${section}:${index}`];
+    if (!field) throw new Error(`No stored field for ${section} #${index}`);
+    return storedSectionProp(page, field.sectionId, field.prop);
   }
 
   /** Presses Load latest, keep mine, and waits for the rebased write to land. */
@@ -247,7 +255,6 @@ test.describe("unsaved work when the signed-in account changes", () => {
   }
 
   async function expectMovedThenKeepMine(
-    browser: Browser,
     run: Awaited<ReturnType<typeof landedThenAnotherWriter>>,
     other: { section: string; index: number },
   ) {
@@ -268,8 +275,8 @@ test.describe("unsaved work when the signed-in account changes", () => {
     await run.page.waitForTimeout(2_000);
     expect(run.writes.sent, "no write before the author chooses").toBe(before);
     await expect(field).toHaveValue(run.value("next"));
-    expect(await storedField(browser, "hero", 0)).toBe(run.value("landed"));
-    expect(await storedField(browser, other.section, other.index)).toBe(
+    expect(await storedField(run.page, "hero", 0)).toBe(run.value("landed"));
+    expect(await storedField(run.page, other.section, other.index)).toBe(
       run.value("theirs"),
     );
 
@@ -289,7 +296,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       index: 0,
     });
     try {
-      await expectMovedThenKeepMine(browser, run, {
+      await expectMovedThenKeepMine(run, {
         section: "editorial-intro",
         index: 0,
       });
@@ -309,7 +316,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       index: 1,
     });
     try {
-      await expectMovedThenKeepMine(browser, run, { section: "hero", index: 1 });
+      await expectMovedThenKeepMine(run, { section: "hero", index: 1 });
     } finally {
       await run.cleanup();
     }
@@ -340,7 +347,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       );
       // Nothing was written over the other tab's value, and nothing goes out
       // while the author has not chosen.
-      expect(await storedField(browser, "hero", 0)).toBe(run.value("theirs"));
+      expect(await storedField(run.page, "hero", 0)).toBe(run.value("theirs"));
       const waiting = run.writes.sent;
       await run.page.waitForTimeout(3_000);
       expect(run.writes.sent, "writes before the author chooses").toBe(waiting);
@@ -350,11 +357,11 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await loadLatestKeepMine(run.page);
       await run.page.waitForTimeout(2_000);
       expect(run.writes.sent - waiting, "writes for keep mine").toBe(1);
-      expect(await storedField(browser, "hero", 0)).toBe(run.value("landed"));
+      expect(await storedField(run.page, "hero", 0)).toBe(run.value("landed"));
 
       // The edit after that is composed on its own saved document: saved.
       await nextEditSavedOnReadBack(run.page, run.writes, run.value("next"));
-      expect(await storedField(browser, "hero", 0)).toBe(run.value("next"));
+      expect(await storedField(run.page, "hero", 0)).toBe(run.value("next"));
     } finally {
       await run.cleanup();
     }
