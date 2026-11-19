@@ -1033,7 +1033,18 @@ async function listAllFiles(page: Page, scope: ThemeScope) {
   );
 }
 
-/** Edits the home page's introduction heading through the Inspector. */
+/**
+ * Brings `target`, inside the preview frame, to a point of the canvas where a
+ * click reaches it, and waits until it is hit there.
+ *
+ * `scrollIntoView` scrolls every scroll container up to the editor, the
+ * frame's own document included. That is only safe once the editor has sized
+ * the frame to its content: while the frame is still shorter, the scroll
+ * lands inside the frame, and when the frame then grows to its full height
+ * the browser clamps that scroll back and the target moves away from where
+ * it was checked. So the canvas is first waited for until it is as tall as
+ * the frame's content and its height has held still for a few frames.
+ */
 async function scrollIntoExposedCanvas(
   page: Page,
   target: Locator,
@@ -1049,6 +1060,40 @@ async function scrollIntoExposedCanvas(
       { message: "the canvas never accepted input", timeout: 60_000 },
     )
     .not.toBe("none");
+  // The canvas box is sized from the height the frame reported; the frame
+  // itself is a couple of pixels shorter inside the box's border, so the
+  // frame's content is compared with the box, not with the frame's viewport.
+  const canvasSettled = async () => {
+    const boxes = await page
+      .locator("iframe")
+      .first()
+      .evaluate(
+        (frame) =>
+          new Promise<number[]>((resolve) => {
+            const heights: number[] = [];
+            const sample = () => {
+              heights.push(parseFloat(frame.parentElement?.style.height ?? ""));
+              if (heights.length < 4) requestAnimationFrame(sample);
+              else resolve(heights);
+            };
+            requestAnimationFrame(sample);
+          }),
+      );
+    const content = await target.evaluate(
+      (element) => element.ownerDocument.documentElement.scrollHeight,
+    );
+    const held = boxes.every((height) => height === boxes[0]);
+    const whole = Number.isFinite(boxes[0]) && boxes[0]! >= content - 1;
+    return held && whole
+      ? "stable"
+      : `canvas ${boxes.join(",")} content ${content}`;
+  };
+  await expect
+    .poll(() => canvasSettled().catch((error: unknown) => String(error)), {
+      message: "the canvas never reached the frame's content height and held still",
+      timeout: 30_000,
+    })
+    .toBe("stable");
   await target.evaluate((el) =>
     el.scrollIntoView({ block: "center", inline: "center" }),
   );
@@ -1128,6 +1173,7 @@ async function scrollIntoExposedCanvas(
     .toBe(true);
 }
 
+/** Edits the home page's introduction heading through the Inspector. */
 async function editHeading(page: Page, editorPath: string, value: string) {
   await page.goto(editorPath, { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
