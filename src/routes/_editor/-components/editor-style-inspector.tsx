@@ -979,6 +979,28 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   });
   const acceptedContentPropsRef = useRef(acceptedContentProps);
   acceptedContentPropsRef.current = acceptedContentProps;
+  /**
+   * The author changed the field at `fieldPath`, made on the newest accepted
+   * copy, which may hold a write answered but not yet shown here: the next
+   * server copy is rebased against it for that field's top-level key. Every
+   * path that sets a field to a value calls this first, or a value put back to
+   * what it was before that write would be replaced by the write's value when
+   * its copy renders.
+   *
+   * Local-props writes that do not call it, and why: the instance-style
+   * `itemId` mint (a fresh id can never equal the older baseline), the field
+   * reset removal and the list-reset effect (they remove a key rather than set
+   * a value, and `rebaseContentProps` never keeps a removed key, so a
+   * baseline move cannot help them).
+   */
+  const noteInputOn = useCallback(
+    (fieldPath: string) =>
+      noteLocalInput(
+        fieldPath.split(".")[0]!,
+        acceptedContentPropsRef.current?.(),
+      ),
+    [noteLocalInput],
+  );
   // A list reset is for the panel showing that list when the discard made it:
   // that panel's own copy still holds the discarded rows. A panel mounted
   // after it, or showing another section then, reads the latest props itself
@@ -1222,10 +1244,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       inlineTextCommit.fieldPath,
       inlineTextCommit.value,
     );
+    noteInputOn(inlineTextCommit.fieldPath);
     localPropsRef.current = next;
     setLocalProps(next);
     setInlineCommitEpoch((epoch) => epoch + 1);
-  }, [inlineTextCommit, localPropsRef, section.id, setLocalProps]);
+  }, [inlineTextCommit, localPropsRef, noteInputOn, section.id, setLocalProps]);
   const optimisticStyleRef = useRef<{
     key: string;
     revision: number;
@@ -2202,6 +2225,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     );
     const selectionFieldPath = selection?.fieldPath;
     if (!selectionFieldPath) return;
+    noteInputOn(objectPositionTarget.fieldPath);
     localPropsRef.current = next;
     setLocalProps(next);
     onPropsChange(next, {
@@ -2907,19 +2931,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           ? setFieldPathValue(currentProps, targetPath, value)
           : { ...currentProps, [field]: value },
       );
-      // Made on the newest accepted copy, which may hold a write answered
-      // but not yet shown here: the next server copy is rebased against it.
-      noteLocalInput(
-        (targetPath ?? field).split(".")[0]!,
-        acceptedContentPropsRef.current?.(),
-      );
+      noteInputOn(targetPath ?? field);
       localPropsRef.current = next;
       setLocalProps(next);
       onPropsChange(next, { ...options, inputFieldPath: targetPath ?? field });
     },
     [
       activeFieldPath,
-      noteLocalInput,
+      noteInputOn,
       onPropsChange,
       section.id,
       selection?.descendantFields,
@@ -2976,9 +2995,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
        * list the Document does not store yet starts from these rows, so the
        * declared defaults are kept and the index pressed is the row drawn.
        */
-      seed?: { key: string; value: unknown },
-      /** The top-level list being written, e.g. `items`. */
-      listKey?: string,
+      seed: { key: string; value: unknown } | undefined,
+      /**
+       * The top-level list being written, e.g. `items`. Required so that a
+       * caller cannot skip moving the list's rebase baseline.
+       */
+      listKey: string,
     ) => {
       if (documentWritesRefusedRef.current) return;
       const result = mutate(seedUnstoredList(localPropsRef.current, seed));
@@ -2993,6 +3015,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         return;
       }
       const next = toStorableContentProps(result.value);
+      noteInputOn(listKey);
       localPropsRef.current = next;
       setLocalProps(next);
       // A row selected without an id: the row itself is refused and its list
@@ -3021,6 +3044,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     },
     [
       activeFieldPath,
+      noteInputOn,
       onPropsChange,
       section.id,
       seedUnstoredList,
@@ -3057,11 +3081,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         return;
       const base = seedUnstoredList(current, seed);
       const next = toStorableContentProps(setFieldPathValue(base, path, value));
+      noteInputOn(path);
       localPropsRef.current = next;
       setLocalProps(next);
       onPropsChange(next, { inputFieldPath: path });
     },
-    [onPropsChange, seedUnstoredList],
+    [noteInputOn, onPropsChange, seedUnstoredList],
   );
 
   const handleTextFieldBlur = useCallback(

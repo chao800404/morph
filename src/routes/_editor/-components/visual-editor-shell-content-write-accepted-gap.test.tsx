@@ -524,6 +524,46 @@ describe("input after a write was answered, before the context rendered it", () 
     expect(notices().infos).toEqual([]);
     expect(notices().errors).toEqual([]);
   });
+
+  it("G4 a canvas commit of the original text back, in the window, is sent once and the panel never shows W1's value", async () => {
+    renderEditor();
+    await firstWriteAnsweredContextBehind();
+
+    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    await settle();
+    expect(shownHeading(), "the panel shows W1's value before the commit").toBe(EDITED);
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: ORIGINAL,
+      originalValue: EDITED,
+    });
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    expect(shownHeading(), "the commit is shown in the panel").toBe(ORIGINAL);
+    await releaseNotifications();
+    expect(renderedGenerations.at(-1), "W1's copy rendered").toBe(2);
+    const shownOnW1Copy = shownHeading();
+    await debounceRuns();
+    await debounceRuns();
+
+    expect(
+      updateSectionProps.mock.calls.map((call) => (call[0] as { data: { props: HeroProps } }).data.props.heading),
+      "W1, then the committed text, once",
+    ).toEqual([EDITED, ORIGINAL]);
+    expect(sentAt(1)).toMatchObject({ props: { heading: ORIGINAL }, expectedDraftGeneration: 2 });
+    expect(shownOnW1Copy, "W1's copy rendered over the canvas commit").toBe(ORIGINAL);
+    expect(shownHeading()).toBe(ORIGINAL);
+    expect(await serverRead()).toMatchObject({ heading: ORIGINAL });
+    expect(server.generation).toBe(3);
+    expect(notices().errors).toEqual([]);
+  });
 });
 
 describe("a second write that is not answered, or not sent, keeps its existing notices in the window", () => {
