@@ -36,6 +36,13 @@ export function useInspectorContentProps(args: {
    * The stored props stay the baseline; nothing is written from here.
    */
   heldProps?: () => InspectorContentProps | undefined;
+  /**
+   * This section's stored props in the newest copy the editor has accepted
+   * of its document, read when the panel opens the section with held input
+   * on top. See `noteLocalInput`: the held keys were made on that copy, not
+   * on the older one the panel may be opened from.
+   */
+  acceptedProps?: () => InspectorContentProps | undefined;
 }): {
   contentResourceKey: string;
   localProps: InspectorContentProps;
@@ -76,12 +83,40 @@ export function useInspectorContentProps(args: {
   const { resourceKey, sectionId, sectionProps } = args;
   const heldPropsRef = useRef(args.heldProps);
   heldPropsRef.current = args.heldProps;
+  const acceptedPropsRef = useRef(args.acceptedProps);
+  acceptedPropsRef.current = args.acceptedProps;
   /** The stored props with the held input on top, as the panel opens them. */
   const withHeld = (incoming: InspectorContentProps): InspectorContentProps => {
     const held = heldPropsRef.current?.();
     return held && Object.keys(held).length > 0
       ? { ...incoming, ...held }
       : incoming;
+  };
+  /**
+   * The baseline the panel opens with: the stored props it was handed, with
+   * each held key's baseline moved up to the accepted copy, as
+   * `noteLocalInput` moves a key the author changes here.
+   *
+   * The held input was staged on the accepted copy, which can be newer than
+   * the copy the panel opens from: a write answered but not yet rendered.
+   * Against the older copy, a held value equal to it (the earlier value
+   * typed back) looks unchanged, and the rendered answer would replace it
+   * here while the editor still holds it. Only held keys move; with no
+   * accepted copy named, the baseline stays the stored props.
+   */
+  const openedBaseline = (
+    incoming: InspectorContentProps,
+  ): InspectorContentProps => {
+    const held = heldPropsRef.current?.();
+    if (!held || Object.keys(held).length === 0) return incoming;
+    const accepted = acceptedPropsRef.current?.();
+    if (!accepted) return incoming;
+    const baseline = { ...incoming };
+    for (const key of Object.keys(held)) {
+      if (Object.hasOwn(accepted, key)) baseline[key] = accepted[key];
+      else delete baseline[key];
+    }
+    return baseline;
   };
   // Kept by identity across renders. The rebase effect below depends on it and
   // sets state, so a fresh `{}` per render for a section without props made
@@ -100,7 +135,12 @@ export function useInspectorContentProps(args: {
     withHeld(incomingProps),
   );
   const localPropsRef = useRef(localProps);
-  const serverBaselineRef = useRef<InspectorContentProps>(incomingProps);
+  const serverBaselineRef = useRef<InspectorContentProps | null>(null);
+  if (serverBaselineRef.current === null) {
+    serverBaselineRef.current = openedBaseline(incomingProps);
+  }
+  /** The stored props the effect below last rebased onto. */
+  const lastIncomingRef = useRef(incomingProps);
   const contentResourceKey = `${resourceKey}:${sectionId}`;
   const lastContentResourceKeyRef = useRef(contentResourceKey);
   const [externalEpochs, setExternalEpochs] = useState<
@@ -108,19 +148,25 @@ export function useInspectorContentProps(args: {
   >({});
 
   useEffect(() => {
-    const baseline = serverBaselineRef.current;
-    serverBaselineRef.current = incomingProps;
-
     // Switching sections replaces everything; there is no edit in progress
     // in this panel that belongs to the new one. What the editor still holds
-    // for it is shown, as on mount.
+    // for it is shown, as on mount, on the same baseline as on mount.
     if (contentResourceKey !== lastContentResourceKeyRef.current) {
       lastContentResourceKeyRef.current = contentResourceKey;
+      lastIncomingRef.current = incomingProps;
+      serverBaselineRef.current = openedBaseline(incomingProps);
       const opened = withHeld(incomingProps);
       localPropsRef.current = opened;
       setLocalProps(opened);
       return;
     }
+    // The props the panel opened with, or last rebased onto: nothing newer
+    // to rebase onto. (The run after mount, chiefly: the baseline the panel
+    // opened with stays until a newer copy arrives.)
+    if (incomingProps === lastIncomingRef.current) return;
+    lastIncomingRef.current = incomingProps;
+    const baseline = serverBaselineRef.current ?? incomingProps;
+    serverBaselineRef.current = incomingProps;
 
     // Keep keys the author is currently editing while rebasing every other
     // key onto the latest server state.

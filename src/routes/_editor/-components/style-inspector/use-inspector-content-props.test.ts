@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   sameInspectorContentValue,
   useInspectorContentProps,
@@ -188,6 +188,112 @@ describe("useInspectorContentProps", () => {
         props: { title: "Stored", body: "Body" },
       });
       expect(result.current.props).toEqual({ title: "Stored", body: "Body" });
+    });
+  });
+
+  describe("held input opened on an accepted copy newer than the one shown (M1)", () => {
+    // W1 wrote title "Edited" and was answered; the panel is handed the copy
+    // from before it ("Original") until the next render. The author typed
+    // "Original" back, which the editor holds (staged on the accepted copy).
+    const held: Record<string, Record<string, unknown> | undefined> = {};
+    const accepted: Record<string, Record<string, unknown> | undefined> = {};
+    const render = (initial: { sectionId: string; props: unknown }) =>
+      renderHook(
+        ({ sectionId, props }) =>
+          useInspectorContentProps({
+            resourceKey: "store:theme:doc",
+            sectionId,
+            sectionProps: props,
+            heldProps: () => held[sectionId],
+            acceptedProps: () => accepted[sectionId],
+          }),
+        { initialProps: initial },
+      );
+    afterEach(() => {
+      for (const key of Object.keys(held)) delete held[key];
+      for (const key of Object.keys(accepted)) delete accepted[key];
+    });
+
+    it("on mount: the rendered answer does not replace the held value", () => {
+      held.hero = { title: "Original" };
+      accepted.hero = { title: "Edited", body: "Body" };
+      const { result, rerender } = render({
+        sectionId: "hero",
+        props: { title: "Original", body: "Body" },
+      });
+      expect(result.current.props).toEqual({ title: "Original", body: "Body" });
+
+      rerender({ sectionId: "hero", props: { title: "Edited", body: "Body" } });
+
+      expect(result.current.props).toEqual({ title: "Original", body: "Body" });
+      expect(result.current.externalEpochs).toEqual({});
+    });
+
+    it("on a section switch back: the rendered answer does not replace the held value", () => {
+      held.hero = { title: "Original" };
+      accepted.hero = { title: "Edited", body: "Body" };
+      const { result, rerender } = render({
+        sectionId: "footer",
+        props: { title: "Footer" },
+      });
+      rerender({
+        sectionId: "hero",
+        props: { title: "Original", body: "Body" },
+      });
+      expect(result.current.props).toEqual({ title: "Original", body: "Body" });
+
+      rerender({ sectionId: "hero", props: { title: "Edited", body: "Body" } });
+
+      expect(result.current.props).toEqual({ title: "Original", body: "Body" });
+      expect(result.current.externalEpochs).toEqual({});
+    });
+
+    it("moves only held keys: another key still takes a newer stored value", () => {
+      held.hero = { title: "Original" };
+      accepted.hero = { title: "Edited", body: "Body" };
+      const { result, rerender } = render({
+        sectionId: "hero",
+        props: { title: "Original", body: "Body" },
+      });
+
+      rerender({
+        sectionId: "hero",
+        props: { title: "Edited", body: "Their body" },
+      });
+
+      expect(result.current.props).toEqual({
+        title: "Original",
+        body: "Their body",
+      });
+      expect(result.current.externalEpochs).toEqual({ body: 1 });
+    });
+
+    it("without an accepted copy named, rebases on the stored props as before", () => {
+      held.hero = { title: "Original" };
+      const { result, rerender } = render({
+        sectionId: "hero",
+        props: { title: "Original", body: "Body" },
+      });
+
+      rerender({ sectionId: "hero", props: { title: "Edited", body: "Body" } });
+
+      expect(result.current.props).toEqual({ title: "Edited", body: "Body" });
+      expect(result.current.externalEpochs).toEqual({ title: 1 });
+    });
+
+    it("a held value equal to the accepted copy is not kept over a later change", () => {
+      held.hero = { title: "Edited" };
+      accepted.hero = { title: "Edited", body: "Body" };
+      const { result, rerender } = render({
+        sectionId: "hero",
+        props: { title: "Original", body: "Body" },
+      });
+      expect(result.current.props).toEqual({ title: "Edited", body: "Body" });
+
+      rerender({ sectionId: "hero", props: { title: "Theirs", body: "Body" } });
+
+      expect(result.current.props).toEqual({ title: "Theirs", body: "Body" });
+      expect(result.current.externalEpochs).toEqual({ title: 1 });
     });
   });
 
