@@ -9,8 +9,12 @@ import {
 
 describe("section-source refusals in an error message (C7)", () => {
   it("keeps the two codes apart: neither is a prefix of the other", () => {
-    expect(SECTION_SOURCE_UNCONFIRMABLE.includes(SECTION_SOURCE_UNCONFIRMED)).toBe(false);
-    expect(SECTION_SOURCE_UNCONFIRMED.includes(SECTION_SOURCE_UNCONFIRMABLE)).toBe(false);
+    expect(
+      SECTION_SOURCE_UNCONFIRMABLE.includes(SECTION_SOURCE_UNCONFIRMED),
+    ).toBe(false);
+    expect(
+      SECTION_SOURCE_UNCONFIRMED.includes(SECTION_SOURCE_UNCONFIRMABLE),
+    ).toBe(false);
   });
 
   it("reads a temporarily unconfirmable refusal with its reason code", () => {
@@ -28,7 +32,11 @@ describe("section-source refusals in an error message (C7)", () => {
   it("reads every other class as UNCONFIRMED with its reason code", () => {
     expect(
       parseSectionSourceRefusal(
-        sectionSourceRefusalMessage(false, "dynamic-route", "Edit it in Code mode."),
+        sectionSourceRefusalMessage(
+          false,
+          "dynamic-route",
+          "Edit it in Code mode.",
+        ),
       ),
     ).toEqual({
       code: SECTION_SOURCE_UNCONFIRMED,
@@ -52,7 +60,9 @@ describe("section-source refusals in an error message (C7)", () => {
   });
 
   it("is null for any other error", () => {
-    expect(parseSectionSourceRefusal("CONFLICT_DRAFT_GENERATION_MISMATCH: x")).toBeNull();
+    expect(
+      parseSectionSourceRefusal("CONFLICT_DRAFT_GENERATION_MISMATCH: x"),
+    ).toBeNull();
     expect(parseSectionSourceRefusal("boom")).toBeNull();
   });
 });

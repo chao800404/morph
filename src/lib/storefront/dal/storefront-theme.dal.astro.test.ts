@@ -548,7 +548,10 @@ describe("the editor context of an Astro Theme", () => {
 });
 
 describe("an Astro page's own Document (D7 create, C5) and the home template (N1)", () => {
-  const ensure = (routePath: string, overrides: Partial<{ storefrontId: string; themeId: string }> = {}) =>
+  const ensure = (
+    routePath: string,
+    overrides: Partial<{ storefrontId: string; themeId: string }> = {},
+  ) =>
     storefrontThemeDal.ensureRouteTemplate({
       storefrontId: STOREFRONT,
       themeId: THEME,
@@ -568,7 +571,11 @@ describe("an Astro page's own Document (D7 create, C5) and the home template (N1
     expect(result).toMatchObject({
       ok: true,
       createdByThisCall: true,
-      template: { routePath: "/about", draftGeneration: 1, draftRevisionId: null },
+      template: {
+        routePath: "/about",
+        draftGeneration: 1,
+        draftRevisionId: null,
+      },
     });
     expect(templates()).toEqual([
       {
@@ -615,7 +622,9 @@ describe("an Astro page's own Document (D7 create, C5) and the home template (N1
     await expect(ensure("/", { themeId: "theme-b" })).resolves.toMatchObject({
       ok: false,
     });
-    sqlite.exec("UPDATE storefront_themes SET deleted_at = 'then' WHERE id = 'theme-a'");
+    sqlite.exec(
+      "UPDATE storefront_themes SET deleted_at = 'then' WHERE id = 'theme-a'",
+    );
     await expect(ensure("/about")).resolves.toEqual({
       ok: false,
       reason: "Theme not found.",
@@ -665,7 +674,9 @@ describe("an Astro page's own Document (D7 create, C5) and the home template (N1
   });
 
   it("creates no home template for an Astro Theme without a home page", async () => {
-    sqlite.exec(`DELETE FROM storefront_theme_files WHERE id = 'theme-a:${INDEX}'`);
+    sqlite.exec(
+      `DELETE FROM storefront_theme_files WHERE id = 'theme-a:${INDEX}'`,
+    );
     await expect(ensure("/")).resolves.toEqual({
       ok: false,
       reason: "/ is not a page in the saved Theme source.",
@@ -674,7 +685,9 @@ describe("an Astro page's own Document (D7 create, C5) and the home template (N1
   });
 
   it("still refuses / for a Start Theme: its home Document comes from the Starter", async () => {
-    sqlite.exec("UPDATE storefront_themes SET framework = 'tanstack-start' WHERE id = 'theme-a'");
+    sqlite.exec(
+      "UPDATE storefront_themes SET framework = 'tanstack-start' WHERE id = 'theme-a'",
+    );
     await expect(ensure("/")).resolves.toEqual({
       ok: false,
       reason: "/ stores its content in the index template.",
@@ -876,7 +889,12 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
         JSON.stringify({
           version: 1,
           sections: [
-            { id: "hero", type: "hero", enabled: true, props: { title: "Old" } },
+            {
+              id: "hero",
+              type: "hero",
+              enabled: true,
+              props: { title: "Old" },
+            },
           ],
         }),
       );

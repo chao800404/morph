@@ -422,7 +422,10 @@ describe("which moved files carry a route Document, by the Theme's framework (D7
   const astroFiles: ThemeSourceFile[] = [
     { path: "src/pages/about.astro", content: "<h1>About</h1>\n" },
     { path: "src/pages/blog/[slug].astro", content: "<h1>Post</h1>\n" },
-    { path: "src/pages/api.ts", content: "export const GET = () => new Response();\n" },
+    {
+      path: "src/pages/api.ts",
+      content: "export const GET = () => new Response();\n",
+    },
   ];
 
   it("moves an Astro page's Document with the page file on an Astro Theme", () => {

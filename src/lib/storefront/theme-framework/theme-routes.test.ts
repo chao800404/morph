@@ -145,7 +145,10 @@ describe("a source file as a route of the recorded framework (D7)", () => {
     for (const recorded of [null, undefined, "tanstack-start"]) {
       for (const path of START_PATHS) {
         const metadata = parseThemeRouteSourcePath(path);
-        expect(routeSourcePathInfo(recorded, path), `${recorded} ${path}`).toEqual(
+        expect(
+          routeSourcePathInfo(recorded, path),
+          `${recorded} ${path}`,
+        ).toEqual(
           metadata
             ? {
                 routePath: metadata.path,
@@ -166,10 +169,14 @@ describe("a source file as a route of the recorded framework (D7)", () => {
       root: false,
       dynamic: false,
     });
-    expect(routeSourcePathInfo("astro", "src/pages/index.astro")).toMatchObject({
-      routePath: "/",
-    });
-    expect(routeSourcePathInfo("astro", "src/pages/blog/[slug].astro")).toMatchObject({
+    expect(routeSourcePathInfo("astro", "src/pages/index.astro")).toMatchObject(
+      {
+        routePath: "/",
+      },
+    );
+    expect(
+      routeSourcePathInfo("astro", "src/pages/blog/[slug].astro"),
+    ).toMatchObject({
       routePath: "/blog/[slug]",
       dynamic: true,
     });
@@ -191,7 +198,9 @@ describe("a source file as a route of the recorded framework (D7)", () => {
     expect(contentTargetForRoutePath(info.routePath).kind).toBe("route");
     expect(routeSourceContentTarget(info).kind).toBe("unsupported");
     expect(
-      routeSourceContentTarget(routeSourcePathInfo("astro", "src/pages/about.astro")!),
+      routeSourceContentTarget(
+        routeSourcePathInfo("astro", "src/pages/about.astro")!,
+      ),
     ).toEqual({ kind: "route", routePath: "/about" });
   });
 

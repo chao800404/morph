@@ -38,9 +38,8 @@ vi.mock("@/lib/storefront/dal/storefront-theme.dal", () => ({
   storefrontThemeDal: dal,
 }));
 
-const { updateStorefrontThemeSectionProps } = await import(
-  "./storefront-themes.serverFn"
-);
+const { updateStorefrontThemeSectionProps } =
+  await import("./storefront-themes.serverFn");
 
 type Result = {
   success: boolean;
@@ -84,7 +83,9 @@ describe("updateStorefrontThemeSectionProps answers a section-source refusal by 
 
   it("answers SECTION_SOURCE_UNCONFIRMED with its reason code", async () => {
     dal.updateSectionProps.mockRejectedValue(
-      new Error("SECTION_SOURCE_UNCONFIRMED: dynamic-route: Edit it in Code mode."),
+      new Error(
+        "SECTION_SOURCE_UNCONFIRMED: dynamic-route: Edit it in Code mode.",
+      ),
     );
     expect(await call(input)).toMatchObject({
       success: false,
@@ -135,7 +136,11 @@ describe("updateStorefrontThemeSectionProps carries an Astro write's identity to
   });
 
   it("refuses a component digest that is not a sha256, before the DAL", async () => {
-    const result = await call({ ...input, ...identity, componentDigest: "B".repeat(64) });
+    const result = await call({
+      ...input,
+      ...identity,
+      componentDigest: "B".repeat(64),
+    });
     expect(result).toMatchObject({ success: false, error: "INVALID_INPUT" });
     expect(dal.updateSectionProps).not.toHaveBeenCalled();
   });
