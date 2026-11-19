@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import { expect, type Page } from "@playwright/test";
 import { EDITOR_PATH } from "../helpers";
-import { execLocalD1 } from "./editor-writes-paused";
+import { execLocalD1, queryLocalD1 } from "./editor-writes-paused";
 import { THEMES, serverFn } from "../native-acceptance";
 import {
   themeScopeFromEditorPath,
@@ -49,30 +47,6 @@ export const UNBOUND_DOCUMENT = {
   ],
 };
 
-// Only the runner's disposable D1, never the developer's .wrangler or remote.
-async function localSql(command: string) {
-  const state = process.env.MORPH_E2E_STATE_DIR;
-  if (!state) throw new Error("Runner-owned database required");
-  const { stdout } = await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    state,
-    "--json",
-    "--command",
-    command,
-  ]);
-  return JSON.parse(stdout) as Array<{
-    success: boolean;
-    results: Record<string, unknown>[];
-  }>;
-}
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 export async function unboundSectionsFixture(page: Page) {
@@ -135,15 +109,12 @@ function Page() {
   execLocalD1(`UPDATE storefront_theme_templates SET document = ${literal(JSON.stringify(UNBOUND_DOCUMENT))}
     WHERE id = ${literal(templateId)} AND theme_id = ${literal(scope.themeId)} AND draft_revision_id IS NULL;`);
   const readStored = async () => {
-    const result =
-      await localSql(`SELECT CASE WHEN t.draft_revision_id IS NULL THEN t.document ELSE r.document END AS document
+    const result = queryLocalD1<{ document: string }>(`SELECT CASE WHEN t.draft_revision_id IS NULL THEN t.document ELSE r.document END AS document
       FROM storefront_theme_templates t LEFT JOIN storefront_theme_template_revisions r
       ON r.id = t.draft_revision_id AND r.template_id = t.id
       WHERE t.id = ${literal(templateId)} AND t.theme_id = ${literal(scope.themeId)};`);
-    expect(result[0]!.results).toHaveLength(1);
-    return JSON.parse(
-      result[0]!.results[0]!.document as string,
-    ) as typeof UNBOUND_DOCUMENT;
+    expect(result).toHaveLength(1);
+    return JSON.parse(result[0]!.document) as typeof UNBOUND_DOCUMENT;
   };
   expect(await readStored()).toEqual(UNBOUND_DOCUMENT);
   return {

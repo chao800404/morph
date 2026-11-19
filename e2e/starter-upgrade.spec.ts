@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
@@ -15,7 +14,7 @@ import {
   previewFrame,
   settleSelection,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
+import { execLocalD1, queryLocalD1 } from "./helpers/editor-writes-paused";
 import {
   expectHydrated,
   savedField,
@@ -121,29 +120,9 @@ test.skip(
   "Set E2E_EDITOR_PATH, or run through scripts/run-editor-e2e.mjs.",
 );
 
-/** The local D1 the run's dev server uses. No server function sets these. */
+/** The local D1 the run's dev server uses, read from its SQLite file. */
 function d1(sql: string): Array<Record<string, unknown>> {
-  const output = execFileSync(
-    "npx",
-    [
-      "wrangler",
-      "d1",
-      "execute",
-      "DATABASE",
-      "--local",
-      ...(CONTAINERS ? [] : ["--env", "local_preview_e2e"]),
-      "--persist-to",
-      STATE_DIR!,
-      "--json",
-      "--command",
-      sql,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" },
-  );
-  return (
-    (JSON.parse(output) as Array<{ results?: Array<Record<string, unknown>> }>)[0]
-      ?.results ?? []
-  );
+  return queryLocalD1<Record<string, unknown>>(sql);
 }
 
 function setStarterVersion(version: number) {
