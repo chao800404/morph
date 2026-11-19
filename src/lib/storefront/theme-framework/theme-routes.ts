@@ -1,8 +1,13 @@
 import { astroRouteRegistry } from "../compiler/astro-route-registry";
 import {
   buildThemeRouteRegistry,
+  parseThemeRouteSourcePath,
   type ThemeRouteRegistry,
 } from "../compiler/theme-route-registry";
+import {
+  contentTargetForRoutePath,
+  type RouteContentTarget,
+} from "../theme-template-routes";
 import {
   THEME_FRAMEWORK_IDS,
   UNRECORDED_THEME_FRAMEWORK,
@@ -64,4 +69,72 @@ export function themeRoutesFor(
     framework,
     registry: THEME_FRAMEWORK_ROUTES[framework](files),
   };
+}
+
+/**
+ * What one source file is as a route of the framework a Theme records, for
+ * moving and rolling back the Documents routes own (D7): the URL path, and
+ * whether the file is a page route of its own. Null for a file that is no
+ * route of that framework.
+ *
+ * - Start (and a Theme recording none): TanStack Router's file convention,
+ *   exactly as before (`parseThemeRouteSourcePath`). A companion piece
+ *   (`about.lazy.tsx`) is not standalone; the root route is `root`.
+ * - Astro: the Astro route registry's reading of `src/pages/`. An endpoint
+ *   (`.js`/`.ts`) is not standalone; `dynamic` is the registry's, the only
+ *   judge of an Astro parameter (Q6).
+ * - Any other recorded value: null. Its routes are not read as Start's.
+ */
+export type RouteSourcePathInfo = Readonly<{
+  routePath: string;
+  standalone: boolean;
+  root: boolean;
+  /** Astro's `[param]`; Start reports false (its `$param` is judged below). */
+  dynamic: boolean;
+}>;
+
+export function routeSourcePathInfo(
+  recorded: string | null | undefined,
+  path: string,
+): RouteSourcePathInfo | null {
+  const id = recorded ?? UNRECORDED_THEME_FRAMEWORK;
+  if (id === "tanstack-start") {
+    const metadata = parseThemeRouteSourcePath(path);
+    if (!metadata) return null;
+    return {
+      routePath: metadata.path,
+      standalone: !metadata.isRoutePiece,
+      root: metadata.routeType === "root",
+      dynamic: false,
+    };
+  }
+  if (id === "astro") {
+    const [record] = astroRouteRegistry([{ path }]).routes;
+    if (!record) return null;
+    return {
+      routePath: record.path,
+      standalone: !record.isEndpoint,
+      root: false,
+      dynamic: record.dynamic,
+    };
+  }
+  return null;
+}
+
+/**
+ * Where a route's content lives, by `contentTargetForRoutePath`, except that
+ * a dynamic Astro page is `unsupported` before that rule is asked: it does
+ * not know `[slug]` as a parameter and would call the path static.
+ */
+export function routeSourceContentTarget(
+  info: RouteSourcePathInfo,
+): RouteContentTarget {
+  if (info.dynamic) {
+    return {
+      kind: "unsupported",
+      reason:
+        "Pages with route parameters have no content document of their own.",
+    };
+  }
+  return contentTargetForRoutePath(info.routePath);
 }

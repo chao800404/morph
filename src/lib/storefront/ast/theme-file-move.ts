@@ -1,5 +1,6 @@
 import { parse } from "@babel/parser";
 import { parseThemeRouteSourcePath } from "@/lib/storefront/compiler/theme-route-registry";
+import { routeSourcePathInfo } from "@/lib/storefront/theme-framework/theme-routes";
 
 /**
  * Moving a Theme file, with every reference to it brought along.
@@ -378,6 +379,14 @@ export function rewriteThemeRouteFactoryPath(
 export function planThemeFileMove(
   files: readonly ThemeSourceFile[],
   moves: readonly ThemeFileMove[],
+  options: Readonly<{
+    /**
+     * The Theme's recorded framework, which decides which moved files are
+     * page routes whose Documents move with them (D7). Absent reads as a
+     * Theme recording none: TanStack Start.
+     */
+    framework?: string | null;
+  }> = {},
 ): ThemeFileMoveResult {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const movesByFrom = new Map<string, string>();
@@ -503,16 +512,16 @@ export function planThemeFileMove(
     rewrites,
     routePathMoves: moves
       .filter((move) => {
-        const from = parseThemeRouteSourcePath(move.from);
-        const to = parseThemeRouteSourcePath(move.to);
+        const from = routeSourcePathInfo(options.framework, move.from);
+        const to = routeSourcePathInfo(options.framework, move.to);
         return Boolean(
           from &&
           to &&
-          !from.isRoutePiece &&
-          !to.isRoutePiece &&
-          from.routeType !== "root" &&
-          to.routeType !== "root" &&
-          from.path !== to.path,
+          from.standalone &&
+          to.standalone &&
+          !from.root &&
+          !to.root &&
+          from.routePath !== to.routePath,
         );
       })
       .map(({ from, to }) => ({

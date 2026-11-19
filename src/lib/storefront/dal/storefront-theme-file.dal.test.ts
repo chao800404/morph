@@ -85,6 +85,7 @@ beforeEach(() => {
       source_index_version integer,
       source_index_status text,
       source_index text,
+      framework text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -1792,5 +1793,191 @@ describe("the batch ownership guard against soft-deleted rows", () => {
     ).rejects.toThrow();
     expect(storedFile()).toMatchObject({ id: file.id, deleted_at: null });
     expect(generation()).toBe(2);
+  });
+});
+
+describe("route Documents of an Astro Theme follow its pages (D7)", () => {
+  const ABOUT = {
+    path: "src/pages/about.astro",
+    content: "<h1>About</h1>\n",
+  };
+  beforeEach(() => {
+    sqlite.exec(
+      "UPDATE storefront_themes SET framework = 'astro' WHERE id = 'theme-a'",
+    );
+  });
+
+  const saveAbout = async () => {
+    const [file] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [{ ...ABOUT, expectMissing: true }],
+      { expectedSourceGeneration: 1, createRevision: true },
+    );
+    return file!;
+  };
+  const createRouteDocument = (id: string, path: string) =>
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+           (id, theme_id, type, name, route_path, updated_at)
+         VALUES (?, 'theme-a', 'page', ?, ?, 'now')`,
+      )
+      .run(id, path, path);
+  const placement = (id: string) =>
+    sqlite
+      .prepare(
+        "SELECT route_path, name FROM storefront_theme_templates WHERE id = ?",
+      )
+      .get(id);
+  const rename = (
+    file: { path: string; id: string; version: number },
+    to: string,
+  ) =>
+    storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [{ path: to, content: ABOUT.content, expectMissing: true }],
+      {
+        expectedSourceGeneration: 2,
+        deletions: [
+          {
+            path: file.path,
+            expectedFileId: file.id,
+            expectedVersion: file.version,
+          },
+        ],
+        routePathMoves: [{ fromSourcePath: file.path, toSourcePath: to }],
+      },
+    );
+
+  it("moves /about's Document to /company in the page rename's own batch", async () => {
+    const file = await saveAbout();
+    createRouteDocument("about-document", "/about");
+    await rename(file, "src/pages/company.astro");
+    expect(placement("about-document")).toEqual({
+      route_path: "/company",
+      name: "/company",
+    });
+  });
+
+  it("carries the Document back to /about with a source rollback", async () => {
+    const file = await saveAbout();
+    createRouteDocument("about-document", "/about");
+    await rename(file, "src/pages/company.astro");
+    await expect(
+      storefrontThemeFileDal.planRouteDocumentRollback("theme-a", {
+        sourceGeneration: 2,
+        paths: [ABOUT.path],
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      documentMoves: [
+        {
+          templateId: "about-document",
+          fromRoutePath: "/company",
+          toRoutePath: "/about",
+        },
+      ],
+    });
+    const files = await storefrontThemeFileDal.rollbackToRevision(
+      "storefront-a",
+      "theme-a",
+      1,
+      { expectedSourceGeneration: 3 },
+    );
+    expect(files.map((entry) => entry.path)).toEqual([ABOUT.path]);
+    expect(placement("about-document")).toEqual({
+      route_path: "/about",
+      name: "/about",
+    });
+  });
+
+  it("refuses to move a Document onto a dynamic page, and moves nothing", async () => {
+    const file = await saveAbout();
+    createRouteDocument("about-document", "/about");
+    await expect(rename(file, "src/pages/[slug].astro")).rejects.toThrow(
+      "ROUTE_DOCUMENT_MOVE_UNSUPPORTED",
+    );
+    expect(placement("about-document")).toEqual({
+      route_path: "/about",
+      name: "/about",
+    });
+    await expect(
+      storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).resolves.toBe(2);
+  });
+
+  it("refuses a Start route move on an Astro Theme, and moves nothing", async () => {
+    // A leftover Start route file: never an Astro Theme's page.
+    const [file] = await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: "src/routes/about.tsx",
+          content: 'export const Route = createFileRoute("/about")({});',
+          expectMissing: true,
+        },
+      ],
+      { expectedSourceGeneration: 1 },
+    );
+    createRouteDocument("about-document", "/about");
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: "src/routes/company.tsx",
+            content: 'export const Route = createFileRoute("/company")({});',
+            expectMissing: true,
+          },
+        ],
+        {
+          expectedSourceGeneration: 2,
+          deletions: [
+            {
+              path: file!.path,
+              expectedFileId: file!.id,
+              expectedVersion: file!.version,
+            },
+          ],
+          routePathMoves: [
+            {
+              fromSourcePath: "src/routes/about.tsx",
+              toSourcePath: "src/routes/company.tsx",
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow("INVALID_ROUTE_DOCUMENT_MOVE");
+    expect(placement("about-document")).toEqual({
+      route_path: "/about",
+      name: "/about",
+    });
+    await expect(
+      storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).resolves.toBe(2);
+  });
+
+  it("counts an Astro page's Document as owned by the revision that has the page", async () => {
+    createRouteDocument("about-document", "/about");
+    await expect(
+      storefrontThemeFileDal.planRouteDocumentRollback("theme-a", {
+        sourceGeneration: null,
+        paths: [ABOUT.path],
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    // Read as Start, the same revision would strand /about's content.
+    sqlite.exec(
+      "UPDATE storefront_themes SET framework = NULL WHERE id = 'theme-a'",
+    );
+    await expect(
+      storefrontThemeFileDal.planRouteDocumentRollback("theme-a", {
+        sourceGeneration: null,
+        paths: [ABOUT.path],
+      }),
+    ).resolves.toMatchObject({ ok: false });
   });
 });

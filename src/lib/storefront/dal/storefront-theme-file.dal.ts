@@ -24,10 +24,9 @@ import { firstOrNull } from "@/lib/db/single-row";
 import { and, asc, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { ThemeSourceIndex } from "../theme-source-index";
 import {
-  isThemeRouteSourcePath,
-  themeRoutePathFromSourcePath,
-} from "@/lib/storefront/compiler/theme-route-registry";
-import { contentTargetForRoutePath } from "../theme-template-routes";
+  routeSourceContentTarget,
+  routeSourcePathInfo,
+} from "../theme-framework/theme-routes";
 import {
   planRouteDocumentRollback,
   type RouteDocumentRollbackPlan,
@@ -245,17 +244,38 @@ function prepareRouteDocumentMove(args: {
   ];
 }
 
-/** The content-owning static route paths a set of source files declares. */
-function routeOwnedPathsOf(paths: readonly string[]): Set<string> {
+/**
+ * The content-owning static route paths a set of source files declares, read
+ * as the Theme's recorded framework reads its routes (D7).
+ */
+function routeOwnedPathsOf(
+  framework: string | null | undefined,
+  paths: readonly string[],
+): Set<string> {
   const routePaths = new Set<string>();
   for (const path of paths) {
-    if (!isThemeRouteSourcePath(path)) continue;
-    const routePath = themeRoutePathFromSourcePath(path);
-    if (!routePath) continue;
-    const target = contentTargetForRoutePath(routePath);
+    const info = routeSourcePathInfo(framework, path);
+    if (!info?.standalone || !info.routePath) continue;
+    const target = routeSourceContentTarget(info);
     if (target.kind === "route") routePaths.add(target.routePath);
   }
   return routePaths;
+}
+
+/**
+ * The framework a Theme records, read for route Document moves. Recorded
+ * once and never converted, so reading it apart from the write races
+ * nothing (as `pageWritesUnavailableReason`). Undefined for no such Theme.
+ */
+async function readRecordedFramework(
+  themeId: string,
+): Promise<string | null | undefined> {
+  const row = await env.DATABASE.prepare(
+    "SELECT framework FROM storefront_themes WHERE id = ?1 AND deleted_at IS NULL LIMIT 1",
+  )
+    .bind(themeId)
+    .first<{ framework: string | null }>();
+  return row ? row.framework : undefined;
 }
 
 export function prepareIncrementThemeSourceGeneration(
@@ -1083,12 +1103,20 @@ export const storefrontThemeFileDal = {
       );
     }
     const deletions = options.deletions ?? [];
+    // Which files are page routes is the recorded framework's question; read
+    // only when a route Document moves.
+    const framework =
+      (options.routePathMoves ?? []).length > 0
+        ? await readRecordedFramework(themeId)
+        : null;
     const routePathMoves = (options.routePathMoves ?? []).map((move) => {
-      const fromRoutePath = themeRoutePathFromSourcePath(move.fromSourcePath);
-      const toRoutePath = themeRoutePathFromSourcePath(move.toSourcePath);
+      const from = routeSourcePathInfo(framework, move.fromSourcePath);
+      const to = routeSourcePathInfo(framework, move.toSourcePath);
+      const fromRoutePath = from?.routePath;
+      const toRoutePath = to?.routePath;
       if (
-        !isThemeRouteSourcePath(move.fromSourcePath) ||
-        !isThemeRouteSourcePath(move.toSourcePath) ||
+        !from?.standalone ||
+        !to?.standalone ||
         !fromRoutePath ||
         !toRoutePath ||
         fromRoutePath === toRoutePath ||
@@ -1099,7 +1127,12 @@ export const storefrontThemeFileDal = {
           "INVALID_ROUTE_DOCUMENT_MOVE: route mapping must match a moved route source file.",
         );
       }
-      return { fromRoutePath, toRoutePath };
+      return {
+        fromRoutePath,
+        toRoutePath,
+        fromTarget: routeSourceContentTarget(from),
+        toTarget: routeSourceContentTarget(to),
+      };
     });
     if (
       new Set(routePathMoves.map((move) => move.fromRoutePath)).size !==
@@ -1144,10 +1177,10 @@ export const storefrontThemeFileDal = {
     let routeMoveSequence = 0;
 
     for (const move of routePathMoves) {
-      const previous = contentTargetForRoutePath(move.fromRoutePath);
+      const previous = move.fromTarget;
       if (previous.kind !== "route") continue;
 
-      const next = contentTargetForRoutePath(move.toRoutePath);
+      const next = move.toTarget;
       const previousTemplate = await env.DATABASE.prepare(
         `SELECT id FROM storefront_theme_templates
          WHERE theme_id = ?1 AND route_path = ?2 AND deleted_at IS NULL LIMIT 1`,
@@ -1987,7 +2020,10 @@ export const storefrontThemeFileDal = {
           fromRoutePath: row.from_route_path,
           toRoutePath: row.to_route_path,
         })) ?? null,
-      revisionRoutePaths: routeOwnedPathsOf(revision.paths),
+      revisionRoutePaths: routeOwnedPathsOf(
+        await readRecordedFramework(themeId),
+        revision.paths,
+      ),
     });
   },
 
@@ -2094,7 +2130,10 @@ export const storefrontThemeFileDal = {
         ).bind(
           themeId,
           JSON.stringify([
-            ...routeOwnedPathsOf(snapshot.map((file) => file.path)),
+            ...routeOwnedPathsOf(
+              await readRecordedFramework(themeId),
+              snapshot.map((file) => file.path),
+            ),
           ]),
         ),
       );
