@@ -411,6 +411,13 @@ type EditorStyleInspectorProps = {
    */
   contentBasis?: () => number | undefined;
   /**
+   * This section's stored props in the newest copy the editor has accepted
+   * of its document, read when the author changes a content field. A write
+   * answered but not yet rendered is in it, so an input made after that
+   * answer is rebased against it, not against the older copy last shown.
+   */
+  acceptedContentProps?: () => Record<string, unknown> | undefined;
+  /**
    * The last value an inline canvas edit wrote. Applied to this section's
    * fields before the save and refetch bring it back as stored props.
    */
@@ -906,6 +913,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onListResetApplied,
   onDiscardListConflict,
   contentBasis,
+  acceptedContentProps,
   inlineTextCommit = null,
   onJumpToCode,
   sharedLayoutPaths,
@@ -952,11 +960,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     localPropsRef,
     props,
     externalEpochs,
+    noteLocalInput,
   } = useInspectorContentProps({
     resourceKey,
     sectionId: section.id,
     sectionProps: section.props,
   });
+  const acceptedContentPropsRef = useRef(acceptedContentProps);
+  acceptedContentPropsRef.current = acceptedContentProps;
   // A list reset is for the panel showing that list when the discard made it:
   // that panel's own copy still holds the discarded rows. A panel mounted
   // after it, or showing another section then, reads the latest props itself
@@ -2884,11 +2895,23 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           ? setFieldPathValue(currentProps, targetPath, value)
           : { ...currentProps, [field]: value },
       );
+      // Made on the newest accepted copy, which may hold a write answered
+      // but not yet shown here: the next server copy is rebased against it.
+      noteLocalInput(
+        (targetPath ?? field).split(".")[0]!,
+        acceptedContentPropsRef.current?.(),
+      );
       localPropsRef.current = next;
       setLocalProps(next);
       onPropsChange(next, { ...options, inputFieldPath: targetPath ?? field });
     },
-    [activeFieldPath, onPropsChange, section.id, selection?.descendantFields],
+    [
+      activeFieldPath,
+      noteLocalInput,
+      onPropsChange,
+      section.id,
+      selection?.descendantFields,
+    ],
   );
   /**
    * The props a list write starts from: the stored props, plus — for a list
