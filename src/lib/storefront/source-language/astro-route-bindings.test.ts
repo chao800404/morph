@@ -67,6 +67,29 @@ describe("reading a page refuses before guessing", () => {
     });
   });
 
+  it("refuses a Markdown, MDX or HTML page as a capability limit without asking the parser", async () => {
+    for (const sourcePath of [
+      "src/pages/notes.md",
+      "src/pages/notes.mdx",
+      "src/pages/notes.html",
+    ]) {
+      const result = await readAstroRoute({
+        binding: {
+          fetch: () => {
+            throw new Error("the parser must not be asked");
+          },
+        },
+        files: [...files, { path: sourcePath, content: "# Notes\n" }],
+        route: { path: "/notes", sourcePath, dynamic: false },
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        class: "capability-limit",
+        reason: "page-language-unsupported",
+      });
+    }
+  });
+
   it("refuses a snapshot that names one file twice", async () => {
     const result = await readAstroRoute({
       binding: null,

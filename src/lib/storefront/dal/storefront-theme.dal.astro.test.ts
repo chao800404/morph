@@ -1047,6 +1047,37 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     ).resolves.toBeNull();
     expect(stored("tpl-about")).toEqual(before);
   });
+
+  it("refuses a Markdown or HTML page as a capability limit before the parser is asked (L1), and writes nothing", async () => {
+    const request = await identityOf("/about", "intro");
+    seedFiles(THEME, STOREFRONT, [
+      { path: "src/pages/notes.md", content: "# Notes\n" },
+    ]);
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates (id, theme_id, type, name, route_path, document, created_at, updated_at)
+      VALUES ('tpl-notes', 'theme-a', 'page', '/notes', '/notes', '{"version":1,"sections":[]}', 'now', 'now');
+    `);
+    const before = stored("tpl-notes");
+    const fetch = countParserCalls();
+    await expect(
+      write({ ...request, templateId: "tpl-notes", routePath: "/notes" }),
+    ).rejects.toThrow(
+      /^SECTION_SOURCE_UNCONFIRMED: page-language-unsupported: /,
+    );
+    await expect(read({ routePath: "/notes" })).resolves.toMatchObject({
+      status: "view",
+      view: {
+        status: {
+          kind: "refused",
+          class: "capability-limit",
+          reason: "page-language-unsupported",
+        },
+        instances: [],
+      },
+    });
+    expect(fetch.calls).toBe(0);
+    expect(stored("tpl-notes")).toEqual(before);
+  });
 });
 
 /**

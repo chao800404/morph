@@ -127,6 +127,16 @@ export async function readAstroRoute(args: {
       `${args.route.path} has route parameters; Design edits fixed pages only`,
     );
   }
+  if (!routeFile.endsWith(".astro")) {
+    // A `.md`, `.mdx` or `.html` page is a page Astro serves, but not one
+    // the parser reads: refused for what it is, never sent to the parser
+    // and then reported as a parser fault that retrying cannot fix.
+    return astroBindingRefusal(
+      "capability-limit",
+      "page-language-unsupported",
+      `${routeFile} is not an .astro page; Design edits .astro pages only`,
+    );
+  }
   const contentByPath = new Map<string, string>();
   for (const file of args.files) {
     const path = normalizeThemeSourcePath(file.path);
