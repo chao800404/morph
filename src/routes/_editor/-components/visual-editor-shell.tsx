@@ -345,6 +345,7 @@ import {
   contentEntryVisibilityIntent,
   createInstanceContentReplay,
   previewSectionHidden,
+  inspectorInputSectionProps,
   previewSectionPost,
   previewSectionPostShowsAccepted,
   type InstanceContentReplay,
@@ -15823,9 +15824,10 @@ export function VisualEditorShell({
           presentationProof,
         );
       }
-      // 1. Instant 0ms visual sync to iframe canvas
-      // A held input is shown too when the frame on screen can acknowledge
-      // what it shows: the round that acknowledges it is what releases it
+      // 1. Visual sync to the iframe canvas (`showInput`, once the input is
+      // staged below). A held input is shown too when the frame on screen
+      // can acknowledge what it shows: the round that acknowledges it is
+      // what releases it
       // (coalesced presentation release), and a post still waiting on signing is
       // superseded, so rapid edits coalesce into its one post. A frame that
       // cannot acknowledge is told nothing new, and an older
@@ -15839,18 +15841,46 @@ export function VisualEditorShell({
         frameRecord.capabilities.has("section-presentation-ack-v1"),
       );
       const shownWhileHeld = !presentationReadyAtInput && frameCanAcknowledge;
-      const previewProps = parsePreviewSectionProps(nextProps);
       const awaitingSignedBefore = awaitingSignedPostRef.current.has(sectionId);
       if (!presentationReadyAtInput && !frameCanAcknowledge) {
         cancelAwaitingSignedPost(sectionId);
-      } else if (!options?.skipPreviewSync && previewProps) {
-        syncPreviewSectionProps(sectionId, previewProps);
-      } else if (previewProps) {
-        supersedeAwaitingSignedPost(sectionId, previewProps);
       }
+      /**
+       * Shows the canvas `props` for this input, as the frame on screen may
+       * be told it (above). Called once, wherever the input ends below.
+       */
+      const showInput = (props: Record<string, unknown>) => {
+        if (!presentationReadyAtInput && !frameCanAcknowledge) return;
+        const previewProps = parsePreviewSectionProps(props);
+        if (!previewProps) return;
+        if (!options?.skipPreviewSync) {
+          syncPreviewSectionProps(sectionId, previewProps);
+        } else {
+          supersedeAwaitingSignedPost(sectionId, previewProps);
+        }
+      };
+      /**
+       * The section as the editor holds it now: the accepted copy with the
+       * unanswered and pending fields on top (`inspectorInputSectionProps`),
+       * never the Inspector's whole copy. The post is stamped with the
+       * accepted copy's generation, so what it carries has to be that copy.
+       */
+      const heldSectionView = () => {
+        const state = previewSectionStateRef.current(sectionId);
+        return inspectorInputSectionProps({
+          accepted: acceptedSectionProps(sectionId),
+          unconfirmed: state?.unconfirmed,
+          pending: state?.pending,
+        });
+      };
 
       const templateId = presentationTemplateId;
-      if (!templateId) return;
+      // No document owns the section: nothing is accepted or pending for it,
+      // and no post of it is stamped with a generation.
+      if (!templateId) {
+        showInput(nextProps);
+        return;
+      }
       // One entry per section: an edit still held under the route
       // placeholder takes this one in, and is sent as the placeholder's.
       const key = contentKeyFor(templateId, sectionId);
@@ -15882,6 +15912,7 @@ export function VisualEditorShell({
         toast.error(RESELECT_CONTENT_MESSAGE, {
           id: "selection-source-conflict",
         });
+        showInput(heldSectionView());
         return;
       }
       const existingProps = prior?.props ?? {};
@@ -15944,7 +15975,10 @@ export function VisualEditorShell({
                     : path,
                 )?.sourceGeneration ?? null),
       });
-      if (!staged) return;
+      if (!staged) {
+        showInput(heldSectionView());
+        return;
+      }
       // New input after the author left a field, to it or to a sibling the
       // commit never held: that commit is over, and only leaving a field
       // again commits what is there now.
@@ -15969,6 +16003,9 @@ export function VisualEditorShell({
                 : {}),
             },
       );
+      // 1. Instant visual sync to the iframe canvas, of the section with
+      // this input staged in it.
+      showInput(heldSectionView());
       if (!presentationReadyAtInput) {
         if (existingTimer) pendingPropsTimersRef.current.delete(key);
         // Held, not sent, and shown (above): the round that acknowledges
