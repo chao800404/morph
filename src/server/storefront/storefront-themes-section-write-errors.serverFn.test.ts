@@ -119,3 +119,32 @@ describe("updateStorefrontThemeSectionProps answers a section-source refusal by 
     });
   });
 });
+
+describe("updateStorefrontThemeSectionProps carries an Astro write's identity to the DAL", () => {
+  const identity = {
+    identity: `0123456789abcdef:2:${"a".repeat(64)}:10:30`,
+    componentDigest: "b".repeat(64),
+  };
+
+  it("passes the identity and component digest through, for Core to verify", async () => {
+    dal.updateSectionProps.mockResolvedValue({ draftGeneration: 2 });
+    await call({ ...input, ...identity });
+    expect(dal.updateSectionProps).toHaveBeenCalledWith(
+      expect.objectContaining(identity),
+    );
+  });
+
+  it("refuses a component digest that is not a sha256, before the DAL", async () => {
+    const result = await call({ ...input, ...identity, componentDigest: "B".repeat(64) });
+    expect(result).toMatchObject({ success: false, error: "INVALID_INPUT" });
+    expect(dal.updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("drops a field it does not know (room for a later presentation token), and verifies nothing from it", async () => {
+    dal.updateSectionProps.mockResolvedValue({ draftGeneration: 2 });
+    await call({ ...input, presentationToken: "anything" });
+    expect(dal.updateSectionProps.mock.calls[0]![0]).not.toHaveProperty(
+      "presentationToken",
+    );
+  });
+});

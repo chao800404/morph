@@ -4,6 +4,7 @@ import {
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
+  sectionSourceRefusalMessage,
 } from "@/lib/storefront/theme-write-errors";
 import { getDb } from "@/db";
 import { withReleaseNote } from "@/lib/storefront/release-note";
@@ -33,8 +34,11 @@ import {
   astroRouteBindingsView,
   readAstroRoute,
   refusedAstroRouteBindingsView,
+  type AstroBindingRefusal,
   type AstroRouteBindingsView,
 } from "@/lib/storefront/source-language/astro-route-bindings";
+import { verifyAstroSectionWriteIdentity } from "@/lib/storefront/source-language/astro-instance-identity";
+import { parseAstroInstanceIdentity } from "@/lib/storefront/theme-framework/astro-preview-locate";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontThemeBuildDal } from "./storefront-theme-build.dal";
@@ -49,6 +53,7 @@ import {
   analyzeB1Route,
   findB1WriteProvenanceFailure,
   type B1Claim,
+  type B1Instance,
 } from "@/lib/storefront/ast/theme-content-provenance";
 import { normalizeThemeSourcePath } from "@/lib/storefront/ast/theme-content-binding";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
@@ -57,6 +62,7 @@ import {
   readDeployedThemeBuildId,
 } from "@/lib/storefront/service/theme-worker-deployment-state";
 import {
+  sourceSectionIdentity,
   deriveThemeLayoutSections,
   deriveThemeRouteSections,
   type ThemeRouteSectionResult,
@@ -565,6 +571,219 @@ async function ensureAstroHomeTemplate(data: {
     ok: true,
     createdByThisCall: true,
     template: { id, routePath: "/", draftGeneration: 1, draftRevisionId: null },
+  };
+}
+
+/**
+ * The fields one B1 instance proves come from `sectionId`, by stored field:
+ * a claim, or null where two claims of one field disagree on their
+ * condition (refused below as unproven). Start and Astro alike.
+ */
+function b1ClaimsForSection(
+  instance: B1Instance,
+  sectionId: string,
+): ReadonlyMap<string, Extract<B1Claim, { kind: "claim" }> | null> {
+  const claimsByStoredField = new Map<
+    string,
+    Extract<B1Claim, { kind: "claim" }> | null
+  >();
+  for (const claim of Object.values(instance.claims)) {
+    if (claim.kind !== "claim" || claim.slot !== sectionId) {
+      continue;
+    }
+    const previous = claimsByStoredField.get(claim.field);
+    if (previous === undefined) {
+      claimsByStoredField.set(claim.field, claim);
+    } else if (
+      previous === null ||
+      JSON.stringify(previous.conditional) !==
+        JSON.stringify(claim.conditional)
+    ) {
+      claimsByStoredField.set(claim.field, null);
+    }
+  }
+  return claimsByStoredField;
+}
+
+/** What an author is told, by the plan's failure class (section 6.2). */
+function astroSectionRefusal(refusal: AstroBindingRefusal): Error {
+  const text =
+    refusal.class === "temporarily-unconfirmable"
+      ? `Design cannot confirm this section right now (${refusal.detail}). The source is not at fault: try again, or reload the preview.`
+      : refusal.class === "author-syntax"
+        ? `This page has a syntax error (${refusal.detail}). Fix it in Code mode.`
+        : refusal.class === "controlled-by-code"
+          ? `This section's content is controlled by code (${refusal.detail}).`
+          : `Design does not support this yet (${refusal.detail}). Edit it in Code mode.`;
+  return new Error(
+    sectionSourceRefusalMessage(
+      refusal.class === "temporarily-unconfirmable",
+      refusal.reason,
+      text,
+    ),
+  );
+}
+
+/**
+ * Everything an Astro section write takes from the source, proven by Core
+ * on the one snapshot this write reads (M2 C5; design v2 section 6 step 8,
+ * section 8):
+ *
+ * 1. the page the template holds content for: `/` for the `index`
+ *    template, its own path for a route template; any other template kind
+ *    is not written on Astro yet;
+ * 2. that page in the saved source's Astro registry (not an endpoint, not
+ *    dynamic);
+ * 3. the page and every `.astro` module it reaches parsed by the pinned
+ *    compiler with no diagnostics, projected, and analysed with the Astro
+ *    B1 profile (`readAstroRoute`);
+ * 4. the request's instance identity and component digest verified against
+ *    that very parse and analysis (`verifyAstroSectionWriteIdentity`): the
+ *    route file's sha256, the boundary rule, the range, exactly one B1
+ *    instance, its component by Core's own import resolution, the
+ *    component file's sha256, and the instance's section being the one the
+ *    write names;
+ * 5. that instance the only one rendering the section, with no analysis
+ *    diagnostics, for its field claims (else none: every field is refused
+ *    as unproven, as for Start).
+ *
+ * The caller has checked `expectedSourceGeneration` before this reads the
+ * files, checks it again after, and writes in one batch whose CAS repeats
+ * it, with the draft generation. So the snapshot proven here is the one
+ * the Document is written against: a source save in between changes the
+ * generation and the write is refused (`SELECTION_SOURCE_CONFLICT`), never
+ * applied against a proof of other source. Refusals throw the coded
+ * section-source error (C7) and write nothing.
+ */
+async function resolveAstroSectionWrite(args: {
+  storefrontId: string;
+  themeId: string;
+  template: StorefrontThemeEditorDTO["templates"][number];
+  sectionId: string;
+  routePath?: string;
+  identity?: string;
+  componentDigest?: string;
+}): Promise<{
+  baseDocument: StorefrontPageDocument;
+  targetSection: StorefrontPageDocument["sections"][number] | undefined;
+  componentRef: string;
+  claims: ReadonlyMap<string, Extract<B1Claim, { kind: "claim" }> | null>;
+}> {
+  const refuse = (
+    klass: AstroBindingRefusal["class"],
+    reason: string,
+    detail: string,
+  ) => astroSectionRefusal(astroBindingRefusal(klass, reason, detail));
+  // An editor older than the v2 identity: refused before any source is read
+  // or the parser is asked (design v2 section 7, old bridge or old editor).
+  if (!parseAstroInstanceIdentity(args.identity)) {
+    throw refuse(
+      "temporarily-unconfirmable",
+      "preview-identity-legacy",
+      "the write carries no v2 instance identity; reload the preview",
+    );
+  }
+  const pagePath = args.template.routePath
+    ? routeTemplatePathForRequest(args.template.routePath)
+    : args.template.type === "index"
+      ? "/"
+      : null;
+  if (!pagePath) {
+    throw refuse(
+      "capability-limit",
+      "template-kind-unsupported",
+      `the ${args.template.type} template of an Astro Theme`,
+    );
+  }
+  if (
+    args.routePath !== undefined &&
+    routeTemplatePathForRequest(args.routePath) !== pagePath
+  ) {
+    throw refuse(
+      "temporarily-unconfirmable",
+      "route-mismatch",
+      `this document holds content for ${pagePath}, not ${args.routePath}; refresh the editor`,
+    );
+  }
+  const files = await listThemeSourceFiles(args.storefrontId, args.themeId);
+  const page = astroPageAt(files, pagePath);
+  if (!page.ok) {
+    throw refuse(
+      "capability-limit",
+      page.reason.includes("parameters") ? "dynamic-route" : "route-missing",
+      page.reason,
+    );
+  }
+  const reading = await readAstroRoute({
+    binding: astroParserBindingFrom(env),
+    files,
+    route: {
+      path: page.record.path,
+      sourcePath: page.record.sourcePath,
+      dynamic: page.record.dynamic,
+    },
+  });
+  if (!reading.ok) throw astroSectionRefusal(reading);
+  const verified = await verifyAstroSectionWriteIdentity({
+    // A missing digest is compared as "" and refused (source-stale).
+    input: {
+      identity: args.identity!,
+      componentDigest: args.componentDigest ?? "",
+    },
+    sectionId: args.sectionId,
+    snapshot: { files },
+    route: reading.identityInput,
+  });
+  if (!verified.ok) {
+    throw refuse(verified.class, verified.reason, verified.detail);
+  }
+
+  const { analysis } = reading.identityInput;
+  const instance = verified.instance;
+  const stored = sourceSectionIdentity({
+    files,
+    componentSourcePath: instance.componentPath!,
+    componentExport: instance.componentExport,
+    componentName: instance.componentName,
+  });
+  const rendering = analysis.instances.filter(
+    (candidate) => candidate.section === args.sectionId,
+  );
+  const claims =
+    rendering.length === 1 &&
+    rendering[0] === instance &&
+    analysis.diagnostics.length === 0
+      ? b1ClaimsForSection(instance, args.sectionId)
+      : new Map<string, Extract<B1Claim, { kind: "claim" }> | null>();
+
+  // The section's stored row, or a new one for its first write: the ref and
+  // type Core derived for the instance, never the Document's or the
+  // client's. Nothing else of the Document changes.
+  const document = args.template.document;
+  const baseDocument: StorefrontPageDocument = document.sections.some(
+    (section) => section.id === args.sectionId,
+  )
+    ? document
+    : {
+        ...document,
+        sections: [
+          ...document.sections,
+          {
+            id: args.sectionId,
+            type: stored.sectionType,
+            componentRef: stored.componentRef,
+            enabled: true,
+            props: {},
+          },
+        ],
+      };
+  return {
+    baseDocument,
+    targetSection: baseDocument.sections.find(
+      (section) => section.id === args.sectionId,
+    ),
+    componentRef: stored.componentRef,
+    claims,
   };
 }
 
@@ -1789,6 +2008,14 @@ export const storefrontThemeDal = {
     routePath?: string;
     /** Declared fields whose stored value is removed; the code default renders. */
     resetProps?: readonly string[];
+    /**
+     * Astro only (M2 P5): the v2 boundary id of the instance the selection
+     * named, and the sha256 of its component file the selection was
+     * confirmed against. Claims from a page that runs author code: Core
+     * verifies both on the snapshot this write reads. Unused for Start.
+     */
+    identity?: string;
+    componentDigest?: string;
   }) {
     const context = await this.findEditorContext(
       data.storefrontId,
@@ -1811,94 +2038,110 @@ export const storefrontThemeDal = {
       throw new Error(SELECTION_SOURCE_CONFLICT);
     }
 
-    const baseDocument = templateSectionWriteBase(template, data.sectionId);
-    const targetSection = baseDocument.sections.find(
-      (section) => section.id === data.sectionId,
-    );
-    if (!targetSection) return null;
-
-    const themeSourceFiles = await listThemeSourceFiles(
-      data.storefrontId,
-      data.themeId,
-    );
-    const sourceComponent = resolveSectionSourceComponent({
-      framework: context.theme.framework,
-      templateType: template.type,
-      templateRoutePath: template.routePath ?? null,
-      sectionId: data.sectionId,
-      files: themeSourceFiles,
-      routePath: data.routePath,
-    });
-    if (sourceComponent.kind === "unconfirmed") {
-      throw new Error(
-        `${SECTION_SOURCE_UNCONFIRMED}: ${sourceComponent.reason}`,
-      );
-    }
-    const sectionComponentRef =
-      sourceComponent.kind === "confirmed"
-        ? sourceComponent.componentRef
-        : (targetSection.componentRef ?? null);
-
-    // Wherever the source confirms the section, derive the write mapping again
-    // from the exact source snapshot used to resolve it. Canvas metadata is
-    // only a locator: it cannot authorize or redirect a Document write.
-    //
-    // This holds for the layout as much as for a route: the call site is
-    // then the layout file `deriveThemeLayoutSections` found the section in,
-    // which the same B1 analysis already reads to find layout sections. A
-    // layout that overrides a stored field after its spread would otherwise
-    // accept an edit the rendered page never shows.
-    const b1ProofRequired = sourceComponent.kind === "confirmed";
+    let baseDocument: StorefrontPageDocument;
+    let targetSection: StorefrontPageDocument["sections"][number] | undefined;
+    let sectionComponentRef: string | null;
+    let b1ProofRequired: boolean;
     let b1Claims: ReadonlyMap<
       string,
       Extract<B1Claim, { kind: "claim" }> | null
     > = new Map();
-    if (b1ProofRequired) {
-      const sourceAnalysis = analyzeB1Route(
-        themeSourceFiles.filter(
-          (file): file is typeof file & { content: string } =>
-            typeof file.content === "string",
-        ),
-        sourceComponent.callSitePath,
+
+    const capability = designWriteCapability(
+      context.theme.framework,
+      "section-props",
+    );
+    if (capability.ok && capability.via === "astro") {
+      // C5: an Astro section is written only through Core's own proof on
+      // the snapshot this write reads (`resolveAstroSectionWrite`); the B1
+      // field check, the capability allowlist and the CAS below are the
+      // same as Start's.
+      const astro = await resolveAstroSectionWrite({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        template,
+        sectionId: data.sectionId,
+        routePath: data.routePath,
+        identity: data.identity,
+        componentDigest: data.componentDigest,
+      });
+      baseDocument = astro.baseDocument;
+      targetSection = astro.targetSection;
+      sectionComponentRef = astro.componentRef;
+      b1ProofRequired = true;
+      b1Claims = astro.claims;
+    } else {
+      baseDocument = templateSectionWriteBase(template, data.sectionId);
+      targetSection = baseDocument.sections.find(
+        (section) => section.id === data.sectionId,
       );
-      const normalizedComponentPath = normalizeThemeSourcePath(
-        sourceComponent.componentSourcePath,
+      if (!targetSection) return null;
+
+      const themeSourceFiles = await listThemeSourceFiles(
+        data.storefrontId,
+        data.themeId,
       );
-      const matchingInstances = sourceAnalysis.instances.filter(
-        (instance) =>
-          instance.section === data.sectionId &&
-          instance.componentPath !== null &&
-          normalizeThemeSourcePath(instance.componentPath) ===
-            normalizedComponentPath,
-      );
-      // A confirmed source-backed section must also have one exact B1 source
-      // instance. Missing, duplicate or diagnostically ambiguous provenance
-      // leaves an empty proof map, so every capability-allowed write fails
-      // closed below; it never falls back to a name-based/legacy guess.
-      if (matchingInstances.length === 1 && sourceAnalysis.diagnostics.length === 0) {
-        const instance = matchingInstances[0]!;
-        const claimsByStoredField = new Map<
-          string,
-          Extract<B1Claim, { kind: "claim" }> | null
-        >();
-        for (const claim of Object.values(instance.claims)) {
-          if (claim.kind !== "claim" || claim.slot !== data.sectionId) {
-            continue;
-          }
-          const previous = claimsByStoredField.get(claim.field);
-          if (previous === undefined) {
-            claimsByStoredField.set(claim.field, claim);
-          } else if (
-            previous === null ||
-            JSON.stringify(previous.conditional) !==
-              JSON.stringify(claim.conditional)
-          ) {
-            claimsByStoredField.set(claim.field, null);
-          }
+      const sourceComponent = resolveSectionSourceComponent({
+        framework: context.theme.framework,
+        templateType: template.type,
+        templateRoutePath: template.routePath ?? null,
+        sectionId: data.sectionId,
+        files: themeSourceFiles,
+        routePath: data.routePath,
+      });
+      if (sourceComponent.kind === "unconfirmed") {
+        throw new Error(
+          `${SECTION_SOURCE_UNCONFIRMED}: ${sourceComponent.reason}`,
+        );
+      }
+      sectionComponentRef =
+        sourceComponent.kind === "confirmed"
+          ? sourceComponent.componentRef
+          : (targetSection.componentRef ?? null);
+
+      // Wherever the source confirms the section, derive the write mapping
+      // again from the exact source snapshot used to resolve it. Canvas
+      // metadata is only a locator: it cannot authorize or redirect a
+      // Document write.
+      //
+      // This holds for the layout as much as for a route: the call site is
+      // then the layout file `deriveThemeLayoutSections` found the section
+      // in, which the same B1 analysis already reads to find layout
+      // sections. A layout that overrides a stored field after its spread
+      // would otherwise accept an edit the rendered page never shows.
+      b1ProofRequired = sourceComponent.kind === "confirmed";
+      if (sourceComponent.kind === "confirmed") {
+        const sourceAnalysis = analyzeB1Route(
+          themeSourceFiles.filter(
+            (file): file is typeof file & { content: string } =>
+              typeof file.content === "string",
+          ),
+          sourceComponent.callSitePath,
+        );
+        const normalizedComponentPath = normalizeThemeSourcePath(
+          sourceComponent.componentSourcePath,
+        );
+        const matchingInstances = sourceAnalysis.instances.filter(
+          (instance) =>
+            instance.section === data.sectionId &&
+            instance.componentPath !== null &&
+            normalizeThemeSourcePath(instance.componentPath) ===
+              normalizedComponentPath,
+        );
+        // A confirmed source-backed section must also have one exact B1
+        // source instance. Missing, duplicate or diagnostically ambiguous
+        // provenance leaves an empty proof map, so every capability-allowed
+        // write fails closed below; it never falls back to a
+        // name-based/legacy guess.
+        if (
+          matchingInstances.length === 1 &&
+          sourceAnalysis.diagnostics.length === 0
+        ) {
+          b1Claims = b1ClaimsForSection(matchingInstances[0]!, data.sectionId);
         }
-        b1Claims = claimsByStoredField;
       }
     }
+    if (!targetSection) return null;
 
     const manifestState = await env.DATABASE.prepare(
       `
