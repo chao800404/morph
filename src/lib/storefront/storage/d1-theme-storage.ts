@@ -785,6 +785,7 @@ export function createD1ThemeRevisionStore(
         throw new Error("Theme not found or does not belong to storefront");
       }
       return storefrontThemeFileDal.planRouteDocumentRollback(
+        storefrontId,
         themeId,
         revision,
       );

@@ -909,10 +909,14 @@ describe("storefront theme file DAL", () => {
       createRouteDocument("written-later", "/company");
 
       await expect(
-        storefrontThemeFileDal.planRouteDocumentRollback("theme-a", {
-          sourceGeneration: 2,
-          paths: [aboutRoute.path],
-        }),
+        storefrontThemeFileDal.planRouteDocumentRollback(
+          "storefront-a",
+          "theme-a",
+          {
+            sourceGeneration: 2,
+            paths: [aboutRoute.path],
+          },
+        ),
       ).resolves.toMatchObject({
         ok: true,
         documentMoves: [
@@ -1866,10 +1870,14 @@ describe("route Documents of an Astro Theme follow its pages (D7)", () => {
     createRouteDocument("about-document", "/about");
     await rename(file, "src/pages/company.astro");
     await expect(
-      storefrontThemeFileDal.planRouteDocumentRollback("theme-a", {
-        sourceGeneration: 2,
-        paths: [ABOUT.path],
-      }),
+      storefrontThemeFileDal.planRouteDocumentRollback(
+        "storefront-a",
+        "theme-a",
+        {
+          sourceGeneration: 2,
+          paths: [ABOUT.path],
+        },
+      ),
     ).resolves.toMatchObject({
       ok: true,
       documentMoves: [
@@ -1964,20 +1972,80 @@ describe("route Documents of an Astro Theme follow its pages (D7)", () => {
   it("counts an Astro page's Document as owned by the revision that has the page", async () => {
     createRouteDocument("about-document", "/about");
     await expect(
-      storefrontThemeFileDal.planRouteDocumentRollback("theme-a", {
-        sourceGeneration: null,
-        paths: [ABOUT.path],
-      }),
+      storefrontThemeFileDal.planRouteDocumentRollback(
+        "storefront-a",
+        "theme-a",
+        {
+          sourceGeneration: null,
+          paths: [ABOUT.path],
+        },
+      ),
     ).resolves.toMatchObject({ ok: true });
     // Read as Start, the same revision would strand /about's content.
     sqlite.exec(
       "UPDATE storefront_themes SET framework = NULL WHERE id = 'theme-a'",
     );
     await expect(
-      storefrontThemeFileDal.planRouteDocumentRollback("theme-a", {
-        sourceGeneration: null,
-        paths: [ABOUT.path],
-      }),
+      storefrontThemeFileDal.planRouteDocumentRollback(
+        "storefront-a",
+        "theme-a",
+        {
+          sourceGeneration: null,
+          paths: [ABOUT.path],
+        },
+      ),
     ).resolves.toMatchObject({ ok: false });
+  });
+
+  it("reads the recorded framework only through the Theme's own live storefront (L3)", async () => {
+    createRouteDocument("about-document", "/about");
+    const revision = { sourceGeneration: null, paths: [ABOUT.path] };
+    await expect(
+      storefrontThemeFileDal.planRouteDocumentRollback(
+        "storefront-a",
+        "theme-a",
+        revision,
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    // Another storefront's id with this Theme's id: not this Theme.
+    await expect(
+      storefrontThemeFileDal.planRouteDocumentRollback(
+        "storefront-b",
+        "theme-a",
+        revision,
+      ),
+    ).rejects.toThrow("THEME_NOT_FOUND");
+    // A deleted storefront's Theme is not live, whatever its own row says.
+    sqlite.exec(
+      "UPDATE storefronts SET deleted_at = 'then' WHERE id = 'storefront-a'",
+    );
+    await expect(
+      storefrontThemeFileDal.planRouteDocumentRollback(
+        "storefront-a",
+        "theme-a",
+        revision,
+      ),
+    ).rejects.toThrow("THEME_NOT_FOUND");
+  });
+
+  it("moves no Document of a deleted storefront's Theme (L3)", async () => {
+    const file = await saveAbout();
+    createRouteDocument("about-document", "/about");
+    sqlite.exec(
+      "UPDATE storefronts SET deleted_at = 'then' WHERE id = 'storefront-a'",
+    );
+    await expect(rename(file, "src/pages/company.astro")).rejects.toThrow(
+      "THEME_NOT_FOUND",
+    );
+    expect(placement("about-document")).toEqual({
+      route_path: "/about",
+      name: "/about",
+    });
+    sqlite.exec(
+      "UPDATE storefronts SET deleted_at = NULL WHERE id = 'storefront-a'",
+    );
+    await expect(
+      storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
+    ).resolves.toBe(2);
   });
 });

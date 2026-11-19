@@ -265,17 +265,29 @@ function routeOwnedPathsOf(
 /**
  * The framework a Theme records, read for route Document moves. Recorded
  * once and never converted, so reading it apart from the write races
- * nothing (as `pageWritesUnavailableReason`). Undefined for no such Theme.
+ * nothing (as `pageWritesUnavailableReason`). Read only through the Theme's
+ * own live storefront, as every Theme read is; a Theme that is not this
+ * storefront's, or whose storefront or own row is deleted, is refused
+ * rather than read as the unrecorded (Start) default.
  */
 async function readRecordedFramework(
+  storefrontId: string,
   themeId: string,
-): Promise<string | null | undefined> {
+): Promise<string | null> {
   const row = await env.DATABASE.prepare(
-    "SELECT framework FROM storefront_themes WHERE id = ?1 AND deleted_at IS NULL LIMIT 1",
+    `SELECT th.framework AS framework
+       FROM storefront_themes th
+       INNER JOIN storefronts s ON s.id = th.storefront_id
+      WHERE th.id = ?1 AND s.id = ?2
+        AND th.deleted_at IS NULL AND s.deleted_at IS NULL
+      LIMIT 1`,
   )
-    .bind(themeId)
+    .bind(themeId, storefrontId)
     .first<{ framework: string | null }>();
-  return row ? row.framework : undefined;
+  if (!row) {
+    throw new Error("THEME_NOT_FOUND: Theme is not owned by this storefront.");
+  }
+  return row.framework;
 }
 
 export function prepareIncrementThemeSourceGeneration(
@@ -1107,7 +1119,7 @@ export const storefrontThemeFileDal = {
     // only when a route Document moves.
     const framework =
       (options.routePathMoves ?? []).length > 0
-        ? await readRecordedFramework(themeId)
+        ? await readRecordedFramework(storefrontId, themeId)
         : null;
     const routePathMoves = (options.routePathMoves ?? []).map((move) => {
       const from = routeSourcePathInfo(framework, move.fromSourcePath);
@@ -1985,12 +1997,16 @@ export const storefrontThemeFileDal = {
    * only while no document would be left at a route the revision lacks.
    */
   async planRouteDocumentRollback(
+    storefrontId: string,
     themeId: string,
     revision: Readonly<{
       sourceGeneration: number | null;
       paths: readonly string[];
     }>,
   ): Promise<RouteDocumentRollbackPlan> {
+    // First, so another storefront's Theme is refused before anything of
+    // it is read.
+    const framework = await readRecordedFramework(storefrontId, themeId);
     const [documents, moves] = await Promise.all([
       env.DATABASE.prepare(
         `SELECT id, route_path, name FROM storefront_theme_templates
@@ -2020,10 +2036,7 @@ export const storefrontThemeFileDal = {
           fromRoutePath: row.from_route_path,
           toRoutePath: row.to_route_path,
         })) ?? null,
-      revisionRoutePaths: routeOwnedPathsOf(
-        await readRecordedFramework(themeId),
-        revision.paths,
-      ),
+      revisionRoutePaths: routeOwnedPathsOf(framework, revision.paths),
     });
   },
 
@@ -2084,10 +2097,14 @@ export const storefrontThemeFileDal = {
       ).bind(now, storefrontId, themeId),
     ];
 
-    const routeDocuments = await this.planRouteDocumentRollback(themeId, {
-      sourceGeneration: rev.sourceGeneration ?? null,
-      paths: snapshot.map((file) => file.path),
-    });
+    const routeDocuments = await this.planRouteDocumentRollback(
+      storefrontId,
+      themeId,
+      {
+        sourceGeneration: rev.sourceGeneration ?? null,
+        paths: snapshot.map((file) => file.path),
+      },
+    );
     if (!routeDocuments.ok) {
       throw new Error(
         `ROLLBACK_ROUTE_DOCUMENT_CONFLICT: ${routeDocuments.message}`,
@@ -2131,7 +2148,7 @@ export const storefrontThemeFileDal = {
           themeId,
           JSON.stringify([
             ...routeOwnedPathsOf(
-              await readRecordedFramework(themeId),
+              await readRecordedFramework(storefrontId, themeId),
               snapshot.map((file) => file.path),
             ),
           ]),
