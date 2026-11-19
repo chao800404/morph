@@ -151,7 +151,11 @@ const DEV_ORIGIN = `http://localhost:${DEV_PORT}`;
  * Whether this run also starts the `.astro` parser Worker
  * (packages/astro-parser-worker) behind Core's `ASTRO_PARSER` binding.
  *
- * `local_preview_e2e` declares that binding, and the Vite dev server does not
+ * `local_preview_e2e` declares that binding (the container transport runs the
+ * default environment, which declares no services; there `vite.config.ts`
+ * adds the binding to the run's resolved config through `e2eWorkerConfig`,
+ * keyed on this same variable, so the top level that deploys never gains it).
+ * The Vite dev server does not
  * run the Worker it names: the binding resolves through Wrangler's dev
  * registry, finds no session and answers HTTP 503, which the client reports
  * as `binding-failed`. Measured both ways (handoff/2026-11-02/
@@ -178,12 +182,6 @@ if (!["", "0", "1"].includes(ASTRO_PARSER_SETTING)) {
   await exitAfterFlush(1);
 }
 const WITH_ASTRO_PARSER = ASTRO_PARSER_SETTING === "1";
-if (WITH_ASTRO_PARSER && !USES_SIDECAR) {
-  console.error(
-    "[e2e] ASTRO_PARSER_NEEDS_LOCAL_PREVIEW: only Wrangler's local_preview_e2e environment binds ASTRO_PARSER, and the container transport runs the default one. Unset MORPH_E2E_ASTRO_PARSER or use the local-sidecar transport.",
-  );
-  await exitAfterFlush(1);
-}
 /** Clear of 3000 (`pnpm dev`) and the 3417/3418 the E2E dev server uses. */
 const ASTRO_PARSER_PORT = Number(
   process.env.MORPH_E2E_ASTRO_PARSER_PORT ?? 3419,

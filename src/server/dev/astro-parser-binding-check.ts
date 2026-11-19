@@ -11,7 +11,9 @@
  * 2. it answers 404 when the environment looks like production;
  * 3. it answers 404 when there is no `ASTRO_PARSER` binding, which only
  *    `env.local_preview_e2e` in wrangler.jsonc declares (a test pins that the
- *    top level, which is what deploys, has none). Plain `pnpm dev` has none.
+ *    top level, which is what deploys, has none), or a container E2E run that
+ *    opted in with `MORPH_E2E_ASTRO_PARSER=1` (`e2eWorkerConfig` adds it to
+ *    that run's resolved config only). Plain `pnpm dev` has none.
  *
  * It takes no input: the source is fixed (the ROADMAP's Astro homepage case,
  * with non-ASCII text before the first element so UTF-16 and UTF-8 offsets

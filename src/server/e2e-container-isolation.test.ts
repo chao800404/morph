@@ -48,6 +48,46 @@ describe("e2eWorkerConfig", () => {
     ]);
   });
 
+  it("adds no service without the parser opt-in", () => {
+    const config = { ...sandboxes(), services: [{ binding: "OTHER", service: "other" }] };
+    e2eWorkerConfig(RUN)!(config);
+    e2eWorkerConfig(RUN, { astroParser: false })!(config);
+    expect(config.services).toEqual([{ binding: "OTHER", service: "other" }]);
+    const bare: ReturnType<typeof sandboxes> & {
+      services?: { binding: string; service: string }[];
+    } = sandboxes();
+    e2eWorkerConfig(RUN)!(bare);
+    expect(bare.services).toBeUndefined();
+  });
+
+  it("binds ASTRO_PARSER beside existing services, once, only with the opt-in", () => {
+    const config: ReturnType<typeof sandboxes> & {
+      services?: { binding: string; service: string }[];
+    } = { ...sandboxes(), services: [{ binding: "OTHER", service: "other" }] };
+    const result = e2eWorkerConfig(RUN, { astroParser: true })!(config);
+    expect(result).toEqual({ name: RUN });
+    expect(config.services).toEqual([
+      { binding: "OTHER", service: "other" },
+      { binding: "ASTRO_PARSER", service: "morph-astro-parser" },
+    ]);
+    e2eWorkerConfig(RUN, { astroParser: true })!(config);
+    expect(config.services).toHaveLength(2);
+    const bare: ReturnType<typeof sandboxes> & {
+      services?: { binding: string; service: string }[];
+    } = sandboxes();
+    e2eWorkerConfig(RUN, { astroParser: true })!(bare);
+    expect(bare.services).toEqual([{ binding: "ASTRO_PARSER", service: "morph-astro-parser" }]);
+  });
+
+  it("is inert outside a run even with the parser opt-in (no worker name)", () => {
+    expect(e2eWorkerConfig(undefined, { astroParser: true })).toBeUndefined();
+    expect(e2eWorkerConfig("", { astroParser: true })).toBeUndefined();
+  });
+
+  it("still refuses a run with no containers when the parser is requested", () => {
+    expect(() => e2eWorkerConfig(RUN, { astroParser: true })!({})).toThrow(/E2E_CONTAINERS_MISSING/);
+  });
+
   it("refuses a malformed run id instead of using the shared image", () => {
     for (const bad of ["morph", "morph-e2e-", "morph-e2e-0123456789a", "morph-e2e-0123456789abc", "morph-e2e-0123456789AB", "x; rm -rf /"]) {
       expect(() => e2eWorkerConfig(bad)).toThrow(/E2E_WORKER_NAME_INVALID/);

@@ -44,20 +44,48 @@ function isLocalDockerfile(image: string | undefined): boolean {
   );
 }
 
+/** The `.astro` parser Worker (packages/astro-parser-worker), by its `name`. */
+export const ASTRO_PARSER_BINDING = "ASTRO_PARSER";
+export const ASTRO_PARSER_SERVICE = "morph-astro-parser";
+
+interface ServiceBinding {
+  binding: string;
+  service: string;
+}
+
+export interface E2eWorkerConfigOptions {
+  /**
+   * Bind `ASTRO_PARSER` for this run (`MORPH_E2E_ASTRO_PARSER=1`). The
+   * container transport runs Wrangler's default environment, which is what
+   * `wrangler deploy` ships and so declares no `services`; the binding is
+   * added here, to this run's resolved config only. The runner starts the
+   * parser Worker in a dev registry of its own, which is where the binding
+   * resolves. Without a run (no worker name) this does nothing.
+   */
+  astroParser?: boolean;
+}
+
 /**
  * The Cloudflare plugin's `config` for a run, or undefined outside one. The
- * function edits the containers in place: the plugin merges a returned object
- * with `defu`, which would append a returned `containers` array to the
+ * function edits the containers (and `services`) in place: the plugin merges a
+ * returned object with `defu`, which would append a returned array to the
  * configured one rather than replace it.
  */
-export function e2eWorkerConfig(workerName: string | undefined) {
+export function e2eWorkerConfig(
+  workerName: string | undefined,
+  options: E2eWorkerConfigOptions = {},
+) {
   if (workerName === undefined || workerName === "") return undefined;
   if (!E2E_WORKER_NAME.test(workerName)) {
     throw new Error(
       `E2E_WORKER_NAME_INVALID: MORPH_E2E_WORKER_NAME must be morph-e2e-<12 hex>, not "${workerName}".`,
     );
   }
-  return <Config extends { containers?: ContainerConfig[] }>(config: Config) => {
+  return <
+    Config extends { containers?: ContainerConfig[]; services?: ServiceBinding[] },
+  >(
+    config: Config,
+  ) => {
     const containers = config.containers ?? [];
     if (containers.length === 0) {
       throw new Error(
@@ -71,6 +99,12 @@ export function e2eWorkerConfig(workerName: string | undefined) {
         );
       }
       container.image_vars = { ...container.image_vars, [DEV_IMAGE_RUN_ARG]: workerName };
+    }
+    if (options.astroParser === true) {
+      const services = (config.services ??= []);
+      if (!services.some((service) => service.binding === ASTRO_PARSER_BINDING)) {
+        services.push({ binding: ASTRO_PARSER_BINDING, service: ASTRO_PARSER_SERVICE });
+      }
     }
     return { name: workerName };
   };
