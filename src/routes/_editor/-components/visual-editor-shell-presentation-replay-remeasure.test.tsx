@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
@@ -7,6 +7,7 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import {
   answerLatestRouteRequest,
   createLiveFrame,
+  disablePresentationAcks,
   frameEnvelope,
   sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
@@ -41,6 +42,18 @@ const SECTION_IDS = ["hero-1", "hero-2", "hero-3", "hero-4"];
 const CONTENT_HEIGHT = 2_400;
 
 const posted: Array<Record<string, unknown>> = [];
+/** A content write the frame's acknowledgement releases stays unanswered. */
+const updateSectionProps = vi.hoisted(() =>
+  vi.fn(() => new Promise<never>(() => {})),
+);
+
+vi.mock(
+  "@/server/storefront/storefront-themes.serverFn",
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    updateStorefrontThemeSectionProps: updateSectionProps,
+  }),
+);
 
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -76,34 +89,41 @@ export function Hero({ heading = "Welcome" }) {
 
 const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
 
-const context = {
-  previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
-  storefront: {
-    id: "storefront-1",
-    name: "Store",
-    domain: null,
-    status: "active",
-  },
-  theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
-  templates: [
-    {
-      id: "template-1",
-      type: "index",
-      name: "Home",
-      document: {
-        version: 1,
-        sections: SECTION_IDS.map((id, index) => ({
-          id,
-          type: "hero",
-          enabled: true,
-          props: { heading: `Heading ${index + 1}` },
-        })),
-      },
-      draftGeneration: 1,
-      version: 1,
+/** The editor's context; `hidden` names sections stored as hidden. */
+function contextWith(
+  draftGeneration = 1,
+  hidden: readonly string[] = [],
+): StorefrontThemeEditorDTO {
+  return {
+    previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
+    storefront: {
+      id: "storefront-1",
+      name: "Store",
+      domain: null,
+      status: "active",
     },
-  ],
-} as unknown as StorefrontThemeEditorDTO;
+    theme: { id: "theme-1", name: "Theme", sourceGeneration: 1 },
+    templates: [
+      {
+        id: "template-1",
+        type: "index",
+        name: "Home",
+        document: {
+          version: 1,
+          sections: SECTION_IDS.map((id, index) => ({
+            id,
+            type: "hero",
+            enabled: !hidden.includes(id),
+            props: { heading: `Heading ${index + 1}` },
+          })),
+        },
+        draftGeneration,
+        version: 1,
+      },
+    ],
+  } as unknown as StorefrontThemeEditorDTO;
+}
+const context = contextWith();
 
 const search = {
   template: "index",
@@ -201,6 +221,71 @@ const sizeRequests = () =>
 const canvasHeight = () =>
   document.querySelector("iframe")?.parentElement?.style.height ?? null;
 
+/** Section posts that carry a presentation token: the replay's posts. */
+const replayPosts = (from: number) =>
+  posted
+    .slice(from)
+    .filter(
+      (message) =>
+        message.type === "morph:storefront-preview-update-section-props" &&
+        message.presentationToken !== undefined,
+    );
+
+function renderShell(
+  initial: StorefrontThemeEditorDTO = context,
+  initialSearch: StorefrontThemeEditorSearch = search,
+) {
+  const client = readyClient();
+  let currentContext = initial;
+  let currentSearch = initialSearch;
+  // The route above the shell takes the search the shell asks for.
+  const onSearchChange = vi.fn((next: Partial<StorefrontThemeEditorSearch>) => {
+    currentSearch = { ...currentSearch, ...next };
+    if (!currentSearch.section) delete currentSearch.section;
+    queueMicrotask(() => act(() => view.rerender(tree())));
+  });
+  const tree = () => (
+    <QueryClientProvider client={client}>
+      <VisualEditorShell
+        context={currentContext}
+        search={currentSearch}
+        onSearchChange={onSearchChange}
+      />
+    </QueryClientProvider>
+  );
+  const view = render(tree());
+  return {
+    /** The route above the shell hands it a newer read of the Theme. */
+    storedAs(next: StorefrontThemeEditorDTO) {
+      currentContext = next;
+      act(() => view.rerender(tree()));
+    },
+  };
+}
+
+/** Past the remeasure delay and the two frames after it. */
+async function pastRemeasure() {
+  await act(() => new Promise((resolve) => setTimeout(resolve, 1_200)));
+  await flushFrames();
+}
+
+/**
+ * The frame comes up and names its page; the editor sends it the route and,
+ * a frame later, asks for its size. Returns that request.
+ */
+async function frameComesUp() {
+  sendFrameReady(ADDRESS);
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [],
+    routePath: "/",
+  });
+  await flushFrames();
+  const asked = sizeRequests().at(-1);
+  expect(asked, "the size asked for on ready").toBeDefined();
+  return asked!;
+}
+
 beforeEach(() => {
   posted.length = 0;
   useThemeWorkspaceStore.setState({
@@ -276,5 +361,141 @@ describe("the first ready's presentation replay and the canvas measurement", () 
       );
     }
     expect(canvasHeight()).toBe(`${CONTENT_HEIGHT}px`);
+  });
+
+  /**
+   * The frame's document is the one its preview request loaded, and the
+   * editor's accepted copy can move on before the frame is ready: here a
+   * hide confirmed in the meantime. The replay then posts nothing on top of
+   * that copy, yet the page drops a section it still showed, and the answer
+   * already on its way was measured before the drop. The editor asks again,
+   * on the same revision, after the replay: that answer is still taken, and
+   * the one measured after the replay sets the canvas, shorter included.
+   */
+  it("an accepted copy that moved on before ready: the replay is measured once more on the same revision, and the shorter page sets the canvas", async () => {
+    const shell = renderShell();
+    await flushFrames();
+    // Before the frame is ready, the stored document hides the last
+    // section: the frame's page was requested before that, and shows it.
+    shell.storedAs(contextWith(2, ["hero-4"]));
+    await flushFrames();
+
+    const asked = await frameComesUp();
+    const requestsBeforeReplay = sizeRequests().length;
+    const postsBeforeReplay = posted.length;
+    answerLatestRouteRequest(ADDRESS);
+    const replayed = replayPosts(postsBeforeReplay);
+    expect(
+      replayed.find((message) => message.sectionId === "hero-4")?.enabled,
+      "the replay hides the section the page still shows",
+    ).toBe(false);
+
+    // The answer measured before the replay, on the taller page: taken.
+    fromPreview({
+      type: "morph:storefront-preview-size",
+      height: CONTENT_HEIGHT,
+      measurementRevision: asked.measurementRevision,
+    });
+    expect(canvasHeight()).toBe(`${CONTENT_HEIGHT}px`);
+
+    await pastRemeasure();
+    const later = sizeRequests().slice(requestsBeforeReplay);
+    expect(later, "asked once more after the replay").toHaveLength(1);
+    expect(
+      later[0]!.measurementRevision,
+      "on the revision already asked for: no answer on its way is dropped",
+    ).toBe(asked.measurementRevision);
+
+    // The page measured after the replay, a section shorter.
+    const shorter = CONTENT_HEIGHT - 600;
+    fromPreview({
+      type: "morph:storefront-preview-size",
+      height: shorter,
+      measurementRevision: later[0]!.measurementRevision,
+    });
+    expect(canvasHeight()).toBe(`${shorter}px`);
+  });
+
+  it("a draft held on round 1 measures the page once, after the replay's posts", async () => {
+    renderShell();
+    await flushFrames();
+    await frameComesUp();
+    fireEvent.click(screen.getAllByTitle("Select hero; drag to reorder")[0]!);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await flushFrames();
+    const field = await screen.findByDisplayValue("Heading 1");
+    // Typed and left before the frame has answered its route: no section
+    // has acknowledged what it shows yet, so the edit is held as a draft,
+    // which the replay carries.
+    fireEvent.input(field, { target: { value: "Held heading" } });
+    fireEvent.blur(field);
+    await pastRemeasure();
+    const requestsBeforeReplay = sizeRequests().length;
+    const revisionBeforeReplay = sizeRequests().at(-1)!.measurementRevision;
+    const postsBeforeReplay = posted.length;
+    answerLatestRouteRequest(ADDRESS);
+    const replayed = replayPosts(postsBeforeReplay);
+    expect(new Set(replayed.map((message) => message.sectionId))).toEqual(
+      new Set(SECTION_IDS),
+    );
+    expect(
+      (
+        replayed.find((message) => message.sectionId === "hero-1")?.props as
+          | Record<string, unknown>
+          | undefined
+      )?.heading,
+      "the held draft is replayed",
+    ).toBe("Held heading");
+
+    await pastRemeasure();
+    const later = sizeRequests().slice(requestsBeforeReplay);
+    expect(later, "one remeasure for the whole replay").toHaveLength(1);
+    expect(later[0]!.measurementRevision).toBe(revisionBeforeReplay + 1);
+  });
+
+  it("a frame that comes back to the editor's page is replayed with one remeasure, not one per section", async () => {
+    renderShell();
+    await flushFrames();
+    const asked = await frameComesUp();
+    // The frame applies the replay without acknowledging it, so every
+    // section is still unacknowledged when the page comes back.
+    disablePresentationAcks();
+    answerLatestRouteRequest(ADDRESS);
+    fromPreview({
+      type: "morph:storefront-preview-size",
+      height: CONTENT_HEIGHT,
+      measurementRevision: asked.measurementRevision,
+    });
+    await pastRemeasure();
+
+    // The frame goes to another page by itself, then comes back.
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/elsewhere",
+    });
+    await flushFrames();
+    const requestsBeforeReturn = sizeRequests().length;
+    const revisionBeforeReturn = Math.max(
+      0,
+      ...sizeRequests().map((request) => request.measurementRevision),
+    );
+    const postsBeforeReturn = posted.length;
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/",
+    });
+    const replayed = replayPosts(postsBeforeReturn);
+    expect(
+      new Set(replayed.map((message) => message.sectionId)),
+      "the page it came back to is replayed",
+    ).toEqual(new Set(SECTION_IDS));
+
+    await pastRemeasure();
+    const later = sizeRequests().slice(requestsBeforeReturn);
+    expect(later, "one remeasure for the whole replay").toHaveLength(1);
+    expect(later[0]!.measurementRevision).toBe(revisionBeforeReturn + 1);
   });
 });

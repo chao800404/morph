@@ -7419,7 +7419,7 @@ export function VisualEditorShell({
    * until a later answer came back. While a replay runs, its posts only note
    * here that they were sent; the replay then schedules one remeasure, and
    * none when it told the frame nothing that can change its layout
-   * (`runPresentationReplayBatch`).
+   * (`runPresentationReplayBatch`, which returns what its posts noted).
    */
   const presentationReplayBatchRef = useRef<{
     posted: boolean;
@@ -7428,7 +7428,7 @@ export function VisualEditorShell({
   const runPresentationReplayBatch = useCallback(
     (
       send: (batch: { posted: boolean; mayChangeLayout: boolean }) => void,
-    ) => {
+    ): Readonly<{ posted: boolean; mayChangeLayout: boolean }> => {
       const outer = presentationReplayBatchRef.current;
       const batch = { posted: false, mayChangeLayout: false };
       presentationReplayBatchRef.current = batch;
@@ -7437,13 +7437,14 @@ export function VisualEditorShell({
       } finally {
         presentationReplayBatchRef.current = outer;
       }
-      if (!batch.posted || !batch.mayChangeLayout) return;
+      if (!batch.posted || !batch.mayChangeLayout) return batch;
       if (outer) {
         outer.posted = true;
         outer.mayChangeLayout = true;
-        return;
+        return batch;
       }
       schedulePreviewRemeasureRef.current();
+      return batch;
     },
     [],
   );
@@ -14668,12 +14669,20 @@ export function VisualEditorShell({
     ) {
       return;
     }
-    // The first document was rendered from the accepted copy this editor
-    // loaded, so a section whose post is that copy alone is told what it
-    // already shows: its layout, and the size answer already on its way for
-    // it, stay valid. A held draft or an unanswered hide or show on top does
-    // change the page, and the replay then measures once, after its posts.
-    runPresentationReplayBatch((batch) => {
+    // A held draft or an unanswered hide or show on top of the accepted copy
+    // changes the page, and the replay then measures once, after its posts.
+    //
+    // A section whose post is the accepted copy alone starts no measurement,
+    // so the size answer already on its way is not thrown away. But that
+    // copy is the editor's now, and the frame's document is the one its
+    // preview request loaded: a read or a confirmed write since then (a hide
+    // before ready, say) moves the copy without a new frame, and such a
+    // replay can still change the page, shorter included. So the frame is
+    // asked once more after the replay's posts, on the revision it was
+    // already asked on: the answer on its way stays valid, and an answer
+    // measured after the replay always comes back.
+    const replayKey = previewKeyRef.current;
+    const replay = runPresentationReplayBatch((batch) => {
       const sourceGeneration = currentContentSourceGeneration();
       for (const sectionId of sectionModelRef.current.bindings.keys()) {
         const state = previewSectionStateRef.current(sectionId);
@@ -14686,6 +14695,14 @@ export function VisualEditorShell({
         reconcilePreviewSection(sectionId);
       }
     });
+    if (!replay.posted || replay.mayChangeLayout) return;
+    // Two frames, as a remeasure waits, for the posts to commit and lay out.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (previewKeyRef.current !== replayKey) return;
+        requestPreviewSize(previewSizeMeasurementRevisionRef.current);
+      }),
+    );
   };
   previewVisibilityRef.current.reconcile = reconcilePreviewSection;
 
