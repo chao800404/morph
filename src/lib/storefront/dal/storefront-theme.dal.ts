@@ -184,7 +184,7 @@ export function designWritesUnavailableReason(
  * The Design writes judged per operation and framework (M2 C5), replacing
  * #346's blanket refusal for exactly these two on an Astro Theme:
  *
- * - `section-props`: Astro only through Core's own proof on the snapshot it
+ * - `section-values`: Astro only through Core's own proof on the snapshot it
  *   writes against: parse → Astro B1 profile → instance identity and
  *   component digest → field allowlist → the same Document CAS as Start
  *   (`resolveAstroSectionWrite`).
@@ -196,7 +196,7 @@ export function designWritesUnavailableReason(
  * promotion, page files) still asks `designWritesUnavailableReason`, which
  * refuses Astro. `via` names the path a permitted write takes.
  */
-export type DesignWriteOperation = "section-props" | "route-document-create";
+export type DesignWriteOperation = "section-values" | "route-document-create";
 
 export function designWriteCapability(
   framework: string | null | undefined,
@@ -2150,7 +2150,7 @@ export const storefrontThemeDal = {
 
     const capability = designWriteCapability(
       context.theme.framework,
-      "section-props",
+      "section-values",
     );
     if (capability.ok && capability.via === "astro") {
       // C5: an Astro section is written only through Core's own proof on
