@@ -374,6 +374,77 @@ describe("useInspectorContentProps", () => {
       expect(result.current.externalEpochs).toEqual({ title: 1 });
     });
   });
+
+  // H1 (review of the M1/M2 follow-up to #399). In production `heldProps` is
+  // the section's pending entry's `props`, and for an Inspector input that is
+  // the Inspector's whole copy of the section (`{ ...pending.props, ...next }`
+  // with `next` the whole `localProps`), not only the field the author held.
+  // These tests hand the hook that shape: `title` is the field really held,
+  // `body` is an untouched key carried along at its older value.
+  describe("H1: held props are the Inspector's whole copy, only one key really held", () => {
+    const held: Record<string, Record<string, unknown> | undefined> = {};
+    const accepted: Record<string, Record<string, unknown> | undefined> = {};
+    const render = (initial: { sectionId: string; props: unknown }) =>
+      renderHook(
+        ({ sectionId, props }) =>
+          useInspectorContentProps({
+            resourceKey: "store:theme:doc",
+            sectionId,
+            sectionProps: props,
+            heldProps: () => held[sectionId],
+            acceptedProps: () => accepted[sectionId],
+          }),
+        { initialProps: initial },
+      );
+    afterEach(() => {
+      for (const key of Object.keys(held)) delete held[key];
+      for (const key of Object.keys(accepted)) delete accepted[key];
+    });
+
+    it("H1 (M1 openedBaseline): an untouched key carried in the held copy takes the accepted value when the context renders it", () => {
+      // W1 changed body to "New body" and was answered; the context the panel
+      // opens from is still the copy before it. The author typed a title,
+      // which is held; the held copy carries body at the old value.
+      held.hero = { title: "Typed", body: "Old body" };
+      accepted.hero = { title: "Original", body: "New body" };
+      const { result, rerender } = render({
+        sectionId: "hero",
+        props: { title: "Original", body: "Old body" },
+      });
+      expect(result.current.props).toEqual({
+        title: "Typed",
+        body: "Old body",
+      });
+
+      // The context renders W1's copy.
+      rerender({
+        sectionId: "hero",
+        props: { title: "Original", body: "New body" },
+      });
+
+      expect(
+        result.current.props,
+        "body was never changed in this panel: it must adopt W1's value",
+      ).toEqual({ title: "Typed", body: "New body" });
+    });
+
+    it("H1 (withHeld, pre-existing): an untouched key carried in the held copy does not hide a newer stored value on open", () => {
+      // The author typed a title, which is held with the whole copy (body at
+      // "Old body"). Another writer then changed body, and that copy was read
+      // in. The panel opens the section on it; no accepted copy is named, so
+      // only `withHeld` is in play.
+      held.hero = { title: "Typed", body: "Old body" };
+      const { result } = render({
+        sectionId: "hero",
+        props: { title: "Original", body: "New body" },
+      });
+
+      expect(
+        result.current.props,
+        "only the held title goes over the stored props",
+      ).toEqual({ title: "Typed", body: "New body" });
+    });
+  });
 });
 
 describe("adoptAcceptedValue", () => {
