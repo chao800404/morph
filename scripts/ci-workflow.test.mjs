@@ -56,7 +56,7 @@ test("validation runs independently with the complete original commands", () => 
     assert.match(block, /node-version: 22\n/);
     assert.match(block, /cache: pnpm\n/);
   }
-  assert.match(jobBlock(workflow, "validate-test"), /timeout-minutes: 30\n/);
+  assert.match(jobBlock(workflow, "validate-test"), /timeout-minutes: 45\n/);
 });
 
 test("the existing aggregate waits for all validation jobs and is always evaluated", () => {
