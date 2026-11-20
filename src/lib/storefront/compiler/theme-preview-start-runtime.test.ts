@@ -436,3 +436,47 @@ describe("themePreviewStartClientSource early presentation tokens", () => {
     expect(source).toContain("superseded");
   });
 });
+
+describe("themePreviewStartClientSource [preview-frame] lines", () => {
+  async function runClient(options: { router: boolean; clock: number[] }) {
+    const lines: string[] = [];
+    const browser: Record<string, unknown> = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      ...(options.router ? { __TSR_ROUTER__: { invalidate: async () => {} } } : {}),
+    };
+    const source = themePreviewStartClientSource()
+      .replace(/^import .*;\n/, "")
+      .replace('import("/src/morph/preview-content.ts")', "contentPromise")
+      .replace('import("/src/morph/preview-bridge.ts")', "loadBridge()");
+    const clock = [...options.clock];
+    await runInNewContext(`(async () => { ${source} })()`, {
+      window: browser,
+      document: { readyState: options.router ? "complete" : "interactive" },
+      performance: { now: () => (clock.length > 1 ? clock.shift()! : clock[0]!) },
+      setTimeout: (callback: () => void) => callback(),
+      requestAnimationFrame: (callback: () => void) => callback(),
+      console: { info: (line: string) => lines.push(line) },
+      documentPreviewIdentity: () => "0123456789abcdef0123456789abcdef",
+      documentPreviewRuntimeChannel: () => ({}),
+      parseEditorToPreviewWindowEvent: () => null,
+      contentPromise: Promise.resolve({ updatePreviewContent: () => {} }),
+      loadBridge: async () => {},
+    });
+    return lines;
+  }
+
+  it("says how the hydration wait ended and that the bridge loaded, once each, by document", async () => {
+    expect(await runClient({ router: true, clock: [0, 120] })).toEqual([
+      "[preview-frame] frame hydration waited router=yes readyState=complete waitedMs=120 earlyTokens=0 doc=01234567",
+      "[preview-frame] frame bridge loaded contentBeforeBridge=no doc=01234567",
+    ]);
+  });
+
+  it("says when the wait gave up without a router", async () => {
+    const lines = await runClient({ router: false, clock: [0, 40_000] });
+    expect(lines[0]).toBe(
+      "[preview-frame] frame hydration timed-out router=no readyState=interactive waitedMs=40000 earlyTokens=0 doc=01234567",
+    );
+  });
+});

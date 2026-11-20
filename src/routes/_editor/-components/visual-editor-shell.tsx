@@ -436,6 +436,14 @@ import {
   sectionPresentationKey,
   type ExpectedSectionPresentation,
 } from "@/lib/storefront/editor/section-presentation-readiness";
+import {
+  createPreviewFrameTrace,
+  createSectionPresentationTrace,
+  previewStructureCounts,
+  scopeFields as presentationTraceScopeFields,
+  type SectionPresentationAckRejection,
+  type SectionPresentationTraceScope,
+} from "@/lib/storefront/editor/section-presentation-trace";
 import { splitPageRoots } from "@/lib/storefront/editor/page-structure";
 import { resolveEditorSectionModel } from "@/lib/storefront/editor/editor-section-model";
 import {
@@ -3222,6 +3230,55 @@ export function VisualEditorShell({
   const appliedSectionPresentationRef = useRef(
     new Map<string, SectionPresentationToken>(),
   );
+  /**
+   * `[preview-presentation]` lines: one operation id from the post to the
+   * accepted or rejected answer (`createSectionPresentationTrace`). A frame
+   * is named by a per-tab ordinal, never by its URL, which can carry an
+   * access token.
+   */
+  const presentationTraceRef = useRef(createSectionPresentationTrace());
+  /** `[preview-frame]` lines: ready taken, structure taken or set aside. */
+  const frameTraceRef = useRef(createPreviewFrameTrace());
+  const presentationTraceFramesRef = useRef(new Map<string, number>());
+  const presentationTraceFrameCountRef = useRef(0);
+  const presentationTraceFrame = (previewKey: string | null | undefined) => {
+    if (!previewKey) return null;
+    const frames = presentationTraceFramesRef.current;
+    let ordinal = frames.get(previewKey);
+    if (ordinal === undefined) {
+      presentationTraceFrameCountRef.current += 1;
+      ordinal = presentationTraceFrameCountRef.current;
+      frames.set(previewKey, ordinal);
+      while (frames.size > 16) {
+        const oldest = frames.keys().next().value;
+        if (oldest === undefined) break;
+        frames.delete(oldest);
+      }
+    }
+    return `f${ordinal}`;
+  };
+  /** The frame round on screen, as the trace names it. */
+  const presentationTraceScope = (): SectionPresentationTraceScope => {
+    const frame = previewFrameRecordRef.current;
+    return frame
+      ? {
+          frame: presentationTraceFrame(frame.previewKey),
+          readyRound: frame.readyRound,
+          documentId: frame.documentId,
+        }
+      : {
+          frame: presentationTraceFrame(previewKeyRef.current),
+          readyRound: previewReadyRoundRef.current,
+          documentId: null,
+        };
+  };
+  /**
+   * The bound sections whose latest presentation in this round is not yet
+   * acknowledged. Assigned below, beside the page readiness it reads.
+   */
+  const unconfirmedSectionPresentationsRef = useRef<
+    () => readonly string[]
+  >(() => []);
   /** Assigned below, where the content write path is defined. */
   const releasePresentationHeldDraftsRef = useRef<() => void>(() => {});
   /**
@@ -12528,6 +12585,11 @@ export function VisualEditorShell({
             applied !== undefined &&
             sameSectionPresentationToken(applied, message.token);
           if (withdrawn || withdrawnApplied) {
+            presentationTraceRef.current.record({
+              type: "ack-withdrawn",
+              scope: presentationTraceScope(),
+              token: message.token,
+            });
             if (withdrawn) {
               acknowledgedSectionPresentationRef.current.delete(withdrawn[0]);
             }
@@ -12536,29 +12598,67 @@ export function VisualEditorShell({
             }
             refreshSectionPresentationReady();
             previewVisibilityRef.current.reconcile(message.token.sectionId);
+          } else {
+            presentationTraceRef.current.record({
+              type: "ack-rejected",
+              scope: presentationTraceScope(),
+              token: message.token,
+              status: message.status,
+              reason: message.reason,
+              guard: "no-pending",
+            });
           }
           return;
         }
-        if (
-          !record ||
-          !pending ||
-          record.previewKey !== previewKeyRef.current ||
-          record.readyRound !== previewReadyRoundRef.current ||
-          !record.capabilities.has("section-presentation-ack-v1") ||
-          record.documentId === null ||
-          pending.previewKey !== record.previewKey ||
-          pending.readyRound !== record.readyRound ||
-          pending.previewDocumentId !== record.documentId ||
-          documentVerdict?.kind !== "message" ||
-          !documentVerdict.verified ||
-          !sameSectionPresentationToken(pending.token, message.token) ||
-          latestSectionPresentationRef.current.get(pending.sectionKey) ===
-            undefined ||
-          !sameSectionPresentationToken(
-            latestSectionPresentationRef.current.get(pending.sectionKey)!,
-            message.token,
-          )
-        ) {
+        // The first guard that refuses the answer, in the order checked; said
+        // with the answer's identity, so a refusal is never silent.
+        const latestForPending = pending
+          ? latestSectionPresentationRef.current.get(pending.sectionKey)
+          : undefined;
+        const rejection: SectionPresentationAckRejection | null = !record
+          ? "no-frame-record"
+          : !pending
+            ? "no-pending"
+            : record.previewKey !== previewKeyRef.current
+              ? "other-frame"
+              : record.readyRound !== previewReadyRoundRef.current
+                ? "other-round"
+                : !record.capabilities.has("section-presentation-ack-v1")
+                  ? "no-ack-capability"
+                  : record.documentId === null
+                    ? "no-document-id"
+                    : pending.previewKey !== record.previewKey
+                      ? "pending-other-frame"
+                      : pending.readyRound !== record.readyRound
+                        ? "pending-other-round"
+                        : pending.previewDocumentId !== record.documentId
+                          ? "pending-other-document"
+                          : documentVerdict?.kind !== "message" ||
+                              !documentVerdict.verified
+                            ? "unverified-document"
+                            : !sameSectionPresentationToken(
+                                  pending.token,
+                                  message.token,
+                                )
+                              ? "token-mismatch"
+                              : latestForPending === undefined ||
+                                  !sameSectionPresentationToken(
+                                    latestForPending,
+                                    message.token,
+                                  )
+                                ? "not-latest"
+                                : null;
+        if (rejection !== null || !record || !pending) {
+          presentationTraceRef.current.record({
+            type: "ack-rejected",
+            scope: presentationTraceScope(),
+            token: message.token,
+            status: message.status,
+            ...(message.status === "not-applied"
+              ? { reason: message.reason }
+              : {}),
+            guard: rejection ?? "no-pending",
+          });
           return;
         }
         pendingSectionPresentationRef.current.delete(message.operationId);
@@ -12584,7 +12684,19 @@ export function VisualEditorShell({
             appliedSectionPresentationRef.current.delete(appliedKey);
           }
         }
-        if (refreshSectionPresentationReady()) {
+        const pageReadyAfterAck = refreshSectionPresentationReady();
+        presentationTraceRef.current.record({
+          type: "ack-accepted",
+          scope: presentationTraceScope(),
+          token: message.token,
+          status: message.status,
+          ...(message.status === "not-applied"
+            ? { reason: message.reason }
+            : {}),
+          pageReady: pageReadyAfterAck,
+          unconfirmed: unconfirmedSectionPresentationsRef.current().length,
+        });
+        if (pageReadyAfterAck) {
           releasePresentationHeldDraftsRef.current();
           // A draft the author already committed by leaving its field, held
           // by the checks then, goes on now through those same checks.
@@ -12767,6 +12879,16 @@ export function VisualEditorShell({
           documentId,
           servedInstance: message.servedInstance ?? null,
         };
+        frameTraceRef.current.say(
+          `ready accepted ${presentationTraceScopeFields(presentationTraceScope())} acknowledges=${(message.capabilities ?? []).includes("section-presentation-ack-v1") ? "yes" : "no"} served=${message.servedInstance ? "named" : "unnamed"}`,
+        );
+        presentationTraceRef.current.record({
+          type: "round-started",
+          scope: presentationTraceScope(),
+          acknowledges: (message.capabilities ?? []).includes(
+            "section-presentation-ack-v1",
+          ),
+        });
         setFrameRecordSequence((sequence) => sequence + 1);
         // Tell this document what the editor can read back, only when this
         // ready carries a document id and the bridge said it reads the token.
@@ -12844,11 +12966,20 @@ export function VisualEditorShell({
             routePath: message.routePath,
           };
         }
+        const structureSummary = `${previewStructureCounts(message.nodes)} route=${message.routePath ?? "none"} epoch=${message.frameNavigationEpoch ?? "none"}`;
         // A report sent while the preview was still on another route — it
         // boots on `/` — describes that route, not the selected one.
         if (
           !previewStructureMatchesRoute(message.routePath, search.routePath)
         ) {
+          const traceScope = presentationTraceScopeFields(
+            presentationTraceScope(),
+          );
+          frameTraceRef.current.changed(
+            `structure|${traceScope}`,
+            `aside|${structureSummary}`,
+            `structure set aside reason=other-route editorRoute=${search.routePath ?? "/"} ${structureSummary} ${traceScope}`,
+          );
           // Still set aside. But a report that names another page while
           // the editor is asking the frame for nothing is the author moving
           // inside the frame, by a link or back and forward: the editor
@@ -12919,6 +13050,16 @@ export function VisualEditorShell({
           routePath: search.routePath ?? "/",
           nodes: message.nodes,
         });
+        {
+          const traceScope = presentationTraceScopeFields(
+            presentationTraceScope(),
+          );
+          frameTraceRef.current.changed(
+            `structure|${traceScope}`,
+            `taken|${structureSummary}`,
+            `structure accepted applied=${previewStructureCounts(message.nodes)} route=${message.routePath ?? "none"} epoch=${message.frameNavigationEpoch ?? "none"} ${traceScope}`,
+          );
+        }
         if (returnedToEditorPage) {
           resyncReturnedPagePresentationRef.current();
         }
@@ -14234,6 +14375,22 @@ export function VisualEditorShell({
       acknowledged: acknowledgedSectionPresentationRef.current,
     });
   }, [expectedSectionPresentations]);
+  unconfirmedSectionPresentationsRef.current = () =>
+    expectedSectionPresentations()
+      .filter((expected) => {
+        const key = sectionPresentationKey(
+          expected.templateId,
+          expected.sectionId,
+        );
+        const latest = latestSectionPresentationRef.current.get(key);
+        const acknowledged = acknowledgedSectionPresentationRef.current.get(key);
+        return !(
+          latest &&
+          acknowledged &&
+          sameSectionPresentationToken(latest, acknowledged)
+        );
+      })
+      .map((expected) => expected.sectionId);
   const isSectionPresentationPageEstablished = useCallback(() => {
     if (presentationUnconfirmableRef.current) return false;
     const frame = previewFrameRecordRef.current;
@@ -14385,9 +14542,33 @@ export function VisualEditorShell({
           scope: canvasScopeRef.current,
         })
       ) {
+        if (
+          previewFrameRecordRef.current?.capabilities.has(
+            "section-presentation-ack-v1",
+          )
+        ) {
+          presentationTraceRef.current.record({
+            type: "not-sent",
+            scope: presentationTraceScope(),
+            sectionId,
+            reason: "held-for-inline-edit",
+          });
+        }
         return;
       }
       if (frameOnAnotherRouteRef.current()) {
+        if (
+          previewFrameRecordRef.current?.capabilities.has(
+            "section-presentation-ack-v1",
+          )
+        ) {
+          presentationTraceRef.current.record({
+            type: "not-sent",
+            scope: presentationTraceScope(),
+            sectionId,
+            reason: "frame-on-another-route",
+          });
+        }
         return;
       }
       // Decided as it is posted, from what the editor holds now: a section
@@ -14476,6 +14657,39 @@ export function VisualEditorShell({
             previewDocumentId: frame.documentId,
           },
         );
+      } else if (frame?.capabilities.has("section-presentation-ack-v1")) {
+        // A frame that acknowledges is sent this section with nothing to
+        // acknowledge: the page cannot be confirmed until a later post
+        // carries a token, so why is said.
+        presentationTraceRef.current.record({
+          type: "posted-without-token",
+          scope: presentationTraceScope(),
+          sectionId,
+          reason:
+            frame.previewKey !== previewKeyRef.current ||
+            frame.readyRound !== previewReadyRoundRef.current
+              ? "frame-record-stale"
+              : frame.documentId === null
+                ? "no-document-id"
+                : !templateId
+                  ? "no-template"
+                  : "no-document-basis",
+        });
+      }
+      if (presentationToken) {
+        if (previewIframeRef.current?.contentWindow) {
+          presentationTraceRef.current.record({
+            type: "posted",
+            scope: presentationTraceScope(),
+            token: presentationToken,
+            via: presentationReplayBatchRef.current ? "replay" : "edit",
+          });
+        } else {
+          presentationTraceRef.current.anomaly(
+            presentationTraceScope(),
+            `not delivered op=${presentationToken.operationId} section=${sectionId} reason=no-frame-window`,
+          );
+        }
       }
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-section-props",
@@ -14688,8 +14902,26 @@ export function VisualEditorShell({
       frame.previewKey !== previewKeyRef.current ||
       !frame.capabilities.has("section-presentation-ack-v1")
     ) {
+      // A frame that cannot acknowledge is not asked to: nothing to say.
+      if (frame?.capabilities.has("section-presentation-ack-v1") !== false) {
+        presentationTraceRef.current.record({
+          type: "replay-skipped",
+          scope: presentationTraceScope(),
+          reason: !frame
+            ? "no-frame-record"
+            : frame.readyRound !== 1
+              ? "not-round-one"
+              : "other-frame",
+        });
+      }
       return;
     }
+    presentationTraceRef.current.record({
+      type: "replay",
+      scope: presentationTraceScope(),
+      sections: sectionModelRef.current.bindings.size,
+      mode: "initial",
+    });
     // A held draft or an unanswered hide or show on top of the accepted copy
     // changes the page, and the replay then measures once, after its posts.
     //
@@ -14739,14 +14971,25 @@ export function VisualEditorShell({
       unackedMode: false | "skip-pending" | "replace-pending" = false,
     ) => {
       if (unackedMode !== false) {
-        if (
-          !frameShowsEditorPageRef.current() ||
-          !previewFrameRecordRef.current?.capabilities.has(
-            "section-presentation-ack-v1",
-          )
-        ) {
+        const capable = previewFrameRecordRef.current?.capabilities.has(
+          "section-presentation-ack-v1",
+        );
+        if (!frameShowsEditorPageRef.current() || !capable) {
+          if (capable) {
+            presentationTraceRef.current.record({
+              type: "replay-skipped",
+              scope: presentationTraceScope(),
+              reason: "frame-not-on-editor-page",
+            });
+          }
           return;
         }
+        presentationTraceRef.current.record({
+          type: "replay",
+          scope: presentationTraceScope(),
+          sections: unconfirmedSectionPresentationsRef.current().length,
+          mode: "unacked",
+        });
       }
       // The page this replay is for was rendered from a start snapshot, or
       // has come back to the editor's page, so the editor cannot say it
@@ -16394,6 +16637,21 @@ export function VisualEditorShell({
   useEffect(() => {
     if (sectionPresentationReady) releasePresentationHeldDraftsRef.current();
   }, [sectionPresentationReady]);
+  // The section tree can be reordered (`[data-editor-tree-sortable]`) only
+  // while every bound section's presentation is acknowledged: said when that
+  // changes, with how many structure sections the tree has to show.
+  useEffect(() => {
+    if (!previewKey) return;
+    const traceScope = presentationTraceScopeFields(presentationTraceScope());
+    const nodes =
+      previewStructure?.key === previewKey ? previewStructure.nodes : undefined;
+    const summary = `sortable=${sectionPresentationReady ? "yes" : "no"} structure=${nodes ? previewStructureCounts(nodes) : "none"} bound=${sectionModel.bindings.size}`;
+    frameTraceRef.current.changed(
+      `tree|${traceScope}`,
+      summary,
+      `section tree ${summary} unconfirmed=${unconfirmedSectionPresentationsRef.current().length} ${traceScope}`,
+    );
+  }, [previewKey, previewStructure, sectionModel, sectionPresentationReady]);
   // C5: what a section an inline commit landed on is rebuilt from when the
   // held posts are sent — the newest copy this editor has accepted, decided
   // by `newestAcceptedCopy` (`acceptedSectionProps`) exactly as the commit

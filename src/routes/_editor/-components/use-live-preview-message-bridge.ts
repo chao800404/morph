@@ -13,6 +13,11 @@ import {
   type PreviewMessageChannel,
   type PreviewToEditorMessage,
 } from "@/lib/storefront/editor/preview-protocol";
+import {
+  createPreviewFrameTrace,
+  previewStructureCounts,
+  shortPresentationDocumentId,
+} from "@/lib/storefront/editor/section-presentation-trace";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
 
 export function useStableLivePreviewSession(
@@ -77,6 +82,8 @@ export function useLivePreviewMessageBridge(
   const documentsRef = useRef(initialPreviewDocumentState(null));
   const decidedRef = useRef(new WeakMap<object, ReadEvent>());
   const loggedRef = useRef(new Set<string>());
+  /** `[preview-frame]` lines for readies and structure reports not taken. */
+  const frameTraceRef = useRef(createPreviewFrameTrace());
   /** The candidate's own ready, kept for the moment it is confirmed. */
   const candidateReadyRef = useRef<{
     probe: number;
@@ -124,6 +131,30 @@ export function useLivePreviewMessageBridge(
         documentsRef.current = step.state;
         const verdict = step.verdict;
         read = { message: envelope.message, document: verdict };
+        // Which document spoke and what was decided, for a ready (rare) and
+        // for a structure report not taken (said once per document and
+        // decision: reports repeat on every DOM commit).
+        const traceDoc = shortPresentationDocumentId(envelope.previewDocument);
+        const traceVerdict =
+          verdict.kind === "refused" ? `refused:${verdict.why}` : verdict.kind;
+        if (isReady) {
+          frameTraceRef.current.say(
+            `ready received doc=${traceDoc} verdict=${traceVerdict}`,
+          );
+        } else if (
+          envelope.message.type === "morph:storefront-preview-structure" &&
+          (verdict.kind === "refused" ||
+            verdict.kind === "candidate" ||
+            (verdict.kind === "message" && !verdict.verified))
+        ) {
+          const why =
+            verdict.kind === "message" ? "unverified-document" : traceVerdict;
+          frameTraceRef.current.changed(
+            `structure|${previewKey ?? ""}|${traceDoc}`,
+            why,
+            `structure not taken doc=${traceDoc} verdict=${why} ${previewStructureCounts(envelope.message.nodes)} route=${envelope.message.routePath ?? "none"} epoch=${envelope.message.frameNavigationEpoch ?? "none"}`,
+          );
+        }
         // Said once per frame and reason: a refused message repeats (a pong
         // every few seconds), and its line would bury everything else.
         const logOnce = (reason: string, line: string) => {
@@ -172,6 +203,9 @@ export function useLivePreviewMessageBridge(
             expiryTimerRef.current = null;
           }
           read = candidate ? { message: candidate.message, document: verdict } : null;
+          frameTraceRef.current.say(
+            `ready confirmed doc=${shortPresentationDocumentId(verdict.documentId)} candidate=${candidate ? "kept" : "missing"}`,
+          );
         }
         if (verdict.kind === "ready" && verdict.documentId === null) {
           logOnce(
