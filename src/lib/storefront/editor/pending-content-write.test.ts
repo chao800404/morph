@@ -1436,3 +1436,99 @@ describe("sentContentWrite: what was sent stays as sent", () => {
     }).toThrow(TypeError);
   });
 });
+
+describe("shownListIsBehind", () => {
+  const { shownListIsBehind } = pendingContentWrite;
+  const accepted = { items: [{ id: "a" }, { id: "c" }], heading: "Hi" };
+
+  it("a list shown as the accepted one is not behind, in any key order", () => {
+    expect(
+      shownListIsBehind({
+        shown: [{ id: "a" }, { id: "c" }],
+        accepted,
+        listRoot: "items",
+        unanswered: [],
+      }),
+    ).toBe(false);
+  });
+
+  it("a list shown with a row the accepted copy no longer has is behind", () => {
+    expect(
+      shownListIsBehind({
+        shown: [{ id: "a" }, { id: "b" }, { id: "c" }],
+        accepted,
+        listRoot: "items",
+        unanswered: [],
+      }),
+    ).toBe(true);
+  });
+
+  it("an unanswered input to that list keeps it from being behind", () => {
+    const shown = [{ id: "a" }, { id: "c" }, { id: "n" }];
+    expect(
+      shownListIsBehind({
+        shown,
+        accepted,
+        listRoot: "items",
+        unanswered: [
+          {
+            sectionId: "hero",
+            props: { items: shown },
+            listActionPaths: ["items"],
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      shownListIsBehind({
+        shown,
+        accepted,
+        listRoot: "items",
+        unanswered: [
+          {
+            sectionId: "hero",
+            props: { items: shown },
+            fields: { "items.2.title": { value: "N", sourceGeneration: 1 } },
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("an unanswered input to another field does not, even though its props carry the old list", () => {
+    const shown = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    expect(
+      shownListIsBehind({
+        shown,
+        accepted,
+        listRoot: "items",
+        unanswered: [
+          {
+            sectionId: "hero",
+            props: { heading: "Hello", items: shown },
+            fields: { heading: { value: "Hello", sourceGeneration: 1 } },
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("a list neither stores is not behind; a stored list shown as unstored is", () => {
+    expect(
+      shownListIsBehind({
+        shown: undefined,
+        accepted: {},
+        listRoot: "items",
+        unanswered: [],
+      }),
+    ).toBe(false);
+    expect(
+      shownListIsBehind({
+        shown: undefined,
+        accepted,
+        listRoot: "items",
+        unanswered: [],
+      }),
+    ).toBe(true);
+  });
+});

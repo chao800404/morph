@@ -64,6 +64,14 @@ export function useInspectorContentProps(args: {
     key: string,
     accepted: InspectorContentProps | undefined,
   ) => void;
+  /**
+   * Shows the accepted value of top-level `key` in place of the panel's own
+   * (`undefined`: the key is not stored), as unchanged by the author: it is
+   * the value and the baseline both, and the key's inputs remount to show
+   * it. For a list the panel showed behind the accepted copy, after the list
+   * action on it was refused. Every other key is left as it is.
+   */
+  adoptAcceptedValue: (key: string, accepted: unknown) => void;
 } {
   const { resourceKey, sectionId, sectionProps } = args;
   const heldPropsRef = useRef(args.heldProps);
@@ -150,6 +158,25 @@ export function useInspectorContentProps(args: {
     [],
   );
 
+  const adoptAcceptedValue = useCallback((key: string, accepted: unknown) => {
+    const local = { ...localPropsRef.current };
+    const baseline = { ...serverBaselineRef.current };
+    if (accepted === undefined) {
+      delete local[key];
+      delete baseline[key];
+    } else {
+      local[key] = accepted;
+      baseline[key] = accepted;
+    }
+    serverBaselineRef.current = baseline;
+    localPropsRef.current = local;
+    setLocalProps(local);
+    setExternalEpochs((current) => ({
+      ...current,
+      [key]: (current[key] ?? 0) + 1,
+    }));
+  }, []);
+
   const props =
     contentResourceKey === lastContentResourceKeyRef.current
       ? localProps
@@ -163,5 +190,6 @@ export function useInspectorContentProps(args: {
     props,
     externalEpochs,
     noteLocalInput,
+    adoptAcceptedValue,
   };
 }
