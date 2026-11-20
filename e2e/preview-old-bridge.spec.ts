@@ -533,6 +533,18 @@ test.describe("the editor on a preview page running an older bridge", () => {
         };
         page.on("request", recordWrite);
         try {
+          // The bounded check first: a frame that cannot acknowledge is
+          // refreshed once (a new iframe element, keyed by the preview
+          // revision) before the editor stops on the notice. Read the frame
+          // only after that, or the lookup can land between the two frames.
+          await expect(
+            page.getByTestId("preview-presentation-unconfirmable"),
+            "missing section-presentation-ack-v1 pauses editing after bounded check",
+          ).toBeVisible({ timeout: 45_000 });
+          await expect(
+            page.getByRole("button", { name: "Reload preview" }),
+          ).toBeVisible();
+
           const frameOld = await previewFrameObject(page);
           // The editor answers a ready with its own capabilities only when the
           // ready names `code-default-selection` and a document; none does.
@@ -547,13 +559,6 @@ test.describe("the editor on a preview page running an older bridge", () => {
             "the editor logged a ready it cannot tell apart",
           ).toBe(!expected.documentId);
 
-          await expect(
-            page.getByTestId("preview-presentation-unconfirmable"),
-            "missing section-presentation-ack-v1 pauses editing after bounded check",
-          ).toBeVisible({ timeout: 45_000 });
-          await expect(
-            page.getByRole("button", { name: "Reload preview" }),
-          ).toBeVisible();
           await expect(
             page.locator("[data-editor-tree-sortable]"),
             "sorting is disabled while presentation is unconfirmable",
