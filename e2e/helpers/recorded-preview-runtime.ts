@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test, type Page } from "@playwright/test";
@@ -8,6 +7,7 @@ import {
   previewedThemeRefusal,
   recordedThemeRefusal,
 } from "../../scripts/e2e-preview-runtime-guard.mjs";
+import { execLocalD1, queryLocalD1 } from "./editor-writes-paused";
 
 /**
  * The Live Preview runtime the Themes a run uses should record (R-0, R1),
@@ -42,37 +42,12 @@ export function recordedPreviewRuntimeSql(): string {
   return RECORDED_PREVIEW_RUNTIME ? `'${RECORDED_PREVIEW_RUNTIME}'` : "NULL";
 }
 
-/** One statement against the runner-owned database, its rows as JSON. */
+/** One SELECT against the runner-owned database, its rows. */
 function d1(sql: string): Array<Record<string, unknown>> {
-  const stateDir = process.env.MORPH_E2E_STATE_DIR;
-  if (!stateDir) {
+  if (!process.env.MORPH_E2E_STATE_DIR) {
     throw new Error("Recording a preview runtime needs MORPH_E2E_STATE_DIR.");
   }
-  const output = execFileSync(
-    "npx",
-    [
-      "wrangler",
-      "d1",
-      "execute",
-      "DATABASE",
-      "--local",
-      ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") ===
-      "local-sidecar"
-        ? ["--env", "local_preview_e2e"]
-        : []),
-      "--persist-to",
-      stateDir,
-      "--json",
-      "--command",
-      sql,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" },
-  );
-  return (
-    (
-      JSON.parse(output) as Array<{ results?: Array<Record<string, unknown>> }>
-    )[0]?.results ?? []
-  );
+  return queryLocalD1<Record<string, unknown>>(sql);
 }
 
 function sqlId(value: string): string {
@@ -159,7 +134,7 @@ export function recordThemePreviewRuntime(scope: {
 }): void {
   const themeId = sqlId(scope.themeId);
   const storefrontId = sqlId(scope.storefrontId);
-  d1(
+  execLocalD1(
     `UPDATE storefront_themes SET preview_runtime = ${recordedPreviewRuntimeSql()} WHERE id = '${themeId}' AND storefront_id = '${storefrontId}'`,
   );
   const rows = d1(

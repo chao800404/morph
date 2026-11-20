@@ -5,9 +5,7 @@ import {
   type Locator,
   type Page,
 } from "@playwright/test";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import {
   EDITOR_PATH,
   clickExposedElement,
@@ -17,6 +15,7 @@ import {
   previewFrame,
   settleSelection,
 } from "./helpers";
+import { execLocalD1, queryLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   themeScopeFromEditorPath,
@@ -189,24 +188,13 @@ const OVERRIDE_FILES = [
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
   const now = new Date().toISOString();
-  await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--command",
+  execLocalD1(
     `INSERT INTO storefront_themes
     (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
     VALUES ('${created.themeId}', '${created.storefrontId}',
       'spread-override-binding-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
-  ]);
+  );
   verifyRecordedThemePreviewRuntime(created);
   return created;
 }
@@ -262,34 +250,13 @@ async function rawStoredProps(
 ): Promise<Record<string, unknown> | null> {
   if (!/^\/[a-z0-9-]+$/.test(routePath)) throw new Error(routePath);
   if (!/^[0-9a-f-]{36}$/.test(scope!.themeId)) throw new Error("theme id");
-  const { stdout } = await promisify(execFile)(
-    "npx",
-    [
-      "wrangler",
-      "d1",
-      "execute",
-      "DATABASE",
-      "--local",
-      ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") ===
-      "local-sidecar"
-        ? ["--env", "local_preview_e2e"]
-        : []),
-      "--persist-to",
-      process.env.MORPH_E2E_STATE_DIR!,
-      "--json",
-      "--command",
-      `SELECT CASE WHEN t.draft_revision_id IS NULL THEN t.document ELSE r.document END AS document
+  const rows = queryLocalD1<Record<string, unknown>>(
+    `SELECT CASE WHEN t.draft_revision_id IS NULL THEN t.document ELSE r.document END AS document
        FROM storefront_theme_templates t LEFT JOIN storefront_theme_template_revisions r
          ON r.id = t.draft_revision_id AND r.template_id = t.id
        WHERE t.theme_id = '${scope!.themeId}' AND t.route_path = '${routePath}'
          AND t.deleted_at IS NULL`,
-    ],
-    { maxBuffer: 16 * 1024 * 1024 },
   );
-  const rows =
-    (
-      JSON.parse(stdout) as Array<{ results?: Array<Record<string, unknown>> }>
-    )[0]?.results ?? [];
   expect(rows, `one stored template for ${routePath}`).toHaveLength(1);
   const document = JSON.parse(String(rows[0]!.document)) as {
     sections: Array<{ id: string; props?: Record<string, unknown> }>;

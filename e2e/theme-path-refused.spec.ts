@@ -1,9 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 
 import { EDITOR_PATH, isServerFunctionCall } from "./helpers";
+import { execLocalD1 } from "./helpers/editor-writes-paused";
 
 /**
  * The platform's build files (`__entry.tsx`, the Start preview's Worker and
@@ -33,24 +32,6 @@ async function openSignedIn(page: Page) {
   await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"));
   // The client's serializer is configured once the app has hydrated.
   await page.waitForFunction(() => Boolean(window.__TSR_ROUTER__));
-}
-
-/** SQL against the runner's own throwaway D1, as initial-code-publish does. */
-async function executeSql(command: string) {
-  await promisify(execFile)("npx", [
-    "wrangler",
-    "d1",
-    "execute",
-    "DATABASE",
-    "--local",
-    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
-      ? ["--env", "local_preview_e2e"]
-      : []),
-    "--persist-to",
-    process.env.MORPH_E2E_STATE_DIR!,
-    "--command",
-    command,
-  ]);
 }
 
 test("a signed-in save onto a platform file reaches the browser as THEME_PATH_REFUSED", async ({
@@ -165,7 +146,7 @@ test("a stale platform file can be deleted through the real API", async ({
   const themeId = randomUUID();
   const fileId = randomUUID();
   const now = new Date().toISOString();
-  await executeSql(
+  execLocalD1(
     `INSERT INTO storefront_themes
       (id, storefront_id, name, metadata, created_at, updated_at)
       VALUES ('${themeId}', '${storefrontId}', 'stale-platform-${themeId}',
