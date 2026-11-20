@@ -108,7 +108,7 @@ export type SectionPresentationTraceEvent =
       scope: SectionPresentationTraceScope;
       token: SectionPresentationToken;
       /** Part of a replay of every bound section (`replay`) or one edit. */
-      via: "replay" | "edit";
+      via: "replay" | "edit" | "resend";
     }>
   | Readonly<{
       type: "posted-without-token";
@@ -130,7 +130,7 @@ export type SectionPresentationTraceEvent =
       type: "replay";
       scope: SectionPresentationTraceScope;
       sections: number;
-      mode: "initial" | "unacked";
+      mode: "initial" | "unacked" | "resend";
     }>
   | Readonly<{
       type: "replay-skipped";
