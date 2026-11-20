@@ -3478,3 +3478,147 @@ export default function Sized({ size = null }: { size?: string | null }) {
     ).toContain("Small");
   });
 });
+
+describe("a declared number field", () => {
+  const PATH = "src/components/Grid.tsx";
+  const gridFile = {
+    id: "grid-source",
+    storefrontId: "storefront-1",
+    themeId: "theme-1",
+    path: PATH,
+    content: `export const contentFields = {
+  columns: { type: "number", label: "Columns" },
+} as const;
+export default function Grid({ columns = 3 }: { columns?: number }) {
+  return <section data-columns={columns} />;
+}`,
+    mimeType: "text/typescript",
+    isEntry: false,
+    version: 1,
+    createdAt: "2026-11-19T00:00:00.000Z",
+    updatedAt: "2026-11-19T00:00:00.000Z",
+  };
+  const view = (
+    props: { columns: number },
+    onPropsChange: ReturnType<typeof vi.fn>,
+    resourceKey = "storefront-1:theme-1:template-1:document:0",
+  ) => (
+    <EditorStyleInspector
+      view="content"
+      onPropsChange={onPropsChange}
+      onUpdateThemeFileStyle={vi.fn()}
+      onJumpToCode={vi.fn()}
+      resourceKey={resourceKey}
+      section={{
+        id: "section-1",
+        type: "grid",
+        componentRef: PATH,
+        enabled: true,
+        props,
+      }}
+      themeFiles={[gridFile]}
+    />
+  );
+  const columnsInput = () => {
+    const inputs = screen.getAllByRole("spinbutton");
+    expect(inputs).toHaveLength(1);
+    return inputs[0] as HTMLInputElement;
+  };
+  /** The author enters the field and leaves it without typing anything. */
+  const focusAndLeave = () => {
+    const input = columnsInput();
+    act(() => input.focus());
+    act(() => input.blur());
+  };
+  const typeAndLeave = (value: string) => {
+    const input = columnsInput();
+    act(() => input.focus());
+    input.value = value;
+    fireEvent.input(input);
+    act(() => input.blur());
+  };
+
+  it("writes a typed value exactly once", () => {
+    const onPropsChange = vi.fn();
+    render(view({ columns: 2 }, onPropsChange));
+    expect(columnsInput().value).toBe("2");
+
+    typeAndLeave("5");
+
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      { columns: 5 },
+      { inputFieldPath: "columns" },
+    );
+  });
+
+  it("shows the value an undo restores and writes nothing when left untouched", () => {
+    const onPropsChange = vi.fn();
+    const { rerender } = render(view({ columns: 2 }, onPropsChange));
+    typeAndLeave("5");
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+    // The write lands, then an undo puts the stored value back.
+    rerender(view({ columns: 5 }, onPropsChange));
+    rerender(view({ columns: 2 }, onPropsChange));
+
+    expect(columnsInput().value).toBe("2");
+    focusAndLeave();
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a value changed elsewhere and writes nothing when left untouched", () => {
+    const onPropsChange = vi.fn();
+    const { rerender } = render(view({ columns: 2 }, onPropsChange));
+    rerender(view({ columns: 7 }, onPropsChange));
+
+    expect(columnsInput().value).toBe("7");
+    focusAndLeave();
+    expect(onPropsChange).not.toHaveBeenCalled();
+  });
+
+  it("shows the stored value after a discard and writes nothing when left untouched", () => {
+    const onPropsChange = vi.fn();
+    const { rerender } = render(view({ columns: 2 }, onPropsChange));
+    typeAndLeave("5");
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+    // A discard drops the unsaved value and starts the panel over.
+    rerender(
+      view(
+        { columns: 2 },
+        onPropsChange,
+        "storefront-1:theme-1:template-1:document:1",
+      ),
+    );
+
+    expect(columnsInput().value).toBe("2");
+    focusAndLeave();
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not write a saved value again when left untouched", () => {
+    const onPropsChange = vi.fn();
+    const { rerender } = render(view({ columns: 2 }, onPropsChange));
+    typeAndLeave("5");
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+    rerender(view({ columns: 5 }, onPropsChange));
+
+    expect(columnsInput().value).toBe("5");
+    focusAndLeave();
+    expect(onPropsChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes a value typed after an undo exactly once", () => {
+    const onPropsChange = vi.fn();
+    const { rerender } = render(view({ columns: 2 }, onPropsChange));
+    typeAndLeave("5");
+    rerender(view({ columns: 5 }, onPropsChange));
+    rerender(view({ columns: 2 }, onPropsChange));
+
+    typeAndLeave("4");
+    expect(onPropsChange).toHaveBeenCalledTimes(2);
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      { columns: 4 },
+      { inputFieldPath: "columns" },
+    );
+  });
+});

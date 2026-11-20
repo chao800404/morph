@@ -4005,6 +4005,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                               />
                             ) : definition.type === "number" ? (
                               <Input
+                                key={contentFieldInputKey(fieldKey)}
                                 type="number"
                                 defaultValue={
                                   typeof value === "number" ? value : ""
@@ -4021,6 +4022,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                   );
                                 }}
                                 onBlur={(event) => {
+                                  // Left as it was entered: nothing was
+                                  // typed, so there is no change to write.
+                                  // The number still in the input may be
+                                  // older than the stored one.
+                                  if (
+                                    contentFocusRef.current?.value ===
+                                    event.currentTarget.value
+                                  ) {
+                                    return;
+                                  }
                                   const rawValue =
                                     event.currentTarget.value.trim();
                                   if (!rawValue) return;

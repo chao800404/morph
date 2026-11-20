@@ -277,14 +277,21 @@ const CARD_SOURCE = `export const contentFields = {
     label: "Entries",
     fields: { title: { type: "text", label: "Title", maxLength: 150 } },
   },
+  count: { type: "number", label: "Count" },
 } as const;
 export default function AboutCard({
   heading = "Default heading",
   items = ${JSON.stringify(DEFAULT_ROWS)},
-}: { heading?: string; items?: { id?: string; title?: string }[] }) {
+  count = 3,
+}: {
+  heading?: string;
+  items?: { id?: string; title?: string }[];
+  count?: number;
+}) {
   return (
     <section>
       <h2>{heading}</h2>
+      <p>{count}</p>
       {items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}
     </section>
   );
@@ -714,6 +721,7 @@ async function canvasReport(selector: string, index: number) {
 let headingReport: Awaited<ReturnType<typeof canvasReport>>;
 let secondRowReport: Awaited<ReturnType<typeof canvasReport>>;
 let firstRowReport: Awaited<ReturnType<typeof canvasReport>>;
+let countReport: Awaited<ReturnType<typeof canvasReport>>;
 
 /** Opens the editor on the route and selects `report`'s element in Content. */
 async function openOn(report: Record<string, unknown>) {
@@ -810,6 +818,7 @@ beforeAll(async () => {
   headingReport = await canvasReport("h2", 0);
   secondRowReport = await canvasReport("h3", 1);
   firstRowReport = await canvasReport("h3", 0);
+  countReport = await canvasReport("p", 0);
 });
 
 beforeEach(() => {
@@ -5291,5 +5300,153 @@ describe("off-page saves, step by step", () => {
       await ackAgain();
       expect(sent()).toHaveLength(1);
     });
+  });
+});
+
+/**
+ * A declared number field with a held draft. The number input stages its
+ * typed value on blur and has no commit of its own: the section's blur
+ * commits the held draft as it is. Leaving the field again without typing
+ * must not re-emit the displayed number (it may be older than the held
+ * one): nothing new is written, the notice stays, the draft stays, and the
+ * acknowledgement then sends the typed number once on the original basis.
+ */
+describe("a declared number field's held draft", () => {
+  const ELSEWHERE = "/unfollowed/elsewhere";
+  const ACK = "morph:storefront-preview-section-presentation-ack";
+  const moveFrame = async (routePath: string, epoch: number) => {
+    await fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath,
+      frameNavigationEpoch: epoch,
+    });
+    await flushFrames();
+  };
+  const withdrawEveryAck = async () => {
+    const tokens = posted
+      .filter(
+        (message) =>
+          message.type === "morph:storefront-preview-update-section-props" &&
+          message.presentationToken,
+      )
+      .map((message) => message.presentationToken as { operationId: string });
+    for (const token of tokens) {
+      await fromPreview({
+        type: ACK,
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "superseded",
+      });
+    }
+    await flushFrames();
+  };
+  const countInput = () => {
+    const inputs = Array.from(
+      document.querySelectorAll<HTMLInputElement>('input[type="number"]'),
+    ).filter((element) => !element.getAttribute("aria-label"));
+    expect(inputs).toHaveLength(1);
+    return inputs[0]!;
+  };
+  /** The author clicks into the number and types there, not leaving it. */
+  const typeNumber = (value: string) => {
+    const input = countInput();
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value } });
+  };
+  /** The author leaves the number; with no typing first, it is untouched. */
+  const leaveNumber = async (focusFirst: boolean) => {
+    const input = countInput();
+    await act(async () => {
+      if (focusFirst) fireEvent.focus(input);
+      fireEvent.blur(input);
+    });
+    await pause();
+  };
+  const otherPageNotices = () =>
+    screen.queryAllByText(PREVIEW_OTHER_PAGE_PAUSED_MESSAGE).length;
+  const writes = () =>
+    sent().map((write) => ({
+      templateId: write.templateId,
+      expectedDraftGeneration: write.expectedDraftGeneration,
+      expectedSourceGeneration: write.expectedSourceGeneration,
+      props: write.props,
+    }));
+
+  /**
+   * The route's document exists at generation 3 and the frame acknowledged
+   * its page, then left; it withdraws every acknowledgement, so a number
+   * typed and left now is held, not written.
+   */
+  async function heldNumberWhileAway() {
+    server.route = { generation: 3, props: { count: 3 } };
+    await openOn(countReport);
+    await waitForPresentationReady();
+    expect(host.search?.templateId).toBe(ROUTE_DOC_ID);
+    expect(countInput().value).toBe("3");
+    await moveFrame(ELSEWHERE, 1);
+    await withdrawEveryAck();
+    typeNumber("7");
+    await leaveNumber(false);
+    expect(sent()).toHaveLength(0);
+    expect(countInput().value).toBe("7");
+    expect(saveStatus()).toBe("Unsaved");
+    expect(otherPageNotices()).toBeGreaterThan(0);
+  }
+
+  it("an untouched blur while the draft is held writes nothing and keeps the notice and the draft; the acknowledgement then sends the typed number once on the original basis", async () => {
+    await heldNumberWhileAway();
+
+    // Back into the field and out again, nothing typed.
+    await leaveNumber(true);
+    expect(sent()).toHaveLength(0);
+    expect(countInput().value).toBe("7");
+    expect(saveStatus()).toBe("Unsaved");
+    expect(otherPageNotices()).toBeGreaterThan(0);
+    expect(server.route).toMatchObject({ generation: 3, props: { count: 3 } });
+
+    // The return's acknowledgement arrives.
+    await moveFrame(ROUTE_PATH, 2);
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
+    expect(writes()).toEqual([
+      {
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 3,
+        expectedSourceGeneration: 1,
+        props: { count: 7 },
+      },
+    ]);
+    expect(typeof sent()[0]!.props.count).toBe("number");
+    expect(server.route).toMatchObject({ generation: 4, props: { count: 7 } });
+    expect(otherPageNotices()).toBe(0);
+  });
+
+  it("reopened, the field shows the held number and an untouched blur sends nothing; the acknowledgement then sends it once", async () => {
+    await heldNumberWhileAway();
+
+    await select(headingReport);
+    await select(countReport);
+    await pause();
+    expect(countInput().value).toBe("7");
+
+    await leaveNumber(true);
+    expect(sent()).toHaveLength(0);
+    expect(countInput().value).toBe("7");
+    expect(saveStatus()).toBe("Unsaved");
+    expect(server.route).toMatchObject({ generation: 3, props: { count: 3 } });
+
+    await moveFrame(ROUTE_PATH, 2);
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    await pause();
+    expect(writes()).toEqual([
+      {
+        templateId: ROUTE_DOC_ID,
+        expectedDraftGeneration: 3,
+        expectedSourceGeneration: 1,
+        props: { count: 7 },
+      },
+    ]);
   });
 });
