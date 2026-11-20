@@ -864,6 +864,33 @@ function answerRouteRequest(routeRequestId, routePath, status) {
   );
 }
 
+/**
+ * Loads the location the router committed when nothing else will.
+ *
+ * TanStack Router loads a navigation from a history listener that its
+ * Transitioner subscribes once the React tree has committed; only with no
+ * history listener at all does its commitLocation load by itself. The
+ * bridge's own epoch listener is one, so on a Full Start page still
+ * hydrating (Start hydrates inside a transition, and the bridge can be up
+ * first) a navigate moves the address and nothing loads it: the page it
+ * booted on stays on screen and the navigate never settles. Transitioner's
+ * listener starts its load synchronously when the location is pushed, so a
+ * router that is not loading right after the push and has not taken the
+ * location up has no one to load it. Once this load has run, Transitioner
+ * finds its location already current when it mounts and commits nothing.
+ */
+function loadUnloadedCommittedLocation(router) {
+  if (typeof router?.load !== "function" || router.state?.isLoading) return;
+  const committed = committedFrameLocation(router);
+  if (
+    router.state?.location?.pathname === committed.pathname ||
+    matchesReachedPath(router, committed.pathname)
+  ) {
+    return;
+  }
+  void Promise.resolve(router.load()).catch(() => {});
+}
+
 function applyEditorRoute(message) {
   const currentEpoch = syncFrameNavigationEpoch();
   const isFrameFollow = message.navigationIntent === "frame-follow";
@@ -909,7 +936,11 @@ function applyEditorRoute(message) {
     // then names the route it left, which the editor now sets aside, and
     // a destination whose DOM happens to match the old one would give the
     // observer no mutation to report on.
-    void Promise.resolve(router.navigate({ to: message.routePath ?? "/" }))
+    const navigation = Promise.resolve(
+      router.navigate({ to: message.routePath ?? "/" }),
+    );
+    loadUnloadedCommittedLocation(router);
+    void navigation
       .catch(() => {})
       .then(() => reportStructure())
       .then(() => {
