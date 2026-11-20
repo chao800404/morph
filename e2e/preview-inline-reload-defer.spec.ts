@@ -2,7 +2,6 @@ import {
   expect,
   test,
   type Browser,
-  type Frame,
   type Page,
 } from "@playwright/test";
 import { randomUUID } from "node:crypto";
@@ -13,6 +12,7 @@ import {
   isServerFunctionCall,
   openContentTab,
   previewFrame,
+  previewFrameOf,
 } from "./helpers";
 import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
@@ -138,9 +138,6 @@ const inlineEditor = (page: Page) =>
   previewFrame(page).locator("[data-storefront-editor-inline-editing]");
 
 const saveStatus = (page: Page) => page.locator("[data-editor-save-status]");
-
-const previewFrameOf = (page: Page): Frame | undefined =>
-  page.frames().find((frame) => frame.url().includes("__morph-theme-preview__"));
 
 async function frameMark(page: Page): Promise<string | null> {
   const frame = previewFrameOf(page);
