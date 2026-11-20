@@ -41,6 +41,7 @@ import {
   shownListIsBehind,
   draftIsAsCommitted,
   inputEndsCommit,
+  heldContentProps,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { resolveSectionContentDeclaration } from "@/lib/storefront/editor/section-content-declaration";
@@ -15628,15 +15629,23 @@ export function VisualEditorShell({
     },
     [contentBasisFor, templateIdForSection],
   );
+  /** The section's pending entry on the page shown; assigned below. */
+  const heldEntryForSectionRef = useRef<
+    (sectionId: string) => PendingContentEntry | undefined
+  >(() => undefined);
   /**
-   * The unsaved input this editor holds for a section of the page shown, as
-   * the canvas is rebuilt from it (`canvasRebuildSourceRef.pendingProps`:
-   * the section's pending entry, under the key the write path uses for this
-   * page's document). The Inspector shows it when it opens the section, so
-   * a field opened again shows what the canvas shows. Read only.
+   * The unsaved input this editor holds for a section of the page shown: of
+   * the section's pending entry (under the key the write path uses for this
+   * page's document), only the keys it really holds (`heldContentProps`).
+   * The Inspector shows them when it opens the section, so a field opened
+   * again shows what the canvas shows, and opens their baseline on the
+   * accepted copy. The entry's `props` is the Inspector's whole copy, so
+   * passing all of it would pin every untouched key at the copy's value
+   * (H1). Read only.
    */
   const heldContentForSection = useCallback(
-    (sectionId: string) => canvasRebuildSourceRef.current.pendingProps(sectionId),
+    (sectionId: string) =>
+      heldContentProps(heldEntryForSectionRef.current(sectionId)),
     [],
   );
 
@@ -16391,19 +16400,21 @@ export function VisualEditorShell({
   // handler below and the Inspector's input path read it, with the section's
   // pending input on top. Read only; asked once per section, when the edit
   // ends.
+  const pendingEntryForSection = (
+    sectionId: string,
+  ): PendingContentEntry | undefined => {
+    if (!activeTemplate) return undefined;
+    const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
+    return pendingPropsMapRef.current.get(contentKeyFor(templateId, sectionId));
+  };
   canvasRebuildSourceRef.current = {
     storedCopy: (sectionId) => {
       if (!activeTemplate) return undefined;
       return acceptedSectionProps(sectionId);
     },
-    pendingProps: (sectionId) => {
-      if (!activeTemplate) return undefined;
-      const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
-      return pendingPropsMapRef.current.get(
-        contentKeyFor(templateId, sectionId),
-      )?.props;
-    },
+    pendingProps: (sectionId) => pendingEntryForSection(sectionId)?.props,
   };
+  heldEntryForSectionRef.current = pendingEntryForSection;
   useEffect(() => {
     inlineTextCommitHandlerRef.current = (message) => {
       const selection = activeSelection;
