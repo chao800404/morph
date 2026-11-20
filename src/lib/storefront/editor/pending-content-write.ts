@@ -215,6 +215,41 @@ export function discardedListValue(
   return getFieldPathValue(incoming, fieldPath);
 }
 
+/** Shown when a list action is refused because the list shown is behind. */
+export const LIST_BEHIND_MESSAGE =
+  "This list was out of date, so your change was not made. The latest list is shown now. Make your change again.";
+
+/**
+ * Whether the list a panel (or the canvas) shows for `listRoot` lags the
+ * newest copy of the section this editor has accepted, so a list action
+ * built on it must not be sent.
+ *
+ * A list action (add, remove, reorder) sends the whole list, built from the
+ * rows on screen, on the current basis: OCC cannot tell a list built on an
+ * older copy from one built on the newest. So the rows on screen must be the
+ * accepted ones. They may differ for one legitimate reason only: an input of
+ * this editor to that same list not yet answered (staged, held, sent, or of
+ * unknown outcome), which the accepted copy does not have yet. `unanswered`
+ * is every such entry of the section in its document; one that touches the
+ * list (`contentEntryTouchesPath`, the overlap rule the list discard guard
+ * uses) makes the list not behind. An entry for other fields of the section
+ * (a held heading, say) does not: its props are the panel's whole copy and
+ * can carry the old list too.
+ *
+ * Compared by content (`sameContent`). A list neither stores is the same.
+ */
+export function shownListIsBehind(args: {
+  shown: unknown;
+  accepted: Readonly<Record<string, unknown>>;
+  listRoot: string;
+  unanswered: Iterable<PendingContentEntry>;
+}): boolean {
+  for (const entry of args.unanswered) {
+    if (contentEntryTouchesPath(entry, args.listRoot)) return false;
+  }
+  return !sameContent(args.shown, args.accepted[args.listRoot]);
+}
+
 /** Whether one unanswered write belongs to the selected document and list. */
 export function hasUnconfirmedContentForList(args: {
   entries: Iterable<readonly [string, PendingContentEntry]>;

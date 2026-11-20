@@ -269,3 +269,54 @@ describe("useInspectorContentProps", () => {
     });
   });
 });
+
+describe("adoptAcceptedValue", () => {
+  it("shows the accepted value as unchanged, remounts that key only, and keeps other drafts", () => {
+    const stale = { heading: "Hi", items: [{ id: "a" }, { id: "b" }] };
+    const { result, rerender } = renderHook(
+      ({ sectionProps }) =>
+        useInspectorContentProps({
+          resourceKey: "page",
+          sectionId: "hero",
+          sectionProps,
+        }),
+      { initialProps: { sectionProps: stale as unknown } },
+    );
+    act(() => {
+      result.current.setLocalProps({ ...stale, heading: "Draft" });
+      result.current.localPropsRef.current = { ...stale, heading: "Draft" };
+    });
+    act(() => result.current.adoptAcceptedValue("items", [{ id: "a" }]));
+    expect(result.current.props).toEqual({
+      heading: "Draft",
+      items: [{ id: "a" }],
+    });
+    expect(result.current.externalEpochs).toEqual({ items: 1 });
+
+    // The copy with that list renders: nothing moves, the draft stays.
+    rerender({ sectionProps: { heading: "Hi", items: [{ id: "a" }] } });
+    expect(result.current.props).toEqual({
+      heading: "Draft",
+      items: [{ id: "a" }],
+    });
+    // A later copy with another list is adopted: the list counts as unchanged.
+    rerender({
+      sectionProps: { heading: "Hi", items: [{ id: "a" }, { id: "x" }] },
+    });
+    expect(result.current.props.items).toEqual([{ id: "a" }, { id: "x" }]);
+  });
+
+  it("an accepted value of undefined removes the key", () => {
+    // One object across renders, as the editor passes it.
+    const sectionProps = { items: [{ id: "a" }] };
+    const { result } = renderHook(() =>
+      useInspectorContentProps({
+        resourceKey: "page",
+        sectionId: "hero",
+        sectionProps,
+      }),
+    );
+    act(() => result.current.adoptAcceptedValue("items", undefined));
+    expect(result.current.props).toEqual({});
+  });
+});

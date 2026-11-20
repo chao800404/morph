@@ -29,7 +29,10 @@ import {
 } from "@/lib/storefront/editor/selected-row-identity";
 import { identifyUnstoredListRows } from "@/lib/storefront/editor/normalize-row-ids";
 import { earlierBasis } from "@/lib/storefront/editor/content-write-snapshot";
-import { sameContent } from "@/lib/storefront/editor/pending-content-write";
+import {
+  LIST_BEHIND_MESSAGE,
+  sameContent,
+} from "@/lib/storefront/editor/pending-content-write";
 import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
 import {
   findSourceLocation,
@@ -425,6 +428,17 @@ type EditorStyleInspectorProps = {
    * answer is rebased against it, not against the older copy last shown.
    */
   acceptedContentProps?: () => Record<string, unknown> | undefined;
+  /**
+   * Asked before an Add or Remove on top-level list `listRoot`, with the
+   * list the panel shows: the accepted value of that list when the one shown
+   * is behind it (`shownListIsBehind`), else null. A list action on a list
+   * that is behind is refused: nothing is sent, and the panel shows the
+   * accepted list for the author to act on again.
+   */
+  listBehindAccepted?: (
+    listRoot: string,
+    shown: unknown,
+  ) => { accepted: unknown } | null;
   /**
    * The last value an inline canvas edit wrote. Applied to this section's
    * fields before the save and refetch bring it back as stored props.
@@ -924,6 +938,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   heldContentProps,
   onContentBlur,
   acceptedContentProps,
+  listBehindAccepted,
   inlineTextCommit = null,
   onJumpToCode,
   sharedLayoutPaths,
@@ -971,6 +986,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     props,
     externalEpochs,
     noteLocalInput,
+    adoptAcceptedValue,
   } = useInspectorContentProps({
     resourceKey,
     sectionId: section.id,
@@ -979,6 +995,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   });
   const acceptedContentPropsRef = useRef(acceptedContentProps);
   acceptedContentPropsRef.current = acceptedContentProps;
+  const listBehindAcceptedRef = useRef(listBehindAccepted);
+  listBehindAcceptedRef.current = listBehindAccepted;
   /**
    * The author changed the field at `fieldPath`, made on the newest accepted
    * copy, which may hold a write answered but not yet shown here: the next
@@ -3003,6 +3021,20 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       listKey: string,
     ) => {
       if (documentWritesRefusedRef.current) return;
+      // Built from the rows the panel shows, and sent whole on the current
+      // basis: shown behind the accepted copy (opened from an older copy
+      // while a write was answered but not yet rendered), it would bring
+      // back what that write changed. Refused instead, and not rebuilt on
+      // the accepted list: the row pressed was one the author saw.
+      const behind = listBehindAcceptedRef.current?.(
+        listKey,
+        localPropsRef.current[listKey],
+      );
+      if (behind) {
+        adoptAcceptedValue(listKey, behind.accepted);
+        toast.warning(LIST_BEHIND_MESSAGE, { id: "list-behind-accepted" });
+        return;
+      }
       const result = mutate(seedUnstoredList(localPropsRef.current, seed));
       if (!result.editable) {
         const message =
@@ -3044,6 +3076,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     },
     [
       activeFieldPath,
+      adoptAcceptedValue,
       noteInputOn,
       onPropsChange,
       section.id,

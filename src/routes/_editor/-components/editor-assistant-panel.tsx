@@ -147,6 +147,12 @@ type EditorAssistantPanelProps = {
   ) => Record<string, unknown> | undefined;
   /** See the Inspector's `acceptedContentProps`; asked by the section's id. */
   acceptedPropsForSection?: (sectionId: string) => Record<string, unknown>;
+  /** See the Inspector's `listBehindAccepted`; asked by the section's id. */
+  listBehindAcceptedForSection?: (
+    sectionId: string,
+    listRoot: string,
+    shown: unknown,
+  ) => { accepted: unknown } | null;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
   inlineTextCommit?: InspectorInlineTextCommit | null;
   /** Per-list recovery status for the Inspector's Content tab. */
@@ -286,6 +292,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   contentBasisForSection,
   heldContentForSection,
   acceptedPropsForSection,
+  listBehindAcceptedForSection,
   inlineTextCommit,
   listWriteStatuses,
   listReset,
@@ -454,6 +461,14 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         ? acceptedPropsForSection?.(storedSection.id)
         : undefined,
     [acceptedPropsForSection, contentStore, storedSection],
+  );
+  const inspectorListBehindAccepted = useCallback(
+    (listRoot: string, shown: unknown) =>
+      contentStore === "document" && storedSection
+        ? (listBehindAcceptedForSection?.(storedSection.id, listRoot, shown) ??
+          null)
+        : null,
+    [contentStore, listBehindAcceptedForSection, storedSection],
   );
 
   useEffect(() => {
@@ -667,6 +682,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 contentBasis={inspectorContentBasis}
                 heldContentProps={inspectorHeldContent}
                 acceptedContentProps={inspectorAcceptedContentProps}
+                listBehindAccepted={inspectorListBehindAccepted}
                 inlineTextCommit={inlineTextCommit}
                 onJumpToCode={onJumpToCode}
                 selectionSourceCurrent={selectionSourceCurrent}

@@ -37,6 +37,8 @@ import {
   contentEntryStatusPaths,
   changedListPaths,
   hasUnconfirmedContentForList as hasUnconfirmedListWrite,
+  LIST_BEHIND_MESSAGE,
+  shownListIsBehind,
   draftIsAsCommitted,
   inputEndsCommit,
   type PendingContentEntry,
@@ -15186,6 +15188,45 @@ export function VisualEditorShell({
   );
 
   /**
+   * The accepted value of a section's list, when the list `shown` for it
+   * (in the Inspector, or as the canvas reorder builds it) is behind it
+   * (`shownListIsBehind`); null when it is not. A list action on a list
+   * that is behind is refused: nothing is sent, and the list shown is
+   * replaced by the value returned. The unanswered inputs that keep a list
+   * from counting as behind are this section's entries in its document,
+   * pending or of unknown outcome.
+   */
+  const listBehindAccepted = useCallback(
+    (
+      sectionId: string,
+      listRoot: string,
+      shown: unknown,
+    ): { accepted: unknown } | null => {
+      const requested = templateIdForSection(sectionId);
+      if (!requested) return null;
+      const ownerId = routeTemplateIdsRef.current.get(requested) ?? requested;
+      const unanswered: PendingContentEntry[] = [];
+      for (const entries of [
+        pendingPropsMapRef.current,
+        unconfirmedContentRef.current,
+      ]) {
+        for (const [key, entry] of entries) {
+          if (entry.sectionId !== sectionId) continue;
+          const templateId = templateIdOfPendingContentKey(key, sectionId);
+          if (templateId === null || !sameTemplateOwner(templateId, ownerId))
+            continue;
+          unanswered.push(entry);
+        }
+      }
+      const accepted = acceptedSectionProps(sectionId);
+      return shownListIsBehind({ shown, accepted, listRoot, unanswered })
+        ? { accepted: accepted[listRoot] }
+        : null;
+    },
+    [acceptedSectionProps, sameTemplateOwner, templateIdForSection],
+  );
+
+  /**
    * Removes this page's value for declared fields, so the component's own
    * default renders again.
    *
@@ -16575,7 +16616,10 @@ export function VisualEditorShell({
         draggedFieldPath,
         targetFieldPath,
       );
-      const restoreSelectionAndProps = () => {
+      // `currentProps` is what the swap was built on. Restored to anything
+      // else (`fromAccepted`: a list behind the accepted copy), the canvas
+      // is told the accepted copy with the pending fields on top instead.
+      const restoreSelectionAndProps = (fromAccepted = false) => {
         postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
           type: "morph:storefront-preview-set-selection-field-path",
           sectionId,
@@ -16594,6 +16638,10 @@ export function VisualEditorShell({
             fieldPath: `${draggedFieldPath}${current.fieldPath.slice(targetFieldPath.length)}`,
           };
         });
+        if (fromAccepted) {
+          reconcilePreviewSection(sectionId);
+          return;
+        }
         const rollbackProps = parsePreviewSectionProps(currentProps);
         if (rollbackProps) syncPreviewSectionProps(sectionId, rollbackProps);
       };
@@ -16611,6 +16659,31 @@ export function VisualEditorShell({
       if (!previewProps) {
         restoreSelectionAndProps();
         toast.error("Cannot reorder: the resulting section data is invalid.");
+        return;
+      }
+
+      // The swap was built on the list as the context and the pending input
+      // hold it. Behind the accepted copy (a write answered but not yet
+      // rendered), its indices name other rows than the canvas showed, and
+      // the list sent would bring back what that write changed: refused,
+      // nothing sent, the list shown again as accepted. Before the timer
+      // below is touched, so other pending fields still go out on their own.
+      const behind = listBehindAccepted(
+        sectionId,
+        arrayRoot,
+        currentProps[arrayRoot],
+      );
+      if (behind) {
+        restoreSelectionAndProps(true);
+        listResetEpochRef.current += 1;
+        setListReset({
+          templateId,
+          sectionId,
+          fieldPath: arrayRoot,
+          value: behind.accepted,
+          epoch: listResetEpochRef.current,
+        });
+        toast.warning(LIST_BEHIND_MESSAGE, { id: "list-behind-accepted" });
         return;
       }
 
@@ -16808,6 +16881,8 @@ export function VisualEditorShell({
       commitSectionPending,
       previewSectionIsHidden,
       reconcileAfterRemoval,
+      reconcilePreviewSection,
+      listBehindAccepted,
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
@@ -20583,6 +20658,7 @@ export function VisualEditorShell({
           contentBasisForSection={contentBasisForSection}
           heldContentForSection={heldContentForSection}
           acceptedPropsForSection={acceptedSectionProps}
+          listBehindAcceptedForSection={listBehindAccepted}
           inlineTextCommit={inlineTextCommit}
           onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}
