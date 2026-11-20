@@ -878,17 +878,50 @@ function answerRouteRequest(routeRequestId, routePath, status) {
  * router that is not loading right after the push and has not taken the
  * location up has no one to load it. Once this load has run, Transitioner
  * finds its location already current when it mounts and commits nothing.
+ *
+ * Taken up means the whole location, not its path: the frame boots on the
+ * editor's query, and a set-route to the page it booted on pushes the same
+ * path without it.
  */
 function loadUnloadedCommittedLocation(router) {
   if (typeof router?.load !== "function" || router.state?.isLoading) return;
-  const committed = committedFrameLocation(router);
-  if (
-    router.state?.location?.pathname === committed.pathname ||
-    matchesReachedPath(router, committed.pathname)
-  ) {
-    return;
-  }
+  if (routerTookUpCommittedLocation(router)) return;
   void Promise.resolve(router.load()).catch(() => {});
+}
+
+/**
+ * Whether the location the router last took up is the one its history has
+ * committed: path, search and hash.
+ *
+ * Both are read as the router reads them (its parseLocation is what its
+ * load takes up), so a search spelled differently but parsed the same is
+ * one location. Matches reached for the committed path under another
+ * spelling count only once the search and hash are the committed ones too:
+ * matches loaded for the same path under a stale search are not this
+ * location.
+ */
+function routerTookUpCommittedLocation(router) {
+  const taken = router.state?.location;
+  if (!taken) return false;
+  const committed = committedFrameLocation(router);
+  const raw = router.history?.location;
+  let parsed = null;
+  if (raw && typeof router.parseLocation === "function") {
+    try {
+      parsed = router.parseLocation(raw);
+    } catch {
+      parsed = null;
+    }
+  }
+  const sameSearchAndHash = parsed
+    ? parsed.searchStr === taken.searchStr && parsed.hash === taken.hash
+    : (raw?.search ?? "") === (taken.searchStr ?? "") &&
+      (raw?.hash ?? "") === (taken.hash ? "#" + taken.hash : "");
+  if (!sameSearchAndHash) return false;
+  return (
+    taken.pathname === (parsed ? parsed.pathname : committed.pathname) ||
+    matchesReachedPath(router, committed.pathname)
+  );
 }
 
 function applyEditorRoute(message) {

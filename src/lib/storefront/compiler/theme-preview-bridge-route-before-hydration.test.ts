@@ -30,7 +30,7 @@ const TARGET = "/selection-field-home";
 type Posted = Record<string, unknown>;
 
 /** A Theme's router as Start hydrated it: matches on the page it booted on. */
-async function hydratedRouter() {
+async function hydratedRouter(bootedAt = "/") {
   const rootRoute = createRootRoute();
   const routeTree = rootRoute.addChildren([
     createRoute({ getParentRoute: () => rootRoute, path: "/" }),
@@ -38,7 +38,7 @@ async function hydratedRouter() {
   ]);
   const router = createRouter({
     routeTree,
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    history: createMemoryHistory({ initialEntries: [bootedAt] }),
     isServer: false,
   });
   await router.load();
@@ -52,7 +52,7 @@ function mountTransitioner(router: Router) {
   return router.history.subscribe(router.load);
 }
 
-function startPreview(router: Router) {
+function startPreview(router: Router, search = "") {
   const start = BRIDGE.indexOf("const documentNavigation =");
   const end = BRIDGE.indexOf("function clearSelectionAttributes");
   expect(start, "the bridge's routing code").toBeGreaterThan(-1);
@@ -62,9 +62,9 @@ function startPreview(router: Router) {
   const posted: Posted[] = [];
   const location = {
     pathname: "/",
-    search: "",
+    search,
     origin: "http://127.0.0.1:5178",
-    href: "http://127.0.0.1:5178/",
+    href: "http://127.0.0.1:5178/" + search,
     assign: () => {
       throw new Error("a Start preview navigates with its router");
     },
@@ -216,5 +216,58 @@ describe("a set-route that arrives before the Start router's Transitioner mounts
     expect(leafPath(router)).toBe(TARGET);
     expect(load, "one load, Transitioner's").toHaveBeenCalledTimes(1);
     expect(page.answers().map((answer) => answer.routeRequestId)).toEqual([9]);
+  });
+
+  it("loads a set-route to the booted pathname whose location differs only in search", async () => {
+    // The frame boots on the editor's channel query; the editor's set-route
+    // names "/", and navigate builds "/" without that query. The pathname is
+    // the one already shown, but the router pushed a new location.
+    const booted = "/?editorOrigin=x&previewSession=y";
+    const router = await hydratedRouter(booted);
+    const load = vi.spyOn(router, "load");
+    const page = startPreview(router, "?editorOrigin=x&previewSession=y");
+    page.reportStructure();
+    expect(
+      router.history.subscribers.size,
+      "only the bridge listens; Transitioner has not mounted",
+    ).toBe(1);
+
+    page.applyEditorRoute(setRoute("/", 11));
+    await settle();
+
+    expect(router.history.location.pathname).toBe("/");
+    expect(router.history.location.search).toBe("");
+    expect(load, "someone loaded the pushed location").toHaveBeenCalled();
+    expect(router.state.location.searchStr).toBe("");
+    expect(router.state.isLoading).toBe(false);
+    expect(page.answers()).toEqual([
+      {
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: 11,
+        routePath: "/",
+        status: "applied",
+      },
+    ]);
+  });
+
+  it("control: a set-route to exactly the current location adds no load of its own", async () => {
+    const router = await hydratedRouter("/");
+    const load = vi.spyOn(router, "load");
+    const page = startPreview(router);
+    page.reportStructure();
+    expect(router.history.subscribers.size).toBe(1);
+
+    page.applyEditorRoute(setRoute("/", 12));
+    await settle();
+
+    expect(router.history.location.pathname).toBe("/");
+    expect(router.history.location.search).toBe("");
+    // The router reloads a same-URL navigate itself; the bridge adds none.
+    expect(load, "only the router's own same-URL load").toHaveBeenCalledTimes(
+      1,
+    );
+    expect(page.answers().map((answer) => answer.routeRequestId)).toEqual([
+      12,
+    ]);
   });
 });
