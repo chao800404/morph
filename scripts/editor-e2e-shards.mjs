@@ -103,6 +103,8 @@ export const EDITOR_SHARDS = [
     "source-asset-publish.spec.ts",
     "preview-start-bridge-interruption.spec.ts",
     "history-back-controlled-repro.spec.ts",
+    // Full Start only, so it skips here; the full Start job runs it.
+    "author-pick-supersedes-follow.spec.ts",
     // Container transport only, so it skips on every shard. Its exact tests
     // are listed in scripts/container-acceptance-targets/.
     "starter-upgrade-publish-acceptance.spec.ts",
