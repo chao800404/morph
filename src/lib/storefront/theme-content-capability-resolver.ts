@@ -1,6 +1,7 @@
 import { parse } from "@babel/parser";
 import {
   contentFieldsSidecarPath,
+  isAstroComponentSource,
   readComponentContentFields,
 } from "./ast/theme-content-fields-declaration";
 import { inferThemeContentFields } from "./ast/infer-theme-content-fields";
@@ -24,6 +25,12 @@ import {
 
 const THEME_MANIFEST_PATH = "morph.theme.json";
 export const MAX_SCANNED_COMPONENT_SOURCES = 200;
+/**
+ * Component sources the scan reads. An `.astro` one declares its fields only
+ * in its `<Name>.fields.ts`; it is never parsed, inferred from or followed as
+ * a forwarding adapter (`isAstroComponentSource`).
+ */
+const COMPONENT_SOURCE_FILE = /\.(?:tsx|jsx|astro)$/;
 
 export type ThemeContentSourceStatus =
   "declared" | "inferred" | "forwarded" | "invalid" | "absent" | "unreadable";
@@ -86,9 +93,11 @@ function resolveRowComponentPath(
  * declarations in adapter files.
  */
 function readReExportedContentFieldsSpecifier(
+  path: string,
   source: string,
   parsedAst?: ParsedThemeAst | null,
 ): string | null {
+  if (isAstroComponentSource(path)) return null;
   if (!source.includes("contentFields")) return null;
   try {
     const ast =
@@ -362,7 +371,9 @@ function expandReExportedContentFields({
     let changed = false;
     for (const [path, source] of entries) {
       if (typeof source !== "string") continue;
+      if (isAstroComponentSource(path)) continue;
       const specifier = readReExportedContentFieldsSpecifier(
+        path,
         source,
         parsedAstFor?.(path, source),
       );
@@ -488,7 +499,9 @@ export function resolveThemeContentCapabilitiesFromFiles(
   const invalidDeclarations = new Set<string>();
   const sourceStatuses = new Map<string, ThemeContentSourceStatus>();
   const eligibleSourcePaths = [...byPath.keys()]
-    .filter((path) => path.startsWith("src/") && /\.(tsx|jsx)$/.test(path))
+    .filter(
+      (path) => path.startsWith("src/") && COMPONENT_SOURCE_FILE.test(path),
+    )
     .sort();
   const scannedSourcePaths = eligibleSourcePaths.slice(
     0,
@@ -501,7 +514,9 @@ export function resolveThemeContentCapabilitiesFromFiles(
       continue;
     }
     const sidecarPath = contentFieldsSidecarPath(path);
-    const parsedSourceAst = options.parsedAstFor?.(path, source);
+    const parsedSourceAst = isAstroComponentSource(path)
+      ? undefined
+      : options.parsedAstFor?.(path, source);
     const sidecarContent =
       sidecarPath && byPath.has(sidecarPath)
         ? (byPath.get(sidecarPath) ?? null)
@@ -531,7 +546,10 @@ export function resolveThemeContentCapabilitiesFromFiles(
     } else if (parsed.declaration === "invalid") {
       sourceStatuses.set(path, "invalid");
       invalidDeclarations.add(path);
-    } else if (isThemeSectionSourcePath(path)) {
+    } else if (
+      isThemeSectionSourcePath(path) &&
+      !isAstroComponentSource(path)
+    ) {
       // A section-folder component may use ordinary React props without a
       // second contentFields declaration. The inference is intentionally
       // limited to this convention and only exposes static primitive props;
@@ -627,7 +645,10 @@ export async function resolveThemeContentCapabilities(args: {
   const sources = new Map(readComponentSourcePaths(args.manifestContent));
   for (const sourcePath of args.additionalSourcePaths ?? []) {
     const normalized = sourcePath.replace(/\\/g, "/").replace(/^\/+/, "");
-    if (normalized.startsWith("src/") && /\.(?:tsx|jsx)$/.test(normalized)) {
+    if (
+      normalized.startsWith("src/") &&
+      COMPONENT_SOURCE_FILE.test(normalized)
+    ) {
       sources.set(normalized, normalized);
     }
   }
@@ -648,7 +669,7 @@ export async function resolveThemeContentCapabilities(args: {
   // Fetch their local target as well so server-side validation sees the same
   // contract as the editor's whole-workspace resolver.
   for (const [sourcePath, source] of [...sourceContents]) {
-    const specifier = readReExportedContentFieldsSpecifier(source);
+    const specifier = readReExportedContentFieldsSpecifier(sourcePath, source);
     if (!specifier) continue;
     const base = resolveRowComponentPath(sourcePath, specifier);
     if (!base) continue;
@@ -702,7 +723,10 @@ export async function resolveThemeContentCapabilities(args: {
     if (parsed.declaration === "valid") {
       sourceStatuses.set(sourcePath, "declared");
       declared.set(sourcePath, parsed.fields ?? {});
-    } else if (isThemeSectionSourcePath(sourcePath)) {
+    } else if (
+      isThemeSectionSourcePath(sourcePath) &&
+      !isAstroComponentSource(sourcePath)
+    ) {
       const inferred = inferThemeContentFields(source);
       if (Object.keys(inferred.fields).length > 0) {
         sourceStatuses.set(sourcePath, "inferred");
@@ -757,7 +781,7 @@ export async function resolveThemeContentCapabilities(args: {
   });
 
   for (const [sourcePath, source] of sourceContents) {
-    const specifier = readReExportedContentFieldsSpecifier(source);
+    const specifier = readReExportedContentFieldsSpecifier(sourcePath, source);
     if (!specifier) continue;
     const base = resolveRowComponentPath(sourcePath, specifier);
     if (!base) continue;

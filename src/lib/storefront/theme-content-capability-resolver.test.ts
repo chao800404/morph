@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createThemeSourceAstReader } from "./ast/theme-source-ast";
 import {
   readComponentSourcePaths,
   resolveThemeContentCapabilities,
@@ -474,5 +475,97 @@ describe("a sibling <Name>.fields.ts declares the same as the component would", 
       fields: { heading: { type: "text", label: "Heading" } },
     });
     expect(onDemand).toEqual(scanned);
+  });
+});
+
+// M2 plan v2 §3 (PR-C): an `.astro` component is a component source like a
+// `.tsx` one, whose fields come only from its `<Name>.fields.ts`. Both entry
+// points must agree, as for TSX, and neither may read the `.astro` file as
+// JavaScript.
+describe("an .astro component declares its fields in <Name>.fields.ts", () => {
+  const astroPath = "src/components/Hero.astro";
+  const sidecarPath = "src/components/Hero.fields.ts";
+  const astroSource = `---
+const { title, desc } = Astro.props;
+---
+<h1>{title}</h1>
+<p>{desc}</p>
+`;
+  const sidecar = `export const contentFields = {
+  title: { type: "text", label: "Title" },
+  desc: { type: "textarea", label: "Description" },
+} as const;`;
+  const fields = {
+    title: { type: "text", label: "Title" },
+    desc: { type: "textarea", label: "Description" },
+  };
+
+  const resolveBoth = async (themeFiles: Record<string, string>) => {
+    const list = Object.entries(themeFiles).map(([path, content]) => ({
+      path,
+      content,
+    }));
+    // The editor's shared AST reader, recording which paths it is asked for.
+    const reader = createThemeSourceAstReader(list);
+    const parsedPaths: string[] = [];
+    const scanned = resolveThemeContentCapabilitiesFromFiles(list, {
+      includeManifestFallback: false,
+      parsedAstFor: (path, content) => {
+        parsedPaths.push(path);
+        return reader.ast(path, content);
+      },
+    });
+    const onDemand = await resolveThemeContentCapabilities({
+      manifestContent: null,
+      additionalSourcePaths: [astroPath],
+      readSource: async (path) => themeFiles[path] ?? null,
+    });
+    return { scanned, onDemand, parsedPaths };
+  };
+
+  it("exposes the sibling's fields on both paths", async () => {
+    const { scanned, onDemand } = await resolveBoth({
+      [astroPath]: astroSource,
+      [sidecarPath]: sidecar,
+    });
+    expect(scanned.capabilities[astroPath]).toEqual({ fields });
+    expect(onDemand.capabilities[astroPath]).toEqual({ fields });
+    expect(scanned.sourceScan.entries[astroPath]?.status).toBe("declared");
+    expect(onDemand.sourceScan.entries[astroPath]?.status).toBe("declared");
+    expect(scanned.capabilities[sidecarPath]).toBeUndefined();
+  });
+
+  it("exposes nothing for an .astro component without a sibling", async () => {
+    const { scanned, onDemand } = await resolveBoth({
+      [astroPath]: astroSource,
+    });
+    expect(scanned.capabilities[astroPath]).toBeUndefined();
+    expect(onDemand.capabilities[astroPath]).toBeUndefined();
+    expect(scanned.sourceScan.entries[astroPath]?.status).toBe("absent");
+    expect(onDemand.sourceScan.entries[astroPath]?.status).toBe("absent");
+  });
+
+  it("never asks for an AST of the .astro file itself", async () => {
+    const { parsedPaths } = await resolveBoth({
+      [astroPath]: astroSource,
+      [sidecarPath]: sidecar,
+      "src/components/Card.tsx":
+        "export default function Card() { return <div />; }",
+    });
+    expect(parsedPaths).toContain(sidecarPath);
+    expect(parsedPaths).toContain("src/components/Card.tsx");
+    expect(parsedPaths).not.toContain(astroPath);
+  });
+
+  it("does not take a re-export written in .astro text as a forwarding alias", async () => {
+    // A .tsx adapter `export { contentFields } from "./Hero"` forwards; the
+    // same text in an .astro file is not JavaScript Morph reads.
+    const { scanned, onDemand } = await resolveBoth({
+      [astroPath]: `export { contentFields } from "./Card";`,
+      "src/components/Card.tsx": `export const contentFields = { heading: { type: "text" } } as const;
+export default function Card() { return <div />; }`,
+    });
+    expect(scanned.capabilities[astroPath]).toBeUndefined();
+    expect(onDemand.capabilities[astroPath]).toBeUndefined();
   });
 });

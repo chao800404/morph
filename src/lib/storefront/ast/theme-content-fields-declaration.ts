@@ -17,8 +17,19 @@ import type { ParsedThemeAst } from "./theme-source-ast";
  * Both files are only parsed. Nothing here imports or runs either of them.
  */
 
-const COMPONENT_SOURCE = /^(src\/.+)\.(tsx|jsx)$/;
+const COMPONENT_SOURCE = /^(src\/.+)\.(tsx|jsx|astro)$/;
 const SIDECAR_SUFFIX = ".fields.ts";
+const ASTRO_COMPONENT_SOURCE = /^src\/.+\.astro$/;
+
+/**
+ * An `.astro` component source. Its fields are declared only in its sibling
+ * `<Name>.fields.ts` (M2 plan v2 §3): the `.astro` file is never read as
+ * JavaScript here. Babel cannot parse a template, and finding the frontmatter
+ * is the Astro parser's job; Morph never looks for `---` itself.
+ */
+export function isAstroComponentSource(path: string): boolean {
+  return ASTRO_COMPONENT_SOURCE.test(path.replace(/\\/g, "/"));
+}
 
 /** The sibling declaration file for a component source, or `null`. */
 export function contentFieldsSidecarPath(componentPath: string): string | null {
@@ -105,10 +116,13 @@ export function readComponentContentFields(input: {
   parsedSourceAst?: ParsedThemeAst | null;
   parsedSidecarAst?: ParsedThemeAst | null;
 }): ComponentContentFieldsResult {
-  const inline = parseColocatedContentFields(
-    input.source,
-    input.parsedSourceAst,
-  );
+  // An `.astro` file declares nothing itself: neither its text nor an AST a
+  // caller hands in is read, so only the sibling can declare its fields.
+  const inline: ColocatedContentFieldsResult = isAstroComponentSource(
+    input.path,
+  )
+    ? { declaration: "absent", fields: null, diagnostics: [] }
+    : parseColocatedContentFields(input.source, input.parsedSourceAst);
   const sidecarPath = contentFieldsSidecarPath(input.path);
   if (input.sidecar === undefined || !sidecarPath) {
     return {

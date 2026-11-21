@@ -6,6 +6,7 @@ import {
 import { parseComponentSource } from "./theme-ast-transformer";
 import {
   contentFieldsSidecarPath,
+  isAstroComponentSource,
   readComponentContentFields,
 } from "./theme-content-fields-declaration";
 import {
@@ -248,7 +249,10 @@ export function collectThemeContentFieldsDiagnostics(
   );
 
   for (const file of themeFiles) {
-    if (!file.path.startsWith("src/") || !/\.(?:tsx|jsx)$/.test(file.path)) {
+    if (
+      !file.path.startsWith("src/") ||
+      !/\.(?:tsx|jsx|astro)$/.test(file.path)
+    ) {
       continue;
     }
     const sidecarPath = contentFieldsSidecarPath(file.path);
@@ -287,6 +291,10 @@ export function collectThemeContentFieldsDiagnostics(
         }
       }
     }
+    // An `.astro` component is checked only through its sibling declaration
+    // above: the prop reminder below reads the source as TSX, which an
+    // `.astro` file is not.
+    if (isAstroComponentSource(file.path)) continue;
     // Route files receive framework loader/search params rather than Document
     // content. Restrict the reminder to authored component locations (or a
     // file explicitly registered as a Theme component) to avoid noisy advice

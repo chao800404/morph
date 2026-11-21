@@ -241,3 +241,37 @@ describe("declarations in a component and its <Name>.fields.ts", () => {
     expect(all).toEqual([]);
   });
 });
+
+describe("an .astro component's <Name>.fields.ts in Code mode", () => {
+  const astroPath = "src/components/Hero.astro";
+  const sidecarPath = "src/components/Hero.fields.ts";
+  const astroSource = `---
+const { title } = Astro.props;
+---
+<h1>{title}</h1>
+`;
+
+  it("warns on both files when the sibling declares nothing", () => {
+    const diagnostics = collectThemeContentFieldsDiagnostics([
+      file(astroPath, astroSource),
+      file(sidecarPath, "export const other = 1;"),
+    ]);
+    const paths = diagnostics.map((diagnostic) => diagnostic.path).sort();
+    expect(paths).toEqual([sidecarPath, astroPath].sort());
+    expect(diagnostics[0]?.message).toContain(
+      'does not declare "export const contentFields',
+    );
+  });
+
+  it("says nothing for a valid sibling, and never reads the .astro file as a component", () => {
+    expect(
+      collectThemeContentFieldsDiagnostics([
+        file(astroPath, astroSource),
+        file(
+          sidecarPath,
+          `export const contentFields = { title: { type: "text" } } as const;`,
+        ),
+      ]),
+    ).toEqual([]);
+  });
+});
