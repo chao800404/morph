@@ -301,6 +301,21 @@ export type InspectorListReset = Readonly<{
   ownedHere?: boolean;
 }>;
 
+/**
+ * An Undo or Redo of this section's content was answered: the accepted copy
+ * now holds what it wrote to the top-level keys `keys`. The panel's own copy
+ * of a list among them was made before it, so it shows the accepted list
+ * instead, unless an input of the author's to that list is still unanswered
+ * (`listBehindAccepted` decides both). Every other key is left as it is.
+ */
+export type InspectorHistoryAnswered = Readonly<{
+  sectionId: string;
+  keys: readonly string[];
+  epoch: number;
+  /** As `InspectorListReset.ownedHere`. */
+  ownedHere?: boolean;
+}>;
+
 type EditorStyleInspectorProps = {
   /** Storefront/theme/template identity; section ids are only locally unique. */
   resourceKey?: string;
@@ -406,6 +421,8 @@ type EditorStyleInspectorProps = {
   listWriteStatuses?: Readonly<Record<string, InspectorListWriteStatus>>;
   listReset?: InspectorListReset | null;
   onListResetApplied?: (epoch: number) => void;
+  /** See `InspectorHistoryAnswered`. */
+  historyAnswered?: InspectorHistoryAnswered | null;
   onDiscardListConflict?: (sectionId: string, fieldPath: string) => void;
   /**
    * The draft generation of the document this section's content is being
@@ -933,6 +950,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   listWriteStatuses,
   listReset,
   onListResetApplied,
+  historyAnswered,
   onDiscardListConflict,
   contentBasis,
   heldContentProps,
@@ -1048,6 +1066,37 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     }
     onListResetApplied?.(listReset.epoch);
   }, [listReset, localPropsRef, onListResetApplied, section.id, setLocalProps]);
+
+  // An answered Undo / Redo is for the panel showing the section when it was
+  // answered, as a list reset is: a panel mounted after it, or showing
+  // another section then, reads the section itself when it shows it. Only a
+  // list it wrote is replaced, and only when the panel's list is behind the
+  // accepted copy with no unanswered input of the author's to it: the
+  // editor's document context may never move (its refetch can return the
+  // copy it already held), so the panel is not otherwise told.
+  const appliedHistoryAnsweredEpochRef = useRef<number | null>(
+    historyAnswered?.epoch ?? null,
+  );
+  useEffect(() => {
+    if (
+      !historyAnswered ||
+      appliedHistoryAnsweredEpochRef.current === historyAnswered.epoch
+    )
+      return;
+    appliedHistoryAnsweredEpochRef.current = historyAnswered.epoch;
+    if (
+      historyAnswered.sectionId !== section.id ||
+      historyAnswered.ownedHere === false
+    )
+      return;
+    for (const key of historyAnswered.keys) {
+      const shown = localPropsRef.current[key];
+      const behind = listBehindAcceptedRef.current?.(key, shown);
+      if (!behind) continue;
+      if (!Array.isArray(shown) && !Array.isArray(behind.accepted)) continue;
+      adoptAcceptedValue(key, behind.accepted);
+    }
+  }, [adoptAcceptedValue, historyAnswered, localPropsRef, section.id]);
 
   /**
    * The content input the author is in, with what it showed and the copy it

@@ -507,6 +507,7 @@ import {
   type EditorEditableNodeDeleteResult,
 } from "./editor-sections-panel";
 import type {
+  InspectorHistoryAnswered,
   InspectorInlineTextCommit,
   InspectorListReset,
   InspectorListWriteStatus,
@@ -1666,6 +1667,12 @@ export function VisualEditorShell({
   // derived from it would hand the next discard an epoch the mounted
   // Inspector has already applied, so it would be skipped (Task 41 31-A).
   const listResetEpochRef = useRef(0);
+  // The latest answered Undo / Redo content write, for the Content panel
+  // (`InspectorHistoryAnswered`). Keyed by its document, as `listReset` is.
+  const [historyAnswered, setHistoryAnswered] = useState<
+    (InspectorHistoryAnswered & { templateId: string }) | null
+  >(null);
+  const historyAnsweredEpochRef = useRef(0);
   /**
    * Lists (by pending-content key) whose write had an unknown outcome and
    * was later confirmed landed: by a read-back, or by an answered resend
@@ -3862,6 +3869,21 @@ export function VisualEditorShell({
                 replay.link.attempt,
                 answeredDraftGeneration,
               );
+              // The Content panel's own copy of a list this step wrote is
+              // now behind the accepted copy; it is told so (see
+              // `InspectorHistoryAnswered`).
+              if (result) {
+                historyAnsweredEpochRef.current += 1;
+                setHistoryAnswered({
+                  templateId: tid,
+                  sectionId: replay.entry.sectionId,
+                  keys: [
+                    ...Object.keys(replay.entry.props),
+                    ...(replay.entry.resetProps ?? []),
+                  ],
+                  epoch: historyAnsweredEpochRef.current,
+                });
+              }
             }
             // A history step or a field reset of a list, answered, is newer
             // than any earlier record of it (R3-5).
@@ -17879,6 +17901,26 @@ export function VisualEditorShell({
     [sameSectionTarget, templateIdForSection],
   );
 
+  // Applied only to this page's section of that id, as a list reset is (R2-1).
+  const inspectorHistoryAnswered = useMemo<InspectorHistoryAnswered | null>(
+    () => {
+      if (!historyAnswered) return null;
+      const here = templateIdForSection(historyAnswered.sectionId);
+      return {
+        sectionId: historyAnswered.sectionId,
+        keys: historyAnswered.keys,
+        epoch: historyAnswered.epoch,
+        ownedHere:
+          here !== null &&
+          sameSectionTarget(historyAnswered, {
+            templateId: here,
+            sectionId: historyAnswered.sectionId,
+          }),
+      };
+    },
+    [historyAnswered, sameSectionTarget, templateIdForSection],
+  );
+
   const acknowledgeListReset = useCallback((epoch: number) => {
     setListReset((current) => (current?.epoch === epoch ? null : current));
   }, []);
@@ -20951,6 +20993,7 @@ export function VisualEditorShell({
             }
           }
           onListResetApplied={acknowledgeListReset}
+          historyAnswered={inspectorHistoryAnswered}
           onDiscardListConflict={openListDiscard}
           activeComputedStyleRevision={activeComputedStyleRevision}
           activeViewport={search.viewport}

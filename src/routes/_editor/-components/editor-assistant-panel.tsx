@@ -25,6 +25,7 @@ import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
   EditorStyleInspector,
   InspectorCodeDefaultContext,
+  type InspectorHistoryAnswered,
   type InspectorInlineTextCommit,
   type InspectorListReset,
   type InspectorListWriteStatus,
@@ -160,6 +161,8 @@ type EditorAssistantPanelProps = {
   /** Replaces one Inspector list with the exact value read from the server. */
   listReset?: InspectorListReset | null;
   onListResetApplied?: (epoch: number) => void;
+  /** See the Inspector's `historyAnswered`. */
+  historyAnswered?: InspectorHistoryAnswered | null;
   documentPresentationEstablished?: boolean;
   onDiscardListConflict?: (sectionId: string, fieldPath: string) => void;
   onCodeComponentPropsChange?: (
@@ -297,6 +300,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   listWriteStatuses,
   listReset,
   onListResetApplied,
+  historyAnswered,
   onDiscardListConflict,
   onCodeComponentPropsChange,
   onJumpToCode,
@@ -678,6 +682,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 listWriteStatuses={listWriteStatuses}
                 listReset={listReset}
                 onListResetApplied={onListResetApplied}
+                historyAnswered={historyAnswered}
                 onDiscardListConflict={onDiscardListConflict}
                 contentBasis={inspectorContentBasis}
                 heldContentProps={inspectorHeldContent}

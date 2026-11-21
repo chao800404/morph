@@ -2859,25 +2859,17 @@ describe("a list both writers changed", () => {
     await waitFor(() =>
       expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
     );
-    // The panel still shows the row the undo removed: the undo's answer is
-    // the accepted copy, and the panel's list is behind it. An Add entry
-    // there is refused (`shownListIsBehind`): nothing is sent, and the panel
-    // shows the undone list, so the Add below is made on that one.
+    // The panel shows the list as the undo left it (its answer is the
+    // accepted copy; `InspectorHistoryAnswered`), so the Add below is made
+    // on that one.
     const rowTitles = () =>
       (screen.queryAllByRole("textbox") as HTMLInputElement[])
         .map((input) => input.value)
         .filter((value) => value !== "Welcome");
-    expect(rowTitles(), "the undone row is still shown").toEqual([
-      "A",
-      "B",
-      "",
-    ]);
-    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
-    await flushFrames();
-    expect(updateSectionProps, "refused: nothing sent").toHaveBeenCalledTimes(
-      2,
+    await waitFor(() =>
+      expect(rowTitles(), "the accepted, undone list").toEqual(["A", "B"]),
     );
-    expect(rowTitles(), "the accepted, undone list").toEqual(["A", "B"]);
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
 
     await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 2);
     const text = await discardItems();
@@ -2893,6 +2885,144 @@ describe("a list both writers changed", () => {
     await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 0);
     const text = await discardItems();
     expect(text).not.toMatch(/A saved change is not undone/);
+  });
+
+  describe("the Content panel after the Undo of a list change is answered", () => {
+    /** Answers a write, as the server does, with the document it now holds. */
+    const answerWithDocument =
+      (listContext: StorefrontThemeEditorDTO) =>
+      async ({
+        data,
+      }: {
+        data: {
+          sectionId: string;
+          props: Record<string, unknown>;
+          expectedDraftGeneration: number;
+        };
+      }) => ({
+        success: true,
+        data: {
+          draftGeneration: data.expectedDraftGeneration + 1,
+          droppedProps: [],
+          document: {
+            version: 1,
+            sections: listContext.templates[0]!.document.sections.map(
+              (section) =>
+                section.id === data.sectionId
+                  ? { ...section, props: { ...section.props, ...data.props } }
+                  : section,
+            ),
+          },
+        },
+      });
+    const rowTitles = () =>
+      (screen.queryAllByRole("textbox") as HTMLInputElement[])
+        .map((input) => input.value)
+        .filter((value) => !/heading/i.test(value) && value !== "Welcome");
+
+    /**
+     * An Add entry, answered and saved, then Undo pressed. The Undo's own
+     * write is held until `answerUndo()`, so the author can act meanwhile.
+     */
+    async function addThenUndo() {
+      const { listContext, client, source } = declaredListFixture();
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      renderShellWithHero(source, "hero", listContext, client);
+      await openSection("Featured");
+      const answer = answerWithDocument(listContext);
+
+      updateSectionProps.mockImplementationOnce(answer as never);
+      fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+      );
+      expect(rowTitles(), "the added row").toEqual(["A", "B", ""]);
+      const undo = screen.getByRole("button", {
+        name: "Undo",
+      }) as HTMLButtonElement;
+      await waitFor(() => expect(undo.disabled).toBe(false));
+
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      updateSectionProps.mockImplementationOnce((async (call: never) => {
+        await released;
+        return answer(call);
+      }) as never);
+      fireEvent.click(undo);
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+      expect(
+        (
+          updateSectionProps.mock.calls[1]![0].data.props.items as {
+            title: string;
+          }[]
+        ).map((row) => row.title),
+        "the undo writes the list back",
+      ).toEqual(["A", "B"]);
+      return {
+        answerUndo: async () => {
+          await act(async () => {
+            release();
+            await released;
+          });
+          await flushFrames();
+        },
+      };
+    }
+
+    it("shows the list as the undo left it", async () => {
+      const { answerUndo } = await addThenUndo();
+      await answerUndo();
+      await waitFor(() =>
+        expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+      );
+      await waitFor(() =>
+        expect(rowTitles(), "the undone row is gone").toEqual(["A", "B"]),
+      );
+      expect(removeButtons()).toHaveLength(2);
+    });
+
+    it("keeps another field's unsaved draft of the same section as it is", async () => {
+      const { answerUndo } = await addThenUndo();
+      const debounce = holdContentDebounce();
+      try {
+        // Typed while the Undo is out: held, not sent, when it is answered.
+        const heading = screen.getByDisplayValue("Welcome");
+        act(() => heading.focus());
+        fireEvent.input(heading, { target: { value: "Typed heading" } });
+        act(() => heading.blur());
+        await flushFrames();
+        expect(updateSectionProps, "the draft is not sent").toHaveBeenCalledTimes(
+          2,
+        );
+        await answerUndo();
+        await waitFor(() =>
+          expect(rowTitles(), "the undone row is gone").toEqual(["A", "B"]),
+        );
+        expect(screen.getByDisplayValue("Typed heading")).toBeTruthy();
+        expect(screen.queryByDisplayValue("Welcome")).toBeNull();
+      } finally {
+        debounce.restore();
+      }
+    });
+
+    it("does not overwrite the author's own unanswered edit of that list", async () => {
+      const { answerUndo } = await addThenUndo();
+      const debounce = holdContentDebounce();
+      try {
+        fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+        await flushFrames();
+        expect(removeButtons(), "the author's own Add").toHaveLength(4);
+        await answerUndo();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await flushFrames();
+        expect(removeButtons(), "the author's list is kept").toHaveLength(4);
+      } finally {
+        debounce.restore();
+      }
+    });
   });
 });
 
