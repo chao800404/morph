@@ -493,16 +493,36 @@ function runProbeInPage(
 ): Promise<Omit<ProbeEvent, "surface">> {
   return target.evaluate(
     async ({ probe, marker }) => {
+      // The preview's own `window.fetch` answers a same-origin
+      // `/_morph/content` from the draft already in the document, without a
+      // request (src/lib/storefront/compiler/theme-preview-content.ts). A
+      // probe measures what the server serves, so it uses the fetch of an
+      // empty same-origin frame, which nothing in the page has wrapped.
+      const w = window as unknown as Record<string, unknown>;
+      let holder = w.__c1fetchFrame as HTMLIFrameElement | undefined;
+      if (!holder?.isConnected || !holder.contentWindow) {
+        holder = document.createElement("iframe");
+        holder.hidden = true;
+        holder.setAttribute("data-c1-probe-fetch", "");
+        document.body.appendChild(holder);
+        w.__c1fetchFrame = holder;
+      }
+      const nativeFetch = holder.contentWindow!.fetch.bind(
+        holder.contentWindow,
+      );
       const t = Date.now();
       try {
-        const response = await fetch(probe.url, {
-          method: probe.method,
-          headers: { ...probe.headers, "x-c1-probe": "1" },
-          body: probe.body ?? undefined,
-          cache: "no-store",
-          credentials: "same-origin",
-          redirect: "manual",
-        });
+        const response = await nativeFetch(
+          new URL(probe.url, location.href).href,
+          {
+            method: probe.method,
+            headers: { ...probe.headers, "x-c1-probe": probe.kind },
+            body: probe.body ?? undefined,
+            cache: "no-store",
+            credentials: "same-origin",
+            redirect: "manual",
+          },
+        );
         const text = await response.text();
         const refusedStatus = [401, 403, 410].includes(response.status);
         const named = /"reason":"([A-Z_]+)"/.exec(text);
@@ -552,17 +572,32 @@ async function startProbeLoop(
         while (!w.__c1stop) {
           const probe = probes[i % probes.length]!;
           i += 1;
+          // As runProbeInPage: an unwrapped fetch, so every probe is a request.
+          let holder = w.__c1fetchFrame as HTMLIFrameElement | undefined;
+          if (!holder?.isConnected || !holder.contentWindow) {
+            holder = document.createElement("iframe");
+            holder.hidden = true;
+            holder.setAttribute("data-c1-probe-fetch", "");
+            document.body.appendChild(holder);
+            w.__c1fetchFrame = holder;
+          }
+          const nativeFetch = holder.contentWindow!.fetch.bind(
+            holder.contentWindow,
+          );
           const t = Date.now();
           let event: Record<string, unknown>;
           try {
-            const response = await fetch(probe.url, {
-              method: probe.method,
-              headers: { ...probe.headers, "x-c1-probe": "1" },
-              body: probe.body ?? undefined,
-              cache: "no-store",
-              credentials: "same-origin",
-              redirect: "manual",
-            });
+            const response = await nativeFetch(
+              new URL(probe.url, location.href).href,
+              {
+                method: probe.method,
+                headers: { ...probe.headers, "x-c1-probe": probe.kind },
+                body: probe.body ?? undefined,
+                cache: "no-store",
+                credentials: "same-origin",
+                redirect: "manual",
+              },
+            );
             const text = await response.text();
             const refusedStatus = [401, 403, 410].includes(response.status);
             const named = /"reason":"([A-Z_]+)"/.exec(text);
@@ -925,6 +960,15 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       });
     watchSockets(page, () => "frame");
 
+    // Every probe must leave the document as a request; one answered inside
+    // the page (a wrapped fetch) would measure the page's memory, not the
+    // server.
+    const probesOnNetwork = new Map<string, number>();
+    context.on("request", (request) => {
+      const kind = request.headers()["x-c1-probe"];
+      if (kind) probesOnNetwork.set(kind, (probesOnNetwork.get(kind) ?? 0) + 1);
+    });
+
     // Serverfn requests the tab's client navigation makes.
     let serverFnRequest: Probe | null = null;
     context.on("request", (request) => {
@@ -1059,7 +1103,12 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       const results: Record<string, unknown> = {};
       let markerSeen = false;
       for (const probe of probes) {
+        const sentBefore = probesOnNetwork.get(probe.kind) ?? 0;
         const answer = await runProbeInPage(target, probe);
+        if ((probesOnNetwork.get(probe.kind) ?? 0) <= sentBefore)
+          harnessErrors.push(
+            `${surface}: the ${probe.kind} probe was answered inside the document, not sent as a request`,
+          );
         results[probe.kind] = {
           status: answer.status,
           hasMarker: answer.leaked,
