@@ -28,11 +28,12 @@ import {
  * the write gate, checked separately by counting saves.)
  */
 async function expectClosedToAnotherAccount(page: Page) {
-  await expect(page.locator('[data-editor-locked="different-account"]')).toBeVisible();
-  await expect(page.locator("[data-editor-mode-surface]").first()).toHaveAttribute(
-    "inert",
-    "",
-  );
+  await expect(
+    page.locator('[data-editor-locked="different-account"]'),
+  ).toBeVisible();
+  await expect(
+    page.locator("[data-editor-mode-surface]").first(),
+  ).toHaveAttribute("inert", "");
 }
 
 test.describe("unsaved work when the signed-in account changes", () => {
@@ -280,11 +281,50 @@ test.describe("unsaved work when the signed-in account changes", () => {
           message.text().startsWith("[preview-instance] content replayed"),
         timeout: 60_000,
       });
+      // The same holds for the preview stale probe (`probeThemePreviewAddress`),
+      // which runs while the remounted frame is loading-frame/syncing-source:
+      // the frame's 404 load-summary brings it forward, and sent after the
+      // sign-in it too is refused as ACCOUNT_CHANGED (run 44883777187). So
+      // after the replay, wait until either the lifecycle is ready (the probe
+      // stops) or a probe has answered "serving" for this account; the next
+      // one is then at least the 2 s hint gap / 4 s interval away.
+      const probeSettled = new Promise<void>((resolve, reject) => {
+        let sawReplay = false;
+        let phase: string | null = null;
+        const timer = setTimeout(() => {
+          page.off("console", onConsole);
+          reject(
+            new Error(
+              `preview probe did not settle after the replay (phase=${phase})`,
+            ),
+          );
+        }, 60_000);
+        const done = () => {
+          clearTimeout(timer);
+          page.off("console", onConsole);
+          resolve();
+        };
+        const onConsole = (message: { text(): string }) => {
+          const text = message.text();
+          const lifecycle = /^\[preview-lifecycle\] (\S+)/.exec(text);
+          if (lifecycle) phase = lifecycle[1] ?? null;
+          if (text.startsWith("[preview-instance] content replayed")) {
+            sawReplay = true;
+          }
+          if (!sawReplay) return;
+          if (phase === "ready" || text === "[preview-probe] serving") done();
+        };
+        page.on("console", onConsole);
+      });
+      // Awaited below; this only keeps an early failure from also reporting
+      // an unhandled rejection.
+      probeSettled.catch(() => undefined);
       await pausedNotice(page)
         .getByRole("button", { name: "Check again" })
         .click();
       await expect(pausedNotice(page)).toContainText("Signed in again");
       await replayed;
+      await probeSettled;
       // Still verified once the frame settled: the Save below is the first
       // thing to meet the account change.
       await expect(
