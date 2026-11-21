@@ -4,11 +4,11 @@
  * transport can run: on the shards and the full Start job the preview has no
  * `pv-` host, and the spec skips itself.
  *
- * `node scripts/check-container-acceptance.mjs <report> <this module>` requires
- * exactly these titles, each once, passed with zero skip and zero retry. No CI
- * step runs that check yet; wiring the container step is a separate change.
- * Until then these cases are unproven in CI. A renamed case changes this list
- * in the same commit.
+ * The editor-e2e-container job runs this spec after the lifecycle handover and
+ * checks this module's exact title set. The checker requires each title once,
+ * passed, with zero skip and zero retry. Wiring does not count as a CI pass; a
+ * candidate still needs a fresh successful run. A renamed case changes this
+ * list in the same commit.
  */
 export const TARGET = Object.freeze({
   file: "preview-access-container.spec.ts",

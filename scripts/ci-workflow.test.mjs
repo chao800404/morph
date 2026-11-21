@@ -4,6 +4,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   mkdtempSync,
   readFileSync,
   writeFileSync,
@@ -123,6 +124,229 @@ test("architecture CI executes these workflow gate tests", () => {
   assert.match(
     withoutComments(jobBlock(workflow, "architecture-guards")),
     /^\s+node --test scripts\/ci-workflow\.test\.mjs$/m,
+  );
+});
+
+test("container acceptance targets are exactly wired or explicitly deferred", async () => {
+  const container = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  const targetNames = readdirSync(
+    new URL("./container-acceptance-targets/", import.meta.url),
+  )
+    .filter((name) => name.endsWith(".mjs"))
+    .sort();
+  const targetsIn = (block) =>
+    [
+      ...block.matchAll(
+        /scripts\/container-acceptance-targets\/([a-z0-9-]+\.mjs)/g,
+      ),
+    ].map((match) => match[1]);
+  const wired = targetsIn(container);
+  // Targets another job already checks in target mode. Each is pinned to its
+  // own job, so moving or dropping one fails here rather than passing as
+  // "covered".
+  const wiredElsewhere = {
+    "editor-e2e-container-presentation-ack": ["presentation-ack-refresh.mjs"],
+  };
+  for (const [job, names] of Object.entries(wiredElsewhere)) {
+    assert.deepEqual(targetsIn(withoutComments(jobBlock(workflow, job))), names);
+  }
+  const wiredOutsideContainer = Object.values(wiredElsewhere).flat();
+  assert.deepEqual(
+    targetsIn(withoutComments(workflow)).sort(),
+    [...wired, ...wiredOutsideContainer].sort(),
+    "every target the workflow checks must belong to a pinned job",
+  );
+  const deferred = [
+    "b1-publish-rollback.mjs",
+    "navigation-matrix-public.mjs",
+    "preview-socket-acceptance.mjs",
+    "start-container-content-sync.mjs",
+    "starter-upgrade-case-e.mjs",
+    "starter-upgrade-publish.mjs",
+  ];
+
+  assert.deepEqual(wired, ["preview-access-container.mjs"]);
+  assert.deepEqual([...deferred].sort(), deferred);
+  assert.equal(new Set(wired).size, wired.length, "wired targets must be unique");
+  assert.equal(
+    new Set(deferred).size,
+    deferred.length,
+    "deferred targets must be unique",
+  );
+  assert.equal(
+    [...wired, ...wiredOutsideContainer].filter((name) => deferred.includes(name))
+      .length,
+    0,
+    "wired and deferred targets must be disjoint",
+  );
+  assert.deepEqual(
+    [...wired, ...wiredOutsideContainer, ...deferred].sort(),
+    targetNames,
+  );
+
+  const requiredOrder = [
+    "- name: Run M1 container lifecycle acceptance",
+    "- name: Preserve lifecycle acceptance report",
+    "- name: Require lifecycle container acceptance",
+    "- name: Require lifecycle runner handover",
+    "- name: Run preview access container acceptance",
+    "- name: Preserve preview access acceptance report",
+    "- name: Require exact preview access target",
+    "- name: Require preview access runner handover",
+    "- name: Record Stage 3 runner identities and handover results",
+  ].map((name) => container.indexOf(name));
+  assert.ok(requiredOrder.every((index) => index >= 0), "all sequential gates must exist");
+  assert.ok(
+    requiredOrder.every((index, position) =>
+      position === 0 || requiredOrder[position - 1] < index,
+    ),
+    "preview access must start only after the lifecycle report and handover gates",
+  );
+  assert.match(
+    container,
+    /MORPH_E2E_HANDOVER_RECORD: \$\{\{ runner\.temp \}\}\/stage3\/lifecycle-handover\.json/,
+  );
+  assert.match(
+    container,
+    /MORPH_E2E_HANDOVER_RECORD: \$\{\{ runner\.temp \}\}\/stage3\/preview-access-handover\.json/,
+  );
+  // Task 38 item 2: the whole lifecycle test-results is kept, not only the
+  // report (its sidecar logs and traces go when the next run starts).
+  assert.match(
+    container,
+    /cp -R test-results\/\. "\$RUNNER_TEMP\/stage3\/lifecycle\/"/,
+  );
+  assert.match(container, /\$\{\{ runner\.temp \}\}\/stage3\//);
+
+  const wiredFiles = [];
+  for (const name of wired) {
+    const { TARGET } = await import(
+      new URL(`./container-acceptance-targets/${name}`, import.meta.url).href
+    );
+    wiredFiles.push(TARGET.file);
+  }
+  const invokedSpecs = [
+    ...container.matchAll(
+      /exec node scripts\/run-container-e2e-isolated\.mjs scripts\/run-editor-e2e\.mjs e2e\/([^\s]+)/g,
+    ),
+  ].map((match) => match[1]);
+  assert.deepEqual(
+    invokedSpecs.sort(),
+    [
+      "m1-container-lifecycle-acceptance.spec.ts",
+      "preview-access-container.spec.ts",
+    ].sort(),
+    "both Stage 3 targets must use the same isolated runner launcher",
+  );
+  assert.match(container, /Require preview access runner handover/);
+  assert.match(container, /Record Stage 3 runner identities and handover results/);
+  assert.match(container, /LIFECYCLE_HANDOVER_OUTCOME/);
+  assert.match(container, /PREVIEW_ACCESS_HANDOVER_OUTCOME/);
+  assert.match(container, /sid=\$\{runner\.sid\}/);
+  assert.match(container, /stage3\/preview-access\/preview-access-container\.json/);
+  for (const file of wiredFiles) {
+    assert.equal(
+      invokedSpecs.filter((spec) => spec === file).length,
+      1,
+      `${file} must be run exactly once by the container job`,
+    );
+  }
+});
+
+/**
+ * One step of a job block: from its `- name:` line to the next step's.
+ * @param {string} job
+ * @param {string} name
+ */
+function stepBlock(job, name) {
+  const start = job.indexOf(`      - name: ${name}\n`);
+  assert.ok(start >= 0, `step ${name} must exist`);
+  const next = job.indexOf("\n      - name: ", start + 1);
+  return next < 0 ? job.slice(start) : job.slice(start, next + 1);
+}
+
+test("Stage 3 checks a handover only after its run, against the run's lock, and keeps both runs' evidence", () => {
+  const container = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  const lockFile = (/** @type {string} */ block) =>
+    /^ {10}MORPH_E2E_LOCK_FILE: (.+)$/m.exec(block)?.[1];
+
+  for (const [runName, id, checkName] of [
+    ["Run M1 container lifecycle acceptance", "lifecycle_run", "Require lifecycle runner handover"],
+    ["Run preview access container acceptance", "preview_access_run", "Require preview access runner handover"],
+  ]) {
+    const run = stepBlock(container, runName);
+    const check = stepBlock(container, checkName);
+    assert.match(run, new RegExp(`^ {8}id: ${id}$`, "m"), runName);
+    // A skipped run has no record; checking it only adds an ENOENT failure.
+    assert.match(
+      check,
+      new RegExp(`^ {8}if: always\\(\\) && steps\\.${id}\\.outcome != 'skipped'$`, "m"),
+      checkName,
+    );
+    assert.ok(lockFile(run), `${runName} must name its lock file`);
+    assert.equal(lockFile(check), lockFile(run), `${checkName} must check the run's lock`);
+  }
+
+  const preserve = stepBlock(container, "Preserve lifecycle acceptance report");
+  assert.match(preserve, /^ {8}if: always\(\)$/m);
+  assert.match(preserve, /cp -R test-results\/\. "\$RUNNER_TEMP\/stage3\/lifecycle\/"/);
+
+  // An unset step outcome is "", which `??` would print as is.
+  const record = stepBlock(container, "Record Stage 3 runner identities and handover results");
+  assert.doesNotMatch(record, /\?\? "not-run"/);
+  assert.equal((record.match(/outcome \|\| "not-run"/g) ?? []).length, 2);
+
+  // test-results stays the artifact's root, as on main; Stage 3 goes inside it.
+  const keep = stepBlock(container, "Keep Stage 3 records with the results");
+  assert.match(keep, /^ {8}if: always\(\)$/m);
+  assert.match(keep, /cp -R "\$RUNNER_TEMP\/stage3\/\." test-results\/stage3\//);
+  const upload = stepBlock(container, "Upload results and failure traces");
+  assert.match(upload, /^ {10}path: test-results\/$/m);
+  assert.doesNotMatch(upload, /runner\.temp/);
+  assert.ok(container.indexOf(keep) < container.indexOf(upload));
+  assert.ok(
+    container.indexOf(
+      stepBlock(
+        container,
+        "Require the run's container veths to have had no IPv6 link-local address",
+      ),
+    ) < container.indexOf(keep),
+    "Stage 3 records are copied after the last step that writes test-results",
+  );
+});
+
+test("Stage 3 probes the clock at each window marker and checks every window's veths after the monitor stops", () => {
+  const container = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  for (const [stepName, marker, always] of [
+    ["Mark lifecycle container window start", "lifecycle-start", false],
+    ["Mark lifecycle container window end", "lifecycle-end", true],
+    ["Mark preview access container window start", "preview-access-start", false],
+    ["Mark preview access container window end", "preview-access-end", true],
+  ]) {
+    const step = stepBlock(container, stepName);
+    const mark = step.indexOf(`printf '{"name":"${marker}","utc":"%s"}\\n'`);
+    const probe = step.indexOf(
+      `node scripts/check-container-network-windows.mjs probe ${marker} "$RUNNER_TEMP/container-network"`,
+    );
+    assert.ok(mark >= 0, `${stepName} must write its marker`);
+    assert.ok(probe > mark, `${stepName} must probe the clock right after its marker`);
+    assert.equal(/^ {8}if: always\(\)$/m.test(step), always, stepName);
+    assert.doesNotMatch(step, /continue-on-error|\|\| true/, stepName);
+  }
+
+  const name = "Require each container window's veths to have come and gone inside it";
+  const check = stepBlock(container, name);
+  assert.match(check, /^ {8}if: always\(\)$/m);
+  assert.match(
+    check,
+    /^ {8}run: node scripts\/check-container-network-windows\.mjs check "\$RUNNER_TEMP\/container-network"$/m,
+  );
+  assert.doesNotMatch(check, /continue-on-error/);
+  const at = (/** @type {string} */ step) => container.indexOf(`      - name: ${step}\n`);
+  // After the link-local step has stopped the monitor, so the record is whole.
+  assert.ok(
+    at("Require the run's container veths to have had no IPv6 link-local address") < at(name) &&
+      at(name) < at("Upload results and failure traces"),
   );
 });
 

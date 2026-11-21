@@ -48,7 +48,7 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * - Relative generation progression:
  *     draftGeneration: g0 -> g1 (g0+1, edit) -> g2 (g1+2, pub1) -> g3 (g2+1, edit2) -> g4 (g3+1 indep / g3+2 dep, pub2) -> g4 (rollback)
  *     releaseGeneration: rg0 -> rg0+1 (pub1) -> rg0+1 (edit2) -> rg0+2 (pub2) -> rg0+2 (rollback)
- * - Proves Starter version = 29 (STOREFRONT_STARTER_TEMPLATE_VERSION).
+ * - Proves Starter version = 30 (STOREFRONT_STARTER_TEMPLATE_VERSION).
  * - Proves contentDependency from actual build output without premature assumptions.
  * - Connects public domain before draft isolation assertions.
  * - Inspected asset scope: strictly verifies the static asset (/assets/...) linked in the home page HTML returns HTTP 200 (does not claim uninspected global asset coverage).
@@ -301,11 +301,11 @@ test.describe("M1 container lifecycle acceptance", () => {
 
     identities.templateId = home0.id;
 
-    // Snapshot 0: Verify Starter Template Version is 29 on the tested head
+    // Snapshot 0: Verify Starter Template Version is 30 on the tested head
     const snap0 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(
       snap0.theme.metadata.starterTemplateVersion,
-      "Tested head must record Starter Template Version 29",
+      "Tested head must record Starter Template Version 30",
     ).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
     identities.initialSourceRevisionId = snap0.theme.publishedSourceRevisionId;
