@@ -2,6 +2,7 @@ import { getDb } from "@/db";
 import {
   storefrontThemeDependencies,
   storefrontThemes,
+  storefronts,
 } from "@/db/storefront.schema";
 import type { StorefrontThemeDependencyDTO } from "@/lib/storefront/dto/storefront-theme-dependency.dto";
 import { and, asc, eq, isNull } from "drizzle-orm";
@@ -30,11 +31,13 @@ export const storefrontThemeDependencyDal = {
     const [row] = await db
       .select({ id: storefrontThemes.id })
       .from(storefrontThemes)
+      .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
       .where(
         and(
           eq(storefrontThemes.id, themeId),
           eq(storefrontThemes.storefrontId, storefrontId),
           isNull(storefrontThemes.deletedAt),
+          isNull(storefronts.deletedAt),
         ),
       )
       .limit(1);

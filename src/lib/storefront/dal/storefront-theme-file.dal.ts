@@ -5,6 +5,7 @@ import {
   storefrontThemeFiles,
   storefrontThemeRevisions,
   storefrontThemes,
+  storefronts,
 } from "@/db/storefront.schema";
 import {
   isBinaryThemeFile,
@@ -438,7 +439,9 @@ export function buildFileTree(
 
 export const storefrontThemeFileDal = {
   /**
-   * Strictly verify that the theme belongs to the given storefront.
+   * Strictly verify that the theme belongs to the given storefront and that
+   * neither is soft-deleted: a live theme of a deleted storefront is not
+   * owned by anyone who can still act on it.
    */
   async verifyOwnership(
     storefrontId: string,
@@ -448,11 +451,13 @@ export const storefrontThemeFileDal = {
     const [theme] = await db
       .select({ id: storefrontThemes.id })
       .from(storefrontThemes)
+      .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
       .where(
         and(
           eq(storefrontThemes.id, themeId),
           eq(storefrontThemes.storefrontId, storefrontId),
           isNull(storefrontThemes.deletedAt),
+          isNull(storefronts.deletedAt),
         ),
       )
       .limit(1);
