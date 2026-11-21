@@ -277,6 +277,66 @@ describe("a Client-only preview (memory history) counting frame navigations", ()
   });
 
   /**
+   * The editor followed the frame to /detail; the frame went back Home by
+   * itself before that request arrived, and the author's pick of /detail
+   * replaced it. Either arrival order leaves the frame on the page picked.
+   */
+  describe("a stale frame-follow beside the author's pick that replaced it", () => {
+    async function followThenBack() {
+      const opened = await openedOn("/home");
+      await opened.router.navigate({ to: "/detail" });
+      const follow = setRoute(
+        "/detail",
+        2,
+        "frame-follow",
+        opened.page.lastEpoch(),
+      );
+      opened.router.history.back();
+      expect(opened.router.history.location.pathname).toBe("/home");
+      return { ...opened, follow, pick: setRoute("/detail", 3, "author") };
+    }
+
+    it("the stale request first: refused, then the pick is taken", async () => {
+      const { router, page, follow, pick } = await followThenBack();
+      page.applyEditorRoute(follow);
+      await settle();
+      expect(router.history.location.pathname).toBe("/home");
+      expect(page.answers().at(-1)).toMatchObject({
+        routeRequestId: 2,
+        routePath: "/home",
+        status: "superseded",
+      });
+
+      page.applyEditorRoute(pick);
+      await settle();
+      expect(router.history.location.pathname).toBe("/detail");
+      expect(page.answers().at(-1)).toMatchObject({
+        routeRequestId: 3,
+        routePath: "/detail",
+        status: "applied",
+      });
+    });
+
+    it("the stale request late, after the pick: refused, and the frame stays on the page picked", async () => {
+      const { router, page, follow, pick } = await followThenBack();
+      page.applyEditorRoute(pick);
+      await settle();
+      expect(router.history.location.pathname).toBe("/detail");
+      const navigations = router.navigate.mock.calls.length;
+
+      page.applyEditorRoute(follow);
+      await settle();
+      expect(router.history.location.pathname).toBe("/detail");
+      expect(router.navigate.mock.calls.length).toBe(navigations);
+      expect(page.answers().at(-1)).toMatchObject({
+        routeRequestId: 2,
+        routePath: "/detail",
+        status: "superseded",
+      });
+    });
+  });
+
+  /**
    * TanStack Router subscribes to its history before the bridge does: on a
    * navigation it takes up the new location at once, and its matches follow
    * only once the route has loaded. In between, the leaf match still names

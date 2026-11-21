@@ -18,6 +18,7 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
@@ -1132,6 +1133,329 @@ describe("the author picks the page the editor shows while the frame is elsewher
     await pickHome();
     expect(routeRequests().slice(before)).toEqual([]);
     expect(finishSave).toBeTypeOf("function");
+  });
+});
+
+/**
+ * The author picks the page the editor shows while the editor's latest
+ * request to the frame is still unanswered, and the frame, in the same
+ * ready round, has left that request's page by itself.
+ *
+ * The frame went to /b; the editor followed and asked the frame for /b (R1,
+ * a frame-follow request). Before answering, the frame went on to /c with a
+ * later navigation count: it was on /b and left it. That report is set
+ * aside (R1 is unanswered), and before this change a pick of /b sent
+ * nothing either, so the frame stayed on /c. The pick now replaces R1 with
+ * the author's own request; R1's late answer is no longer the latest.
+ */
+describe("an author pick replaces a route request the frame has left", () => {
+  const frameOn = (
+    routePath: string,
+    frameNavigationEpoch: number,
+    nodes: unknown[] = [],
+  ) =>
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes,
+      routePath,
+      frameNavigationEpoch,
+    });
+  const pick = async (routePath: string) => {
+    act(() => {
+      screen.getByTitle(`Preview ${routePath}`).click();
+    });
+    await tick(0);
+  };
+  /** The editor on /b, its frame-follow R1 for /b unanswered, the frame on /b. */
+  async function followUnanswered() {
+    const harness = await settled();
+    frameOn("/b", 7);
+    await tick(0);
+    expect(shownRoute(harness)).toBe("/b");
+    const r1 = latestRequest();
+    expect(r1).toMatchObject({
+      routePath: "/b",
+      navigationIntent: "frame-follow",
+      followEpoch: 7,
+    });
+    return { harness, r1: r1! };
+  }
+  /** As above, then the frame leaves /b by itself for /c. */
+  async function frameLeftUnansweredFollow() {
+    const { harness, r1 } = await followUnanswered();
+    frameOn("/c", 8);
+    await tick(0);
+    // Precondition: set aside, as before; nothing more asked or sent.
+    expect(routesAsked(harness)).toEqual(["/b"]);
+    expect(shownRoute(harness)).toBe("/b");
+    expect(latestRequest()).toBe(r1);
+    return { harness, r1 };
+  }
+
+  it("sends the frame back to the page picked, once, as the author's navigation", async () => {
+    const { harness, r1 } = await frameLeftUnansweredFollow();
+    const before = routeRequests().length;
+
+    await pick("/b");
+
+    expect(shownRoute(harness)).toBe("/b");
+    const sent = routeRequests().slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      routePath: "/b",
+      navigationIntent: "author",
+    });
+    expect(sent[0]).not.toHaveProperty("followEpoch");
+    expect(sent[0]!.routeRequestId!).toBeGreaterThan(r1.routeRequestId!);
+    expect(routesAsked(harness)).toEqual(["/b", "/b"]);
+
+    // A second pick before anything more from the frame sends nothing.
+    await pick("/b");
+    expect(routeRequests().slice(before)).toHaveLength(1);
+  });
+
+  it("the old request's late answer and the frame's /c report do not take the editor to /c", async () => {
+    const { harness, r1 } = await frameLeftUnansweredFollow();
+    const before = routeRequests().length;
+    await pick("/b");
+    const r2 = latestRequest()!;
+    expect(routeRequests().slice(before)).toEqual([r2]);
+
+    // R1 reaches the bridge after the frame moved on: superseded, from /c,
+    // and the report the bridge sends with it (no navigation since).
+    fromPreview({
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId: r1.routeRequestId,
+      routePath: "/c",
+      status: "superseded",
+    });
+    frameOn("/c", 8);
+    await tick(0);
+    await tick(20);
+    expect(shownRoute(harness)).toBe("/b");
+    expect(routesAsked(harness)).not.toContain("/c");
+    expect(routeRequests().slice(before)).toEqual([r2]);
+
+    // The author's request lands the frame on /b, reported before it is
+    // answered, as the bridge does; nothing more is sent.
+    frameOn("/b", 9);
+    applied(r2.routeRequestId, "/b");
+    await tick(0);
+    await tick(20);
+    expect(shownRoute(harness)).toBe("/b");
+    expect(routeRequests().slice(before)).toEqual([r2]);
+    expect(routesAsked(harness)).not.toContain("/c");
+  });
+
+  it("an edit from the frame stays refused until the frame is back, then is written once", async () => {
+    // The same order, on Home, whose document takes a write: the frame went
+    // to /b and the editor followed; it came back Home and the editor
+    // followed again (R2, unanswered); the frame went on to /c.
+    const harness = await settled();
+    frameOn("/", 3);
+    await tick(0);
+    frameOn("/b", 4);
+    await tick(0);
+    frameOn("/b", 4);
+    applied(latestRequest()!.routeRequestId, "/b");
+    await tick(0);
+    frameOn("/", 5);
+    await tick(0);
+    expect(shownRoute(harness)).toBe("/");
+    const r2 = latestRequest()!;
+    expect(r2).toMatchObject({
+      routePath: null,
+      navigationIntent: "frame-follow",
+      followEpoch: 5,
+    });
+    frameOn("/c", 6);
+    await tick(0);
+    expect(latestRequest()).toBe(r2);
+    expect(routesAsked(harness)).toEqual(["/b", "/"]);
+
+    const before = routeRequests().length;
+    await pick("/");
+    const r3 = latestRequest()!;
+    expect(routeRequests().slice(before)).toEqual([r3]);
+    expect(r3).toMatchObject({ routePath: null, navigationIntent: "author" });
+
+    // The frame, still on /c, commits an edit before taking the pick.
+    vi.mocked(toast.info).mockClear();
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "From /c",
+      originalValue: "Welcome",
+    });
+    await tick(400);
+    expect(toast.info).toHaveBeenCalledWith(
+      PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
+      expect.anything(),
+    );
+    expect(updateSectionProps).not.toHaveBeenCalled();
+
+    // R2's late answer changes nothing.
+    fromPreview({
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId: r2.routeRequestId,
+      routePath: "/c",
+      status: "superseded",
+    });
+    frameOn("/c", 6);
+    await tick(20);
+    expect(shownRoute(harness)).toBe("/");
+    expect(routeRequests().slice(before)).toEqual([r3]);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+
+    // Back on Home (reported, then answered): an edit there is taken, once.
+    frameOn("/", 7, [heroNode]);
+    applied(r3.routeRequestId, "/");
+    await tick(20);
+    const heading = await screen.findByText("h1");
+    act(() => {
+      heading.closest("button")?.click();
+    });
+    updateSectionProps.mockResolvedValue({ success: true, message: "ok" });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "On Home",
+      originalValue: "Welcome",
+    });
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await tick(400);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    const written = JSON.stringify(updateSectionProps.mock.calls[0]);
+    expect(written).toContain("On Home");
+    expect(written).not.toContain("From /c");
+  });
+
+  describe("sends nothing", () => {
+    it("without a pick: the frame's own reports never replace the request", async () => {
+      const { harness, r1 } = await frameLeftUnansweredFollow();
+      const before = routeRequests().length;
+      frameOn("/c", 8);
+      await tick(0);
+      frameOn("/", 9);
+      await tick(20);
+      expect(routeRequests().slice(before)).toEqual([]);
+      expect(latestRequest()).toBe(r1);
+      expect(shownRoute(harness)).toBe("/b");
+      expect(routesAsked(harness)).toEqual(["/b"]);
+    });
+
+    it("when the frame names another page with no later navigation count", async () => {
+      const { r1 } = await followUnanswered();
+      // A stale report: another page, the count it was on /b with.
+      frameOn("/c", 7);
+      await tick(0);
+      const before = routeRequests().length;
+      await pick("/b");
+      expect(routeRequests().slice(before)).toEqual([]);
+      expect(latestRequest()).toBe(r1);
+    });
+
+    it("when the frame never reached the requested page", async () => {
+      const harness = await settled();
+      frameOn("/", 3);
+      await tick(0);
+      // The author's own switch to /b, sent while the frame was on Home.
+      await pick("/b");
+      expect(shownRoute(harness)).toBe("/b");
+      const request = latestRequest();
+      expect(request).toMatchObject({
+        routePath: "/b",
+        navigationIntent: "author",
+      });
+      // Before the frame answers, it names Home and then /c with later
+      // counts: it is not on /b and never was, so it left nothing.
+      frameOn("/", 4);
+      await tick(0);
+      frameOn("/c", 5);
+      await tick(0);
+      const before = routeRequests().length;
+      await pick("/b");
+      expect(routeRequests().slice(before)).toEqual([]);
+      expect(latestRequest()).toBe(request);
+    });
+
+    it("for a frame that gives no navigation count", async () => {
+      const harness = await settled();
+      report("/b");
+      await tick(0);
+      expect(shownRoute(harness)).toBe("/b");
+      const r1 = latestRequest();
+      report("/c");
+      await tick(0);
+      const before = routeRequests().length;
+      await pick("/b");
+      expect(routeRequests().slice(before)).toEqual([]);
+      expect(latestRequest()).toBe(r1);
+    });
+
+    it("for a later count reported by another window than the preview frame", async () => {
+      const { r1 } = await followUnanswered();
+      // The preview frame names /c with no later count ...
+      frameOn("/c", 7);
+      await tick(0);
+      // ... and another window names it with one.
+      const other = document.createElement("iframe");
+      document.body.appendChild(other);
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: frameEnvelope({
+              type: "morph:storefront-preview-structure",
+              nodes: [],
+              routePath: "/c",
+              frameNavigationEpoch: 8,
+              previewSession: PREVIEW_SESSION,
+            }),
+            origin: PREVIEW_ORIGIN,
+            source: other.contentWindow,
+          }),
+        );
+      });
+      await tick(0);
+      const before = routeRequests().length;
+      await pick("/b");
+      other.remove();
+      expect(routeRequests().slice(before)).toEqual([]);
+      expect(latestRequest()).toBe(r1);
+    });
+
+    it("in a new ready round, for the frame's count from the round before", async () => {
+      const { harness } = await followUnanswered();
+      reloadFrameDocument();
+      sendFrameReady(
+        { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+        LIVE_FRAME_CAPABILITIES,
+        {
+          servedInstance: {
+            kind: "known",
+            instance: { session: SESSION, serial: 1 },
+          },
+        },
+      );
+      await tick(0);
+      // The new round's own request, for the page on screen, sent before
+      // the reloaded frame named any page.
+      const roundRequest = latestRequest();
+      expect(roundRequest?.routePath).toBe("/b");
+      // The reloaded frame names /c with a count above the one the old
+      // round saw it on /b with.
+      frameOn("/c", 8);
+      await tick(0);
+      const before = routeRequests().length;
+      await pick("/b");
+      expect(routeRequests().slice(before)).toEqual([]);
+      expect(latestRequest()).toBe(roundRequest);
+      expect(shownRoute(harness)).toBe("/b");
+    });
   });
 });
 
