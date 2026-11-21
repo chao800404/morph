@@ -8,6 +8,11 @@ import {
 import { startRequestTimeline } from "./request-timeline";
 import { assertPreviewedThemeVerified } from "./helpers/recorded-preview-runtime";
 import {
+  editorOriginOf,
+  installUpdateDepthStack,
+  UPDATE_DEPTH_STACK_PREFIX,
+} from "./helpers/update-depth-stack";
+import {
   hasMonacoModel,
   readMonacoModel,
   setMonacoModelValue,
@@ -146,6 +151,17 @@ function reportEditorCrashes(page: Page) {
   };
   page.on("pageerror", (error) => report(error.message));
   page.on("console", (message) => {
+    // The stack the page script captured next to a "Maximum update depth"
+    // error: frames only, already bounded in the page.
+    if (message.text().startsWith(UPDATE_DEPTH_STACK_PREFIX)) {
+      console.log(
+        `[editor update-depth stack] ${title}:
+${message
+          .text()
+          .slice(UPDATE_DEPTH_STACK_PREFIX.length)}`,
+      );
+      return;
+    }
     if (message.type() !== "error") return;
     const text = message.text();
     if (
@@ -166,6 +182,19 @@ function reportEditorCrashes(page: Page) {
  */
 export async function openEditor(page: Page, editorPath = EDITOR_PATH!) {
   reportEditorCrashes(page);
+  // Before the first navigation, so the wrapper is in place when React starts.
+  // Best effort: a failure here must never fail the test.
+  await page
+    .addInitScript(installUpdateDepthStack, {
+      editorOrigin: editorOriginOf(
+        editorPath,
+        test.info().project.use.baseURL,
+      ),
+      prefix: UPDATE_DEPTH_STACK_PREFIX,
+      maxStacks: 3,
+      maxFrames: 25,
+    })
+    .catch(() => undefined);
   const server = capturePreviewServerReport(page);
   const done: [string, number][] = [];
   // Null unless MORPH_E2E_TIMELINE=1; see request-timeline.ts.
