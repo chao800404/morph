@@ -103,6 +103,11 @@ export const EDITOR_SHARDS = [
     "preview-access-container.spec.ts",
     "start-container-content-sync.spec.ts",
     "preview-socket-acceptance.spec.ts",
+    // M1 acceptance 1c, the revocation timeline: container transport and the
+    // full Start preview only, so it skips on every shard. Its exact tests are
+    // listed in scripts/container-acceptance-targets/preview-revocation-timeline.mjs;
+    // no CI step runs that check yet.
+    "preview-revocation-timeline.spec.ts",
     "native-compat-published.spec.ts",
     "native-content-dependency.spec.ts",
     "native-publish-acceptance.spec.ts",
