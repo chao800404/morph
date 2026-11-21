@@ -973,10 +973,16 @@ export function collectThemeRouteDiagnostics(
  * builders in Code Mode. This keeps an invalid `.server`/`.client` import
  * visible before the user starts a build, without disabling Monaco's normal
  * semantic diagnostics.
+ *
+ * The client/server boundary is TanStack Start's; `startImportProtection:
+ * false` (another framework's Theme) leaves only the framework-neutral path
+ * alias diagnostics.
  */
 export function collectThemeImportProtectionEditorDiagnostics(
   files: readonly ThemeModelFile[],
+  options: Readonly<{ startImportProtection?: boolean }> = {},
 ): ThemeRouteEditorDiagnostic[] {
+  const { startImportProtection = true } = options;
   const pathAliasConfig = readThemePathAliases(
     files.map((file) => ({ path: file.path, content: file.content })),
   );
@@ -1001,13 +1007,14 @@ export function collectThemeImportProtectionEditorDiagnostics(
       // The manifest scanner reports malformed JSON separately.
     }
   }
-  const importDiagnostics = collectThemeImportProtectionDiagnosticsForBuild(
-    files,
-    {
-      entry,
-      hasStartRuntime,
-      nativeStartCompilation: hasStartRuntime,
-    },
+  const importDiagnostics = (
+    startImportProtection
+      ? collectThemeImportProtectionDiagnosticsForBuild(files, {
+          entry,
+          hasStartRuntime,
+          nativeStartCompilation: hasStartRuntime,
+        })
+      : []
   ).map((diagnostic) => ({
     id: `tanstack-import:${diagnostic.target}:${diagnostic.code}:${diagnostic.filePath}:${diagnostic.line}:${diagnostic.column}:${diagnostic.importSource}`,
     path: diagnostic.filePath,
