@@ -319,7 +319,7 @@ describe("EditorSectionsPanel visibility controls", () => {
 
   it("shows the interim notice only on hidden sections and keeps Show working", () => {
     const notice =
-      "此區塊的隱藏效果尚未確認，預覽或發布結果可能仍顯示內容，或發生渲染錯誤。";
+      "Marked as hidden. This section may still appear in the preview and on the public site with its component defaults.";
     const { onToggleSectionEnabled } = renderPanel();
 
     // Exactly one notice: section-2 (newsletter) is hidden, section-1 is not.

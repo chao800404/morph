@@ -286,7 +286,7 @@ const HEADING_ICONS: Readonly<Record<string, EditableNodeIcon>> = {
 
 /** Interim notice for a hidden section; wording is state-based on purpose. */
 const HIDDEN_SECTION_NOTICE =
-  "此區塊的隱藏效果尚未確認，預覽或發布結果可能仍顯示內容，或發生渲染錯誤。";
+  "Marked as hidden. This section may still appear in the preview and on the public site with its component defaults.";
 
 function editableNodeIcon(node: PreviewEditableNode): EditableNodeIcon {
   if (node.kind === "heading") {
