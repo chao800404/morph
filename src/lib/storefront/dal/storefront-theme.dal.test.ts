@@ -5867,11 +5867,17 @@ function Home() {
     expect(storedState()).toEqual(before);
   });
 
-  it("refuses hiding a layout section the layout source never reads", async () => {
+  it("refuses hiding a layout section the layout source never reads, writing nothing", async () => {
+    // Since main's Starter-layout source proof, a layout that reads no Design
+    // content refuses every write before the hide is judged (as
+    // SECTION_SOURCE_UNCONFIRMED, not P2's `legacy-shell`): the hide is
+    // still refused, and nothing is written.
     seed({ templateType: "layout" });
+    const before = storedState();
     await expect(write("hero", { enabled: false })).rejects.toThrow(
-      "SECTION_HIDE_UNSUPPORTED: legacy-shell",
+      "SECTION_SOURCE_UNCONFIRMED: This layout does not read Design content.",
     );
+    expect(storedState()).toEqual(before);
   });
 });
 

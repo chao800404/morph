@@ -268,7 +268,12 @@ async function requestSectionEnabled(page: Page, enabled: boolean) {
       expectedSourceGeneration: await themeSourceGeneration(page, scope!),
       routePath: ROUTE_PATH,
     },
-  )) as { success: boolean; error?: string; reason?: string; message?: string };
+  )) as {
+    success: boolean;
+    error?: string;
+    errors?: { reason?: string[] };
+    message?: string;
+  };
   return written;
 }
 
@@ -473,7 +478,7 @@ test.describe("case B in the full Start preview", () => {
     expect(answer, JSON.stringify(answer)).toMatchObject({
       success: false,
       error: "SECTION_HIDE_UNSUPPORTED",
-      reason: "unsupported-shape",
+      errors: { reason: ["unsupported-shape"] },
     });
     expect(answer.message).toMatch(/^Morph cannot hide this section yet/);
     // Nothing was written.
