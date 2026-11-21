@@ -775,6 +775,46 @@ describe("following a link the author clicks inside an Astro preview", () => {
     );
   });
 
+  it("a pick of the page on screen does not replace an unanswered page switch, whatever counts the frame reports", async () => {
+    // A document-navigating frame restarts its navigation count with each
+    // document, so counts prove nothing about it leaving a page by itself:
+    // the pick waits for the answer, as before.
+    await routed("/");
+    act(() => {
+      within(pagesList()).getByRole("button", { name: "/about" }).click();
+    });
+    await tick();
+    expect(currentSearch().routePath).toBe("/about");
+    const request = routeRequests().at(-1);
+    expect(request?.routePath).toBe("/about");
+    // Unanswered: the frame names the page asked for, then another one at
+    // a later count.
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/about",
+      frameNavigationEpoch: 1,
+    });
+    await tick();
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath: "/blog/hello",
+      frameNavigationEpoch: 2,
+    });
+    await tick();
+    const before = routeRequests().length;
+
+    act(() => {
+      within(pagesList()).getByRole("button", { name: "/about" }).click();
+    });
+    await tick();
+    await tick(20);
+
+    expect(routeRequests().slice(before)).toEqual([]);
+    expect(routeRequests().at(-1)).toBe(request);
+  });
+
   /**
    * D92-B: opening a page from the list switches the page and keeps the
    * author's mode. The bridge leaves clicks to the Theme until the editor

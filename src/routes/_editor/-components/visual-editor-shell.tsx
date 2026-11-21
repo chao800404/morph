@@ -5310,6 +5310,18 @@ export function VisualEditorShell({
     round: number;
     routePath: string | null;
   } | null>(null);
+  /**
+   * The page and navigation count (`frameNavigationEpoch`) of the frame's
+   * last structure report that gave both, with the frame and ready round
+   * that sent it; null after a report that names a page with no count.
+   * Read only as a route request's starting point (`frameLeftTarget`).
+   */
+  const frameCountedReportRef = useRef<{
+    key: string;
+    round: number;
+    routePath: string;
+    epoch: number;
+  } | null>(null);
   /** The route on screen, for that replay's binding. */
   const replayRoutePathRef = useRef(search.routePath ?? "/");
   replayRoutePathRef.current = search.routePath ?? "/";
@@ -7067,7 +7079,15 @@ export function VisualEditorShell({
         routeRequest.key === previewKeyNow &&
         routeRequest.round === roundNow &&
         routeRequest.id === routeRequestIdRef.current &&
-        routeRequest.answered;
+        (routeRequest.answered ||
+          // Unanswered, this pick still replaces it when this frame, in
+          // this round, has proven it left that request's page by itself
+          // (`frameLeftTarget`). Only this explicit pick: a frame's own
+          // report never replaces a request. Not for a document-navigating
+          // frame, whose count restarts with each document.
+          (!documentNavigationRef.current &&
+            routeRequest.frameLeftTarget &&
+            editorRoutePathsMatch(routeRequest.routePath, route.path)));
       if (sendFrameBack) {
         // The switch this pick replaces, if the frame started one, is over.
         frameFollowRef.current = null;
@@ -13068,6 +13088,41 @@ export function VisualEditorShell({
             round: previewReadyRoundRef.current,
             routePath: message.routePath,
           };
+          const epoch = message.frameNavigationEpoch;
+          frameCountedReportRef.current =
+            typeof epoch === "number" && message.routePath !== null
+              ? {
+                  key: previewKey,
+                  round: previewReadyRoundRef.current,
+                  routePath: message.routePath,
+                  epoch,
+                }
+              : null;
+          // Whether this frame, in the latest request's round, has now left
+          // that request's page by itself: seen on it at one count, then on
+          // another page at a later one.
+          const routeRequest = lastRouteRequestRef.current;
+          const counted = frameCountedReportRef.current;
+          if (
+            routeRequest !== null &&
+            counted !== null &&
+            routeRequest.key === previewKey &&
+            routeRequest.round === previewReadyRoundRef.current
+          ) {
+            if (
+              previewStructureMatchesRoute(
+                counted.routePath,
+                routeRequest.routePath,
+              )
+            ) {
+              routeRequest.targetEpoch ??= counted.epoch;
+            } else if (
+              routeRequest.targetEpoch !== null &&
+              counted.epoch > routeRequest.targetEpoch
+            ) {
+              routeRequest.frameLeftTarget = true;
+            }
+          }
         }
         const structureSummary = `${previewStructureCounts(message.nodes)} route=${message.routePath ?? "none"} epoch=${message.frameNavigationEpoch ?? "none"}`;
         // A report sent while the preview was still on another route — it
@@ -13526,7 +13581,43 @@ export function VisualEditorShell({
     round: number;
     id: number;
     answered: boolean;
+    /** The page asked for. */
+    routePath: string;
+    /**
+     * The first navigation count this frame reported from that page, in
+     * this round: its last counted report when the request was sent (a
+     * frame-follow is sent for the page the frame is on), or a later one.
+     */
+    targetEpoch: number | null;
+    /**
+     * This frame, in this round, has since reported another page at a
+     * later count: it left the page asked for by itself. Only an explicit
+     * author pick of that page reads it (`handleOpenThemeRoute`).
+     */
+    frameLeftTarget: boolean;
   } | null>(null);
+  /** The record of a route request just sent to `key`'s frame. */
+  const routeRequestRecord = useCallback((key: string, id: number) => {
+    const round = previewReadyRoundRef.current;
+    // The route on screen, which `syncPreviewRoute` just sent.
+    const routePath = replayRoutePathRef.current;
+    const counted = frameCountedReportRef.current;
+    return {
+      key,
+      round,
+      id,
+      answered: false,
+      routePath,
+      targetEpoch:
+        counted !== null &&
+        counted.key === key &&
+        counted.round === round &&
+        previewStructureMatchesRoute(counted.routePath, routePath)
+          ? counted.epoch
+          : null,
+      frameLeftTarget: false,
+    };
+  }, []);
   /** Sends the route on screen; the request's id, or null when none was sent. */
   const syncPreviewRoute = useCallback((): number | null => {
     const templateId = activeTemplateIdRef.current;
@@ -13607,12 +13698,10 @@ export function VisualEditorShell({
     const measurementRevision = beginPreviewSizeMeasurement();
     const routeRequestId = syncPreviewRoute();
     if (routeRequestId !== null) {
-      lastRouteRequestRef.current = {
-        key: previewKey,
-        round: previewReadyRoundRef.current,
-        id: routeRequestId,
-        answered: false,
-      };
+      lastRouteRequestRef.current = routeRequestRecord(
+        previewKey,
+        routeRequestId,
+      );
       noteDocumentRouteSent(previewKey);
       // A reloaded frame's content waits for the answer to this request
       // (`createInstanceContentReplay`); sending it is not the answer.
@@ -13640,6 +13729,7 @@ export function VisualEditorShell({
     beginPreviewSizeMeasurement,
     noteDocumentRouteSent,
     requestPreviewSize,
+    routeRequestRecord,
     syncPreviewRoute,
   ]);
   // The route on screen sent again, as above, to a frame that moved away by
@@ -13648,12 +13738,10 @@ export function VisualEditorShell({
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
     const routeRequestId = syncPreviewRoute();
     if (routeRequestId === null) return;
-    lastRouteRequestRef.current = {
-      key: previewKey,
-      round: previewReadyRoundRef.current,
-      id: routeRequestId,
-      answered: false,
-    };
+    lastRouteRequestRef.current = routeRequestRecord(
+      previewKey,
+      routeRequestId,
+    );
     noteDocumentRouteSent(previewKey);
     instanceContentReplayRef.current?.routeSent(
       previewKey,
