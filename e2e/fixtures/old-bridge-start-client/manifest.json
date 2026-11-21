@@ -1,0 +1,15 @@
+{
+  "label": "old-bridge-start-client",
+  "path": "__morph_preview_client.ts",
+  "storedAs": "files/__morph_preview_client.ts.txt",
+  "bytes": 2155,
+  "sha256": "ce06bfe3bf4510a355669f56701dca3305c4bd2aac2f21f0017f62e76ea507f4",
+  "sourceCommits": {
+    "without-capabilities": "22fbc72d5e1adcd542f935b4cada6e467f6cabb8",
+    "without-document-id": "5e19e2be334c283de935fccfd0af9b17c7b99fd5",
+    "without-editor-capabilities": "7f1cbe3ae268f9dfba481e61f3e69e36c2a0216a"
+  },
+  "characteristics": "The full Start preview client module (platform-owned, part of the bridge identity: previewBridgeIdentity counts THEME_PREVIEW_START_CLIENT_PATH for a Start preview) as each old bridge fixture's source commit generated it. Byte-identical at all three commits. It imports only documentPreviewRuntimeChannel and parseEditorToPreviewWindowEvent from the protocol module, which every old fixture exports; today's client also imports documentPreviewIdentity, which two of the three old protocol modules lack.",
+  "howGenerated": "git archive <sourceCommit> src tsconfig.json into a scratch directory, then themePreviewStartClientSource() from src/lib/storefront/compiler/theme-preview-start-runtime.ts written out by tsx. The same bytes came out for all three commits.",
+  "storage": "Stored as .txt so nothing here is typechecked, linted or bundled."
+}

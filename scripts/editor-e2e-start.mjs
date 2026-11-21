@@ -23,13 +23,31 @@ export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 
 /** Whole-file shards (3 full Start jobs). */
 export const START_PREVIEW_SHARDS = [
-  ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "code-controlled-field.spec.ts"],
-  ["spread-override-binding.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts"],
+  // preview-old-bridge-start: M1 1b case B3, the three frozen old bridges
+  // under the full Start preview (local sidecar, no container).
+  [
+    "loader-data-binding.spec.ts",
+    "native-compat-preview.spec.ts",
+    "code-controlled-field.spec.ts",
+    "preview-old-bridge-start.spec.ts",
+  ],
+  [
+    "spread-override-binding.spec.ts",
+    "binding-acceptance-c.spec.ts",
+    "preview-start-bridge-interruption.spec.ts",
+  ],
   // navigation-matrix: shard 3 was the shortest Start shard job of main run
   // 41267736430 (10m53s, against 19m44s and 17m45s); the spec's Start preview
   // cells took ~2.6 min locally. selection-field-frame-navigated: accepted
   // on full Start by the user's decision; added to this, the shortest shard.
-  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts", "navigation-matrix.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts"],
+  [
+    "binding-acceptance-p.spec.ts",
+    "starter-upgrade.spec.ts",
+    "navigation-matrix.spec.ts",
+    "history-back-controlled-repro.spec.ts",
+    "selection-field-frame-navigated.spec.ts",
+    "author-pick-supersedes-follow.spec.ts",
+  ],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
@@ -65,6 +83,8 @@ export const START_PREVIEW_EXCLUDED = {
     "The Start content sync check runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the full Start job runs on the local-sidecar transport.",
   "preview-revocation-timeline.spec.ts":
     "The M1 1c revocation timeline runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox), on the pv- host only a container fronts; the full Start job runs on the local-sidecar transport. Its exact titles are in container-acceptance-targets/preview-revocation-timeline.mjs; no CI step runs that check yet.",
+  "starter-upgrade-t1-acceptance.spec.ts":
+    "M1 1b (B1, B2) builds, publishes and rolls back in the Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox) on the full Start preview; the full Start job runs on the local-sidecar transport. Its exact titles are in container-acceptance-targets/starter-upgrade-t1.mjs; no CI step runs that check yet.",
   "public-svg.spec.ts":
     "Reads the variable only inside a test that plants a file in a Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the rest of the file is not Start-gated and runs on the shards.",
 };
