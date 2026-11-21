@@ -14,6 +14,7 @@ import {
   walkCase,
   type Fixture,
 } from "./binding-acceptance-helpers";
+import { m1Evidence } from "./helpers/m1-acceptance-evidence";
 import {
   DOMAINS,
   RELEASES,
@@ -51,6 +52,12 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * page, so the first instance keeping "SALE" while the second changes is seen
  * where it renders. The served artifact is the local operator stand-in
  * (`storefrontHarness`), as in m1-container-lifecycle-acceptance.spec.ts.
+ *
+ * M1 1a evidence (handoff 2026-11-21 m1-acceptance-plan.md, A1/A2): the
+ * Theme records full Start before any case preview, every preview start this
+ * spec observes must answer container transport + full Start (Q10), and the
+ * plan's ledger (2.3) and identity record (2.4) are written into the run's
+ * output directory (e2e/helpers/m1-acceptance-evidence.ts).
  *
  * Serial: a failed step skips the rest, and CI requires every listed test to
  * have passed (scripts/container-acceptance-targets/b1-publish-rollback.mjs),
@@ -115,6 +122,9 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
 
   const harness = STATE_DIR
     ? storefrontHarness({ scope: scope!, stateDir: STATE_DIR })
+    : null;
+  const evidence = STATE_DIR
+    ? m1Evidence({ item: "1a", spec: "b1-publish-rollback", scope: scope!, stateDir: STATE_DIR })
     : null;
   const fx: Fixture | null = EDITOR_PATH
     ? { scope: scope!, editorPath: EDITOR_PATH }
@@ -188,11 +198,17 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
 
   /** A Design walk that must pass in full before anything is published. */
   const designWalk = async (page: Page, testCase: BasCase, mode: "inspector" | "inline") => {
+    evidence!.observePreviewStarts(page);
     const before = valueOf((await draftValues())[testCase.id as "h1" | "l1"], testCase);
     await walkCase(page, testCase, mode, fx!);
     expect(test.info().errors, `${testCase.id} ${mode} Design walk`).toEqual([]);
     const after = valueOf((await draftValues())[testCase.id as "h1" | "l1"], testCase);
     expect(after, `${testCase.id} ${mode} wrote a new value`).not.toBe(before);
+    evidence!.ledger({
+      case: testCase.id,
+      step: release1 ? "R2/S1-S5" : "R1/S1-S5",
+      action: `${mode === "inspector" ? "Inspector" : "canvas"} write`,
+    });
     return after;
   };
 
@@ -259,10 +275,16 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
     const page = await signedInPage(browser);
     try {
       await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+      // Q10: full Start recorded on the Theme itself, before any case preview.
+      await evidence!.recordFullStartTheme(page);
       // h1 becomes the home route and l1 the root layout of the run's Theme,
       // seeded through the editor's own writes.
       await seedSingletonCases(page, fx!);
       expect(await draftValues()).toEqual({ h1: H1.seed, l1: L1.seed });
+      for (const id of ["h1", "l1"]) {
+        evidence!.ledger({ case: id, step: "seed", action: "editor seed write" });
+      }
+      evidence!.writeIdentity(false);
 
       const domain = (await serverFn(page, DOMAINS, "createStorefrontDomain", {
         storefrontId: scope!.storefrontId,
@@ -297,6 +319,7 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
         }
       }
     } finally {
+      evidence?.writeIdentity(true);
       await harness?.dispose();
     }
   });
@@ -322,6 +345,7 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
 
     const { publishedState, serveActiveRelease, releaseBuild } = harness!;
     const state0 = await publishedState();
+    evidence!.observePreviewStarts(page);
     await openEditor(page);
     await (await publishShowingRelease(page)).close();
     release1 = await latestRelease(page, scope!);
@@ -339,6 +363,14 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
     expect(served.releaseId).toBe(release1);
     values1 = values;
     await expectPublic(browser, values1, []);
+    evidence!.ledger({
+      case: "h1,l1",
+      step: "R1/P1-P2",
+      action: "publish",
+      releaseId: release1,
+      activeBefore: state0.active ?? null,
+      activeAfter: evidence!.activeRelease(),
+    });
   });
 
   test("release 2: h1 home route second instance edited on the canvas through Design", async ({ page }) => {
@@ -361,6 +393,7 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
     await expectPublic(browser, values1!, r2);
 
     const { publishedState, serveActiveRelease, releaseBuild } = harness!;
+    evidence!.observePreviewStarts(page);
     await openEditor(page);
     await (await publishShowingRelease(page)).close();
     release2 = await latestRelease(page, scope!);
@@ -379,6 +412,14 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
     expect(served.releaseId).toBe(release2);
     values2 = values;
     await expectPublic(browser, values2, r1);
+    evidence!.ledger({
+      case: "h1,l1",
+      step: "R2/P1-P2",
+      action: "publish",
+      releaseId: release2,
+      activeBefore: release1,
+      activeAfter: evidence!.activeRelease(),
+    });
   });
 
   test("rollback to release 1: after a reload every case on the public site is back to release 1", async ({ page, browser }) => {
@@ -408,5 +449,17 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
     expect(restored.releaseId).toBe(release1);
     expect(restored.contentPublicationId).toBe(publication1);
     await expectPublic(browser, values1!, editedValues(values2!));
+    evidence!.ledger({
+      case: "h1,l1",
+      step: "P3-P4",
+      action: "rollback",
+      releaseId: release1,
+      activeBefore: release2,
+      activeAfter: evidence!.activeRelease(),
+      expectedActiveReleaseId: release2,
+      result: "activated",
+    });
+    // Q10: every preview this spec saw ran on the container under full Start.
+    evidence!.expectFullStartObserved();
   });
 });

@@ -91,6 +91,11 @@ export const EDITOR_SHARDS = [
     // tests are listed in scripts/container-acceptance-targets/; the
     // editor-e2e-container-publish job runs that check.
     "b1-publish-rollback-acceptance.spec.ts",
+    // M1 1a A3/A4, the B1 route cases published and rolled back: container
+    // transport and full Start only, so it skips here at file level. Its
+    // exact tests are listed in
+    // scripts/container-acceptance-targets/b1-route-publish-rollback.mjs.
+    "b1-route-publish-rollback-acceptance.spec.ts",
     "build-preview-isolated.spec.ts",
     "loader-data-binding.spec.ts",
     "m1-container-lifecycle-acceptance.spec.ts",
