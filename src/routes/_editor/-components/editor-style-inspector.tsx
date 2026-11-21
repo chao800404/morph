@@ -1104,9 +1104,32 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // unanswered input of the author's to it: the editor's document context
   // may never move (its refetch can return the copy it already held), so the
   // panel is not otherwise told.
+  //
+  // Never while the author is in a content input (`contentFocusRef`): the
+  // keys are held, the input keeps the value it shows and its focus, and
+  // they are asked about again once no content input has focus
+  // (`adoptHeldHistoryKeys`), when an input made meanwhile is unanswered and
+  // keeps its key from counting as behind.
   const appliedHistoryAnsweredEpochRef = useRef<number | null>(
     historyAnswered?.epoch ?? null,
   );
+  /** Keys an answered step wrote while the author was in a content input. */
+  const heldHistoryKeysRef = useRef<Set<string>>(new Set());
+  const adoptBehindKeys = useCallback(
+    (keys: Iterable<string>) => {
+      for (const key of keys) {
+        const shown = localPropsRef.current[key];
+        const behind = valueBehindAcceptedRef.current?.(key, shown);
+        if (!behind) continue;
+        adoptAcceptedValue(key, behind.accepted);
+      }
+    },
+    [adoptAcceptedValue, localPropsRef],
+  );
+  // Held keys belong to the section shown when they were held.
+  useEffect(() => {
+    heldHistoryKeysRef.current = new Set();
+  }, [contentResourceKey]);
   useEffect(() => {
     if (
       !historyAnswered ||
@@ -1119,13 +1142,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       historyAnswered.ownedHere === false
     )
       return;
-    for (const key of historyAnswered.keys) {
-      const shown = localPropsRef.current[key];
-      const behind = valueBehindAcceptedRef.current?.(key, shown);
-      if (!behind) continue;
-      adoptAcceptedValue(key, behind.accepted);
+    if (contentFocusRef.current) {
+      for (const key of historyAnswered.keys) {
+        heldHistoryKeysRef.current.add(key);
+      }
+      return;
     }
-  }, [adoptAcceptedValue, historyAnswered, localPropsRef, section.id]);
+    adoptBehindKeys(historyAnswered.keys);
+  }, [adoptBehindKeys, historyAnswered, section.id]);
 
   /**
    * The content input the author is in, with what it showed and the copy it
@@ -1231,7 +1255,22 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     contentFocusRef.current = null;
     onContentBlur?.();
     // After focus settles: moving into another input keeps updates held.
-    setTimeout(syncShownEpochs, 0);
+    setTimeout(() => {
+      adoptHeldHistoryKeys();
+      syncShownEpochs();
+    }, 0);
+  };
+  /**
+   * The keys an answered Undo / Redo wrote while the author was in a content
+   * input, asked about again once none has focus: the input's own blur has
+   * staged what was typed there, so a key the author changed is not behind.
+   */
+  const adoptHeldHistoryKeys = () => {
+    if (contentFocusRef.current || heldHistoryKeysRef.current.size === 0)
+      return;
+    const keys = [...heldHistoryKeysRef.current];
+    heldHistoryKeysRef.current = new Set();
+    adoptBehindKeys(keys);
   };
   /** Every content change, with the copy the focused input was made on. */
   /**

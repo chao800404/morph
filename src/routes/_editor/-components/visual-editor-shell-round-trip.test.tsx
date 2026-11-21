@@ -3153,6 +3153,35 @@ describe("a list both writers changed", () => {
           debounce.restore();
         }
       });
+
+      it("leaves the text the author is in as it is, and shows the undo's once they leave it", async () => {
+        const { answerUndo } = await typeThenUndo();
+        // In the heading, nothing typed: no unanswered input of theirs.
+        const heading = screen.getByDisplayValue("X") as HTMLInputElement;
+        act(() => heading.focus());
+        await answerUndo();
+        await waitFor(() =>
+          expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await flushFrames();
+        expect(heading.isConnected, "the input is not remounted").toBe(true);
+        expect(document.activeElement, "it keeps its focus").toBe(heading);
+        expect(heading.value, "its text is not replaced").toBe("X");
+
+        act(() => heading.blur());
+        await waitFor(() =>
+          expect(
+            screen.queryByDisplayValue("Welcome"),
+            "the undo's text, once the author left the input",
+          ).toBeTruthy(),
+        );
+        expect(screen.queryByDisplayValue("X")).toBeNull();
+        expect(
+          updateSectionProps,
+          "nothing is written for it",
+        ).toHaveBeenCalledTimes(2);
+      });
     });
   });
 });
