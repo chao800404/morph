@@ -1649,3 +1649,61 @@ describe("a Starter upgrade racing another tab's save", () => {
     expect(await contentNow()).toBe(AUTHOR_EDIT);
   });
 });
+
+describe("theme ownership against soft-deleted rows", () => {
+  beforeEach(() => {
+    sqlite.exec(`
+      INSERT INTO storefronts (id, sales_channel_id, name, status, created_at, updated_at)
+      VALUES ('storefront-b', 'channel-b', 'Store B', 'draft', 'now', 'now');
+      INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, created_at, updated_at)
+      VALUES ('theme-b', 'storefront-b', 'Theme B', 'draft', 1, 'now', 'now');
+    `);
+  });
+
+  it("accepts a live theme of a live storefront", async () => {
+    expect(
+      await storefrontThemeFileDal.verifyOwnership("storefront-a", "theme-a"),
+    ).toBe(true);
+  });
+
+  it("refuses another storefront's theme", async () => {
+    expect(
+      await storefrontThemeFileDal.verifyOwnership("storefront-a", "theme-b"),
+    ).toBe(false);
+  });
+
+  it("refuses a soft-deleted theme", async () => {
+    sqlite.exec(
+      `UPDATE storefront_themes SET deleted_at = 'deleted' WHERE id = 'theme-a'`,
+    );
+    expect(
+      await storefrontThemeFileDal.verifyOwnership("storefront-a", "theme-a"),
+    ).toBe(false);
+  });
+
+  it("refuses a live theme whose storefront is soft-deleted", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_files (id, storefront_id, theme_id, path, content, created_at, updated_at)
+      VALUES ('file-a', 'storefront-a', 'theme-a', 'src/a.ts', 'export {}', 'now', 'now');
+    `);
+    expect(
+      await storefrontThemeFileDal.listFiles("storefront-a", "theme-a"),
+    ).toHaveLength(1);
+    sqlite.exec(
+      `UPDATE storefronts SET deleted_at = 'deleted' WHERE id = 'storefront-a'`,
+    );
+    expect(
+      await storefrontThemeFileDal.verifyOwnership("storefront-a", "theme-a"),
+    ).toBe(false);
+    await expect(
+      storefrontThemeFileDal.listFiles("storefront-a", "theme-a"),
+    ).resolves.toEqual([]);
+    await expect(
+      storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a"),
+    ).rejects.toThrow("Theme not found or does not belong to storefront");
+    // Another storefront's live theme is unaffected.
+    expect(
+      await storefrontThemeFileDal.verifyOwnership("storefront-b", "theme-b"),
+    ).toBe(true);
+  });
+});
