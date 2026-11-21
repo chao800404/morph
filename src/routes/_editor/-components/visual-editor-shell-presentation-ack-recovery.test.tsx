@@ -473,4 +473,55 @@ describe("a frame that can acknowledge but does not", () => {
       ),
     ).toHaveLength(0);
   });
+
+  it("(d) after the notice, a valid answer for the same frame, document and round clears it and sends the held draft once; answers from elsewhere do not", async () => {
+    const replay = await frameThatNeverAnswers();
+    const afterReplay = posted.length;
+    await advance(WAIT_MS + 500);
+    const resend = tokenPosts(afterReplay);
+    expect(resend.map((post) => post.sectionId).sort()).toEqual([...SECTION_IDS].sort());
+    await advance(WAIT_MS + 100);
+    expect(unconfirmable()?.textContent).toContain(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    const ack = (post: TokenPost) => ({
+      type: "morph:storefront-preview-section-presentation-ack",
+      operationId: post.presentationToken.operationId,
+      token: post.presentationToken,
+      status: "applied",
+    });
+
+    // Control: the re-sent tokens answered from a document the frame does
+    // not show, and the first round of tokens (no longer waited on) answered
+    // by the frame itself. Neither clears the notice or sends anything.
+    const otherDocument = "f".repeat(32);
+    expect(
+      String((frameEnvelope({}) as { previewDocument?: unknown }).previewDocument),
+    ).not.toBe(otherDocument);
+    for (const post of resend) fromOldDocument(ack(post), otherDocument);
+    for (const post of replay) fromPreview(ack(post));
+    await advance(100);
+    expect(unconfirmable()?.textContent).toContain(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE);
+    expect(draftField().disabled).toBe(true);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+
+    // The valid answer: the re-sent tokens, from this frame's document, in
+    // this round. The notice clears, the page is established, and the held
+    // draft is written exactly once.
+    for (const post of resend) fromPreview(ack(post));
+    await advance(100);
+    expect(unconfirmable(), lines.slice(-16).join("\n")).toBeNull();
+    // Established: no paused reason of either kind is shown any more.
+    expect(screen.queryByText(PAUSED)).toBeNull();
+    expect(
+      screen.queryAllByText(PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE, { exact: false }),
+    ).toHaveLength(0);
+    expect(lines.some((line) => line.includes("page confirmed after re-send"))).toBe(true);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(updateSectionProps.mock.calls[0])).toContain(DRAFT);
+
+    await advance(WAIT_MS * 3);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(unconfirmable()).toBeNull();
+    expect(draftField().value).toBe(DRAFT);
+  });
 });
