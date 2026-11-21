@@ -26,15 +26,18 @@ import {
  * answer to the held request, released afterwards, does not take the canvas
  * away from it; and an edit there is saved exactly once.
  *
- * Full Start only: the frame's own history is the browser history there, as
- * in history-back-controlled-repro.spec.ts.
+ * Runs on both preview runtimes. The frame's own history is the browser
+ * history under full Start (window.history) and the router's memory history
+ * under client-only preview (__morphPreviewRouter.history), as in
+ * navigation-matrix.spec.ts; the page the frame is on is read the same way.
  */
 test.skip(
-  !EDITOR_PATH ||
-    !process.env.MORPH_E2E_STATE_DIR ||
-    process.env.MORPH_E2E_PREVIEW_RUNTIME !== "start",
-  "Needs the runner-owned throwaway store and full Start preview runtime (MORPH_E2E_PREVIEW_RUNTIME=start).",
+  !EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR,
+  "Needs the runner-owned throwaway store.",
 );
+
+const EXPECTED_RUNTIME: "start" | "client" =
+  process.env.MORPH_E2E_PREVIEW_RUNTIME === "start" ? "start" : "client";
 
 const HOME_ROUTE = "/author-pick-home";
 const DETAIL_ROUTE = "/author-pick-detail";
@@ -158,10 +161,26 @@ async function storedTitle(page: Page, slot: string): Promise<unknown> {
 const routePathOf = (page: Page) =>
   new URL(page.url()).searchParams.get("routePath");
 
+/**
+ * The page the frame is on: its own address under full Start (browser
+ * history), its router's memory history under client-only preview, where the
+ * address never moves.
+ */
 const framePathname = (page: Page) =>
   previewFrame(page)
     .locator("body")
-    .evaluate(() => window.location.pathname);
+    .evaluate((_body, runtime) => {
+      if (runtime === "start") return window.location.pathname;
+      return (
+        (
+          window as unknown as {
+            __morphPreviewRouter?: {
+              state?: { location?: { pathname?: string } };
+            };
+          }
+        ).__morphPreviewRouter?.state?.location?.pathname ?? null
+      );
+    }, EXPECTED_RUNTIME);
 
 test.describe("an author pick replaces a frame-follow request the frame left", () => {
   test.describe.configure({ mode: "serial" });
@@ -327,9 +346,33 @@ test.describe("an author pick replaces a frame-follow request the frame left", (
         )
         .toBe(1);
 
-      // The frame goes back by its own history. The editor stays on the
+      // The frame goes back by its own history: the browser history under
+      // full Start, the router's memory history under client-only preview,
+      // with no fallback from one to the other. The editor stays on the
       // detail page: its latest request is unanswered.
-      await frameBody.evaluate(() => window.history.back());
+      const backMechanism = await frameBody.evaluate((_body, runtime) => {
+        if (runtime === "client") {
+          const router = (
+            window as unknown as {
+              __morphPreviewRouter?: { history?: { back(): void } };
+            }
+          ).__morphPreviewRouter;
+          if (!router?.history?.back) {
+            throw new Error(
+              "Missing __morphPreviewRouter.history.back in client-only preview",
+            );
+          }
+          router.history.back();
+          return "__morphPreviewRouter.history";
+        }
+        window.history.back();
+        return "window.history";
+      }, EXPECTED_RUNTIME);
+      expect(backMechanism).toBe(
+        EXPECTED_RUNTIME === "start"
+          ? "window.history"
+          : "__morphPreviewRouter.history",
+      );
       await expect(cardTitle(page, HOME_SLOT)).toBeVisible({ timeout: 30_000 });
       await expect(cardTitle(page, DETAIL_SLOT)).toHaveCount(0);
       expect(await framePathname(page)).toBe(HOME_ROUTE);
