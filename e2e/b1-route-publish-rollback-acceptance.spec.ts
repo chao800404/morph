@@ -50,7 +50,11 @@ import { themeScopeFromEditorPath } from "./native-compat";
  *       walked and must write nothing; p3 is not edited. Their route
  *       Documents keep the seed revision through every step.
  *
- *   P1  each release's own content publication pins exactly the drafts
+ *   P1  each release's own content publication pins exactly the drafts.
+ *       Publish seals the Document of the page open in the editor and
+ *       carries the others' published revisions forward, so each page is
+ *       published from its own editor (`publishPages`); release 1 and 2 are
+ *       the last release of each round
  *   P2  the public site (local operator stand-in, `storefrontHarness`), read
  *       raw (HTML, `/_morph/content`) and in a browser context with no
  *       cookie, shows the publication on the home page and each route page;
@@ -380,6 +384,73 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     return `${url.pathname}${url.search}`;
   };
 
+  /** The revision of a route Document that a release's own content publication pins. */
+  const pinnedRevisions = (releaseId: string, routePath: string) =>
+    queryD1(
+      `SELECT i.revision_id AS id
+         FROM storefront_releases rel
+         JOIN storefront_content_publication_items i
+           ON i.publication_id = rel.content_publication_id AND i.item_type = 'template' AND i.deleted_at IS NULL
+         JOIN storefront_theme_templates t ON t.id = i.content_id
+        WHERE rel.id = ?1 AND t.theme_id = ?2 AND t.route_path = ?3`,
+      releaseId,
+      scope!.themeId,
+      routePath,
+    ).map((row) => String(row.id));
+
+  /**
+   * Publishes each page from the editor opened on it, the way the product
+   * publishes: Publish seals the Document of the page open in the editor
+   * (`publishMutation`'s `templateId` is the active template) and carries
+   * every other Document's published revision forward
+   * (`storefrontContentPublicationDal.resolveForTheme`). A route Document
+   * that was never published from its own page is in no release. `null` is
+   * the home page. Each publish must create a release, make it active and,
+   * for a route page, pin that route Document's draft. Returns the last
+   * release.
+   */
+  const publishPages = async (
+    page: Page,
+    pages: ReadonlyArray<BasCase | null>,
+    step: string,
+  ): Promise<string> => {
+    const { publishedState } = harness!;
+    let previous = (await publishedState()).active;
+    for (const testCase of pages) {
+      const activeBefore = evidence!.activeRelease();
+      await openEditor(page, testCase ? editorRouteUrl(testCase.routePath) : EDITOR_PATH!);
+      await (await publishShowingRelease(page)).close();
+      const releaseId = await latestRelease(page, scope!);
+      const where = testCase ? testCase.routePath : HOME;
+      expect(releaseId, `publishing ${where} creates a release`).not.toBe(previous);
+      expect((await publishedState()).active, `publishing ${where} activates its release`).toBe(releaseId);
+      if (testCase) {
+        const draft = queryD1(
+          `SELECT draft_revision_id AS id FROM storefront_theme_templates
+            WHERE theme_id = ?1 AND route_path = ?2 AND deleted_at IS NULL`,
+          scope!.themeId,
+          testCase.routePath,
+        ).map((row) => String(row.id));
+        expect(draft, `${testCase.routePath} has one route Document`).toHaveLength(1);
+        expect(
+          pinnedRevisions(releaseId, testCase.routePath),
+          `publishing ${testCase.routePath} pins its draft`,
+        ).toEqual(draft);
+      }
+      evidence!.ledger({
+        case: testCase ? testCase.id : "home",
+        step,
+        action: `publish from the editor on ${where}`,
+        routePath: testCase ? testCase.routePath : null,
+        releaseId,
+        activeBefore,
+        activeAfter: evidence!.activeRelease(),
+      });
+      previous = releaseId;
+    }
+    return previous!;
+  };
+
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(600_000);
     const page = await signedInPage(browser);
@@ -462,7 +533,8 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
   });
 
   test("release 1: published, the public home and each route page show its values, code values unchanged", async ({ page, browser }) => {
-    test.setTimeout(15 * 60_000);
+    // Seven publishes, each from its own page, each possibly building.
+    test.setTimeout(75 * 60_000);
     evidence!.observePreviewStarts(page);
     const values = await draftValues();
     expectIsolated(values);
@@ -477,13 +549,14 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     const { publishedState, serveActiveRelease, releaseBuild } = harness!;
     const state0 = await publishedState();
     const activeBefore = evidence!.activeRelease();
-    await openEditor(page);
-    await (await publishShowingRelease(page)).close();
-    release1 = await latestRelease(page, scope!);
+    // The home page, then every route page from its own editor: A3's edits
+    // and A4's code-shown Documents alike. Release 1 is the last of these.
+    const published = [null, ...ALL] as const;
+    release1 = await publishPages(page, published, "R1/P1-publish");
     expect(release1).not.toBe(state0.active);
     const state1 = await publishedState();
     expect(state1.active).toBe(release1);
-    expect(state1.releases).toBe(state0.releases + 1);
+    expect(state1.releases).toBe(state0.releases + published.length);
 
     // P1: the release pins exactly the drafts, route Document by route Document.
     expect(releaseValues(release1)).toEqual(values);
@@ -520,7 +593,8 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
   });
 
   test("release 2: the draft stays off the public site until published, then the public site shows release 2", async ({ page, browser }) => {
-    test.setTimeout(15 * 60_000);
+    // Three publishes, each from its own page, each possibly building.
+    test.setTimeout(40 * 60_000);
     evidence!.observePreviewStarts(page);
     const values = await draftValues();
     expectIsolated(values);
@@ -534,12 +608,14 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
 
     const { publishedState, serveActiveRelease, releaseBuild } = harness!;
     const activeBefore = evidence!.activeRelease();
-    await openEditor(page);
-    await (await publishShowingRelease(page)).close();
-    release2 = await latestRelease(page, scope!);
+    // Only A3's pages changed: each is published from its own editor, and
+    // release 2 (the last) carries A4's release 1 revisions forward.
+    const before2 = await publishedState();
+    release2 = await publishPages(page, EDITED, "R2/P1-publish");
     expect(release2).not.toBe(release1);
     const state2 = await publishedState();
     expect(state2.active).toBe(release2);
+    expect(state2.releases).toBe(before2.releases + EDITED.length);
 
     expect(releaseValues(release2)).toEqual(values);
     // Release 1 still pins its own values: publishing again changed nothing in it.
