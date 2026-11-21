@@ -2859,25 +2859,17 @@ describe("a list both writers changed", () => {
     await waitFor(() =>
       expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
     );
-    // The panel still shows the row the undo removed: the undo's answer is
-    // the accepted copy, and the panel's list is behind it. An Add entry
-    // there is refused (`shownListIsBehind`): nothing is sent, and the panel
-    // shows the undone list, so the Add below is made on that one.
+    // The panel shows the list as the undo left it (its answer is the
+    // accepted copy; `InspectorHistoryAnswered`), so the Add below is made
+    // on that one.
     const rowTitles = () =>
       (screen.queryAllByRole("textbox") as HTMLInputElement[])
         .map((input) => input.value)
         .filter((value) => value !== "Welcome");
-    expect(rowTitles(), "the undone row is still shown").toEqual([
-      "A",
-      "B",
-      "",
-    ]);
-    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
-    await flushFrames();
-    expect(updateSectionProps, "refused: nothing sent").toHaveBeenCalledTimes(
-      2,
+    await waitFor(() =>
+      expect(rowTitles(), "the accepted, undone list").toEqual(["A", "B"]),
     );
-    expect(rowTitles(), "the accepted, undone list").toEqual(["A", "B"]);
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
 
     await conflictOnAdd(client, remoteWith(rows("C", "A", "B"), 7), 2);
     const text = await discardItems();
