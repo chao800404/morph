@@ -570,9 +570,11 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     const { publishedState, serveActiveRelease } = harness!;
     const before = await publishedState();
     expect(before.active).toBe(release2);
-    const snapshot0 = rollbackSnapshot();
 
     await openEditor(page);
+    // Taken once the editor is open, so nothing opening it does is read as
+    // a change the rollback made.
+    const snapshot0 = rollbackSnapshot();
     // A stale expectation (release 1 is not active) is refused and moves nothing.
     const stale = (await serverFn(page, RELEASES, "activateStorefrontRelease", {
       storefrontId: scope!.storefrontId,
