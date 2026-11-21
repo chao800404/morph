@@ -36,10 +36,12 @@ import {
   signedInPage,
   storefrontFetcher,
   storefrontHarness,
+  storefrontRequest,
   type Fetcher,
 } from "./native-acceptance";
 import {
   removeThemeFiles,
+  themeScopeFromEditorPath,
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
@@ -51,16 +53,36 @@ import {
  * applies in the editor; v20 and v28 then built, published and rolled back;
  * and an old Theme whose `content.ts` its author edited (B2).
  *
- * Isolation. Releases, domains and the active release are a storefront's,
- * so each case runs on a storefront of its own, created through the product
- * path a merchant uses (`createSalesChannel` with type "storefront", which
- * creates the storefront, its Theme and the current Starter's workspace;
- * `storefrontDal.ensureDefault`). No case reads or writes another's
- * storefront or the run's shared editor Theme, so each one's preconditions
- * (v28: nothing published yet on its storefront) hold in any order and with
- * `-g` on one title. This removes #360's known limit, where v28 and v20
- * shared the run's storefront and v28's precondition only held if it ran
- * first. Each storefront and Theme is left as its case ended it: the upgrade
+ * Isolation. Releases, domains and the active release are a storefront's.
+ * The cases that only read back (v11, v15, v26) run on a storefront of their
+ * own, created through the product path a merchant uses
+ * (`createSalesChannel` with type "storefront", which creates the
+ * storefront, its Theme and the current Starter's workspace;
+ * `storefrontDal.ensureDefault`).
+ *
+ * The cases the public site serves (v28, v20, B2 v26) run on the run's own
+ * storefront, the one the editor path names, each on a Theme of its own
+ * there. The product serves a domain from one storefront only:
+ * `createStorefrontDomain` takes a hostname and attaches it to the oldest
+ * storefront (`storefrontDomainDal.activeStorefront`), so a domain cannot
+ * reach a storefront made for a case (single-site product model; lead
+ * decision 2026-11-21, option (a)). The run's storefront is that oldest one,
+ * checked at set-up, and each case's domain is checked to land on it.
+ * Because those cases share one storefront's active release, each public
+ * step records the release the public host served before and after it (Core's
+ * answer for the hostname, from the ETag of `/_morph/content`) and requires
+ * the one after to be the release this case published or rolled back to, so
+ * no case can pass on another's release.
+ *
+ * KNOWN ORDERING LIMIT (as in #360): v28's precondition is that nothing is
+ * published yet on the run's storefront, so v28 must run before any other
+ * publish on this run's D1. The file runs on one worker in file order, and
+ * v28 is the first public case; v20 and B2 hold in any order. Run with `-g`
+ * on a single title, each holds; run v28 after another publish and its
+ * precondition fails (it does not pass on someone else's release). The same
+ * note is written into each public case's ledger.
+ *
+ * Each storefront and Theme is left as its case ended it: the upgrade
  * rewrites template revisions as well as files, so it cannot be undone by
  * restoring files (see starter-upgrade-publish-acceptance.spec.ts), and
  * nothing else opens them. The domains are removed in afterAll.
@@ -102,6 +124,12 @@ const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
 const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
 const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
 const PREVIEW_RUNTIME = process.env.MORPH_E2E_PREVIEW_RUNTIME;
+/** The run's storefront: the one the product's domains serve. */
+const RUN_STOREFRONT_ID = EDITOR_PATH
+  ? themeScopeFromEditorPath(EDITOR_PATH).storefrontId
+  : null;
+const ORDERING_NOTE =
+  "Known ordering limit: the public cases (v28, v20, B2 v26) share the run's storefront, the only one a domain can serve; v28 needs nothing published on it yet, so it must run before any other publish on this run's D1. Each public step records the release the host served before and after it and requires this case's own release after it.";
 
 test.skip(
   !EDITOR_PATH || !STATE_DIR,
@@ -326,13 +354,59 @@ function releaseRow(releaseId: string) {
 }
 
 /**
- * A storefront of the case's own, made the way a merchant makes one, with
- * its Theme recorded and verified as full Start (Q10).
+ * A Theme of the case's own on the run's storefront, the one the product's
+ * domains serve (see the header: the public cases share it).
+ *
+ * Inserted with no files, recorded as Starter 1, as
+ * starter-upgrade-publish-acceptance.spec.ts and the other throwaway Themes
+ * do; the editor's read (`getStorefrontThemeEditor` →
+ * `ensureStoredStarterPreview`) then writes the current Starter's files and
+ * templates. Read here through the server function, before the editor
+ * opens, so the Theme records full Start before any Live Preview starts.
+ */
+async function themeOnRunStorefront(
+  page: Page,
+  label: string,
+): Promise<ThemeScope> {
+  expect(RUN_STOREFRONT_ID, "the run's storefront").toBeTruthy();
+  const [oldest] = queryD1(
+    "SELECT id FROM storefronts WHERE deleted_at IS NULL ORDER BY created_at ASC LIMIT 1",
+  );
+  expect(
+    oldest?.id,
+    "the run's storefront is the one createStorefrontDomain attaches domains to",
+  ).toBe(RUN_STOREFRONT_ID);
+  const scope: ThemeScope = {
+    storefrontId: RUN_STOREFRONT_ID!,
+    themeId: randomUUID(),
+  };
+  const now = new Date().toISOString();
+  execLocalD1(`INSERT INTO storefront_themes
+    (id, storefront_id, name, metadata, created_at, updated_at)
+    VALUES (${sqlText(scope.themeId)}, ${sqlText(scope.storefrontId)},
+      ${sqlText(`m1-1b-${label}-${scope.themeId}`)}, '{"starterTemplateVersion":1}',
+      ${sqlText(now)}, ${sqlText(now)});`);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  const provisioned = (await serverFn(
+    page,
+    THEMES,
+    "getStorefrontThemeEditor",
+    scope,
+  )) as { success: boolean; message?: string };
+  expect(provisioned.success, provisioned.message).toBe(true);
+  return scope;
+}
+
+/**
+ * A storefront of the case's own, made the way a merchant makes one (or, for
+ * a case the public site serves, a Theme of its own on the run's
+ * storefront), with its Theme recorded and verified as full Start (Q10).
  */
 async function setUpCase(
   page: Page,
   label: string,
   starter: number | null,
+  on: "own storefront" | "run storefront" = "own storefront",
 ): Promise<CaseRun> {
   const dir = evidenceDir(`1b-${label}`);
   const identity = startIdentity(`1b/${label}`);
@@ -354,6 +428,41 @@ async function setUpCase(
       starts.push(null);
     }
   });
+
+  if (on === "run storefront") {
+    const scope = await record.step(
+      "own Theme on the run's storefront",
+      async () => {
+        const made = await themeOnRunStorefront(page, label);
+        const active = activeRelease(made);
+        record.fact("activeReleaseAtStart", active);
+        record.fact("orderingLimit", ORDERING_NOTE);
+        ledger.add({
+          step: `1b/${label}/set-up`,
+          action: "case set up on the run's storefront",
+          themeId: made.themeId,
+          sourceRevisionId: null,
+          templateDraftGeneration: null,
+          buildId: null,
+          buildReused: null,
+          contentPublicationId: null,
+          releaseId: null,
+          activeRelease: { before: active, after: active },
+          expectedActiveReleaseId: null,
+          evidence: [],
+          note: ORDERING_NOTE,
+        });
+        return made;
+      },
+    );
+    return finishSetUp(page, label, starter, scope, {
+      dir,
+      identity,
+      record,
+      ledger,
+      starts,
+    });
+  }
 
   const scope = await record.step("isolated storefront", async () => {
     await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -381,6 +490,30 @@ async function setUpCase(
     expect(activeRelease(made), "nothing is published on it yet").toBeNull();
     return made;
   });
+  return finishSetUp(page, label, starter, scope, {
+    dir,
+    identity,
+    record,
+    ledger,
+    starts,
+  });
+}
+
+/** The set-up both kinds of case share once their Theme exists. */
+async function finishSetUp(
+  page: Page,
+  label: string,
+  starter: number | null,
+  scope: ThemeScope,
+  parts: {
+    dir: string;
+    identity: CaseRecord["identity"];
+    record: CaseRecord;
+    ledger: Ledger;
+    starts: Array<string | null>;
+  },
+): Promise<CaseRun> {
+  const { dir, identity, record, ledger, starts } = parts;
   identity.themeId = scope.themeId;
   record.fact("scope", scope);
 
@@ -1005,6 +1138,72 @@ async function expectPublicSite(
   }
 }
 
+/**
+ * The release Core serves for this case's host, or null when it serves
+ * none: Core names the release it resolved for the hostname in the ETag of
+ * its content endpoint (`"<releaseId>:<path>"`).
+ */
+async function servedRelease(run: CaseRun): Promise<string | null> {
+  if (!run.domainId) return null;
+  const response = await storefrontRequest(
+    origin(run.host),
+    "/_morph/content?path=%2F",
+  );
+  await response.arrayBuffer();
+  if (response.status !== 200) return null;
+  const etag = response.headers.get("etag") ?? "";
+  const named = /^(?:W\/)?"([^":]+):\/"$/.exec(etag);
+  expect(
+    named,
+    `the content read names its release (ETag ${etag})`,
+  ).not.toBeNull();
+  return named![1]!;
+}
+
+/**
+ * A step the public site is part of. The public cases share the run's
+ * storefront (header), so the release the host serves is read before and
+ * after the step, written to the ledger, and the one after must be
+ * `expected(result)`: a release this case published or rolled back to.
+ */
+async function publicStep<T>(
+  run: CaseRun,
+  name: string,
+  expected: (result: T) => string,
+  body: () => Promise<T>,
+): Promise<T> {
+  return run.record.step(name, async () => {
+    const activeBefore = activeRelease(run.scope);
+    const before = await servedRelease(run);
+    const result = await body();
+    const after = await servedRelease(run);
+    const wanted = expected(result);
+    const served = (run.record.facts.servedReleases ?? []) as unknown[];
+    served.push({ step: name, before, after, expected: wanted });
+    run.record.fact("servedReleases", served);
+    run.ledger.add({
+      step: `1b/${run.label}/${name}`,
+      action: "public site served",
+      themeId: run.scope.themeId,
+      sourceRevisionId: null,
+      templateDraftGeneration: homeDraftGeneration(run),
+      buildId: null,
+      buildReused: null,
+      contentPublicationId: null,
+      releaseId: wanted,
+      activeRelease: { before: activeBefore, after: activeRelease(run.scope) },
+      expectedActiveReleaseId: null,
+      evidence: [],
+      servedRelease: { before, after },
+      note: ORDERING_NOTE,
+    });
+    expect(after, `${name}: the host serves this case's own release`).toBe(
+      wanted,
+    );
+    return result;
+  });
+}
+
 /** Serves the active release and checks it is the publication `release` names. */
 async function serveRelease(
   run: CaseRun,
@@ -1191,147 +1390,13 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
     browser,
   }) => readBackOnly(page, browser, 26));
 
-  test("B1 v20: read back, refused build, reviewed upgrade, published, rolled back to the release serving before the upgrade", async ({
-    page,
-    browser,
-  }) => {
-    const V20 = fixture(20);
-    const run = await setUpCase(page, "b1-v20", 20);
-    try {
-      const storefront = storefrontFetcher(origin(run.host));
-      // The release serving before the upgrade: built and published from the
-      // current Starter on this Theme, since v20's own bytes cannot be built
-      // before the upgrade. Restoring an artifact of v20's own bytes stays
-      // UNVERIFIED for that reason.
-      const baselineMarker = `m1-1b-v20-base-${randomUUID().slice(0, 8)}`;
-      const baseline = await run.record.step(
-        "baseline release serving",
-        async () => {
-          await connectDomain(page, run);
-          await editHeroDraft(page, run, baselineMarker);
-          const made = await publishRelease(page, run, "1b/b1-v20/baseline");
-          await serveRelease(run, baselineMarker, made);
-          await expectPublicSite(storefront, baselineMarker, []);
-          return made;
-        },
-      );
-      await run.record.step("installed v20", async () => {
-        await installStarter(page, run, V20);
-        await expectOpeningWritesNothing(page, run, 20);
-      });
-      const before = await run.record.step("before-upgrade read-back", () =>
-        readBack(page, browser, run, "before", baselineMarker, {
-          canvasRequired: false,
-        }),
-      );
-      run.record.fact("beforeCanvasRendered", before.canvas.rendered);
-      run.record.identity.contentTsSha256 = before.contentTs.sha256;
-      run.record.identity.contentTsEdited = false;
-      await run.record.step(
-        "old workspace build refused, site unchanged",
-        async () => {
-          const releasesBefore = (await run.harness.publishedState()).releases;
-          await openEditor(page, run.editorPath);
-          const refused = await build(page, run, "1b/b1-v20/refused-build");
-          expect(refused?.status).toBe("failed");
-          expect(refused?.error_message ?? "").toContain(
-            "INVALID_START_PACKAGE",
-          );
-          const unchanged = await run.harness.publishedState();
-          expect(unchanged.active).toBe(baseline.releaseId);
-          expect(unchanged.releases).toBe(releasesBefore);
-          await expectPublicSite(storefront, baselineMarker, []);
-        },
-      );
-      await run.record.step("review", async () => {
-        const shown = await review(page, run, V20_REVIEW);
-        await apply(page, run, shown.dialog);
-      });
-      const after = await run.record.step("after-upgrade read-back", () =>
-        readBack(page, browser, run, "after", baselineMarker, {
-          canvasRequired: true,
-        }),
-      );
-      await run.record.step("upgrade kept the author's content", async () => {
-        run.record.fact(
-          "changedPaths",
-          expectUpgradeKeptAuthorContent(before, after, V20_REVIEW),
-        );
-        // The live site did not move with the upgrade.
-        expect(after.public.activeRelease).toBe(baseline.releaseId);
-        expect(after.public.home?.hasMarker).toBe(true);
-        const files = await workspace(page, run.scope);
-        for (const path of [...FLAT_COMPONENTS, MANIFEST]) {
-          expect(files[path], path).toBeDefined();
-        }
-      });
-      const contentB = `m1-1b-v20-b-${randomUUID().slice(0, 8)}`;
-      const upgraded = await run.record.step(
-        "upgraded source built and published",
-        async () => {
-          await editHeroDraft(page, run, contentB);
-          const made = await publishRelease(page, run, "1b/b1-v20/publish");
-          expect(made.releaseId).not.toBe(baseline.releaseId);
-          expect(made.buildId).not.toBe(baseline.buildId);
-          expect(made.sourceRevisionId).not.toBe(baseline.sourceRevisionId);
-          await serveRelease(run, contentB, made);
-          await expectPublicSite(storefront, contentB, [baselineMarker]);
-          return made;
-        },
-      );
-      await run.record.step("published read-back", async () => {
-        await readBack(page, browser, run, "published", contentB, {
-          canvasRequired: true,
-        });
-      });
-      const draftD = `m1-1b-v20-d-${randomUUID().slice(0, 8)}`;
-      await run.record.step(
-        "a later draft stays off the public site",
-        async () => {
-          await editHeroDraft(page, run, draftD);
-          await expectPublicSite(storefront, contentB, [
-            baselineMarker,
-            draftD,
-          ]);
-        },
-      );
-      await run.record.step(
-        "rolled back to the release serving before the upgrade",
-        async () => {
-          await rollBack(page, run, baseline.releaseId, upgraded.releaseId);
-          await serveRelease(run, baselineMarker, baseline);
-          await expectPublicSite(storefront, baselineMarker, [
-            contentB,
-            draftD,
-          ]);
-          // Q6: the public site is back on the old release; the editor keeps
-          // the draft it had before the rollback. Both read back.
-          const rolled = await readBack(
-            page,
-            browser,
-            run,
-            "rolled-back",
-            draftD,
-            {
-              canvasRequired: true,
-              publicMarker: baselineMarker,
-            },
-          );
-          expect(rolled.public.home?.hasMarker).toBe(true);
-          await savedField(page, run.scope, draftD);
-        },
-      );
-      await run.record.step("full Start", async () => expectFullStart(run));
-    } finally {
-      await finish(run);
-    }
-  });
-
+  // v28 runs first of the public cases: its precondition is that nothing is
+  // published on the run's storefront yet (header: known ordering limit).
   test("B1 v28: read back, published from its own bytes, reviewed upgrade, published, rolled back", async ({
     page,
     browser,
   }) => {
-    const run = await setUpCase(page, "b1-v28", 28);
+    const run = await setUpCase(page, "b1-v28", 28, "run storefront");
     try {
       const storefront = storefrontFetcher(origin(run.host));
       await run.record.step("installed v28", async () => {
@@ -1339,9 +1404,17 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         await expectOpeningWritesNothing(page, run, 28);
       });
       const contentA = `m1-1b-v28-a-${randomUUID().slice(0, 8)}`;
-      const r0 = await run.record.step(
+      const r0 = await publicStep(
+        run,
         "R0 published from v28's own bytes",
+        (made) => made.releaseId,
         async () => {
+          // The known ordering limit (header): nothing published yet on the
+          // run's storefront, so v28 runs before any other publish.
+          expect(
+            activeRelease(run.scope),
+            "v28 precondition: nothing is published on the run's storefront yet",
+          ).toBeNull();
           await editHeroDraft(page, run, contentA);
           await connectDomain(page, run);
           // Before any publish this storefront's domain serves nothing.
@@ -1384,8 +1457,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         ).toEqual([]);
       });
       const contentB = `m1-1b-v28-b-${randomUUID().slice(0, 8)}`;
-      const r1 = await run.record.step(
+      const r1 = await publicStep(
+        run,
         "R1 published from the upgraded source",
+        (made) => made.releaseId,
         async () => {
           await editHeroDraft(page, run, contentB);
           const made = await publishRelease(page, run, "1b/b1-v28/R1");
@@ -1405,15 +1480,19 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         });
       });
       const draftD = `m1-1b-v28-d-${randomUUID().slice(0, 8)}`;
-      await run.record.step(
+      await publicStep(
+        run,
         "a later draft stays off the public site",
+        () => r1.releaseId,
         async () => {
           await editHeroDraft(page, run, draftD);
           await expectPublicSite(storefront, contentB, [contentA, draftD]);
         },
       );
-      await run.record.step(
+      await publicStep(
+        run,
         "rolled back to R0, the release serving before the upgrade",
+        () => r0.releaseId,
         async () => {
           await rollBack(page, run, r0.releaseId, r1.releaseId);
           await serveRelease(run, contentA, r0);
@@ -1440,6 +1519,154 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
     }
   });
 
+  test("B1 v20: read back, refused build, reviewed upgrade, published, rolled back to the release serving before the upgrade", async ({
+    page,
+    browser,
+  }) => {
+    const V20 = fixture(20);
+    const run = await setUpCase(page, "b1-v20", 20, "run storefront");
+    try {
+      const storefront = storefrontFetcher(origin(run.host));
+      // The release serving before the upgrade: built and published from the
+      // current Starter on this Theme, since v20's own bytes cannot be built
+      // before the upgrade. Restoring an artifact of v20's own bytes stays
+      // UNVERIFIED for that reason.
+      const baselineMarker = `m1-1b-v20-base-${randomUUID().slice(0, 8)}`;
+      // Connected first, so the step below records what the host served
+      // before this case published (another case's release, or none).
+      await run.record.step("domain connected", () => connectDomain(page, run));
+      const baseline = await publicStep(
+        run,
+        "baseline release serving",
+        (made) => made.releaseId,
+        async () => {
+          await editHeroDraft(page, run, baselineMarker);
+          const made = await publishRelease(page, run, "1b/b1-v20/baseline");
+          await serveRelease(run, baselineMarker, made);
+          await expectPublicSite(storefront, baselineMarker, []);
+          return made;
+        },
+      );
+      await run.record.step("installed v20", async () => {
+        await installStarter(page, run, V20);
+        await expectOpeningWritesNothing(page, run, 20);
+      });
+      const before = await run.record.step("before-upgrade read-back", () =>
+        readBack(page, browser, run, "before", baselineMarker, {
+          canvasRequired: false,
+        }),
+      );
+      run.record.fact("beforeCanvasRendered", before.canvas.rendered);
+      run.record.identity.contentTsSha256 = before.contentTs.sha256;
+      run.record.identity.contentTsEdited = false;
+      await publicStep(
+        run,
+        "old workspace build refused, site unchanged",
+        () => baseline.releaseId,
+        async () => {
+          const releasesBefore = (await run.harness.publishedState()).releases;
+          await openEditor(page, run.editorPath);
+          const refused = await build(page, run, "1b/b1-v20/refused-build");
+          expect(refused?.status).toBe("failed");
+          expect(refused?.error_message ?? "").toContain(
+            "INVALID_START_PACKAGE",
+          );
+          const unchanged = await run.harness.publishedState();
+          expect(unchanged.active).toBe(baseline.releaseId);
+          expect(unchanged.releases).toBe(releasesBefore);
+          await expectPublicSite(storefront, baselineMarker, []);
+        },
+      );
+      await run.record.step("review", async () => {
+        const shown = await review(page, run, V20_REVIEW);
+        await apply(page, run, shown.dialog);
+      });
+      const after = await run.record.step("after-upgrade read-back", () =>
+        readBack(page, browser, run, "after", baselineMarker, {
+          canvasRequired: true,
+        }),
+      );
+      await run.record.step("upgrade kept the author's content", async () => {
+        run.record.fact(
+          "changedPaths",
+          expectUpgradeKeptAuthorContent(before, after, V20_REVIEW),
+        );
+        // The live site did not move with the upgrade.
+        expect(after.public.activeRelease).toBe(baseline.releaseId);
+        expect(after.public.home?.hasMarker).toBe(true);
+        const files = await workspace(page, run.scope);
+        for (const path of [...FLAT_COMPONENTS, MANIFEST]) {
+          expect(files[path], path).toBeDefined();
+        }
+      });
+      const contentB = `m1-1b-v20-b-${randomUUID().slice(0, 8)}`;
+      const upgraded = await publicStep(
+        run,
+        "upgraded source built and published",
+        (made) => made.releaseId,
+        async () => {
+          await editHeroDraft(page, run, contentB);
+          const made = await publishRelease(page, run, "1b/b1-v20/publish");
+          expect(made.releaseId).not.toBe(baseline.releaseId);
+          expect(made.buildId).not.toBe(baseline.buildId);
+          expect(made.sourceRevisionId).not.toBe(baseline.sourceRevisionId);
+          await serveRelease(run, contentB, made);
+          await expectPublicSite(storefront, contentB, [baselineMarker]);
+          return made;
+        },
+      );
+      await run.record.step("published read-back", async () => {
+        await readBack(page, browser, run, "published", contentB, {
+          canvasRequired: true,
+        });
+      });
+      const draftD = `m1-1b-v20-d-${randomUUID().slice(0, 8)}`;
+      await publicStep(
+        run,
+        "a later draft stays off the public site",
+        () => upgraded.releaseId,
+        async () => {
+          await editHeroDraft(page, run, draftD);
+          await expectPublicSite(storefront, contentB, [
+            baselineMarker,
+            draftD,
+          ]);
+        },
+      );
+      await publicStep(
+        run,
+        "rolled back to the release serving before the upgrade",
+        () => baseline.releaseId,
+        async () => {
+          await rollBack(page, run, baseline.releaseId, upgraded.releaseId);
+          await serveRelease(run, baselineMarker, baseline);
+          await expectPublicSite(storefront, baselineMarker, [
+            contentB,
+            draftD,
+          ]);
+          // Q6: the public site is back on the old release; the editor keeps
+          // the draft it had before the rollback. Both read back.
+          const rolled = await readBack(
+            page,
+            browser,
+            run,
+            "rolled-back",
+            draftD,
+            {
+              canvasRequired: true,
+              publicMarker: baselineMarker,
+            },
+          );
+          expect(rolled.public.home?.hasMarker).toBe(true);
+          await savedField(page, run.scope, draftD);
+        },
+      );
+      await run.record.step("full Start", async () => expectFullStart(run));
+    } finally {
+      await finish(run);
+    }
+  });
+
   test("B2 v26: content.ts the author edited is kept byte for byte, the review says why, its read result is unchanged, then published", async ({
     page,
     browser,
@@ -1448,7 +1675,7 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
     const original = V26.files.find((file) => file.path === CONTENT);
     expect(original, "v26 has a content module").toBeDefined();
     const edited = original!.content + AUTHOR_EDIT;
-    const run = await setUpCase(page, "b2-v26", 26);
+    const run = await setUpCase(page, "b2-v26", 26, "run storefront");
     try {
       const storefront = storefrontFetcher(origin(run.host));
       const marker = `m1-1b-b2-${randomUUID().slice(0, 8)}`;
@@ -1507,26 +1734,34 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           );
         },
       );
-      await run.record.step("published, public read result", async () => {
-        await connectDomain(page, run);
-        await openEditor(page, run.editorPath);
-        const made = await publishRelease(page, run, "1b/b2-v26/publish");
-        await serveRelease(run, marker, made);
-        await expectPublicSite(storefront, marker, [], false);
-        const published = await readBack(
-          page,
-          browser,
-          run,
-          "published",
-          marker,
-          {
-            canvasRequired: true,
-          },
-        );
-        expect(published.contentTs.sha256).toBe(sha256(edited));
-        expect(published.public.home?.hasMarker).toBe(true);
-        expect(published.public.content?.hasMarker).toBe(true);
-      });
+      // Connected first, so the step below records what the host served
+      // before this case published (another case's release, or none).
+      await run.record.step("domain connected", () => connectDomain(page, run));
+      await publicStep(
+        run,
+        "published, public read result",
+        (made) => made.releaseId,
+        async () => {
+          await openEditor(page, run.editorPath);
+          const made = await publishRelease(page, run, "1b/b2-v26/publish");
+          await serveRelease(run, marker, made);
+          await expectPublicSite(storefront, marker, [], false);
+          const published = await readBack(
+            page,
+            browser,
+            run,
+            "published",
+            marker,
+            {
+              canvasRequired: true,
+            },
+          );
+          expect(published.contentTs.sha256).toBe(sha256(edited));
+          expect(published.public.home?.hasMarker).toBe(true);
+          expect(published.public.content?.hasMarker).toBe(true);
+          return made;
+        },
+      );
       await run.record.step("full Start", async () => expectFullStart(run));
     } finally {
       await finish(run);

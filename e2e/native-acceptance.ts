@@ -51,7 +51,7 @@ export type Fetched = { status: number; body: string };
 export type Fetcher = (path: string) => Promise<Fetched>;
 
 /** A storefront request: to 127.0.0.1 (falling back to ::1 if IPv6 loopback only), naming the hostname in Host. */
-function storefrontRequest(origin: string, path: string): Promise<Response> {
+export function storefrontRequest(origin: string, path: string): Promise<Response> {
   const url = new URL(path, origin);
   const send = (host: string) =>
     new Promise<Response>((resolve, reject) => {

@@ -169,6 +169,14 @@ export type LedgerRow = {
   /** For a rollback: the CAS's `expectedActiveReleaseId`. */
   expectedActiveReleaseId: string | null;
   evidence: string[];
+  /**
+   * The release the public host served (Core's answer for that hostname,
+   * read from its content endpoint) when the step began and when it ended;
+   * null where nothing was served.
+   */
+  servedRelease?: { before: string | null; after: string | null };
+  /** A limit or condition the row's reader must know (e.g. case ordering). */
+  note?: string;
 };
 
 export class Ledger {
