@@ -67,6 +67,33 @@ export type PendingContentEntry = {
 };
 
 /**
+ * Of a pending entry's `props`, the top-level keys the entry really holds:
+ * the roots of its staged fields, its list actions and its resets. For an
+ * Inspector input `props` is the panel's whole copy of the section, so the
+ * other keys there are only the values that copy had, not input. An entry
+ * with no fields holds its props as a whole. A reset root has no value in
+ * `props` and so is not in the result.
+ */
+export function heldContentProps(
+  entry: PendingContentEntry | undefined,
+): Record<string, unknown> | undefined {
+  if (!entry) return undefined;
+  if (!entry.fields) return entry.props;
+  const roots = new Set(
+    [
+      ...Object.keys(entry.fields),
+      ...(entry.listActionPaths ?? []),
+      ...(entry.resetProps ?? []),
+    ].map((path) => path.split(".")[0]!),
+  );
+  const held: Record<string, unknown> = {};
+  for (const root of roots) {
+    if (Object.hasOwn(entry.props, root)) held[root] = entry.props[root];
+  }
+  return held;
+}
+
+/**
  * Whether a held draft is still exactly the one the author left: the same
  * field edits, each the very edit object that was held when they left the
  * field. Any input since (to that field, or to a sibling field never left)

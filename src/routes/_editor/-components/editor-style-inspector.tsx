@@ -992,6 +992,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     sectionId: section.id,
     sectionProps: section.props,
     heldProps: heldContentProps,
+    acceptedProps: acceptedContentProps,
   });
   const acceptedContentPropsRef = useRef(acceptedContentProps);
   acceptedContentPropsRef.current = acceptedContentProps;

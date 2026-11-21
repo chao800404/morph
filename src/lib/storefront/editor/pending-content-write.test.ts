@@ -17,6 +17,60 @@ import {
 } from "./pending-content-write";
 import * as pendingContentWrite from "./pending-content-write";
 
+describe("heldContentProps (H1): only the keys an entry really holds", () => {
+  const field = { value: null, sourceGeneration: 1 } as const;
+  it("an Inspector input: the staged field's root, not the rest of the panel's copy", () => {
+    // `props` is the Inspector's whole copy: `items` is only the copy's value.
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: {
+        heading: "Typed",
+        items: [{ id: "a" }, { id: "b" }],
+        count: 1,
+      },
+      fields: { heading: { ...field, value: "Typed" } },
+    };
+    expect(pendingContentWrite.heldContentProps(entry)).toEqual({
+      heading: "Typed",
+    });
+  });
+
+  it("nested field paths and list actions hold their top-level key", () => {
+    const entry: PendingContentEntry = {
+      sectionId: "hero",
+      props: {
+        heading: "Stored",
+        items: [{ id: "a", title: "A2" }],
+        links: [{ id: "x" }],
+      },
+      fields: { "items.0.title": { ...field, value: "A2" } },
+      listActionPaths: ["links"],
+    };
+    expect(pendingContentWrite.heldContentProps(entry)).toEqual({
+      items: [{ id: "a", title: "A2" }],
+      links: [{ id: "x" }],
+    });
+  });
+
+  it("a reset root has no value to show; a field-less entry holds all its props; no entry, nothing", () => {
+    expect(
+      pendingContentWrite.heldContentProps({
+        sectionId: "hero",
+        props: { heading: "Stored" },
+        fields: {},
+        resetProps: ["subheading"],
+      }),
+    ).toEqual({});
+    expect(
+      pendingContentWrite.heldContentProps({
+        sectionId: "hero",
+        props: { heading: "Stored", count: 2 },
+      }),
+    ).toEqual({ heading: "Stored", count: 2 });
+    expect(pendingContentWrite.heldContentProps(undefined)).toBeUndefined();
+  });
+});
+
 describe("per-field source recovery", () => {
   const stored = { heading: "Old heading", subheading: "Old subheading" };
   const stage = (

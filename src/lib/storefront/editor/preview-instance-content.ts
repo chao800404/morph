@@ -258,6 +258,57 @@ export function previewSectionPostShowsAccepted(
   return JSON.stringify(post) === JSON.stringify(accepted);
 }
 
+/**
+ * The props an Inspector input shows the canvas: the section as the editor
+ * has accepted it, with what the editor holds on top of it, and nothing else
+ * from the Inspector's own copy.
+ *
+ * The post carrying them is stamped with the accepted copy's generation
+ * (`postPreviewSectionProps`), and the frame's acknowledgement of it is the
+ * proof later inputs and held releases rely on. The Inspector's copy can be
+ * older than that accepted copy for fields the author did not touch: a write
+ * answered but not yet rendered, or one made outside the panel (a canvas
+ * reorder, an undo). Posting it whole would put those old values on the
+ * canvas under a token naming the newer copy.
+ *
+ * On `accepted`, in order: the write sent and not yet answered
+ * (`unconfirmed`), then the pending entry, this input staged in it. Each as
+ * its fields when it has them: keys it resets removed, then each field set
+ * at its path, a nested one on the entry's own copy of its root when the
+ * accepted copy has none. A field whose rows no longer match the copy it is
+ * set on is left out, as the write path leaves it out; an entry without
+ * fields lays its props over whole, as `instanceReplaySection` does. Shown
+ * whatever the source or the server said of them: this is what the author
+ * sees, not what a write would send. `enabled` is not a prop; the post says
+ * visibility on its own.
+ */
+export function inspectorInputSectionProps(args: {
+  accepted: Record<string, unknown>;
+  unconfirmed: PendingContentEntry | undefined;
+  pending: PendingContentEntry | undefined;
+}): Record<string, unknown> {
+  let merged: Record<string, unknown> = { ...args.accepted };
+  for (const entry of [args.unconfirmed, args.pending]) {
+    if (!entry) continue;
+    if (!entry.fields) {
+      merged = { ...merged, ...entry.props };
+      continue;
+    }
+    for (const key of entry.resetProps ?? []) delete merged[key];
+    for (const [path, field] of Object.entries(entry.fields)) {
+      const root = path.split(".")[0]!;
+      const base =
+        path.includes(".") && merged[root] === undefined
+          ? { ...merged, [root]: entry.props[root] }
+          : merged;
+      if (!rowsStillMatch(base, path, field.rows)) continue;
+      merged = setFieldPathValue(base, path, field.value);
+    }
+  }
+  delete merged.enabled;
+  return merged;
+}
+
 /** The frame, ready round and route a replay is for. */
 export type InstanceReplayFrame = Readonly<{
   key: string;

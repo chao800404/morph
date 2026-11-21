@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createInstanceContentReplay,
   INSTANCE_REPLAY_CONFIRM_TIMEOUT_MS,
+  inspectorInputSectionProps,
   instanceReplaySection,
   previewSectionPostShowsAccepted,
   type InstanceReplayFrame,
@@ -702,5 +703,119 @@ describe("createInstanceContentReplay", () => {
         expect(h.unconfirmed()).toBe(1);
       });
     });
+  });
+});
+
+describe("inspectorInputSectionProps", () => {
+  const accepted = {
+    heading: "W1 heading",
+    subheading: "W1 summary",
+    items: [
+      { id: "b", title: "B" },
+      { id: "a", title: "A" },
+    ],
+  };
+
+  it("takes every field the editor holds nothing for from the accepted copy", () => {
+    // The Inspector's copy (pending.props) still has the rows in their old
+    // order and the old subheading; only the input's field is on top.
+    const entry = pending(
+      { count: field(5) },
+      {
+        subheading: "Old summary",
+        items: [
+          { id: "a", title: "A" },
+          { id: "b", title: "B" },
+        ],
+      },
+    );
+    expect(
+      inspectorInputSectionProps({
+        accepted,
+        unconfirmed: undefined,
+        pending: entry,
+      }),
+    ).toEqual({ ...accepted, count: 5 });
+  });
+
+  it("lays the unanswered write under the pending entry, each by its fields", () => {
+    expect(
+      inspectorInputSectionProps({
+        accepted,
+        unconfirmed: pending({ heading: field("Sent"), subheading: field("Sent sub") }),
+        pending: pending({ heading: field("Typing") }),
+      }),
+    ).toEqual({ ...accepted, heading: "Typing", subheading: "Sent sub" });
+  });
+
+  it("shows a field whatever the source said of it: refused or on another source generation", () => {
+    expect(
+      inspectorInputSectionProps({
+        accepted,
+        unconfirmed: undefined,
+        pending: pending({
+          heading: field("Refused", { rejected: true }),
+          subheading: field("Older source", { sourceGeneration: GEN - 1 }),
+        }),
+      }),
+    ).toEqual({ ...accepted, heading: "Refused", subheading: "Older source" });
+  });
+
+  it("sets a row field on the row it was made on, and leaves it out when the rows moved", () => {
+    const onRowA = field("A typed", { rows: [{ rowPath: "items.1", id: "a" }] });
+    expect(
+      inspectorInputSectionProps({
+        accepted,
+        unconfirmed: undefined,
+        pending: pending({ "items.1.title": onRowA }),
+      }).items,
+    ).toEqual([
+      { id: "b", title: "B" },
+      { id: "a", title: "A typed" },
+    ]);
+    // Made when row "a" was first: the accepted copy has "b" there now.
+    const moved = field("A typed", { rows: [{ rowPath: "items.0", id: "a" }] });
+    expect(
+      inspectorInputSectionProps({
+        accepted,
+        unconfirmed: undefined,
+        pending: pending({ "items.0.title": moved }),
+      }).items,
+    ).toEqual(accepted.items);
+  });
+
+  it("composes a nested field on the entry's own root when the accepted copy has none", () => {
+    const entry = pending(
+      { "links.0.label": field("Shop", { rows: [{ rowPath: "links.0", id: "l1" }] }) },
+      { links: [{ id: "l1", label: "Default" }] },
+    );
+    expect(
+      inspectorInputSectionProps({ accepted: {}, unconfirmed: undefined, pending: entry }),
+    ).toEqual({ links: [{ id: "l1", label: "Shop" }] });
+  });
+
+  it("removes the keys an entry resets, lays a field-less entry over whole, and drops enabled", () => {
+    expect(
+      inspectorInputSectionProps({
+        accepted: { ...accepted, enabled: true },
+        unconfirmed: {
+          sectionId: "hero",
+          props: {},
+          fields: {},
+          resetProps: ["subheading"],
+        },
+        pending: { sectionId: "hero", props: { heading: "Whole", enabled: false } },
+      }),
+    ).toEqual({ heading: "Whole", items: accepted.items });
+  });
+
+  it("with nothing held: the accepted copy as it is", () => {
+    expect(
+      inspectorInputSectionProps({
+        accepted,
+        unconfirmed: undefined,
+        pending: undefined,
+      }),
+    ).toEqual(accepted);
   });
 });

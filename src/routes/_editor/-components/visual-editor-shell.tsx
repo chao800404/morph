@@ -41,6 +41,7 @@ import {
   shownListIsBehind,
   draftIsAsCommitted,
   inputEndsCommit,
+  heldContentProps,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { resolveSectionContentDeclaration } from "@/lib/storefront/editor/section-content-declaration";
@@ -345,6 +346,7 @@ import {
   contentEntryVisibilityIntent,
   createInstanceContentReplay,
   previewSectionHidden,
+  inspectorInputSectionProps,
   previewSectionPost,
   previewSectionPostShowsAccepted,
   type InstanceContentReplay,
@@ -15627,15 +15629,23 @@ export function VisualEditorShell({
     },
     [contentBasisFor, templateIdForSection],
   );
+  /** The section's pending entry on the page shown; assigned below. */
+  const heldEntryForSectionRef = useRef<
+    (sectionId: string) => PendingContentEntry | undefined
+  >(() => undefined);
   /**
-   * The unsaved input this editor holds for a section of the page shown, as
-   * the canvas is rebuilt from it (`canvasRebuildSourceRef.pendingProps`:
-   * the section's pending entry, under the key the write path uses for this
-   * page's document). The Inspector shows it when it opens the section, so
-   * a field opened again shows what the canvas shows. Read only.
+   * The unsaved input this editor holds for a section of the page shown: of
+   * the section's pending entry (under the key the write path uses for this
+   * page's document), only the keys it really holds (`heldContentProps`).
+   * The Inspector shows them when it opens the section, so a field opened
+   * again shows what the canvas shows, and opens their baseline on the
+   * accepted copy. The entry's `props` is the Inspector's whole copy, so
+   * passing all of it would pin every untouched key at the copy's value
+   * (H1). Read only.
    */
   const heldContentForSection = useCallback(
-    (sectionId: string) => canvasRebuildSourceRef.current.pendingProps(sectionId),
+    (sectionId: string) =>
+      heldContentProps(heldEntryForSectionRef.current(sectionId)),
     [],
   );
 
@@ -15823,9 +15833,10 @@ export function VisualEditorShell({
           presentationProof,
         );
       }
-      // 1. Instant 0ms visual sync to iframe canvas
-      // A held input is shown too when the frame on screen can acknowledge
-      // what it shows: the round that acknowledges it is what releases it
+      // 1. Visual sync to the iframe canvas (`showInput`, once the input is
+      // staged below). A held input is shown too when the frame on screen
+      // can acknowledge what it shows: the round that acknowledges it is
+      // what releases it
       // (coalesced presentation release), and a post still waiting on signing is
       // superseded, so rapid edits coalesce into its one post. A frame that
       // cannot acknowledge is told nothing new, and an older
@@ -15839,18 +15850,46 @@ export function VisualEditorShell({
         frameRecord.capabilities.has("section-presentation-ack-v1"),
       );
       const shownWhileHeld = !presentationReadyAtInput && frameCanAcknowledge;
-      const previewProps = parsePreviewSectionProps(nextProps);
       const awaitingSignedBefore = awaitingSignedPostRef.current.has(sectionId);
       if (!presentationReadyAtInput && !frameCanAcknowledge) {
         cancelAwaitingSignedPost(sectionId);
-      } else if (!options?.skipPreviewSync && previewProps) {
-        syncPreviewSectionProps(sectionId, previewProps);
-      } else if (previewProps) {
-        supersedeAwaitingSignedPost(sectionId, previewProps);
       }
+      /**
+       * Shows the canvas `props` for this input, as the frame on screen may
+       * be told it (above). Called once, wherever the input ends below.
+       */
+      const showInput = (props: Record<string, unknown>) => {
+        if (!presentationReadyAtInput && !frameCanAcknowledge) return;
+        const previewProps = parsePreviewSectionProps(props);
+        if (!previewProps) return;
+        if (!options?.skipPreviewSync) {
+          syncPreviewSectionProps(sectionId, previewProps);
+        } else {
+          supersedeAwaitingSignedPost(sectionId, previewProps);
+        }
+      };
+      /**
+       * The section as the editor holds it now: the accepted copy with the
+       * unanswered and pending fields on top (`inspectorInputSectionProps`),
+       * never the Inspector's whole copy. The post is stamped with the
+       * accepted copy's generation, so what it carries has to be that copy.
+       */
+      const heldSectionView = () => {
+        const state = previewSectionStateRef.current(sectionId);
+        return inspectorInputSectionProps({
+          accepted: acceptedSectionProps(sectionId),
+          unconfirmed: state?.unconfirmed,
+          pending: state?.pending,
+        });
+      };
 
       const templateId = presentationTemplateId;
-      if (!templateId) return;
+      // No document owns the section: nothing is accepted or pending for it,
+      // and no post of it is stamped with a generation.
+      if (!templateId) {
+        showInput(nextProps);
+        return;
+      }
       // One entry per section: an edit still held under the route
       // placeholder takes this one in, and is sent as the placeholder's.
       const key = contentKeyFor(templateId, sectionId);
@@ -15882,6 +15921,7 @@ export function VisualEditorShell({
         toast.error(RESELECT_CONTENT_MESSAGE, {
           id: "selection-source-conflict",
         });
+        showInput(heldSectionView());
         return;
       }
       const existingProps = prior?.props ?? {};
@@ -15944,7 +15984,10 @@ export function VisualEditorShell({
                     : path,
                 )?.sourceGeneration ?? null),
       });
-      if (!staged) return;
+      if (!staged) {
+        showInput(heldSectionView());
+        return;
+      }
       // New input after the author left a field, to it or to a sibling the
       // commit never held: that commit is over, and only leaving a field
       // again commits what is there now.
@@ -15969,6 +16012,9 @@ export function VisualEditorShell({
                 : {}),
             },
       );
+      // 1. Instant visual sync to the iframe canvas, of the section with
+      // this input staged in it.
+      showInput(heldSectionView());
       if (!presentationReadyAtInput) {
         if (existingTimer) pendingPropsTimersRef.current.delete(key);
         // Held, not sent, and shown (above): the round that acknowledges
@@ -16354,19 +16400,21 @@ export function VisualEditorShell({
   // handler below and the Inspector's input path read it, with the section's
   // pending input on top. Read only; asked once per section, when the edit
   // ends.
+  const pendingEntryForSection = (
+    sectionId: string,
+  ): PendingContentEntry | undefined => {
+    if (!activeTemplate) return undefined;
+    const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
+    return pendingPropsMapRef.current.get(contentKeyFor(templateId, sectionId));
+  };
   canvasRebuildSourceRef.current = {
     storedCopy: (sectionId) => {
       if (!activeTemplate) return undefined;
       return acceptedSectionProps(sectionId);
     },
-    pendingProps: (sectionId) => {
-      if (!activeTemplate) return undefined;
-      const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
-      return pendingPropsMapRef.current.get(
-        contentKeyFor(templateId, sectionId),
-      )?.props;
-    },
+    pendingProps: (sectionId) => pendingEntryForSection(sectionId)?.props,
   };
+  heldEntryForSectionRef.current = pendingEntryForSection;
   useEffect(() => {
     inlineTextCommitHandlerRef.current = (message) => {
       const selection = activeSelection;
