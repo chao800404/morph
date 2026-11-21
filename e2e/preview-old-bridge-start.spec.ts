@@ -478,14 +478,22 @@ function recordPreviewDocuments(page: Page) {
     } catch {
       return;
     }
-    if (new URL(response.url()).pathname.endsWith(ROUTE_PATH)) {
-      documents.push(response.text().catch(() => null));
-    }
+    // Every preview document. The frame opens at the preview's root (its
+    // query carries the editor's channel) and the editor then routes inside
+    // the page to ROUTE_PATH (dev run 2026-11-21: two "/" documents, the
+    // first and the one refresh), so the HTML the server sent is the root
+    // route's, not the card's.
+    documents.push(response.text().catch(() => null));
   });
   return documents;
 }
 
-/** The frame is the full Start page: its client module, no client-only bridge tag, server-rendered. */
+/**
+ * The frame is the full Start page: its client module, no client-only
+ * bridge tag, and HTML the server rendered (workerd's SSR, with the
+ * platform's client module script and rendered sections in it) rather than
+ * a client-only shell.
+ */
 async function expectStartPage(
   page: Page,
   documents: Promise<string | null>[],
@@ -509,10 +517,15 @@ async function expectStartPage(
   expect(htmls.length, "the preview document's HTML was read").toBeGreaterThan(
     0,
   );
-  expect(
-    htmls[htmls.length - 1],
-    "the server rendered the card's stored title",
-  ).toContain(title);
+  const html = htmls[htmls.length - 1]!;
+  expect(html, "the server sent the platform's Start client module").toContain(
+    `src="/${START_CLIENT_PATH}"`,
+  );
+  expect(html, "the server rendered sections into the HTML").toContain(
+    "data-storefront-section-id",
+  );
+  // The route the editor routed to, rendered in the page.
+  await expect(cardTitle(page)).toHaveText(title);
 }
 
 test.describe("the editor on a full Start preview page running an older bridge", () => {
