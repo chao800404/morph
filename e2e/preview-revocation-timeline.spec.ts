@@ -820,11 +820,30 @@ async function signIn(
   credentials: { email: string; password: string },
 ) {
   const { baseURL } = test.info().project.use;
-  const signedIn = await context.request.post("/api/auth/sign-in/email", {
-    headers: { origin: new URL(baseURL!).origin },
-    data: credentials,
-  });
-  expect(signedIn.ok(), "a sign-in for this case's own session").toBe(true);
+  const post = () =>
+    context.request.post("/api/auth/sign-in/email", {
+      headers: { origin: new URL(baseURL!).origin },
+      data: credentials,
+    });
+  let signedIn = await post();
+  // The cases sign in one after another from one address, and Morph allows 5
+  // sign-ins per 60 s there, the window running from the last one allowed
+  // (src/auth/index.ts rateLimit). Several cases inside a minute each reach
+  // the sixth. The limit is honoured, not reset: wait the time it names, once.
+  if (signedIn.status() === 429) {
+    const retryAfter = Number(signedIn.headers()["x-retry-after"] ?? "60");
+    const waitMs =
+      (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60) *
+        1_000 +
+      1_000;
+    console.log(`[1c] sign-in rate limited; waiting ${waitMs} ms`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    signedIn = await post();
+  }
+  expect(
+    signedIn.ok(),
+    `a sign-in for this case's own session (${signedIn.status()})`,
+  ).toBe(true);
 }
 
 type CaseGrant = {
