@@ -134,11 +134,28 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   )
     .filter((name) => name.endsWith(".mjs"))
     .sort();
-  const wired = [
-    ...container.matchAll(
-      /scripts\/container-acceptance-targets\/([a-z0-9-]+\.mjs)/g,
-    ),
-  ].map((match) => match[1]);
+  const targetsIn = (block) =>
+    [
+      ...block.matchAll(
+        /scripts\/container-acceptance-targets\/([a-z0-9-]+\.mjs)/g,
+      ),
+    ].map((match) => match[1]);
+  const wired = targetsIn(container);
+  // Targets another job already checks in target mode. Each is pinned to its
+  // own job, so moving or dropping one fails here rather than passing as
+  // "covered".
+  const wiredElsewhere = {
+    "editor-e2e-container-presentation-ack": ["presentation-ack-refresh.mjs"],
+  };
+  for (const [job, names] of Object.entries(wiredElsewhere)) {
+    assert.deepEqual(targetsIn(withoutComments(jobBlock(workflow, job))), names);
+  }
+  const wiredOutsideContainer = Object.values(wiredElsewhere).flat();
+  assert.deepEqual(
+    targetsIn(withoutComments(workflow)).sort(),
+    [...wired, ...wiredOutsideContainer].sort(),
+    "every target the workflow checks must belong to a pinned job",
+  );
   const deferred = [
     "b1-publish-rollback.mjs",
     "navigation-matrix-public.mjs",
@@ -157,11 +174,15 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
     "deferred targets must be unique",
   );
   assert.equal(
-    wired.filter((name) => deferred.includes(name)).length,
+    [...wired, ...wiredOutsideContainer].filter((name) => deferred.includes(name))
+      .length,
     0,
     "wired and deferred targets must be disjoint",
   );
-  assert.deepEqual([...wired, ...deferred].sort(), targetNames);
+  assert.deepEqual(
+    [...wired, ...wiredOutsideContainer, ...deferred].sort(),
+    targetNames,
+  );
 
   const requiredOrder = [
     "- name: Run M1 container lifecycle acceptance",
