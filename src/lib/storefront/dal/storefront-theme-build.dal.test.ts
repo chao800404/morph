@@ -307,6 +307,53 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
     });
   });
 
+  describe("theme ownership against soft-deleted rows", () => {
+    beforeEach(() => {
+      seedStorefront("storefront-a");
+      seedTheme("storefront-a", "theme-a");
+      seedRevision("storefront-a", "theme-a", "rev-100", 1);
+      seedStorefront("storefront-b");
+      seedTheme("storefront-b", "theme-b");
+    });
+
+    it("accepts a live theme of a live storefront", async () => {
+      expect(
+        await storefrontThemeBuildDal.verifyThemeOwnership("storefront-a", "theme-a"),
+      ).toBe(true);
+    });
+
+    it("refuses another storefront's theme", async () => {
+      expect(
+        await storefrontThemeBuildDal.verifyThemeOwnership("storefront-a", "theme-b"),
+      ).toBe(false);
+    });
+
+    it("refuses a soft-deleted theme", async () => {
+      sqlite.exec("UPDATE storefront_themes SET deleted_at = 'deleted' WHERE id = 'theme-a'");
+      expect(
+        await storefrontThemeBuildDal.verifyThemeOwnership("storefront-a", "theme-a"),
+      ).toBe(false);
+    });
+
+    it("refuses a live theme whose storefront is soft-deleted, and creates no build", async () => {
+      sqlite.exec("UPDATE storefronts SET deleted_at = 'deleted' WHERE id = 'storefront-a'");
+      expect(
+        await storefrontThemeBuildDal.verifyThemeOwnership("storefront-a", "theme-a"),
+      ).toBe(false);
+      await expect(
+        storefrontThemeBuildDal.createBuild("storefront-a", "theme-a", {
+          sourceRevisionId: "rev-100",
+        }),
+      ).rejects.toThrow("Theme not found or does not belong to storefront");
+      expect(
+        sqlite.prepare("SELECT COUNT(*) AS n FROM storefront_theme_builds").get(),
+      ).toEqual({ n: 0 });
+      expect(
+        await storefrontThemeBuildDal.verifyThemeOwnership("storefront-b", "theme-b"),
+      ).toBe(true);
+    });
+  });
+
   describe("State Machine Transition Guarantees", () => {
     it("allows valid lifecycle: queued -> building -> succeeded", async () => {
       seedStorefront("storefront-a");

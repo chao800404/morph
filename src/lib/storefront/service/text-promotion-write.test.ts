@@ -706,4 +706,44 @@ describe("commitTextPromotion", () => {
     expect(sourceGeneration()).toBe(1);
     expect(revisionCount()).toEqual({ n: 0 });
   });
+
+  // No ownership read runs before this batch: its guards decide it. The
+  // template guard already refuses a deleted storefront; the theme guard and
+  // the conflict diagnosis must agree with it, so the refusal names the Theme.
+  describe("ownership guard against soft-deleted rows", () => {
+    const untouched = () => {
+      expect(fileRow()).toEqual({ version: 1, content: PROMO });
+      expect(sourceGeneration()).toBe(1);
+      expect(template()).toEqual({ generation: 1, revision: null });
+    };
+
+    it("writes both halves for a live theme of a live storefront", async () => {
+      seed();
+      await commit();
+      expect(fileRow()).toEqual({ version: 2, content: "rewritten" });
+      expect(sourceGeneration()).toBe(2);
+    });
+
+    it("writes nothing for a soft-deleted theme", async () => {
+      seed();
+      sqlite.exec(
+        "UPDATE storefront_themes SET deleted_at = 'deleted' WHERE id = 'theme-a'",
+      );
+      await expect(commit()).rejects.toEqual(
+        new TextPromotionConflictError("source-generation"),
+      );
+      untouched();
+    });
+
+    it("writes nothing for a live theme of a soft-deleted storefront", async () => {
+      seed();
+      sqlite.exec(
+        "UPDATE storefronts SET deleted_at = 'deleted' WHERE id = 'storefront-a'",
+      );
+      await expect(commit()).rejects.toEqual(
+        new TextPromotionConflictError("source-generation"),
+      );
+      untouched();
+    });
+  });
 });

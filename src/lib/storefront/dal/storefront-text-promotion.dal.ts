@@ -150,8 +150,10 @@ async function diagnoseConflict(
   args: Parameters<typeof commitTextPromotion>[0],
 ): Promise<TextPromotionConflict> {
   const theme = await env.DATABASE.prepare(
-    `SELECT source_generation AS generation FROM storefront_themes
-     WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL`,
+    `SELECT th.source_generation AS generation FROM storefront_themes th
+     INNER JOIN storefronts s ON s.id = th.storefront_id
+     WHERE th.id = ?1 AND th.storefront_id = ?2
+       AND th.deleted_at IS NULL AND s.deleted_at IS NULL`,
   )
     .bind(args.themeId, args.storefrontId)
     .first<{ generation: number }>();

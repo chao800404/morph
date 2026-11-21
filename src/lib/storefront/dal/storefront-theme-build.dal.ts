@@ -3,6 +3,7 @@ import {
   storefrontThemeBuilds,
   storefrontThemeRevisions,
   storefrontThemes,
+  storefronts,
   type StorefrontThemeBuildContentDependency,
 } from "@/db/storefront.schema";
 import type {
@@ -95,7 +96,7 @@ export const storefrontThemeBuildDal = {
   },
 
   /**
-   * Validates that theme belongs to storefront and is not deleted.
+   * Validates that theme belongs to storefront and neither is deleted.
    */
   async verifyThemeOwnership(
     storefrontId: string,
@@ -105,11 +106,13 @@ export const storefrontThemeBuildDal = {
     const [theme] = await db
       .select({ id: storefrontThemes.id })
       .from(storefrontThemes)
+      .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
       .where(
         and(
           eq(storefrontThemes.id, themeId),
           eq(storefrontThemes.storefrontId, storefrontId),
           isNull(storefrontThemes.deletedAt),
+          isNull(storefronts.deletedAt),
         ),
       )
       .limit(1);
