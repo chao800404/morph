@@ -110,8 +110,19 @@ export function editorWritesOpen(
   return editorWriteRefusal(gate, area) === null;
 }
 
-/** Whether nobody is signed in, as far as this Theme's editor knows. */
+/**
+ * Whether nobody is signed in, as far as this Theme's editor knows — the
+ * account the held work belongs to not proven back.
+ *
+ * Read only for the preview's own requests (its file sync and lease), which
+ * save nothing. A verification that found that account back (`verified`)
+ * ends it: the gate stays closed to saves until the author confirms, but the
+ * preview may serve that account again.
+ */
 export function editorSignedOut(scope: WorkspaceScope): boolean {
-  return editorWriteGateFor(useEditorWriteGateStore.getState().gates, scope)
-    .signedOut;
+  const gate = editorWriteGateFor(
+    useEditorWriteGateStore.getState().gates,
+    scope,
+  );
+  return gate.signedOut && gate.recovery !== "verified";
 }

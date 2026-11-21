@@ -7859,7 +7859,9 @@ export function VisualEditorShell({
       }
       // Signed out, the write would only be refused, and it carries this
       // tab's unsaved drafts to the server; the page catches up once writes
-      // resume and the drafts are saved through the ordinary path.
+      // resume and the drafts are saved through the ordinary path. Once the
+      // same account is verified back it goes out again, saves still waiting
+      // for the author: a frame that came up meanwhile needs it to confirm.
       if (
         editorSignedOut({
           storefrontId: context.storefront.id,
