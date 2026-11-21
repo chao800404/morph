@@ -269,10 +269,27 @@ test.describe("unsaved work when the signed-in account changes", () => {
         "Your sign-in has expired",
       );
       await context.addCookies(session);
+      // Verified reads everything again (`invalidateQueries`); the preview
+      // server's refetch remounts the frame, and the new frame's ready reads
+      // the Theme for its content replay. That read must be answered before
+      // the other account signs in: sent after it, it is refused as
+      // ACCOUNT_CHANGED and closes the editor before Save is pressed, which
+      // is a different case (run 44724395884). Waited for, not slept on.
+      const replayed = page.waitForEvent("console", {
+        predicate: (message) =>
+          message.text().startsWith("[preview-instance] content replayed"),
+        timeout: 60_000,
+      });
       await pausedNotice(page)
         .getByRole("button", { name: "Check again" })
         .click();
       await expect(pausedNotice(page)).toContainText("Signed in again");
+      await replayed;
+      // Still verified once the frame settled: the Save below is the first
+      // thing to meet the account change.
+      await expect(
+        pausedNotice(page).getByRole("button", { name: "Save my changes" }),
+      ).toBeVisible();
 
       // Between checking and saving, another tab signs in as someone else.
       await signIn(context, SECOND_EMAIL);
