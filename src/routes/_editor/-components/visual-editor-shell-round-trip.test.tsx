@@ -3023,6 +3023,166 @@ describe("a list both writers changed", () => {
         debounce.restore();
       }
     });
+
+    describe("and of a text field", () => {
+      /**
+       * The heading typed, answered and saved, then Undo pressed. The
+       * document context never moves here (nothing refetches it), as when a
+       * refetch returns the copy the editor already held. The Undo's own
+       * write is held until `answerUndo()`.
+       */
+      async function typeThenUndo() {
+        const { listContext, client, source } = declaredListFixture();
+        vi.spyOn(toast, "error").mockImplementation(() => "");
+        renderShellWithHero(source, "hero", listContext, client);
+        await openSection("Featured");
+        const answer = answerWithDocument(listContext);
+
+        updateSectionProps.mockImplementationOnce(answer as never);
+        const heading = screen.getByDisplayValue("Welcome");
+        act(() => heading.focus());
+        fireEvent.input(heading, { target: { value: "X" } });
+        act(() => heading.blur());
+        await waitFor(() =>
+          expect(updateSectionProps).toHaveBeenCalledTimes(1),
+        );
+        expect(updateSectionProps.mock.calls[0]![0].data.props.heading).toBe(
+          "X",
+        );
+        await waitFor(() =>
+          expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+        );
+        expect(screen.getByDisplayValue("X")).toBeTruthy();
+        const undo = screen.getByRole("button", {
+          name: "Undo",
+        }) as HTMLButtonElement;
+        await waitFor(() => expect(undo.disabled).toBe(false));
+
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        updateSectionProps.mockImplementationOnce((async (call: never) => {
+          await released;
+          return answer(call);
+        }) as never);
+        fireEvent.click(undo);
+        await waitFor(() =>
+          expect(updateSectionProps).toHaveBeenCalledTimes(2),
+        );
+        expect(
+          updateSectionProps.mock.calls[1]![0].data.props.heading,
+          "the undo writes the heading back",
+        ).toBe("Welcome");
+        return {
+          answerUndo: async () => {
+            await act(async () => {
+              release();
+              await released;
+            });
+            await flushFrames();
+          },
+        };
+      }
+
+      it("shows the text as the undo left it", async () => {
+        const { answerUndo } = await typeThenUndo();
+        await answerUndo();
+        await waitFor(() =>
+          expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+        );
+        await waitFor(() =>
+          expect(
+            screen.queryByDisplayValue("Welcome"),
+            "the original heading",
+          ).toBeTruthy(),
+        );
+        expect(screen.queryByDisplayValue("X")).toBeNull();
+      });
+
+      it("keeps another field's unsaved draft of the same section as it is", async () => {
+        const { answerUndo } = await typeThenUndo();
+        const debounce = holdContentDebounce();
+        try {
+          // A row title typed while the Undo is out: held, not sent.
+          const row = screen.getByDisplayValue("A");
+          act(() => row.focus());
+          fireEvent.input(row, { target: { value: "A typed" } });
+          act(() => row.blur());
+          await flushFrames();
+          expect(
+            updateSectionProps,
+            "the draft is not sent",
+          ).toHaveBeenCalledTimes(2);
+          await answerUndo();
+          await waitFor(() =>
+            expect(
+              screen.queryByDisplayValue("Welcome"),
+              "the original heading",
+            ).toBeTruthy(),
+          );
+          expect(screen.getByDisplayValue("A typed")).toBeTruthy();
+          expect(rowTitles()).toEqual(["A typed", "B"]);
+        } finally {
+          debounce.restore();
+        }
+      });
+
+      it("does not overwrite the author's own unanswered input to that text", async () => {
+        const { answerUndo } = await typeThenUndo();
+        const debounce = holdContentDebounce();
+        try {
+          const heading = screen.getByDisplayValue("X");
+          act(() => heading.focus());
+          fireEvent.input(heading, { target: { value: "Y" } });
+          act(() => heading.blur());
+          await flushFrames();
+          expect(
+            updateSectionProps,
+            "the input is not sent",
+          ).toHaveBeenCalledTimes(2);
+          await answerUndo();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          await flushFrames();
+          expect(
+            screen.getByDisplayValue("Y"),
+            "the author's text is kept",
+          ).toBeTruthy();
+          expect(screen.queryByDisplayValue("Welcome")).toBeNull();
+        } finally {
+          debounce.restore();
+        }
+      });
+
+      it("leaves the text the author is in as it is, and shows the undo's once they leave it", async () => {
+        const { answerUndo } = await typeThenUndo();
+        // In the heading, nothing typed: no unanswered input of theirs.
+        const heading = screen.getByDisplayValue("X") as HTMLInputElement;
+        act(() => heading.focus());
+        await answerUndo();
+        await waitFor(() =>
+          expect(saveStatus()).toMatch(/^(Unpublished|Published)$/),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await flushFrames();
+        expect(heading.isConnected, "the input is not remounted").toBe(true);
+        expect(document.activeElement, "it keeps its focus").toBe(heading);
+        expect(heading.value, "its text is not replaced").toBe("X");
+
+        act(() => heading.blur());
+        await waitFor(() =>
+          expect(
+            screen.queryByDisplayValue("Welcome"),
+            "the undo's text, once the author left the input",
+          ).toBeTruthy(),
+        );
+        expect(screen.queryByDisplayValue("X")).toBeNull();
+        expect(
+          updateSectionProps,
+          "nothing is written for it",
+        ).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 });
 

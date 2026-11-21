@@ -271,10 +271,36 @@ export function shownListIsBehind(args: {
   listRoot: string;
   unanswered: Iterable<PendingContentEntry>;
 }): boolean {
+  return shownValueIsBehind({
+    shown: args.shown,
+    accepted: args.accepted,
+    key: args.listRoot,
+    unanswered: args.unanswered,
+  });
+}
+
+/**
+ * Whether the value a panel shows for top-level content key `key` (a list,
+ * or a scalar such as a heading's text) lags the newest copy of the section
+ * this editor has accepted: the rule of `shownListIsBehind`, for any key.
+ *
+ * For a scalar it is asked only to correct what is shown, never to decide
+ * what is written: after an answered Undo or Redo, the panel's copy of a key
+ * the step wrote can still hold what the step replaced when the document
+ * context does not move. An unanswered input of this editor touching the key
+ * (`contentEntryTouchesPath`) means the shown value is the author's, not
+ * behind; an entry for other fields of the section does not.
+ */
+export function shownValueIsBehind(args: {
+  shown: unknown;
+  accepted: Readonly<Record<string, unknown>>;
+  key: string;
+  unanswered: Iterable<PendingContentEntry>;
+}): boolean {
   for (const entry of args.unanswered) {
-    if (contentEntryTouchesPath(entry, args.listRoot)) return false;
+    if (contentEntryTouchesPath(entry, args.key)) return false;
   }
-  return !sameContent(args.shown, args.accepted[args.listRoot]);
+  return !sameContent(args.shown, args.accepted[args.key]);
 }
 
 /** Whether one unanswered write belongs to the selected document and list. */
