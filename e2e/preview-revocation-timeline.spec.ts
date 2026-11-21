@@ -314,8 +314,12 @@ function d1Write(statements: Array<[string, ...unknown[]]>): number {
   }
 }
 
-/** This run's own preview container (never a developer's `workerd-morph-…`). */
-function ownPreviewContainer(): string {
+/**
+ * The e2e runs' preview containers (never a developer's `workerd-morph-…`).
+ * One run has several: each user's preview is its own container, and the
+ * ban, role-downgrade and remove-user cases each sign in a fresh admin.
+ */
+function e2ePreviewContainers(): string[] {
   const listed = spawnSync(
     "bash",
     [
@@ -330,30 +334,39 @@ function ownPreviewContainer(): string {
     .filter(
       (row) => row.includes("-PreviewSandbox-") && !row.endsWith("-proxy"),
     );
-  expect(own, "exactly one preview container of this run").toHaveLength(1);
-  return own[0]!.split(" ")[0]!;
+  expect(own, "a preview container of an e2e run is up").not.toHaveLength(0);
+  return own.map((row) => row.split(" ")[0]!);
 }
 
-/** The fixture's record for one socket, read inside the container. */
+/**
+ * The fixture's record for one socket, read inside the container that served
+ * it: the one container whose fixture holds this socket's (per-case) name.
+ */
 function fixtureRecord(sock: string): FixtureRecord | null {
   const url = `http://127.0.0.1:${DEV_PORT}${DEV_BASE}${LOG}?sock=${sock}`;
   const script =
     "fetch(process.argv[1],{cache:'no-store'}).then(r=>r.text()).then(t=>console.log('C1LOG '+t),e=>console.log('C1LOG null'))";
-  const ran = spawnSync(
-    "bash",
-    [
-      "-c",
-      'docker exec "$0" node -e "$1" "$2" 3>&-',
-      ownPreviewContainer(),
-      script,
-      url,
-    ],
-    { encoding: "utf8", timeout: 60_000 },
-  );
-  const line = (ran.stdout ?? "")
-    .split("\n")
-    .find((l) => l.startsWith("C1LOG "));
-  return line ? (JSON.parse(line.slice(6)) as FixtureRecord | null) : null;
+  const holding: Array<{ container: string; record: FixtureRecord }> = [];
+  for (const container of e2ePreviewContainers()) {
+    const ran = spawnSync(
+      "bash",
+      ["-c", 'docker exec "$0" node -e "$1" "$2" 3>&-', container, script, url],
+      { encoding: "utf8", timeout: 60_000 },
+    );
+    const line = (ran.stdout ?? "")
+      .split("\n")
+      .find((l) => l.startsWith("C1LOG "));
+    const record = line
+      ? (JSON.parse(line.slice(6)) as FixtureRecord | null)
+      : null;
+    if (record) holding.push({ container, record });
+  }
+  // None holding it is reported by the caller as a harness error.
+  expect(
+    holding.length,
+    `at most one preview container holds this case's socket (${holding.map((h) => h.container).join(", ")})`,
+  ).toBeLessThanOrEqual(1);
+  return holding[0]?.record ?? null;
 }
 
 async function previewFrame(page: Page): Promise<Frame> {
