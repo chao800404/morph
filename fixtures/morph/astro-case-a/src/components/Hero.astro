@@ -1,0 +1,12 @@
+---
+interface Props {
+  title?: string;
+  subtitle?: string;
+}
+
+const { title = "CASE-A-DEFAULT-TITLE", subtitle = "CASE-A-DEFAULT-SUBTITLE" } = Astro.props;
+---
+<section data-case-a-hero>
+  <h1>{title}</h1>
+  <p>{subtitle}</p>
+</section>

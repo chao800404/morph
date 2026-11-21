@@ -1,0 +1,9 @@
+{
+  "name": "morph-astro-case-a",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@astrojs/cloudflare": "14.3.4",
+    "astro": "7.3.5"
+  }
+}
