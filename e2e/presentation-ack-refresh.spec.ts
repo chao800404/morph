@@ -9,6 +9,8 @@ import {
   restoreHeroAfterFailure,
   sharedEditor,
 } from "./helpers/editor-writes-paused";
+import { stopPreviewServer } from "./helpers/preview-server-stop";
+import { themeScopeFromEditorPath } from "./native-compat";
 
 const BRIDGE_PATH = "/src/morph/preview-bridge.ts";
 const WRITE_FUNCTION =
@@ -409,6 +411,23 @@ function asOlderServiceAnswer(body: string): string {
 
 test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
 
+/** The Theme `E2E_EDITOR_PATH` opens, whose preview server a swap replaces. */
+const scope = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
+
+/**
+ * Replaces the running preview server before a start is let through: stops
+ * it, so that start lays the workspace out again and a new instance serves.
+ * A start that differs only in preview content reuses the running server, and
+ * the same instance serving says nothing new about the frame it served. The
+ * answer is "stopped", or the error the stop gave.
+ */
+function replaceServerBeforeStart(page: Page): Promise<string> {
+  return stopPreviewServer(page, scope!).then(
+    () => "stopped",
+    (error: unknown) => String(error),
+  );
+}
+
 test.describe("presentation ack and unsupported bridge refresh", () => {
   restoreHeroAfterFailure();
 
@@ -488,6 +507,8 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     let startCalls = 0;
     /** What the first start's answer was made into; null until it is. */
     let olderServiceAnswer: string | null = null;
+    /** Whether the server was replaced before the background check's start. */
+    let replacedForCheck: string | null = null;
     // The editor's own account of each decision about the frame's bridge.
     const bridgeDecisions: string[] = [];
 
@@ -532,6 +553,11 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
             return route.abort();
           }
         }
+        if (startCalls === 2) {
+          // The swap: the background check's start is answered by a new
+          // service instance, not the one that framed the first page.
+          replacedForCheck = await replaceServerBeforeStart(page);
+        }
       }
       return route.fallback();
     });
@@ -543,6 +569,11 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
         olderServiceAnswer,
         "the first start answered as an older service, with no serving report",
       ).toBe("no serving report");
+      await expect.poll(() => replacedForCheck, { timeout: 45_000 }).not.toBeNull();
+      expect(
+        replacedForCheck,
+        "the preview server was replaced before the background check's start",
+      ).toBe("stopped");
       await expect
         .poll(
           async () => {
@@ -789,6 +820,8 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
     let strippedBridgeCount = 0;
     let startCalls = 0;
     let releaseBackgroundStart: (() => void) | null = null;
+    /** Whether the server was replaced before the held check's start. */
+    let replacedForCheck: string | null = null;
 
     await page.route("**/*", async (route) => {
       const request = route.request();
@@ -816,6 +849,8 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
           await new Promise<void>((resolve) => {
             releaseBackgroundStart = resolve;
           });
+          // Released into a new service instance, as a swap would be.
+          replacedForCheck = await replaceServerBeforeStart(page);
         }
       }
       return route.fallback();
@@ -872,6 +907,11 @@ test.describe("presentation ack and unsupported bridge refresh", () => {
       // Now let the background check confirm the new bridge while still composing.
       stripBridge = false;
       releaseBackgroundStart!();
+      await expect.poll(() => replacedForCheck, { timeout: 30_000 }).not.toBeNull();
+      expect(
+        replacedForCheck,
+        "the preview server was replaced before the held check's start",
+      ).toBe("stopped");
       await page.waitForTimeout(1_500);
 
       // Must NOT have reloaded while composing; caret and draft text stay intact.

@@ -246,9 +246,11 @@ describe.skipIf(!available)(
         expect(await shown()).toBe("A6B-C");
       }
 
-      // A start read before C, landing after it, leaves C — this transport
-      // lays a start with other content out again, and the newer snapshot
-      // on disk is kept; one read after C replaces it.
+      // A start read before C, landing after it, leaves C; one read after C
+      // replaces it. The first start below changes the source too, so it is
+      // laid out again and the newer snapshot on disk is kept; the second
+      // differs from it in content alone, so it reuses the running dev
+      // server and writes its snapshot under the same ticket rule.
       const restart = async (headline: string, contentTicket: number) => {
         const started = await server.start({
           previewId: PREVIEW_ID,
@@ -263,7 +265,8 @@ describe.skipIf(!available)(
           previewContent: JSON.parse(await snapshot(headline, contentTicket)),
         });
         expect(started).toMatchObject({ ok: true });
-        // Laid out again, it listens on a port of its own.
+        // Laid out again, it may listen on a port of its own; reused, it
+        // keeps the one it had.
         if (started.ok) origin = new URL(started.url).origin;
       };
       await restart("A6B-A", 102);

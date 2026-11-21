@@ -15,6 +15,7 @@ import {
   previewFrameOf,
 } from "./helpers";
 import { execLocalD1 } from "./helpers/editor-writes-paused";
+import { stopPreviewServer } from "./helpers/preview-server-stop";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   themeScopeFromEditorPath,
@@ -25,6 +26,11 @@ import {
 /**
  * Text typed on the canvas, not yet committed, when another tab's ordinary
  * start replaces the preview's dev server.
+ *
+ * A start that differs from the running server only in preview content
+ * reuses it, so where only content changed the other tab's start is made a
+ * replacement by stopping the server immediately before it
+ * (`stopPreviewServer`): the stop such a start used to run itself.
  *
  * The text lives only in the frame until it is committed. Before this,
  * replacing the frame for the new server dropped it silently: no notice, the
@@ -236,20 +242,54 @@ async function typingOnCanvas(page: Page, base: string, typed: string) {
   await expect(saveStatus(page)).toHaveAttribute("data-save-state", "unsaved");
 }
 
-/** Another tab opens the editor on the route: its ordinary start. */
-async function anotherTabStarts(browser: Browser, before?: (other: Page) => Promise<void>) {
+/**
+ * Another tab opens the editor on the route: its ordinary start.
+ *
+ * With `stopFirst`, the running dev server is stopped immediately before
+ * that start is sent, from a third signed-in page, so the start lays the
+ * workspace out again and a new instance serves even though nothing but
+ * content changed.
+ */
+async function anotherTabStarts(
+  browser: Browser,
+  before?: (other: Page) => Promise<void>,
+  options: { stopFirst?: boolean } = {},
+) {
   const other = await signedInPage(browser);
+  const stopper = options.stopFirst ? await signedInPage(browser) : null;
   try {
     await other.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
     if (before) await before(other);
+    let stopped: string | null = null;
+    if (stopper) {
+      await stopper.goto("/", { waitUntil: "domcontentloaded" });
+      await other.route(
+        (url) => isServerFunctionCall(url.toString(), "startThemePreviewServer"),
+        async (route) => {
+          if (stopped === null) {
+            stopped = await stopPreviewServer(stopper, scope!).then(
+              () => "stopped",
+              (error: unknown) => String(error),
+            );
+          }
+          return route.fallback();
+        },
+      );
+    }
     const answered = other.waitForResponse(
       (response) => isServerFunctionCall(response.url(), "startThemePreviewServer"),
       { timeout: 180_000 },
     );
     await other.goto(routeUrl(), { waitUntil: "domcontentloaded" });
     expect((await answered).status()).toBe(200);
+    if (stopper) {
+      expect(stopped, "the running server was stopped before the other tab's start").toBe(
+        "stopped",
+      );
+    }
   } finally {
     await other.context().close();
+    await stopper?.context().close();
   }
 }
 
@@ -302,9 +342,11 @@ test.describe("text typed on the canvas when the preview server is replaced", ()
     const mark = randomUUID();
     await markFrame(page, mark);
 
-    // Only content changed since this tab's start, so the other tab's start
-    // lays the workspace out again without moving the source.
-    await anotherTabStarts(browser);
+    // Only content changed since this tab's start, so the source is as it
+    // was. Such a start reuses the running server, so it is stopped first:
+    // the other tab's start then lays the workspace out again and replaces
+    // it, without moving the source.
+    await anotherTabStarts(browser, undefined, { stopFirst: true });
     await heldAndTold(page, mark, base, typed);
     expect(seen.reasons.some((line) => line.startsWith("[preview-instance] reload deferred"))).toBe(
       true,
