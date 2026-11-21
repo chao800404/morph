@@ -887,6 +887,19 @@ async function connectDomain(page: Page, run: CaseRun) {
   expect(domain.success, domain.message).toBe(true);
   run.domainId = domain.data!.id;
   connectedDomains.push(domain.data!.id);
+  // `createStorefrontDomain` takes only a hostname and attaches it to the
+  // oldest storefront (`storefrontDomainDal.activeStorefront`); the
+  // `storefrontId` above is not part of its input. A domain on another
+  // storefront serves that storefront's release, so say so here rather than
+  // as a 404 on the public site later.
+  const [row] = queryD1(
+    "SELECT storefront_id FROM storefront_domains WHERE id = ?1",
+    domain.data!.id,
+  );
+  expect(
+    row?.storefront_id,
+    "the domain is attached to this case's storefront",
+  ).toBe(run.scope.storefrontId);
 }
 
 /** Publishes from the toolbar and records the release in the ledger. */
