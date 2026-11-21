@@ -169,6 +169,46 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
   const queryD1 = (sql: string, ...params: unknown[]) =>
     queryLifecycleD1(STATE_DIR!, sql, ...params) as Array<Record<string, unknown>>;
 
+  /*
+   * `storefrontHarness`'s publishedState and releaseBuild, the same SQL read
+   * through `queryD1`: theirs start a second workerd on the run's D1
+   * (`queryRunD1`), and right after a rollback that reader hit SQLITE_BUSY
+   * while the dev server was writing (dev-run3, D1 "internal error"). A
+   * read-only handle with a busy timeout reads the same rows.
+   */
+  /** Publications a build sealed are left out, as in `storefrontHarness`. */
+  const publishedState = async () =>
+    queryD1(
+      `SELECT
+         (SELECT active_release_id FROM storefronts WHERE id = ?1) AS active,
+         (SELECT COUNT(*) FROM storefront_releases WHERE storefront_id = ?1) AS releases,
+         (SELECT COUNT(*) FROM storefront_content_publications p
+           WHERE p.storefront_id = ?1
+             AND NOT EXISTS (
+               SELECT 1 FROM storefront_theme_builds b
+               WHERE b.content_publication_id = p.id
+             )) AS publications`,
+      scope!.storefrontId,
+    )[0] as { active: string; releases: number; publications: number };
+
+  /** A release's build and what its build proved about content. */
+  const releaseBuild = async (releaseId: string) =>
+    queryD1(
+      `SELECT r.theme_build_id AS buildId,
+              r.content_publication_id AS releaseContent,
+              b.content_publication_id AS buildContent,
+              b.content_dependency AS dependency
+         FROM storefront_releases r
+         JOIN storefront_theme_builds b ON b.id = r.theme_build_id
+        WHERE r.id = ?1`,
+      releaseId,
+    )[0] as {
+      buildId: string;
+      releaseContent: string | null;
+      buildContent: string | null;
+      dependency: "dependent" | "independent" | null;
+    };
+
   /** Every case's sections in its draft route Document, read raw from D1. */
   const draftValues = async (): Promise<CaseValues> => {
     const entries: Array<[string, StoredSections]> = [];
@@ -414,7 +454,6 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     pages: ReadonlyArray<BasCase | null>,
     step: string,
   ): Promise<string> => {
-    const { publishedState } = harness!;
     let previous = (await publishedState()).active;
     for (const testCase of pages) {
       const activeBefore = evidence!.activeRelease();
@@ -546,7 +585,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     expect(before.status).toBe(404);
     for (const value of editedValues(values)) expect(before.body).not.toContain(value);
 
-    const { publishedState, serveActiveRelease, releaseBuild } = harness!;
+    const { serveActiveRelease } = harness!;
     const state0 = await publishedState();
     const activeBefore = evidence!.activeRelease();
     // The home page, then every route page from its own editor: A3's edits
@@ -606,7 +645,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     // The draft is not public while release 1 is active.
     const hidden = await expectPublic(browser, values1!, r2, "r2-draft-unpublished");
 
-    const { publishedState, serveActiveRelease, releaseBuild } = harness!;
+    const { serveActiveRelease } = harness!;
     const activeBefore = evidence!.activeRelease();
     // Only A3's pages changed: each is published from its own editor, and
     // release 2 (the last) carries A4's release 1 revisions forward.
@@ -643,7 +682,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
   test("rollback to release 1 with expectedActiveReleaseId: a stale expectation is refused, then the public site is back to release 1 after a reload", async ({ page, browser }) => {
     test.setTimeout(15 * 60_000);
     evidence!.observePreviewStarts(page);
-    const { publishedState, serveActiveRelease } = harness!;
+    const { serveActiveRelease } = harness!;
     const before = await publishedState();
     expect(before.active).toBe(release2);
 
