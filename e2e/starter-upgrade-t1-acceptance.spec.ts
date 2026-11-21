@@ -729,13 +729,20 @@ async function review(page: Page, run: CaseRun, listed?: string[]) {
   const count = Number(
     /\((\d+)\)/.exec((await heading.textContent()) ?? "")?.[1],
   );
+  // A change row is a button holding two spans, the operation ("create",
+  // "update") and then the path, so its whole text reads "updatepackage.json".
+  // The path is the row's last span; any other button keeps its own name and
+  // is dropped by the path pattern below.
   const shown = (
     await starter
       .getByRole("button")
       .evaluateAll((buttons) =>
         buttons.map(
           (button) =>
-            button.getAttribute("aria-label") ?? button.textContent ?? "",
+            button.querySelector(":scope > span:last-child")?.textContent ??
+            button.getAttribute("aria-label") ??
+            button.textContent ??
+            "",
         ),
       )
   )
