@@ -2,12 +2,21 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { astroRouteRegistry } from "../compiler/astro-route-registry";
-import { buildThemeRouteRegistry } from "../compiler/theme-route-registry";
+import {
+  buildThemeRouteRegistry,
+  parseThemeRouteSourcePath,
+} from "../compiler/theme-route-registry";
+import { contentTargetForRoutePath } from "../theme-template-routes";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { astroFramework } from "./astro.framework";
 import { tanstackStartFramework } from "./tanstack-start.framework";
 import { THEME_FRAMEWORK_IDS } from "./theme-framework.types";
-import { THEME_FRAMEWORK_ROUTES, themeRoutesFor } from "./theme-routes";
+import {
+  THEME_FRAMEWORK_ROUTES,
+  routeSourceContentTarget,
+  routeSourcePathInfo,
+  themeRoutesFor,
+} from "./theme-routes";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
 
@@ -96,12 +105,15 @@ describe("the route dispatch module", () => {
   const importsOf = (source: string) =>
     [...source.matchAll(/from "([^"]+)"/g)].map((match) => match[1]).sort();
 
-  it("imports only the two route readers and the framework ids", () => {
+  it("imports only the two route readers, the content-target rule and the framework ids", () => {
     // Client-safe: the editor may import it, so it must not pull in either
-    // adapter's preview or build planners.
+    // adapter's preview or build planners. The content-target rule
+    // (theme-template-routes, pure) is the one the Astro registry already
+    // imports; route Document moves read it through here (D7).
     expect(importsOf(read("theme-routes.ts"))).toEqual([
       "../compiler/astro-route-registry",
       "../compiler/theme-route-registry",
+      "../theme-template-routes",
       "./theme-framework.types",
     ]);
     const astro = read("../compiler/astro-route-registry.ts");
@@ -113,5 +125,92 @@ describe("the route dispatch module", () => {
     expect(astro).toMatch(
       /import type \{[^}]*\} from "\.\/theme-route-registry"/,
     );
+  });
+});
+
+describe("a source file as a route of the recorded framework (D7)", () => {
+  const START_PATHS = [
+    "src/routes/index.tsx",
+    "src/routes/about.tsx",
+    "src/routes/about.lazy.tsx",
+    "src/routes/__root.tsx",
+    "src/routes/posts.$postId.tsx",
+    "src/routes/company/about.tsx",
+    "src/routes/_layout.tsx",
+    "src/pages/about.astro",
+    "src/components/Hero.tsx",
+  ];
+
+  it("reads Start's files exactly as TanStack Router's convention, for Start and a Theme recording none", () => {
+    for (const recorded of [null, undefined, "tanstack-start"]) {
+      for (const path of START_PATHS) {
+        const metadata = parseThemeRouteSourcePath(path);
+        expect(
+          routeSourcePathInfo(recorded, path),
+          `${recorded} ${path}`,
+        ).toEqual(
+          metadata
+            ? {
+                routePath: metadata.path,
+                standalone: !metadata.isRoutePiece,
+                root: metadata.routeType === "root",
+                dynamic: false,
+              }
+            : null,
+        );
+      }
+    }
+  });
+
+  it("reads an Astro Theme's pages from src/pages only, as its registry does", () => {
+    expect(routeSourcePathInfo("astro", "src/pages/about.astro")).toEqual({
+      routePath: "/about",
+      standalone: true,
+      root: false,
+      dynamic: false,
+    });
+    expect(routeSourcePathInfo("astro", "src/pages/index.astro")).toMatchObject(
+      {
+        routePath: "/",
+      },
+    );
+    expect(
+      routeSourcePathInfo("astro", "src/pages/blog/[slug].astro"),
+    ).toMatchObject({
+      routePath: "/blog/[slug]",
+      dynamic: true,
+    });
+    expect(routeSourcePathInfo("astro", "src/pages/api.ts")).toMatchObject({
+      standalone: false,
+    });
+    // Start's files are not an Astro Theme's routes, whatever they hold.
+    expect(routeSourcePathInfo("astro", "src/routes/about.tsx")).toBeNull();
+    expect(routeSourcePathInfo("astro", "src/pages/_draft.astro")).toBeNull();
+  });
+
+  it("reads no route for a framework Morph does not know", () => {
+    expect(routeSourcePathInfo("next", "src/routes/about.tsx")).toBeNull();
+    expect(routeSourcePathInfo("next", "src/pages/about.astro")).toBeNull();
+  });
+
+  it("refuses a dynamic Astro page a Document before the static-path rule, which would call it static", () => {
+    const info = routeSourcePathInfo("astro", "src/pages/blog/[slug].astro")!;
+    expect(contentTargetForRoutePath(info.routePath).kind).toBe("route");
+    expect(routeSourceContentTarget(info).kind).toBe("unsupported");
+    expect(
+      routeSourceContentTarget(
+        routeSourcePathInfo("astro", "src/pages/about.astro")!,
+      ),
+    ).toEqual({ kind: "route", routePath: "/about" });
+  });
+
+  it("leaves Start's targets to contentTargetForRoutePath, unchanged", () => {
+    for (const path of START_PATHS) {
+      const info = routeSourcePathInfo(null, path);
+      if (!info) continue;
+      expect(routeSourceContentTarget(info)).toEqual(
+        contentTargetForRoutePath(info.routePath),
+      );
+    }
   });
 });

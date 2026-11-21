@@ -511,15 +511,19 @@ describe("a section write's identity (design v2 §6 step 8)", () => {
     });
   });
 
-  it("refuses swapped instances: B's identity with A's section", async () => {
+  it("refuses swapped instances: B's identity with A's section, as not retryable", async () => {
     const fx = await fixture(I2);
+    // Same source, same range: the instance's section cannot change by
+    // retrying, so the write is a request defect, not a stale preview.
     expect(await write(fx, fx.markers[2], "hero")).toMatchObject({
       ok: false,
-      reason: "preview-identity-mismatch",
+      class: "capability-limit",
+      reason: "section-mismatch",
     });
     expect(await write(fx, fx.markers[1], "card")).toMatchObject({
       ok: false,
-      reason: "preview-identity-mismatch",
+      class: "capability-limit",
+      reason: "section-mismatch",
     });
   });
 
@@ -583,7 +587,7 @@ describe("reverse checks: what the identity rules prevent (§12 item 12)", () =>
         sectionId: "card",
         ...fx,
       }),
-    ).toMatchObject({ ok: false, reason: "preview-identity-mismatch" });
+    ).toMatchObject({ ok: false, reason: "section-mismatch" });
   });
 
   it("an FNV check would accept a component file changed under a colliding hash", async () => {

@@ -2304,6 +2304,8 @@ const EditorCodeWorkspaceContent = forwardRef<
         ? planThemeFileMove(
             [...planInputs].map(([path, content]) => ({ path, content })),
             sourceMoves,
+            // Which moved files are pages whose Documents move with them.
+            { framework },
           )
         : {
             ok: true,

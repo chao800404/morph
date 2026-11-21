@@ -5,6 +5,8 @@ import {
   SELECTION_SOURCE_CONFLICT_MESSAGE,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
+  THEME_FRAMEWORK_UNAVAILABLE,
+  parseSectionSourceRefusal,
 } from "@/lib/storefront/theme-write-errors";
 import { parseRejectedContentField } from "@/lib/storefront/theme-content-capabilities";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
@@ -391,6 +393,11 @@ export const updateStorefrontThemeRenderPolicy = createServerFn({
           error: TEMPLATE_DRAFT_CONFLICT,
         });
       }
+      if (message.startsWith(`${THEME_FRAMEWORK_UNAVAILABLE}: `)) {
+        return fail(message.slice(THEME_FRAMEWORK_UNAVAILABLE.length + 2), {
+          error: THEME_FRAMEWORK_UNAVAILABLE,
+        });
+      }
       if (message.startsWith("RENDER_POLICY_SCOPE_MISMATCH:")) {
         return fail("The rendering policy does not belong to this document.", {
           error: "RENDER_POLICY_SCOPE_MISMATCH",
@@ -473,6 +480,21 @@ export const updateStorefrontThemeSectionProps = createServerFn({
         return fail("Template draft was modified concurrently.", {
           error: TEMPLATE_DRAFT_CONFLICT,
         });
+      }
+      // `SECTION_SOURCE_UNCONFIRMABLE` (retryable) or
+      // `SECTION_SOURCE_UNCONFIRMED`, with the plan's reason code where the
+      // DAL gives one (M2 C7). Start's refusals carry none and answer as
+      // before.
+      const refusal = parseSectionSourceRefusal(message);
+      if (refusal) {
+        return fail(
+          refusal.text ||
+            "This section cannot be confirmed in the current Theme source.",
+          {
+            error: refusal.code,
+            ...(refusal.reason ? { errors: { reason: [refusal.reason] } } : {}),
+          },
+        );
       }
       if (message.includes(SECTION_SOURCE_UNCONFIRMED)) {
         return fail(

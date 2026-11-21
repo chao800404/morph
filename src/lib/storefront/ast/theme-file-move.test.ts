@@ -417,3 +417,58 @@ describe("planDropMoves", () => {
     ]);
   });
 });
+
+describe("which moved files carry a route Document, by the Theme's framework (D7)", () => {
+  const astroFiles: ThemeSourceFile[] = [
+    { path: "src/pages/about.astro", content: "<h1>About</h1>\n" },
+    { path: "src/pages/blog/[slug].astro", content: "<h1>Post</h1>\n" },
+    {
+      path: "src/pages/api.ts",
+      content: "export const GET = () => new Response();\n",
+    },
+  ];
+
+  it("moves an Astro page's Document with the page file on an Astro Theme", () => {
+    const result = planThemeFileMove(
+      astroFiles,
+      [{ from: "src/pages/about.astro", to: "src/pages/company.astro" }],
+      { framework: "astro" },
+    );
+    expect(result.ok && result.routePathMoves).toEqual([
+      {
+        fromSourcePath: "src/pages/about.astro",
+        toSourcePath: "src/pages/company.astro",
+      },
+    ]);
+  });
+
+  it("names no Document move for an endpoint, nor for a Theme read as Start", () => {
+    expect(
+      planThemeFileMove(
+        astroFiles,
+        [{ from: "src/pages/api.ts", to: "src/pages/other.ts" }],
+        { framework: "astro" },
+      ),
+    ).toMatchObject({ ok: true, routePathMoves: [] });
+    expect(
+      planThemeFileMove(astroFiles, [
+        { from: "src/pages/about.astro", to: "src/pages/company.astro" },
+      ]),
+    ).toMatchObject({ ok: true, routePathMoves: [] });
+  });
+
+  it("does not read a leftover Start route of an Astro Theme as a page", () => {
+    const result = planThemeFileMove(
+      [
+        {
+          path: "src/routes/about.tsx",
+          content:
+            'import { createFileRoute } from "@tanstack/react-router";\nexport const Route = createFileRoute("/about")({});',
+        },
+      ],
+      [{ from: "src/routes/about.tsx", to: "src/routes/company.tsx" }],
+      { framework: "astro" },
+    );
+    expect(result).toMatchObject({ ok: true, routePathMoves: [] });
+  });
+});

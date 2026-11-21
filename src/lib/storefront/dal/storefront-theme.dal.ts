@@ -4,6 +4,8 @@ import {
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
+  THEME_FRAMEWORK_UNAVAILABLE,
+  sectionSourceRefusalMessage,
 } from "@/lib/storefront/theme-write-errors";
 import { getDb } from "@/db";
 import { withReleaseNote } from "@/lib/storefront/release-note";
@@ -33,8 +35,11 @@ import {
   astroRouteBindingsView,
   readAstroRoute,
   refusedAstroRouteBindingsView,
+  type AstroBindingRefusal,
   type AstroRouteBindingsView,
 } from "@/lib/storefront/source-language/astro-route-bindings";
+import { verifyAstroSectionWriteIdentity } from "@/lib/storefront/source-language/astro-instance-identity";
+import { parseAstroInstanceIdentity } from "@/lib/storefront/theme-framework/astro-preview-locate";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import { storefrontThemeBuildDal } from "./storefront-theme-build.dal";
@@ -49,6 +54,7 @@ import {
   analyzeB1Route,
   findB1WriteProvenanceFailure,
   type B1Claim,
+  type B1Instance,
 } from "@/lib/storefront/ast/theme-content-provenance";
 import { normalizeThemeSourcePath } from "@/lib/storefront/ast/theme-content-binding";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
@@ -57,6 +63,7 @@ import {
   readDeployedThemeBuildId,
 } from "@/lib/storefront/service/theme-worker-deployment-state";
 import {
+  sourceSectionIdentity,
   deriveThemeLayoutSections,
   deriveThemeRouteSections,
   type ThemeRouteSectionResult,
@@ -171,6 +178,38 @@ export function designWritesUnavailableReason(
   if (framework === null || framework === undefined) return null;
   if (framework === "tanstack-start") return null;
   return `Design cannot change ${framework} Themes yet. Edit the source in Code mode.`;
+}
+
+/**
+ * The Design writes judged per operation and framework (M2 C5), replacing
+ * #346's blanket refusal for exactly these two on an Astro Theme:
+ *
+ * - `section-values`: Astro only through Core's own proof on the snapshot it
+ *   writes against: parse → Astro B1 profile → instance identity and
+ *   component digest → field allowlist → the same Document CAS as Start
+ *   (`resolveAstroSectionWrite`).
+ * - `route-document-create`: an empty row for a page the Astro registry
+ *   lists (kind route, not an endpoint, not dynamic). Writes no content,
+ *   so it needs no parser.
+ *
+ * Every other operation (reorder, rename, add, bind, delete, text
+ * promotion, page files) still asks `designWritesUnavailableReason`, which
+ * refuses Astro. `via` names the path a permitted write takes.
+ */
+export type DesignWriteOperation = "section-values" | "route-document-create";
+
+export function designWriteCapability(
+  framework: string | null | undefined,
+  // Named at every call so the operations stay explicit; both answer alike.
+  _operation: DesignWriteOperation,
+):
+  | Readonly<{ ok: true; via: "start" | "astro" }>
+  | Readonly<{ ok: false; reason: string }> {
+  if (framework === "astro") return { ok: true, via: "astro" };
+  const unavailable = designWritesUnavailableReason(framework);
+  return unavailable
+    ? { ok: false, reason: unavailable }
+    : { ok: true, via: "start" };
 }
 
 export const LEGACY_LAYOUT_DESIGN_WRITE_REASON =
@@ -408,6 +447,420 @@ async function readThemeSourceGeneration(
     .bind(themeId, storefrontId)
     .first<{ generation: number }>();
   return row ? row.generation : null;
+}
+
+/**
+ * The page an Astro Theme's registry lists at `routePath`: a route, not an
+ * endpoint, not dynamic (the registry's `dynamic` alone decides, Q6).
+ */
+function astroPageAt(
+  files: readonly { path: string; content: string }[],
+  routePath: string,
+):
+  | Readonly<{ ok: true; record: ThemeRouteRegistry["routes"][number] }>
+  | Readonly<{
+      ok: false;
+      code: "route-missing" | "dynamic-route";
+      reason: string;
+    }> {
+  const routes = themeRoutesFor("astro", files);
+  const record = routes.ok
+    ? routes.registry.routes.find(
+        (candidate) =>
+          candidate.kind === "route" &&
+          !candidate.isEndpoint &&
+          candidate.path === routePath,
+      )
+    : undefined;
+  if (!record) {
+    return {
+      ok: false,
+      code: "route-missing",
+      reason: `${routePath} is not a page in the saved Theme source.`,
+    };
+  }
+  if (record.dynamic) {
+    return {
+      ok: false,
+      code: "dynamic-route",
+      reason: `${routePath} has route parameters, so it has no content document of its own.`,
+    };
+  }
+  return { ok: true, record };
+}
+
+/**
+ * The source files of an Astro Theme that map to `routePath` when more than
+ * one does (`about.astro` and `about/index.astro`, or `about.astro` and
+ * `about.md`), else null. Which of them Astro serves is Astro's question,
+ * not one Core answers, so content for such a path is neither read nor
+ * written (refused as `ambiguous-route`, not retryable).
+ */
+function astroRouteAmbiguity(
+  files: readonly { path: string; content: string }[],
+  routePath: string,
+): string[] | null {
+  const routes = themeRoutesFor("astro", files);
+  if (!routes.ok) return null;
+  const sourcePaths = routes.registry.routes
+    .filter(
+      (candidate) => candidate.kind === "route" && candidate.path === routePath,
+    )
+    .map((candidate) => candidate.sourcePath);
+  return sourcePaths.length > 1 ? sourcePaths : null;
+}
+
+const astroAmbiguousRouteDetail = (
+  routePath: string,
+  sourcePaths: readonly string[],
+) =>
+  `${routePath} is served by more than one file (${sourcePaths.join(", ")}); keep one of them`;
+
+/**
+ * N1: the `index` template of an Astro Theme, created empty when it has
+ * none, under the same ownership check as a route document and only while
+ * the saved source has a home page. Content is still proven when written.
+ * Idempotent: an existing `index` template is returned as it is, and of two
+ * racing creators the unique (theme, type, name) index lets one insert land
+ * and the other reads it back.
+ */
+async function ensureAstroHomeTemplate(data: {
+  storefrontId: string;
+  themeId: string;
+}): Promise<
+  | Readonly<{
+      ok: true;
+      createdByThisCall: boolean;
+      template: Readonly<{
+        id: string;
+        routePath: string;
+        draftGeneration: number;
+        draftRevisionId: string | null;
+      }>;
+    }>
+  | Readonly<{ ok: false; reason: string }>
+> {
+  const owned = await readOwnedTheme(data.storefrontId, data.themeId);
+  if (!owned) return { ok: false, reason: "Theme not found." };
+  if (owned.themeFramework !== "astro") {
+    return { ok: false, reason: "/ stores its content in the index template." };
+  }
+  const page = astroPageAt(
+    await listThemeSourceFiles(data.storefrontId, data.themeId),
+    "/",
+  );
+  if (!page.ok) return { ok: false, reason: page.reason };
+  const db = await getDb();
+  const readExisting = async () => {
+    const [row] = await db
+      .select({
+        id: storefrontThemeTemplates.id,
+        draftGeneration: storefrontThemeTemplates.draftGeneration,
+        draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+      })
+      .from(storefrontThemeTemplates)
+      .where(
+        and(
+          eq(storefrontThemeTemplates.themeId, data.themeId),
+          eq(storefrontThemeTemplates.type, "index"),
+          isNull(storefrontThemeTemplates.deletedAt),
+        ),
+      )
+      .orderBy(asc(storefrontThemeTemplates.createdAt))
+      .limit(1);
+    return row
+      ? {
+          ok: true as const,
+          createdByThisCall: false,
+          template: {
+            id: row.id,
+            routePath: "/",
+            draftGeneration: row.draftGeneration ?? 1,
+            draftRevisionId: row.draftRevisionId,
+          },
+        }
+      : null;
+  };
+  const existing = await readExisting();
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  try {
+    await db.insert(storefrontThemeTemplates).values({
+      id,
+      themeId: data.themeId,
+      type: "index",
+      // The name the Starter gives its home template.
+      name: "Default",
+      document: { version: 1, sections: [] },
+      createdAt: now,
+      updatedAt: now,
+    });
+  } catch (error) {
+    const created = await readExisting();
+    if (created) return created;
+    throw error;
+  }
+  return {
+    ok: true,
+    createdByThisCall: true,
+    template: { id, routePath: "/", draftGeneration: 1, draftRevisionId: null },
+  };
+}
+
+/**
+ * The fields one B1 instance proves come from `sectionId`, by stored field:
+ * a claim, or null where two claims of one field disagree on their
+ * condition (refused below as unproven). Start and Astro alike.
+ */
+function b1ClaimsForSection(
+  instance: B1Instance,
+  sectionId: string,
+): ReadonlyMap<string, Extract<B1Claim, { kind: "claim" }> | null> {
+  const claimsByStoredField = new Map<
+    string,
+    Extract<B1Claim, { kind: "claim" }> | null
+  >();
+  for (const claim of Object.values(instance.claims)) {
+    if (claim.kind !== "claim" || claim.slot !== sectionId) {
+      continue;
+    }
+    const previous = claimsByStoredField.get(claim.field);
+    if (previous === undefined) {
+      claimsByStoredField.set(claim.field, claim);
+    } else if (
+      previous === null ||
+      JSON.stringify(previous.conditional) !==
+        JSON.stringify(claim.conditional)
+    ) {
+      claimsByStoredField.set(claim.field, null);
+    }
+  }
+  return claimsByStoredField;
+}
+
+/** What an author is told, by the plan's failure class (section 6.2). */
+function astroSectionRefusal(refusal: AstroBindingRefusal): Error {
+  const text =
+    refusal.class === "temporarily-unconfirmable"
+      ? `Design cannot confirm this section right now (${refusal.detail}). The source is not at fault: try again, or reload the preview.`
+      : refusal.class === "author-syntax"
+        ? `This page has a syntax error (${refusal.detail}). Fix it in Code mode.`
+        : refusal.class === "controlled-by-code"
+          ? `This section's content is controlled by code (${refusal.detail}).`
+          : `Design does not support this yet (${refusal.detail}). Edit it in Code mode.`;
+  return new Error(
+    sectionSourceRefusalMessage(
+      refusal.class === "temporarily-unconfirmable",
+      refusal.reason,
+      text,
+    ),
+  );
+}
+
+/**
+ * A write that names another page (`route-mismatch`) or another section
+ * (`section-mismatch`) than Core proves the target to be: an editor defect
+ * or tampering, never a stale preview, so `SECTION_SOURCE_UNCONFIRMED`
+ * (not retryable). The same payload would be refused the same way again.
+ */
+function astroRequestMismatchRefusal(
+  reason: "route-mismatch" | "section-mismatch",
+  detail: string,
+): Error {
+  return new Error(
+    sectionSourceRefusalMessage(
+      false,
+      reason,
+      `This edit names another ${reason === "route-mismatch" ? "page" : "section"} than the one it would change (${detail}). Refresh the editor.`,
+    ),
+  );
+}
+
+/**
+ * Everything an Astro section write takes from the source, proven by Core
+ * on the one snapshot this write reads (M2 C5; design v2 section 6 step 8,
+ * section 8):
+ *
+ * 1. the page the template holds content for: `/` for the `index`
+ *    template, its own path for a route template; any other template kind
+ *    is not written on Astro yet;
+ * 2. that page in the saved source's Astro registry (not an endpoint, not
+ *    dynamic);
+ * 3. the page and every `.astro` module it reaches parsed by the pinned
+ *    compiler with no diagnostics, projected, and analysed with the Astro
+ *    B1 profile (`readAstroRoute`);
+ * 4. the request's instance identity and component digest verified against
+ *    that very parse and analysis (`verifyAstroSectionWriteIdentity`): the
+ *    route file's sha256, the boundary rule, the range, exactly one B1
+ *    instance, its component by Core's own import resolution, the
+ *    component file's sha256, and the instance's section being the one the
+ *    write names;
+ * 5. that instance the only one rendering the section, with no analysis
+ *    diagnostics, for its field claims (else none: every field is refused
+ *    as unproven, as for Start).
+ *
+ * The caller has checked `expectedSourceGeneration` before this reads the
+ * files, checks it again after, and writes in one batch whose CAS repeats
+ * it, with the draft generation. So the snapshot proven here is the one
+ * the Document is written against: a source save in between changes the
+ * generation and the write is refused (`SELECTION_SOURCE_CONFLICT`), never
+ * applied against a proof of other source. Refusals throw the coded
+ * section-source error (C7) and write nothing.
+ */
+async function resolveAstroSectionWrite(args: {
+  storefrontId: string;
+  themeId: string;
+  template: StorefrontThemeEditorDTO["templates"][number];
+  sectionId: string;
+  routePath?: string;
+  identity?: string;
+  componentDigest?: string;
+}): Promise<{
+  baseDocument: StorefrontPageDocument;
+  targetSection: StorefrontPageDocument["sections"][number] | undefined;
+  componentRef: string;
+  claims: ReadonlyMap<string, Extract<B1Claim, { kind: "claim" }> | null>;
+}> {
+  const refuse = (
+    klass: AstroBindingRefusal["class"],
+    reason: string,
+    detail: string,
+  ) => astroSectionRefusal(astroBindingRefusal(klass, reason, detail));
+  // An editor older than the v2 identity: refused before any source is read
+  // or the parser is asked (design v2 section 7, old bridge or old editor).
+  if (!parseAstroInstanceIdentity(args.identity)) {
+    throw refuse(
+      "temporarily-unconfirmable",
+      "preview-identity-legacy",
+      "the write carries no v2 instance identity; reload the preview",
+    );
+  }
+  const pagePath = args.template.routePath
+    ? routeTemplatePathForRequest(args.template.routePath)
+    : args.template.type === "index"
+      ? "/"
+      : null;
+  if (!pagePath) {
+    throw refuse(
+      "capability-limit",
+      "template-kind-unsupported",
+      `the ${args.template.type} template of an Astro Theme`,
+    );
+  }
+  if (
+    args.routePath !== undefined &&
+    routeTemplatePathForRequest(args.routePath) !== pagePath
+  ) {
+    // The template decides the page; a request naming another one is an
+    // editor defect that retrying the same payload cannot fix.
+    throw astroRequestMismatchRefusal(
+      "route-mismatch",
+      `this document holds content for ${pagePath}, not ${args.routePath}`,
+    );
+  }
+  const files = await listThemeSourceFiles(args.storefrontId, args.themeId);
+  const ambiguous = astroRouteAmbiguity(files, pagePath);
+  if (ambiguous) {
+    throw refuse(
+      "capability-limit",
+      "ambiguous-route",
+      astroAmbiguousRouteDetail(pagePath, ambiguous),
+    );
+  }
+  const page = astroPageAt(files, pagePath);
+  if (!page.ok) throw refuse("capability-limit", page.code, page.reason);
+  const reading = await readAstroRoute({
+    binding: astroParserBindingFrom(env),
+    files,
+    route: {
+      path: page.record.path,
+      sourcePath: page.record.sourcePath,
+      dynamic: page.record.dynamic,
+    },
+  });
+  if (!reading.ok) throw astroSectionRefusal(reading);
+  const verified = await verifyAstroSectionWriteIdentity({
+    // A missing digest is compared as "" and refused (source-stale).
+    input: {
+      identity: args.identity!,
+      componentDigest: args.componentDigest ?? "",
+    },
+    sectionId: args.sectionId,
+    snapshot: { files },
+    route: reading.identityInput,
+  });
+  if (!verified.ok) {
+    if (verified.reason === "section-mismatch") {
+      throw astroRequestMismatchRefusal(verified.reason, verified.detail);
+    }
+    throw refuse(verified.class, verified.reason, verified.detail);
+  }
+
+  const { analysis } = reading.identityInput;
+  const instance = verified.instance;
+  const stored = sourceSectionIdentity({
+    files,
+    componentSourcePath: instance.componentPath!,
+    componentExport: instance.componentExport,
+    componentName: instance.componentName,
+  });
+  const rendering = analysis.instances.filter(
+    (candidate) => candidate.section === args.sectionId,
+  );
+  const claims =
+    rendering.length === 1 &&
+    rendering[0] === instance &&
+    analysis.diagnostics.length === 0
+      ? b1ClaimsForSection(instance, args.sectionId)
+      : new Map<string, Extract<B1Claim, { kind: "claim" }> | null>();
+
+  // The section's stored row, or a new one for its first write: the ref and
+  // type Core derived for the instance, never the Document's or the
+  // client's. Nothing else of the Document changes.
+  const document = args.template.document;
+  const storedRow = document.sections.find(
+    (section) => section.id === args.sectionId,
+  );
+  // A stored row under this id written for another component (a Starter
+  // row on a Theme recorded as Astro, a row with no ref) keeps a type and
+  // props nothing here proved. Re-pointing it at this instance would spread
+  // those props into a component that never declared them, so it is
+  // refused, never converted (M1); Code mode stays available.
+  if (storedRow && storedRow.componentRef !== stored.componentRef) {
+    throw refuse(
+      "capability-limit",
+      "section-row-mismatch",
+      `the document's section "${args.sectionId}" was stored for ${
+        storedRow.componentRef
+          ? `component ${storedRow.componentRef}`
+          : "no component"
+      }, not ${stored.componentRef}, which renders it now`,
+    );
+  }
+  const baseDocument: StorefrontPageDocument = storedRow
+    ? document
+    : {
+        ...document,
+        sections: [
+          ...document.sections,
+          {
+            id: args.sectionId,
+            type: stored.sectionType,
+            componentRef: stored.componentRef,
+            enabled: true,
+            props: {},
+          },
+        ],
+      };
+  return {
+    baseDocument,
+    targetSection: baseDocument.sections.find(
+      (section) => section.id === args.sectionId,
+    ),
+    componentRef: stored.componentRef,
+    claims,
+  };
 }
 
 async function listThemeSourceFiles(storefrontId: string, themeId: string) {
@@ -681,7 +1134,13 @@ export const storefrontThemeDal = {
     const template = context?.templates.find(
       (item) => item.id === input.templateId,
     );
-    if (!template) return null;
+    if (!context || !template) return null;
+    // A Document-level Design write: refused on a framework Design cannot
+    // judge (C5: on Astro only section props and route Documents are open).
+    const unavailable = designWritesUnavailableReason(context.theme.framework);
+    if (unavailable) {
+      throw new Error(`${THEME_FRAMEWORK_UNAVAILABLE}: ${unavailable}`);
+    }
     if ((input.setting.scope === "website") !== (template.type === "layout")) {
       throw new Error(
         "RENDER_POLICY_SCOPE_MISMATCH: Website defaults belong to the layout document; page overrides belong to page documents.",
@@ -1124,17 +1583,20 @@ export const storefrontThemeDal = {
             candidate.path === routePath,
         )
       : undefined;
-    const reading = record
-      ? await readAstroRoute({
-          binding: astroParserBindingFrom(env),
-          files,
-          route: {
-            path: record.path,
-            sourcePath: record.sourcePath,
-            dynamic: record.dynamic,
-          },
-        })
-      : null;
+    // Two files at one path: refused like the write, before any parse.
+    const ambiguous = astroRouteAmbiguity(files, routePath);
+    const reading =
+      record && !ambiguous
+        ? await readAstroRoute({
+            binding: astroParserBindingFrom(env),
+            files,
+            route: {
+              path: record.path,
+              sourcePath: record.sourcePath,
+              dynamic: record.dynamic,
+            },
+          })
+        : null;
     const after = await readThemeSourceGeneration(
       data.storefrontId,
       data.themeId,
@@ -1145,6 +1607,22 @@ export const storefrontThemeDal = {
         after,
         `the saved source changed from generation ${before} to ${after} while it was read`,
       );
+    }
+    if (ambiguous) {
+      return {
+        status: "view",
+        view: refusedAstroRouteBindingsView({
+          routePath,
+          routeFile: null,
+          sourceGeneration: before,
+          routeSourceDigest: null,
+          refusal: astroBindingRefusal(
+            "capability-limit",
+            "ambiguous-route",
+            astroAmbiguousRouteDetail(routePath, ambiguous),
+          ),
+        }),
+      };
     }
     if (!record || !reading) {
       return {
@@ -1484,6 +1962,18 @@ export const storefrontThemeDal = {
     | Readonly<{ ok: false; reason: string }>
   > {
     const target = contentTargetForRoutePath(data.routePath);
+    // N1: an Astro Theme's home page stores its content in the `index`
+    // template, which no other product path creates for it.
+    if (
+      target.kind === "template" &&
+      target.type === "index" &&
+      normalizeRoutePath(data.routePath) === "/"
+    ) {
+      const owned = await readOwnedTheme(data.storefrontId, data.themeId);
+      if (owned?.themeFramework === "astro") {
+        return ensureAstroHomeTemplate(data);
+      }
+    }
     if (target.kind === "template") {
       return {
         ok: false,
@@ -1512,22 +2002,31 @@ export const storefrontThemeDal = {
       )
       .limit(1);
     if (!theme) return { ok: false, reason: "Theme not found." };
-    // A route document is checked against Start's route files, which another
-    // framework's Theme does not render (or does not have).
-    const unavailable = designWritesUnavailableReason(theme.framework);
-    if (unavailable) return { ok: false, reason: unavailable };
-
-    const registry = buildThemeRouteRegistry(
-      await listThemeSourceFiles(data.storefrontId, data.themeId),
+    // A route document is checked against the routes of the framework the
+    // Theme records: Start's route files, or an Astro Theme's pages (C5;
+    // no parser: the row is empty, and content is proven when written).
+    // Any other framework is refused.
+    const capability = designWriteCapability(
+      theme.framework,
+      "route-document-create",
     );
-    if (
-      !registry.valid ||
-      !findBoundTemplateRoute(registry, target.routePath)
-    ) {
-      return {
-        ok: false,
-        reason: `${target.routePath} is not a route in the saved Theme source.`,
-      };
+    if (!capability.ok) return { ok: false, reason: capability.reason };
+
+    const files = await listThemeSourceFiles(data.storefrontId, data.themeId);
+    if (capability.via === "astro") {
+      const page = astroPageAt(files, target.routePath);
+      if (!page.ok) return { ok: false, reason: page.reason };
+    } else {
+      const registry = buildThemeRouteRegistry(files);
+      if (
+        !registry.valid ||
+        !findBoundTemplateRoute(registry, target.routePath)
+      ) {
+        return {
+          ok: false,
+          reason: `${target.routePath} is not a route in the saved Theme source.`,
+        };
+      }
     }
 
     const readExisting = async () => {
@@ -1610,6 +2109,14 @@ export const storefrontThemeDal = {
     routePath?: string;
     /** Declared fields whose stored value is removed; the code default renders. */
     resetProps?: readonly string[];
+    /**
+     * Astro only (M2 P5): the v2 boundary id of the instance the selection
+     * named, and the sha256 of its component file the selection was
+     * confirmed against. Claims from a page that runs author code: Core
+     * verifies both on the snapshot this write reads. Unused for Start.
+     */
+    identity?: string;
+    componentDigest?: string;
   }) {
     const context = await this.findEditorContext(
       data.storefrontId,
@@ -1632,94 +2139,121 @@ export const storefrontThemeDal = {
       throw new Error(SELECTION_SOURCE_CONFLICT);
     }
 
-    const baseDocument = templateSectionWriteBase(template, data.sectionId);
-    const targetSection = baseDocument.sections.find(
-      (section) => section.id === data.sectionId,
-    );
-    if (!targetSection) return null;
-
-    const themeSourceFiles = await listThemeSourceFiles(
-      data.storefrontId,
-      data.themeId,
-    );
-    const sourceComponent = resolveSectionSourceComponent({
-      framework: context.theme.framework,
-      templateType: template.type,
-      templateRoutePath: template.routePath ?? null,
-      sectionId: data.sectionId,
-      files: themeSourceFiles,
-      routePath: data.routePath,
-    });
-    if (sourceComponent.kind === "unconfirmed") {
-      throw new Error(
-        `${SECTION_SOURCE_UNCONFIRMED}: ${sourceComponent.reason}`,
-      );
-    }
-    const sectionComponentRef =
-      sourceComponent.kind === "confirmed"
-        ? sourceComponent.componentRef
-        : (targetSection.componentRef ?? null);
-
-    // Wherever the source confirms the section, derive the write mapping again
-    // from the exact source snapshot used to resolve it. Canvas metadata is
-    // only a locator: it cannot authorize or redirect a Document write.
-    //
-    // This holds for the layout as much as for a route: the call site is
-    // then the layout file `deriveThemeLayoutSections` found the section in,
-    // which the same B1 analysis already reads to find layout sections. A
-    // layout that overrides a stored field after its spread would otherwise
-    // accept an edit the rendered page never shows.
-    const b1ProofRequired = sourceComponent.kind === "confirmed";
+    let baseDocument: StorefrontPageDocument;
+    let targetSection: StorefrontPageDocument["sections"][number] | undefined;
+    let sectionComponentRef: string | null;
+    let b1ProofRequired: boolean;
     let b1Claims: ReadonlyMap<
       string,
       Extract<B1Claim, { kind: "claim" }> | null
     > = new Map();
-    if (b1ProofRequired) {
-      const sourceAnalysis = analyzeB1Route(
-        themeSourceFiles.filter(
-          (file): file is typeof file & { content: string } =>
-            typeof file.content === "string",
-        ),
-        sourceComponent.callSitePath,
+
+    const capability = designWriteCapability(
+      context.theme.framework,
+      "section-values",
+    );
+    if (capability.ok && capability.via === "astro") {
+      // C5: an Astro section is written only through Core's own proof on
+      // the snapshot this write reads (`resolveAstroSectionWrite`); the B1
+      // field check, the capability allowlist and the CAS below are the
+      // same as Start's.
+      // Section props only (C5): showing or hiding a section is another
+      // operation, and nothing proves an Astro page honours it yet.
+      if (Object.prototype.hasOwnProperty.call(data.props, "enabled")) {
+        throw new Error(
+          sectionSourceRefusalMessage(
+            false,
+            "section-visibility-unsupported",
+            "Design cannot show or hide a section of an Astro page yet. Edit it in Code mode.",
+          ),
+        );
+      }
+      const astro = await resolveAstroSectionWrite({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        template,
+        sectionId: data.sectionId,
+        routePath: data.routePath,
+        identity: data.identity,
+        componentDigest: data.componentDigest,
+      });
+      baseDocument = astro.baseDocument;
+      targetSection = astro.targetSection;
+      sectionComponentRef = astro.componentRef;
+      b1ProofRequired = true;
+      b1Claims = astro.claims;
+    } else {
+      baseDocument = templateSectionWriteBase(template, data.sectionId);
+      targetSection = baseDocument.sections.find(
+        (section) => section.id === data.sectionId,
       );
-      const normalizedComponentPath = normalizeThemeSourcePath(
-        sourceComponent.componentSourcePath,
+      if (!targetSection) return null;
+
+      const themeSourceFiles = await listThemeSourceFiles(
+        data.storefrontId,
+        data.themeId,
       );
-      const matchingInstances = sourceAnalysis.instances.filter(
-        (instance) =>
-          instance.section === data.sectionId &&
-          instance.componentPath !== null &&
-          normalizeThemeSourcePath(instance.componentPath) ===
-            normalizedComponentPath,
-      );
-      // A confirmed source-backed section must also have one exact B1 source
-      // instance. Missing, duplicate or diagnostically ambiguous provenance
-      // leaves an empty proof map, so every capability-allowed write fails
-      // closed below; it never falls back to a name-based/legacy guess.
-      if (matchingInstances.length === 1 && sourceAnalysis.diagnostics.length === 0) {
-        const instance = matchingInstances[0]!;
-        const claimsByStoredField = new Map<
-          string,
-          Extract<B1Claim, { kind: "claim" }> | null
-        >();
-        for (const claim of Object.values(instance.claims)) {
-          if (claim.kind !== "claim" || claim.slot !== data.sectionId) {
-            continue;
-          }
-          const previous = claimsByStoredField.get(claim.field);
-          if (previous === undefined) {
-            claimsByStoredField.set(claim.field, claim);
-          } else if (
-            previous === null ||
-            JSON.stringify(previous.conditional) !==
-              JSON.stringify(claim.conditional)
-          ) {
-            claimsByStoredField.set(claim.field, null);
-          }
+      const sourceComponent = resolveSectionSourceComponent({
+        framework: context.theme.framework,
+        templateType: template.type,
+        templateRoutePath: template.routePath ?? null,
+        sectionId: data.sectionId,
+        files: themeSourceFiles,
+        routePath: data.routePath,
+      });
+      if (sourceComponent.kind === "unconfirmed") {
+        throw new Error(
+          `${SECTION_SOURCE_UNCONFIRMED}: ${sourceComponent.reason}`,
+        );
+      }
+      sectionComponentRef =
+        sourceComponent.kind === "confirmed"
+          ? sourceComponent.componentRef
+          : (targetSection.componentRef ?? null);
+
+      // Wherever the source confirms the section, derive the write mapping
+      // again from the exact source snapshot used to resolve it. Canvas
+      // metadata is only a locator: it cannot authorize or redirect a
+      // Document write.
+      //
+      // This holds for the layout as much as for a route: the call site is
+      // then the layout file `deriveThemeLayoutSections` found the section
+      // in, which the same B1 analysis already reads to find layout
+      // sections. A layout that overrides a stored field after its spread
+      // would otherwise accept an edit the rendered page never shows.
+      b1ProofRequired = sourceComponent.kind === "confirmed";
+      if (sourceComponent.kind === "confirmed") {
+        const sourceAnalysis = analyzeB1Route(
+          themeSourceFiles.filter(
+            (file): file is typeof file & { content: string } =>
+              typeof file.content === "string",
+          ),
+          sourceComponent.callSitePath,
+        );
+        const normalizedComponentPath = normalizeThemeSourcePath(
+          sourceComponent.componentSourcePath,
+        );
+        const matchingInstances = sourceAnalysis.instances.filter(
+          (instance) =>
+            instance.section === data.sectionId &&
+            instance.componentPath !== null &&
+            normalizeThemeSourcePath(instance.componentPath) ===
+              normalizedComponentPath,
+        );
+        // A confirmed source-backed section must also have one exact B1
+        // source instance. Missing, duplicate or diagnostically ambiguous
+        // provenance leaves an empty proof map, so every capability-allowed
+        // write fails closed below; it never falls back to a
+        // name-based/legacy guess.
+        if (
+          matchingInstances.length === 1 &&
+          sourceAnalysis.diagnostics.length === 0
+        ) {
+          b1Claims = b1ClaimsForSection(matchingInstances[0]!, data.sectionId);
         }
-        b1Claims = claimsByStoredField;
       }
     }
+    if (!targetSection) return null;
 
     const manifestState = await env.DATABASE.prepare(
       `

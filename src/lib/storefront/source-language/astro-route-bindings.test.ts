@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ASTRO_FIXTURE, astroPage } from "@/lib/test-utils/astro-b1-samples";
 import { sourceSectionIdentity } from "../compiler/theme-route-sections";
@@ -65,6 +65,53 @@ describe("reading a page refuses before guessing", () => {
       class: "temporarily-unconfirmable",
       reason: "parser-binding-missing",
     });
+  });
+
+  it("refuses a Markdown, MDX or HTML page as a capability limit without asking the parser", async () => {
+    for (const sourcePath of [
+      "src/pages/notes.md",
+      "src/pages/notes.mdx",
+      "src/pages/notes.html",
+    ]) {
+      const result = await readAstroRoute({
+        binding: {
+          fetch: () => {
+            throw new Error("the parser must not be asked");
+          },
+        },
+        files: [...files, { path: sourcePath, content: "# Notes\n" }],
+        route: { path: "/notes", sourcePath, dynamic: false },
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        class: "capability-limit",
+        reason: "page-language-unsupported",
+      });
+    }
+  });
+
+  it("answers a binding failure by its reason code, never the binding's own message", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = await readAstroRoute({
+      binding: {
+        fetch: async () => {
+          throw new Error(
+            "connect ECONNREFUSED 10.9.8.7:4431 parser-internal-host",
+          );
+        },
+      },
+      files,
+      route: { path: "/", sourcePath: INDEX, dynamic: false },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      class: "temporarily-unconfirmable",
+      reason: "parser-binding-failed",
+    });
+    expect(JSON.stringify(result)).not.toMatch(
+      /ECONNREFUSED|10\.9\.8\.7|parser-internal-host/,
+    );
+    warn.mockRestore();
   });
 
   it("refuses a snapshot that names one file twice", async () => {

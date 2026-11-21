@@ -135,6 +135,17 @@ export const updateStorefrontThemeSectionPropsInputSchema =
      * renders again. Only declared fields; the server refuses anything else.
      */
     resetProps: z.array(z.string().trim().min(1).max(100)).max(100).optional(),
+    /**
+     * Astro only (M2 P5): the v2 boundary id the selection named, and the
+     * sha256 of the clicked component's file it was confirmed against.
+     * Claims, verified by Core on the source it writes against; an Astro
+     * write without them is refused, a Start write does not use them.
+     */
+    identity: z.string().trim().min(1).max(160).optional(),
+    componentDigest: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
   });
 
 /**

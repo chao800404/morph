@@ -107,6 +107,31 @@ export function reachableAstroModules(
 }
 
 /**
+ * What an author is told of a parser refusal. A binding's or the parser's
+ * own message (an exception text, an HTTP status, the parser's error
+ * detail) can name internal hosts or containers, so it never leaves the
+ * server: the reason code carries the cause, the raw text goes to the
+ * server log only. An author syntax error keeps Core's own count of the
+ * compiler's diagnostics, which is about the author's file.
+ */
+function parserRefusalDetail(
+  path: string,
+  outcome: Readonly<{
+    class: AstroParserFailureClass;
+    reason: string;
+    detail: string;
+  }>,
+): string {
+  if (outcome.class === "author-syntax") return outcome.detail;
+  console.warn(
+    `[astro-route] parser refused ${path} (${outcome.reason}): ${outcome.detail}`,
+  );
+  return outcome.class === "capability-limit"
+    ? "the file, or its parse, is over the parser's size limit"
+    : "the .astro parser could not confirm this file";
+}
+
+/**
  * Reads one Astro page of one source snapshot: parses the page and every
  * `.astro` module it reaches (one at a time: the parser has one slot), then
  * projects and analyses them. `files` must be the whole snapshot Core read
@@ -125,6 +150,16 @@ export async function readAstroRoute(args: {
       "capability-limit",
       "dynamic-route",
       `${args.route.path} has route parameters; Design edits fixed pages only`,
+    );
+  }
+  if (!routeFile.endsWith(".astro")) {
+    // A `.md`, `.mdx` or `.html` page is a page Astro serves, but not one
+    // the parser reads: refused for what it is, never sent to the parser
+    // and then reported as a parser fault that retrying cannot fix.
+    return astroBindingRefusal(
+      "capability-limit",
+      "page-language-unsupported",
+      `${routeFile} is not an .astro page; Design edits .astro pages only`,
     );
   }
   const contentByPath = new Map<string, string>();
@@ -155,7 +190,7 @@ export async function readAstroRoute(args: {
       return astroBindingRefusal(
         outcome.class,
         outcome.reason,
-        `${path}: ${outcome.detail}`,
+        `${path}: ${parserRefusalDetail(path, outcome)}`,
       );
     }
     const projection = projectAstroTemplate(source, outcome.result);

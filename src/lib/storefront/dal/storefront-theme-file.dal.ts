@@ -24,10 +24,9 @@ import { firstOrNull } from "@/lib/db/single-row";
 import { and, asc, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { ThemeSourceIndex } from "../theme-source-index";
 import {
-  isThemeRouteSourcePath,
-  themeRoutePathFromSourcePath,
-} from "@/lib/storefront/compiler/theme-route-registry";
-import { contentTargetForRoutePath } from "../theme-template-routes";
+  routeSourceContentTarget,
+  routeSourcePathInfo,
+} from "../theme-framework/theme-routes";
 import {
   planRouteDocumentRollback,
   type RouteDocumentRollbackPlan,
@@ -245,17 +244,50 @@ function prepareRouteDocumentMove(args: {
   ];
 }
 
-/** The content-owning static route paths a set of source files declares. */
-function routeOwnedPathsOf(paths: readonly string[]): Set<string> {
+/**
+ * The content-owning static route paths a set of source files declares, read
+ * as the Theme's recorded framework reads its routes (D7).
+ */
+function routeOwnedPathsOf(
+  framework: string | null | undefined,
+  paths: readonly string[],
+): Set<string> {
   const routePaths = new Set<string>();
   for (const path of paths) {
-    if (!isThemeRouteSourcePath(path)) continue;
-    const routePath = themeRoutePathFromSourcePath(path);
-    if (!routePath) continue;
-    const target = contentTargetForRoutePath(routePath);
+    const info = routeSourcePathInfo(framework, path);
+    if (!info?.standalone || !info.routePath) continue;
+    const target = routeSourceContentTarget(info);
     if (target.kind === "route") routePaths.add(target.routePath);
   }
   return routePaths;
+}
+
+/**
+ * The framework a Theme records, read for route Document moves. Recorded
+ * once and never converted, so reading it apart from the write races
+ * nothing (as `pageWritesUnavailableReason`). Read only through the Theme's
+ * own live storefront, as every Theme read is; a Theme that is not this
+ * storefront's, or whose storefront or own row is deleted, is refused
+ * rather than read as the unrecorded (Start) default.
+ */
+async function readRecordedFramework(
+  storefrontId: string,
+  themeId: string,
+): Promise<string | null> {
+  const row = await env.DATABASE.prepare(
+    `SELECT th.framework AS framework
+       FROM storefront_themes th
+       INNER JOIN storefronts s ON s.id = th.storefront_id
+      WHERE th.id = ?1 AND s.id = ?2
+        AND th.deleted_at IS NULL AND s.deleted_at IS NULL
+      LIMIT 1`,
+  )
+    .bind(themeId, storefrontId)
+    .first<{ framework: string | null }>();
+  if (!row) {
+    throw new Error("THEME_NOT_FOUND: Theme is not owned by this storefront.");
+  }
+  return row.framework;
 }
 
 export function prepareIncrementThemeSourceGeneration(
@@ -1083,12 +1115,20 @@ export const storefrontThemeFileDal = {
       );
     }
     const deletions = options.deletions ?? [];
+    // Which files are page routes is the recorded framework's question; read
+    // only when a route Document moves.
+    const framework =
+      (options.routePathMoves ?? []).length > 0
+        ? await readRecordedFramework(storefrontId, themeId)
+        : null;
     const routePathMoves = (options.routePathMoves ?? []).map((move) => {
-      const fromRoutePath = themeRoutePathFromSourcePath(move.fromSourcePath);
-      const toRoutePath = themeRoutePathFromSourcePath(move.toSourcePath);
+      const from = routeSourcePathInfo(framework, move.fromSourcePath);
+      const to = routeSourcePathInfo(framework, move.toSourcePath);
+      const fromRoutePath = from?.routePath;
+      const toRoutePath = to?.routePath;
       if (
-        !isThemeRouteSourcePath(move.fromSourcePath) ||
-        !isThemeRouteSourcePath(move.toSourcePath) ||
+        !from?.standalone ||
+        !to?.standalone ||
         !fromRoutePath ||
         !toRoutePath ||
         fromRoutePath === toRoutePath ||
@@ -1099,7 +1139,12 @@ export const storefrontThemeFileDal = {
           "INVALID_ROUTE_DOCUMENT_MOVE: route mapping must match a moved route source file.",
         );
       }
-      return { fromRoutePath, toRoutePath };
+      return {
+        fromRoutePath,
+        toRoutePath,
+        fromTarget: routeSourceContentTarget(from),
+        toTarget: routeSourceContentTarget(to),
+      };
     });
     if (
       new Set(routePathMoves.map((move) => move.fromRoutePath)).size !==
@@ -1144,10 +1189,10 @@ export const storefrontThemeFileDal = {
     let routeMoveSequence = 0;
 
     for (const move of routePathMoves) {
-      const previous = contentTargetForRoutePath(move.fromRoutePath);
+      const previous = move.fromTarget;
       if (previous.kind !== "route") continue;
 
-      const next = contentTargetForRoutePath(move.toRoutePath);
+      const next = move.toTarget;
       const previousTemplate = await env.DATABASE.prepare(
         `SELECT id FROM storefront_theme_templates
          WHERE theme_id = ?1 AND route_path = ?2 AND deleted_at IS NULL LIMIT 1`,
@@ -1952,12 +1997,16 @@ export const storefrontThemeFileDal = {
    * only while no document would be left at a route the revision lacks.
    */
   async planRouteDocumentRollback(
+    storefrontId: string,
     themeId: string,
     revision: Readonly<{
       sourceGeneration: number | null;
       paths: readonly string[];
     }>,
   ): Promise<RouteDocumentRollbackPlan> {
+    // First, so another storefront's Theme is refused before anything of
+    // it is read.
+    const framework = await readRecordedFramework(storefrontId, themeId);
     const [documents, moves] = await Promise.all([
       env.DATABASE.prepare(
         `SELECT id, route_path, name FROM storefront_theme_templates
@@ -1987,7 +2036,7 @@ export const storefrontThemeFileDal = {
           fromRoutePath: row.from_route_path,
           toRoutePath: row.to_route_path,
         })) ?? null,
-      revisionRoutePaths: routeOwnedPathsOf(revision.paths),
+      revisionRoutePaths: routeOwnedPathsOf(framework, revision.paths),
     });
   },
 
@@ -2048,10 +2097,14 @@ export const storefrontThemeFileDal = {
       ).bind(now, storefrontId, themeId),
     ];
 
-    const routeDocuments = await this.planRouteDocumentRollback(themeId, {
-      sourceGeneration: rev.sourceGeneration ?? null,
-      paths: snapshot.map((file) => file.path),
-    });
+    const routeDocuments = await this.planRouteDocumentRollback(
+      storefrontId,
+      themeId,
+      {
+        sourceGeneration: rev.sourceGeneration ?? null,
+        paths: snapshot.map((file) => file.path),
+      },
+    );
     if (!routeDocuments.ok) {
       throw new Error(
         `ROLLBACK_ROUTE_DOCUMENT_CONFLICT: ${routeDocuments.message}`,
@@ -2094,7 +2147,10 @@ export const storefrontThemeFileDal = {
         ).bind(
           themeId,
           JSON.stringify([
-            ...routeOwnedPathsOf(snapshot.map((file) => file.path)),
+            ...routeOwnedPathsOf(
+              await readRecordedFramework(storefrontId, themeId),
+              snapshot.map((file) => file.path),
+            ),
           ]),
         ),
       );
