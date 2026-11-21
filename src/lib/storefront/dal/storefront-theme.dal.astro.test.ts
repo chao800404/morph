@@ -1030,8 +1030,14 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     const request = await identityOf("/about", "intro");
     const before = stored("tpl-about");
     const fetch = countParserCalls();
+    // M3 Hide: a hide is refused as one Morph cannot carry out on a
+    // non-Start Theme (until M3 P5), before the parser is asked.
     await expect(
       write({ ...request, props: { enabled: false } }),
+    ).rejects.toThrow(/^SECTION_HIDE_UNSUPPORTED: framework-not-supported: /);
+    // Show keeps C5's refusal.
+    await expect(
+      write({ ...request, props: { enabled: true } }),
     ).rejects.toThrow(
       /^SECTION_SOURCE_UNCONFIRMED: section-visibility-unsupported: /,
     );

@@ -5879,6 +5879,36 @@ function Home() {
     );
     expect(storedState()).toEqual(before);
   });
+
+  // The classifier reads Start source only: until M3 P5 a hide on a Theme
+  // recorded as another framework is refused at the boundary, from the
+  // framework the owned Theme records.
+  for (const framework of ["astro", "next"]) {
+    it(`refuses a hide on a Theme recorded as ${framework}, writing nothing`, async () => {
+      seed();
+      sqlite
+        .prepare(
+          `UPDATE storefront_themes SET framework = '${framework}' WHERE id = 'theme-a'`,
+        )
+        .run();
+      const before = storedState();
+      await expect(write("hero", { enabled: false })).rejects.toThrow(
+        /^SECTION_HIDE_UNSUPPORTED: framework-not-supported: Morph cannot hide this section yet/,
+      );
+      expect(storedState()).toEqual(before);
+    });
+  }
+
+  it("reverse: the same hide on the Theme recorded as Start (or before frameworks were) is written", async () => {
+    seed();
+    sqlite
+      .prepare("UPDATE storefront_themes SET framework = NULL WHERE id = 'theme-a'")
+      .run();
+    const result = await write("hero", { enabled: false });
+    expect(
+      result?.document.sections.find((section) => section.id === "hero"),
+    ).toMatchObject({ enabled: false });
+  });
 });
 
 /**

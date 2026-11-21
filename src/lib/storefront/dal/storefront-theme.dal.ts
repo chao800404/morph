@@ -73,6 +73,7 @@ import {
   assertSectionHideSupported,
   sectionHideRefusal,
 } from "../content/section-hide-check";
+import { hideRefusalMessage } from "../ast/theme-hide-capability";
 import {
   contentTargetForRoutePath,
   normalizeRoutePath,
@@ -2223,6 +2224,20 @@ export const storefrontThemeDal = {
       context.theme.framework,
       "section-values",
     );
+    // M3 Hide: the hide classifier (`theme-hide-capability.ts`) reads Start
+    // source only (`START_B1_PROFILE`). Until M3 P5, a hide on a Theme whose
+    // recorded framework is not Start — the framework this write's own
+    // capability check reads from the owned Theme — is refused before
+    // anything is read or written. Showing a section is not judged here.
+    if (
+      data.props.enabled === false &&
+      !(capability.ok && capability.via === "start")
+    ) {
+      throw sectionHideRefusal(
+        "framework-not-supported",
+        hideRefusalMessage("framework-not-supported"),
+      );
+    }
     if (capability.ok && capability.via === "astro") {
       // C5: an Astro section is written only through Core's own proof on
       // the snapshot this write reads (`resolveAstroSectionWrite`); the B1
