@@ -915,7 +915,6 @@ jobs:
       - name: Run preview access container acceptance
         id: preview_access_run
         env:
-          MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_THEME_PREVIEW_RUNTIME: start

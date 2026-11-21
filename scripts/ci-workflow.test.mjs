@@ -348,18 +348,6 @@ test("Stage 3 probes the clock at each window marker and checks every window's v
     at("Require the run's container veths to have had no IPv6 link-local address") < at(name) &&
       at(name) < at("Upload results and failure traces"),
   );
-
-  // Both runs record the auth path the same way.
-  for (const runName of [
-    "Run M1 container lifecycle acceptance",
-    "Run preview access container acceptance",
-  ]) {
-    assert.match(
-      stepBlock(container, runName),
-      /^ {10}MORPH_E2E_AUTH_DIAGNOSTICS: "1"$/m,
-      runName,
-    );
-  }
 });
 
 test("every job that installs Chromium first puts the primary Ubuntu archive ahead of the Azure mirror", () => {
