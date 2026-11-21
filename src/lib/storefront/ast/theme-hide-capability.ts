@@ -60,7 +60,13 @@ export type HideRefusalReason =
   | "content-module-unconfirmed"
   | "legacy-shell"
   | "no-call-site"
-  | "source-unconfirmed";
+  | "source-unconfirmed"
+  /**
+   * The Theme's recorded framework is not Start. This classifier reads
+   * Start source only, so the write boundary refuses such a hide before
+   * calling it (until M3 P5).
+   */
+  | "framework-not-supported";
 
 /** Where Morph's compiled guard goes, for one supported call site. */
 export type HideGuardSite = Readonly<{
@@ -115,7 +121,13 @@ const MESSAGES: Readonly<Record<HideRefusalReason, string>> = {
   "legacy-shell": `${PREFIX}: this part of the Theme does not read its sections from the page content, so hiding would have no effect.`,
   "no-call-site": `${PREFIX}: Morph could not find where the page renders it.`,
   "source-unconfirmed": `${PREFIX}: the Theme source has errors Morph cannot analyse.`,
+  "framework-not-supported": `${PREFIX}: hiding is only supported on TanStack Start pages so far. Edit it in Code mode.`,
 };
+
+/** The capability-limit wording for a refusal reason. */
+export function hideRefusalMessage(reason: HideRefusalReason): string {
+  return MESSAGES[reason];
+}
 
 /** Every Starter content module whose `morph.pages.get` returns `_hidden`. */
 const STARTER_PAGE_MODULE_SOURCES: readonly string[] = [
@@ -364,23 +376,23 @@ export function createHideCapabilityAnalyzer(
     }
 
     // Every read of the section in this module sits inside a guarded site.
-    const uncovered = slotUsesHere
+    // A value computed before the page renders the section is named first:
+    // it is the reason the call site itself may look untraced too.
+    const uncoveredUses = slotUsesHere
       .filter(
         (use) =>
           !sites.some((site) => use.start >= site.start && use.end <= site.end),
       )
-      .sort((a, b) => a.start - b.start)[0];
-    if (uncovered) {
-      if (siteRefusal) return siteRefusal;
-      return refuse(
-        slot,
-        uncovered.inJsx || uncovered.via === "alias"
-          ? "unsupported-shape"
-          : "early-computation",
-        at(uncovered.line),
-      );
-    }
+      .sort((a, b) => a.start - b.start);
+    const early = uncoveredUses.find(
+      (use) => !use.inJsx && use.via !== "binding",
+    );
+    if (early) return refuse(slot, "early-computation", at(early.line));
     if (siteRefusal) return siteRefusal;
+    const uncovered = uncoveredUses[0];
+    if (uncovered) {
+      return refuse(slot, "unsupported-shape", at(uncovered.line));
+    }
 
     // Modules that can reach this route's loader data some other way.
     if (

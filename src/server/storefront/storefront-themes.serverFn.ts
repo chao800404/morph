@@ -484,7 +484,9 @@ export const updateStorefrontThemeSectionProps = createServerFn({
       // `SECTION_SOURCE_UNCONFIRMABLE` (retryable) or
       // `SECTION_SOURCE_UNCONFIRMED`, with the plan's reason code where the
       // DAL gives one (M2 C7). Start's refusals carry none and answer as
-      // before.
+      // before. `SECTION_HIDE_UNSUPPORTED` (M3 Hide) answers the same way:
+      // a hide the source cannot carry out, refused before anything was
+      // written, always with its reason; retrying is refused the same way.
       const refusal = parseSectionSourceRefusal(message);
       if (refusal) {
         return fail(

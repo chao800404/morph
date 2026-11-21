@@ -1,6 +1,10 @@
 import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import {
+  parseSectionSourceRefusal,
+  SECTION_HIDE_UNSUPPORTED,
+} from "@/lib/storefront/theme-write-errors";
+import {
   createStorefrontPageInputSchema,
   getStorefrontPageInputSchema,
   listStorefrontPageRevisionsInputSchema,
@@ -159,6 +163,17 @@ export const updateStorefrontPage = createServerFn({ method: "POST" })
         version,
       });
     } catch (error) {
+      // M3 Hide: a Page section cannot be hidden yet. Answered in the
+      // section-source refusal form (M2 C7), reason under `errors.reason`.
+      const refusal = parseSectionSourceRefusal(
+        error instanceof Error ? error.message : "",
+      );
+      if (refusal?.code === SECTION_HIDE_UNSUPPORTED) {
+        return fail(refusal.text || "Morph cannot hide this section yet.", {
+          error: SECTION_HIDE_UNSUPPORTED,
+          ...(refusal.reason ? { errors: { reason: [refusal.reason] } } : {}),
+        });
+      }
       return failure(
         "Update storefront page error",
         error,

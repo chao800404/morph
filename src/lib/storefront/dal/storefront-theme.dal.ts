@@ -70,6 +70,11 @@ import {
 } from "@/lib/storefront/compiler/theme-route-sections";
 import { templateSectionWriteBase } from "../content/template-section-write-base";
 import {
+  assertSectionHideSupported,
+  sectionHideRefusal,
+} from "../content/section-hide-check";
+import { hideRefusalMessage } from "../ast/theme-hide-capability";
+import {
   contentTargetForRoutePath,
   normalizeRoutePath,
   routeTemplatePathForRequest,
@@ -251,8 +256,11 @@ type SectionSourceComponent =
    * here may the ref the Document stored stand in for the source.
    */
   | Readonly<{ kind: "legacy" }>
-  /** The source owns this structure and cannot vouch for the section. */
-  | Readonly<{ kind: "unconfirmed"; reason: string }>;
+  /**
+   * The source owns this structure and cannot vouch for the section.
+   * `notRendered`: the source is fine but renders no such section.
+   */
+  | Readonly<{ kind: "unconfirmed"; reason: string; notRendered?: true }>;
 
 /**
  * The component the saved source renders for one section.
@@ -305,6 +313,7 @@ export function resolveSectionSourceComponent(args: {
       return {
         kind: "unconfirmed",
         reason: `${owner} does not render section "${args.sectionId}".`,
+        notRendered: true,
       };
     }
     if (section.missingComponentSourcePath) {
@@ -861,6 +870,69 @@ async function resolveAstroSectionWrite(args: {
     componentRef: stored.componentRef,
     claims,
   };
+}
+
+/**
+ * Where one section of a template is rendered, on every route that serves
+ * the template (M3 Hide). A template can sit behind several routes, and a
+ * hide is only safe when each of them can omit the section, so a hide is
+ * judged on all of them, never on the one the editor happens to show.
+ *
+ * Each entry is a call site to classify; `null` for a source with no say
+ * (a legacy shell); `"not-rendered"` for a route that does not render the
+ * section, which nothing can then show; or why the source cannot confirm it.
+ * A template no route serves gives no entry: nothing renders it.
+ */
+export type TemplateHideCallSite =
+  string | null | "not-rendered" | Readonly<{ unconfirmed: string }>;
+
+export function templateHideCallSites(args: {
+  framework: string | null;
+  templateType: string;
+  templateRoutePath?: string | null;
+  sectionId: string;
+  files: readonly { path: string; content: string }[];
+}): TemplateHideCallSite[] {
+  const site = (resolved: SectionSourceComponent): TemplateHideCallSite =>
+    resolved.kind === "confirmed"
+      ? resolved.callSitePath
+      : resolved.kind === "legacy"
+        ? null
+        : resolved.notRendered
+          ? "not-rendered"
+          : { unconfirmed: resolved.reason };
+  const resolve = (routePath?: string) =>
+    site(
+      resolveSectionSourceComponent({
+        framework: args.framework,
+        templateType: args.templateType,
+        templateRoutePath: args.templateRoutePath ?? null,
+        sectionId: args.sectionId,
+        files: args.files,
+        ...(routePath !== undefined ? { routePath } : {}),
+      }),
+    );
+  if (
+    args.templateType === "layout" ||
+    designWritesUnavailableReason(args.framework) !== null ||
+    !args.files.some((file) => file.path.startsWith("src/routes/"))
+  ) {
+    return [resolve()];
+  }
+  const registry = buildThemeRouteRegistry(args.files);
+  if (!registry.valid) return [resolve()];
+  if (args.templateRoutePath) {
+    return findBoundTemplateRoute(registry, args.templateRoutePath)
+      ? [resolve()]
+      : [];
+  }
+  return registry.routes
+    .filter(
+      (route) =>
+        route.kind === "route" &&
+        templateTypeForRoutePath(route.path) === args.templateType,
+    )
+    .map((route) => resolve(route.path));
 }
 
 async function listThemeSourceFiles(storefrontId: string, themeId: string) {
@@ -2152,6 +2224,20 @@ export const storefrontThemeDal = {
       context.theme.framework,
       "section-values",
     );
+    // M3 Hide: the hide classifier (`theme-hide-capability.ts`) reads Start
+    // source only (`START_B1_PROFILE`). Until M3 P5, a hide on a Theme whose
+    // recorded framework is not Start — the framework this write's own
+    // capability check reads from the owned Theme — is refused before
+    // anything is read or written. Showing a section is not judged here.
+    if (
+      data.props.enabled === false &&
+      !(capability.ok && capability.via === "start")
+    ) {
+      throw sectionHideRefusal(
+        "framework-not-supported",
+        hideRefusalMessage("framework-not-supported"),
+      );
+    }
     if (capability.ok && capability.via === "astro") {
       // C5: an Astro section is written only through Core's own proof on
       // the snapshot this write reads (`resolveAstroSectionWrite`); the B1
@@ -2250,6 +2336,40 @@ export const storefrontThemeDal = {
           sourceAnalysis.diagnostics.length === 0
         ) {
           b1Claims = b1ClaimsForSection(matchingInstances[0]!, data.sectionId);
+        }
+      }
+
+      // M3 Hide: a section becomes hidden only where the saved source proves
+      // Morph can omit every place that reads it. Judged on the same source
+      // snapshot as the proof above, read between the two source-generation
+      // checks; the final batch repeats that precondition, so the verdict
+      // belongs to the generation that is written. Showing a section, and
+      // keeping a hidden one hidden, are never judged here. (An Astro page
+      // refuses every visibility write above.)
+      // Every route that serves this template is judged, not only the one
+      // the editor shows: each of them renders the hidden section.
+      if (data.props.enabled === false && targetSection.enabled !== false) {
+        const callSites = templateHideCallSites({
+          framework: context.theme.framework,
+          templateType: template.type,
+          templateRoutePath: template.routePath ?? null,
+          sectionId: data.sectionId,
+          files: themeSourceFiles,
+        });
+        for (const callSite of callSites) {
+          if (callSite === "not-rendered") continue;
+          if (callSite !== null && typeof callSite === "object") {
+            throw sectionHideRefusal(
+              "source-unconfirmed",
+              `Morph cannot hide this section yet: ${callSite.unconfirmed}`,
+            );
+          }
+          assertSectionHideSupported({
+            files: themeSourceFiles,
+            callSitePath: callSite,
+            slot: data.sectionId,
+            scope: template.type === "layout" ? "layout" : "route",
+          });
         }
       }
     }

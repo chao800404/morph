@@ -43,6 +43,7 @@ import {
   draftIsAsCommitted,
   inputEndsCommit,
   heldContentProps,
+  dropPendingContentField,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { resolveSectionContentDeclaration } from "@/lib/storefront/editor/section-content-declaration";
@@ -136,6 +137,7 @@ import {
   rebaseContentProps,
 } from "@/lib/storefront/editor/content-rebase";
 import {
+  SECTION_HIDE_UNSUPPORTED,
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
 } from "@/lib/storefront/theme-write-errors";
@@ -2489,6 +2491,38 @@ export function VisualEditorShell({
     },
     [],
   );
+  /**
+   * M3 Hide: a hide that did not happen and that the editor stops holding —
+   * refused by the server (`SECTION_HIDE_UNSUPPORTED`, which the same source
+   * refuses again), or sent with no answer and read back as not hidden. It
+   * is an answer, as a refused swap is: the hide leaves what the section
+   * holds pending (anything typed with it stays, to be sent), the canvas and
+   * the Sections panel show the section again, and nothing is recorded or
+   * held for a retry. The caller has said why.
+   */
+  const rollBackUnhiddenSection = useCallback(
+    (key: string, sectionId: string) => {
+      const pending = pendingPropsMapRef.current.get(key);
+      if (
+        pending?.props.enabled === false &&
+        dropPendingContentField(pendingPropsMapRef.current, key, "enabled")
+      ) {
+        pendingPropsBaselineRef.current.delete(key);
+        failedContentKeysRef.current.delete(key);
+      }
+      if (
+        unconfirmedContentRef.current.size === 0 &&
+        !Array.from(failedContentKeysRef.current).some((failed) =>
+          pendingPropsMapRef.current.has(failed),
+        )
+      ) {
+        setDraftSaveState("idle");
+      }
+      syncContentWritesRef.current();
+      previewVisibilityRef.current.reconcile(sectionId);
+    },
+    [],
+  );
 
   /**
    * A content write was saved: carry it into a preview that reads content on
@@ -4019,6 +4053,19 @@ export function VisualEditorShell({
           }
           throw error;
         }
+        // M3 Hide: a hide the source cannot carry out, refused before anything
+        // was written. The same source refuses it again, so it is not kept
+        // for "Try again": rolled back (`rollBackUnhiddenSection`), recorded
+        // never (only an answered write calls `recordAnswered`). The mutation
+        // has shown the server's reason.
+        const refusedHide = sentEntry as PendingContentEntry | undefined;
+        if (
+          code === SECTION_HIDE_UNSUPPORTED &&
+          refusedHide?.props.enabled === false
+        ) {
+          rollBackUnhiddenSection(key, refusedHide.sectionId);
+          throw error;
+        }
         // The payload is retained either way; what differs is what the author
         // can do about it, so a conflict is recorded rather than only reported.
         if ((error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT) {
@@ -4079,6 +4126,7 @@ export function VisualEditorShell({
       noteSavedListChange,
       supersedeSavedListChange,
       unnamedCopyBasis,
+      rollBackUnhiddenSection,
     ],
   );
 
@@ -4516,6 +4564,18 @@ export function VisualEditorShell({
         );
         return;
       }
+      // M3 Hide: a hide resent after a lost answer (read back as not
+      // hidden) and refused as one the source cannot carry out: an answer,
+      // as a first send's refusal is. Rolled back, recorded never, and not
+      // kept for a retry; the mutation showed the reason.
+      if (
+        !isRun &&
+        code === SECTION_HIDE_UNSUPPORTED &&
+        sent.props.enabled === false
+      ) {
+        rollBackUnhiddenSection(key, sent.sectionId);
+        return;
+      }
       if (!isRun) {
         failedContentKeysRef.current.add(key);
         syncContentWritesRef.current();
@@ -4596,6 +4656,7 @@ export function VisualEditorShell({
     commitSectionPending,
     markResetMoved,
     reconcileAfterRemoval,
+    rollBackUnhiddenSection,
     settleUnconfirmedContent,
     syncUnconfirmedContentCount,
   ]);

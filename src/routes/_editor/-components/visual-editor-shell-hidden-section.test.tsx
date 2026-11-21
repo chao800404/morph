@@ -1687,3 +1687,349 @@ describe("Show / Hide section Undo and Redo as history runs", () => {
     });
   });
 });
+
+/**
+ * M3 Hide P2: a hide the saved source cannot carry out is refused by the
+ * server before anything is written (`SECTION_HIDE_UNSUPPORTED`, its reason
+ * under `errors.reason`). Inside the Show / Hide history run that refusal is
+ * an answer, as a refused swap is: the toggle is rolled back on the canvas
+ * and in the Sections panel, nothing is recorded or held for a retry, and
+ * the server's reason is shown. Undo and Redo never re-issue it. A hide with
+ * no answer goes through the existing read-back: read back as not hidden,
+ * it is resent once as first sent (Task 41 29-B), and that resend refused
+ * is taken as refused, the same way.
+ */
+describe("a hide the source cannot carry out", () => {
+  const SECTION_PROPS = "morph:storefront-preview-update-section-props";
+  const REASON =
+    "Morph cannot hide this section yet: the page uses its content before rendering the section, and that would still run while the section is hidden. (src/routes/index.tsx:6)";
+  const unsupported = {
+    success: false,
+    error: "SECTION_HIDE_UNSUPPORTED",
+    message: REASON,
+    errors: { reason: ["early-computation"] },
+  };
+  type Held = { enabled: boolean; heading: string };
+  let server: {
+    sections: Record<"hero" | "promo", Held>;
+    generation: number;
+  };
+  /** Whether the server refuses hiding the hero (the source cannot). */
+  let heroHideUnsupported: boolean;
+  let answerNext: Array<(data: Record<string, unknown>) => unknown> = [];
+  /** What the server holds; the promo is its own type, so its row is named apart. */
+  const held = () => {
+    const context = contextWith(
+      (["hero", "promo"] as const).map((id) => ({
+        id,
+        ...server.sections[id],
+      })),
+      server.generation,
+    );
+    const promo = context.templates[0]!.document.sections[1] as {
+      type: string;
+    };
+    promo.type = "promo";
+    return context;
+  };
+  const apply = (data: Record<string, unknown>) => {
+    const sectionId = data.sectionId as "hero" | "promo";
+    const props = data.props as Record<string, unknown>;
+    if (
+      heroHideUnsupported &&
+      sectionId === "hero" &&
+      props.enabled === false &&
+      server.sections.hero.enabled
+    ) {
+      return unsupported;
+    }
+    if (data.expectedDraftGeneration !== server.generation) {
+      return {
+        success: false,
+        error: "TEMPLATE_DRAFT_CONFLICT",
+        message: "Template draft was modified concurrently.",
+      };
+    }
+    const section = server.sections[sectionId];
+    if (typeof props.heading === "string") section.heading = props.heading;
+    if (typeof props.enabled === "boolean") section.enabled = props.enabled;
+    server.generation += 1;
+    return {
+      success: true,
+      data: {
+        draftGeneration: server.generation,
+        droppedProps: [],
+        document: held().templates[0]!.document,
+      },
+    };
+  };
+  const lost = () => {
+    throw new Error("offline");
+  };
+  const sent = () =>
+    updateSectionProps.mock.calls.map(
+      (call) => call[0].data as Record<string, unknown>,
+    );
+  const sentFor = (sectionId: string) =>
+    sent().filter((data) => data.sectionId === sectionId);
+  const depth = () =>
+    document
+      .querySelector("[data-editor-undo-depth]")
+      ?.getAttribute("data-editor-undo-depth") ?? null;
+  const historyButtons = () => ({
+    undo: !screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+    redo: !screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled"),
+  });
+  const unconfirmedCount = () =>
+    document
+      .querySelector("[data-editor-unconfirmed-saves]")
+      ?.getAttribute("data-editor-unconfirmed-saves") ?? null;
+  const saveStatus = () =>
+    document
+      .querySelector("[data-editor-save-status]")
+      ?.getAttribute("aria-label");
+  const settle = () =>
+    act(() => new Promise((resolve) => setTimeout(resolve, 1_200)));
+  const press = async (name: "Undo" | "Redo") => {
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name }).hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name }));
+    await settle();
+  };
+  /** The last visibility the preview was told for a section. */
+  const previewHidden = (sectionId: string) => {
+    const last = posted
+      .filter(
+        (message) =>
+          message.type === SECTION_PROPS &&
+          message.sectionId === sectionId &&
+          typeof message.enabled === "boolean",
+      )
+      .at(-1);
+    return last ? last.enabled === false : null;
+  };
+  const errors = () =>
+    vi.mocked(toast.error).mock.calls.map((call) => String(call[0]));
+  const hideOf = (sectionId: string) =>
+    screen.getAllByRole("button", { name: `Hide section ${sectionId}` })[0]!;
+  const reread = async (shell: ReturnType<typeof renderShell>) => {
+    shell.storedAs(held());
+    await flushFrames();
+  };
+
+  beforeEach(() => {
+    server = {
+      sections: {
+        hero: { enabled: true, heading: "Welcome" },
+        promo: { enabled: true, heading: "Promo" },
+      },
+      generation: 1,
+    };
+    heroHideUnsupported = true;
+    answerNext = [];
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockImplementation(async ({ data }) => {
+      const override = answerNext.shift();
+      return override ? override(data) : apply(data);
+    });
+    getThemeEditor.mockImplementation(async () => ({
+      success: true,
+      message: "ok",
+      data: held(),
+    }));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Asserts the hero is shown everywhere and nothing about it is held. */
+  async function heroShownAndNothingHeld(shell: ReturnType<typeof renderShell>) {
+    await waitFor(() => expect(previewHidden("hero")).toBe(false));
+    await reread(shell);
+    expect(screen.getAllByRole("button", { name: "Hide section hero" })).not.toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Show section hero" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check and save" })).toBeNull();
+    expect(unconfirmedCount()).toBeNull();
+    expect(saveStatus()).not.toBe("Save failed");
+    expect(server.sections.hero.enabled).toBe(true);
+  }
+
+  it("refused: rolled back on the canvas and in the Sections panel, its reason shown, nothing recorded and nothing held to retry", async () => {
+    const shell = renderShell(held());
+    await flushFrames();
+
+    fireEvent.click(hideOf("hero"));
+    await settle();
+
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({
+      sectionId: "hero",
+      props: { enabled: false },
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: 1,
+    });
+    // The canvas hid it at once, and is told to show it again.
+    expect(
+      posted.some(
+        (message) =>
+          message.type === SECTION_PROPS &&
+          message.sectionId === "hero" &&
+          message.enabled === false,
+      ),
+    ).toBe(true);
+    expect(errors()).toContain(REASON);
+    await heroShownAndNothingHeld(shell);
+    expect(depth(), "nothing recorded").toBe("0");
+    expect(historyButtons()).toEqual({ undo: false, redo: false });
+    await settle();
+    expect(sent(), "not sent again").toHaveLength(1);
+  });
+
+  it("Undo after a refused hide does nothing about it: it undoes the earlier step of another section, and never sends the hero's hide", async () => {
+    const shell = renderShell(held());
+    await flushFrames();
+    // A supported step first: the promo hidden (draft 1 -> 2), recorded once.
+    fireEvent.click(hideOf("promo"));
+    await settle();
+    await reread(shell);
+    expect(server.sections.promo.enabled).toBe(false);
+    expect(depth()).toBe("1");
+
+    fireEvent.click(hideOf("hero"));
+    await settle();
+    expect(sentFor("hero")).toHaveLength(1);
+    await heroShownAndNothingHeld(shell);
+    expect(depth(), "the refused hide added nothing").toBe("1");
+
+    await press("Undo");
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]).toMatchObject({
+      sectionId: "promo",
+      props: { enabled: true },
+      expectedDraftGeneration: 2,
+    });
+    await reread(shell);
+    expect(server.sections.promo.enabled).toBe(true);
+    expect(depth()).toBe("0");
+    expect(historyButtons()).toEqual({ undo: false, redo: true });
+
+    await press("Redo");
+    expect(sent()).toHaveLength(4);
+    expect(sent()[3]).toMatchObject({
+      sectionId: "promo",
+      props: { enabled: false },
+    });
+    await reread(shell);
+    expect(depth()).toBe("1");
+    expect(sentFor("hero"), "the hero's hide was never sent again").toHaveLength(1);
+    expect(server.sections.hero.enabled).toBe(true);
+    expect(previewHidden("hero")).toBe(false);
+  });
+
+  it("control: a hide the source can carry out is written once and recorded once, and Undo reverses it", async () => {
+    heroHideUnsupported = false;
+    const shell = renderShell(held());
+    await flushFrames();
+
+    fireEvent.click(hideOf("hero"));
+    await settle();
+    await reread(shell);
+    expect(sent()).toHaveLength(1);
+    expect(server.sections.hero.enabled).toBe(false);
+    expect(depth()).toBe("1");
+    expect(previewHidden("hero")).toBe(true);
+    await settle();
+    expect(sent()).toHaveLength(1);
+    expect(depth(), "recorded once").toBe("1");
+    expect(errors()).not.toContain(REASON);
+
+    await press("Undo");
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      sectionId: "hero",
+      props: { enabled: true },
+    });
+    expect(depth()).toBe("0");
+  });
+
+  it("a hide with no answer, read back as not hidden: its one resend is refused, and it is taken as refused — rolled back, nothing recorded, nothing held", async () => {
+    const shell = renderShell(held());
+    await flushFrames();
+    answerNext.push(lost);
+
+    fireEvent.click(hideOf("hero"));
+    await settle();
+    expect(sent()).toHaveLength(1);
+    expect(unconfirmedCount()).toBe("1");
+    expect(previewHidden("hero"), "still drawn as the editor holds it").toBe(
+      true,
+    );
+    await settle();
+    expect(sent(), "nothing sent by itself").toHaveLength(1);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Check and save" }),
+    );
+    await settle();
+
+    expect(sent(), "resent once, as first sent").toHaveLength(2);
+    expect(sent()[1]).toMatchObject({
+      sectionId: "hero",
+      props: { enabled: false },
+      expectedDraftGeneration: 1,
+    });
+    expect(errors()).toContain(REASON);
+    await heroShownAndNothingHeld(shell);
+    expect(depth(), "nothing recorded").toBe("0");
+    await settle();
+    expect(sent(), "not sent again").toHaveLength(2);
+    await press("Undo").catch(() => undefined);
+    expect(sent(), "Undo has nothing to re-issue").toHaveLength(2);
+  });
+
+  it("reverse: a hide with no answer, read back as hidden: recorded once, not sent again", async () => {
+    heroHideUnsupported = false;
+    const shell = renderShell(held());
+    await flushFrames();
+    answerNext.push(lost);
+
+    fireEvent.click(hideOf("hero"));
+    await settle();
+    expect(unconfirmedCount()).toBe("1");
+    // It landed: hidden, one generation on.
+    server.sections.hero.enabled = false;
+    server.generation = 2;
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Check and save" }),
+    );
+    await settle();
+    await reread(shell);
+
+    expect(sent()).toHaveLength(1);
+    expect(unconfirmedCount()).toBeNull();
+    expect(depth(), "recorded once").toBe("1");
+    expect(previewHidden("hero")).toBe(true);
+    expect(errors()).not.toContain(REASON);
+  });
+
+  it("reverse: any other refused hide is still held for a retry", async () => {
+    const shell = renderShell(held());
+    await flushFrames();
+    answerNext.push(() => ({
+      success: false,
+      error: "UPDATE_FAILED",
+      message: "Failed to update section props",
+    }));
+
+    fireEvent.click(hideOf("hero"));
+    await settle();
+    expect(sent()).toHaveLength(1);
+    await reread(shell);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+});

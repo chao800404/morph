@@ -29,6 +29,18 @@ export const TEMPLATE_DRAFT_GENERATION_MISMATCH =
  */
 export const SECTION_SOURCE_UNCONFIRMED = "SECTION_SOURCE_UNCONFIRMED";
 
+/**
+ * A hide the saved source cannot carry out (M3 Hide).
+ *
+ * The section would stay visible, show its component's defaults, or crash the
+ * page while hidden, because something reads its content where Morph cannot
+ * omit it. Refused before anything is written; showing a section is never
+ * refused with it. See `theme-hide-capability.ts`. Raised as
+ * `SECTION_HIDE_UNSUPPORTED: reason-code: text` and read back, with the
+ * other section-source refusals, by `parseSectionSourceRefusal`.
+ */
+export const SECTION_HIDE_UNSUPPORTED = "SECTION_HIDE_UNSUPPORTED";
+
 /** The source used for a visual selection is no longer the saved source. */
 export const SELECTION_SOURCE_CONFLICT = "SELECTION_SOURCE_CONFLICT";
 export const SELECTION_SOURCE_CONFLICT_MESSAGE =
@@ -66,11 +78,15 @@ const SECTION_SOURCE_REASON = /^([a-z][a-z0-9]*(?:-[a-z0-9]+)*): ([\s\S]*)$/;
  * no section-source refusal.
  */
 export function parseSectionSourceRefusal(message: string): Readonly<{
-  code: typeof SECTION_SOURCE_UNCONFIRMABLE | typeof SECTION_SOURCE_UNCONFIRMED;
+  code:
+    | typeof SECTION_HIDE_UNSUPPORTED
+    | typeof SECTION_SOURCE_UNCONFIRMABLE
+    | typeof SECTION_SOURCE_UNCONFIRMED;
   reason: string | null;
   text: string;
 }> | null {
   for (const code of [
+    SECTION_HIDE_UNSUPPORTED,
     SECTION_SOURCE_UNCONFIRMABLE,
     SECTION_SOURCE_UNCONFIRMED,
   ] as const) {
