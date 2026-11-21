@@ -1586,3 +1586,88 @@ describe("shownListIsBehind", () => {
     ).toBe(true);
   });
 });
+
+describe("shownValueIsBehind", () => {
+  const { shownValueIsBehind } = pendingContentWrite;
+  const accepted = { items: [{ id: "a" }], heading: "Welcome" };
+
+  it("a text shown as the accepted one is not behind; another text is", () => {
+    expect(
+      shownValueIsBehind({
+        shown: "Welcome",
+        accepted,
+        key: "heading",
+        unanswered: [],
+      }),
+    ).toBe(false);
+    expect(
+      shownValueIsBehind({
+        shown: "X",
+        accepted,
+        key: "heading",
+        unanswered: [],
+      }),
+    ).toBe(true);
+  });
+
+  it("an unanswered input to that text keeps it from being behind", () => {
+    expect(
+      shownValueIsBehind({
+        shown: "Y",
+        accepted,
+        key: "heading",
+        unanswered: [
+          {
+            sectionId: "hero",
+            props: { heading: "Y" },
+            fields: { heading: { value: "Y", sourceGeneration: 1 } },
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      shownValueIsBehind({
+        shown: undefined,
+        accepted,
+        key: "heading",
+        unanswered: [{ sectionId: "hero", props: {}, resetProps: ["heading"] }],
+      }),
+    ).toBe(false);
+  });
+
+  it("an unanswered input to another field does not, even though its props carry the old text", () => {
+    expect(
+      shownValueIsBehind({
+        shown: "X",
+        accepted,
+        key: "heading",
+        unanswered: [
+          {
+            sectionId: "hero",
+            props: { heading: "X", items: [{ id: "a", title: "T" }] },
+            fields: { "items.0.title": { value: "T", sourceGeneration: 1 } },
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("a text neither stores is not behind; a stored text shown as unstored is", () => {
+    expect(
+      shownValueIsBehind({
+        shown: undefined,
+        accepted: {},
+        key: "heading",
+        unanswered: [],
+      }),
+    ).toBe(false);
+    expect(
+      shownValueIsBehind({
+        shown: undefined,
+        accepted,
+        key: "heading",
+        unanswered: [],
+      }),
+    ).toBe(true);
+  });
+});

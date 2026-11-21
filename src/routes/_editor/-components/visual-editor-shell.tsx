@@ -39,6 +39,7 @@ import {
   hasUnconfirmedContentForList as hasUnconfirmedListWrite,
   LIST_BEHIND_MESSAGE,
   shownListIsBehind,
+  shownValueIsBehind,
   draftIsAsCommitted,
   inputEndsCommit,
   heldContentProps,
@@ -15778,20 +15779,13 @@ export function VisualEditorShell({
   );
 
   /**
-   * The accepted value of a section's list, when the list `shown` for it
-   * (in the Inspector, or as the canvas reorder builds it) is behind it
-   * (`shownListIsBehind`); null when it is not. A list action on a list
-   * that is behind is refused: nothing is sent, and the list shown is
-   * replaced by the value returned. The unanswered inputs that keep a list
-   * from counting as behind are this section's entries in its document,
-   * pending or of unknown outcome.
+   * This section's unanswered content inputs in its document, pending or of
+   * unknown outcome: the entries that keep a shown value from counting as
+   * behind the accepted copy (`listBehindAccepted`, `valueBehindAccepted`).
+   * Null when the section has no document here.
    */
-  const listBehindAccepted = useCallback(
-    (
-      sectionId: string,
-      listRoot: string,
-      shown: unknown,
-    ): { accepted: unknown } | null => {
+  const unansweredContentOfSection = useCallback(
+    (sectionId: string): PendingContentEntry[] | null => {
       const requested = templateIdForSection(sectionId);
       if (!requested) return null;
       const ownerId = routeTemplateIdsRef.current.get(requested) ?? requested;
@@ -15808,12 +15802,63 @@ export function VisualEditorShell({
           unanswered.push(entry);
         }
       }
+      return unanswered;
+    },
+    [sameTemplateOwner, templateIdForSection],
+  );
+
+  /**
+   * The accepted value of a section's list, when the list `shown` for it
+   * (in the Inspector, or as the canvas reorder builds it) is behind it
+   * (`shownListIsBehind`); null when it is not. A list action on a list
+   * that is behind is refused: nothing is sent, and the list shown is
+   * replaced by the value returned. The unanswered inputs that keep a list
+   * from counting as behind are this section's entries in its document,
+   * pending or of unknown outcome.
+   */
+  const listBehindAccepted = useCallback(
+    (
+      sectionId: string,
+      listRoot: string,
+      shown: unknown,
+    ): { accepted: unknown } | null => {
+      const unanswered = unansweredContentOfSection(sectionId);
+      if (!unanswered) return null;
       const accepted = acceptedSectionProps(sectionId);
       return shownListIsBehind({ shown, accepted, listRoot, unanswered })
         ? { accepted: accepted[listRoot] }
         : null;
     },
-    [acceptedSectionProps, sameTemplateOwner, templateIdForSection],
+    [acceptedSectionProps, unansweredContentOfSection],
+  );
+
+  /**
+   * The accepted value of any top-level content key of a section (a scalar
+   * such as a heading's text, or a list), when the value `shown` for it is
+   * behind it (`shownValueIsBehind`); null when it is not. Kept from counting
+   * as behind by the same entries as `listBehindAccepted`. Display only:
+   * asked by the Content panel after an answered Undo or Redo, never by a
+   * write.
+   */
+  const valueBehindAccepted = useCallback(
+    (
+      sectionId: string,
+      contentKey: string,
+      shown: unknown,
+    ): { accepted: unknown } | null => {
+      const unanswered = unansweredContentOfSection(sectionId);
+      if (!unanswered) return null;
+      const accepted = acceptedSectionProps(sectionId);
+      return shownValueIsBehind({
+        shown,
+        accepted,
+        key: contentKey,
+        unanswered,
+      })
+        ? { accepted: accepted[contentKey] }
+        : null;
+    },
+    [acceptedSectionProps, unansweredContentOfSection],
   );
 
   /**
@@ -21331,6 +21376,7 @@ export function VisualEditorShell({
           heldContentForSection={heldContentForSection}
           acceptedPropsForSection={acceptedSectionProps}
           listBehindAcceptedForSection={listBehindAccepted}
+          valueBehindAcceptedForSection={valueBehindAccepted}
           inlineTextCommit={inlineTextCommit}
           onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}

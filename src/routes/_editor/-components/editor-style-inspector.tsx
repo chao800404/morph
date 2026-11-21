@@ -305,9 +305,10 @@ export type InspectorListReset = Readonly<{
 /**
  * An Undo or Redo of this section's content was answered: the accepted copy
  * now holds what it wrote to the top-level keys `keys`. The panel's own copy
- * of a list among them was made before it, so it shows the accepted list
- * instead, unless an input of the author's to that list is still unanswered
- * (`listBehindAccepted` decides both). Every other key is left as it is.
+ * of a key among them (a list, or a scalar such as a heading's text) was made
+ * before it, so it shows the accepted value instead, unless an input of the
+ * author's to that key is still unanswered (`valueBehindAccepted` decides
+ * both). Every other key is left as it is.
  */
 export type InspectorHistoryAnswered = Readonly<{
   sectionId: string;
@@ -460,6 +461,16 @@ type EditorStyleInspectorProps = {
    */
   listBehindAccepted?: (
     listRoot: string,
+    shown: unknown,
+  ) => { accepted: unknown } | null;
+  /**
+   * Asked after an answered Undo or Redo (`historyAnswered`), for each
+   * top-level key `contentKey` it wrote, with the value the panel shows:
+   * the accepted value when the one shown is behind it
+   * (`shownValueIsBehind`), else null. Display only; nothing is sent.
+   */
+  valueBehindAccepted?: (
+    contentKey: string,
     shown: unknown,
   ) => { accepted: unknown } | null;
   /**
@@ -972,6 +983,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onContentBlur,
   acceptedContentProps,
   listBehindAccepted,
+  valueBehindAccepted,
   inlineTextCommit = null,
   onJumpToCode,
   sharedLayoutPaths,
@@ -1031,6 +1043,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   acceptedContentPropsRef.current = acceptedContentProps;
   const listBehindAcceptedRef = useRef(listBehindAccepted);
   listBehindAcceptedRef.current = listBehindAccepted;
+  const valueBehindAcceptedRef = useRef(valueBehindAccepted);
+  valueBehindAcceptedRef.current = valueBehindAccepted;
   /**
    * The author changed the field at `fieldPath`, made on the newest accepted
    * copy, which may hold a write answered but not yet shown here: the next
@@ -1085,10 +1099,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // An answered Undo / Redo is for the panel showing the section when it was
   // answered, as a list reset is: a panel mounted after it, or showing
   // another section then, reads the section itself when it shows it. Only a
-  // list it wrote is replaced, and only when the panel's list is behind the
-  // accepted copy with no unanswered input of the author's to it: the
-  // editor's document context may never move (its refetch can return the
-  // copy it already held), so the panel is not otherwise told.
+  // key it wrote is replaced (a list, or a scalar such as a heading's text),
+  // and only when the panel's value is behind the accepted copy with no
+  // unanswered input of the author's to it: the editor's document context
+  // may never move (its refetch can return the copy it already held), so the
+  // panel is not otherwise told.
   const appliedHistoryAnsweredEpochRef = useRef<number | null>(
     historyAnswered?.epoch ?? null,
   );
@@ -1106,9 +1121,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       return;
     for (const key of historyAnswered.keys) {
       const shown = localPropsRef.current[key];
-      const behind = listBehindAcceptedRef.current?.(key, shown);
+      const behind = valueBehindAcceptedRef.current?.(key, shown);
       if (!behind) continue;
-      if (!Array.isArray(shown) && !Array.isArray(behind.accepted)) continue;
       adoptAcceptedValue(key, behind.accepted);
     }
   }, [adoptAcceptedValue, historyAnswered, localPropsRef, section.id]);
