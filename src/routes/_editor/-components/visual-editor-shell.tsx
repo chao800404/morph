@@ -710,6 +710,26 @@ export const PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE =
   "This preview cannot confirm what it shows, so content edits are paused. Your changes are kept; nothing was saved.";
 /** How long a frame with no acknowledgement capability is waited for. */
 export const PREVIEW_PRESENTATION_UNCONFIRMABLE_AFTER_MS = 5_000;
+/**
+ * How long a frame that names section-presentation-ack-v1 is waited for when
+ * the page it was sent is not confirmed and nothing was posted or answered
+ * since: then the sections still unconfirmed are presented again, once, to
+ * the same frame, document and ready round; and the same wait again after
+ * that before the editor says this preview cannot confirm what it shows
+ * (with Reload preview). Writes stay paused throughout, the draft is kept,
+ * and nothing is written: the re-send is a preview message only.
+ *
+ * 8 s per wait, at most 16 s from the last activity to the notice. An
+ * answer normally comes within frames of the post (a router invalidate on
+ * full Start, ~0.5 s for a whole page in #399's measurements), so 8 s is
+ * well past a slow but healthy frame under CI load, and a re-send that is
+ * answered still leaves an E2E action (60 s) most of its time. Longer than
+ * the 5 s a frame that names no capability gets, because that frame is
+ * known not to answer, while this one may only be slow. Waiting too little
+ * costs one extra preview message, and a notice that clears itself when a
+ * valid answer for the round still arrives; it never unlocks a write.
+ */
+export const PREVIEW_PRESENTATION_ACK_RESEND_AFTER_MS = 8_000;
 /** Said when bounded auto-refresh for an unsupported bridge stops. */
 export const PREVIEW_UNSUPPORTED_REFRESH_FAILED_MESSAGE =
   "Could not update the preview.";
@@ -3244,6 +3264,33 @@ export function VisualEditorShell({
    * access token.
    */
   const presentationTraceRef = useRef(createSectionPresentationTrace());
+  /**
+   * The wait for this frame round's presentation to be confirmed: armed by
+   * each token posted and each answer taken while the page is unconfirmed,
+   * and spent on one re-send per frame, document and round.
+   */
+  const presentationAckWatchRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+    documentId: string;
+    resent: boolean;
+    stalled: boolean;
+    recoveredSaid: boolean;
+    timer: ReturnType<typeof setTimeout> | null;
+  } | null>(null);
+  /** Assigned below, beside the page readiness they read. */
+  const schedulePresentationAckWatchRef = useRef<() => void>(() => {});
+  const settlePresentationAckWatchRef = useRef<() => void>(() => {});
+  const resendUnconfirmedPresentationRef = useRef<
+    (only: ReadonlySet<string>, isCurrent: () => boolean) => void
+  >(() => {});
+  /** What a post is part of, when it is the re-send. */
+  const presentationPostViaRef = useRef<"resend" | null>(null);
+  const clearPresentationAckWatch = () => {
+    const watch = presentationAckWatchRef.current;
+    if (watch?.timer) clearTimeout(watch.timer);
+    presentationAckWatchRef.current = null;
+  };
   /** `[preview-frame]` lines: ready taken, structure taken or set aside. */
   const frameTraceRef = useRef(createPreviewFrameTrace());
   const presentationTraceFramesRef = useRef(new Map<string, number>());
@@ -3322,8 +3369,28 @@ export function VisualEditorShell({
    * decides from the frame's own reports, as before.
    */
   const [frameShowsOtherPage, setFrameShowsOtherPage] = useState(false);
+  /**
+   * The frame round whose presentation went unconfirmed through the one
+   * re-send (`PREVIEW_PRESENTATION_ACK_RESEND_AFTER_MS`): said as the
+   * cannot-confirm state while that round is on screen, cleared by the
+   * round's own confirmation or by a new round.
+   */
+  const [presentationAckStalled, setPresentationAckStalled] = useState<
+    Readonly<{ previewKey: string; readyRound: number; documentId: string }>
+    | null
+  >(null);
+  const presentationAckStalledNow =
+    presentationAckStalled !== null &&
+    previewFrameRecordRef.current?.previewKey ===
+      presentationAckStalled.previewKey &&
+    previewFrameRecordRef.current.readyRound ===
+      presentationAckStalled.readyRound &&
+    previewFrameRecordRef.current.documentId ===
+      presentationAckStalled.documentId;
+  const presentationCannotConfirm =
+    presentationUnconfirmable || presentationAckStalledNow;
   const presentationUnconfirmableRef = useRef(false);
-  presentationUnconfirmableRef.current = presentationUnconfirmable;
+  presentationUnconfirmableRef.current = presentationCannotConfirm;
   const presentationHoldMessage = () =>
     presentationUnconfirmableRef.current
       ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
@@ -12421,6 +12488,8 @@ export function VisualEditorShell({
 
   // A new frame starts a document on whatever the preview holds now.
   useEffect(() => {
+    clearPresentationAckWatch();
+    setPresentationAckStalled(null);
     pendingSectionPresentationRef.current.clear();
     latestSectionPresentationRef.current.clear();
     acknowledgedSectionPresentationRef.current.clear();
@@ -12719,6 +12788,11 @@ export function VisualEditorShell({
           unconfirmed: unconfirmedSectionPresentationsRef.current().length,
         });
         if (pageReadyAfterAck) {
+          settlePresentationAckWatchRef.current();
+        } else {
+          schedulePresentationAckWatchRef.current();
+        }
+        if (pageReadyAfterAck) {
           releasePresentationHeldDraftsRef.current();
           // A draft the author already committed by leaving its field, held
           // by the checks then, goes on now through those same checks.
@@ -12885,6 +12959,8 @@ export function VisualEditorShell({
           );
         }
         dispatchPreviewLifecycle({ type: "frame-ready", key: previewKey });
+        clearPresentationAckWatch();
+        setPresentationAckStalled(null);
         pendingSectionPresentationRef.current.clear();
         latestSectionPresentationRef.current.clear();
         acknowledgedSectionPresentationRef.current.clear();
@@ -14413,6 +14489,142 @@ export function VisualEditorShell({
         );
       })
       .map((expected) => expected.sectionId);
+  /** Unconfirmed sections that were sent a token this round: what is waited on. */
+  const waitedSectionPresentations = () =>
+    expectedSectionPresentations().flatMap((expected) => {
+      const key = sectionPresentationKey(
+        expected.templateId,
+        expected.sectionId,
+      );
+      const latest = latestSectionPresentationRef.current.get(key);
+      if (!latest) return [];
+      const acknowledged = acknowledgedSectionPresentationRef.current.get(key);
+      return acknowledged && sameSectionPresentationToken(latest, acknowledged)
+        ? []
+        : [{ sectionId: expected.sectionId, operationId: latest.operationId }];
+    });
+  const presentationAckWatchFrame = () => {
+    const frame = previewFrameRecordRef.current;
+    return frame &&
+      frame.previewKey === previewKeyRef.current &&
+      frame.readyRound === previewReadyRoundRef.current &&
+      frame.documentId !== null &&
+      frame.capabilities.has("section-presentation-ack-v1")
+      ? { ...frame, documentId: frame.documentId }
+      : null;
+  };
+  const presentationAckWatchIsCurrent = (
+    watch: NonNullable<typeof presentationAckWatchRef.current>,
+  ) => {
+    const frame = presentationAckWatchFrame();
+    return (
+      presentationAckWatchRef.current === watch &&
+      frame !== null &&
+      frame.previewKey === watch.previewKey &&
+      frame.readyRound === watch.readyRound &&
+      frame.documentId === watch.documentId
+    );
+  };
+  const checkPresentationAckWatch = (
+    watch: NonNullable<typeof presentationAckWatchRef.current>,
+  ) => {
+    if (presentationAckWatchRef.current !== watch) return;
+    watch.timer = null;
+    // Only the frame, document and round it was armed for: a new round has
+    // its own wait, and nothing is sent to it for this one.
+    if (!presentationAckWatchIsCurrent(watch)) {
+      presentationAckWatchRef.current = null;
+      return;
+    }
+    if (isSectionPresentationPageReady()) return;
+    const waiting = waitedSectionPresentations();
+    if (waiting.length === 0) return;
+    // Another page on screen has its own notice; an open edit holds posts.
+    // The wait is kept, unspent, for when they are over.
+    if (
+      !frameShowsEditorPageRef.current() ||
+      inlineEditOpenRef.current ||
+      inspectorComposingRef.current
+    ) {
+      schedulePresentationAckWatchRef.current();
+      return;
+    }
+    const sections = waiting.map((entry) => entry.sectionId).join(",");
+    const ops = waiting.map((entry) => entry.operationId).join(",");
+    if (!watch.resent) {
+      watch.resent = true;
+      presentationTraceRef.current.anomaly(
+        presentationTraceScope(),
+        `ack wait expired after=${PREVIEW_PRESENTATION_ACK_RESEND_AFTER_MS}ms; re-sending once sections=${sections} ops=${ops}`,
+      );
+      resendUnconfirmedPresentationRef.current(
+        new Set(waiting.map((entry) => entry.sectionId)),
+        () => presentationAckWatchIsCurrent(watch),
+      );
+      // Waits again from now, whether or not the re-send could post.
+      schedulePresentationAckWatchRef.current();
+      return;
+    }
+    watch.stalled = true;
+    presentationTraceRef.current.anomaly(
+      presentationTraceScope(),
+      `ack wait expired after re-send after=${PREVIEW_PRESENTATION_ACK_RESEND_AFTER_MS}ms; cannot confirm sections=${sections} ops=${ops}`,
+    );
+    setPresentationAckStalled({
+      previewKey: watch.previewKey,
+      readyRound: watch.readyRound,
+      documentId: watch.documentId,
+    });
+  };
+  schedulePresentationAckWatchRef.current = () => {
+    const frame = presentationAckWatchFrame();
+    if (!frame) return;
+    let watch = presentationAckWatchRef.current;
+    if (
+      !watch ||
+      watch.previewKey !== frame.previewKey ||
+      watch.readyRound !== frame.readyRound ||
+      watch.documentId !== frame.documentId
+    ) {
+      clearPresentationAckWatch();
+      watch = {
+        previewKey: frame.previewKey,
+        readyRound: frame.readyRound,
+        documentId: frame.documentId,
+        resent: false,
+        stalled: false,
+        recoveredSaid: false,
+        timer: null,
+      };
+      presentationAckWatchRef.current = watch;
+    }
+    if (watch.stalled) return;
+    if (watch.timer !== null) clearTimeout(watch.timer);
+    const armed = watch;
+    watch.timer = setTimeout(
+      () => checkPresentationAckWatch(armed),
+      PREVIEW_PRESENTATION_ACK_RESEND_AFTER_MS,
+    );
+  };
+  settlePresentationAckWatchRef.current = () => {
+    const watch = presentationAckWatchRef.current;
+    if (!watch || !presentationAckWatchIsCurrent(watch)) return;
+    if (watch.timer !== null) clearTimeout(watch.timer);
+    watch.timer = null;
+    if (watch.stalled) {
+      // The round confirmed itself after all: what it shows is proven.
+      watch.stalled = false;
+      setPresentationAckStalled(null);
+    }
+    if (watch.resent && !watch.recoveredSaid) {
+      watch.recoveredSaid = true;
+      presentationTraceRef.current.anomaly(
+        presentationTraceScope(),
+        "page confirmed after re-send",
+      );
+    }
+  };
+  useEffect(() => () => clearPresentationAckWatch(), []);
   const isSectionPresentationPageEstablished = useCallback(() => {
     if (presentationUnconfirmableRef.current) return false;
     const frame = previewFrameRecordRef.current;
@@ -14704,8 +14916,11 @@ export function VisualEditorShell({
             type: "posted",
             scope: presentationTraceScope(),
             token: presentationToken,
-            via: presentationReplayBatchRef.current ? "replay" : "edit",
+            via:
+              presentationPostViaRef.current ??
+              (presentationReplayBatchRef.current ? "replay" : "edit"),
           });
+          schedulePresentationAckWatchRef.current();
         } else {
           presentationTraceRef.current.anomaly(
             presentationTraceScope(),
@@ -14991,6 +15206,8 @@ export function VisualEditorShell({
     (
       isCurrent?: () => boolean,
       unackedMode: false | "skip-pending" | "replace-pending" = false,
+      /** Only these sections (the re-send of those still unconfirmed). */
+      only?: ReadonlySet<string>,
     ) => {
       if (unackedMode !== false) {
         const capable = previewFrameRecordRef.current?.capabilities.has(
@@ -15009,8 +15226,10 @@ export function VisualEditorShell({
         presentationTraceRef.current.record({
           type: "replay",
           scope: presentationTraceScope(),
-          sections: unconfirmedSectionPresentationsRef.current().length,
-          mode: "unacked",
+          sections: only
+            ? only.size
+            : unconfirmedSectionPresentationsRef.current().length,
+          mode: only ? "resend" : "unacked",
         });
       }
       // The page this replay is for was rendered from a start snapshot, or
@@ -15021,6 +15240,7 @@ export function VisualEditorShell({
         batch.mayChangeLayout = true;
         const sourceGeneration = currentContentSourceGeneration();
         for (const [sectionId, binding] of sectionModelRef.current.bindings) {
+          if (only && !only.has(sectionId)) continue;
           const templateId = binding.templateId;
           if (unackedMode !== false) {
             const sectionKey = sectionPresentationKey(templateId, sectionId);
@@ -15081,6 +15301,16 @@ export function VisualEditorShell({
   );
   resyncUnackedSectionPresentationRef.current = () => {
     replayBoundSections(undefined, "replace-pending");
+  };
+  // A preview message only: the sections' accepted copy with what is pending
+  // on top, as any replay sends; no write is sent again from here.
+  resendUnconfirmedPresentationRef.current = (only, isCurrent) => {
+    presentationPostViaRef.current = "resend";
+    try {
+      replayBoundSections(isCurrent, "replace-pending", only);
+    } finally {
+      presentationPostViaRef.current = null;
+    }
   };
   resyncReturnedPagePresentationRef.current = () => {
     replayBoundSections(undefined, "replace-pending");
@@ -20276,7 +20506,7 @@ export function VisualEditorShell({
           style={LEFT_PANEL_STYLE}
           documentPresentationReady={sectionPresentationReady}
           documentPresentationPausedReason={
-            presentationUnconfirmable
+            presentationCannotConfirm
               ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
               : frameShowsOtherPage
                 ? PREVIEW_OTHER_PAGE_PAUSED_MESSAGE
@@ -20666,7 +20896,7 @@ export function VisualEditorShell({
               </div>
             ) : null}
 
-            {presentationUnconfirmable ? (
+            {presentationCannotConfirm ? (
               // The existing recovery surface, with the true reason: this
               // frame cannot acknowledge what it shows.
               <div
@@ -20695,7 +20925,7 @@ export function VisualEditorShell({
                     className="mt-2"
                     onClick={retryLivePreview}
                   >
-                    {unsupportedRefreshFailed
+                    {unsupportedRefreshFailed || presentationAckStalledNow
                       ? "Reload preview"
                       : "Retry Preview"}
                   </Button>
@@ -20859,7 +21089,7 @@ export function VisualEditorShell({
             sectionPresentationReady || isSectionPresentationPageEstablished()
           }
           documentPresentationPausedReason={
-            presentationUnconfirmable
+            presentationCannotConfirm
               ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
               : frameShowsOtherPage
                 ? PREVIEW_OTHER_PAGE_PAUSED_MESSAGE
