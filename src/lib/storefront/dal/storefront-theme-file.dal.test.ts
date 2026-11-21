@@ -1707,3 +1707,90 @@ describe("theme ownership against soft-deleted rows", () => {
     ).toBe(true);
   });
 });
+
+describe("the batch ownership guard against soft-deleted rows", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const storedFile = () =>
+    sqlite
+      .prepare(
+        "SELECT id, content, version, deleted_at FROM storefront_theme_files WHERE path = 'src/a.ts'",
+      )
+      .get() as
+      | { id: string; content: string; version: number; deleted_at: string | null }
+      | undefined;
+  const generation = () =>
+    (
+      sqlite
+        .prepare(
+          "SELECT source_generation AS g FROM storefront_themes WHERE id = 'theme-a'",
+        )
+        .get() as { g: number }
+    ).g;
+
+  // A plain save has no ownership check besides the guard in its batch.
+  const save = () =>
+    storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [{ path: "src/a.ts", content: "export {}", expectMissing: true }],
+      { expectedSourceGeneration: 1 },
+    );
+
+  it("saves into a live theme of a live storefront", async () => {
+    await save();
+    expect(storedFile()?.content).toBe("export {}");
+    expect(generation()).toBe(2);
+  });
+
+  it("saves nothing into a soft-deleted theme", async () => {
+    sqlite.exec(
+      "UPDATE storefront_themes SET deleted_at = 'deleted' WHERE id = 'theme-a'",
+    );
+    await expect(save()).rejects.toThrow();
+    expect(storedFile()).toBeUndefined();
+    expect(generation()).toBe(1);
+  });
+
+  it("saves nothing into a live theme of a soft-deleted storefront", async () => {
+    sqlite.exec(
+      "UPDATE storefronts SET deleted_at = 'deleted' WHERE id = 'storefront-a'",
+    );
+    await expect(save()).rejects.toThrow();
+    expect(storedFile()).toBeUndefined();
+    expect(generation()).toBe(1);
+  });
+
+  // deleteFile checks ownership first, then writes in a guarded batch. The
+  // storefront is deleted after the check passed: only the guard is left.
+  it("deletes nothing when the storefront is soft-deleted after the ownership check", async () => {
+    await save();
+    const file = storedFile()!;
+    const verify = storefrontThemeFileDal.verifyOwnership.bind(
+      storefrontThemeFileDal,
+    );
+    vi.spyOn(storefrontThemeFileDal, "verifyOwnership").mockImplementation(
+      async (storefrontId, themeId) => {
+        const owned = await verify(storefrontId, themeId);
+        sqlite.exec(
+          "UPDATE storefronts SET deleted_at = 'deleted' WHERE id = 'storefront-a'",
+        );
+        return owned;
+      },
+    );
+    await expect(
+      storefrontThemeFileDal.deleteFile(
+        "storefront-a",
+        "theme-a",
+        "src/a.ts",
+        file.id,
+        file.version,
+        { expectedSourceGeneration: 2 },
+      ),
+    ).rejects.toThrow();
+    expect(storedFile()).toMatchObject({ id: file.id, deleted_at: null });
+    expect(generation()).toBe(2);
+  });
+});
