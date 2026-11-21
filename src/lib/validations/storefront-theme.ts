@@ -171,6 +171,17 @@ export const ensureStorefrontThemeRouteTemplateInputSchema =
   });
 
 /**
+ * Reading the binding view of one page of an Astro Theme. Read-only: names a
+ * route, never a file, and the generation the editor's workspace holds, so
+ * the answer is about that source or says it is stale.
+ */
+export const readStorefrontThemeRouteBindingsInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    routePath: z.string().trim().min(1).max(512),
+    expectedSourceGeneration: z.number().int().min(1),
+  });
+
+/**
  * Renaming one section placement.
  *
  * `null` clears the name and restores the derived one, which is why an empty

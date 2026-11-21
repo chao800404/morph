@@ -90,3 +90,18 @@ describe("one content edit, not a source projection", () => {
     ).toBe(document);
   });
 });
+
+describe("a template whose structure is left to source analysis (Astro)", () => {
+  it("materializes nothing from it: the stored document is the base", () => {
+    expect(
+      templateSectionWriteBase(
+        {
+          document,
+          // Spelled out, not imported: the state as the editor context sends it.
+          routeStructure: { kind: "source-analysis", via: "route-bindings" },
+        },
+        "target",
+      ),
+    ).toBe(document);
+  });
+});

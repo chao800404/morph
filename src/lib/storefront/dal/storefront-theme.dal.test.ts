@@ -19,7 +19,12 @@ import { resolveStorefrontContent } from "../service/storefront-content-runtime"
 import {
   deriveThemeLayoutSections,
   mergeDocumentWithRouteSections,
+  type ThemeRouteSectionResult,
 } from "../compiler/theme-route-sections";
+import {
+  isSourceAnalysisRouteStructure,
+  type StorefrontThemeEditorDTO,
+} from "../dto/storefront-theme.dto";
 import { analyzeB1Route } from "../ast/theme-content-provenance";
 import { starterThemeWorkspaceFiles } from "../starter-theme-files";
 import {
@@ -264,6 +269,19 @@ afterEach(() => {
   sqlite.close();
   vi.clearAllMocks();
 });
+
+/**
+ * A Start template's derived route structure. The editor context leaves an
+ * Astro template's to its binding view; these tests are all of Start Themes.
+ */
+function startStructure(
+  structure: StorefrontThemeEditorDTO["templates"][number]["routeStructure"],
+): ThemeRouteSectionResult {
+  if (!structure || isSourceAnalysisRouteStructure(structure)) {
+    throw new Error("expected a derived Start route structure");
+  }
+  return structure;
+}
 
 /** The source revision check `publishTemplate` requires, accepting. */
 const acceptRevision = async () => {};
@@ -1873,7 +1891,7 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
     // Source structure is still available to the editor, but it is no longer
     // fabricated stored content. The first edit below must create this slot.
     expect(template.document.sections).toEqual([]);
-    expect(mergeDocumentWithRouteSections(template.document, template.routeStructure!.sections).sections).toEqual([
+    expect(mergeDocumentWithRouteSections(template.document, startStructure(template.routeStructure).sections).sections).toEqual([
       {
         id: "promo",
         type: "promo",
@@ -2504,9 +2522,9 @@ export default function Hero() { return <h1 />; }`;
       )?.document;
       // The route still declares its Hero, but publish preparation must seal
       // stored content rather than turn the editor projection into content.
-      const derived = before!.templates.find((item) => item.id === ensured.template.id)!.routeStructure!;
+      const derived = before!.templates.find((item) => item.id === ensured.template.id)!.routeStructure;
       expect(untouched?.sections).toEqual([]);
-      expect(mergeDocumentWithRouteSections(untouched!, derived.sections).sections).toEqual([
+      expect(mergeDocumentWithRouteSections(untouched!, startStructure(derived).sections).sections).toEqual([
         {
           id: "about-hero",
           type: "hero",
@@ -2586,7 +2604,7 @@ export default function Hero() { return <h1 />; }`;
       );
       expect(aboutDoc?.routePath).toBe("/aboutus");
       expect(aboutDoc?.document.sections).toEqual([]);
-      expect(aboutDoc?.routeStructure?.sections.map((section) => section.slotId)).toEqual([
+      expect(startStructure(aboutDoc?.routeStructure).sections.map((section) => section.slotId)).toEqual([
         "about-hero",
       ]);
 
