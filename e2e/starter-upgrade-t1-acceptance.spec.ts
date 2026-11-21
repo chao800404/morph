@@ -292,6 +292,33 @@ function storedPreviewRuntime(scope: ThemeScope) {
   return (rows[0]!.preview_runtime as string | null) ?? null;
 }
 
+/**
+ * The storefront's published state: the same query as
+ * `storefrontHarness().publishedState()`, read through the run's D1 file
+ * read-only (`queryLifecycleD1`, with a busy timeout) instead of a second
+ * workerd. That second reader hit SQLITE_BUSY during v20's refused build in
+ * dev-run3 and failed the step on a D1 "internal error" before any assertion.
+ */
+function publishedState(scope: ThemeScope) {
+  const [row] = queryD1(
+    `SELECT
+       (SELECT active_release_id FROM storefronts WHERE id = ?1) AS active,
+       (SELECT COUNT(*) FROM storefront_releases WHERE storefront_id = ?1) AS releases,
+       (SELECT COUNT(*) FROM storefront_content_publications p
+         WHERE p.storefront_id = ?1
+           AND NOT EXISTS (
+             SELECT 1 FROM storefront_theme_builds b
+             WHERE b.content_publication_id = p.id
+           )) AS publications`,
+    scope.storefrontId,
+  );
+  return row as {
+    active: string | null;
+    releases: number;
+    publications: number;
+  };
+}
+
 function activeRelease(scope: ThemeScope) {
   const [row] = queryD1(
     "SELECT active_release_id FROM storefronts WHERE id = ?1",
@@ -1246,7 +1273,7 @@ async function rollBack(
     },
   )) as { success: boolean; message?: string };
   expect(activated.success, activated.message).toBe(true);
-  expect((await run.harness.publishedState()).active).toBe(releaseId);
+  expect(publishedState(run.scope).active).toBe(releaseId);
   const row = releaseRow(releaseId);
   run.ledger.add({
     step: `1b/${run.label}/rollback`,
@@ -1564,14 +1591,14 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         "old workspace build refused, site unchanged",
         () => baseline.releaseId,
         async () => {
-          const releasesBefore = (await run.harness.publishedState()).releases;
+          const releasesBefore = publishedState(run.scope).releases;
           await openEditor(page, run.editorPath);
           const refused = await build(page, run, "1b/b1-v20/refused-build");
           expect(refused?.status).toBe("failed");
           expect(refused?.error_message ?? "").toContain(
             "INVALID_START_PACKAGE",
           );
-          const unchanged = await run.harness.publishedState();
+          const unchanged = publishedState(run.scope);
           expect(unchanged.active).toBe(baseline.releaseId);
           expect(unchanged.releases).toBe(releasesBefore);
           await expectPublicSite(storefront, baselineMarker, []);
