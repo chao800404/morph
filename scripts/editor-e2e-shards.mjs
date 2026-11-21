@@ -75,6 +75,9 @@ export const EDITOR_SHARDS = [
     // shard job of main run 41267736430 (11m27s).
     "navigation-matrix.spec.ts",
     "presentation-ack-refresh.spec.ts",
+    // Added after the duration measurement above; not in its projection. Its
+    // client-only preview case runs here; the full Start job runs it as well.
+    "author-pick-supersedes-follow.spec.ts",
     // The files below measured zero seconds: every test in them is gated on
     // an environment the shards do not have (the container transport,
     // MORPH_ASTRO_THEMES=1 or the full Start preview), so they skip on every
@@ -103,8 +106,6 @@ export const EDITOR_SHARDS = [
     "source-asset-publish.spec.ts",
     "preview-start-bridge-interruption.spec.ts",
     "history-back-controlled-repro.spec.ts",
-    // Full Start only, so it skips here; the full Start job runs it.
-    "author-pick-supersedes-follow.spec.ts",
     // Container transport only, so it skips on every shard. Its exact tests
     // are listed in scripts/container-acceptance-targets/.
     "starter-upgrade-publish-acceptance.spec.ts",
