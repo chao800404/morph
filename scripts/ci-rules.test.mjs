@@ -97,6 +97,7 @@ test("every script the container acceptance job runs is a rule or excluded with 
     "scripts/run-editor-e2e.mjs",
     "scripts/check-container-acceptance.mjs",
     "scripts/check-container-run-handover.mjs",
+    "scripts/check-container-network-windows.mjs",
   ]) {
     assert.ok(run.has(file), `the parser must see ${file} in the job`);
   }

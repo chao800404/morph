@@ -315,6 +315,53 @@ test("Stage 3 checks a handover only after its run, against the run's lock, and 
   );
 });
 
+test("Stage 3 probes the clock at each window marker and checks every window's veths after the monitor stops", () => {
+  const container = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  for (const [stepName, marker, always] of [
+    ["Mark lifecycle container window start", "lifecycle-start", false],
+    ["Mark lifecycle container window end", "lifecycle-end", true],
+    ["Mark preview access container window start", "preview-access-start", false],
+    ["Mark preview access container window end", "preview-access-end", true],
+  ]) {
+    const step = stepBlock(container, stepName);
+    const mark = step.indexOf(`printf '{"name":"${marker}","utc":"%s"}\\n'`);
+    const probe = step.indexOf(
+      `node scripts/check-container-network-windows.mjs probe ${marker} "$RUNNER_TEMP/container-network"`,
+    );
+    assert.ok(mark >= 0, `${stepName} must write its marker`);
+    assert.ok(probe > mark, `${stepName} must probe the clock right after its marker`);
+    assert.equal(/^ {8}if: always\(\)$/m.test(step), always, stepName);
+    assert.doesNotMatch(step, /continue-on-error|\|\| true/, stepName);
+  }
+
+  const name = "Require each container window's veths to have come and gone inside it";
+  const check = stepBlock(container, name);
+  assert.match(check, /^ {8}if: always\(\)$/m);
+  assert.match(
+    check,
+    /^ {8}run: node scripts\/check-container-network-windows\.mjs check "\$RUNNER_TEMP\/container-network"$/m,
+  );
+  assert.doesNotMatch(check, /continue-on-error/);
+  const at = (/** @type {string} */ step) => container.indexOf(`      - name: ${step}\n`);
+  // After the link-local step has stopped the monitor, so the record is whole.
+  assert.ok(
+    at("Require the run's container veths to have had no IPv6 link-local address") < at(name) &&
+      at(name) < at("Upload results and failure traces"),
+  );
+
+  // Both runs record the auth path the same way.
+  for (const runName of [
+    "Run M1 container lifecycle acceptance",
+    "Run preview access container acceptance",
+  ]) {
+    assert.match(
+      stepBlock(container, runName),
+      /^ {10}MORPH_E2E_AUTH_DIAGNOSTICS: "1"$/m,
+      runName,
+    );
+  }
+});
+
 test("every job that installs Chromium first puts the primary Ubuntu archive ahead of the Azure mirror", () => {
   const installers = jobKeys(workflow).filter((key) =>
     withoutComments(jobBlock(workflow, key)).includes(

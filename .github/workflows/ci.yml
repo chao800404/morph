@@ -854,9 +854,15 @@ jobs:
           done
           echo "::warning::Container diagnostics did not start; the run goes on without them."
 
+      # Each marker is followed by a clock probe: a probe link made and removed
+      # between two UTC readings, and the Docker daemon's time between two
+      # more. The per-window check below compares the monitor's zone-less
+      # `ip -ts` times with these markers only once the probes show they read
+      # the same clock (Stage 3 v3 plan). The probe records; the check decides.
       - name: Mark lifecycle container window start
         run: |
           printf '{"name":"lifecycle-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe lifecycle-start "$RUNNER_TEMP/container-network"
 
       - name: Run M1 container lifecycle acceptance
         id: lifecycle_run
@@ -875,6 +881,7 @@ jobs:
         if: always()
         run: |
           printf '{"name":"lifecycle-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe lifecycle-end "$RUNNER_TEMP/container-network"
 
       # Playwright empties test-results when the next runner starts. Keep the
       # first run's results (report, sidecar and parser logs, traces) outside
@@ -903,10 +910,12 @@ jobs:
       - name: Mark preview access container window start
         run: |
           printf '{"name":"preview-access-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe preview-access-start "$RUNNER_TEMP/container-network"
 
       - name: Run preview access container acceptance
         id: preview_access_run
         env:
+          MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_THEME_PREVIEW_RUNTIME: start
@@ -930,6 +939,7 @@ jobs:
         if: always()
         run: |
           printf '{"name":"preview-access-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe preview-access-end "$RUNNER_TEMP/container-network"
 
       - name: Require exact preview access target
         run: node scripts/check-container-acceptance.mjs test-results/preview-access-container.json scripts/container-acceptance-targets/preview-access-container.mjs
@@ -1027,6 +1037,15 @@ jobs:
             echo "::error::No container veth was recorded, so the setting was not checked."
             exit 1
           fi
+
+      # The same record, per window (Stage 3 v3 plan): each runner's window
+      # has container veths created and deleted inside it, none outside or
+      # across a window edge, none with an IPv6 link-local address, and the
+      # clock probes at all four markers within bound. Runs after the step
+      # above has stopped the monitor, so it reads the whole record.
+      - name: Require each container window's veths to have come and gone inside it
+        if: always()
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network"
 
       # Two upload paths root the artifact at their common ancestor, which
       # moves test-results off the artifact root. Stage 3's records (both

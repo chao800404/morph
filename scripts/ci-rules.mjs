@@ -34,6 +34,8 @@ export const CI_RULE_PATHS = Object.freeze([
   "playwright.config.ts",
   "scripts/check-container-acceptance.mjs",
   "scripts/check-container-acceptance.test.mjs",
+  "scripts/check-container-network-windows.mjs",
+  "scripts/check-container-network-windows.test.mjs",
   "scripts/check-container-run-handover.mjs",
   "scripts/check-container-run-handover.test.mjs",
   "scripts/check-e2e-shards.mjs",
