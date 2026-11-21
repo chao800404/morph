@@ -1,7 +1,8 @@
-
-
-
 export { ResendAdapter, type ResendAdapterConfig } from "./resend.adapter";
+export {
+  CloudflareAdapter,
+  type CloudflareAdapterConfig,
+} from "./cloudflare.adapter";
 
 // 未來可以新增其他 adapters
 // export { AwsSesAdapter } from './aws-ses.adapter';
@@ -11,20 +12,33 @@ export { ResendAdapter, type ResendAdapterConfig } from "./resend.adapter";
 // Helper functions to create adapters (PayloadCMS style)
 import type { EmailAdapter } from "../types";
 import { ResendAdapter, type ResendAdapterConfig } from "./resend.adapter";
+import {
+  CloudflareAdapter,
+  type CloudflareAdapterConfig,
+} from "./cloudflare.adapter";
 
 /**
  * 創建 Resend adapter
  * @example
  * ```ts
- * email: resendAdapter({
- *   apiKey: process.env.RESEND_API_KEY || '',
- *   defaultFromAddress: 'noreply@yourdomain.com',
- *   defaultFromName: 'Your Company',
- * })
+ * server: createServerOnlyFn(() => ({
+ *   email: resendAdapter({
+ *     apiKey: process.env.RESEND_API_KEY || '',
+ *     defaultFromAddress: 'noreply@yourdomain.com',
+ *     defaultFromName: 'Your Company',
+ *   }),
+ * }))
  * ```
  */
 export function resendAdapter(config: ResendAdapterConfig): EmailAdapter {
-    return new ResendAdapter(config);
+  return new ResendAdapter(config);
+}
+
+/** Construct inside cmsConfig.server(), never at module scope. */
+export function cloudflareAdapter(
+  config: CloudflareAdapterConfig,
+): EmailAdapter {
+  return new CloudflareAdapter(config);
 }
 
 // 未來的 adapter helper functions
