@@ -301,7 +301,16 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
       }
     });
     await openRoute(page);
-    const templateId = await routeTemplateId(page);
+    const { id: templateId, createdByThisCall } =
+      await ensureRouteDocument(page);
+    if (createdByThisCall) {
+      // Run on its own (no earlier test of this file stored the slot): the
+      // editor opened the route before it had a Document, and this ensure,
+      // not the editor's, created it. Input made on that placeholder names
+      // no copy it was made on and is refused before it is sent (the
+      // no-basis rule), so the editor reads the stored Document first.
+      await openRoute(page);
+    }
     const start = storedSection(templateId);
     expect(start.enabled, "shown at the start").toBe(true);
     await expectHistory(page, { depth: 0, undo: false, redo: false });
@@ -457,16 +466,28 @@ async function expectHistory(
 
 /** The id of the route's own Document (it exists once a write stored it). */
 async function routeTemplateId(page: Page) {
+  return (await ensureRouteDocument(page)).id;
+}
+
+/**
+ * The route's own Document, created if it does not exist yet, and whether
+ * this call created it (then an editor already open on the route still holds
+ * its placeholder).
+ */
+async function ensureRouteDocument(page: Page) {
   const ensured = (await serverFn(
     page,
     THEMES,
     "ensureStorefrontThemeRouteTemplate",
     { ...scope!, routePath: ROUTE_PATH },
-  )) as { success: boolean; data?: { id: string } };
+  )) as {
+    success: boolean;
+    data?: { id: string; createdByThisCall?: boolean };
+  };
   expect(ensured.success, JSON.stringify(ensured)).toBe(true);
   const id = ensured.data!.id;
   if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error(`template id ${id}`);
-  return id;
+  return { id, createdByThisCall: ensured.data!.createdByThisCall === true };
 }
 
 /**
