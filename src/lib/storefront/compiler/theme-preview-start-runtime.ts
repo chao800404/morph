@@ -279,7 +279,7 @@ export default {
  * bridge.
  */
 export function themePreviewStartClientSource(): string {
-  return `import { documentPreviewRuntimeChannel, parseEditorToPreviewWindowEvent } from "/src/morph/preview/preview-protocol.ts";
+  return `import { documentPreviewIdentity, documentPreviewRuntimeChannel, parseEditorToPreviewWindowEvent } from "/src/morph/preview/preview-protocol.ts";
 
 // Read before anything can navigate: Start uses browser history, and the
 // first navigation drops the query the editor's channel is carried in.
@@ -323,12 +323,34 @@ function nextFrame() {
 
 async function whenHydrated() {
   const started = performance.now();
+  let timedOut = false;
   while (!window.__TSR_ROUTER__ || document.readyState !== "complete") {
-    if (performance.now() - started > HYDRATION_WAIT_LIMIT_MS) break;
+    if (performance.now() - started > HYDRATION_WAIT_LIMIT_MS) {
+      timedOut = true;
+      break;
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   await nextFrame();
   await nextFrame();
+  return {
+    timedOut,
+    router: Boolean(window.__TSR_ROUTER__),
+    readyState: document.readyState,
+    waitedMs: Math.round(performance.now() - started),
+  };
+}
+
+// One [preview-frame] line about this page's start, read beside the
+// bridge's and the editor's lines by the document id's first 8 hex. Once per
+// page load; no content, no session.
+function traceFrameStart(text) {
+  if (typeof console === "undefined" || typeof console.info !== "function") return;
+  const doc =
+    typeof documentPreviewIdentity === "function"
+      ? String(documentPreviewIdentity()).slice(0, 8)
+      : "none";
+  console.info("[preview-frame] frame " + text + " doc=" + doc);
 }
 
 // The bridge navigates with the router the preview hands it. Start creates
@@ -353,7 +375,15 @@ function reportFailedImport(path) {
   };
 }
 
-await whenHydrated();
+const hydration = await whenHydrated();
+traceFrameStart(
+  "hydration " +
+    (hydration.timedOut ? "timed-out" : "waited") +
+    " router=" + (hydration.router ? "yes" : "no") +
+    " readyState=" + hydration.readyState +
+    " waitedMs=" + hydration.waitedMs +
+    " earlyTokens=" + earlyPresentationQueue.length,
+);
 await contentModule.catch(reportFailedImport("/${THEME_PREVIEW_CONTENT_MODULE_PATH}"));
 await import("/${THEME_PREVIEW_BRIDGE_PATH}").catch(reportFailedImport("/${THEME_PREVIEW_BRIDGE_PATH}"));
 window.removeEventListener("message", receiveEarlyContent);
@@ -361,5 +391,8 @@ if (contentChangedBeforeBridge && window.__morphPreviewRouter) {
   await window.__morphPreviewRouter.invalidate({ sync: true });
 }
 await window.__morphFlushEarlyPresentation?.();
+traceFrameStart(
+  "bridge loaded contentBeforeBridge=" + (contentChangedBeforeBridge ? "yes" : "no"),
+);
 `;
 }

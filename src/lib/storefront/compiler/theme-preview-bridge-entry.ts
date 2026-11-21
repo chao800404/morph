@@ -99,8 +99,17 @@ const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
 const pendingPresentationTokens = new Map();
 const postedAppliedPresentationAcks = new Map();
 
-function postPresentationAck(token, status, reason) {
+function postPresentationAck(token, status, reason, cause) {
   if (!channel || !token) return;
+  tracePresentation(
+    "answered",
+    token,
+    status === "applied"
+      ? "status=applied"
+      : "status=not-applied reason=" +
+          (reason === "superseded" ? "superseded" : "section-missing") +
+          (cause ? " cause=" + cause : ""),
+  );
   if (status === "applied") {
     postPreviewToEditorMessage(
       {
@@ -138,12 +147,67 @@ function postPresentationAck(token, status, reason) {
   );
 }
 
+/**
+ * One \`[preview-presentation] frame ...\` line about a token: what the
+ * frame did with it, read beside the editor's own lines by its operation id.
+ * Identities only (operation, section, route pattern, the first 8 hex of
+ * this document's id), never content or the session. At most
+ * PRESENTATION_TRACE_LINES lines per 10 s, then one line saying the rest are
+ * dropped, so typing cannot flood the console. Self-contained, as the
+ * pieces of this script some tests run on their own are.
+ */
+function tracePresentation(verb, token, detail) {
+  if (typeof console === "undefined" || typeof console.info !== "function") {
+    return;
+  }
+  if (!token || typeof token.operationId !== "string") return;
+  const PRESENTATION_TRACE_LINES = 64;
+  const PRESENTATION_TRACE_WINDOW_MS = 10_000;
+  const now = Date.now();
+  let state = tracePresentation.state;
+  if (!state || now - state.windowStart >= PRESENTATION_TRACE_WINDOW_MS) {
+    state = { windowStart: now, spent: 0, suppressed: false };
+    tracePresentation.state = state;
+  }
+  const doc =
+    typeof documentPreviewIdentity === "function"
+      ? String(documentPreviewIdentity()).slice(0, 8)
+      : "none";
+  if (state.spent >= PRESENTATION_TRACE_LINES) {
+    if (!state.suppressed) {
+      state.suppressed = true;
+      console.info(
+        "[preview-presentation] frame lines suppressed after " +
+          PRESENTATION_TRACE_LINES +
+          " in 10 s doc=" +
+          doc,
+      );
+    }
+    return;
+  }
+  state.spent += 1;
+  console.info(
+    "[preview-presentation] frame " +
+      verb +
+      " op=" +
+      token.operationId +
+      " section=" +
+      String(token.sectionId) +
+      " route=" +
+      String(token.routePath) +
+      (detail ? " " + detail : "") +
+      " doc=" +
+      doc,
+  );
+}
+
 function queuePresentationToken(sectionId, enabled, token) {
   if (!token) return;
   const previous = pendingPresentationTokens.get(sectionId);
   if (previous && previous.token.operationId !== token.operationId) {
     postPresentationAck(previous.token, "not-applied", "superseded");
   }
+  tracePresentation("queued", token, "");
   pendingPresentationTokens.set(sectionId, { sectionId, enabled, token });
 }
 
@@ -181,18 +245,32 @@ function flushPendingPresentationTokens() {
       continue;
     }
     if (arriving !== undefined && entry.token.routePath === arriving) {
+      if (!entry.heldTraced) {
+        entry.heldTraced = true;
+        tracePresentation("held", entry.token, "cause=route-arriving");
+      }
       continue;
     }
     pendingPresentationTokens.delete(sectionId);
     if (entry.token.routePath && entry.token.routePath !== currentRoute) {
-      postPresentationAck(entry.token, "not-applied", "section-missing");
+      postPresentationAck(
+        entry.token,
+        "not-applied",
+        "section-missing",
+        "other-route",
+      );
       continue;
     }
     if (isSectionPresentationCommitted(sectionId, entry.enabled)) {
       postedAppliedPresentationAcks.set(entry.token.operationId, entry.token);
       postPresentationAck(entry.token, "applied");
     } else {
-      postPresentationAck(entry.token, "not-applied", "section-missing");
+      postPresentationAck(
+        entry.token,
+        "not-applied",
+        "section-missing",
+        "not-rendered",
+      );
     }
   }
 }
@@ -211,7 +289,7 @@ function withdrawAppliedPresentationAcks(currentRoute) {
     ) {
       continue;
     }
-    postPresentationAck(token, "not-applied", "superseded");
+    postPresentationAck(token, "not-applied", "superseded", "withdrawn");
     postedAppliedPresentationAcks.delete(sectionId);
   }
 }
@@ -324,7 +402,12 @@ function refreshPreviewContent() {
             latestRefreshFailedEpoch > latestRefreshSucceededEpoch
           ) {
             for (const entry of pendingPresentationTokens.values()) {
-              postPresentationAck(entry.token, "not-applied", "section-missing");
+              postPresentationAck(
+                entry.token,
+                "not-applied",
+                "section-missing",
+                "refresh-failed",
+              );
             }
             pendingPresentationTokens.clear();
           } else if (latestRefreshSucceededEpoch === contentRefreshEpoch) {
@@ -829,19 +912,84 @@ if (typeof window !== "undefined") {
   });
 }
 
+/**
+ * One \`[preview-frame] frame ...\` line about this document's life: bridge
+ * start, each ready, each structure report whose summary changed. Read
+ * beside the editor's \`[preview-frame]\` lines by the first 8 hex of this
+ * document's id. Counts, route patterns and epochs only, never node labels,
+ * content or the session. At most 32 lines per 10 s, then one line saying
+ * the rest are dropped. Self-contained, as the pieces of this script some
+ * tests run on their own are; callers check it exists.
+ */
+function traceFrame(text) {
+  if (typeof console === "undefined" || typeof console.info !== "function") {
+    return;
+  }
+  const FRAME_TRACE_LINES = 32;
+  const FRAME_TRACE_WINDOW_MS = 10_000;
+  const now = Date.now();
+  let state = traceFrame.state;
+  if (!state || now - state.windowStart >= FRAME_TRACE_WINDOW_MS) {
+    state = { windowStart: now, spent: 0, suppressed: false };
+    traceFrame.state = state;
+  }
+  const doc =
+    typeof documentPreviewIdentity === "function"
+      ? String(documentPreviewIdentity()).slice(0, 8)
+      : "none";
+  if (state.spent >= FRAME_TRACE_LINES) {
+    if (!state.suppressed) {
+      state.suppressed = true;
+      console.info(
+        "[preview-frame] frame lines suppressed after " +
+          FRAME_TRACE_LINES +
+          " in 10 s doc=" +
+          doc,
+      );
+    }
+    return;
+  }
+  state.spent += 1;
+  console.info("[preview-frame] frame " + text + " doc=" + doc);
+}
+
 function reportStructure() {
   if (!channel) return;
   const epoch = syncFrameNavigationEpoch();
   const routePath = currentRoutePattern();
+  const nodes = collectPreviewEditableNodes(document);
   postPreviewToEditorMessage(
     {
       type: "morph:storefront-preview-structure",
-      nodes: collectPreviewEditableNodes(document),
+      nodes,
       ...(routePath ? { routePath } : {}),
       frameNavigationEpoch: epoch,
     },
     channel,
   );
+  if (typeof traceFrame === "function") {
+    // Said when what the report says changes, not on every DOM commit: the
+    // count of reports so far is on the line.
+    const sections = new Set(
+      (Array.isArray(nodes) ? nodes : []).map((node) => node?.sectionId),
+    ).size;
+    const summary =
+      "sections=" +
+      sections +
+      " nodes=" +
+      (Array.isArray(nodes) ? nodes.length : 0) +
+      " route=" +
+      (routePath ?? "none") +
+      " epoch=" +
+      epoch;
+    const seen = reportStructure.traced ?? { summary: null, count: 0 };
+    seen.count += 1;
+    reportStructure.traced = seen;
+    if (seen.summary !== summary) {
+      seen.summary = summary;
+      traceFrame("structure posted " + summary + " reports=" + seen.count);
+    }
+  }
 }
 
 /**
@@ -886,6 +1034,16 @@ function answerRouteRequest(routeRequestId, routePath, status) {
 function loadUnloadedCommittedLocation(router) {
   if (typeof router?.load !== "function" || router.state?.isLoading) return;
   if (routerTookUpCommittedLocation(router)) return;
+  // The startup path under investigation: said once per load it starts.
+  // Paths only: the frame's query carries the editor's session parameters.
+  if (typeof traceFrame === "function") {
+    traceFrame(
+      "router load for committed location committed=" +
+        committedFrameLocation(router).pathname +
+        " routerAt=" +
+        (router.state?.location?.pathname ?? "none"),
+    );
+  }
   void Promise.resolve(router.load()).catch(() => {});
 }
 
@@ -1480,6 +1638,16 @@ function reportReady() {
         },
     channel,
   );
+  if (typeof traceFrame === "function") {
+    traceFrame(
+      "ready posted readyState=" +
+        document.readyState +
+        " served=" +
+        (servedInstance ? "named" : "unnamed") +
+        " capabilities=" +
+        BRIDGE_CAPABILITIES.join("+"),
+    );
+  }
   reportStructure();
   window.dispatchEvent(new Event("${THEME_PREVIEW_BRIDGE_READY_EVENT}"));
 }
@@ -1488,6 +1656,14 @@ if (channel) {
   // For the page's first script, which reports load progress to the editor
   // and cannot import anything from this graph.
   window.dispatchEvent(new Event("${THEME_PREVIEW_BRIDGE_STARTED_EVENT}"));
+  traceFrame(
+    "bridge started readyState=" +
+      document.readyState +
+      " router=" +
+      (window.__morphPreviewRouter ? "yes" : "no") +
+      " navigation=" +
+      (documentNavigation ? "document" : "client"),
+  );
 
   const ensurePreviewRoot = () => {
     // A marked element that React has since replaced is not the page any
