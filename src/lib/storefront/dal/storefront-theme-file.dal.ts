@@ -64,6 +64,10 @@ function detectThemeMimeType(path: string, mimeType?: string | null) {
   return "text/plain";
 }
 
+/**
+ * Raises inside a batch unless the theme belongs to the storefront and
+ * neither is soft-deleted (the same rule as `verifyOwnership`).
+ */
 export function prepareThemeOwnershipGuard(
   storefrontId: string,
   themeId: string,
@@ -73,11 +77,13 @@ export function prepareThemeOwnershipGuard(
     return env.DATABASE.prepare(
       `
       SELECT CASE WHEN EXISTS (
-        SELECT 1 FROM storefront_themes
-        WHERE id = ?1
-          AND storefront_id = ?2
-          AND source_generation = ?3
-          AND deleted_at IS NULL
+        SELECT 1 FROM storefront_themes th
+        INNER JOIN storefronts s ON s.id = th.storefront_id
+        WHERE th.id = ?1
+          AND th.storefront_id = ?2
+          AND th.source_generation = ?3
+          AND th.deleted_at IS NULL
+          AND s.deleted_at IS NULL
       ) THEN 1 ELSE json('') END AS ok
     `,
     ).bind(themeId, storefrontId, expectedSourceGeneration);
@@ -86,8 +92,12 @@ export function prepareThemeOwnershipGuard(
   return env.DATABASE.prepare(
     `
     SELECT CASE WHEN EXISTS (
-      SELECT 1 FROM storefront_themes
-      WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL
+      SELECT 1 FROM storefront_themes th
+      INNER JOIN storefronts s ON s.id = th.storefront_id
+      WHERE th.id = ?1
+        AND th.storefront_id = ?2
+        AND th.deleted_at IS NULL
+        AND s.deleted_at IS NULL
     ) THEN 1 ELSE json('') END AS ok
   `,
   ).bind(themeId, storefrontId);
