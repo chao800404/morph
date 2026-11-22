@@ -1503,6 +1503,8 @@ type Exercise = {
   /** Which rule picked the Inspector control, and every control that showed the value. */
   controlRule?: string;
   controlCandidates?: InspectorCandidate[];
+  /** The control's `maxlength`, when it has one. */
+  maxLength?: number | null;
   outcome?: string;
   error?: string;
 };
@@ -1613,11 +1615,26 @@ async function exerciseAnnotations(
       const original = where.value as string;
       const expectedLeaf = `${where.templateId}/${binding.section}/${where.location}`;
       const start = documentLeaves(draftDocuments(run.scope));
-      const written = `m1-1b-${run.label}-a${n}-${randomUUID().slice(0, 6)}`;
-      result.written = written;
       const target = await inspectorControlFor(page, original, binding);
       result.controlRule = target.rule;
       result.controlCandidates = target.candidates;
+      // Short enough for the field's declared length (dev-run3: Principles'
+      // `number` declares maxLength 20, and a 23-character value was cut to
+      // 20 by the control, as it should be). A value that does not fit is
+      // the harness's mistake, so it fails here instead of being typed.
+      const maxLength = Number(
+        (await target.control.getAttribute("maxlength")) ?? Infinity,
+      );
+      const written = `1b${n}-${randomUUID().slice(0, 6)}`;
+      result.written = written;
+      result.maxLength = Number.isFinite(maxLength) ? maxLength : null;
+      expect(
+        written.length,
+        `the value fits the field's maxlength ${maxLength}`,
+      ).toBeLessThanOrEqual(maxLength);
+      expect(written, "the value differs from the stored one").not.toBe(
+        original,
+      );
       await typeInto(target.control, written);
       await expect
         .poll(
@@ -1883,6 +1900,284 @@ function expectV11AfterUpgrade(
 }
 
 /**
+ * The category cards' links (user decision 2026-11-22). Two points, both
+ * strict, each recorded in `<case>/links.json` whether or not it passes:
+ *   (a) after the upgrade and before any edit, each category card on the
+ *       canvas, and on the published or served page where the case has one,
+ *       is an anchor whose href is the author's URL from the pre-upgrade D1
+ *       Document (e.g. /collections/morning-table);
+ *   (b) after the first copy-only edit to the cards (one card's title), each
+ *       card's URL is still in D1 in a documented shape (`href`, or
+ *       `link.href`) and each card on the canvas is still that anchor.
+ * They fail until the category link fix lands (dev-run2: the first list
+ * write drops every row's `href`).
+ */
+type CardUrl = {
+  row: number;
+  id: unknown;
+  title: string | null;
+  url: string | null;
+  shape: "href" | "link.href" | null;
+};
+
+/** Each category row's URL, read only from the documented shapes. */
+function categoryCardUrls(drafts: DraftDocument[]): CardUrl[] {
+  const props = sectionProps(drafts, "starter-categories");
+  const items = Array.isArray(props?.items) ? (props!.items as unknown[]) : [];
+  return items.map((item, row) => {
+    const value = (item ?? {}) as Record<string, unknown>;
+    const link = value.link;
+    const shape: CardUrl["shape"] =
+      typeof value.href === "string"
+        ? "href"
+        : link !== null &&
+            typeof link === "object" &&
+            typeof (link as { href?: unknown }).href === "string"
+          ? "link.href"
+          : null;
+    return {
+      row,
+      id: value.id,
+      title: typeof value.title === "string" ? value.title : null,
+      url:
+        shape === "href"
+          ? (value.href as string)
+          : shape === "link.href"
+            ? ((link as { href: string }).href)
+            : null,
+      shape,
+    };
+  });
+}
+
+/** A URL as a page resolves it: path, query and fragment. */
+function urlPath(url: string) {
+  const resolved = new URL(url, "http://storefront.invalid");
+  return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+}
+
+const linkRecords = new Map<string, Record<string, unknown>>();
+
+/** Records one link point in `<case>/links.json`. */
+function recordLinks(run: CaseRun, point: string, value: unknown) {
+  const record = linkRecords.get(run.label) ?? {};
+  record[point] = value;
+  linkRecords.set(run.label, record);
+  writeJson(run.dir, "links.json", record);
+}
+
+/** Every category card on the canvas: the anchor it is, or sits in, and where it goes. */
+async function canvasCardLinks(page: Page) {
+  const cards = previewFrame(page).locator(
+    '[data-storefront-section-id="starter-categories"] [data-storefront-field="items"]',
+  );
+  await expect
+    .poll(() => cards.count(), {
+      timeout: 120_000,
+      message: "the canvas renders the category cards",
+    })
+    .toBeGreaterThan(0);
+  return cards.evaluateAll((items) =>
+    items.map((item, row) => {
+      const anchor =
+        item.closest("a") ?? (item.querySelector("a") as HTMLAnchorElement | null);
+      const href = anchor?.getAttribute("href") ?? null;
+      let resolved: string | null = null;
+      if (href) {
+        const url = new URL(href, location.href);
+        resolved = `${url.pathname}${url.search}${url.hash}`;
+      }
+      return {
+        row,
+        path: item.getAttribute("data-storefront-field-path"),
+        anchor: anchor !== null,
+        href,
+        resolved,
+      };
+    }),
+  );
+}
+
+/** The problems with the canvas cards against the expected URLs (none when they hold). */
+function canvasLinkProblems(
+  expected: CardUrl[],
+  shown: Awaited<ReturnType<typeof canvasCardLinks>>,
+) {
+  const problems: string[] = [];
+  if (shown.length !== expected.length) {
+    problems.push(`${shown.length} cards on the canvas, ${expected.length} rows in the Document`);
+  }
+  for (const row of expected) {
+    const card = shown[row.row];
+    if (!row.url) problems.push(`row ${row.row}: no URL in the pre-upgrade Document`);
+    else if (!card) problems.push(`row ${row.row}: no card on the canvas`);
+    else if (!card.anchor) problems.push(`row ${row.row}: the card is no link`);
+    else if (card.resolved !== urlPath(row.url)) {
+      problems.push(`row ${row.row}: the card goes to ${card.href ?? "nothing"}, not ${row.url}`);
+    }
+  }
+  return problems;
+}
+
+/** (a) on the canvas: after the upgrade, before any edit. */
+async function expectCardLinksOnCanvas(
+  page: Page,
+  run: CaseRun,
+  before: ReadBack,
+) {
+  const expected = categoryCardUrls(before.drafts);
+  await openEditorWithHero(page, run);
+  const shown = await canvasCardLinks(page);
+  const problems = canvasLinkProblems(expected, shown);
+  recordLinks(run, "a: canvas after the upgrade, before any edit", {
+    reached: true,
+    expected,
+    shown,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, "(a) each category card on the canvas links to the author's URL")
+    .toEqual([]);
+}
+
+/** (a) on a published or served page: each card is an anchor to its URL holding its title. */
+function expectCardLinksServed(
+  run: CaseRun,
+  before: ReadBack,
+  html: string,
+  where: string,
+) {
+  const expected = categoryCardUrls(before.drafts);
+  const anchors = [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].map(
+    (match) => ({
+      href: /\bhref="([^"]*)"/i.exec(match[1]!)?.[1] ?? null,
+      text: match[2]!.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(),
+    }),
+  );
+  const problems: string[] = [];
+  const found = expected.map((row) => {
+    const anchor = anchors.find(
+      (item) =>
+        item.href !== null &&
+        row.url !== null &&
+        urlPath(item.href.replace(/&amp;/g, "&")) === urlPath(row.url) &&
+        row.title !== null &&
+        item.text.includes(row.title),
+    );
+    if (!row.url) problems.push(`row ${row.row}: no URL in the pre-upgrade Document`);
+    else if (!anchor) {
+      problems.push(`row ${row.row}: no link to ${row.url} holding "${row.title}"`);
+    }
+    return { ...row, anchor: anchor ?? null };
+  });
+  recordLinks(run, `a: ${where}`, {
+    reached: true,
+    found,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, `(a) each category card on the ${where} links to the author's URL`)
+    .toEqual([]);
+}
+
+/**
+ * (b) The first copy-only edit to the cards: row 0's title, typed in the
+ * Inspector after clicking it on the canvas. It must land; then each row's
+ * URL must still be in D1 in a documented shape and each card on the canvas
+ * still link to it. Row 0's title is put back and read back afterwards.
+ */
+async function expectCardLinksAfterCopyEdit(
+  page: Page,
+  run: CaseRun,
+  before: ReadBack,
+) {
+  const expected = categoryCardUrls(before.drafts);
+  const point = "b: after the first copy-only edit";
+  recordLinks(run, point, { reached: false });
+  await openEditorWithHero(page, run);
+  await tabletCanvas(page);
+  if (
+    await page
+      .getByRole("button", { name: "Enable section selection" })
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await enableSelection(page);
+  }
+  const binding = (await canvasBindings(page)).find(
+    (item) => item.key === "starter-categories|title#0",
+  );
+  expect(binding, "row 0's title is on the canvas").toBeDefined();
+  const element = previewFrame(page)
+    .locator("[data-storefront-field]")
+    .nth(binding!.index);
+  const drafts = draftDocuments(run.scope);
+  const where = resolveBinding(binding!, drafts);
+  expect(where.ok, "row 0's title resolves to its Document").toBe(true);
+  const original = (where as { value: string }).value;
+  const leaf = `${(where as { templateId: string }).templateId}/starter-categories/${(where as { location: string }).location}`;
+  await element.scrollIntoViewIfNeeded();
+  const misses: string[] = [];
+  expect(
+    await clickOwnPoint(page, element, misses),
+    `row 0's title takes the click (${misses.slice(0, 4).join("; ")})`,
+  ).toBe(true);
+  await openContentTab(page);
+  const copy = `1bcopy-${randomUUID().slice(0, 6)}`;
+  await typeInto(
+    (await inspectorControlFor(page, original, binding!)).control,
+    copy,
+  );
+  await expect
+    .poll(() => documentLeaves(draftDocuments(run.scope)).get(leaf), {
+      timeout: 30_000,
+      message: "the copy edit is stored",
+    })
+    .toBe(copy);
+  const now = categoryCardUrls(draftDocuments(run.scope));
+  const storedProblems = expected
+    .map((row) => {
+      const kept = now.find((item) => item.id === row.id);
+      if (!row.url) return `row ${row.row}: no URL before the edit`;
+      if (!kept) return `row ${row.row} (${String(row.id)}): gone from D1`;
+      if (!kept.url) return `row ${row.row} (${String(row.id)}): no URL in D1 (href or link.href)`;
+      if (urlPath(kept.url) !== urlPath(row.url)) {
+        return `row ${row.row} (${String(row.id)}): D1 holds ${kept.url}, not ${row.url}`;
+      }
+      return null;
+    })
+    .filter((problem): problem is string => problem !== null);
+  await expect(element).toHaveText(copy, { timeout: 30_000 });
+  const shown = await canvasCardLinks(page);
+  const canvasProblems = canvasLinkProblems(expected, shown);
+  recordLinks(run, point, {
+    reached: true,
+    edit: { leaf, copy },
+    stored: now,
+    storedProblems,
+    shown,
+    canvasProblems,
+    ok: storedProblems.length === 0 && canvasProblems.length === 0,
+  });
+  // Row 0's title back, read back.
+  await typeInto((await inspectorControlFor(page, copy, binding!)).control, original);
+  await expect
+    .poll(() => documentLeaves(draftDocuments(run.scope)).get(leaf), {
+      timeout: 30_000,
+      message: "row 0's title is put back",
+    })
+    .toBe(original);
+  expect
+    .soft(storedProblems, "(b) after a copy edit each card's URL is still in D1")
+    .toEqual([]);
+  expect
+    .soft(canvasProblems, "(b) after a copy edit each card on the canvas still links to it")
+    .toEqual([]);
+}
+
+/**
  * (d) v11 published after its upgrade, on its own storefront, and the
  * published result read through the release the publish shows (the
  * storefront has no domain: domains reach only the run's storefront). The
@@ -1890,7 +2185,12 @@ function expectV11AfterUpgrade(
  * carry the author's marker, and the content's hero slot holds the author's
  * value as D1's draft did.
  */
-async function publishV11(page: Page, run: CaseRun, marker: string) {
+async function publishV11(
+  page: Page,
+  run: CaseRun,
+  marker: string,
+  before: ReadBack,
+) {
   await openEditor(page, run.editorPath);
   const draftHero = sectionProps(draftDocuments(run.scope), "starter-hero");
   expect(draftHero?.eyebrow, "the draft holds the author's value").toBe(marker);
@@ -1913,6 +2213,8 @@ async function publishV11(page: Page, run: CaseRun, marker: string) {
       slots?.["starter-hero"]?.eyebrow,
       "the published content's hero holds the author's value",
     ).toBe(marker);
+    // (a) on the published page: before any edit to the cards.
+    expectCardLinksServed(run, before, home.body, "published release page");
     run.record.fact("publishedRead", {
       homeStatus: home.status,
       homeSha256: sha256(home.body),
@@ -2675,6 +2977,28 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           return keys;
         },
       );
+      if (version !== 26) {
+        // The category cards' links (a), before any edit to them.
+        await run.record.step(
+          "(a) category cards link to the author's URL on the canvas after the upgrade",
+          () => expectCardLinksOnCanvas(page, run, before),
+        );
+        if (version === 11) {
+          // Published before any edit, so the release shows (a) too.
+          await run.record.step("published, public result read", () =>
+            publishV11(page, run, marker, before),
+          );
+        } else {
+          recordLinks(run, "a: published or served page", {
+            reached: false,
+            reason: "v15 is read back only; it is not published (Q4)",
+          });
+        }
+        await run.record.step(
+          "(b) after the first copy-only edit, category cards still link to the author's URL",
+          () => expectCardLinksAfterCopyEdit(page, run, before),
+        );
+      }
       if (toUse) {
         await run.record.step(
           version === 11
@@ -2685,11 +3009,6 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
               run,
               await exerciseAnnotations(page, run, toUse),
             ),
-        );
-      }
-      if (version === 11) {
-        await run.record.step("published, public result read", () =>
-          publishV11(page, run, marker),
         );
       }
       await run.record.step("full Start", async () => expectFullStart(run));
@@ -2930,6 +3249,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           expect(files[path], path).toBeDefined();
         }
       });
+      await run.record.step(
+        "(a) category cards link to the author's URL on the canvas after the upgrade",
+        () => expectCardLinksOnCanvas(page, run, before),
+      );
       const contentB = `m1-1b-v20-b-${randomUUID().slice(0, 8)}`;
       const upgraded = await publicStep(
         run,
@@ -2944,6 +3267,19 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           await serveRelease(run, contentB, made);
           await expectPublicSite(storefront, contentB, [baselineMarker]);
           return made;
+        },
+      );
+      await run.record.step(
+        "(a) category cards link to the author's URL on the served page",
+        async () => {
+          const home = await storefront("/");
+          expect(home.status).toBe(200);
+          expectCardLinksServed(
+            run,
+            before,
+            home.body,
+            "served page after the upgraded publish",
+          );
         },
       );
       await run.record.step("published read-back", async () => {
@@ -2991,6 +3327,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           expect(rolled.public.home?.hasMarker).toBe(true);
           await savedField(page, run.scope, draftD);
         },
+      );
+      await run.record.step(
+        "(b) after the first copy-only edit, category cards still link to the author's URL",
+        () => expectCardLinksAfterCopyEdit(page, run, before),
       );
       // After every publish-result check, so its draft writes (each put back
       // and read back) cannot move what those checks saw.
