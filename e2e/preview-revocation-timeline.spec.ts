@@ -112,29 +112,71 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  * polled every 20 ms), the D1 write, and the two sockets' renewals falling
  * a few hundred ms apart (they are opened one after the other).
  *
+ * Also for the after-renewal cases: a prefixed lease line that does not parse,
+ * read between the formal start and just after R, makes the case INCOMPLETE
+ * (it could have been one of these connections'); each connection must name
+ * its own surface's grant (frame: iframe, tab: tab); b - sentAt(#2) is
+ * reported beside the window; and no line of sequence 3 or later for these
+ * connections may have been sent at or before b (a harness error). With
+ * MORPH_PREVIEW_LEASE_EVENTS off no line is written, so the connections
+ * cannot be proven and both cases are INCOMPLETE, which fails them; they can
+ * never pass with the switch off.
+ *
+ * Live at R (every case). Each socket must have an echo, or a container
+ * receipt (the fixture keeps receipt times), within LIVE_BEFORE_MS = 500 ms
+ * before a, and must still be open at b; otherwise a harness error. The idle
+ * case stops sending just BEFORE a (so nothing it sends can follow R), and is
+ * judged live just before that stop; it records the frames the page had sent
+ * and the container had received at the stop and at b, and framesSentAfterR
+ * is derived from them (frames sent after the stop, which must be 0).
+ *
  * Verdicts, as A7 judges them. With R in [a, b] and an event at T, against a
  * limit D: pass T - a <= D; over T - b > D; uncertain otherwise. Only pass is
  * a pass; the margin (eps) only ever yields uncertain. D = 30 s
  * (§7 Q3). The design bounds (data L + eps = 32 s, close L + tick + eps =
- * 37 s) are reported beside it, never used in place of it.
+ * 37 s) are judged the same way and asserted (below), never used in place of
+ * the 30 s verdicts.
  *
- *   HTTP: pass when the first request of every kind sent at or after b is
- *   refused (401/403/410) and none sent at or after b is served; over when one
- *   is served; uncertain otherwise (an error that is neither).
+ *   HTTP, per kind: pass when the first request sent at or after b is
+ *   refused (401/403/410) and was itself sent within 30 s of a (t - a <= D),
+ *   and none sent at or after b is served; over when one is served;
+ *   uncertain otherwise. Each kind carries its own refusalDelay; the path's
+ *   verdict is the worst of its kinds, and `firstRefusalAnyKind` is labelled
+ *   as just that.
  *   WebSocket: data stopped (the last data frame either end received) and
- *   closed, each judged against 30 s; the path's verdict is the worse.
+ *   closed, each judged against 30 s; the path's verdict is the worse. In
+ *   the idle case the data stop is the harness's own (sending stopped before
+ *   a), so its data verdicts are "not applicable", never "met".
+ *
+ * Served after b. Any probe SENT at or after b that is served (2xx/3xx)
+ * fails the case, whether or not it carries the marker. The pages' own pv-
+ * requests after b are recorded with a class (preview-auth, hmr, module,
+ * content, serverFn, document-or-other); a served one fails the case unless
+ * its class is exempt. Exempt: preview-auth only, because
+ * /__morph/preview-auth/ is Morph's own access hand-off, answered by the
+ * Worker before any grant is used, and it carries no Theme byte (a marker in
+ * it would still fail as a leak). Not exempt: hmr, since Vite's client and
+ * modules come from the container through the same grant check as any Theme
+ * byte, so serving them after b is a gate gap, not legitimate traffic.
+ *
+ * The trigger itself is checked (every case): a D1-only revocation must
+ * change exactly this case's grant rows; grant-expiry must change them and
+ * read back expires_at = a; a pushed revocation must read back revoked_at
+ * inside [a, b].
  *
  * This spec reports the 30 s verdicts; "over" (recorded as "not met") and
  * "uncertain" do not fail it. The 30 s threshold stands and its guarantee is
  * unproven: a run's numbers are trial observations, never a proof of "within
  * 30 s". It fails on a harness error (a precondition that did not hold, a
- * measurement that could not be made), on an incomplete case, and on any draft
- * byte served after b. The after-renewal cases also assert the design's
- * existing limits: data stopped within L + eps = 32 s and closed with 4401
- * within L + tick + eps = 37 s, each a "pass" (T - a <= D).
+ * measurement that could not be made), on an incomplete case, on any draft
+ * byte served after b, and on anything served after b as above. EVERY case
+ * also asserts the design's existing limits: data stopped within L + eps =
+ * 32 s (idle: not applicable) and closed with 4401 within L + tick + eps =
+ * 37 s, each a "pass" (T - a <= D). A failed case writes its record, marked
+ * "failed" with why, before it fails.
  *
- * Logs and the timeline carry grant and preview ids only: no cookie, token,
- * session id, grant secret or password.
+ * Logs and the timeline carry grant, preview and connection ids only: no
+ * cookie, token, session id, grant secret or password.
  */
 
 const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
@@ -171,6 +213,14 @@ const TICK_MS = 5_000;
 const SLACK_MS = 2_000;
 const TARGET_MS = 30_000;
 const FRAME_INTERVAL_MS = 100;
+/** Receipt times the echo fixture keeps per socket (~200 s of frames). */
+const RECEIPTS_KEPT = 2_000;
+/**
+ * A socket counts as live at R only with an echo or a container receipt
+ * within this long before a (idle case: before sending stopped): five frame
+ * intervals.
+ */
+const LIVE_BEFORE_MS = 500;
 const PROBE_GAP_MS = 100;
 /** How long after b a socket may take to close before it counts as not closed. */
 const CLOSE_WAIT_MS = 75_000;
@@ -241,6 +291,7 @@ const FIXTURE = `import startEntry from "@tanstack/react-start/server-entry";
 // and when it closed; another returns that record.
 const ECHO = ${JSON.stringify(`/${ECHO}`)};
 const LOG = ${JSON.stringify(`/${LOG}`)};
+const RECEIPTS_KEPT = ${RECEIPTS_KEPT};
 const records = new Map();
 
 export default {
@@ -264,6 +315,9 @@ export default {
       openedAt: Date.now(),
       received: 0,
       lastReceivedAt: null,
+      // The latest receipts' times, so counts at any recent instant can be
+      // derived afterwards without reading the record at that instant.
+      receivedAt: [],
       closedAt: null,
       closeCode: null,
     };
@@ -275,6 +329,8 @@ export default {
     server.addEventListener("message", (event) => {
       record.received += 1;
       record.lastReceivedAt = Date.now();
+      record.receivedAt.push(record.lastReceivedAt);
+      if (record.receivedAt.length > RECEIPTS_KEPT) record.receivedAt.shift();
       try {
         server.send(event.data);
       } catch {}
@@ -320,9 +376,23 @@ type FixtureRecord = {
   openedAt: number;
   received: number;
   lastReceivedAt: number | null;
+  /** The latest RECEIPTS_KEPT receipt times, oldest first. */
+  receivedAt?: number[];
   closedAt: number | null;
   closeCode: number | null;
 };
+
+/**
+ * How many frames the container had received by `at`, from its record read
+ * later: exact while the kept receipts reach back to `at`, else null.
+ */
+function receivedBy(record: FixtureRecord | null, at: number): number | null {
+  const times = record?.receivedAt;
+  if (!record || !times) return null;
+  const after = times.filter((x) => x > at).length;
+  if (after === times.length && record.received > times.length) return null;
+  return record.received - after;
+}
 
 type Surface = "frame" | "tab";
 type HttpKind = "document" | "module" | "content" | "serverFn";
@@ -373,6 +443,31 @@ type AnyEvent = ProbeEvent | WsEvent | PassiveEvent | PassiveSocketEvent;
 const refused = (status: number) =>
   status === 401 || status === 403 || status === 410;
 const served = (status: number) => status >= 200 && status < 400;
+
+/**
+ * What a page's own pv- request after b was (M1; see "Served after b" in the
+ * header). Only "preview-auth" is exempt.
+ */
+type PassiveClass =
+  | "preview-auth"
+  | "hmr"
+  | "module"
+  | "content"
+  | "serverFn"
+  | "document-or-other";
+function classifyPassive(path: string): PassiveClass {
+  if (path.startsWith("/__morph/preview-auth/")) return "preview-auth";
+  if (
+    /(^|\/)@(vite|id|fs|react-refresh)(\/|$)/.test(path) ||
+    path.includes("/node_modules/.vite/")
+  )
+    return "hmr";
+  if (path.startsWith("/_morph/content")) return "content";
+  if (path.includes("/_serverFn/")) return "serverFn";
+  if (/\.(m?[jt]sx?|css)$/.test(path) || /\/src\//.test(path)) return "module";
+  return "document-or-other";
+}
+const PASSIVE_EXEMPT: ReadonlySet<PassiveClass> = new Set(["preview-auth"]);
 
 /** One statement, or several in one transaction, against this run's own D1. */
 function d1File(): string {
@@ -867,7 +962,7 @@ const MECHANISM: Record<
   },
   "notice-lost-after-renewal-idle": {
     mechanism:
-      "grants revoked in D1 only, at once after each case socket's lease renewal (its second successful verification, the DO's [preview-lease-verified] sequence 2) was seen; the sockets send nothing after R",
+      "grants revoked in D1 only, at once after each case socket's lease renewal (its second successful verification, the DO's [preview-lease-verified] sequence 2) was seen; the pages stop sending just before a, so the sockets send nothing after R",
     pushExpected: false,
     ownUser: false,
   },
@@ -1190,13 +1285,15 @@ function saveCase(trigger: Trigger, result: Record<string, unknown>) {
     tickMs: TICK_MS,
     epsMs: SLACK_MS,
     verdict:
-      "pass: T - a <= D; over: T - b > D; uncertain otherwise. HTTP: first request of every kind sent at or after b refused and none served.",
+      "pass: T - a <= D; over: T - b > D; uncertain otherwise. HTTP, per kind: the first request sent at or after b refused and sent within 30 s of a, and none served. Idle case: data verdicts not applicable.",
+    failsOn:
+      "harness error (incl. a socket closed before b or not live within 500 ms before a / the idle stop; trigger rows or read-back wrong), incomplete case, draft byte after b, any probe sent at or after b served, a non-exempt page request after b served (exempt: preview-auth only), and in EVERY case design limits not met: data within 32 s (idle: not applicable) and 4401 close within 37 s, each a pass.",
     target:
       "TARGET 30 s reported with the same verdicts: pass = met, over = not met, uncertain = uncertain. The 30 s threshold stands; its guarantee is unproven, and these numbers are trial observations.",
     preparation:
       "Sign-ins only before the formal case; one Retry-After wait on a 429; a second 429, or any re-login after the formal case started, makes the case incomplete (failed, never retried).",
     renewal:
-      `After-renewal cases: the renewal is each case socket's second successful lease verification (sequence 2 of the DO's [preview-lease-verified] line for that connection; the registration's is 1), read from the run's log; revoked at once after both are seen; none seen, or a socket that cannot be proven the case's = incomplete; verification effective (settledAt) -> revoke committed (b) over ${VERIFY_TO_REVOKE_WINDOW_MS} ms for any connection = incomplete.`,
+      `After-renewal cases: the renewal is each case socket's second successful lease verification (sequence 2 of the DO's [preview-lease-verified] line for that connection; the registration's is 1), read from the run's log; revoked at once after both are seen; none seen, or a socket that cannot be proven the case's = incomplete; verification effective (settledAt) -> revoke committed (b) over ${VERIFY_TO_REVOKE_WINDOW_MS} ms for any connection = incomplete; a malformed lease line between the formal start and just after R = incomplete; a sequence >= 3 line sent at or before b, or a socket on the other surface's grant = harness error.`,
   };
   all.cases[trigger] = result;
   writeFileSync(OUT, JSON.stringify(all, null, 2));
@@ -1233,6 +1330,8 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
   let renewal: Record<string, unknown> | null = null;
   let leaseReader: ReturnType<typeof leaseLineReader> | null = null;
   let fullySaved = false;
+  /** The full record once saved, so a later failure can mark it (L4). */
+  let savedResult: Record<string, unknown> | null = null;
   const watchSignInRequests = (owner: BrowserContext, label: string) =>
     owner.on("request", (request) => {
       if (!formal.started) return;
@@ -1718,6 +1817,20 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
             .join(", ")}; not revoked`,
         );
       }
+      // A prefixed line that did not parse could have been one of these
+      // connections' lines: nothing about them can be ruled out (M3).
+      if (reader.malformed.length) {
+        throw new IncompleteCase(
+          `incomplete: ${reader.malformed.length} malformed lease line(s) since the formal case started; not revoked`,
+        );
+      }
+      // Each socket on its own surface's grant (L2).
+      for (const c of connections) {
+        expect(
+          c.grantKind,
+          `the ${c.surface} socket's lease line names the ${c.surface === "frame" ? "iframe" : "tab"} grant`,
+        ).toBe(c.surface === "frame" ? "iframe" : "tab");
+      }
     } else {
       await page.waitForTimeout(3_000);
     }
@@ -1729,16 +1842,34 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     let a = 0;
     let b = 0;
     let triggerAnswer: Record<string, unknown> = {};
-    const stopSending = async () => {
-      if (trigger !== "notice-lost-after-renewal-idle") return;
-      for (const { target } of targets) {
-        await target
-          .evaluate(() => {
-            (window as unknown as Record<string, unknown>).__c1wsSend = false;
-          })
-          .catch(() => {});
+    const idleCase = trigger === "notice-lost-after-renewal-idle";
+    /** Frames each page had sent, read in the page. */
+    const framesSent = async (stop: boolean) => {
+      const sent: Record<Surface, number | null> = { frame: null, tab: null };
+      for (const { surface, target } of targets) {
+        sent[surface] = await target
+          .evaluate((stop) => {
+            const w = window as unknown as Record<string, unknown>;
+            if (stop) w.__c1wsSend = false;
+            return Number(w.__c1wsSent ?? 0);
+          }, stop)
+          .catch(() => null);
       }
+      return sent;
     };
+    // Idle case (M4): sending stops just BEFORE a, so nothing the page sends
+    // can follow R; what it had sent then and at b is recorded.
+    let idleStop: {
+      at: number;
+      sentAtStop: Record<Surface, number | null>;
+      sentAtB?: Record<Surface, number | null>;
+    } | null = null;
+    if (idleCase) {
+      const sentAtStop = await framesSent(true);
+      idleStop = { at: Date.now(), sentAtStop };
+    }
+    /** Where "live just before R" is judged: a, or the idle case's stop. */
+    const liveAt = () => idleStop?.at ?? a;
     switch (trigger) {
       case "sign-out": {
         a = aMark = Date.now();
@@ -1826,7 +1957,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       }
     }
     bMark = b;
-    await stopSending();
+    if (idleStop) idleStop.sentAtB = await framesSent(false);
     // Verification effective (settledAt of sequence 2) -> revoke committed
     // (b), per connection, against the window fixed in advance.
     let renewalOverWindow: string | null = null;
@@ -1856,6 +1987,8 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
           logDelayMs: r.seenAt - r.settledAt,
           effectiveToRevokeSentMs: a - r.settledAt,
           effectiveToRevokeCommittedMs: effectiveToCommittedMs,
+          // From the renewal's own V (its query's send time) to b (L1).
+          renewalSentToRevokeCommittedMs: b - r.sentAt,
           withinWindow: effectiveToCommittedMs <= VERIFY_TO_REVOKE_WINDOW_MS,
         };
       });
@@ -1865,6 +1998,12 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         renewalOverWindow = `incomplete: verification effective -> revoke committed over the ${VERIFY_TO_REVOKE_WINDOW_MS} ms window (${over
           .map((x) => `${x.surface} ${x.effectiveToRevokeCommittedMs} ms`)
           .join(", ")})`;
+      }
+      // M3, for the lines written up to R: read once more right after b.
+      leaseReader!.read();
+      renewal.malformedLines = leaseReader!.malformed;
+      if (leaseReader!.malformed.length) {
+        renewalOverWindow ??= `incomplete: ${leaseReader!.malformed.length} malformed lease line(s) between the formal start and just after R`;
       }
     }
     const readBackAt = Date.now();
@@ -1890,12 +2029,44 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
           "deleted")
         : undefined,
     };
+    // The trigger did what it says, on exactly this case's grants (L3).
+    const timeOf = (value: unknown) =>
+      typeof value === "number" ? value : Date.parse(String(value));
     if (spec.pushExpected) {
       for (const grant of readBack.grants) {
+        const at = timeOf(grant.revokedAt);
         if (!grant.revokedAt)
           harnessErrors.push(`grant ${String(grant.grantId)} not revoked in D1`);
+        else if (!(at >= a && at <= b))
+          harnessErrors.push(
+            `grant ${String(grant.grantId)} revoked_at ${String(grant.revokedAt)} is not inside [a, b]`,
+          );
       }
     }
+    if (
+      "grantsRevokedInD1Only" in triggerAnswer &&
+      triggerAnswer.grantsRevokedInD1Only !== grantIds.length
+    )
+      harnessErrors.push(
+        `the D1-only revocation changed ${String(triggerAnswer.grantsRevokedInD1Only)} rows, not ${grantIds.length}`,
+      );
+    if (trigger === "grant-expiry") {
+      if (triggerAnswer.grantsExpired !== grantIds.length)
+        harnessErrors.push(
+          `the expiry changed ${String(triggerAnswer.grantsExpired)} rows, not ${grantIds.length}`,
+        );
+      const stamp = new Date(a).toISOString();
+      for (const grant of readBack.grants) {
+        if (grant.expiresAt !== stamp)
+          harnessErrors.push(
+            `grant ${String(grant.grantId)} reads back expires_at ${String(grant.expiresAt)}, not ${stamp}`,
+          );
+      }
+    }
+    if (readBack.grants.length !== grantIds.length)
+      harnessErrors.push(
+        `read back ${readBack.grants.length} grants, not ${grantIds.length}`,
+      );
     if (trigger === "ban" && (readBack.user as { banned?: number })?.banned !== 1)
       harnessErrors.push("the user row is not banned");
     if (
@@ -1941,6 +2112,10 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     // 8. The timeline, per path.
     const paths: Array<Record<string, unknown>> = [];
     const leaks: string[] = [];
+    /** Probes sent at or after b and served, marker or not (M1). */
+    const servedAfterB: string[] = [];
+    /** The page's own pv- requests after b that were served, classified. */
+    const passiveServedAfterB: Array<Record<string, unknown>> = [];
     for (const surface of ["frame", "tab"] as const) {
       const probes = events.filter(
         (e): e is ProbeEvent =>
@@ -1964,22 +2139,37 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
           continue;
         }
         const servedAfter = after.filter((p) => served(p.status));
+        for (const p of servedAfter)
+          servedAfterB.push(
+            `${surface} ${kind} sent at b+${p.t - b} ms answered ${p.status}`,
+          );
         const first = after[0]!;
+        // M2: pass only when the first request after b is refused and was
+        // itself sent within the target of a.
         const verdict: Verdict = servedAfter.length
           ? "over"
-          : refused(first.status)
+          : refused(first.status) && first.t - a <= TARGET_MS
             ? "pass"
             : "uncertain";
         kindVerdicts.push(verdict);
+        // L5: this kind's own first refusal at or after a.
+        const firstRefusedOfKind =
+          probes
+            .filter((p) => p.kind === kind && p.t >= a && refused(p.status))
+            .sort((x, y) => x.t - y.t)[0] ?? null;
         byKind[kind] = {
           verdict,
           sentAfterB: after.length,
           servedAfterB: servedAfter.length,
           firstAfterB: {
             t: first.t,
+            sinceAMs: first.t - a,
             status: first.status,
             reason: first.reason,
           },
+          refusalDelay: firstRefusedOfKind
+            ? judgeTarget(firstRefusedOfKind.answeredAt, a, b)
+            : null,
         };
       }
       for (const p of probes) {
@@ -1989,8 +2179,19 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       for (const p of passive) {
         if (p.kind === "passive" && p.leaked && p.t >= b)
           leaks.push(`${surface} passive ${p.path} at b+${p.t - b} ms`);
-        if (p.kind === "passive" && served(p.status) && p.t >= b)
-          kindVerdicts.push("over");
+        if (p.kind === "passive" && served(p.status) && p.t >= b) {
+          const classification = classifyPassive(p.path);
+          passiveServedAfterB.push({
+            surface,
+            path: p.path,
+            status: p.status,
+            resourceType: p.resourceType,
+            sentAfterBMs: p.t - b,
+            classification,
+            exempt: PASSIVE_EXEMPT.has(classification),
+          });
+          if (!PASSIVE_EXEMPT.has(classification)) kindVerdicts.push("over");
+        }
       }
       const refusedAfterA = probes.filter((p) => refused(p.status) && p.t >= a);
       const servedAll = probes.filter((p) => served(p.status));
@@ -2024,8 +2225,13 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         closedAt: null,
         verdict: kindVerdicts.length ? worst(kindVerdicts) : "uncertain",
         byKind,
-        refusalDelay: firstRefused
-          ? judgeTarget(firstRefused.answeredAt, a, b)
+        // L5: the first refusal of ANY kind, labelled as such; each kind's
+        // own is byKind[kind].refusalDelay, and the path's verdict is theirs.
+        firstRefusalAnyKind: firstRefused
+          ? {
+              kind: firstRefused.kind,
+              ...judgeTarget(firstRefused.answeredAt, a, b),
+            }
           : null,
         draftDataStop:
           draftDataStoppedAt === null
@@ -2041,13 +2247,61 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       );
       const lastEchoAt = echoes.length ? Math.max(...echoes.map((e) => e.t)) : null;
       const close = closeOf(surface);
+      // H2: the socket was live just before R, and still open at b.
+      const live = liveAt();
+      const inLive = (t: number) => t >= live - LIVE_BEFORE_MS && t <= live;
+      const echoBeforeR = echoes.some((e) => inLive(e.t));
+      const receiptBeforeR = (record?.receivedAt ?? []).some(inLive);
+      if (!echoBeforeR && !receiptBeforeR)
+        harnessErrors.push(
+          `${surface}: no echo and no container receipt within ${LIVE_BEFORE_MS} ms before ${idleStop ? "sending stopped" : "a"}`,
+        );
+      if (close && close.t < b)
+        harnessErrors.push(
+          `${surface}: the socket closed before b (b${close.t - b} ms, code ${close.status})`,
+        );
+      // M4: what the idle page sent, and the container had, at stop and at b.
+      let idleFrames: Record<string, unknown> | undefined;
+      if (idleStop) {
+        const atStop = idleStop.sentAtStop[surface];
+        const atB = idleStop.sentAtB?.[surface] ?? null;
+        const sentAfterStop =
+          atStop === null || atB === null ? null : atB - atStop;
+        idleFrames = {
+          stoppedAt: idleStop.at,
+          stopBeforeAMs: a - idleStop.at,
+          pageSentAtStop: atStop,
+          pageSentAtB: atB,
+          containerReceivedAtStop: receivedBy(record, idleStop.at),
+          containerReceivedAtB: receivedBy(record, b),
+        };
+        if (sentAfterStop === null)
+          harnessErrors.push(`${surface}: the frames sent at stop or at b were not read`);
+        else if (sentAfterStop !== 0)
+          harnessErrors.push(
+            `${surface}: the idle page sent ${sentAfterStop} frame(s) after sending stopped`,
+          );
+        // Stopped before a, so every frame sent after R was sent after the
+        // stop: none is proven by sentAfterStop being 0.
+        idleFrames.framesSentAfterR = sentAfterStop;
+      }
       const candidates = [lastEchoAt, record?.lastReceivedAt ?? null].filter(
         (t): t is number => typeof t === "number",
       );
       const dataStoppedAt = candidates.length ? Math.max(...candidates) : null;
       if (dataStoppedAt === null) harnessErrors.push(`${surface}: no socket data`);
+      // M4: the idle case stops its own data before R, so a data-stop
+      // verdict would only measure the harness: not applicable.
+      const dataApplicable = !idleStop;
       const data =
-        dataStoppedAt === null ? null : judgeTarget(dataStoppedAt, a, b);
+        dataStoppedAt === null || !dataApplicable
+          ? null
+          : judgeTarget(dataStoppedAt, a, b);
+      const notApplicable = {
+        applicable: false,
+        target: "not applicable",
+        reason: "sending stopped before a; the data stop is the harness's own",
+      };
       // Not closed within the wait: at least CLOSE_WAIT_MS after b.
       const closeT = close?.t ?? deadline;
       const closed = judgeTarget(closeT, a, b);
@@ -2070,6 +2324,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         closedAt: close?.t ?? null,
         closeCode: close?.status ?? null,
         closeTimedOut: !close,
+        liveBeforeR: { at: live, echo: echoBeforeR, containerReceipt: receiptBeforeR },
         container: record
           ? {
               received: record.received,
@@ -2078,14 +2333,18 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
               closeCode: record.closeCode,
             }
           : null,
-        framesSentAfterR:
-          trigger === "notice-lost-after-renewal-idle" ? 0 : undefined,
-        verdict: worst([data?.verdict ?? "pass", closed.verdict]),
+        ...(idleFrames
+          ? { idleFrames, framesSentAfterR: idleFrames.framesSentAfterR }
+          : {}),
+        verdict: dataApplicable
+          ? worst([data?.verdict ?? "pass", closed.verdict])
+          : closed.verdict,
         verdicts: {
-          dataWithin30s: data,
+          dataWithin30s: dataApplicable ? data : notApplicable,
           closeWithin30s: closed,
-          dataWithinDesignBound:
-            dataStoppedAt === null
+          dataWithinDesignBound: !dataApplicable
+            ? notApplicable
+            : dataStoppedAt === null
               ? null
               : judge(dataStoppedAt, a, b, LEASE_MS + SLACK_MS),
           closeWithinDesignBound: judge(
@@ -2098,23 +2357,41 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       });
     }
 
-    // The design's existing limits, asserted for the after-renewal cases:
-    // data within L + eps, closed with 4401 within L + tick + eps, each a
-    // pass (T - a <= D). Unchanged limits; never the 30 s target.
-    const designLimits: Array<Record<string, unknown>> = [];
-    if (renewalCase) {
-      for (const p of paths.filter((x) => x.kind === "ws")) {
-        const v = p.verdicts as {
-          dataWithinDesignBound: { verdict: Verdict } | null;
-          closeWithinDesignBound: { verdict: Verdict };
-        };
-        designLimits.push({
-          path: p.path,
-          dataWithin32s: v.dataWithinDesignBound?.verdict ?? null,
-          closeWithin37s: v.closeWithinDesignBound.verdict,
-          closeCode: p.closeCode,
-        });
+    // L1: no later verification of these connections was sent by b.
+    if (renewal && leaseReader) {
+      leaseReader.read();
+      for (const c of renewal.connections as CaseConnection[]) {
+        const later = leaseReader.lines.filter(
+          (l) => l.connectionId === c.connectionId && l.sequence >= 3,
+        );
+        (renewal as Record<string, unknown>)[`laterLines_${c.surface}`] =
+          later.map((l) => ({ sequence: l.sequence, sentAt: l.sentAt, sinceBMs: l.sentAt - b }));
+        for (const l of later.filter((l) => l.sentAt <= b))
+          harnessErrors.push(
+            `${c.surface}: lease line sequence ${l.sequence} was sent at b${l.sentAt - b} ms, before the revocation committed`,
+          );
       }
+    }
+
+    // H1: the design's existing limits, asserted for EVERY case: data within
+    // L + eps, closed with 4401 within L + tick + eps, each a pass
+    // (T - a <= D). Unchanged limits; never the 30 s target, which stays
+    // report-only. The idle case's data limit is not applicable (M4).
+    const designLimits: Array<Record<string, unknown>> = [];
+    for (const p of paths.filter((x) => x.kind === "ws")) {
+      const v = p.verdicts as {
+        dataWithinDesignBound: { verdict?: Verdict; applicable?: false } | null;
+        closeWithinDesignBound: { verdict: Verdict };
+      };
+      designLimits.push({
+        path: p.path,
+        dataWithin32s:
+          v.dataWithinDesignBound?.applicable === false
+            ? "not applicable"
+            : (v.dataWithinDesignBound?.verdict ?? null),
+        closeWithin37s: v.closeWithinDesignBound.verdict,
+        closeCode: p.closeCode,
+      });
     }
 
     const measuredReLogins = relogins.length > 0;
@@ -2144,12 +2421,16 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       triggerAnswer,
       readBack,
       renewal,
+      idleStop,
       designLimits,
       baseline,
       paths,
+      servedAfterB,
+      passiveServedAfterB,
       harnessErrors,
       leaks,
     };
+    savedResult = result;
     saveCase(trigger, result);
     fullySaved = true;
     for (const p of paths) {
@@ -2157,11 +2438,15 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         string,
         { target?: string } | null
       >;
+      const anyKind = p.firstRefusalAnyKind as
+        | { kind?: string; target?: string }
+        | null
+        | undefined;
       console.log(
         `[1c] ${String(p.path)} verdict=${String(p.verdict)} window=${b - a}ms` +
           (p.kind === "ws"
             ? ` data=${p.dataStoppedAt === null ? "-" : Number(p.dataStoppedAt) - a}ms close=${p.closedAt === null ? "none" : Number(p.closedAt) - a}ms code=${String(p.closeCode)} target30s data=${String(v.dataWithin30s?.target)} close=${String(v.closeWithin30s?.target)}`
-            : ` firstRefused=${p.firstRefusedAt === null ? "-" : Number(p.firstRefusedAt) - a}ms target30s refusal=${String((p.refusalDelay as { target?: string } | null)?.target)}`),
+            : ` firstRefused(any kind: ${String(anyKind?.kind)})=${p.firstRefusedAt === null ? "-" : Number(p.firstRefusedAt) - a}ms target30s refusal(any kind)=${String(anyKind?.target)}`),
       );
     }
     if (renewal) {
@@ -2173,6 +2458,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
             surface: x.surface,
             connectionId: x.connectionId,
             effectiveToRevokeCommittedMs: x.effectiveToRevokeCommittedMs,
+            renewalSentToRevokeCommittedMs: x.renewalSentToRevokeCommittedMs,
             logDelayMs: x.logDelayMs,
             withinWindow: x.withinWindow,
           })),
@@ -2186,15 +2472,21 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       );
     }
     expect(leaks, "no draft byte is served after b").toEqual([]);
+    // M1: served at all after b fails, marker or not.
+    expect(servedAfterB, "no probe sent at or after b is served").toEqual([]);
+    expect(
+      passiveServedAfterB.filter((x) => !x.exempt),
+      "no page request sent at or after b is served, except the exempt classes in the header",
+    ).toEqual([]);
     if (renewalOverWindow) throw new IncompleteCase(renewalOverWindow);
     expect(harnessErrors, "the measurement was made").toEqual([]);
     for (const limit of designLimits) {
       expect(
         limit,
-        "after renewal: data within L + eps (32 s) and a 4401 close within L + tick + eps (37 s), each a pass",
+        "every case: data within L + eps (32 s; idle: not applicable) and a 4401 close within L + tick + eps (37 s), each a pass",
       ).toEqual({
         path: limit.path,
-        dataWithin32s: "pass",
+        dataWithin32s: idleCase ? "not applicable" : "pass",
         closeWithin37s: "pass",
         closeCode: 4401,
       });
@@ -2207,7 +2499,20 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         : error instanceof IncompleteCase
           ? error.message
           : null;
-    if (reason === null) throw error;
+    if (reason === null) {
+      // L4: a failed case leaves a record of why before it fails.
+      const failure = String(error instanceof Error ? error.message : error).slice(0, 2_000);
+      try {
+        saveCase(
+          trigger,
+          savedResult
+            ? { ...savedResult, status: "failed", failure }
+            : { ...incompleteRecord(failure), status: "failed", incompleteReason: null, failure },
+        );
+      } catch {}
+      console.log(`[1c] ${trigger} FAILED: ${failure.split("\n")[0]}`);
+      throw error;
+    }
     // The full timeline, when it was already written, stays as written.
     if (!fullySaved) saveCase(trigger, incompleteRecord(reason));
     console.log(`[1c] ${trigger} INCOMPLETE: ${reason}`);

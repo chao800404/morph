@@ -7,16 +7,29 @@
  *
  * `node scripts/check-container-acceptance.mjs <report> <this module>` requires
  * exactly these titles, each once, passed with zero skip and zero retry. A
- * passed case means the timeline was measured with no harness error and no
- * draft served after revocation was confirmed, and the case was complete: no
- * re-login after its preparation, and (after-renewal cases) the server-side
- * renewal of the same grant observed before the revocation and the design
- * limits (32 s data, 37 s 4401 close) met. An incomplete case fails. Its 30 s
+ * passed case means the timeline was measured with no harness error, nothing
+ * (draft or not) served to a request sent after revocation was confirmed
+ * (the access hand-off page excepted), and the case was complete: no
+ * re-login after its preparation, and (after-renewal cases) each case
+ * socket's lease renewal seen before the revocation, within the fixed 1 s
+ * window. Every case must meet the design limits (32 s data, idle case not
+ * applicable; 37 s 4401 close). An incomplete case fails. Its 30 s
  * verdicts (pass = met, uncertain, over = not met) are in the timeline JSON,
  * not in the pass; the 30 s guarantee stays unproven. No CI step runs
  * that check yet; wiring the container step is a separate change. Until then
  * these cases are unproven in CI. A renamed case changes this list in the same
  * commit.
+ *
+ * Environment the after-renewal cases need, or they are INCOMPLETE (and so
+ * fail; they can never pass without it):
+ * - MORPH_PREVIEW_LEASE_EVENTS=1 in what Wrangler loads for the run (with the
+ *   container transport, `.dev.vars`): the preview Durable Object then writes
+ *   a `[preview-lease-verified]` line each time a socket's lease renews
+ *   (src/lib/storefront/service/preview-access/preview-socket-lease-events.ts).
+ *   Off, no line is written and the case's sockets cannot be identified.
+ * - M1_1C_WORKER_LOG: the path of the run's captured dev-server output (the
+ *   file the runner's stdout is redirected to), which the spec reads, never
+ *   writes. Unset or missing, the cases cannot see a renewal.
  */
 const DESCRIBE = "1c: the revocation timeline of an open Live Preview";
 
