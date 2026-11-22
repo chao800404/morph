@@ -83,10 +83,10 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  *
  * Renewal (user decision 2026-11-22). A grant's stored `expires_at` never
  * moves; what renews is the socket lease's `V`, in the preview's Durable
- * Object. With MORPH_PREVIEW_LEASE_DIAGNOSTICS=1 in what Wrangler loads, the
+ * Object. With MORPH_PREVIEW_LEASE_EVENTS=1 in what Wrangler loads, the
  * DO writes `[preview-lease-verified] {connectionId, grantId, path, sequence,
  * sentAt, settledAt}` each time a "valid" result has advanced `V`
- * (preview-socket-lease-diagnostics.ts). The dev server prints it, and the
+ * (preview-socket-lease-events.ts). The dev server prints it, and the
  * run's log (M1_1C_WORKER_LOG, the runner's captured output) is read from
  * where this case started, never written.
  *
@@ -195,7 +195,7 @@ const OPEN_WINDOW_SLACK_MS = 5;
 /** How long after both first echoes the registration lines may take. */
 const REGISTRATION_LINE_WAIT_MS = 10_000;
 const WORKER_LOG = process.env.M1_1C_WORKER_LOG;
-// preview-socket-lease-diagnostics.ts
+// preview-socket-lease-events.ts
 const LEASE_VERIFIED_PREFIX = "[preview-lease-verified]";
 const E2E_USER_ID =
   process.env.MORPH_E2E_USER_ID ?? "00000000-0000-4000-8000-00000000e2e1";
@@ -1665,7 +1665,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       };
       renewal = {
         source:
-          "[preview-lease-verified] lines (MORPH_PREVIEW_LEASE_DIAGNOSTICS=1) read from the run's log, this case's only",
+          "[preview-lease-verified] lines (MORPH_PREVIEW_LEASE_EVENTS=1) read from the run's log, this case's only",
         windowMs: VERIFY_TO_REVOKE_WINDOW_MS,
         socketsOpenSentAt: openSent,
         socketsOpenReturnedAt: openReturned,
