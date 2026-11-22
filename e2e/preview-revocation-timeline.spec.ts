@@ -182,7 +182,7 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
 const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
 const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
-const RUNTIME = process.env.MORPH_E2E_PREVIEW_RUNTIME;
+const PREVIEW_RUNTIME = process.env.MORPH_E2E_PREVIEW_RUNTIME;
 const OUT = process.env.M1_1C_TIMELINE_OUT;
 
 test.skip(
@@ -194,7 +194,7 @@ test.skip(
   "The pv- host fronts the Sandbox container: MORPH_E2E_TRANSPORT=cloudflare-sandbox.",
 );
 test.skip(
-  RUNTIME !== "start",
+  PREVIEW_RUNTIME !== "start",
   "The server-function probe needs the full Start preview: MORPH_E2E_PREVIEW_RUNTIME=start.",
 );
 
