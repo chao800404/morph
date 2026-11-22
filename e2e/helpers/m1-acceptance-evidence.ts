@@ -337,6 +337,16 @@ export function m1Evidence(options: {
   };
 
   /**
+   * Reads every preview start answer already received. Called after each
+   * test, while its page is still open: an answer whose body is read only
+   * after the test closed its page would show as unreadable ("Test ended")
+   * although the server answered it. It records nothing itself.
+   */
+  const settlePreviewStarts = async () => {
+    while (pendingStarts.size > 0) await Promise.all([...pendingStarts]);
+  };
+
+  /**
    * Q10: at least one preview start was answered in this spec, and every
    * answer it received (failed ones included) was decodable, successful and
    * named the container transport and full Start. Answers still being read
@@ -479,6 +489,7 @@ export function m1Evidence(options: {
     pins,
     activeRelease,
     observePreviewStarts,
+    settlePreviewStarts,
     expectFullStartObserved,
     recordFullStartTheme,
     contentTsSha256,

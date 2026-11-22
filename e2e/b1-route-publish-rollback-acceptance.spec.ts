@@ -765,6 +765,11 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     }
   });
 
+  // Read each start answer before the page closes (Q10 counts every answer).
+  test.afterEach(async () => {
+    await evidence?.settlePreviewStarts();
+  });
+
   test.afterAll(async ({ browser }) => {
     try {
       if (domainId) {
