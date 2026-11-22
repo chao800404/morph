@@ -261,6 +261,19 @@ afterEach(() => {
 
 describe("listDocumentsForPublish", () => {
   it("takes the target and the shell at their drafts, the rest as published", async () => {
+    // No active release: an initial publish carries what the rows record.
+    sqlite.exec(`
+      CREATE TABLE storefronts (id text PRIMARY KEY, active_release_id text, deleted_at text);
+      INSERT INTO storefronts VALUES ('storefront-a', NULL, NULL);
+      CREATE TABLE storefront_releases (
+        id text PRIMARY KEY, storefront_id text, theme_id text,
+        content_publication_id text, metadata text, deleted_at text
+      );
+      CREATE TABLE storefront_content_publication_items (
+        id text, publication_id text, item_type text, content_id text,
+        revision_id text, metadata text, deleted_at text
+      );
+    `);
     sqlite.exec(`
       INSERT INTO storefront_theme_templates
         (id, theme_id, type, name, route_path, draft_revision_id, published_revision_id, deleted_at)
@@ -308,6 +321,75 @@ describe("listDocumentsForPublish", () => {
       ["/pages/faq", "faq-live"],
       ["Home", "home-draft"],
       ["Layout", "shell-draft"],
+    ]);
+  });
+
+  it("carries the rest from the active release, keeping only never-served rows", async () => {
+    // Release `old` is active again after a rollback from `new`, which served
+    // about-new and shell-new. faq-pending was published from the Dashboard
+    // and no deployed release has served it; `failed` sealed it but its
+    // deploy never landed.
+    sqlite.exec(`
+      CREATE TABLE storefronts (id text PRIMARY KEY, active_release_id text, deleted_at text);
+      INSERT INTO storefronts VALUES ('storefront-a', 'old', NULL);
+      CREATE TABLE storefront_releases (
+        id text PRIMARY KEY, storefront_id text, theme_id text,
+        content_publication_id text, metadata text, deleted_at text
+      );
+      INSERT INTO storefront_releases VALUES
+        ('old', 'storefront-a', 'theme-a', 'pub-old', '{"deployedThemeBuildId":"b"}', NULL),
+        ('new', 'storefront-a', 'theme-a', 'pub-new', '{"deployedThemeBuildId":"b"}', NULL),
+        ('failed', 'storefront-a', 'theme-a', 'pub-failed', NULL, NULL);
+      CREATE TABLE storefront_content_publication_items (
+        id text, publication_id text, item_type text, content_id text,
+        revision_id text, metadata text, deleted_at text
+      );
+      INSERT INTO storefront_content_publication_items VALUES
+        ('1', 'pub-old', 'template', 'about', 'about-old', '{}', NULL),
+        ('2', 'pub-old', 'template', 'shell', 'shell-old', '{}', NULL),
+        ('3', 'pub-old', 'page', 'faq', 'faq-old', '{}', NULL),
+        ('4', 'pub-new', 'template', 'about', 'about-new', '{}', NULL),
+        ('5', 'pub-new', 'template', 'shell', 'shell-new', '{}', NULL),
+        ('6', 'pub-new', 'page', 'faq', 'faq-old', '{}', NULL),
+        ('7', 'pub-failed', 'page', 'faq', 'faq-pending', '{}', NULL);
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, route_path, draft_revision_id, published_revision_id, deleted_at)
+      VALUES
+        ('home', 'theme-a', 'index', 'Home', NULL, 'home-draft', NULL, NULL),
+        ('shell', 'theme-a', 'layout', 'Layout', NULL, 'shell-new', 'shell-new', NULL),
+        ('about', 'theme-a', 'page', 'About', '/aboutus', 'about-new', 'about-new', NULL);
+      INSERT INTO storefront_theme_template_revisions (id, template_id, document) VALUES
+        ('home-draft', 'home', '${doc("home-draft")}'),
+        ('shell-old', 'shell', '${doc("shell-old")}'),
+        ('shell-new', 'shell', '${doc("shell-new")}'),
+        ('about-old', 'about', '${doc("about-old")}'),
+        ('about-new', 'about', '${doc("about-new")}');
+      INSERT INTO storefront_pages (id, storefront_id, handle, published_revision_id, deleted_at) VALUES
+        ('faq', 'storefront-a', 'faq', 'faq-pending', NULL);
+      INSERT INTO storefront_page_revisions (id, page_id, document) VALUES
+        ('faq-old', 'faq', '${doc("faq-old")}'),
+        ('faq-pending', 'faq', '${doc("faq-pending")}');
+    `);
+
+    const documents =
+      await storefrontContentPublicationDal.listDocumentsForPublish({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "home",
+      });
+
+    expect(
+      documents
+        .map(({ label, document }) => [
+          label,
+          (document as { sections: { id: string }[] }).sections[0]!.id,
+        ])
+        .sort(),
+    ).toEqual([
+      ["/aboutus", "about-old"],
+      ["/pages/faq", "faq-pending"],
+      ["Home", "home-draft"],
+      ["Layout", "shell-old"],
     ]);
   });
 });
