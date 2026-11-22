@@ -127,6 +127,19 @@ export interface ThemeWorkspaceStore {
     sourceGeneration?: number,
     unreadPaths?: readonly string[],
   ) => void;
+  /**
+   * Merges one file read from the server on its own (a public text file
+   * opened in the Code workspace) by the same per-file rules as
+   * `hydrateFromQuery`. Every other path, and the source generations, are
+   * left alone: one file is not a whole-tree read, so nothing is taken as
+   * deleted. `file` must be the server's copy; an id minted for a local
+   * draft is refused.
+   */
+  hydrateServerFile: (
+    storefrontId: string,
+    themeId: string,
+    file: StorefrontThemeFileDTO,
+  ) => void;
   getAcceptedSourceGeneration: (scope?: WorkspaceScope) => number;
   getBaseSourceGeneration: (scope?: WorkspaceScope) => number;
   setBaseSourceGeneration: (generation: number, scope?: WorkspaceScope) => void;
@@ -281,6 +294,109 @@ function getTargetWorkspace(
   return { key, workspaceFiles: state.workspaces[key] ?? state.files };
 }
 
+/**
+ * The id prefix the editor gives a file that exists only in the workspace,
+ * when it lists drafts next to server files (`<prefix><path>`). Such an id
+ * was never issued by the server, so it is never a write basis.
+ */
+export const LOCAL_DRAFT_FILE_ID_PREFIX = "local:";
+
+function isServerFileId(id: string): boolean {
+  return !id.startsWith(LOCAL_DRAFT_FILE_ID_PREFIX);
+}
+
+/**
+ * One file the server reported, merged into what the workspace holds for its
+ * path. Returns the new state, or null when nothing changes.
+ *
+ * `file` must be the server's own copy: its content becomes `serverContent`
+ * or a conflict's `remoteContent`, and its id and version a write basis.
+ */
+function mergeServerFile(
+  current: ThemeWorkspaceFileState | undefined,
+  file: StorefrontThemeFileDTO,
+): ThemeWorkspaceFileState | null {
+  if (!current) return fromServerFile(file);
+
+  if (current.saveState === "saving") return null;
+
+  // A save that was never answered, answered now by the server's
+  // own copy: it landed. Recorded as saved, keeping anything typed
+  // since — not shown as a conflict with the author's own write.
+  if (
+    current.unconfirmedContent !== undefined &&
+    current.unconfirmedContent === file.content
+  ) {
+    const stillDirty = current.localContent !== file.content;
+    return {
+      ...current,
+      ...presentOnServer(file.id, file.version),
+      serverContent: file.content,
+      dirty: stillDirty,
+      saveState: stillDirty ? "dirty" : "clean",
+      conflict: undefined,
+      errorMessage: undefined,
+      authPaused: stillDirty ? current.authPaused : undefined,
+      unconfirmedContent: undefined,
+    };
+  }
+
+  if (!current.serverExists && current.dirty) {
+    const isSameConflict =
+      current.saveState === "conflict" &&
+      current.conflict?.kind === "created" &&
+      current.conflict?.remoteFileId === file.id &&
+      current.conflict?.remoteVersion === file.version &&
+      current.conflict?.remoteContent === file.content;
+
+    if (isSameConflict) return null;
+    return {
+      ...current,
+      saveState: "conflict",
+      conflict: {
+        kind: "created",
+        remoteExists: true,
+        remoteFileId: file.id,
+        remoteVersion: file.version,
+        remoteContent: file.content,
+      },
+    };
+  }
+
+  const serverChanged =
+    current.serverFileId !== file.id ||
+    current.serverVersion !== file.version ||
+    current.serverContent !== file.content ||
+    !current.serverExists;
+
+  if (current.dirty && serverChanged) {
+    const isSameConflict =
+      current.saveState === "conflict" &&
+      current.conflict?.kind === "modified" &&
+      current.conflict?.remoteFileId === file.id &&
+      current.conflict?.remoteVersion === file.version &&
+      current.conflict?.remoteContent === file.content;
+
+    if (isSameConflict) return null;
+    return {
+      ...current,
+      saveState: "conflict",
+      conflict: {
+        kind: "modified",
+        remoteExists: true,
+        remoteFileId: file.id,
+        remoteVersion: file.version,
+        remoteContent: file.content,
+      },
+    };
+  }
+
+  if (!current.dirty && (serverChanged || current.saveState !== "clean")) {
+    return fromServerFile(file);
+  }
+  return null;
+}
+
 export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
   (set, get) => ({
     activeWorkspaceKey: null,
@@ -429,8 +545,13 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
       return state.files;
     },
 
-    hydrateFromQuery: (storefrontId, themeId, themeFiles, sourceGeneration, unreadPaths = []) => {
+    hydrateFromQuery: (storefrontId, themeId, rawThemeFiles, sourceGeneration, unreadPaths = []) => {
       const targetKey = toWorkspaceKey(storefrontId, themeId);
+      // Only server copies may be hydrated. An id the editor minted for a
+      // local-only draft is not one, and taking it as one gave the draft a
+      // "created" conflict against itself. Such an entry is refused here and
+      // its path counts as not in this read.
+      const themeFiles = rawThemeFiles.filter((file) => isServerFileId(file.id));
       set((state) => {
         const currentWorkspaceFiles = state.workspaces[targetKey] ?? {};
         const incoming = new Map(themeFiles.map((file) => [file.path, file]));
@@ -438,99 +559,9 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
         const next = { ...currentWorkspaceFiles };
 
         for (const file of themeFiles) {
-          const current = currentWorkspaceFiles[file.path];
-          if (!current) {
-            next[file.path] = fromServerFile(file);
-            hasChanges = true;
-            continue;
-          }
-
-          if (current.saveState === "saving") continue;
-
-          // A save that was never answered, answered now by the server's
-          // own copy: it landed. Recorded as saved, keeping anything typed
-          // since — not shown as a conflict with the author's own write.
-          if (
-            current.unconfirmedContent !== undefined &&
-            current.unconfirmedContent === file.content
-          ) {
-            const stillDirty = current.localContent !== file.content;
-            next[file.path] = {
-              ...current,
-              ...presentOnServer(file.id, file.version),
-              serverContent: file.content,
-              dirty: stillDirty,
-              saveState: stillDirty ? "dirty" : "clean",
-              conflict: undefined,
-              errorMessage: undefined,
-              authPaused: stillDirty ? current.authPaused : undefined,
-              unconfirmedContent: undefined,
-            };
-            hasChanges = true;
-            continue;
-          }
-
-          if (!current.serverExists && current.dirty) {
-            const isSameConflict =
-              current.saveState === "conflict" &&
-              current.conflict?.kind === "created" &&
-              current.conflict?.remoteFileId === file.id &&
-              current.conflict?.remoteVersion === file.version &&
-              current.conflict?.remoteContent === file.content;
-
-            if (!isSameConflict) {
-              next[file.path] = {
-                ...current,
-                saveState: "conflict",
-                conflict: {
-                  kind: "created",
-                  remoteExists: true,
-                  remoteFileId: file.id,
-                  remoteVersion: file.version,
-                  remoteContent: file.content,
-                },
-              };
-              hasChanges = true;
-            }
-            continue;
-          }
-
-          const serverChanged =
-            current.serverFileId !== file.id ||
-            current.serverVersion !== file.version ||
-            current.serverContent !== file.content ||
-            !current.serverExists;
-
-          if (current.dirty && serverChanged) {
-            const isSameConflict =
-              current.saveState === "conflict" &&
-              current.conflict?.kind === "modified" &&
-              current.conflict?.remoteFileId === file.id &&
-              current.conflict?.remoteVersion === file.version &&
-              current.conflict?.remoteContent === file.content;
-
-            if (!isSameConflict) {
-              next[file.path] = {
-                ...current,
-                saveState: "conflict",
-                conflict: {
-                  kind: "modified",
-                  remoteExists: true,
-                  remoteFileId: file.id,
-                  remoteVersion: file.version,
-                  remoteContent: file.content,
-                },
-              };
-              hasChanges = true;
-            }
-            continue;
-          }
-
-          if (
-            !current.dirty &&
-            (serverChanged || current.saveState !== "clean")
-          ) {
-            next[file.path] = fromServerFile(file);
+          const merged = mergeServerFile(currentWorkspaceFiles[file.path], file);
+          if (merged) {
+            next[file.path] = merged;
             hasChanges = true;
           }
         }
@@ -602,6 +633,24 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
           acceptedGenerations: nextAcceptedGenerations,
           observedGenerations: nextObservedGenerations,
           generations: nextAcceptedGenerations,
+          activeWorkspaceKey: state.activeWorkspaceKey ?? targetKey,
+          files:
+            isActive || state.activeWorkspaceKey === null ? next : state.files,
+        };
+      });
+    },
+
+    hydrateServerFile: (storefrontId, themeId, file) => {
+      if (!isServerFileId(file.id)) return;
+      const targetKey = toWorkspaceKey(storefrontId, themeId);
+      set((state) => {
+        const currentWorkspaceFiles = state.workspaces[targetKey] ?? {};
+        const merged = mergeServerFile(currentWorkspaceFiles[file.path], file);
+        if (!merged) return state;
+        const next = { ...currentWorkspaceFiles, [file.path]: merged };
+        const isActive = state.activeWorkspaceKey === targetKey;
+        return {
+          workspaces: { ...state.workspaces, [targetKey]: next },
           activeWorkspaceKey: state.activeWorkspaceKey ?? targetKey,
           files:
             isActive || state.activeWorkspaceKey === null ? next : state.files,

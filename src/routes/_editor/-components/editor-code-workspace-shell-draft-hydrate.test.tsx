@@ -6,22 +6,24 @@ import type {
   StorefrontThemeBinaryFileDTO,
   StorefrontThemeFileDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
-import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
+import {
+  LOCAL_DRAFT_FILE_ID_PREFIX,
+  useThemeWorkspaceStore,
+} from "@/lib/storefront/store/theme-workspace-store";
 import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
 import { getStorefrontThemeFile } from "@/server/storefront/storefront-theme-files.serverFn";
 import { EditorCodeWorkspace } from "./editor-code-workspace";
 
 /**
- * Reproduction (no fix), component level: see
+ * Component level of
  * src/lib/storefront/store/theme-workspace-shell-draft-hydrate.test.ts.
  *
  * `ShellLikeWorkspace` passes `files` the way visual-editor-shell.tsx does
  * (`effectiveThemeFiles`: server files with `content` replaced by the
- * workspace's `localContent`). Opening an editable public text file then runs
- * the Code workspace's public-text effect, which hydrates the store with that
- * list as if it were the server's copy.
- *
- * Marked `it.fails` while the bug stands; flip to `it` with the fix.
+ * workspace's `localContent`). Opening an editable public text file runs the
+ * Code workspace's public-text effect, which used to hydrate the store with
+ * that list as if it were the server's copy. It now hydrates only the loaded
+ * public file.
  */
 
 const monacoTestState = vi.hoisted(() => ({
@@ -81,6 +83,7 @@ vi.mock("@monaco-editor/react", () => ({
     beforeMount,
     theme,
     options,
+    path,
   }: {
     defaultValue?: string;
     onChange?: (value?: string) => void;
@@ -88,10 +91,19 @@ vi.mock("@monaco-editor/react", () => ({
     onMount?: (editor: unknown, monaco: unknown) => void;
     theme?: string;
     options?: Record<string, unknown>;
+    path?: string;
   }) => {
     const [value, setValue] = useState(defaultValue ?? "");
     const valueRef = useRef(value);
     valueRef.current = value;
+    // Like Monaco, a new `path` without a remount switches to that path's
+    // model, which starts from `defaultValue`.
+    const shownPathRef = useRef(path);
+    useEffect(() => {
+      if (shownPathRef.current === path) return;
+      shownPathRef.current = path;
+      setValue(defaultValue ?? "");
+    }, [path, defaultValue]);
 
     useEffect(() => {
       const model = {
@@ -214,7 +226,7 @@ function ShellLikeWorkspace({ serverFiles }: { serverFiles: StorefrontThemeFileD
       ...Object.values(workspaceFiles)
         .filter((file) => !serverPaths.has(file.path) && !isThemePublicPath(file.path))
         .map((file) => ({
-          id: `local:${file.path}`,
+          id: `${LOCAL_DRAFT_FILE_ID_PREFIX}${file.path}`,
           storefrontId: "store-1",
           themeId: "theme-1",
           path: file.path,
@@ -259,7 +271,7 @@ describe("EditorCodeWorkspace public text open with a source draft (shell-shaped
     vi.mocked(getStorefrontThemeFile).mockResolvedValue({ success: true, message: "loaded", data: robotsLoaded });
   });
 
-  it.fails("opening robots.txt keeps Hero.tsx's unsaved draft out of conflict and keeps its server basis", async () => {
+  it("opening robots.txt keeps Hero.tsx's unsaved draft out of conflict and keeps its server basis", async () => {
     // An unsaved edit to a source file (typed in Code, or written by the Inspector).
     useThemeWorkspaceStore.getState().updateLocalContent(hero.path, DRAFT, { storefrontId: "store-1", themeId: "theme-1" });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -277,6 +289,13 @@ describe("EditorCodeWorkspace public text open with a source draft (shell-shaped
     await waitFor(() => expect(getStorefrontThemeFile).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    // The opened public file itself is recorded as the server's copy.
+    expect(useThemeWorkspaceStore.getState().files[robotsLoaded.path]).toMatchObject({
+      serverFileId: robotsLoaded.id,
+      serverVersion: robotsLoaded.version,
+      serverContent: robotsLoaded.content,
+    });
+
     const heroState = useThemeWorkspaceStore.getState().files[hero.path]!;
     expect({ conflict: heroState.conflict, saveState: heroState.saveState, serverContent: heroState.serverContent }).toEqual({
       conflict: undefined,
@@ -285,7 +304,8 @@ describe("EditorCodeWorkspace public text open with a source draft (shell-shaped
     });
 
     // Back on Hero.tsx, no conflict bar for a server copy nobody changed.
-    fireEvent.click(screen.getByText("Hero.tsx"));
+    // Hero.tsx is both an open tab and a tree entry; either one switches.
+    fireEvent.click(screen.getAllByText("Hero.tsx")[0]!);
     await waitFor(() =>
       expect((screen.getByRole("textbox", { name: "Code editor" }) as HTMLTextAreaElement).value).toBe(DRAFT),
     );

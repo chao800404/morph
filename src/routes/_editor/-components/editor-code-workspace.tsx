@@ -1233,9 +1233,11 @@ const EditorCodeWorkspaceContent = forwardRef<
     const current = useThemeWorkspaceStore.getState().getWorkspaceFiles(storefrontId, themeId)[loaded.path];
     if (current?.serverExists && current.serverFileId === loaded.id && current.serverVersion > loaded.version) return;
     setOpenedPublicText((previous) => previous[loaded.path] === loaded ? previous : { ...previous, [loaded.path]: loaded });
-    useThemeWorkspaceStore.getState().hydrateFromQuery(storefrontId, themeId,
-      [...sourceFiles, loaded], undefined, binaryFiles.map((file) => file.path));
-  }, [publicTextQuery.data, activePublicTextMetadata, sourceFiles, binaryFiles, storefrontId, themeId, queryClient]);
+    // Only `loaded` is a server copy. `sourceFiles` is the shell's list with
+    // drafts as content and local-only files under minted ids, so hydrating
+    // from it took the author's own drafts as remote changes.
+    useThemeWorkspaceStore.getState().hydrateServerFile(storefrontId, themeId, loaded);
+  }, [publicTextQuery.data, activePublicTextMetadata, storefrontId, themeId, queryClient]);
 
   // Monaco can swap the model without remounting the React editor. Refresh the
   // semantic tag decorations after that transition so a hot reload or a tab
