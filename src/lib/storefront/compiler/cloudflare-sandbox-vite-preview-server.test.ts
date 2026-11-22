@@ -1924,3 +1924,174 @@ describe("a start read before a save that created a file", () => {
     });
   });
 });
+
+/**
+ * PROPOSAL (handoff/2026-11-23/preview-autoretry-design.md), red until it is
+ * decided and built: one automatic retry of a whole start when the sandbox
+ * reports the container stopped, or its runtime connection closed, while one
+ * of the start's operations was pending.
+ *
+ * The error is the one PR #434's CI run met, in the form it reaches the
+ * Worker: Durable Object RPC keeps only the message, and the message carries
+ * the SDK's class name in front (job log, 15:41:17.436).
+ */
+describe("an interrupted start (proposal: one automatic retry)", () => {
+  const INTERRUPTED_MKDIR =
+    "OperationInterruptedError: Sandbox operation files.mkdir was interrupted while the runtime connection was closing";
+  const CONTAINER_STOPPED =
+    "OperationInterruptedError: The sandbox container stopped while the operation was pending.";
+  const SANDBOX_DESTROYED =
+    "OperationInterruptedError: The sandbox was destroyed while the operation was pending.";
+
+  /** A harness whose first `failures` mkdir calls throw `message`. */
+  const failingMkdir = (message: string, failures: number) => {
+    const harness = createSession("ready");
+    let calls = 0;
+    harness.session.mkdir = async () => {
+      calls += 1;
+      if (calls <= failures) throw new Error(message);
+    };
+    return {
+      harness,
+      get mkdirCalls() {
+        return calls;
+      },
+    };
+  };
+
+  const startRecords = async (run: () => Promise<unknown>) => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line) => {
+      logged.push(String(line));
+    });
+    let result: unknown;
+    try {
+      result = await run();
+    } finally {
+      spy.mockRestore();
+    }
+    const starts = logged
+      .filter((line) => line.startsWith("[preview-observe] start "))
+      .map(
+        (line) =>
+          JSON.parse(line.slice("[preview-observe] start ".length)) as Record<
+            string,
+            unknown
+          >,
+      );
+    return { result: result as Awaited<ReturnType<typeof startWith>>, starts };
+  };
+
+  it("retries the whole start once when its runtime connection closed mid-start", async () => {
+    const { harness } = failingMkdir(INTERRUPTED_MKDIR, 1);
+    const { result, starts } = await startRecords(() => startWith(harness));
+
+    expect(result.ok).toBe(true);
+    // Two attempts, each with its own record, and no third.
+    expect(starts).toHaveLength(2);
+    expect(starts[0]!.outcome).toBe("failed");
+    expect(starts[1]!.outcome).toBe("ready");
+    expect(harness.commands).toHaveLength(1);
+  });
+
+  it("retries once, too, when the container stopped while an operation was pending", async () => {
+    const { harness } = failingMkdir(CONTAINER_STOPPED, 1);
+    const { result, starts } = await startRecords(() => startWith(harness));
+
+    expect(result.ok).toBe(true);
+    expect(starts).toHaveLength(2);
+  });
+
+  it("surfaces the error when the retry is interrupted as well, without a third attempt", async () => {
+    const failing = failingMkdir(INTERRUPTED_MKDIR, Number.POSITIVE_INFINITY);
+    const { result, starts } = await startRecords(() =>
+      startWith(failing.harness),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.stage).toBe("preview-server-start");
+    expect(result.errorMessage).toContain("interrupted");
+    expect(starts).toHaveLength(2);
+    expect(starts.map((start) => start.outcome)).toEqual(["failed", "failed"]);
+    expect(starts[0]!.attemptId).not.toBe(starts[1]!.attemptId);
+    // Nothing was started in a container that never held a workspace.
+    expect(failing.harness.commands).toHaveLength(0);
+  });
+
+  it("does not retry a sandbox that was destroyed while the start was pending", async () => {
+    // Someone stopped this preview: starting again would bring back the
+    // container they just stopped.
+    const failing = failingMkdir(SANDBOX_DESTROYED, 1);
+    const { result, starts } = await startRecords(() =>
+      startWith(failing.harness),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(starts).toHaveLength(1);
+    expect(failing.mkdirCalls).toBe(1);
+  });
+
+  it("does not retry an error that is not a sandbox interruption", async () => {
+    const failing = failingMkdir("EACCES: permission denied, mkdir", 1);
+    const { result, starts } = await startRecords(() =>
+      startWith(failing.harness),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(starts).toHaveLength(1);
+    expect(failing.mkdirCalls).toBe(1);
+  });
+
+  it("does not retry a message that only mentions an interruption further in", async () => {
+    // Matched on the SDK's own prefix, never on a substring a Theme or a
+    // log line could carry.
+    const failing = failingMkdir(
+      `Theme build said: ${INTERRUPTED_MKDIR}`,
+      1,
+    );
+    const { result, starts } = await startRecords(() =>
+      startWith(failing.harness),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(starts).toHaveLength(1);
+  });
+
+  it("does not retry a dev server that exited before it was ready", async () => {
+    // A Theme that crashes Vite crashes it again: that is the author's
+    // answer, not a transient one.
+    const harness = createSession("exit");
+    const { result, starts } = await startRecords(() =>
+      startWith(harness, {}, { readyTimeoutMs: 10_000 }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(starts).toHaveLength(1);
+    expect(harness.commands).toHaveLength(1);
+  });
+
+  it("records the retry: the answer names the failed first attempt, and each start line names the other", async () => {
+    const { harness } = failingMkdir(INTERRUPTED_MKDIR, 1);
+    const { result, starts } = await startRecords(() => startWith(harness));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const first = starts[0]!;
+    const second = starts[1]!;
+    // The answer is the second attempt's, and says it recovered from the
+    // first: acceptance evidence can tell a retried start from a clean one.
+    expect(result.attemptId).toBe(second.attemptId);
+    expect(
+      (result as { recoveredFrom?: unknown }).recoveredFrom,
+    ).toEqual({
+      attemptId: first.attemptId,
+      stage: "preview-server-start",
+      reason: "sandbox-interrupted",
+      errorMessage: INTERRUPTED_MKDIR,
+    });
+    // The server's own record ties the two together both ways.
+    expect(first.retry).toBe("scheduled");
+    expect(second.retryOf).toBe(first.attemptId);
+  });
+});
