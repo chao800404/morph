@@ -116,17 +116,22 @@ import {
  * The canvas before and after (user decisions 2026-11-22):
  *   - v26, v28, B2: the canvas's field list is the same before and after.
  *   - v15, v20: four separate checks instead (expectUpgradeKeptAnnotations):
- *     the author's text unchanged; no pre-upgrade annotation gone; none bound
- *     to another field (same path, and its Document value in D1 before and
- *     after); the added annotations exactly the listed ones
- *     (EXPECTED_ADDED_ANNOTATIONS). Then each pre-upgrade annotation is used
- *     once after the upgrade: clicked on the canvas, a value typed in the
- *     Inspector must land in exactly its Document, section and field (D1,
- *     read-only) and show on that element, then the original value goes back
- *     and is read back (v20: after its publish and rollback checks).
- *   - v11: a recorded limitation, the pre-upgrade canvas marker only
- *     (V11_LIMITATION, proven outside the harness). The Documents are read
- *     back before the upgrade; the canvas and its fields after it must hold.
+ *     the author's text unchanged; no pre-upgrade annotation gone (each on
+ *     its own key or its listed move/rename target, ANNOTATION_PLANS); none
+ *     bound to another field (same path, same Document place and D1 value
+ *     before and after, same list row id); the added annotations exactly the
+ *     listed ones. Then each pre-upgrade annotation is used once after the
+ *     upgrade: clicked on the canvas, a value typed in the Inspector must
+ *     land in exactly its Document, section and field (D1, read-only) and
+ *     show on that element, then the original value goes back and is read
+ *     back (v20: after its publish and rollback checks).
+ *   - v11: a recorded limitation (V11_LIMITATION, proven outside the
+ *     harness): only the before/after canvas comparison of the fields v11
+ *     does not render from the Document (all of them) is exempt. The
+ *     Documents are read back before the upgrade and every D1 author value
+ *     is compared before/after; after the upgrade every canvas field is used
+ *     once as above; then v11 is published and the release's public result
+ *     read.
  *
  * Full Start (Q10): each case's Theme records `preview_runtime = 'start'`,
  * read back from D1, and every Live Preview start this case's editor asked
@@ -964,81 +969,148 @@ function changedLeaves(
 }
 
 /**
- * The annotations the upgrade to Starter 30 adds on the canvas (after minus
- * before, by binding key), per version, from dev-run4 (handoff 2026-11-21
- * m1-harness/1b/dev-run4, read-back.json canvas fields of 1b-b1-v15 and
- * 1b-b1-v20). Any other added annotation fails.
+ * What the upgrade to Starter 30 does to the canvas annotations, by binding
+ * key, per version (user decisions 2026-11-22), from dev-run4 (handoff
+ * 2026-11-21 m1-harness/1b/dev-run4, read-back.json canvas fields of
+ * 1b-b1-v15 and 1b-b1-v20). Every pre-upgrade annotation must be found after
+ * the upgrade under its own key, or under the target this plan lists for it;
+ * every annotation after the upgrade that is neither must be in `added`.
+ * Anything else fails.
  *
- * v20: the three Principles rows now carry their own number, title and body.
- * v15: the same, plus Header and Footer inside their Document sections
- * (starter-header, starter-footer: before the upgrade their elements sat in no
- * `data-storefront-section-id`), their list rows, store names and copyright,
- * and the three category cards bound as `items` rows.
+ * - `moved`: the same field gaining its Document section. Before the upgrade
+ *   v15's Header and Footer elements sat in no `data-storefront-section-id`
+ *   (key `-|field#n`); after it they are in starter-header / starter-footer.
+ *   One entry per annotation, in document order.
+ * - `renamed`: the only field-name change allowed, v15's three category
+ *   cards: annotated `href` before, `items` after, on the same `items.N` path.
+ * - `added`: annotations new with the upgrade (v15 and v20: each Principles
+ *   row's number, title and body; v15 also the Header/Footer store names,
+ *   menu rows and copyright).
  */
-const EXPECTED_ADDED_ANNOTATIONS: Record<15 | 20, readonly string[]> = {
-  20: [
-    "starter-principles|number#0",
-    "starter-principles|title#0",
-    "starter-principles|body#0",
-    "starter-principles|number#1",
-    "starter-principles|title#1",
-    "starter-principles|body#1",
-    "starter-principles|number#2",
-    "starter-principles|title#2",
-    "starter-principles|body#2",
-  ],
-  15: [
-    "starter-header|storeName#0",
-    "starter-header|navItems#0",
-    "starter-header|label#0",
-    "starter-header|navItems#1",
-    "starter-header|label#1",
-    "starter-header|navItems#2",
-    "starter-header|label#2",
-    "starter-header|cartLabel#0",
-    "starter-categories|items#0",
-    "starter-categories|items#1",
-    "starter-categories|items#2",
-    "starter-principles|number#0",
-    "starter-principles|title#0",
-    "starter-principles|body#0",
-    "starter-principles|number#1",
-    "starter-principles|title#1",
-    "starter-principles|body#1",
-    "starter-principles|number#2",
-    "starter-principles|title#2",
-    "starter-principles|body#2",
-    "starter-footer|storeName#0",
-    "starter-footer|tagline#0",
-    "starter-footer|exploreHeading#0",
-    "starter-footer|exploreItems#0",
-    "starter-footer|label#0",
-    "starter-footer|exploreItems#1",
-    "starter-footer|label#1",
-    "starter-footer|exploreItems#2",
-    "starter-footer|label#2",
-    "starter-footer|helpHeading#0",
-    "starter-footer|helpItems#0",
-    "starter-footer|label#3",
-    "starter-footer|helpItems#1",
-    "starter-footer|label#4",
-    "starter-footer|helpItems#2",
-    "starter-footer|label#5",
-    "starter-footer|copyrightText#0",
-  ],
+type AnnotationPlan = {
+  moved: Readonly<Record<string, string>>;
+  renamed: Readonly<Record<string, string>>;
+  added: readonly string[];
+};
+
+const PRINCIPLES_ROWS_ADDED = [0, 1, 2].flatMap((n) =>
+  ["number", "title", "body"].map(
+    (field) => `starter-principles|${field}#${n}`,
+  ),
+);
+
+const ANNOTATION_PLANS: Record<15 | 20, AnnotationPlan> = {
+  20: { moved: {}, renamed: {}, added: PRINCIPLES_ROWS_ADDED },
+  15: {
+    moved: {
+      "-|label#0": "starter-header|label#0", // Shop
+      "-|label#1": "starter-header|label#1", // About
+      "-|label#2": "starter-header|label#2", // Journal
+      "-|cartLabel#0": "starter-header|cartLabel#0", // Cart (0)
+      "-|tagline#0": "starter-footer|tagline#0",
+      "-|exploreHeading#0": "starter-footer|exploreHeading#0", // Explore
+      "-|label#3": "starter-footer|label#0", // Shop all
+      "-|label#4": "starter-footer|label#1", // Our story
+      "-|label#5": "starter-footer|label#2", // Journal
+      "-|helpHeading#0": "starter-footer|helpHeading#0", // Help
+      "-|label#6": "starter-footer|label#3", // Contact
+      "-|label#7": "starter-footer|label#4", // Shipping
+      "-|label#8": "starter-footer|label#5", // Returns
+    },
+    renamed: {
+      "starter-categories|href#0": "starter-categories|items#0",
+      "starter-categories|href#1": "starter-categories|items#1",
+      "starter-categories|href#2": "starter-categories|items#2",
+    },
+    added: [
+      "starter-header|storeName#0",
+      "starter-header|navItems#0",
+      "starter-header|navItems#1",
+      "starter-header|navItems#2",
+      ...PRINCIPLES_ROWS_ADDED,
+      "starter-footer|storeName#0",
+      "starter-footer|exploreItems#0",
+      "starter-footer|exploreItems#1",
+      "starter-footer|exploreItems#2",
+      "starter-footer|helpItems#0",
+      "starter-footer|helpItems#1",
+      "starter-footer|helpItems#2",
+      "starter-footer|copyrightText#0",
+    ],
+  },
+};
+
+/** The section's props in the one draft Document holding it, or null. */
+function sectionProps(drafts: DraftDocument[], section: string) {
+  const holders = drafts.filter((draft) =>
+    draft.sections.some((item) => item.id === section),
+  );
+  if (holders.length !== 1) return null;
+  return holders[0]!.sections.find((item) => item.id === section)!.props ?? {};
+}
+
+/**
+ * The list rows `location` passes through (`items.0.title` → `items.0`) must
+ * be the same rows before and after: each row has an `id` in both Documents
+ * and it is the same id, not only the same index.
+ */
+function rowIdentityProblems(
+  name: string,
+  section: string,
+  location: string,
+  beforeDrafts: DraftDocument[],
+  afterDrafts: DraftDocument[],
+): string[] {
+  const was = sectionProps(beforeDrafts, section);
+  const is = sectionProps(afterDrafts, section);
+  if (!was || !is) return [`${name}: section ${section} is not in one Document`];
+  const problems: string[] = [];
+  const parts = location.split(".");
+  parts.forEach((part, index) => {
+    if (!/^\d+$/.test(part)) return;
+    const prefix = parts.slice(0, index + 1).join(".");
+    const idOf = (row: unknown) =>
+      row !== null && typeof row === "object"
+        ? (row as { id?: unknown }).id
+        : undefined;
+    const idBefore = idOf(valueAt(was, prefix));
+    const idAfter = idOf(valueAt(is, prefix));
+    if (typeof idBefore !== "string" || typeof idAfter !== "string") {
+      problems.push(
+        `${name}: row ${prefix} has no id (before ${String(idBefore)}, after ${String(idAfter)})`,
+      );
+    } else if (idBefore !== idAfter) {
+      problems.push(
+        `${name}: row ${prefix} is ${idBefore} before, ${idAfter} after`,
+      );
+    }
+  });
+  return problems;
+}
+
+type AnnotationPair = {
+  from: CanvasBinding;
+  to: CanvasBinding;
+  how: "same" | "moved" | "renamed";
 };
 
 /**
- * v15 and v20 (user decision 2026-11-22): instead of the whole canvas field
+ * v15 and v20 (user decisions 2026-11-22): instead of the whole canvas field
  * list being equal, four checks, each on its own:
  *   1. the author's text: every pre-upgrade annotation shows the same text
- *      after the upgrade;
- *   2. no pre-upgrade annotation disappeared (by binding key);
- *   3. none is bound to another field: the same field path as before, and
- *      before and after it resolves to its Document section's value (D1);
- *   4. the added annotations are exactly EXPECTED_ADDED_ANNOTATIONS[version].
+ *      after the upgrade (on its own key, or its listed move/rename target);
+ *   2. no pre-upgrade annotation disappeared: each is present under its own
+ *      key or under its listed target;
+ *   3. none is bound to another field: same field path (a moved one without
+ *      a path before is read at its target's path); before and after it
+ *      resolves to the same Document, place and D1 value; every list row on
+ *      its path is the same row (same id); a move only adds the section, a
+ *      rename only changes `href` to `items`;
+ *   4. the added annotations are exactly the plan's `added`.
  * Documents, listed paths and the marker after the upgrade are checked as for
- * every version. Each check is soft, so all four are recorded.
+ * every version. Each check is soft, so all four are recorded. Returns the
+ * changed paths and the post-upgrade keys of every pre-upgrade annotation,
+ * which are then each used once (exerciseAnnotations).
  */
 function expectUpgradeKeptAnnotations(
   run: CaseRun,
@@ -1052,56 +1124,153 @@ function expectUpgradeKeptAnnotations(
     before.canvas.rendered,
     "the canvas rendered the author's marker before the upgrade",
   ).toBe(true);
+  const plan = ANNOTATION_PLANS[version];
   const afterByKey = new Map(after.canvas.bindings.map((b) => [b.key, b]));
   const beforeKeys = new Set(before.canvas.bindings.map((b) => b.key));
-  const kept = before.canvas.bindings.filter((b) => afterByKey.has(b.key));
-
-  const textChanged = kept
-    .filter((b) => afterByKey.get(b.key)!.text !== b.text)
-    .map(
-      (b) =>
-        `${b.key}: ${JSON.stringify(b.text.slice(0, 80))} -> ${JSON.stringify(afterByKey.get(b.key)!.text.slice(0, 80))}`,
-    );
-  const disappeared = before.canvas.bindings
-    .filter((b) => !afterByKey.has(b.key))
-    .map((b) => `${b.key} (path ${b.path ?? "-"}, ${JSON.stringify(b.text.slice(0, 40))})`);
-  const misbound: string[] = [];
-  for (const b of kept) {
-    const now = afterByKey.get(b.key)!;
-    if (now.path !== b.path) {
-      misbound.push(`${b.key}: path ${b.path ?? "-"} -> ${now.path ?? "-"}`);
+  const planProblems = [
+    ...Object.keys(plan.moved),
+    ...Object.keys(plan.renamed),
+  ]
+    .filter((source) => !beforeKeys.has(source))
+    .map((source) => `listed source ${source} is not on the pre-upgrade canvas`);
+  const pairs: AnnotationPair[] = [];
+  const disappeared: string[] = [];
+  for (const from of before.canvas.bindings) {
+    const how: AnnotationPair["how"] =
+      from.key in plan.moved
+        ? "moved"
+        : from.key in plan.renamed
+          ? "renamed"
+          : "same";
+    const target =
+      how === "moved"
+        ? plan.moved[from.key]!
+        : how === "renamed"
+          ? plan.renamed[from.key]!
+          : from.key;
+    const to = afterByKey.get(target);
+    if (!to) {
+      disappeared.push(
+        `${from.key}${how === "same" ? "" : ` (listed ${how} to ${target})`} (path ${from.path ?? "-"}, ${JSON.stringify(from.text.slice(0, 40))})`,
+      );
+      continue;
     }
-    const was = resolveBinding(b, before.drafts);
-    if (!was.ok) misbound.push(`${b.key} before: ${was.reason}`);
-    const is = resolveBinding(now, after.drafts);
-    if (!is.ok) misbound.push(`${b.key} after: ${is.reason}`);
-    if (was.ok && is.ok && was.location !== is.location) {
-      misbound.push(`${b.key}: ${was.location} -> ${is.location}`);
-    }
+    pairs.push({ from, to, how });
   }
+
+  const textChanged = pairs
+    .filter(({ from, to }) => to.text !== from.text)
+    .map(
+      ({ from, to }) =>
+        `${from.key} -> ${to.key}: ${JSON.stringify(from.text.slice(0, 80))} -> ${JSON.stringify(to.text.slice(0, 80))}`,
+    );
+  const misbound: string[] = [];
+  for (const { from, to, how } of pairs) {
+    const name = from.key === to.key ? from.key : `${from.key} -> ${to.key}`;
+    if (how === "moved") {
+      if (from.section !== null) {
+        misbound.push(`${name}: moved, but it had section ${from.section}`);
+      }
+      if (from.field !== to.field) {
+        misbound.push(`${name}: moved, but field ${from.field} -> ${to.field}`);
+      }
+    }
+    if (how === "renamed") {
+      if (from.section !== to.section) {
+        misbound.push(
+          `${name}: renamed, but section ${from.section} -> ${to.section}`,
+        );
+      }
+      if (from.field !== "href" || to.field !== "items") {
+        misbound.push(
+          `${name}: only href -> items may be renamed, got ${from.field} -> ${to.field}`,
+        );
+      }
+      if (from.path === null) misbound.push(`${name}: renamed without a path`);
+    }
+    if (from.path !== null && from.path !== to.path) {
+      misbound.push(`${name}: path ${from.path} -> ${to.path ?? "-"}`);
+    }
+    const is = resolveBinding(to, after.drafts);
+    if (!is.ok) {
+      misbound.push(`${name} after: ${is.reason}`);
+      continue;
+    }
+    // Before the upgrade, read where it binds now: a moved one in its
+    // target's section (and at its path, when it had none), a renamed one
+    // under the field it is named now.
+    const was = resolveBinding(
+      {
+        ...from,
+        section: how === "moved" ? to.section : from.section,
+        field: how === "renamed" ? to.field : from.field,
+        path: from.path ?? (how === "moved" ? to.path : null),
+      },
+      before.drafts,
+    );
+    if (!was.ok) {
+      misbound.push(`${name} before: ${was.reason}`);
+      continue;
+    }
+    if (was.location !== is.location || was.templateId !== is.templateId) {
+      misbound.push(
+        `${name}: ${was.templateId}/${was.location} -> ${is.templateId}/${is.location}`,
+      );
+    }
+    if (JSON.stringify(was.value) !== JSON.stringify(is.value)) {
+      misbound.push(`${name}: its D1 value at ${is.location} changed`);
+    }
+    misbound.push(
+      ...rowIdentityProblems(
+        name,
+        to.section!,
+        is.location,
+        before.drafts,
+        after.drafts,
+      ),
+    );
+  }
+  const targets = new Set(pairs.map(({ to }) => to.key));
   const added = after.canvas.bindings
-    .filter((b) => !beforeKeys.has(b.key))
+    .filter((b) => !beforeKeys.has(b.key) && !targets.has(b.key))
     .map((b) => b.key);
   run.record.fact("annotationChecks", {
     before: before.canvas.bindings.length,
     after: after.canvas.bindings.length,
+    pairs: pairs.map(({ from, to, how }) => ({
+      from: from.key,
+      to: to.key,
+      how,
+      pathBefore: from.path,
+      pathAfter: to.path,
+    })),
+    planProblems,
     textChanged,
     disappeared,
     misbound,
     added,
-    expectedAdded: EXPECTED_ADDED_ANNOTATIONS[version],
+    plan,
   });
+  expect
+    .soft(planProblems, "the move/rename plan matches the pre-upgrade canvas")
+    .toEqual([]);
   expect.soft(textChanged, "1. the author's text is unchanged").toEqual([]);
   expect
-    .soft(disappeared, "2. no pre-upgrade annotation disappeared")
+    .soft(
+      disappeared,
+      "2. every pre-upgrade annotation is present, on its key or its listed move/rename target",
+    )
     .toEqual([]);
   expect
     .soft(misbound, "3. no annotation is bound to another field")
     .toEqual([]);
   expect
-    .soft(added, `4. the upgrade adds exactly v${version}'s expected annotations`)
-    .toEqual([...EXPECTED_ADDED_ANNOTATIONS[version]]);
-  return changed;
+    .soft(
+      added,
+      `4. the upgrade adds exactly v${version}'s expected annotations`,
+    )
+    .toEqual([...plan.added]);
+  return { changed, exerciseKeys: new Set(pairs.map(({ to }) => to.key)) };
 }
 
 /** Fits the Live Preview frame to the canvas, so no field sits under a panel. */
@@ -1244,11 +1413,14 @@ type Exercise = {
  * A container (a list row, a card) or an image binds no text of its own: it
  * is clicked and must select an element of its own section, and its text
  * fields are written through their own annotations.
+ *
+ * `keys` are post-upgrade keys (for v15, a moved or renamed annotation's
+ * listed target); every one of them must be on the canvas.
  */
 async function exerciseAnnotations(
   page: Page,
   run: CaseRun,
-  before: ReadBack,
+  keys: ReadonlySet<string>,
 ): Promise<Exercise[]> {
   const dir = evidenceDir(`1b-${run.label}/exercise`);
   await openEditor(page, run.editorPath);
@@ -1256,10 +1428,11 @@ async function exerciseAnnotations(
     previewFrame(page).locator('[data-storefront-section-id="starter-hero"]'),
   ).toBeVisible({ timeout: 180_000 });
   await tabletCanvas(page);
-  const preUpgrade = new Set(before.canvas.bindings.map((b) => b.key));
-  const current = (await canvasBindings(page)).filter((b) =>
-    preUpgrade.has(b.key),
+  const current = (await canvasBindings(page)).filter((b) => keys.has(b.key));
+  const missing = [...keys].filter(
+    (key) => !current.some((binding) => binding.key === key),
   );
+  expect(missing, "every annotation to use is on the canvas").toEqual([]);
   const results: Exercise[] = [];
   for (const [n, binding] of current.entries()) {
     const result: Exercise = {
@@ -1398,26 +1571,44 @@ function expectAnnotationsExercised(run: CaseRun, results: Exercise[]) {
 }
 
 /**
- * v11 pre-upgrade limitation (user decision 2026-11-22), proven against the
+ * v11 pre-upgrade limitation (user decisions 2026-11-22), proven against the
  * original v11 fixture outside this harness (handoff 2026-11-22
- * m1-harness/1b/v11-proof: the fixture's own root and home routes rendered
- * with Core's content for "/" show the hero's default eyebrow, not the
- * author's value; v15, the control, shows it). Cause, in the fixture bytes:
- * v11's `content()` reads a React context that no v11 file provides, so every
- * slot reads `{}` and each component shows its defaults. The exception covers
- * only the pre-upgrade canvas: the author's Document values are still read
- * back before the upgrade, and the canvas and publish checks after it stay.
+ * m1-harness/1b/v11-proof):
+ *   - result.json: the fixture's own root and home routes rendered with
+ *     Core's content for "/" show the hero's default eyebrow, not the
+ *     author's value; v15, the control, shows it;
+ *   - rendered-fields.json: with a sentinel value for every content field of
+ *     every slot, v11 renders none of them; each of its 14
+ *     `data-storefront-field` elements shows its component's own default.
+ * Cause, in the fixture bytes: v11's `content()` reads a React context that
+ * no v11 file provides, so every slot reads `{}`.
+ *
+ * Exempt: the before/after canvas comparison for the fields v11 does not
+ * render from the Document, which is every one of them (the marker
+ * included). Still checked: the author's values in D1 before against after
+ * (so the two sides cannot drop a value together); the canvas comparison for
+ * any field v11 renders from the Document (V11_FIELDS_RENDERED_FROM_DOCUMENT,
+ * none); after the upgrade, each canvas field selects and writes its own
+ * Document, section and field; after publish, the public result reads the
+ * author's content.
  */
 const V11_LIMITATION =
-  "v11 pre-upgrade limitation: canvas marker not rendered (existing behaviour, proven by handoff/2026-11-22/m1-harness/1b/v11-proof/result.json: the original v11 fixture rendered with Core's content shows the default eyebrow, not the marker; no v11 file but content.ts names MorphContentProvider)";
+  "v11 pre-upgrade limitation: canvas marker not rendered (existing behaviour, proven by handoff/2026-11-22/m1-harness/1b/v11-proof/result.json and rendered-fields.json: the original v11 fixture rendered with Core's content shows the default eyebrow, not the marker, and renders no Document field at all; no v11 file but content.ts names MorphContentProvider). Exempt: the before/after canvas comparison of the fields v11 does not render from the Document (all of them).";
 const V11_DEFAULT_EYEBROW = "New collection";
+/**
+ * The pre-upgrade canvas keys whose text v11 renders from the Document, and
+ * which are therefore still compared before/after. Empty by the proof
+ * (rendered-fields.json: 0 of 80 sentinels rendered).
+ */
+const V11_FIELDS_RENDERED_FROM_DOCUMENT: readonly string[] = [];
 
 /**
  * Before v11's upgrade: the author's value is read back from the Documents
  * (the server's read and D1), the canvas shows v11's own default instead of
  * it (the proven behaviour; should it ever render the marker, this fails and
  * the limitation must go), and the cause is still in the fixture's bytes.
- * Recorded as the named limitation, never skipped.
+ * Recorded as the named limitation, never skipped. Returns the fields the
+ * pre-upgrade canvas shows, with the split into exempt and compared.
  */
 async function expectV11PreUpgradeLimitation(
   page: Page,
@@ -1425,7 +1616,7 @@ async function expectV11PreUpgradeLimitation(
   old: Fixture,
   before: ReadBack,
   marker: string,
-) {
+): Promise<CanvasBinding[]> {
   const inServerRead = Object.values(before.authorContent).some(
     (sections) =>
       (sections["starter-hero"] as Record<string, unknown> | undefined)
@@ -1462,11 +1653,31 @@ async function expectV11PreUpgradeLimitation(
     await renderedText(page),
     "v11's canvas does not show the marker",
   ).not.toContain(marker);
+  const shown = await canvasBindings(page);
+  writeJson(evidenceDir(`1b-${run.label}/before`), "v11-canvas-bindings.json", shown);
+  const compared = shown
+    .filter((binding) => V11_FIELDS_RENDERED_FROM_DOCUMENT.includes(binding.key))
+    .map((binding) => binding.key);
+  expect(
+    compared,
+    "every field v11 renders from the Document is on its canvas",
+  ).toEqual([...V11_FIELDS_RENDERED_FROM_DOCUMENT]);
+  run.record.fact("v11FieldSplit", {
+    exempt: shown
+      .filter((binding) => !compared.includes(binding.key))
+      .map((binding) => ({ key: binding.key, path: binding.path, text: binding.text.slice(0, 80) })),
+    compared,
+    comparedNote:
+      compared.length === 0
+        ? "none: the v11 canvas renders no Document field (rendered-fields.json)"
+        : null,
+  });
   run.record.fact("limitation", V11_LIMITATION);
   test.info().annotations.push({
     type: "limitation",
     description: V11_LIMITATION,
   });
+  return shown;
 }
 
 /**
@@ -1491,21 +1702,60 @@ function renderedText(page: Page) {
 
 /**
  * After v11's upgrade: what every version must hold (Documents, listed
- * paths, the marker on the canvas), and, in place of a before/after canvas
- * comparison the limitation leaves nothing to compare with, every field the
- * upgraded canvas shows resolves to its Document section's value in D1.
+ * paths, the marker on the canvas); (a) every author value D1 held before
+ * the upgrade is the same value at the same place after it; (b) every field
+ * v11 rendered from the Document shows the same text after (none, by the
+ * proof); and every field the upgraded canvas shows resolves to its Document
+ * section's value in D1.
  */
 function expectV11AfterUpgrade(
+  run: CaseRun,
   before: ReadBack,
   after: ReadBack,
   listed: string[],
+  v11Canvas: CanvasBinding[],
 ) {
   const changed = expectDocumentsKeptAndListed(before, after, listed);
+  expect(
+    after.drafts.map((draft) => draft.templateId).sort(),
+    "the upgrade keeps the same templates",
+  ).toEqual(before.drafts.map((draft) => draft.templateId).sort());
+  const was = documentLeaves(before.drafts);
+  const is = documentLeaves(after.drafts);
+  const valuesChanged = [...was.keys()]
+    .filter((key) => !is.has(key) || is.get(key) !== was.get(key))
+    .map(
+      (key) =>
+        `${key}: ${JSON.stringify(was.get(key))} -> ${is.has(key) ? JSON.stringify(is.get(key)) : "(gone)"}`,
+    );
+  run.record.fact("v11AuthorValues", {
+    before: was.size,
+    after: is.size,
+    changed: valuesChanged,
+  });
+  expect
+    .soft(valuesChanged, "(a) every author value in D1 is kept by the upgrade")
+    .toEqual([]);
+  const afterByKey = new Map(after.canvas.bindings.map((b) => [b.key, b]));
+  expect
+    .soft(
+      v11Canvas
+        .filter((binding) =>
+          V11_FIELDS_RENDERED_FROM_DOCUMENT.includes(binding.key),
+        )
+        .filter((binding) => afterByKey.get(binding.key)?.text !== binding.text)
+        .map((binding) => binding.key),
+      "(b) every field v11 renders from the Document shows the same text after",
+    )
+    .toEqual([]);
   expect(after.canvas.bindings.length).toBeGreaterThan(0);
   expect
     .soft(
       after.canvas.bindings
-        .map((binding) => ({ binding, where: resolveBinding(binding, after.drafts) }))
+        .map((binding) => ({
+          binding,
+          where: resolveBinding(binding, after.drafts),
+        }))
         .filter(({ where }) => !where.ok)
         .map(
           ({ binding, where }) =>
@@ -1515,6 +1765,72 @@ function expectV11AfterUpgrade(
     )
     .toEqual([]);
   return changed;
+}
+
+/**
+ * (d) v11 published after its upgrade, on its own storefront, and the
+ * published result read through the release the publish shows (the
+ * storefront has no domain: domains reach only the run's storefront). The
+ * release is this Theme's and active; its home page and its content for "/"
+ * carry the author's marker, and the content's hero slot holds the author's
+ * value as D1's draft did.
+ */
+async function publishV11(page: Page, run: CaseRun, marker: string) {
+  await openEditor(page, run.editorPath);
+  const draftHero = sectionProps(draftDocuments(run.scope), "starter-hero");
+  expect(draftHero?.eyebrow, "the draft holds the author's value").toBe(marker);
+  const shown = await publishShowingRelease(page);
+  try {
+    const home = await shown.fetch("/");
+    const content = await shown.fetch("/_morph/content?path=%2F");
+    const dir = evidenceDir(`1b-${run.label}/published`);
+    writeFileSync(join(dir, "release-home.html"), home.body);
+    writeFileSync(join(dir, "release-content.json"), content.body);
+    expect(home.status).toBe(200);
+    expect(home.body, "the published home page shows the marker").toContain(
+      marker,
+    );
+    expect(content.status).toBe(200);
+    const slots = (JSON.parse(content.body) as {
+      slots?: Record<string, Record<string, unknown>>;
+    }).slots;
+    expect(
+      slots?.["starter-hero"]?.eyebrow,
+      "the published content's hero holds the author's value",
+    ).toBe(marker);
+    run.record.fact("publishedRead", {
+      homeStatus: home.status,
+      homeSha256: sha256(home.body),
+      contentStatus: content.status,
+      contentSha256: sha256(content.body),
+    });
+  } finally {
+    await shown.close();
+  }
+  const releaseId = await latestRelease(page, run.scope);
+  const row = releaseRow(releaseId);
+  expect(row.theme_id, "the release is this case's Theme's").toBe(
+    run.scope.themeId,
+  );
+  expect(row.storefront_id).toBe(run.scope.storefrontId);
+  expect(activeRelease(run.scope), "the release is active").toBe(releaseId);
+  run.record.identity.releaseId = releaseId;
+  run.record.identity.buildId = row.theme_build_id;
+  run.record.identity.sourceRevisionId = row.source_revision_id;
+  run.ledger.add({
+    step: `1b/${run.label}/publish`,
+    action: "publish",
+    themeId: row.theme_id,
+    sourceRevisionId: row.source_revision_id,
+    templateDraftGeneration: homeDraftGeneration(run),
+    buildId: row.theme_build_id,
+    buildReused: null,
+    contentPublicationId: row.content_publication_id,
+    releaseId,
+    activeRelease: { before: null, after: activeRelease(run.scope) },
+    expectedActiveReleaseId: null,
+    evidence: ["published/release-home.html", "published/release-content.json"],
+  });
 }
 
 /** Each template's sections' props, by template type/name and section id. */
@@ -2167,16 +2483,17 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
   /**
    * v11, v15 and v26 (manifest era, flat components, stale pins): read back
    * before and after the upgrade. Their build and publish are not part of
-   * this case (Q4: v20 and v28 carry the publish and rollback); each result
-   * record says the last step it verified.
+   * this case (Q4: v20 and v28 carry the publish and rollback), except v11's
+   * (user decision 2026-11-22: its public result is read after a publish);
+   * each result record says the last step it verified.
    */
   async function readBackOnly(
     page: Page,
     browser: Browser,
     version: 11 | 15 | 26,
   ) {
-    // v15 also writes and reads back each of its pre-upgrade annotations.
-    if (version === 15) test.setTimeout(75 * 60_000);
+    // v11 and v15 also write and read back their annotations; v11 publishes.
+    if (version !== 26) test.setTimeout(75 * 60_000);
     const old = fixture(version);
     const run = await setUpCase(page, `b1-v${version}`, version);
     try {
@@ -2196,12 +2513,14 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
       run.record.fact("beforeCanvasRendered", before.canvas.rendered);
       run.record.identity.contentTsSha256 = before.contentTs.sha256;
       run.record.identity.contentTsEdited = false;
-      if (version === 11) {
-        await run.record.step(
-          "v11 pre-upgrade limitation: canvas marker not rendered",
-          () => expectV11PreUpgradeLimitation(page, run, old, before, marker),
-        );
-      }
+      const v11Canvas =
+        version === 11
+          ? await run.record.step(
+              "v11 pre-upgrade limitation: canvas marker not rendered",
+              () =>
+                expectV11PreUpgradeLimitation(page, run, old, before, marker),
+            )
+          : [];
       const listed = await run.record.step("review", async () => {
         const shown = await review(page, run);
         await apply(page, run, shown.dialog);
@@ -2210,25 +2529,52 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
       const after = await run.record.step("after-upgrade read-back", () =>
         readBack(page, browser, run, "after", marker, { canvasRequired: true }),
       );
-      await run.record.step("upgrade kept the author's content", async () => {
-        run.record.fact(
-          "changedPaths",
-          version === 15
-            ? expectUpgradeKeptAnnotations(run, 15, before, after, listed)
-            : version === 11
-              ? expectV11AfterUpgrade(before, after, listed)
-              : expectUpgradeKeptAuthorContent(before, after, listed),
-        );
-        expect(after.contentTs.sha256).not.toBeNull();
-      });
-      if (version === 15) {
+      const toUse = await run.record.step(
+        "upgrade kept the author's content",
+        async () => {
+          let keys: ReadonlySet<string> | null = null;
+          if (version === 15) {
+            const kept = expectUpgradeKeptAnnotations(
+              run,
+              15,
+              before,
+              after,
+              listed,
+            );
+            run.record.fact("changedPaths", kept.changed);
+            keys = kept.exerciseKeys;
+          } else if (version === 11) {
+            run.record.fact(
+              "changedPaths",
+              expectV11AfterUpgrade(run, before, after, listed, v11Canvas),
+            );
+            // (c) every field of the upgraded canvas, used once.
+            keys = new Set(after.canvas.bindings.map((b) => b.key));
+          } else {
+            run.record.fact(
+              "changedPaths",
+              expectUpgradeKeptAuthorContent(before, after, listed),
+            );
+          }
+          expect(after.contentTs.sha256).not.toBeNull();
+          return keys;
+        },
+      );
+      if (toUse) {
         await run.record.step(
-          "each pre-upgrade annotation written and read back after the upgrade",
+          version === 11
+            ? "each canvas field selects, writes and reads back its own Document field after the upgrade"
+            : "each pre-upgrade annotation written and read back after the upgrade",
           async () =>
             expectAnnotationsExercised(
               run,
-              await exerciseAnnotations(page, run, before),
+              await exerciseAnnotations(page, run, toUse),
             ),
+        );
+      }
+      if (version === 11) {
+        await run.record.step("published, public result read", () =>
+          publishV11(page, run, marker),
         );
       }
       await run.record.step("full Start", async () => expectFullStart(run));
@@ -2445,16 +2791,22 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         const shown = await review(page, run, V20_REVIEW);
         await apply(page, run, shown.dialog);
       });
+      let v20Kept: ReturnType<typeof expectUpgradeKeptAnnotations> | null =
+        null;
       const after = await run.record.step("after-upgrade read-back", () =>
         readBack(page, browser, run, "after", baselineMarker, {
           canvasRequired: true,
         }),
       );
       await run.record.step("upgrade kept the author's content", async () => {
-        run.record.fact(
-          "changedPaths",
-          expectUpgradeKeptAnnotations(run, 20, before, after, V20_REVIEW),
+        v20Kept = expectUpgradeKeptAnnotations(
+          run,
+          20,
+          before,
+          after,
+          V20_REVIEW,
         );
+        run.record.fact("changedPaths", v20Kept.changed);
         // The live site did not move with the upgrade.
         expect(after.public.activeRelease).toBe(baseline.releaseId);
         expect(after.public.home?.hasMarker).toBe(true);
@@ -2532,7 +2884,7 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         async () => {
           expectAnnotationsExercised(
             run,
-            await exerciseAnnotations(page, run, before),
+            await exerciseAnnotations(page, run, v20Kept!.exerciseKeys),
           );
           expect(
             activeRelease(run.scope),
