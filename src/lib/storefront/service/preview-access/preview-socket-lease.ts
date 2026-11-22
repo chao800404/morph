@@ -27,6 +27,13 @@
  *   synchronous run since its last I/O, the frozen-clock slack of D51).
  *   That is a bound to be verified on the container transport and in the
  *   cloud (A5 §12), not something this module or its tests establish.
+ * - An idle socket (no frames, so no busy-path renewal) is renewed by its
+ *   ticks from `V + L - renewAheadMs` on, before the lapse rather than after
+ *   it, so a revoked grant is read, and the socket closed, before `V + L`
+ *   when D1 answers in time. The lapse itself never closes: only a verdict
+ *   or a notice does. A renewal still in flight at the lapse that reads
+ *   "valid" leaves the socket open; frames from the lapse on wait for a
+ *   verification sent after it, as above.
  *
  * The socket starts with no verification of its own: the handshake's was made
  * on another instance's clock. It verifies once at registration (A6), and
@@ -80,6 +87,13 @@ export type PreviewSocketLeaseOptions = Readonly<{
    */
   onVerified?: (event: PreviewSocketVerifiedEvent) => void;
   leaseMs?: number;
+  /**
+   * How long before the lapse a tick starts an idle socket's renewal.
+   * Default 0: a tick verifies only a lapsed lease. Capped at `leaseMs / 2`,
+   * where a busy socket's frames renew, so an idle socket never verifies
+   * more often than a busy one.
+   */
+  renewAheadMs?: number;
   maxHeldFrames?: number;
   maxHeldBytes?: number;
 }>;
@@ -89,7 +103,10 @@ export type PreviewSocketLease = Readonly<{
   frame: (direction: PreviewSocketDirection, data: PreviewSocketFrame) => void;
   /** A pushed revocation for this socket's grant: closes now. */
   notice: () => void;
-  /** A timer tick while the socket is open: verifies a lapsed lease. */
+  /**
+   * A timer tick while the socket is open: verifies a lease that has lapsed,
+   * or will within `renewAheadMs`.
+   */
   tick: () => void;
   /** The socket closed on its own; nothing more is forwarded. */
   dispose: () => void;
@@ -107,6 +124,10 @@ export function createPreviewSocketLease(
   options: PreviewSocketLeaseOptions,
 ): PreviewSocketLease {
   const leaseMs = options.leaseMs ?? PREVIEW_SOCKET_LEASE_MS;
+  const renewAheadMs = Math.min(
+    Math.max(options.renewAheadMs ?? 0, 0),
+    leaseMs / 2,
+  );
   const maxFrames = options.maxHeldFrames ?? PREVIEW_SOCKET_MAX_HELD_FRAMES;
   const maxBytes = options.maxHeldBytes ?? PREVIEW_SOCKET_MAX_HELD_BYTES;
 
@@ -235,7 +256,13 @@ export function createPreviewSocketLease(
     },
     tick() {
       if (closed) return;
-      if (!leaseHolds(options.now())) startVerification();
+      // With renewAheadMs 0 this is "the lease has lapsed" (!leaseHolds).
+      if (
+        verifiedAt === null ||
+        options.now() >= verifiedAt + leaseMs - renewAheadMs
+      ) {
+        startVerification();
+      }
     },
     dispose() {
       if (closed) return;

@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type {
-  PreviewSocketVerification,
-  PreviewSocketVerifiedEvent,
+import {
+  PREVIEW_SOCKET_LEASE_MS,
+  type PreviewSocketVerification,
+  type PreviewSocketVerifiedEvent,
 } from "./preview-socket-lease";
-import { type RelaySocket, relayPreviewSocket } from "./preview-socket-relay";
+import {
+  PREVIEW_SOCKET_RENEW_MARGIN_MS,
+  PREVIEW_SOCKET_TICK_MS,
+  previewSocketRenewAheadMs,
+  type RelaySocket,
+  relayPreviewSocket,
+} from "./preview-socket-relay";
 
 type Listener = (event: {
   data?: unknown;
@@ -187,5 +194,145 @@ describe("the preview socket relay (#214 P4)", () => {
     await h.answers[2]!("revoked");
     expect(events).toHaveLength(2);
     expect(h.browser.closes[0]!.code).toBe(4401);
+  });
+});
+
+/**
+ * M1 1c "notice-lost-after-renewal-idle" on a fake clock, with the production
+ * lease and tick: the registration verifies at 0, a busy frame at `renewAt`
+ * renews V, the grant is revoked in D1 1 ms later (after that query read it),
+ * no notice arrives, and the socket then sends nothing. The tick fires every
+ * tick period from the relay's start; D1 answers `d1Ms` after each query is
+ * sent, "valid" if it was sent before R and "revoked" otherwise.
+ */
+async function idleAfterRenewal(args: { renewAt: number; d1Ms: number }) {
+  let clock = 0;
+  let R = Number.POSITIVE_INFINITY;
+  const browser = fakeSocket("browser");
+  const container = fakeSocket("container");
+  const answers: Array<{ at: number; resolve: () => void }> = [];
+  let interval: { cb: () => void; ms: number } | null = null;
+  let nextTick = Number.POSITIVE_INFINITY;
+  const sentToBrowserAt: number[] = [];
+  const sentToContainerAt: number[] = [];
+  const queriesAt: number[] = [];
+  let closedAt: number | null = null;
+  browser.socket.send = () => void sentToBrowserAt.push(clock);
+  container.socket.send = () => void sentToContainerAt.push(clock);
+  browser.socket.close = (code, reason) => {
+    closedAt ??= clock;
+    browser.closes.push({ code, reason });
+  };
+  const relay = relayPreviewSocket({
+    browser: browser.socket,
+    container: container.socket,
+    now: () => clock,
+    verify: () => {
+      const sentAt = clock;
+      queriesAt.push(sentAt);
+      return new Promise<PreviewSocketVerification>((resolve) => {
+        answers.push({
+          at: sentAt + args.d1Ms,
+          resolve: () => resolve(sentAt < R ? "valid" : "revoked"),
+        });
+      });
+    },
+    setInterval: (cb, ms) => {
+      interval = { cb, ms };
+      nextTick = ms;
+      return interval;
+    },
+    clearInterval: () => {
+      interval = null;
+      nextTick = Number.POSITIVE_INFINITY;
+    },
+  });
+  /** Runs D1 answers and ticks in time order up to `until`. */
+  const runUntil = async (until: number) => {
+    while (!relay.closed) {
+      answers.sort((a, b) => a.at - b.at);
+      const answerAt = answers[0]?.at ?? Number.POSITIVE_INFINITY;
+      const next = Math.min(answerAt, nextTick);
+      if (next > until) break;
+      clock = next;
+      if (answerAt === next) {
+        answers.shift()!.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      } else {
+        nextTick += interval!.ms;
+        interval!.cb();
+      }
+    }
+    clock = Math.max(clock, until);
+  };
+  await runUntil(args.renewAt);
+  container.emit("message", { data: "busy" });
+  const V = queriesAt.at(-1)!;
+  R = V + 1;
+  await runUntil(V + 3 * PREVIEW_SOCKET_LEASE_MS);
+  return {
+    V,
+    R,
+    closedAt,
+    code: browser.closes[0]?.code,
+    containerCode: container.closes[0]?.code,
+    sentToBrowserAt,
+    sentToContainerAt,
+    queriesAt,
+  };
+}
+
+describe("an idle socket whose revocation notice was lost (M1 1c)", () => {
+  it("renews on the busy frame, so the case starts where 1c starts", async () => {
+    const run = await idleAfterRenewal({ renewAt: 15_001, d1Ms: 20 });
+    expect(run.V).toBe(15_001);
+    expect(run.sentToBrowserAt).toEqual([15_001]);
+    expect(run.queriesAt.slice(0, 2)).toEqual([0, 15_001]);
+  });
+
+  it("closes 4401 within L of the revocation, wherever the renewal falls in the tick", async () => {
+    for (const d1Ms of [20, 4_999]) {
+      for (let offset = 0; offset < PREVIEW_SOCKET_TICK_MS; offset += 250) {
+        const at = `D ${d1Ms} ms, offset ${offset}`;
+        const run = await idleAfterRenewal({
+          renewAt: PREVIEW_SOCKET_LEASE_MS / 2 + offset + 1,
+          d1Ms,
+        });
+        expect(run.code, at).toBe(4401);
+        expect(run.containerCode, at).toBe(1000);
+        expect(run.closedAt! - run.R, at).toBeLessThanOrEqual(
+          PREVIEW_SOCKET_LEASE_MS,
+        );
+        // Nothing moved after the revocation: the only frame is the renewal's.
+        expect(run.sentToBrowserAt, at).toEqual([run.V]);
+        expect(run.sentToContainerAt, at).toEqual([]);
+      }
+    }
+  });
+
+  it("closes before R + L - margin + D, the bound the renew-ahead guarantees", async () => {
+    const ahead = previewSocketRenewAheadMs(PREVIEW_SOCKET_TICK_MS);
+    const d1Ms = 20;
+    let latest = 0;
+    for (let offset = 0; offset < PREVIEW_SOCKET_TICK_MS; offset += 50) {
+      const run = await idleAfterRenewal({
+        renewAt: PREVIEW_SOCKET_LEASE_MS / 2 + offset + 1,
+        d1Ms,
+      });
+      const afterR = run.closedAt! - run.R;
+      expect(afterR, `offset ${offset}`).toBeLessThan(
+        PREVIEW_SOCKET_LEASE_MS - PREVIEW_SOCKET_RENEW_MARGIN_MS + d1Ms,
+      );
+      // The query that read the revocation went out from V + L - ahead on.
+      expect(run.queriesAt.at(-1)!, `offset ${offset}`).toBeGreaterThanOrEqual(
+        run.V + PREVIEW_SOCKET_LEASE_MS - ahead,
+      );
+      latest = Math.max(latest, afterR);
+    }
+    // The sweep reaches the top of the window, so the bound is tight.
+    expect(latest).toBeGreaterThan(
+      PREVIEW_SOCKET_LEASE_MS - PREVIEW_SOCKET_RENEW_MARGIN_MS - 100,
+    );
   });
 });
