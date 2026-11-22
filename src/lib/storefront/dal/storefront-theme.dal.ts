@@ -69,6 +69,7 @@ import {
   type ThemeRouteSectionResult,
 } from "@/lib/storefront/compiler/theme-route-sections";
 import { templateSectionWriteBase } from "../content/template-section-write-base";
+import { carryStoredRowValues } from "../content/carry-stored-row-values";
 import {
   assertPublishHiddenSections,
   assertSectionHideSupported,
@@ -2517,12 +2518,22 @@ export const storefrontThemeDal = {
             ),
           })
         : restProps;
-    const cleanIncomingProps = filterSectionContentProps(
-      targetSection.type,
-      verifiedProps,
-      resolvedComponentRef,
-      themeCapabilities,
-    );
+    // A list's rows keep what they store beside their declared fields, as the
+    // section's own undeclared props do below (`carryStoredRowValues`).
+    const carriedRows = carryStoredRowValues({
+      filtered: filterSectionContentProps(
+        targetSection.type,
+        verifiedProps,
+        resolvedComponentRef,
+        themeCapabilities,
+      ),
+      sent: verifiedProps,
+      stored: (targetSection.props as Record<string, unknown> | null) ?? {},
+      capability: resolvedComponentRef
+        ? themeCapabilities[resolvedComponentRef]
+        : null,
+    });
+    const cleanIncomingProps = carriedRows.props;
     // Existing props are carried through unvalidated and unfiltered.
     //
     // `contentFields` is an authoring allowlist, not the complete runtime prop
@@ -2574,11 +2585,15 @@ export const storefrontThemeDal = {
     // be holding a declaration another tab has since changed or deleted, and
     // would otherwise show the value as saved. A carried value the client did
     // not change is not one: it is how undeclared runtime props round-trip.
-    const droppedProps = Object.keys(verifiedProps).filter(
-      (key) =>
-        !Object.prototype.hasOwnProperty.call(cleanIncomingProps, key) &&
-        !sameContent(verifiedProps[key], nextProps[key]),
-    );
+    // A list row's undeclared value is the same, reported by its path.
+    const droppedProps = [
+      ...Object.keys(verifiedProps).filter(
+        (key) =>
+          !Object.prototype.hasOwnProperty.call(cleanIncomingProps, key) &&
+          !sameContent(verifiedProps[key], nextProps[key]),
+      ),
+      ...carriedRows.dropped,
+    ];
 
     const document = storefrontPageDocumentSchema.parse({
       ...baseDocument,

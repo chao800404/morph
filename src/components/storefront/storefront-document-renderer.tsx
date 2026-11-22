@@ -145,19 +145,39 @@ const categoryShowcasePropsSchema = z
     heading: z.string().max(200).nullish().default("Shop by collection"),
     items: z
       .array(
-        z.object({
-          title: z.string().max(150).nullish().default("Collection"),
-          caption: z.string().max(300).nullish().default(""),
-          href: z.string().max(500).nullish().default("/collections/all"),
-          image: z.union([groupedImageSchema, z.string().max(2_000)]).nullish(),
-          imageSrc: z
-            .string()
-            .max(2_000)
-            .nullish()
-            .default("/static/storefront/theme-preview-default.png"),
-          imageAlt: z.string().max(200).nullish().default("Category image"),
-          imagePosition: z.string().max(100).nullish().default("center"),
-        }),
+        // A row stores its destination as `link` since links were unified
+        // (`{ href }`, or a bare string); a row written before then holds a
+        // bare `href`. Both are read as the anchor's address.
+        z.preprocess(
+          (row) => {
+            if (typeof row !== "object" || row === null || "href" in row) {
+              return row;
+            }
+            const link = (row as { link?: unknown }).link;
+            const href =
+              typeof link === "string"
+                ? link
+                : typeof link === "object" && link !== null
+                  ? (link as { href?: unknown }).href
+                  : undefined;
+            return typeof href === "string" ? { ...row, href } : row;
+          },
+          z.object({
+            title: z.string().max(150).nullish().default("Collection"),
+            caption: z.string().max(300).nullish().default(""),
+            href: z.string().max(500).nullish().default("/collections/all"),
+            image: z
+              .union([groupedImageSchema, z.string().max(2_000)])
+              .nullish(),
+            imageSrc: z
+              .string()
+              .max(2_000)
+              .nullish()
+              .default("/static/storefront/theme-preview-default.png"),
+            imageAlt: z.string().max(200).nullish().default("Category image"),
+            imagePosition: z.string().max(100).nullish().default("center"),
+          }),
+        ),
       )
       .nullish()
       .default([]),
@@ -218,6 +238,33 @@ export function StorefrontDocumentRenderer({
   );
 }
 
+/**
+ * A section's destination as this renderer reads it. Since links were unified
+ * the Starter stores it as `action` (`{ href, target }`, or a bare string); a
+ * section written before then holds `actionHref` and `actionTarget`, which
+ * are read as they are.
+ */
+function withActionHrefFromLink(
+  props: Record<string, any>,
+): Record<string, any> {
+  if ("actionHref" in props) return props;
+  const action = props.action;
+  const link =
+    typeof action === "string"
+      ? { href: action }
+      : typeof action === "object" && action !== null
+        ? action
+        : null;
+  if (!link || typeof link.href !== "string") return props;
+  return {
+    ...props,
+    actionHref: link.href,
+    ...(link.target === "_self" || link.target === "_blank"
+      ? { actionTarget: link.target }
+      : {}),
+  };
+}
+
 function renderSection(
   section: StorefrontSection,
   themeFiles?: Array<{ path: string; content: string }>,
@@ -235,7 +282,13 @@ function renderSection(
   const rawProps = resolveThemeMediaInSlotValues(
     (section.props ?? {}) as Record<string, any>,
   );
-  const parsed = schema ? schema.safeParse(rawProps) : null;
+  const parsed = schema
+    ? schema.safeParse(
+        section.type === "hero" || section.type === "image-with-text"
+          ? withActionHrefFromLink(rawProps)
+          : rawProps,
+      )
+    : null;
   const parsedData = parsed?.success ? parsed.data : rawProps;
   const componentPath = getComponentFilePath(
     section.type,

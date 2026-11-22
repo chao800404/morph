@@ -130,8 +130,22 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
     version: 1,
     sections: [
       {
-        ...legacyStarterDocument.sections[0]!,
+        id: "starter-hero",
+        type: "hero",
         componentRef: "src/components/Hero.tsx",
+        enabled: true,
+        props: {
+          eyebrow: "New collection",
+          heading: "Objects for everyday rituals.",
+          description:
+            "Quiet essentials, thoughtfully made for the spaces you call home.",
+          actionLabel: "Explore the collection",
+          action: { href: "/collections/new" },
+          image: {
+            src: imageSrc,
+            alt: "A neutral collection of ceramic objects",
+          },
+        },
       },
       {
         id: "starter-introduction",
@@ -155,7 +169,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
             {
               title: "The morning table",
               caption: "Cups, carafes, and objects for an unhurried start.",
-              href: "/collections/morning-table",
+              link: { href: "/collections/morning-table" },
               image: {
                 src: imageSrc,
                 alt: "Ceramic vessels arranged on a morning table",
@@ -165,7 +179,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
             {
               title: "Quiet corners",
               caption: "Sculptural forms that give a room its rhythm.",
-              href: "/collections/quiet-corners",
+              link: { href: "/collections/quiet-corners" },
               image: {
                 src: imageSrc,
                 alt: "A sculptural ceramic vase in warm light",
@@ -175,7 +189,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
             {
               title: "Soft essentials",
               caption: "Natural textures made for slower evenings.",
-              href: "/collections/soft-essentials",
+              link: { href: "/collections/soft-essentials" },
               image: {
                 src: imageSrc,
                 alt: "Folded natural fabric beside ceramic objects",
@@ -195,7 +209,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
           heading: "Made to be kept, not replaced.",
           body: "We look for objects that age gracefully and makers who understand restraint. The result is a collection that feels personal from the first day and more familiar with every year.",
           actionLabel: "Read our story",
-          actionHref: "/pages/about",
+          action: { href: "/pages/about" },
           image: {
             src: imageSrc,
             alt: "Timeless ceramic objects in natural light",

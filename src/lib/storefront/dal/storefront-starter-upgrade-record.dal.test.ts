@@ -363,6 +363,17 @@ beforeEach(() => {
       updated_at text NOT NULL,
       deleted_at text
     );
+    -- Read by the upgrade's content migration, which reads each template's
+    -- Document from its draft revision as the editor does.
+    CREATE TABLE storefront_theme_template_revisions (
+      id text PRIMARY KEY NOT NULL,
+      template_id text NOT NULL,
+      version integer NOT NULL,
+      document text NOT NULL,
+      created_by text,
+      created_at text NOT NULL,
+      published_at text
+    );
   `);
   vi.mocked(getDb).mockResolvedValue(
     drizzle(sqlite, {
