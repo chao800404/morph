@@ -181,16 +181,19 @@ export function useInspectorContentProps(args: {
     const adopted = Object.keys({ ...local, ...rebased }).filter(
       (key) => !sameContentValue(rebased[key], local[key]),
     );
+    // Nothing shown changes: keep the props the panel holds. A new object
+    // here would cost one more render after every parent render that hands
+    // over equal props under a new identity (a code component's stand-in
+    // section, rebuilt on each render of the panel).
+    if (adopted.length === 0) return;
 
     localPropsRef.current = rebased;
     setLocalProps(rebased);
-    if (adopted.length > 0) {
-      setExternalEpochs((current) => {
-        const next = { ...current };
-        for (const key of adopted) next[key] = (next[key] ?? 0) + 1;
-        return next;
-      });
-    }
+    setExternalEpochs((current) => {
+      const next = { ...current };
+      for (const key of adopted) next[key] = (next[key] ?? 0) + 1;
+      return next;
+    });
   }, [contentResourceKey, incomingProps]);
 
   const noteLocalInput = useCallback(
