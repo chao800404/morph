@@ -61,14 +61,26 @@ function load(commit, path, cache = new Map()) {
   return module.exports;
 }
 
-for (const version of [11, 15, 20, 26, 28]) {
-  const fixture = JSON.parse(
-    readFileSync(
-      join(root, "src/lib/storefront/__fixtures__/starter-history", `v${version}.json`),
-      "utf8",
-    ),
-  );
-  const commit = fixture.sourceCommit;
+/**
+ * Versions with no starter-history fixture, by the commit that recorded
+ * them. 30: 77d927a recorded Starter 30; its default Document still held
+ * the cards' `href` and the actions' `actionHref` until #430 moved them to
+ * `link` and `action` (Starter 31, #433, offers that migration to a Theme
+ * recorded at 30).
+ */
+const COMMITS = /** @type {Record<number, string>} */ ({
+  30: "77d927a4d42833d891902dfcb3ce5da04e5d48db",
+});
+
+for (const version of [11, 15, 20, 26, 28, 30]) {
+  const commit =
+    COMMITS[version] ??
+    JSON.parse(
+      readFileSync(
+        join(root, "src/lib/storefront/__fixtures__/starter-history", `v${version}.json`),
+        "utf8",
+      ),
+    ).sourceCommit;
   const source = git("show", `${commit}:${FILE}`);
   const blob = git("rev-parse", `${commit}:${FILE}`).trim();
   const exported = load(commit, FILE);

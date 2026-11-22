@@ -4,7 +4,8 @@
  * preview: each T1 Starter version (v11, v15, v20, v26, v28) read back before
  * and after the reviewed upgrade (v11, v15, v26 each on a storefront of its
  * own); v20 and v28 then built, published and rolled back; and the
- * author-edited content.ts on v26 kept, read and published. The public cases
+ * author-edited content.ts on v26 kept, read and published; and a Theme
+ * recorded at Starter 30 offered the link migration (Starter 31). The public cases
  * (v28, v20, B2 v26) share the run's storefront, the only one a domain can
  * serve; v28 must run before any other publish (the spec's known ordering
  * limit; the file runs on one worker in file order, v28 first).
@@ -23,6 +24,7 @@ export const TARGET = Object.freeze({
       "B1 v11: read back before and after the reviewed upgrade",
       "B1 v15: read back before and after the reviewed upgrade",
       "B1 v26: read back before and after the reviewed upgrade",
+      "B1 v30 → v31: the link migration is offered to a Theme recorded at 30, applied, published, and not offered again",
       "B1 v20: read back, refused build, reviewed upgrade, published, rolled back to the release serving before the upgrade",
       "B1 v28: read back, published from its own bytes, reviewed upgrade, published, rolled back",
       "B2 v26: content.ts the author edited is kept byte for byte, the review says why, its read result is unchanged, then published",

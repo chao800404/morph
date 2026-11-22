@@ -238,7 +238,7 @@ const PAGE_SECTION_ENTRIES = [
   "starter-principles",
   "starter-story",
 ].map((slot) => `src/components/page-sections/index/${slot}/index.tsx`);
-/** What the review lists for v20 against Starter 30 (as #360's spec holds). */
+/** What the review lists for v20 against Starter 30 (31 changed no file; as #360's spec holds). */
 const V20_REVIEW = [
   PACKAGE,
   "src/components/Header.tsx",
@@ -3389,15 +3389,50 @@ async function expectStoryPositionAfterEdit(page: Page, run: CaseRun, edit: stri
     .toEqual([]);
 }
 
+/** The commit that recorded Starter 30, before #430 moved its Documents to link/action. */
+const V30_COMMIT = "77d927a4d42833d891902dfcb3ce5da04e5d48db";
+
 /**
- * (d) v11 published after its upgrade, on its own storefront, and the
+ * The server's review of the Starter upgrade for this Theme
+ * (`reviewStorefrontStarterUpgrade`, which writes nothing): its version
+ * state and the sections its content migration would move.
+ */
+async function reviewedUpgrade(page: Page, run: CaseRun) {
+  const result = (await serverFn(
+    page,
+    THEMES,
+    "reviewStorefrontStarterUpgrade",
+    run.scope,
+  )) as {
+    success: boolean;
+    message?: string;
+    data?: {
+      versionState?: string;
+      contentMigration?: { sections?: Array<{ sectionId: string }> } | null;
+    };
+  };
+  expect(result.success, result.message).toBe(true);
+  return {
+    versionState: result.data?.versionState ?? null,
+    migrated: [
+      ...new Set(
+        (result.data?.contentMigration?.sections ?? []).map(
+          (item) => item.sectionId,
+        ),
+      ),
+    ].sort(),
+  };
+}
+
+/**
+ * (d) A case on its own storefront (v11, v30) published after its upgrade, and the
  * published result read through the release the publish shows (the
  * storefront has no domain: domains reach only the run's storefront). The
  * release is this Theme's and active; its home page and its content for "/"
  * carry the author's marker, and the content's hero slot holds the author's
  * value as D1's draft did.
  */
-async function publishV11(
+async function publishOnOwnStorefront(
   page: Page,
   run: CaseRun,
   marker: string,
@@ -4231,7 +4266,7 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         if (version === 11) {
           // Published before any edit, so the release shows (a) too.
           await run.record.step("published, public result read", () =>
-            publishV11(page, run, marker),
+            publishOnOwnStorefront(page, run, marker),
           );
         } else {
           recordLinks(run, "a: published or served page", {
@@ -4296,6 +4331,171 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
     page,
     browser,
   }) => readBackOnly(page, browser, 26));
+
+  /**
+   * Starter 31 (#433): a Theme recorded at 30 is offered the upgrade so the
+   * content migration runs (#430): a store created at 30 before the default
+   * Document moved to `link` / `action` still holds the cards' `href` and
+   * the actions' `actionHref`, which the components no longer read. 31
+   * changes no file, so the provisioned workspace is 30's; the Theme is
+   * recorded at 30 and its Documents are 30's own (77d927a), with sentinels.
+   * Own storefront: published through the release the publish shows, so the
+   * case holds alone (`-g "B1 v30"`).
+   */
+  test("B1 v30 → v31: the link migration is offered to a Theme recorded at 30, applied, published, and not offered again", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(75 * 60_000);
+    const run = await setUpCase(page, "b1-v30", 30);
+    try {
+      const marker = `m1-1b-v30-${randomUUID().slice(0, 8)}`;
+      const v30 = await run.record.step(
+        "recorded at Starter 30, with the files 30 left",
+        async () => {
+          expect(
+            STOREFRONT_STARTER_TEMPLATE_VERSION,
+            "the current Starter is past 30",
+          ).toBeGreaterThan(30);
+          const files = await workspace(page, run.scope);
+          expect(files, "the provisioned workspace is untouched").toEqual(
+            run.original,
+          );
+          setStarterVersion(run.scope, 30);
+          await expectOpeningWritesNothing(page, run, 30);
+          run.record.fact("fixture", {
+            version: 30,
+            sourceCommit: V30_COMMIT,
+            files: "the provisioned workspace (Starter 31 changed no file)",
+          });
+          return {
+            starterVersion: 30,
+            sourceCommit: V30_COMMIT,
+            sha256: "provisioned-workspace",
+            files: Object.entries(files).map(([path, content]) => ({
+              path,
+              content,
+            })),
+          } satisfies Fixture;
+        },
+      );
+      await run.record.step(
+        "the version's own Documents, with sentinels, seeded before the upgrade",
+        () => seedOldShapeDocuments(page, run, v30, marker),
+      );
+      const before = await run.record.step("before-upgrade read-back", () =>
+        readBack(page, browser, run, "before", marker, {
+          canvasRequired: true,
+        }),
+      );
+      run.record.identity.contentTsSha256 = before.contentTs.sha256;
+      run.record.identity.contentTsEdited = false;
+      await run.record.step(
+        "the editor offers the upgrade; its review lists the hero, categories and story content",
+        async () => {
+          const reviewed = await reviewedUpgrade(page, run);
+          run.record.fact("offeredReview", reviewed);
+          expect(reviewed.versionState, "offered: not current").not.toBe(
+            "current",
+          );
+          expect(reviewed.migrated, "the review's content entries").toEqual([
+            "starter-categories",
+            "starter-hero",
+            "starter-story",
+          ]);
+          const shown = await review(page, run, []);
+          const entries = await shown.dialog
+            .locator("[data-starter-content-migration] [data-content-migrated]")
+            .evaluateAll((items) =>
+              items
+                .map((item) => item.getAttribute("data-content-migrated"))
+                .sort(),
+            );
+          run.record.fact("contentEntriesShown", entries);
+          expect(entries, "the dialog lists the three Content entries").toEqual([
+            "starter-categories",
+            "starter-hero",
+            "starter-story",
+          ]);
+          await apply(page, run, shown.dialog);
+        },
+      );
+      const after = await run.record.step("after-upgrade read-back", () =>
+        readBack(page, browser, run, "after", marker, { canvasRequired: true }),
+      );
+      await run.record.step("upgrade kept the author's content", async () => {
+        run.record.fact(
+          "changedPaths",
+          expectUpgradeKeptAuthorContent(before, after, []),
+        );
+      });
+      await run.record.step(
+        "(a) category cards link to the author's URL on the canvas after the upgrade",
+        () => expectCardLinksOnCanvas(page, run),
+      );
+      await run.record.step(
+        "(a) hero and story action buttons link to the author's URL on the canvas after the upgrade",
+        () => expectActionLinksOnCanvas(page, run),
+      );
+      await run.record.step(
+        "(a) every seeded value kept after the upgrade: D1, editor read, canvas",
+        () =>
+          expectSeededContent(page, run, "after the upgrade, before any edit", true),
+      );
+      await run.record.step("published, public result read", () =>
+        publishOnOwnStorefront(page, run, marker),
+      );
+      await run.record.step(
+        "offered again, nothing moves: no new revision, no content entries",
+        async () => {
+          const state = () => ({
+            starterVersion: starterVersion(run.scope),
+            sourceRevision: latestSourceRevision(run.scope),
+            templates: queryD1(
+              "SELECT id, draft_revision_id, draft_generation FROM storefront_theme_templates WHERE theme_id = ?1 AND deleted_at IS NULL ORDER BY id",
+              run.scope.themeId,
+            ),
+            revisions: queryD1(
+              "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions r JOIN storefront_theme_templates t ON t.id = r.template_id WHERE t.theme_id = ?1",
+              run.scope.themeId,
+            )[0]?.n,
+          });
+          const was = state();
+          const reviewed = await reviewedUpgrade(page, run);
+          await openEditor(page, run.editorPath);
+          await expect(
+            previewFrame(page).locator('[data-storefront-section-id="starter-hero"]'),
+          ).toBeVisible({ timeout: 180_000 });
+          const notice = await upgradeNotice(page)
+            .getAttribute("data-editor-starter-upgrade", { timeout: 5_000 })
+            .catch(() => null);
+          const now = state();
+          run.record.fact("offeredAgain", { reviewed, notice, was, now });
+          expect(reviewed.versionState, "now current").toBe("current");
+          expect(reviewed.migrated, "no content entries").toEqual([]);
+          expect(["available", "pending"], "no upgrade offered").not.toContain(
+            notice,
+          );
+          expect(now, "nothing moved: version, revisions, drafts").toEqual(was);
+        },
+      );
+      await run.record.step(
+        "(b) after the first copy-only edit, category cards still link to the author's URL",
+        () => expectCardLinksAfterCopyEdit(page, run),
+      );
+      await run.record.step(
+        "(b) after a first copy-only edit, hero and story action buttons still link to the author's URL",
+        () => expectActionLinksAfterCopyEdit(page, run),
+      );
+      await run.record.step(
+        "(b) every seeded value kept after the first edits: D1, editor read, canvas",
+        () => expectSeededContent(page, run, "after the first edits", true),
+      );
+      await run.record.step("full Start", async () => expectFullStart(run));
+    } finally {
+      await finish(run);
+    }
+  });
 
   // v28 runs first of the public cases: its precondition is that nothing is
   // published on the run's storefront yet (header: known ordering limit).
