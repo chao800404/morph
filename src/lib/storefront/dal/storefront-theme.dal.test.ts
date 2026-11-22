@@ -7180,7 +7180,9 @@ export default function Hero() { return <section />; }`,
    * shell (`pendingShell`, `alsoPublish`) and seal L2 back into the release,
    * which `resolveCarriedRevisions` would otherwise have kept at L1.
    */
-  const rollBackThenBuildPublishHome = async () => {
+  const rollBackThenBuildPublishHome = async (
+    afterRollback?: () => void,
+  ) => {
     await publish("tpl-about");
     const release1 = active();
     saveDraft("tpl-about", "B2");
@@ -7195,8 +7197,10 @@ export default function Hero() { return <section />; }`,
       draftRevisionId: "rev-L2",
       publishedRevisionId: "rev-L2",
     });
+    afterRollback?.();
 
-    // The merchant edits the home page; the layout stays untouched.
+    // The merchant edits the home page; the layout stays untouched (unless
+    // `afterRollback` edited it).
     saveDraft("tpl-home", "A1");
 
     // 1. The editor's pre-publish preparation, page then layout.
@@ -7266,20 +7270,20 @@ export default function Hero() { return <section />; }`,
     expect(pins(release3.publicationId)["tpl-shell"]).toBeTruthy();
   });
 
-  // KNOWN BUG (M1 freeze blocker, investigate/rollback-build-layout): the
-  // editor's pre-publish preparation forks the untouched layout's draft
-  // (rev-L2, the revision the rollback took off the storefront) into a new
-  // revision with L2's document, so the build seal and the publish treat it
-  // as a pending layout edit and release 3 serves L2 again on every page.
-  // Flip to `it` when the fix lands.
-  it.fails("keeps the shared layout at the restored release when the publish had to build", async () => {
+  // The editor's pre-publish preparation used to fork the untouched layout's
+  // draft (rev-L2, the revision the rollback took off the storefront) into a
+  // new revision with L2's document, so the build seal and the publish
+  // treated it as a pending layout edit and release 3 served L2 again on
+  // every page. Preparation now leaves an untouched layout as it is.
+  it("keeps the shared layout at the restored release when the publish had to build", async () => {
     const { release3, sealedPins, shellAfterPrepare } =
       await rollBackThenBuildPublishHome();
 
     // Preparing the untouched layout must not make it a pending edit.
-    expect(shellAfterPrepare.draftRevisionId).toBe(
-      shellAfterPrepare.publishedRevisionId,
-    );
+    expect(shellAfterPrepare).toMatchObject({
+      draftRevisionId: "rev-L2",
+      publishedRevisionId: "rev-L2",
+    });
     // The build seals the layout the live release serves...
     expect(sealedPins["tpl-shell"]).toBe("rev-L1");
     // ...and so does the release.
@@ -7361,11 +7365,10 @@ export default function Hero() { return <section />; }`,
     };
   };
 
-  // KNOWN BUG (same as above, Build Preview variant): the toolbar Build
-  // Preview prepares the untouched layout the same way, forking rev-L2, so
-  // the next publish finds a pending layout even though it does not build.
-  // Flip to `it` when the fix lands.
-  it.fails("keeps the shared layout at the restored release after a Build Preview and a publish that does not build", async () => {
+  // The toolbar Build Preview prepared the untouched layout the same way,
+  // forking rev-L2, so the next publish found a pending layout even though it
+  // did not build.
+  it("keeps the shared layout at the restored release after a Build Preview and a publish that does not build", async () => {
     const { release1, result, release3, sealedPins, shellAfterBuildPreview } =
       await rollBackThenBuildPreviewThenPublishHome();
 
@@ -7387,5 +7390,77 @@ export default function Hero() { return <section />; }`,
         }),
       ),
     ).toBe("L1");
+  });
+
+  it("still ships a layout edited after the rollback when the publish had to build", async () => {
+    const { release3, sealedPins, shellAfterPrepare } =
+      await rollBackThenBuildPublishHome(() => saveDraft("tpl-shell", "L3"));
+
+    // An edited layout is still prepared (in place: rev-L3 is not pinned).
+    expect(shellAfterPrepare.draftRevisionId).toBe("rev-L3");
+    expect(shellAfterPrepare.publishedRevisionId).toBe("rev-L2");
+    expect(sealedPins["tpl-shell"]).toBe("rev-L3");
+    expect(pins(release3.publicationId)["tpl-shell"]).toBe("rev-L3");
+    expect(templateRow("tpl-shell").publishedRevisionId).toBe("rev-L3");
+    expect(
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedTemplateDocument({
+          publicationId: release3.publicationId,
+          templateType: "layout",
+        }),
+      ),
+    ).toBe("L3");
+  });
+
+  it("prepares an untouched layout without writing, under the same draft and source conditions", async () => {
+    await publish("tpl-about");
+    const before = templateRow("tpl-shell");
+    expect(before).toMatchObject({
+      draftRevisionId: "rev-L1",
+      publishedRevisionId: "rev-L1",
+    });
+    const revisionCount = () =>
+      (
+        sqlite
+          .prepare(
+            "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions WHERE template_id = 'tpl-shell'",
+          )
+          .get() as { n: number }
+      ).n;
+    const countBefore = revisionCount();
+    const prepare = (overrides: {
+      expectedDraftGeneration?: number;
+      expectedSourceGeneration?: number;
+      expectedDraftRevisionId?: string;
+    }) =>
+      storefrontThemeDal.prepareInitialTemplateDraft({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "tpl-shell",
+        expectedDraftGeneration: before.draftGeneration,
+        expectedSourceGeneration: 1,
+        expectedDraftRevisionId: before.draftRevisionId,
+        createdBy: "user-a",
+        ...overrides,
+      });
+
+    await expect(prepare({ expectedSourceGeneration: 2 })).rejects.toThrow(
+      TEMPLATE_DRAFT_GENERATION_MISMATCH,
+    );
+    await expect(
+      prepare({ expectedDraftGeneration: before.draftGeneration + 1 }),
+    ).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
+    await expect(
+      prepare({ expectedDraftRevisionId: "rev-other" }),
+    ).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
+
+    const prepared = await prepare({});
+    expect(prepared).toMatchObject({
+      draftRevisionId: "rev-L1",
+      draftGeneration: before.draftGeneration,
+    });
+    expect(titleOf(prepared?.document)).toBe("L1");
+    expect(templateRow("tpl-shell")).toEqual(before);
+    expect(revisionCount()).toBe(countBefore);
   });
 });

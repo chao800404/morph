@@ -1276,7 +1276,10 @@ export const storefrontThemeDal = {
     if (preparingExisting) {
       const db = await getDb();
       const [revision] = await db
-        .select({ document: storefrontThemeTemplateRevisions.document })
+        .select({
+          document: storefrontThemeTemplateRevisions.document,
+          version: storefrontThemeTemplateRevisions.version,
+        })
         .from(storefrontThemeTemplateRevisions)
         .where(
           and(
@@ -1292,6 +1295,43 @@ export const storefrontThemeDal = {
         throw new Error(
           `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Draft revision is missing.`,
         );
+      }
+      // An untouched shared layout is left as it is. Its draft is its
+      // published revision, which every publication that pins it has made
+      // immutable, so the writer below would fork it into a new revision with
+      // the same document — and a layout whose draft differs from its
+      // published revision is the pending layout edit a seal and a publish
+      // ship with the page (`pendingShell`). After a rollback that revision is
+      // the one the rollback took off the storefront, and the fork put it back
+      // on every page. Not pending, the layout is carried instead
+      // (`resolveCarriedRevisions`: the revision the live release serves), and
+      // a carried revision needs no preparation: sealing checks the writer's
+      // form only for the page and a pending layout. The layout is never a
+      // publish target, so nothing else asks for it to be prepared.
+      //
+      // Nothing is written, so the conditions the writer's guard would have
+      // checked are checked here, with the same refusal: the draft generation
+      // and revision above, and the source generation now.
+      if (
+        template.type === "layout" &&
+        template.draftRevisionId === template.publishedRevisionId
+      ) {
+        const theme = await env.DATABASE.prepare(
+          "SELECT source_generation AS generation FROM storefront_themes WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL",
+        )
+          .bind(data.themeId, data.storefrontId)
+          .first<{ generation: number }>();
+        if (!theme || theme.generation !== data.expectedSourceGeneration) {
+          throw new Error(
+            `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Template was modified concurrently.`,
+          );
+        }
+        return {
+          document: template.document,
+          version: revision.version,
+          draftRevisionId: data.expectedDraftRevisionId!,
+          draftGeneration: template.draftGeneration,
+        };
       }
       // Prepare only the stored document, not source-derived editor structure.
       // The caller supplies no replacement content. The normal writer below
