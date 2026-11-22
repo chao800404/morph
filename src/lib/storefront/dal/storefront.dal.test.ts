@@ -104,6 +104,9 @@ function createExistingStorefrontDb(options?: { layoutTemplate?: boolean }) {
         leftJoin: vi.fn(() => chain),
         where: vi.fn(() => chain),
         limit: vi.fn(async () => results.shift() ?? []),
+        // A read with no limit (the Starter content migration reads every
+        // template): these Themes have no Document for it to move.
+        then: (resolve: (rows: unknown[]) => unknown) => resolve([]),
       };
       return chain;
     }),
@@ -129,6 +132,9 @@ function createLegacyStarterDb(starterTemplateVersion = 2) {
         leftJoin: vi.fn(() => chain),
         where: vi.fn(() => chain),
         limit: vi.fn(async () => results.shift() ?? []),
+        // A read with no limit (the Starter content migration reads every
+        // template): these Themes have no Document for it to move.
+        then: (resolve: (rows: unknown[]) => unknown) => resolve([]),
       };
       return chain;
     }),
@@ -164,6 +170,9 @@ function createNewStorefrontDb() {
         leftJoin: vi.fn(() => chain),
         where: vi.fn(() => chain),
         limit: vi.fn(async () => results.shift() ?? []),
+        // A read with no limit (the Starter content migration reads every
+        // template): these Themes have no Document for it to move.
+        then: (resolve: (rows: unknown[]) => unknown) => resolve([]),
       };
       return chain;
     }),

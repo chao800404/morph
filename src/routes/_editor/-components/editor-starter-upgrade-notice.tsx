@@ -17,6 +17,10 @@ import type {
   StarterUpgradeChange,
   StarterUpgradeKeptReason,
 } from "@/lib/storefront/starter-theme-upgrade-review";
+import type {
+  StarterCategoryLinkKeptReason,
+  StarterContentMigrationPreview,
+} from "@/lib/storefront/starter-category-link-migration";
 import { diffLines } from "@/lib/text/line-diff";
 import { cn } from "@/lib/utils";
 import {
@@ -46,7 +50,59 @@ type Review = {
       | null;
   };
   catalog: Part<ThemeCatalogKeptReason> & { kind: "install" | "update" | null };
+  /** Content the Starter part moves when applied. */
+  contentMigration?: StarterContentMigrationPreview;
 };
+
+const CONTENT_KEPT: Record<StarterCategoryLinkKeptReason, string> = {
+  "link-present": "Kept: this card already has a destination in its link.",
+  "href-not-a-link":
+    "Kept: its old destination is not an address the link field accepts.",
+  "component-reads-href":
+    "Kept: the component showing these cards still reads their old destination.",
+  "component-unconfirmed":
+    "Kept: the Theme's source does not say which component shows these cards.",
+};
+
+/** The content an applied upgrade moves, and what it leaves, with why. */
+function ContentMigrationList({
+  migration,
+}: {
+  migration: StarterContentMigrationPreview;
+}) {
+  if (migration.sections.length === 0 && migration.kept.length === 0) {
+    return null;
+  }
+  return (
+    <div className="space-y-1" data-starter-content-migration>
+      <h3 className="font-medium">
+        Content ({migration.sections.length + migration.kept.length})
+      </h3>
+      <ul className="space-y-1">
+        {migration.sections.map((item) => (
+          <li
+            key={`${item.templateId}:${item.sectionId}`}
+            data-content-migrated={item.sectionId}
+          >
+            {item.templateName}: {item.rows} category{" "}
+            {item.rows === 1 ? "card keeps its" : "cards keep their"}{" "}
+            destination, moved to the link field the upgraded section reads.
+          </li>
+        ))}
+        {migration.kept.map((item) => (
+          <li
+            key={`${item.templateId}:${item.sectionId}:${item.row ?? "all"}`}
+            data-content-kept-reason={item.reason}
+            className="text-muted-foreground"
+          >
+            {item.row === null ? "" : `Card ${item.row + 1}. `}
+            {CONTENT_KEPT[item.reason]}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 type PartName = "starter" | "catalog";
 type Choice = PartName | "pages";
@@ -481,6 +537,11 @@ export function EditorStarterUpgradeNotice({
                           Kept as they are ({starterPart.kept.length})
                         </h3>
                         <KeptList kept={starterPart.kept} text={STARTER_KEPT} />
+                        {review.contentMigration ? (
+                          <ContentMigrationList
+                            migration={review.contentMigration}
+                          />
+                        ) : null}
                       </>
                     )}
                   </section>

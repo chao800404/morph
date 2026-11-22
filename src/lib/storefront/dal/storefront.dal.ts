@@ -3,9 +3,23 @@ import { getDb } from "@/db";
 import {
   storefronts,
   storefrontThemes,
+  storefrontThemeTemplateRevisions,
   storefrontThemeTemplates,
   type StorefrontPageDocument,
 } from "@/db/storefront.schema";
+import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
+import { normalizeDocumentRowIds } from "../editor/normalize-row-ids";
+import {
+  migrateStarterCategoryLinks,
+  STARTER_CATEGORY_LIST_FIELD,
+  type StarterCategoryLinkMigrationResult,
+  type StarterContentMigrationPreview,
+} from "../starter-category-link-migration";
+import { resolveThemeContentCapabilitiesFromFiles } from "../theme-content-capability-resolver";
+import {
+  prepareTemplateDocumentWrite,
+  resolveSectionSourceComponent,
+} from "./storefront-theme.dal";
 import { eq, isNull, and } from "drizzle-orm";
 import type {
   StorefrontDTO,
@@ -116,6 +130,240 @@ async function resetStarterHomeDocument(
 }
 
 /**
+ * A Starter version Morph shipped before the current one. Every one of them
+ * seeded the home's category cards with a bare `href`. A pending or unknown
+ * version is not recognised: nothing says what its Documents hold, so its
+ * content is never migrated.
+ */
+function isRecognisedOldStarterVersion(version: unknown): version is number {
+  return (
+    typeof version === "number" &&
+    Number.isInteger(version) &&
+    version >= 1 &&
+    version < STOREFRONT_STARTER_TEMPLATE_VERSION
+  );
+}
+
+type StarterContentTemplate = {
+  id: string;
+  name: string;
+  type: string;
+  routePath: string | null;
+  document: StorefrontPageDocument;
+  draftRevisionId: string | null;
+  publishedRevisionId: string | null;
+  draftGeneration: number;
+};
+
+/**
+ * Every template Document of the Theme as the editor reads it: the draft
+ * revision's when there is one, rows given the ids the editor shows
+ * (`normalizeDocumentRowIds`), so a migrated row keeps that identity. A
+ * Document that does not parse is left out; nothing here writes it.
+ */
+async function readStarterContentTemplates(
+  db: StorefrontDb,
+  themeId: string,
+): Promise<StarterContentTemplate[]> {
+  const rows = await db
+    .select({
+      id: storefrontThemeTemplates.id,
+      name: storefrontThemeTemplates.name,
+      type: storefrontThemeTemplates.type,
+      routePath: storefrontThemeTemplates.routePath,
+      document: storefrontThemeTemplates.document,
+      draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+      publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+      draftGeneration: storefrontThemeTemplates.draftGeneration,
+    })
+    .from(storefrontThemeTemplates)
+    .where(
+      and(
+        eq(storefrontThemeTemplates.themeId, themeId),
+        isNull(storefrontThemeTemplates.deletedAt),
+      ),
+    );
+  const templates: StarterContentTemplate[] = [];
+  for (const row of rows) {
+    let stored: unknown = row.document;
+    if (row.draftRevisionId) {
+      const [revision] = await db
+        .select({ document: storefrontThemeTemplateRevisions.document })
+        .from(storefrontThemeTemplateRevisions)
+        .where(
+          and(
+            eq(storefrontThemeTemplateRevisions.id, row.draftRevisionId),
+            eq(storefrontThemeTemplateRevisions.templateId, row.id),
+          ),
+        )
+        .limit(1);
+      if (!revision) continue;
+      stored = revision.document;
+    }
+    let parsed;
+    try {
+      parsed = storefrontPageDocumentSchema.safeParse(
+        typeof stored === "string" ? JSON.parse(stored) : stored,
+      );
+    } catch {
+      continue;
+    }
+    if (!parsed.success) continue;
+    templates.push({
+      ...row,
+      routePath: row.routePath ?? null,
+      document: normalizeDocumentRowIds(parsed.data, row.id).value,
+    });
+  }
+  return templates;
+}
+
+/**
+ * The Starter content migration for each template, judged against `files`:
+ * the workspace as it is (applying) or as the reviewed plan leaves it
+ * (reviewing). Which component renders a section, and what it declares, are
+ * read from that source the way a content write reads them.
+ */
+function planStarterContentMigration(
+  templates: readonly StarterContentTemplate[],
+  files: readonly { path: string; content: string }[],
+  framework: string | null,
+): Array<{
+  template: StarterContentTemplate;
+  result: StarterCategoryLinkMigrationResult;
+}> {
+  const { capabilities } = resolveThemeContentCapabilitiesFromFiles(files);
+  return templates.map((template) => ({
+    template,
+    result: migrateStarterCategoryLinks(
+      template.document,
+      template.id,
+      (section) => {
+        const source = resolveSectionSourceComponent({
+          framework,
+          templateType: template.type,
+          templateRoutePath: template.routePath,
+          sectionId: section.id,
+          files,
+        });
+        const componentRef =
+          source.kind === "confirmed"
+            ? source.componentRef
+            : source.kind === "legacy"
+              ? (section.componentRef ?? null)
+              : null;
+        if (!componentRef) return null;
+        return capabilities[componentRef]?.fields[STARTER_CATEGORY_LIST_FIELD];
+      },
+    ),
+  }));
+}
+
+/** The workspace's text files as the reviewed Starter plan would leave them. */
+function filesAfterStarterPlan(
+  files: readonly { path: string; content?: string | null }[],
+  plan: StarterUpgradeReview["plan"],
+): { path: string; content: string }[] {
+  const next = new Map<string, string>();
+  for (const file of files) {
+    if (typeof file.content === "string") next.set(file.path, file.content);
+  }
+  for (const deletion of plan.deletions) next.delete(deletion.path);
+  for (const write of plan.files) next.set(write.path, write.content);
+  return [...next].map(([path, content]) => ({ path, content }));
+}
+
+const EMPTY_CONTENT_MIGRATION: StarterContentMigrationPreview = {
+  sections: [],
+  kept: [],
+};
+
+function contentMigrationPreview(
+  planned: ReturnType<typeof planStarterContentMigration>,
+): StarterContentMigrationPreview {
+  return {
+    sections: planned.flatMap(({ template, result }) =>
+      result.migrated.map((item) => ({ ...item, templateName: template.name })),
+    ),
+    kept: planned.flatMap(({ result }) => result.kept),
+  };
+}
+
+const STARTER_CONTENT_MIGRATION_MAX_ATTEMPTS = 3;
+/** Recorded on a migrated revision when no author started the upgrade. */
+const STARTER_CONTENT_MIGRATION_AUTHOR = "morph:starter-upgrade";
+
+/**
+ * Writes the Starter content migration, one template Document at a time,
+ * each through the template Document writer and its compare-and-set: the
+ * draft generation and draft revision read here, and the source generation
+ * the migration was judged against. A write that raced an edit or a source
+ * save is refused and the whole pass is read and judged again; rows already
+ * moved have no `href` and are not written twice.
+ */
+async function migrateStarterContent(
+  db: StorefrontDb,
+  target: { storefrontId: string; themeId: string },
+  options: { createdBy: string; framework: string | null; now: string },
+): Promise<"done" | "conflict"> {
+  for (
+    let attempt = 1;
+    attempt <= STARTER_CONTENT_MIGRATION_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
+    const sourceGeneration = await themeSourceStore.getSourceGeneration(
+      target.storefrontId,
+      target.themeId,
+    );
+    if (sourceGeneration === null) return "done";
+    const files = (
+      await themeSourceStore.listFiles(target.storefrontId, target.themeId)
+    ).filter(
+      (file): file is typeof file & { content: string } =>
+        typeof file.content === "string",
+    );
+    const planned = planStarterContentMigration(
+      await readStarterContentTemplates(db, target.themeId),
+      files,
+      options.framework,
+    );
+    let conflict = false;
+    for (const { template, result } of planned) {
+      if (!result.changed) continue;
+      const write = await prepareTemplateDocumentWrite(
+        {
+          storefrontId: target.storefrontId,
+          themeId: target.themeId,
+          templateId: template.id,
+          document: result.document,
+          sourceGeneration,
+          draftRevisionId: template.draftRevisionId,
+          publishedRevisionId: template.publishedRevisionId,
+          expectedDraftGeneration: template.draftGeneration,
+          createdBy: options.createdBy,
+        },
+        options.now,
+      );
+      try {
+        await env.DATABASE.batch([write.guard, ...write.mutations]);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          message.includes("malformed JSON") ||
+          message.includes("constraint")
+        ) {
+          conflict = true;
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (!conflict) return "done";
+  }
+  return "conflict";
+}
+
+/**
  * Creates the templates a Theme is missing and, when `record` is set, runs
  * the home rule and records the Starter version.
  *
@@ -127,10 +375,19 @@ async function resetStarterHomeDocument(
 async function ensureStarterHomeDocument(
   db: StorefrontDb,
   themeId: string,
-  options: { filesSaved: boolean; storefrontId: string; record: boolean },
+  options: {
+    filesSaved: boolean;
+    storefrontId: string;
+    record: boolean;
+    /** Who the content migration's template revisions are recorded under. */
+    createdBy?: string;
+  },
 ): Promise<StarterUpgradeRecordOutcome> {
   const [theme] = await db
-    .select({ metadata: storefrontThemes.metadata })
+    .select({
+      metadata: storefrontThemes.metadata,
+      framework: storefrontThemes.framework,
+    })
     .from(storefrontThemes)
     .where(
       and(eq(storefrontThemes.id, themeId), isNull(storefrontThemes.deletedAt)),
@@ -255,6 +512,33 @@ async function ensureStarterHomeDocument(
     await resetStarterHomeDocument(themeId, homeTemplate, now);
   }
 
+  // The content the old Starter wrote in a shape its upgraded source no
+  // longer reads, moved before the version that names this source is
+  // recorded. If it cannot be written the version is not recorded either, so
+  // the upgrade is still offered and applying it again finishes the move.
+  if (isRecognisedOldStarterVersion(metadata.starterTemplateVersion)) {
+    const migration = await migrateStarterContent(
+      db,
+      { storefrontId: options.storefrontId, themeId },
+      {
+        createdBy: options.createdBy ?? STARTER_CONTENT_MIGRATION_AUTHOR,
+        framework: theme.framework ?? null,
+        now,
+      },
+    );
+    if (migration === "conflict") {
+      return reportIncompleteStarterUpgrade(
+        { storefrontId: options.storefrontId, themeId },
+        {
+          status: "partial",
+          reason: "content-migration-conflict",
+          filesSaved: options.filesSaved,
+          attempts: STARTER_CONTENT_MIGRATION_MAX_ATTEMPTS,
+        },
+      );
+    }
+  }
+
   const readRevision = readStarterUpgradeRecordRevision(
     metadata.starterUpgradeRecordRevision,
   );
@@ -310,7 +594,9 @@ export type StarterUpgradePartialOutcome = {
     | "theme-missing"
     | "unreadable-record-revision"
     | "non-object-metadata"
-    | "malformed-metadata";
+    | "malformed-metadata"
+    /** A content migration write kept losing to concurrent edits. */
+    | "content-migration-conflict";
   filesSaved: boolean;
   attempts: number;
 };
@@ -645,6 +931,11 @@ export type StarterUpgradeReviewResult = {
   storedVersion: number | null;
   currentVersion: number;
   review: StarterUpgradeReview;
+  /**
+   * Content the Starter part moves when applied: Documents still in a shape
+   * an older Starter wrote, and what is left as it is, with why.
+   */
+  contentMigration: StarterContentMigrationPreview;
   /** The product catalog, kept apart from the Starter upgrade. */
   catalog: ThemeCatalogReview;
 };
@@ -724,6 +1015,7 @@ export const storefrontDal = {
         ...workspace,
         storefrontId: data.storefrontId,
         record: true,
+        createdBy: data.createdBy,
       }),
     );
     return true;
@@ -765,6 +1057,7 @@ export const storefrontDal = {
           // Nothing of the Starter is offered either, its new pages included.
           optional: null,
         },
+        contentMigration: EMPTY_CONTENT_MIGRATION,
         catalog: reviewThemeCatalog([], {
           hasProducts: false,
           framework: stored.framework,
@@ -777,15 +1070,32 @@ export const storefrontDal = {
       themeChannelHasProducts(data.storefrontId, data.themeId),
     ]);
     if (sourceGeneration === null) return null;
+    const review = reviewStarterThemeUpgrade(files, {
+      storedVersion: recordedStarterVersion(stored.version),
+    });
+    // The content the apply would move, judged on the workspace as the
+    // reviewed plan leaves it. Only where applying records the version, which
+    // is where the migration runs.
+    const contentMigration =
+      review.applies &&
+      isRecognisedOldStarterVersion(stored.version) &&
+      !review.kept.some((item) => item.reason === "origin-unknown")
+        ? contentMigrationPreview(
+            planStarterContentMigration(
+              await readStarterContentTemplates(db, data.themeId),
+              filesAfterStarterPlan(files, review.plan),
+              stored.framework,
+            ),
+          )
+        : EMPTY_CONTENT_MIGRATION;
     return {
       unavailable: null,
       sourceGeneration,
       versionState: starterVersionState(stored.version),
       storedVersion: typeof stored.version === "number" ? stored.version : null,
       currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
-      review: reviewStarterThemeUpgrade(files, {
-        storedVersion: recordedStarterVersion(stored.version),
-      }),
+      review,
+      contentMigration,
       catalog: reviewThemeCatalog(files, {
         hasProducts,
         framework: stored.framework,
@@ -987,6 +1297,7 @@ export const storefrontDal = {
           filesSaved,
           storefrontId: data.storefrontId,
           record: true,
+          createdBy: data.createdBy,
         }),
       );
     }

@@ -155,7 +155,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
             {
               title: "The morning table",
               caption: "Cups, carafes, and objects for an unhurried start.",
-              href: "/collections/morning-table",
+              link: { href: "/collections/morning-table" },
               image: {
                 src: imageSrc,
                 alt: "Ceramic vessels arranged on a morning table",
@@ -165,7 +165,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
             {
               title: "Quiet corners",
               caption: "Sculptural forms that give a room its rhythm.",
-              href: "/collections/quiet-corners",
+              link: { href: "/collections/quiet-corners" },
               image: {
                 src: imageSrc,
                 alt: "A sculptural ceramic vase in warm light",
@@ -175,7 +175,7 @@ export function createDefaultStorefrontHomeDocument(): StorefrontPageDocument {
             {
               title: "Soft essentials",
               caption: "Natural textures made for slower evenings.",
-              href: "/collections/soft-essentials",
+              link: { href: "/collections/soft-essentials" },
               image: {
                 src: imageSrc,
                 alt: "Folded natural fabric beside ceramic objects",

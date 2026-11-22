@@ -568,7 +568,7 @@ export function parseRejectedContentField(
   return { fieldKey, reason: reason.length > 0 ? reason : null };
 }
 
-function assertThemeContentFieldValue(
+export function assertThemeContentFieldValue(
   fieldKey: string,
   definition: ThemeContentFieldDefinition,
   value: unknown,
