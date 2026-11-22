@@ -6,6 +6,7 @@ import {
   type PreviewSocketDirection,
   type PreviewSocketFrame,
   type PreviewSocketVerification,
+  type PreviewSocketVerifiedEvent,
   createPreviewSocketLease,
   registerPreviewSocketLease,
 } from "./preview-socket-lease";
@@ -19,9 +20,15 @@ function harness(
     register?: boolean;
     maxHeldFrames?: number;
     maxHeldBytes?: number;
+    leaseMs?: number;
+    /** Gives the lease an `onVerified` that records every event. */
+    observe?: boolean;
+    /** Makes that `onVerified` throw after recording. */
+    observerThrows?: boolean;
   } = {},
 ) {
   let clock = 1_000_000;
+  const verified: PreviewSocketVerifiedEvent[] = [];
   const queries: Array<{
     sentAt: number;
     answer: (outcome: PreviewSocketVerification | Error) => Promise<void>;
@@ -56,9 +63,19 @@ function harness(
     close: (code) => closes.push({ at: clock, code }),
     ...(options.maxHeldFrames ? { maxHeldFrames: options.maxHeldFrames } : {}),
     ...(options.maxHeldBytes ? { maxHeldBytes: options.maxHeldBytes } : {}),
+    ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
+    ...(options.observe
+      ? {
+          onVerified: (event: PreviewSocketVerifiedEvent) => {
+            verified.push(event);
+            if (options.observerThrows) throw new Error("diagnostics broke");
+          },
+        }
+      : {}),
   });
   return {
     lease,
+    verified,
     queries,
     forwarded,
     closes,
@@ -327,5 +344,157 @@ describe("the preview socket lease (#214 P4, addendum A5/A6)", () => {
         expect(f.at, `run ${run}`).toBeLessThan(R + L);
       }
     }
+  });
+});
+
+describe("the lease's verification diagnostics (M1 1c, off by default)", () => {
+  it("reports each advance of V once, counted from the registration's verification", async () => {
+    const h = harness({ observe: true });
+    const first = h.queries[0]!;
+    h.advance(7); // the answer comes back later than it was sent
+    await first.answer("valid");
+    expect(h.verified).toEqual([
+      { sequence: 1, sentAt: first.sentAt, settledAt: first.sentAt + 7 },
+    ]);
+
+    // A busy socket's renewal from L/2 on.
+    h.advance(L / 2);
+    h.lease.frame("to-container", "busy");
+    const renewal = h.queries[1]!;
+    h.advance(12);
+    await renewal.answer("valid");
+    // An idle socket's renewal by the tick, once lapsed.
+    h.advance(L);
+    h.lease.tick();
+    const idle = h.queries[2]!;
+    h.advance(3);
+    await idle.answer("valid");
+
+    expect(h.verified).toEqual([
+      { sequence: 1, sentAt: first.sentAt, settledAt: first.sentAt + 7 },
+      { sequence: 2, sentAt: renewal.sentAt, settledAt: renewal.sentAt + 12 },
+      { sequence: 3, sentAt: idle.sentAt, settledAt: idle.sentAt + 3 },
+    ]);
+  });
+
+  it.each([
+    ["revoked", "revoked" as const],
+    ["unavailable", "unavailable" as const],
+    ["a D1 error", new Error("D1_ERROR")],
+  ])("reports nothing for %s", async (_name, answer) => {
+    const h = harness({ observe: true });
+    await h.queries[0]!.answer("valid");
+    h.advance(L);
+    h.lease.tick();
+    await h.queries[1]!.answer(answer);
+    expect(h.lease.closed).toBe(true);
+    expect(h.verified.map((e) => e.sequence)).toEqual([1]);
+  });
+
+  it("reports nothing for a 'valid' that does not advance V", async () => {
+    // With no lease time, every tick verifies; on a clock that has not moved
+    // the second query's send time equals V, so V stays where it was.
+    const h = harness({ observe: true, leaseMs: 0 });
+    await h.queries[0]!.answer("valid");
+    h.lease.tick();
+    expect(h.queries).toHaveLength(2);
+    expect(h.queries[1]!.sentAt).toBe(h.queries[0]!.sentAt);
+    await h.queries[1]!.answer("valid");
+    expect(h.verified.map((e) => e.sequence)).toEqual([1]);
+
+    h.advance(1);
+    h.lease.tick();
+    await h.queries[2]!.answer("valid");
+    expect(h.verified.map((e) => e.sequence)).toEqual([1, 2]);
+  });
+
+  it("reports nothing for a 'valid' that arrives after the socket closed", async () => {
+    const h = await verifiedHarness({ observe: true });
+    h.advance(L / 2);
+    h.lease.frame("to-container", "x");
+    h.lease.notice();
+    await h.queries[1]!.answer("valid");
+    expect(h.verified.map((e) => e.sequence)).toEqual([1]);
+  });
+
+  /**
+   * Same seeded interleavings as the bound above, played with and without an
+   * observer (one that throws, too): what is forwarded, sent to D1 and
+   * closed, and when, must be identical.
+   */
+  it("changes nothing the lease does, whether off, on, or broken", async () => {
+    const play = async (
+      seed: number,
+      options: Parameters<typeof harness>[0],
+    ) => {
+      const random = () => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed / 0x7fffffff;
+      };
+      const h = harness(options);
+      const R = h.now + Math.floor(random() * 3 * L);
+      const answered = new Set<number>();
+      for (let step = 0; step < 120 && !h.lease.closed; step++) {
+        const roll = random();
+        if (roll < 0.4) {
+          h.lease.frame(
+            random() < 0.5 ? "to-container" : "to-browser",
+            `s${step}`,
+          );
+        } else if (roll < 0.55) {
+          h.lease.tick();
+        } else if (roll < 0.85) {
+          const pending = h.queries
+            .map((q, i) => [q, i] as const)
+            .filter(([, i]) => !answered.has(i));
+          if (pending.length) {
+            const [q, i] = pending[Math.floor(random() * pending.length)]!;
+            answered.add(i);
+            await q.answer(
+              random() < 0.05
+                ? new Error("D1")
+                : q.sentAt < R
+                  ? "valid"
+                  : "revoked",
+            );
+          }
+        }
+        h.advance(Math.floor(random() * L * 0.4));
+      }
+      return {
+        trace: {
+          forwarded: h.forwarded,
+          closes: h.closes,
+          queries: h.queries.map((q) => q.sentAt),
+          closed: h.lease.closed,
+        },
+        verified: h.verified,
+      };
+    };
+    let reported = 0;
+    for (let run = 0; run < 200; run++) {
+      const seed = 0x1c00 + run;
+      const off = await play(seed, {});
+      const on = await play(seed, { observe: true });
+      const broken = await play(seed, { observe: true, observerThrows: true });
+      expect(on.trace, `run ${run}`).toEqual(off.trace);
+      expect(broken.trace, `run ${run}`).toEqual(off.trace);
+      expect(off.verified).toEqual([]);
+      // Sequences count 1, 2, 3… and V only moves forward.
+      expect(on.verified.map((e) => e.sequence)).toEqual(
+        on.verified.map((_, i) => i + 1),
+      );
+      for (let i = 1; i < on.verified.length; i++) {
+        expect(on.verified[i]!.sentAt).toBeGreaterThan(
+          on.verified[i - 1]!.sentAt,
+        );
+      }
+      for (const e of on.verified) {
+        expect(e.settledAt).toBeGreaterThanOrEqual(e.sentAt);
+      }
+      reported += on.verified.length;
+    }
+    // The interleavings do renew: the comparison is not of empty traces.
+    expect(reported).toBeGreaterThan(200);
   });
 });

@@ -86,6 +86,8 @@ export function relayPreviewSocket(args: {
   container: RelaySocket;
   now: PreviewSocketLeaseOptions["now"];
   verify: PreviewSocketLeaseOptions["verify"];
+  /** Diagnostics only; given to the lease as is (see its `onVerified`). */
+  onVerified?: PreviewSocketLeaseOptions["onVerified"];
   /** Called once, when the relay has ended. */
   onEnd?: () => void;
   leaseMs?: number;
@@ -111,6 +113,7 @@ export function relayPreviewSocket(args: {
   const lease = registerPreviewSocketLease({
     now: args.now,
     verify: args.verify,
+    ...(args.onVerified ? { onVerified: args.onVerified } : {}),
     leaseMs: args.leaseMs ?? PREVIEW_SOCKET_LEASE_MS,
     forward: (direction, frame) => {
       const target =

@@ -32,11 +32,16 @@ vi.mock("@/lib/storefront/service/preview-access/preview-access", () => ({
   reverifyPreviewAccessGrant: access.reverify,
 }));
 
+import { env } from "cloudflare:workers";
 import { Sandbox } from "@cloudflare/sandbox";
 // The repo's own JSONC reader for wrangler.jsonc; a plain .mjs with no types.
 // @ts-expect-error TS7016
 import { parseJsonc } from "../../scripts/theme-runtime-wiring-scan.mjs";
 import { PREVIEW_EGRESS_HEADER } from "@/lib/storefront/service/preview-egress-policy";
+import {
+  PREVIEW_LEASE_DIAGNOSTICS_VAR,
+  PREVIEW_LEASE_VERIFIED_PREFIX,
+} from "@/lib/storefront/service/preview-access/preview-socket-lease-diagnostics";
 import { PreviewSandbox } from "./preview-sandbox";
 
 describe("the Live Preview container class", () => {
@@ -347,5 +352,83 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
     );
     expect(answer).toBe(passthrough);
     expect(pairs).toEqual([]);
+  });
+
+  describe("lease verification diagnostics (M1 1c)", () => {
+    const bindings = env as unknown as Record<string, unknown>;
+    afterEach(() => {
+      delete bindings[PREVIEW_LEASE_DIAGNOSTICS_VAR];
+      vi.restoreAllMocks();
+    });
+    const leaseLines = (log: { mock: { calls: unknown[][] } }) =>
+      log.mock.calls
+        .map(([line]) => String(line))
+        .filter((line) => line.startsWith(PREVIEW_LEASE_VERIFIED_PREFIX));
+
+    it.each([
+      ["unset", undefined],
+      ["not exactly 1", "true"],
+    ])("writes nothing with the switch %s", async (_name, value) => {
+      if (value !== undefined) bindings[PREVIEW_LEASE_DIAGNOSTICS_VAR] = value;
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const uuid = vi.spyOn(crypto, "randomUUID");
+      sdk.fetch.mockResolvedValue(switched(fakeSocket()));
+      await sandbox().fetch(upgrade());
+      await vi.waitFor(() => expect(access.reverify).toHaveBeenCalledTimes(1));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(leaseLines(log)).toEqual([]);
+      expect(uuid).not.toHaveBeenCalled();
+    });
+
+    it("writes one line per advance, with ids, the path and times only", async () => {
+      bindings[PREVIEW_LEASE_DIAGNOSTICS_VAR] = "1";
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const container = fakeSocket();
+      sdk.fetch.mockResolvedValue(switched(container));
+      await sandbox().fetch(
+        new Request(`https://${HOST}/socket/__echo?sock=s1&token=secret`, {
+          headers: {
+            upgrade: "websocket",
+            "x-morph-preview-grant": GRANT,
+            "x-morph-preview-host": HOST,
+          },
+        }),
+      );
+      await vi.waitFor(() => expect(leaseLines(log)).toHaveLength(1));
+      const line = leaseLines(log)[0]!;
+      const event = JSON.parse(line.slice(PREVIEW_LEASE_VERIFIED_PREFIX.length));
+      expect(Object.keys(event).sort()).toEqual(
+        ["connectionId", "grantId", "path", "sentAt", "sequence", "settledAt"],
+      );
+      expect(event).toMatchObject({
+        grantId: GRANT,
+        path: "/socket/__echo",
+        sequence: 1,
+      });
+      expect(event.connectionId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(event.settledAt).toBeGreaterThanOrEqual(event.sentAt);
+      expect(line).not.toContain("secret");
+      expect(line).not.toContain(HOST);
+      // Frames are relayed as before.
+      container.emit("message", { data: "hi" });
+      expect(pairs[0]!.server.sent).toEqual(["hi"]);
+    });
+
+    it("gives each relayed socket its own connection id", async () => {
+      bindings[PREVIEW_LEASE_DIAGNOSTICS_VAR] = "1";
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      sdk.fetch.mockImplementation(async () => switched(fakeSocket()));
+      const object = sandbox();
+      await object.fetch(upgrade());
+      await object.fetch(upgrade());
+      await vi.waitFor(() => expect(leaseLines(log)).toHaveLength(2));
+      const ids = leaseLines(log).map(
+        (line) =>
+          JSON.parse(line.slice(PREVIEW_LEASE_VERIFIED_PREFIX.length))
+            .connectionId,
+      );
+      expect(new Set(ids).size).toBe(2);
+    });
   });
 });
