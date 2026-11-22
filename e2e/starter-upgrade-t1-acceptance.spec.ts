@@ -805,34 +805,51 @@ async function canvasBindings(page: Page): Promise<CanvasBinding[]> {
 type DraftDocument = {
   templateId: string;
   type: string | null;
+  /**
+   * Where D1 holds it: the revision the template's draft points at, or, for
+   * a template no edit has given a draft revision yet, the template row's
+   * own `document` column.
+   */
+  source: "draft revision" | "template row";
   sections: Array<{ id: string; props?: Record<string, unknown> | null }>;
 };
 
 /**
- * Every template's draft Document as D1 holds it (the revision the template's
- * draft points at, where an edit is stored), through the run's D1 file opened
- * read-only.
+ * Every template's Document as D1 holds it, read the way the editor's read
+ * picks it (`storefrontThemeDal.findEditorContext`): the draft revision the
+ * template points at when it has one, else the template row's own document.
+ * dev-run2 (2026-11-22) showed why both are needed: after v11's upgrade the
+ * layout template (starter-header, starter-footer) had no draft revision, so
+ * a revision-only read saw no Document holding those sections. Through the
+ * run's D1 file opened read-only.
  */
 function draftDocuments(scope: ThemeScope): DraftDocument[] {
   return queryD1(
-    `SELECT t.id AS id, t.type AS type, r.document AS document
+    `SELECT t.id AS id, t.type AS type,
+            r.id AS revision_id,
+            CASE WHEN r.id IS NOT NULL THEN r.document ELSE t.document END AS document
        FROM storefront_theme_templates t
-       JOIN storefront_theme_template_revisions r
+       LEFT JOIN storefront_theme_template_revisions r
          ON r.id = t.draft_revision_id AND r.template_id = t.id
       WHERE t.theme_id = ?1 AND t.deleted_at IS NULL
       ORDER BY t.id`,
     scope.themeId,
   ).map((row) => {
+    expect(
+      row.document,
+      `template ${row.id} has a Document in D1`,
+    ).toBeTruthy();
     const document = JSON.parse(String(row.document)) as {
       sections?: DraftDocument["sections"];
     };
     expect(
       Array.isArray(document.sections),
-      `template ${row.id}'s draft Document has sections`,
+      `template ${row.id}'s Document has sections`,
     ).toBe(true);
     return {
       templateId: row.id as string,
       type: (row.type as string | null) ?? null,
+      source: row.revision_id ? "draft revision" : "template row",
       sections: document.sections!,
     };
   });
@@ -1286,12 +1303,32 @@ async function tabletCanvas(page: Page) {
   await page.waitForTimeout(500);
 }
 
+/** What the Inspector shows for one text control, for the record. */
+type InspectorCandidate = {
+  index: number;
+  label: string;
+  rowNumber: number | null;
+  focused: boolean;
+};
+
 /**
- * The Inspector's text control for the clicked field: the one input or
- * textarea showing `value`, or among several, the one the editor marks as
- * the focused field.
+ * The Inspector's text control for the clicked field. Among the inputs and
+ * textareas showing `value`:
+ *   1. the one the editor marks focused (`InspectorField`'s ring, set for a
+ *      section's own field when the click names it);
+ *   2. else, for a field inside a list row (dev-run2: the list rows' own
+ *      controls carry no focus mark, and two controls showed a category
+ *      title), the one whose label names the field and whose row card is the
+ *      clicked row (its number is the path's index + 1);
+ *   3. else the one whose label names the field.
+ * Exactly one must remain, or this throws with every candidate described.
+ * It never falls back to the first match.
  */
-async function inspectorControlShowing(page: Page, value: string) {
+async function inspectorControlFor(
+  page: Page,
+  value: string,
+  binding: Pick<CanvasBinding, "field" | "path">,
+) {
   const controls = page
     .locator('[data-slot="inspector-content-field"]')
     .locator("input:visible, textarea:visible");
@@ -1307,39 +1344,69 @@ async function inspectorControlShowing(page: Page, value: string) {
       },
     )
     .toBeGreaterThan(0);
-  const candidates = await controls.evaluateAll(
+  const candidates: InspectorCandidate[] = await controls.evaluateAll(
     (items, wanted) =>
       items
-        .map((item, index) => ({
-          index,
-          shows: (item as HTMLInputElement).value === wanted,
-          focused: /\bring-1\b/.test(
-            item.closest('[data-slot="inspector-content-field"]')?.className ??
-              "",
-          ),
-        }))
-        .filter((item) => item.shows),
+        .map((item, index) => {
+          const field = item.closest('[data-slot="inspector-content-field"]');
+          // The row card around it: the nearest ancestor whose first child
+          // holds the row number (`<p class="… font-mono">N</p>`).
+          let rowNumber: number | null = null;
+          for (
+            let node = field?.parentElement ?? null;
+            node && rowNumber === null;
+            node = node.parentElement
+          ) {
+            const number = node.querySelector(":scope > div > p.font-mono");
+            if (number && /^\d+$/.test((number.textContent ?? "").trim())) {
+              rowNumber = Number((number.textContent ?? "").trim());
+            }
+          }
+          return {
+            index,
+            shows: (item as HTMLInputElement).value === wanted,
+            label: (
+              field?.querySelector("label")?.textContent ?? ""
+            ).trim(),
+            rowNumber,
+            focused: /\bring-1\b/.test(field?.className ?? ""),
+          };
+        })
+        .filter((item) => item.shows)
+        .map(({ shows: _shows, ...item }) => item),
     value,
   );
-  const chosen =
-    candidates.length === 1
-      ? candidates[0]!
-      : candidates.filter((item) => item.focused).length === 1
-        ? candidates.find((item) => item.focused)!
-        : null;
-  if (!chosen) {
-    throw new Error(
-      `${candidates.length} Inspector controls show ${JSON.stringify(value.slice(0, 60))}, none singled out as focused`,
-    );
+  const normal = (text: string) => text.toLowerCase().replace(/[\s_-]/g, "");
+  const named = (item: InspectorCandidate) =>
+    normal(item.label) === normal(binding.field ?? "");
+  const rowIndex = binding.path
+    ?.split(".")
+    .filter((part) => /^\d+$/.test(part))
+    .map(Number)
+    .pop();
+  const rules: Array<[string, (item: InspectorCandidate) => boolean]> = [
+    ["the only control showing the value", () => candidates.length === 1],
+    ["the control the editor marks focused", (item) => item.focused],
+    [
+      "the clicked row's control for this field",
+      (item) =>
+        rowIndex !== undefined && named(item) && item.rowNumber === rowIndex + 1,
+    ],
+    ["the control labelled with this field", named],
+  ];
+  for (const [rule, keep] of rules) {
+    const left = candidates.filter(keep);
+    if (left.length === 1) {
+      return { control: controls.nth(left[0]!.index), rule, candidates };
+    }
   }
-  return controls.nth(chosen.index);
+  throw new Error(
+    `no single Inspector control for ${binding.path ?? binding.field} shows ${JSON.stringify(value.slice(0, 60))}: ${JSON.stringify(candidates)}`,
+  );
 }
 
 /** Types `value` into the Inspector control and leaves it, as an author does. */
-async function typeInto(
-  control: Awaited<ReturnType<typeof inspectorControlShowing>>,
-  value: string,
-) {
+async function typeInto(control: Locator, value: string) {
   await expect(control).toBeEnabled({ timeout: 60_000 });
   await control.fill(value);
   await control.press("Tab");
@@ -1348,9 +1415,16 @@ async function typeInto(
 /**
  * Clicks `element` at a point where it is the nearest field element under
  * the pointer (itself, or a part of it that is no field of its own) and the
- * editor's panels do not cover the frame. False when it has no such point.
+ * editor's panels do not cover the frame. The points are sampled inside the
+ * part of the element that is on screen: dev-run2's story image is taller
+ * than the window, so points spread over its whole box fell off-screen.
+ * False when it has no such point; `misses` then says what each point hit.
  */
-async function clickOwnPoint(page: Page, element: Locator): Promise<boolean> {
+async function clickOwnPoint(
+  page: Page,
+  element: Locator,
+  misses: string[] = [],
+): Promise<boolean> {
   const frame = page.locator("iframe").first();
   await expect
     .poll(
@@ -1362,23 +1436,49 @@ async function clickOwnPoint(page: Page, element: Locator): Promise<boolean> {
     )
     .not.toBe("none");
   const frameBox = await frame.boundingBox();
-  const box = await element.boundingBox();
-  if (!frameBox || !box || box.width === 0 || box.height === 0) return false;
+  const box = await element.boundingBox({ timeout: 10_000 }).catch(() => null);
+  const viewport = page.viewportSize();
+  if (!frameBox || !box || !viewport || box.width === 0 || box.height === 0) {
+    misses.push(`no box (frame ${JSON.stringify(frameBox)}, element ${JSON.stringify(box)})`);
+    return false;
+  }
+  const left = Math.max(box.x, frameBox.x, 0);
+  const top = Math.max(box.y, frameBox.y, 0);
+  const right = Math.min(box.x + box.width, frameBox.x + frameBox.width, viewport.width);
+  const bottom = Math.min(box.y + box.height, frameBox.y + frameBox.height, viewport.height);
+  if (right - left < 2 || bottom - top < 2) {
+    misses.push(`off screen (element ${JSON.stringify(box)}, frame ${JSON.stringify(frameBox)})`);
+    return false;
+  }
   for (const [dx, dy] of SAMPLE_OFFSETS) {
-    const point = { x: box.x + box.width * dx, y: box.y + box.height * dy };
-    const uncovered = await page.evaluate(
-      (at) => document.elementFromPoint(at.x, at.y)?.tagName === "IFRAME",
-      point,
-    );
-    if (!uncovered) continue;
-    const own = await element.evaluate(
-      (node, at) =>
-        document
-          .elementFromPoint(at.x, at.y)
-          ?.closest("[data-storefront-field]") === node,
+    const point = {
+      x: left + (right - left) * dx,
+      y: top + (bottom - top) * dy,
+    };
+    const onPage = await page.evaluate((at) => {
+      const hit = document.elementFromPoint(at.x, at.y);
+      return hit?.tagName === "IFRAME"
+        ? null
+        : `${hit?.tagName ?? "nothing"}${hit?.getAttribute("data-slot") ? `[${hit.getAttribute("data-slot")}]` : ""}`;
+    }, point);
+    if (onPage) {
+      misses.push(`${Math.round(point.x)},${Math.round(point.y)}: page ${onPage}`);
+      continue;
+    }
+    const inFrame = await element.evaluate(
+      (node, at) => {
+        const hit = document.elementFromPoint(at.x, at.y);
+        const field = hit?.closest("[data-storefront-field]");
+        return field === node
+          ? null
+          : `${hit?.tagName ?? "nothing"} in ${field?.getAttribute("data-storefront-field") ?? "no field"}`;
+      },
       { x: point.x - frameBox.x, y: point.y - frameBox.y },
     );
-    if (!own) continue;
+    if (inFrame) {
+      misses.push(`${Math.round(point.x)},${Math.round(point.y)}: frame ${inFrame}`);
+      continue;
+    }
     await page.mouse.click(point.x, point.y);
     await settleSelection(page);
     return true;
@@ -1400,6 +1500,9 @@ type Exercise = {
   canvasShowedWrite?: boolean;
   canvasShowedRestore?: boolean;
   selectedSection?: string | null;
+  /** Which rule picked the Inspector control, and every control that showed the value. */
+  controlRule?: string;
+  controlCandidates?: InspectorCandidate[];
   outcome?: string;
   error?: string;
 };
@@ -1468,17 +1571,23 @@ async function exerciseAnnotations(
         await enableSelection(page);
       }
       await element.scrollIntoViewIfNeeded();
-      if (!(await clickOwnPoint(page, element))) {
-        // A row or card its own fields cover entirely: an author reaches it
-        // only through one of them.
-        if (where.kind !== "value") {
-          throw new Error("no point on the canvas where this field takes the click");
+      const misses: string[] = [];
+      if (!(await clickOwnPoint(page, element, misses))) {
+        // Only a row or card its own fields cover entirely is reached through
+        // one of them, as an author reaches it. Anything else that cannot be
+        // clicked fails, saying what each point hit.
+        if (!binding.container) {
+          throw new Error(
+            `no point on the canvas where this field takes the click: ${misses.slice(0, 6).join("; ")}`,
+          );
         }
         const inner = element.locator("[data-storefront-field]").first();
-        expect(
-          await clickOwnPoint(page, inner),
-          "a field inside the row takes the click",
-        ).toBe(true);
+        const innerMisses: string[] = [];
+        if (!(await clickOwnPoint(page, inner, innerMisses))) {
+          throw new Error(
+            `neither this row nor its first field takes the click: ${[...misses, ...innerMisses].slice(0, 6).join("; ")}`,
+          );
+        }
         result.outcome = "covered by its own fields; selected through the first of them";
       }
       await openContentTab(page);
@@ -1506,7 +1615,10 @@ async function exerciseAnnotations(
       const start = documentLeaves(draftDocuments(run.scope));
       const written = `m1-1b-${run.label}-a${n}-${randomUUID().slice(0, 6)}`;
       result.written = written;
-      await typeInto(await inspectorControlShowing(page, original), written);
+      const target = await inspectorControlFor(page, original, binding);
+      result.controlRule = target.rule;
+      result.controlCandidates = target.candidates;
+      await typeInto(target.control, written);
       await expect
         .poll(
           () =>
@@ -1523,7 +1635,10 @@ async function exerciseAnnotations(
       await expect(element).toHaveText(written, { timeout: 30_000 });
       result.canvasShowedWrite = true;
       // The original value back, through the same control, read back too.
-      await typeInto(await inspectorControlShowing(page, written), original);
+      await typeInto(
+        (await inspectorControlFor(page, written, binding)).control,
+        original,
+      );
       await expect
         .poll(
           () =>
