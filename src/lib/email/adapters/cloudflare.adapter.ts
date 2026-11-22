@@ -130,11 +130,20 @@ export class CloudflareAdapter implements EmailAdapter {
       if (!parsed.success) return this.fail("INVALID_RESPONSE");
       const result = parsed.data.result;
       // HTTP 200 / success:true can still contain bounces or dropped recipients.
-      const accepted = new Set([...result.delivered, ...result.queued]);
+      // Compare case-insensitively: the provider may report a normalized
+      // address, and a false failure would make callers surface an error for
+      // mail that was actually accepted.
+      const accepted = new Set(
+        [...result.delivered, ...result.queued].map((address) =>
+          address.toLowerCase(),
+        ),
+      );
       if (
         result.permanent_bounces.length > 0 ||
         result.suppressed_recipients.length > 0 ||
-        !recipients.every(({ address }) => accepted.has(address))
+        !recipients.every(({ address }) =>
+          accepted.has(address.toLowerCase()),
+        )
       ) {
         return this.fail("RECIPIENT_NOT_ACCEPTED");
       }
