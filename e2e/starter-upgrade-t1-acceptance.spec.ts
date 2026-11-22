@@ -52,6 +52,7 @@ import {
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
+  themeSourceGeneration,
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
@@ -2178,6 +2179,327 @@ async function expectCardLinksAfterCopyEdit(
 }
 
 /**
+ * The hero's and the story's (ImageWithText) action button links (user
+ * decision 2026-11-22; product fix f600fae on #430: old Documents store
+ * `actionHref`, the current source declares and renders `action.href`).
+ * The same two strict points as the category cards, recorded in links.json:
+ *   (a) after the upgrade, before any edit, each section's action button on
+ *       the canvas, and on the published or served page where the case has
+ *       one, links to the author's URL from the pre-upgrade D1 Document
+ *       (`actionHref` or `action.href`);
+ *   (b) after a first copy-only edit to the section (its heading), D1 holds
+ *       the URL as `action.href` and the button still links to it.
+ * The author's URLs are set before the upgrade, through the old Starter's
+ * own declared field (`actionHref` up to v15, `action` from v20), so a
+ * component default (the hero's /collections/new, the story's "#") can
+ * never pass for the author's value.
+ */
+const ACTION_SECTIONS = ["starter-hero", "starter-story"] as const;
+type ActionSection = (typeof ACTION_SECTIONS)[number];
+
+type ActionUrl = {
+  section: ActionSection;
+  url: string | null;
+  shape: "action.href" | "actionHref" | null;
+  label: string | null;
+};
+
+/**
+ * Each action's URL in D1. `shapes` are the shapes accepted, in order: the
+ * pre-upgrade read takes `action.href` and else `actionHref`; after a copy
+ * edit only `action.href` is documented.
+ */
+function actionUrls(
+  drafts: DraftDocument[],
+  shapes: ReadonlyArray<ActionUrl["shape"] & string>,
+): ActionUrl[] {
+  return ACTION_SECTIONS.map((section) => {
+    const props = (sectionProps(drafts, section) ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const action = props.action;
+    const actionHref =
+      action !== null &&
+      typeof action === "object" &&
+      typeof (action as { href?: unknown }).href === "string"
+        ? (action as { href: string }).href
+        : null;
+    const found = shapes
+      .map((shape) => ({
+        shape,
+        url:
+          shape === "action.href"
+            ? actionHref
+            : typeof props.actionHref === "string"
+              ? props.actionHref
+              : null,
+      }))
+      .find((item) => item.url !== null);
+    return {
+      section,
+      url: found?.url ?? null,
+      shape: found?.shape ?? null,
+      label: typeof props.actionLabel === "string" ? props.actionLabel : null,
+    };
+  });
+}
+
+/**
+ * Before the upgrade: a URL of the author's own on each action, written the
+ * way the Inspector writes a field, in the shape the installed old Starter
+ * declares, and read back from D1.
+ */
+async function setAuthorActionUrls(page: Page, run: CaseRun, version: number) {
+  const shape = version >= 20 ? "action.href" : "actionHref";
+  const set: Record<string, string> = {};
+  for (const section of ACTION_SECTIONS) {
+    const url = `/m1-1b/${run.label}-${section}-${randomUUID().slice(0, 6)}`;
+    expect(["/collections/new", "#"]).not.toContain(url);
+    const context = await editorContext(page, run.scope);
+    const template = context.templates.find((item) =>
+      item.document.sections.some((entry) => entry.id === section),
+    );
+    expect(template, `a Document holds ${section}`).toBeDefined();
+    const written = (await serverFn(
+      page,
+      THEMES,
+      "updateStorefrontThemeSectionProps",
+      {
+        ...run.scope,
+        templateId: template!.id,
+        sectionId: section,
+        props: shape === "action.href" ? { action: { href: url } } : { actionHref: url },
+        expectedDraftGeneration: template!.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(page, run.scope),
+      },
+    )) as { success: boolean; message?: string };
+    expect(written.success, written.message).toBe(true);
+    set[section] = url;
+  }
+  const stored = actionUrls(draftDocuments(run.scope), [shape]);
+  recordLinks(run, "author action URLs set before the upgrade", {
+    shape,
+    set,
+    stored,
+  });
+  for (const item of stored) {
+    expect(item.url, `${item.section}'s ${shape} in D1`).toBe(set[item.section]);
+  }
+}
+
+/** Each section's action button on the canvas: the anchor it is, or sits in. */
+async function canvasActionLinks(page: Page) {
+  return previewFrame(page)
+    .locator("body")
+    .evaluate((body, sections) =>
+      sections.map((section) => {
+        const label = body.querySelector(
+          `[data-storefront-section-id="${section}"] [data-storefront-field="actionLabel"]`,
+        );
+        const anchor =
+          label?.closest("a") ??
+          (label?.querySelector("a") as HTMLAnchorElement | null) ??
+          null;
+        const href = anchor?.getAttribute("href") ?? null;
+        let resolved: string | null = null;
+        if (href) {
+          const url = new URL(href, location.href);
+          resolved = `${url.pathname}${url.search}${url.hash}`;
+        }
+        return {
+          section,
+          button: label !== null,
+          text: (label?.textContent ?? "").trim(),
+          anchor: anchor !== null,
+          href,
+          resolved,
+        };
+      }),
+    [...ACTION_SECTIONS]);
+}
+
+function actionLinkProblems(
+  expected: ActionUrl[],
+  shown: Awaited<ReturnType<typeof canvasActionLinks>>,
+) {
+  return expected.flatMap((item) => {
+    const button = shown.find((entry) => entry.section === item.section);
+    if (!item.url) return [`${item.section}: no URL in the pre-upgrade Document`];
+    if (!button?.button) return [`${item.section}: no action button on the canvas`];
+    if (!button.anchor) return [`${item.section}: the action button is no link`];
+    if (button.resolved !== urlPath(item.url)) {
+      return [`${item.section}: the button goes to ${button.href ?? "nothing"}, not ${item.url}`];
+    }
+    return [];
+  });
+}
+
+/** (a) on the canvas: after the upgrade, before any edit. */
+async function expectActionLinksOnCanvas(
+  page: Page,
+  run: CaseRun,
+  before: ReadBack,
+) {
+  const expected = actionUrls(before.drafts, ["action.href", "actionHref"]);
+  await openEditorWithHero(page, run);
+  await expect
+    .poll(async () => (await canvasActionLinks(page)).filter((b) => b.button).length, {
+      timeout: 120_000,
+      message: "the canvas renders both action buttons",
+    })
+    .toBe(ACTION_SECTIONS.length);
+  const shown = await canvasActionLinks(page);
+  const problems = actionLinkProblems(expected, shown);
+  recordLinks(run, "a: actions on the canvas after the upgrade, before any edit", {
+    reached: true,
+    expected,
+    shown,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, "(a) the hero and story action buttons on the canvas link to the author's URL")
+    .toEqual([]);
+}
+
+/** (a) on a published or served page: an anchor to each URL holding its label. */
+function expectActionLinksServed(
+  run: CaseRun,
+  before: ReadBack,
+  html: string,
+  where: string,
+) {
+  const expected = actionUrls(before.drafts, ["action.href", "actionHref"]);
+  const anchors = [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].map(
+    (match) => ({
+      href: /\bhref="([^"]*)"/i.exec(match[1]!)?.[1] ?? null,
+      text: match[2]!.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(),
+    }),
+  );
+  const problems: string[] = [];
+  const found = expected.map((item) => {
+    const anchor = anchors.find(
+      (entry) =>
+        entry.href !== null &&
+        item.url !== null &&
+        urlPath(entry.href.replace(/&amp;/g, "&")) === urlPath(item.url) &&
+        item.label !== null &&
+        entry.text.includes(item.label),
+    );
+    if (!item.url) problems.push(`${item.section}: no URL in the pre-upgrade Document`);
+    else if (!anchor) {
+      problems.push(`${item.section}: no link to ${item.url} holding "${item.label}"`);
+    }
+    return { ...item, anchor: anchor ?? null };
+  });
+  recordLinks(run, `a: actions on the ${where}`, {
+    reached: true,
+    found,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, `(a) the hero and story action buttons on the ${where} link to the author's URL`)
+    .toEqual([]);
+}
+
+/**
+ * (b) A first copy-only edit to each section, its heading, typed in the
+ * Inspector after clicking it on the canvas; then D1 must hold the action's
+ * URL as `action.href` and the button must still link to it. Each heading is
+ * put back and read back.
+ */
+async function expectActionLinksAfterCopyEdit(
+  page: Page,
+  run: CaseRun,
+  before: ReadBack,
+) {
+  const expected = actionUrls(before.drafts, ["action.href", "actionHref"]);
+  const point = "b: actions after a first copy-only edit";
+  recordLinks(run, point, { reached: false });
+  await openEditorWithHero(page, run);
+  await tabletCanvas(page);
+  const edits: unknown[] = [];
+  const problems: string[] = [];
+  for (const section of ACTION_SECTIONS) {
+    if (
+      await page
+        .getByRole("button", { name: "Enable section selection" })
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await enableSelection(page);
+    }
+    const binding = (await canvasBindings(page)).find(
+      (item) => item.key === `${section}|heading#0`,
+    );
+    expect(binding, `${section}'s heading is on the canvas`).toBeDefined();
+    const element = previewFrame(page)
+      .locator("[data-storefront-field]")
+      .nth(binding!.index);
+    const where = resolveBinding(binding!, draftDocuments(run.scope));
+    expect(where.ok, `${section}'s heading resolves to its Document`).toBe(true);
+    const original = (where as { value: string }).value;
+    const leaf = `${(where as { templateId: string }).templateId}/${section}/${(where as { location: string }).location}`;
+    await element.scrollIntoViewIfNeeded();
+    const misses: string[] = [];
+    expect(
+      await clickOwnPoint(page, element, misses),
+      `${section}'s heading takes the click (${misses.slice(0, 4).join("; ")})`,
+    ).toBe(true);
+    await openContentTab(page);
+    const copy = `1bcopy-${randomUUID().slice(0, 6)}`;
+    await typeInto(
+      (await inspectorControlFor(page, original, binding!)).control,
+      copy,
+    );
+    await expect
+      .poll(() => documentLeaves(draftDocuments(run.scope)).get(leaf), {
+        timeout: 30_000,
+        message: `${section}'s copy edit is stored`,
+      })
+      .toBe(copy);
+    await expect(element).toHaveText(copy, { timeout: 30_000 });
+    const want = expected.find((item) => item.section === section)!;
+    const stored = actionUrls(draftDocuments(run.scope), ["action.href"]).find(
+      (item) => item.section === section,
+    )!;
+    if (!want.url) problems.push(`${section}: no URL before the edit`);
+    else if (!stored.url) problems.push(`${section}: no action.href in D1 after the edit`);
+    else if (urlPath(stored.url) !== urlPath(want.url)) {
+      problems.push(`${section}: D1 action.href is ${stored.url}, not ${want.url}`);
+    }
+    const shown = (await canvasActionLinks(page)).find(
+      (item) => item.section === section,
+    );
+    problems.push(
+      ...actionLinkProblems([want], shown ? [shown] : []).map(
+        (problem) => `after the edit, ${problem}`,
+      ),
+    );
+    edits.push({ section, leaf, copy, stored, shown });
+    // The heading back, read back.
+    await typeInto((await inspectorControlFor(page, copy, binding!)).control, original);
+    await expect
+      .poll(() => documentLeaves(draftDocuments(run.scope)).get(leaf), {
+        timeout: 30_000,
+        message: `${section}'s heading is put back`,
+      })
+      .toBe(original);
+  }
+  recordLinks(run, point, {
+    reached: true,
+    edits,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, "(b) after a copy edit, D1 holds action.href and each button still links to it")
+    .toEqual([]);
+}
+
+/**
  * (d) v11 published after its upgrade, on its own storefront, and the
  * published result read through the release the publish shows (the
  * storefront has no domain: domains reach only the run's storefront). The
@@ -2215,6 +2537,7 @@ async function publishV11(
     ).toBe(marker);
     // (a) on the published page: before any edit to the cards.
     expectCardLinksServed(run, before, home.body, "published release page");
+    expectActionLinksServed(run, before, home.body, "published release page");
     run.record.fact("publishedRead", {
       homeStatus: home.status,
       homeSha256: sha256(home.body),
@@ -2922,6 +3245,12 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         await installStarter(page, run, old);
         await expectOpeningWritesNothing(page, run, version);
       });
+      if (version !== 26) {
+        await run.record.step(
+          "author's own action URLs set before the upgrade",
+          () => setAuthorActionUrls(page, run, version),
+        );
+      }
       const before = await run.record.step("before-upgrade read-back", () =>
         readBack(page, browser, run, "before", marker, {
           canvasRequired: false,
@@ -2983,6 +3312,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           "(a) category cards link to the author's URL on the canvas after the upgrade",
           () => expectCardLinksOnCanvas(page, run, before),
         );
+        await run.record.step(
+          "(a) hero and story action buttons link to the author's URL on the canvas after the upgrade",
+          () => expectActionLinksOnCanvas(page, run, before),
+        );
         if (version === 11) {
           // Published before any edit, so the release shows (a) too.
           await run.record.step("published, public result read", () =>
@@ -2993,10 +3326,18 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
             reached: false,
             reason: "v15 is read back only; it is not published (Q4)",
           });
+          recordLinks(run, "a: actions on the published or served page", {
+            reached: false,
+            reason: "v15 is read back only; it is not published (Q4)",
+          });
         }
         await run.record.step(
           "(b) after the first copy-only edit, category cards still link to the author's URL",
           () => expectCardLinksAfterCopyEdit(page, run, before),
+        );
+        await run.record.step(
+          "(b) after a first copy-only edit, hero and story action buttons still link to the author's URL",
+          () => expectActionLinksAfterCopyEdit(page, run, before),
         );
       }
       if (toUse) {
@@ -3195,6 +3536,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         await installStarter(page, run, V20);
         await expectOpeningWritesNothing(page, run, 20);
       });
+      await run.record.step(
+        "author's own action URLs set before the upgrade",
+        () => setAuthorActionUrls(page, run, 20),
+      );
       const before = await run.record.step("before-upgrade read-back", () =>
         readBack(page, browser, run, "before", baselineMarker, {
           canvasRequired: false,
@@ -3253,6 +3598,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         "(a) category cards link to the author's URL on the canvas after the upgrade",
         () => expectCardLinksOnCanvas(page, run, before),
       );
+      await run.record.step(
+        "(a) hero and story action buttons link to the author's URL on the canvas after the upgrade",
+        () => expectActionLinksOnCanvas(page, run, before),
+      );
       const contentB = `m1-1b-v20-b-${randomUUID().slice(0, 8)}`;
       const upgraded = await publicStep(
         run,
@@ -3275,6 +3624,12 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           const home = await storefront("/");
           expect(home.status).toBe(200);
           expectCardLinksServed(
+            run,
+            before,
+            home.body,
+            "served page after the upgraded publish",
+          );
+          expectActionLinksServed(
             run,
             before,
             home.body,
@@ -3331,6 +3686,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
       await run.record.step(
         "(b) after the first copy-only edit, category cards still link to the author's URL",
         () => expectCardLinksAfterCopyEdit(page, run, before),
+      );
+      await run.record.step(
+        "(b) after a first copy-only edit, hero and story action buttons still link to the author's URL",
+        () => expectActionLinksAfterCopyEdit(page, run, before),
       );
       // After every publish-result check, so its draft writes (each put back
       // and read back) cannot move what those checks saw.
