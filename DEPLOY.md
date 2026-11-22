@@ -165,9 +165,16 @@ documentation update does not revalidate the remote service:
   API, but binding restrictions and account/domain setup still matter. REST was
   chosen here to avoid an optional-binding compatibility path in local/E2E/CI.
 - [Limits](https://developers.cloudflare.com/email-service/platform/limits/):
-  at most 50 recipients per message and 5 MiB total message size for arbitrary
-  recipients. The adapter also caps its JSON request at 5 MiB; this does not
-  replace Cloudflare's encoded-message size check. Daily quotas are account-specific.
+  at most 50 recipients per message (to, cc and bcc combined). Rechecked on
+  2026-11-22: the documented total message size is now 25 MiB including
+  attachments (it was 5 MiB in October). The adapter deliberately keeps a
+  stricter 5 MiB cap on its JSON request, since transactional mail is small and
+  base64 inflates attachments; this does not replace Cloudflare's own size
+  check. Daily quotas are account-specific.
+- [Suppressions](https://developers.cloudflare.com/email-service/concepts/suppressions/):
+  with **Drop suppressed recipients** off (the default), the REST API rejects
+  the request with 400; with it on, suppressed recipients are listed in
+  `suppressed_recipients`. The adapter reports both cases as a failed send.
 
 Operator steps, each requiring separate approval for remote changes:
 
