@@ -186,6 +186,18 @@ describe("Cloudflare Email Sending REST adapter (fake network only)", () => {
     },
   );
 
+  it("matches accepted recipients case-insensitively", async () => {
+    fakeFetch.mockResolvedValue(
+      Response.json(accepted({ delivered: ["buyer@example.com"] })),
+    );
+    await expect(
+      new CloudflareAdapter(config).send({
+        ...message,
+        to: "Buyer@Example.COM",
+      }),
+    ).resolves.toEqual({ success: true });
+  });
+
   it("does not report a partially accepted multi-recipient send as success", async () => {
     fakeFetch.mockResolvedValue(Response.json(accepted()));
     await expect(
