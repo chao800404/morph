@@ -53,10 +53,12 @@ export function themeFrameworkAllowsPreviewRuntime(
  * a Theme created from it needs `start` to preview at all (R-0).
  *
  * It was 30 until Starter 30 shipped for another reason: its content module
- * sends the render context back (G3b) and leaves preview as 29 did. The route
- * layer that needs `start` is now planned as Starter 31.
+ * sends the render context back (G3b) and leaves preview as 29 did. It was
+ * then 31 until Starter 31 shipped to re-offer the upgrade to Themes recorded
+ * at 30, for their content migration. The route layer that needs `start` is
+ * now planned as Starter 32.
  */
-export const FIRST_STARTER_VERSION_RECORDING_START_PREVIEW = 31;
+export const FIRST_STARTER_VERSION_RECORDING_START_PREVIEW = 32;
 
 /**
  * What a Theme created from this Starter version records. Null below
