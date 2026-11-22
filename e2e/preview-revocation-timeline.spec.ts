@@ -48,14 +48,29 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  *                             construction, on a fresh admin of their own.
  *   notice-lost               the grants revoked in D1 only (no push), 3 s
  *                             after the sockets opened (A7's case)
- *   notice-lost-after-renewal the same, just after the busy socket's first
- *                             mid-life lease renewal (estimated, see below)
+ *   notice-lost-after-renewal the same, once the server has renewed the SAME
+ *                             grant each socket uses: its stored `expires_at`
+ *                             advanced, read read-only from this run's D1
+ *                             (user decision 2026-11-22). Revoked at once
+ *                             after the advance is observed; never on an
+ *                             estimate. No advance seen: INCOMPLETE.
  *   notice-lost-after-renewal-idle
  *                             the same, and the sockets send nothing after R:
  *                             only the lease tick can end them (the design's
  *                             worst case, R + L + tick + eps = 37 s)
  *   grant-expiry              listed separately: `expires_at` moved to now
  *                             in D1 only
+ *
+ * Preparation and the formal case (user decision 2026-11-22). Every sign-in a
+ * case needs is made in its preparation, before the formal case starts; each
+ * attempt is recorded (time, 429 or not, Retry-After, wait applied). A 429
+ * waits once, for the Retry-After it names; a second 429 ends preparation and
+ * the case is INCOMPLETE. Once the formal case has started, a sign-in request
+ * (from the harness or any page of the case) or an auth redirect of a case
+ * page to /sign-in before R makes the case INCOMPLETE: it fails with
+ * "incomplete: re-login during formal case", is never retried and never
+ * passes. (After R, a redirect to /sign-in is the revocation's own effect and
+ * is only recorded.)
  *
  * Verdicts, as A7 judges them. With R in [a, b] and an event at T, against a
  * limit D: pass T - a <= D; over T - b > D; uncertain otherwise. Only pass is
@@ -69,10 +84,14 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  *   WebSocket: data stopped (the last data frame either end received) and
  *   closed, each judged against 30 s; the path's verdict is the worse.
  *
- * This spec reports verdicts; "over" and "uncertain" do not fail it (the plan
- * says the current design cannot yet prove 30 s for notice-lost). It fails on
- * a harness error (a precondition that did not hold, a measurement that could
- * not be made) and on any draft byte served after b.
+ * This spec reports the 30 s verdicts; "over" (recorded as "not met") and
+ * "uncertain" do not fail it. The 30 s threshold stands and its guarantee is
+ * unproven: a run's numbers are trial observations, never a proof of "within
+ * 30 s". It fails on a harness error (a precondition that did not hold, a
+ * measurement that could not be made), on an incomplete case, and on any draft
+ * byte served after b. The after-renewal cases also assert the design's
+ * existing limits: data stopped within L + eps = 32 s and closed with 4401
+ * within L + tick + eps = 37 s, each a "pass" (T - a <= D).
  *
  * Logs and the timeline carry grant and preview ids only: no cookie, token,
  * session id, grant secret or password.
@@ -117,6 +136,14 @@ const PROBE_GAP_MS = 100;
 const CLOSE_WAIT_MS = 75_000;
 /** Probing continues at least this long after b, and 2 s after the last close. */
 const MIN_PROBE_AFTER_B_MS = 5_000;
+/**
+ * How long, after the later socket's first echo, the after-renewal cases wait
+ * for the server to renew each socket's grant (its stored `expires_at`
+ * advanced). A busy socket's lease renews from L/2 on, so twice the lease is
+ * well past where a renewal is due. Not seen by then: the case is incomplete.
+ */
+const RENEWAL_WAIT_MS = 2 * LEASE_MS;
+const RENEWAL_POLL_MS = 100;
 const E2E_USER_ID =
   process.env.MORPH_E2E_USER_ID ?? "00000000-0000-4000-8000-00000000e2e1";
 
@@ -139,6 +166,20 @@ function judge(t: number, a: number, b: number, limitMs: number) {
     longestMs <= limitMs ? "pass" : shortestMs > limitMs ? "over" : "uncertain";
   return { verdict, longestMs, shortestMs, limitMs };
 }
+
+/** The 30 s target in words: "over" is recorded as not met, never hidden. */
+const TARGET_LABEL: Record<Verdict, string> = {
+  pass: "met",
+  uncertain: "uncertain",
+  over: "not met",
+};
+function judgeTarget(t: number, a: number, b: number) {
+  const judged = judge(t, a, b, TARGET_MS);
+  return { ...judged, target: TARGET_LABEL[judged.verdict] };
+}
+
+/** A case that could not be measured as the criteria require. */
+class IncompleteCase extends Error {}
 
 const FIXTURE = `import startEntry from "@tanstack/react-start/server-entry";
 
@@ -293,6 +334,19 @@ function d1File(): string {
 }
 function d1All(sql: string, ...params: unknown[]) {
   const db = new Database(d1File(), { timeout: 10_000 });
+  try {
+    return db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+  } finally {
+    db.close();
+  }
+}
+/** A read-only connection: the renewal watch never writes. */
+function d1ReadOnly(sql: string, ...params: unknown[]) {
+  const db = new Database(d1File(), {
+    readonly: true,
+    fileMustExist: true,
+    timeout: 10_000,
+  });
   try {
     return db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   } finally {
@@ -767,13 +821,13 @@ const MECHANISM: Record<
   },
   "notice-lost-after-renewal": {
     mechanism:
-      "grants revoked in D1 only, just after the busy sockets' first mid-life lease renewal (estimated)",
+      "grants revoked in D1 only, at once after the server-side renewal of each socket's own grant (stored expires_at advanced) was observed",
     pushExpected: false,
     ownUser: false,
   },
   "notice-lost-after-renewal-idle": {
     mechanism:
-      "grants revoked in D1 only, just after the first mid-life lease renewal (estimated); the sockets send nothing after R",
+      "grants revoked in D1 only, at once after the server-side renewal of each socket's own grant (stored expires_at advanced) was observed; the sockets send nothing after R",
     pushExpected: false,
     ownUser: false,
   },
@@ -815,35 +869,82 @@ async function createCaseAdmin(trigger: Trigger) {
   return { id, email, password };
 }
 
-async function signIn(
+type SignInAttempt = {
+  at: number;
+  status: number;
+  rateLimited: boolean;
+  /** The Retry-After the 429 named, in seconds, as sent; null otherwise. */
+  retryAfter: string | null;
+  /** The wait applied after this attempt before the next, in ms. */
+  waitAppliedMs: number;
+};
+type Preparation = {
+  trigger: Trigger;
+  startedAt: number;
+  endedAt: number | null;
+  attempts: SignInAttempt[];
+  ok: boolean;
+  failure: string | null;
+};
+
+/**
+ * The case's sign-in, in its preparation only. The cases sign in one after
+ * another from one address, and Morph allows 5 sign-ins per 60 s there
+ * (src/auth/index.ts rateLimit), so a case may meet a 429. The limit is
+ * honoured, not reset: one wait, for the Retry-After it names. A second 429
+ * ends the preparation and the case is incomplete.
+ */
+async function prepareSignIn(
   context: BrowserContext,
   credentials: { email: string; password: string },
+  preparation: Preparation,
+  formal: { started: boolean },
 ) {
+  if (formal.started) {
+    // Never reached by this spec's own flow; a guard, not a retry path.
+    throw new IncompleteCase("incomplete: re-login during formal case (harness sign-in)");
+  }
   const { baseURL } = test.info().project.use;
-  const post = () =>
-    context.request.post("/api/auth/sign-in/email", {
+  const post = async () => {
+    const at = Date.now();
+    const response = await context.request.post("/api/auth/sign-in/email", {
       headers: { origin: new URL(baseURL!).origin },
       data: credentials,
     });
-  let signedIn = await post();
-  // The cases sign in one after another from one address, and Morph allows 5
-  // sign-ins per 60 s there, the window running from the last one allowed
-  // (src/auth/index.ts rateLimit). Several cases inside a minute each reach
-  // the sixth. The limit is honoured, not reset: wait the time it names, once.
-  if (signedIn.status() === 429) {
-    const retryAfter = Number(signedIn.headers()["x-retry-after"] ?? "60");
-    const waitMs =
-      (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60) *
-        1_000 +
-      1_000;
-    console.log(`[1c] sign-in rate limited; waiting ${waitMs} ms`);
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-    signedIn = await post();
+    const rateLimited = response.status() === 429;
+    const headers = response.headers();
+    const attempt: SignInAttempt = {
+      at,
+      status: response.status(),
+      rateLimited,
+      retryAfter: rateLimited
+        ? (headers["retry-after"] ?? headers["x-retry-after"] ?? null)
+        : null,
+      waitAppliedMs: 0,
+    };
+    preparation.attempts.push(attempt);
+    return { response, attempt };
+  };
+  let { response, attempt } = await post();
+  if (attempt.rateLimited) {
+    const seconds = Number(attempt.retryAfter ?? "60");
+    attempt.waitAppliedMs =
+      (Number.isFinite(seconds) && seconds > 0 ? seconds : 60) * 1_000 + 1_000;
+    console.log(
+      `[1c] preparation ${preparation.trigger}: sign-in 429, Retry-After=${String(attempt.retryAfter)}; waiting ${attempt.waitAppliedMs} ms once`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, attempt.waitAppliedMs));
+    ({ response, attempt } = await post());
+    if (attempt.rateLimited) {
+      preparation.failure =
+        "incomplete: sign-in preparation rate limited again after its one Retry-After wait";
+      throw new IncompleteCase(preparation.failure);
+    }
   }
-  expect(
-    signedIn.ok(),
-    `a sign-in for this case's own session (${signedIn.status()})`,
-  ).toBe(true);
+  if (!response.ok()) {
+    preparation.failure = `incomplete: sign-in preparation answered ${response.status()}`;
+    throw new IncompleteCase(preparation.failure);
+  }
 }
 
 type CaseGrant = {
@@ -851,11 +952,12 @@ type CaseGrant = {
   kind: string;
   previewId: string;
   sessionId: string;
+  expiresAt: string;
 };
 
 function liveGrantsOf(userId: string, since: string): CaseGrant[] {
   return d1All(
-    `SELECT id, kind, preview_id, session_id FROM storefront_preview_access_grants
+    `SELECT id, kind, preview_id, session_id, expires_at FROM storefront_preview_access_grants
       WHERE user_id = ? AND revoked_at IS NULL AND created_at >= ?`,
     userId,
     since,
@@ -864,7 +966,75 @@ function liveGrantsOf(userId: string, since: string): CaseGrant[] {
     kind: String(row.kind),
     previewId: String(row.preview_id),
     sessionId: String(row.session_id),
+    expiresAt: String(row.expires_at),
   }));
+}
+
+type RenewalWatch = {
+  grantId: string;
+  kind: string;
+  expiresAtBefore: string;
+  expiresAtAfter: string | null;
+  /** First read that saw expires_at advanced, grant still live: renewalAt. */
+  renewalObservedAt: number | null;
+  reads: number;
+  firstReadAt: number | null;
+  lastReadAt: number | null;
+  revokedAtSeen: string | null;
+};
+
+/**
+ * Watches, read-only, each socket's own grant until the server has renewed
+ * it: its stored expires_at later than before, not revoked, not expired.
+ * Returns when every grant renewed (confirmedAt) or the deadline passed.
+ */
+async function watchRenewal(
+  grants: CaseGrant[],
+  deadline: number,
+): Promise<{ watches: RenewalWatch[]; confirmedAt: number | null }> {
+  const watches: RenewalWatch[] = grants.map((g) => ({
+    grantId: g.id,
+    kind: g.kind,
+    expiresAtBefore: g.expiresAt,
+    expiresAtAfter: null,
+    renewalObservedAt: null,
+    reads: 0,
+    firstReadAt: null,
+    lastReadAt: null,
+    revokedAtSeen: null,
+  }));
+  const placeholders = grants.map(() => "?").join(", ");
+  while (Date.now() < deadline) {
+    const rows = d1ReadOnly(
+      `SELECT id, expires_at, revoked_at FROM storefront_preview_access_grants
+        WHERE id IN (${placeholders})`,
+      ...grants.map((g) => g.id),
+    );
+    const readAt = Date.now();
+    for (const watch of watches) {
+      const row = rows.find((r) => String(r.id) === watch.grantId);
+      watch.reads += 1;
+      watch.firstReadAt ??= readAt;
+      watch.lastReadAt = readAt;
+      if (!row) continue;
+      const expiresAt = String(row.expires_at);
+      watch.expiresAtAfter = expiresAt;
+      watch.revokedAtSeen = row.revoked_at ? String(row.revoked_at) : null;
+      if (
+        watch.renewalObservedAt === null &&
+        Date.parse(expiresAt) > Date.parse(watch.expiresAtBefore) &&
+        !row.revoked_at &&
+        Date.parse(expiresAt) > readAt
+      ) {
+        watch.renewalObservedAt = readAt;
+      }
+    }
+    if (watches.every((w) => w.renewalObservedAt !== null)) {
+      return { watches, confirmedAt: Date.now() };
+    }
+    await new Promise((resolve) => setTimeout(resolve, RENEWAL_POLL_MS));
+  }
+  return { watches, confirmedAt: null };
 }
 
 /** Merges this case into the timeline file, which survives a worker restart. */
@@ -896,6 +1066,12 @@ function saveCase(trigger: Trigger, result: Record<string, unknown>) {
     epsMs: SLACK_MS,
     verdict:
       "pass: T - a <= D; over: T - b > D; uncertain otherwise. HTTP: first request of every kind sent at or after b refused and none served.",
+    target:
+      "TARGET 30 s reported with the same verdicts: pass = met, over = not met, uncertain = uncertain. The 30 s threshold stands; its guarantee is unproven, and these numbers are trial observations.",
+    preparation:
+      "Sign-ins only before the formal case; one Retry-After wait on a 429; a second 429, or any re-login after the formal case started, makes the case incomplete (failed, never retried).",
+    renewal:
+      "After-renewal cases: the server-side renewal is the same grant's stored expires_at advancing (read-only D1 read); revoked at once after it is observed; none observed = incomplete.",
   };
   all.cases[trigger] = result;
   writeFileSync(OUT, JSON.stringify(all, null, 2));
@@ -908,26 +1084,149 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
   const { baseURL } = test.info().project.use;
   const context = await browser.newContext({ baseURL });
   const events: AnyEvent[] = [];
+  let aMark = Number.POSITIVE_INFINITY;
   let bMark = Number.POSITIVE_INFINITY;
   let tab: Page | null = null;
   let other: Page | null = null;
-  try {
-    let userId = E2E_USER_ID;
-    if (spec.ownUser) {
-      const admin = await createCaseAdmin(trigger);
-      userId = admin.id;
-      await signIn(context, admin);
-    } else {
-      await signIn(context, {
-        email: process.env.E2E_EMAIL!,
-        password: process.env.E2E_PASSWORD!,
+  const renewalCase =
+    trigger === "notice-lost-after-renewal" ||
+    trigger === "notice-lost-after-renewal-idle";
+  const preparation: Preparation = {
+    trigger,
+    startedAt: Date.now(),
+    endedAt: null,
+    attempts: [],
+    ok: false,
+    failure: null,
+  };
+  const formal = { started: false, startedAt: null as number | null };
+  /** Sign-ins, or auth redirects before R, after the formal case started. */
+  const relogins: Array<Record<string, unknown>> = [];
+  /** Redirects to /sign-in after R: the revocation's own effect, recorded. */
+  const authRedirectsAfterR: Array<Record<string, unknown>> = [];
+  let grants: CaseGrant[] = [];
+  let renewal: Record<string, unknown> | null = null;
+  let fullySaved = false;
+  const watchSignInRequests = (owner: BrowserContext, label: string) =>
+    owner.on("request", (request) => {
+      if (!formal.started) return;
+      let url: URL;
+      try {
+        url = new URL(request.url());
+      } catch {
+        return;
+      }
+      if (!url.pathname.startsWith("/api/auth/sign-in")) return;
+      relogins.push({
+        t: Date.now(),
+        kind: "sign-in request",
+        context: label,
+        method: request.method(),
+        path: url.pathname,
       });
+    });
+  const watchAuthRedirect = (owner: Page, label: string) =>
+    owner.on("framenavigated", (navigated) => {
+      if (!formal.started || navigated !== owner.mainFrame()) return;
+      let url: URL;
+      try {
+        url = new URL(navigated.url());
+      } catch {
+        return;
+      }
+      if (url.hostname.startsWith("pv-")) return;
+      if (!url.pathname.startsWith("/sign-in")) return;
+      const t = Date.now();
+      const record = { t, kind: "auth redirect", page: label, path: url.pathname };
+      if (t < aMark) relogins.push(record);
+      else authRedirectsAfterR.push(record);
+    });
+  const incompleteRecord = (reason: string) => ({
+    trigger,
+    status: "incomplete",
+    incompleteReason: reason,
+    separate: trigger === "grant-expiry",
+    mechanism: spec.mechanism,
+    preparation,
+    formalStartedAt: formal.startedAt,
+    relogins,
+    authRedirectsAfterR,
+    grants: grants.map((g) => ({
+      grantId: g.id,
+      kind: g.kind,
+      previewId: g.previewId,
+      expiresAt: g.expiresAt,
+    })),
+    renewal,
+    a: Number.isFinite(aMark) ? aMark : null,
+    b: Number.isFinite(bMark) ? bMark : null,
+    harnessErrors,
+  });
+  try {
+    // Preparation: every sign-in this case needs, before the formal case.
+    let userId = E2E_USER_ID;
+    try {
+      if (spec.ownUser) {
+        const admin = await createCaseAdmin(trigger);
+        userId = admin.id;
+        await prepareSignIn(context, admin, preparation, formal);
+      } else {
+        await prepareSignIn(
+          context,
+          {
+            email: process.env.E2E_EMAIL!,
+            password: process.env.E2E_PASSWORD!,
+          },
+          preparation,
+          formal,
+        );
+      }
+      if (trigger === "revoke-other-session") {
+        // Another session of the user, from the stored sign-in (no new
+        // sign-in), ready before the formal case so the window is the
+        // trigger alone.
+        other = await (
+          await browser.newContext({
+            baseURL,
+            storageState: test.info().project.use.storageState,
+          })
+        ).newPage();
+        await other.goto("/", { waitUntil: "domcontentloaded" });
+        expect(
+          new URL(other.url()).pathname.startsWith("/sign-in"),
+          "the other session is signed in without a new sign-in",
+        ).toBe(false);
+      }
+      preparation.ok = true;
+    } finally {
+      preparation.endedAt = Date.now();
+      console.log(
+        `[1c] preparation ${trigger}: ok=${preparation.ok} attempts=${JSON.stringify(
+          preparation.attempts.map((x) => ({
+            status: x.status,
+            rateLimited: x.rateLimited,
+            retryAfter: x.retryAfter,
+            waitAppliedMs: x.waitAppliedMs,
+          })),
+        )}`,
+      );
+    }
+
+    // The formal case starts here: from now on any re-login makes it
+    // incomplete.
+    formal.started = true;
+    formal.startedAt = Date.now();
+    watchSignInRequests(context, "case");
+    if (other) {
+      watchSignInRequests(other.context(), "other-session");
+      watchAuthRedirect(other, "other-session");
     }
     await context.exposeBinding("__c1emit", (_source, event: AnyEvent) => {
       events.push(event);
     });
     await context.addInitScript(recordReadiness);
     const page = await context.newPage();
+    watchAuthRedirect(page, "editor");
 
     // The page's own requests and sockets on the pv- host. Requests this
     // harness sent carry x-c1-probe and are recorded as probes instead.
@@ -1038,6 +1337,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     ]);
     tab = opened;
     watchSockets(tab, () => "tab");
+    watchAuthRedirect(tab, "tab");
     await tab.waitForURL(
       (url) =>
         url.hostname === framedHost &&
@@ -1189,7 +1489,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       })
       .toBe(true);
 
-    const grants = liveGrantsOf(userId, caseStart);
+    grants = liveGrantsOf(userId, caseStart);
     const kinds = new Set(grants.map((g) => g.kind));
     expect(
       [...kinds].sort(),
@@ -1199,48 +1499,50 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       new Set(grants.map((g) => g.sessionId)).size,
       "every grant of this case is on its one session",
     ).toBe(1);
-
-    // 5. When to revoke.
-    let renewalEstimate: Record<string, unknown> | null = null;
-    if (
-      trigger === "notice-lost-after-renewal" ||
-      trigger === "notice-lost-after-renewal-idle"
-    ) {
-      // Inference: the registration verification V0 is sent after the open
-      // was sent and before the first echo; a busy socket renews on its first
-      // frame at or after V0 + L/2. Revoke once both renewals have been sent
-      // and answered (a local D1 round trip; 500 ms allowed).
-      const windows = Object.fromEntries(
-        (["frame", "tab"] as const).map((s) => [
-          s,
-          {
-            from: openSent[s] + LEASE_MS / 2,
-            to: firstEcho(s)! + LEASE_MS / 2 + FRAME_INTERVAL_MS,
-          },
-        ]),
-      );
-      const revokeAt =
-        Math.max(windows.frame!.to, windows.tab!.to) + 500;
-      renewalEstimate = { inference: true, windows, plannedRevokeAt: revokeAt };
-      while (Date.now() < revokeAt) await page.waitForTimeout(50);
-    } else {
-      await page.waitForTimeout(3_000);
+    if (renewalCase) {
+      // The renewal must be of the grant each socket uses: one per surface.
+      expect(
+        grants.map((g) => g.kind).sort(),
+        "one grant per socket (iframe: the frame's, tab: the tab's)",
+      ).toEqual(["iframe", "tab"]);
     }
 
-    // Prepared before R so the window is the trigger alone.
-    if (trigger === "revoke-other-session") {
-      other = await (
-        await browser.newContext({
-          baseURL,
-          storageState: test.info().project.use.storageState,
-        })
-      ).newPage();
-      await other.goto("/", { waitUntil: "domcontentloaded" });
-    }
+    // The probes run from here, so R can follow its cue at once.
     for (const { surface, target } of targets) {
       await startProbeLoop(target, surface, plans.get(surface)!);
     }
     await page.waitForTimeout(500);
+
+    // 5. When to revoke.
+    if (renewalCase) {
+      // The server-side renewal of the same grant: its stored expires_at
+      // advanced (read-only, this run's D1), the grant still live. Revoke at
+      // once after both are observed. No estimate stands in for it.
+      const laterEcho = Math.max(firstEcho("frame")!, firstEcho("tab")!);
+      const deadline = laterEcho + RENEWAL_WAIT_MS;
+      const watched = await watchRenewal(grants, deadline);
+      renewal = {
+        source:
+          "storefront_preview_access_grants.expires_at of the socket's own grant, read-only from this run's D1",
+        socketsOpenSentAt: openSent,
+        firstEchoAt: { frame: firstEcho("frame"), tab: firstEcho("tab") },
+        deadline,
+        confirmedAt: watched.confirmedAt,
+        watches: watched.watches,
+      };
+      if (watched.confirmedAt === null) {
+        throw new IncompleteCase(
+          `incomplete: no server-side renewal of the same grant observed: stored expires_at did not advance within ${RENEWAL_WAIT_MS} ms of the sockets' first echo (${watched.watches
+            .map(
+              (w) =>
+                `${w.kind} ${w.grantId}: ${w.expiresAtBefore} -> ${String(w.expiresAtAfter)}, ${w.reads} reads`,
+            )
+            .join("; ")}); not revoked`,
+        );
+      }
+    } else {
+      await page.waitForTimeout(3_000);
+    }
 
     // 6. R in [a, b].
     const grantIds = grants.map((g) => g.id);
@@ -1261,7 +1563,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     };
     switch (trigger) {
       case "sign-out": {
-        a = Date.now();
+        a = aMark = Date.now();
         const out = await context.request.post("/api/auth/sign-out", {
           headers: { origin: new URL(baseURL!).origin },
           data: {},
@@ -1272,7 +1574,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         break;
       }
       case "revoke-other-session": {
-        a = Date.now();
+        a = aMark = Date.now();
         const result = (await serverFn(other!, REVOKE_SESSION, "revokeSession", {
           id: sessionId,
         })) as { success?: boolean; message?: string };
@@ -1307,14 +1609,14 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
                   ["DELETE FROM accounts WHERE user_id = ?", userId],
                   ["DELETE FROM users WHERE id = ?", userId],
                 ];
-        a = Date.now();
+        a = aMark = Date.now();
         const changed = d1Write(statements);
         b = Date.now();
         triggerAnswer = { rowsChanged: changed };
         break;
       }
       case "grant-expiry": {
-        a = Date.now();
+        a = aMark = Date.now();
         const stamp = new Date(a).toISOString();
         const changed = d1Write([
           [
@@ -1330,7 +1632,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         break;
       }
       default: {
-        a = Date.now();
+        a = aMark = Date.now();
         const stamp = new Date(a).toISOString();
         const changed = d1Write([
           [
@@ -1347,6 +1649,14 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     }
     bMark = b;
     await stopSending();
+    if (renewal) {
+      const watches = renewal.watches as RenewalWatch[];
+      renewal.revokeWindow = { a, b };
+      renewal.confirmToRevokeMs = a - Number(renewal.confirmedAt);
+      renewal.renewalToRevokeMs = Object.fromEntries(
+        watches.map((w) => [w.kind, a - Number(w.renewalObservedAt)]),
+      );
+    }
     const readBackAt = Date.now();
     const readBack: {
       at: number;
@@ -1475,6 +1785,11 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       const refusedAfterA = probes.filter((p) => refused(p.status) && p.t >= a);
       const servedAll = probes.filter((p) => served(p.status));
       const firstRefused = refusedAfterA.sort((x, y) => x.t - y.t)[0] ?? null;
+      // Draft data over fetch: the last probe answer that carried the marker.
+      const draftAnswers = probes.filter((p) => p.leaked);
+      const draftDataStoppedAt = draftAnswers.length
+        ? Math.max(...draftAnswers.map((p) => p.answeredAt))
+        : null;
       const httpEvents = [
         ...probes.filter((p) => p.t >= a - 2_000),
         ...passive,
@@ -1495,12 +1810,17 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
           ? Math.max(...servedAll.map((p) => p.t))
           : null,
         dataStoppedAt: null,
+        draftDataStoppedAt,
         closedAt: null,
         verdict: kindVerdicts.length ? worst(kindVerdicts) : "uncertain",
         byKind,
         refusalDelay: firstRefused
-          ? judge(firstRefused.answeredAt, a, b, TARGET_MS)
+          ? judgeTarget(firstRefused.answeredAt, a, b)
           : null,
+        draftDataStop:
+          draftDataStoppedAt === null
+            ? null
+            : judgeTarget(draftDataStoppedAt, a, b),
       });
 
       // WebSocket.
@@ -1517,10 +1837,10 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       const dataStoppedAt = candidates.length ? Math.max(...candidates) : null;
       if (dataStoppedAt === null) harnessErrors.push(`${surface}: no socket data`);
       const data =
-        dataStoppedAt === null ? null : judge(dataStoppedAt, a, b, TARGET_MS);
+        dataStoppedAt === null ? null : judgeTarget(dataStoppedAt, a, b);
       // Not closed within the wait: at least CLOSE_WAIT_MS after b.
       const closeT = close?.t ?? deadline;
-      const closed = judge(closeT, a, b, TARGET_MS);
+      const closed = judgeTarget(closeT, a, b);
       paths.push({
         path: `${trigger}/${surface}/ws`,
         kind: "ws",
@@ -1568,40 +1888,109 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       });
     }
 
+    // The design's existing limits, asserted for the after-renewal cases:
+    // data within L + eps, closed with 4401 within L + tick + eps, each a
+    // pass (T - a <= D). Unchanged limits; never the 30 s target.
+    const designLimits: Array<Record<string, unknown>> = [];
+    if (renewalCase) {
+      for (const p of paths.filter((x) => x.kind === "ws")) {
+        const v = p.verdicts as {
+          dataWithinDesignBound: { verdict: Verdict } | null;
+          closeWithinDesignBound: { verdict: Verdict };
+        };
+        designLimits.push({
+          path: p.path,
+          dataWithin32s: v.dataWithinDesignBound?.verdict ?? null,
+          closeWithin37s: v.closeWithinDesignBound.verdict,
+          closeCode: p.closeCode,
+        });
+      }
+    }
+
+    const measuredReLogins = relogins.length > 0;
     const result = {
       trigger,
+      status: measuredReLogins ? "incomplete" : "measured",
+      incompleteReason: measuredReLogins
+        ? "incomplete: re-login during formal case"
+        : null,
       separate: trigger === "grant-expiry",
       mechanism: spec.mechanism,
       pushExpected: spec.pushExpected,
       ownUser: spec.ownUser,
+      preparation,
+      formalStartedAt: formal.startedAt,
+      relogins,
+      authRedirectsAfterR,
       grants: grants.map((g) => ({
         grantId: g.id,
         kind: g.kind,
         previewId: g.previewId,
+        expiresAt: g.expiresAt,
       })),
       a,
       b,
       windowMs: b - a,
       triggerAnswer,
       readBack,
-      renewalEstimate,
+      renewal,
+      designLimits,
       baseline,
       paths,
       harnessErrors,
       leaks,
     };
     saveCase(trigger, result);
+    fullySaved = true;
     for (const p of paths) {
+      const v = (p.verdicts ?? {}) as Record<
+        string,
+        { target?: string } | null
+      >;
       console.log(
         `[1c] ${String(p.path)} verdict=${String(p.verdict)} window=${b - a}ms` +
           (p.kind === "ws"
-            ? ` data=${p.dataStoppedAt === null ? "-" : Number(p.dataStoppedAt) - a}ms close=${p.closedAt === null ? "none" : Number(p.closedAt) - a}ms code=${String(p.closeCode)}`
-            : ` firstRefused=${p.firstRefusedAt === null ? "-" : Number(p.firstRefusedAt) - a}ms`),
+            ? ` data=${p.dataStoppedAt === null ? "-" : Number(p.dataStoppedAt) - a}ms close=${p.closedAt === null ? "none" : Number(p.closedAt) - a}ms code=${String(p.closeCode)} target30s data=${String(v.dataWithin30s?.target)} close=${String(v.closeWithin30s?.target)}`
+            : ` firstRefused=${p.firstRefusedAt === null ? "-" : Number(p.firstRefusedAt) - a}ms target30s refusal=${String((p.refusalDelay as { target?: string } | null)?.target)}`),
+      );
+    }
+    if (renewal) {
+      console.log(
+        `[1c] ${trigger} renewal confirmedAt=a${Number(renewal.confirmedAt) - a}ms renewalToRevoke=${JSON.stringify(renewal.renewalToRevokeMs)}`,
       );
     }
 
+    if (measuredReLogins) {
+      throw new IncompleteCase(
+        `incomplete: re-login during formal case (${JSON.stringify(relogins)})`,
+      );
+    }
     expect(leaks, "no draft byte is served after b").toEqual([]);
     expect(harnessErrors, "the measurement was made").toEqual([]);
+    for (const limit of designLimits) {
+      expect(
+        limit,
+        "after renewal: data within L + eps (32 s) and a 4401 close within L + tick + eps (37 s), each a pass",
+      ).toEqual({
+        path: limit.path,
+        dataWithin32s: "pass",
+        closeWithin37s: "pass",
+        closeCode: 4401,
+      });
+    }
+  } catch (error) {
+    // A re-login seen during the formal case explains any failure after it.
+    const reason =
+      relogins.length > 0
+        ? `incomplete: re-login during formal case (${JSON.stringify(relogins)})`
+        : error instanceof IncompleteCase
+          ? error.message
+          : null;
+    if (reason === null) throw error;
+    // The full timeline, when it was already written, stays as written.
+    if (!fullySaved) saveCase(trigger, incompleteRecord(reason));
+    console.log(`[1c] ${trigger} INCOMPLETE: ${reason}`);
+    throw new IncompleteCase(reason);
   } finally {
     await other?.context().close().catch(() => {});
     await context.close().catch(() => {});

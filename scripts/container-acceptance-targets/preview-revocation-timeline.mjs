@@ -8,8 +8,12 @@
  * `node scripts/check-container-acceptance.mjs <report> <this module>` requires
  * exactly these titles, each once, passed with zero skip and zero retry. A
  * passed case means the timeline was measured with no harness error and no
- * draft served after revocation was confirmed; its 30 s verdicts (pass,
- * uncertain, over) are in the timeline JSON, not in the pass. No CI step runs
+ * draft served after revocation was confirmed, and the case was complete: no
+ * re-login after its preparation, and (after-renewal cases) the server-side
+ * renewal of the same grant observed before the revocation and the design
+ * limits (32 s data, 37 s 4401 close) met. An incomplete case fails. Its 30 s
+ * verdicts (pass = met, uncertain, over = not met) are in the timeline JSON,
+ * not in the pass; the 30 s guarantee stays unproven. No CI step runs
  * that check yet; wiring the container step is a separate change. Until then
  * these cases are unproven in CI. A renamed case changes this list in the same
  * commit.
