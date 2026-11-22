@@ -63,6 +63,8 @@ export const START_PREVIEW_EXCLUDED = {
     "The M1 container lifecycle acceptance runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the full Start job runs on the local-sidecar transport.",
   "start-container-content-sync.spec.ts":
     "The Start content sync check runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the full Start job runs on the local-sidecar transport.",
+  "preview-revocation-timeline.spec.ts":
+    "The M1 1c revocation timeline runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox), on the pv- host only a container fronts; the full Start job runs on the local-sidecar transport. Its exact titles are in container-acceptance-targets/preview-revocation-timeline.mjs; no CI step runs that check yet.",
   "public-svg.spec.ts":
     "Reads the variable only inside a test that plants a file in a Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the rest of the file is not Start-gated and runs on the shards.",
 };
