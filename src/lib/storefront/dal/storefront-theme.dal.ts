@@ -1427,6 +1427,7 @@ export const storefrontThemeDal = {
             buildContentPublicationId:
               storefrontThemeBuilds.contentPublicationId,
             buildContentDependency: storefrontThemeBuilds.contentDependency,
+            contentPublicationId: storefrontReleases.contentPublicationId,
           })
           .from(storefrontReleases)
           .innerJoin(
@@ -1476,6 +1477,33 @@ export const storefrontThemeDal = {
       );
 
     const themeSourceFiles = await listThemeSourceFiles(storefrontId, themeId);
+
+    // The revision the live release serves for each template, which is what
+    // a publish compares the draft with (`publishTemplate`'s
+    // `liveServesDraft`). The row's published revision is not it after a
+    // rollback, which moves only the live pointer.
+    const liveRevisions = new Map(
+      activeRelease?.contentPublicationId
+        ? (
+            await db
+              .select({
+                contentId: storefrontContentPublicationItems.contentId,
+                revisionId: storefrontContentPublicationItems.revisionId,
+              })
+              .from(storefrontContentPublicationItems)
+              .where(
+                and(
+                  eq(
+                    storefrontContentPublicationItems.publicationId,
+                    activeRelease.contentPublicationId,
+                  ),
+                  eq(storefrontContentPublicationItems.itemType, "template"),
+                  isNull(storefrontContentPublicationItems.deletedAt),
+                ),
+              )
+          ).map((item) => [item.contentId, item.revisionId] as const)
+        : [],
+    );
 
     const templates = await Promise.all(
       templateRows.map(async (template) => {
@@ -1544,6 +1572,7 @@ export const storefrontThemeDal = {
                 }),
           draftRevisionId: template.draftRevisionId,
           publishedRevisionId: template.publishedRevisionId,
+          liveRevisionId: liveRevisions.get(template.id) ?? null,
           draftGeneration: template.draftGeneration ?? 1,
           version,
         };
@@ -3216,6 +3245,17 @@ export const storefrontThemeDal = {
       previousActiveReleaseId: template.activeReleaseId,
       previousPublishedRevisionId: template.publishedRevisionId,
       previousPublishedSourceRevisionId: template.publishedSourceRevisionId,
+      /**
+       * The pending layout this publish also recorded as published, and the
+       * revision its row named before, so a failed deploy can put it back.
+       */
+      previousShell:
+        pendingShell && shell
+          ? {
+              templateId: pendingShell.id,
+              publishedRevisionId: shell.publishedRevisionId,
+            }
+          : null,
       sourceRevisionId,
       // The page's row moves on only when its draft was written above; a
       // publish that seals only the shell, or republishes the same draft,
@@ -3248,7 +3288,17 @@ export const storefrontThemeDal = {
       ),
     };
   },
-  /** Compensates only this failed activation; never rewinds draft/OCC generations. */
+  /**
+   * Compensates only this failed activation; never rewinds draft/OCC
+   * generations.
+   *
+   * Everything the publish recorded as published goes back: the page's row
+   * and the layout's, which travelled with it. Left at the failed revision,
+   * the layout's edit read as published and no page offered to publish it
+   * again. The release is invalidated: its artifact never reached the Worker
+   * and its content never went live, so release history must not offer it as
+   * one to roll back to.
+   */
   async restoreFailedPublish(data: {
     storefrontId: string;
     themeId: string;
@@ -3258,8 +3308,24 @@ export const storefrontThemeDal = {
     previousActiveReleaseId: string | null;
     previousPublishedRevisionId: string | null;
     previousPublishedSourceRevisionId: string | null;
+    previousShell?: {
+      templateId: string;
+      publishedRevisionId: string | null;
+    } | null;
   }): Promise<void> {
     const now = new Date().toISOString();
+    const shellRestore = data.previousShell
+      ? [
+          env.DATABASE.prepare(
+            `UPDATE storefront_theme_templates SET published_revision_id = ?1, updated_at = ?2 WHERE id = ?3 AND theme_id = ?4`,
+          ).bind(
+            data.previousShell.publishedRevisionId,
+            now,
+            data.previousShell.templateId,
+            data.themeId,
+          ),
+        ]
+      : [];
     await env.DATABASE.batch([
       env.DATABASE.prepare(
         `
@@ -3287,6 +3353,10 @@ export const storefrontThemeDal = {
       env.DATABASE.prepare(
         `UPDATE storefront_theme_templates SET published_revision_id = ?1, updated_at = ?2 WHERE id = ?3`,
       ).bind(data.previousPublishedRevisionId, now, data.templateId),
+      ...shellRestore,
+      env.DATABASE.prepare(
+        `UPDATE storefront_releases SET status = 'invalidated', updated_at = ?1 WHERE id = ?2 AND storefront_id = ?3`,
+      ).bind(now, data.releaseId, data.storefrontId),
     ]);
   },
 };

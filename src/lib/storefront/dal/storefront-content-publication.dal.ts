@@ -6,11 +6,16 @@ import {
   storefrontContentPublications,
   storefrontPages,
   storefrontPageRevisions,
+  storefrontReleases,
   storefrontThemeTemplateRevisions,
   storefrontThemeTemplates,
   storefrontThemes,
+  storefronts,
 } from "@/db/storefront.schema";
-import type { StorefrontTemplateType } from "@/db/storefront.schema";
+import type {
+  StorefrontPageDocument,
+  StorefrontTemplateType,
+} from "@/db/storefront.schema";
 import type {
   StorefrontContentPublicationDTO,
   StorefrontContentPublicationItemDTO,
@@ -19,6 +24,7 @@ import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 import { isStorefrontTemplateType } from "../dto/storefront-content-publication.dto";
 import { normalizeDocumentRowIds } from "../editor/normalize-row-ids";
+import { DEPLOYED_THEME_BUILD_METADATA_KEY } from "../service/theme-worker-deployment-state";
 
 export type ThemeContentBuildPreconditions = {
   storefrontId: string;
@@ -123,6 +129,152 @@ function collectAssetKeys(
         })()
       : document,
   );
+}
+
+type CarriedItemType = "template" | "page";
+
+/**
+ * The revision each item a publish does not ship goes into the new release at.
+ *
+ * A template's or Page's `published_revision_id` records the revision its own
+ * last publish chose. It is not what visitors see: that is the active
+ * release's publication. The two part when a rollback moves the live pointer
+ * back, which it does without touching any row. Reading the rows for every
+ * item a publish carries over then put back each page's rolled-away content
+ * the moment any one page was published.
+ *
+ * So an item starts from what the active release pins. A row revision the
+ * active release does not serve still wins when no deployed release ever
+ * served it: that is a publish waiting for its first release (a Page published
+ * from the Dashboard goes live with the next Theme publish), or a revision a
+ * manifest migration rewrote in place of the published one. A row revision
+ * that a deployed release served and the active one does not is one a
+ * rollback took off the storefront, and stays off.
+ *
+ * "Deployed" is the release's own deployment record, written only after its
+ * artifact reached the Worker: a publish whose deploy failed is restored, and
+ * the content it sealed never went live, so it was not rolled away either.
+ *
+ * With no active release of this Theme there is nothing to start from, and
+ * the rows are what an initial publish has always carried.
+ *
+ * Returns `type:contentId` to revision id; an absent key is not carried.
+ */
+export async function resolveCarriedRevisions(data: {
+  storefrontId: string;
+  themeId: string;
+  items: ReadonlyArray<{
+    itemType: CarriedItemType;
+    contentId: string;
+    rowRevisionId: string | null;
+  }>;
+}): Promise<Map<string, string>> {
+  const db = await getDb();
+  const keyOf = (itemType: CarriedItemType, contentId: string) =>
+    `${itemType}:${contentId}`;
+  const carried = new Map<string, string>();
+
+  const [live] = await db
+    .select({ publicationId: storefrontReleases.contentPublicationId })
+    .from(storefronts)
+    .innerJoin(
+      storefrontReleases,
+      eq(storefrontReleases.id, storefronts.activeReleaseId),
+    )
+    .where(
+      and(
+        eq(storefronts.id, data.storefrontId),
+        eq(storefrontReleases.storefrontId, data.storefrontId),
+        eq(storefrontReleases.themeId, data.themeId),
+        isNull(storefronts.deletedAt),
+        isNull(storefrontReleases.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (!live?.publicationId) {
+    for (const item of data.items)
+      if (item.rowRevisionId)
+        carried.set(keyOf(item.itemType, item.contentId), item.rowRevisionId);
+    return carried;
+  }
+
+  const pinned = new Map(
+    (
+      await db
+        .select({
+          itemType: storefrontContentPublicationItems.itemType,
+          contentId: storefrontContentPublicationItems.contentId,
+          revisionId: storefrontContentPublicationItems.revisionId,
+        })
+        .from(storefrontContentPublicationItems)
+        .where(
+          and(
+            eq(
+              storefrontContentPublicationItems.publicationId,
+              live.publicationId,
+            ),
+            isNull(storefrontContentPublicationItems.deletedAt),
+          ),
+        )
+    ).map((item) => [
+      keyOf(item.itemType as CarriedItemType, item.contentId),
+      item.revisionId,
+    ]),
+  );
+
+  // Only rows that disagree with the live release need their history read;
+  // without a rollback (or a pending publish) there are none.
+  const disagreeing = data.items.filter(
+    (item): item is typeof item & { rowRevisionId: string } =>
+      item.rowRevisionId !== null &&
+      pinned.get(keyOf(item.itemType, item.contentId)) !== item.rowRevisionId,
+  );
+  const servedBefore = new Set<string>();
+  // D1 caps bound parameters per statement.
+  for (let start = 0; start < disagreeing.length; start += 50) {
+    const chunk = disagreeing.slice(start, start + 50);
+    const rows = await db
+      .select({
+        itemType: storefrontContentPublicationItems.itemType,
+        contentId: storefrontContentPublicationItems.contentId,
+        revisionId: storefrontContentPublicationItems.revisionId,
+      })
+      .from(storefrontContentPublicationItems)
+      .innerJoin(
+        storefrontReleases,
+        eq(
+          storefrontReleases.contentPublicationId,
+          storefrontContentPublicationItems.publicationId,
+        ),
+      )
+      .where(
+        and(
+          eq(storefrontReleases.storefrontId, data.storefrontId),
+          sql`json_extract(${storefrontReleases.metadata}, ${`$.${DEPLOYED_THEME_BUILD_METADATA_KEY}`}) IS NOT NULL`,
+          inArray(
+            storefrontContentPublicationItems.revisionId,
+            chunk.map((item) => item.rowRevisionId),
+          ),
+          isNull(storefrontContentPublicationItems.deletedAt),
+        ),
+      );
+    for (const row of rows)
+      servedBefore.add(
+        `${keyOf(row.itemType as CarriedItemType, row.contentId)}:${row.revisionId}`,
+      );
+  }
+
+  for (const item of data.items) {
+    const key = keyOf(item.itemType, item.contentId);
+    const pin = pinned.get(key);
+    const rolledAway =
+      item.rowRevisionId !== null &&
+      servedBefore.has(`${key}:${item.rowRevisionId}`);
+    const revisionId =
+      item.rowRevisionId && !rolledAway ? item.rowRevisionId : pin;
+    if (revisionId) carried.set(key, revisionId);
+  }
+  return carried;
 }
 
 export const storefrontContentPublicationDal = {
@@ -553,10 +705,10 @@ export const storefrontContentPublicationDal = {
       );
     }
 
-    const publishedTemplates = await db
+    const templateRows = await db
       .select({
         id: storefrontThemeTemplates.id,
-        revisionId: storefrontThemeTemplates.publishedRevisionId,
+        rowRevisionId: storefrontThemeTemplates.publishedRevisionId,
         routePath: storefrontThemeTemplates.routePath,
         type: storefrontThemeTemplates.type,
       })
@@ -567,32 +719,78 @@ export const storefrontContentPublicationDal = {
           isNull(storefrontThemeTemplates.deletedAt),
         ),
       );
-
-    // Capture every currently published content reference. The target
-    // template is replaced with the revision being published; all other
-    // templates/pages remain exactly as they were in this release.
-    const publishedPages = await db
+    const pageRows = await db
       .select({
         id: storefrontPages.id,
-        revisionId: storefrontPages.publishedRevisionId,
+        rowRevisionId: storefrontPages.publishedRevisionId,
         handle: storefrontPages.handle,
         draftRevisionId: storefrontPages.draftRevisionId,
-        document: storefrontPageRevisions.document,
       })
       .from(storefrontPages)
-      .innerJoin(
-        storefrontPageRevisions,
-        and(
-          eq(storefrontPageRevisions.id, storefrontPages.publishedRevisionId),
-          eq(storefrontPageRevisions.pageId, storefrontPages.id),
-        ),
-      )
       .where(
         and(
           eq(storefrontPages.storefrontId, data.storefrontId),
           isNull(storefrontPages.deletedAt),
         ),
       );
+
+    // The target template is replaced with the revision being published (and
+    // a pending shell with its draft); all other templates/pages remain
+    // exactly as they are in the active release (`resolveCarriedRevisions`).
+    const carried = await resolveCarriedRevisions({
+      storefrontId: data.storefrontId,
+      themeId: data.themeId,
+      items: [
+        ...templateRows.map((row) => ({
+          itemType: "template" as const,
+          contentId: row.id,
+          rowRevisionId: row.rowRevisionId,
+        })),
+        ...pageRows.map((row) => ({
+          itemType: "page" as const,
+          contentId: row.id,
+          rowRevisionId: row.rowRevisionId,
+        })),
+      ],
+    });
+    const publishedTemplates = templateRows.map((row) => ({
+      ...row,
+      revisionId: carried.get(`template:${row.id}`) ?? null,
+    }));
+
+    const pageRevisionIds = pageRows.flatMap((page) => {
+      const revisionId = carried.get(`page:${page.id}`);
+      return revisionId ? [revisionId] : [];
+    });
+    const pageRevisions = new Map<
+      string,
+      { pageId: string; document: StorefrontPageDocument }
+    >();
+    // D1 caps bound parameters per statement.
+    for (let start = 0; start < pageRevisionIds.length; start += 50) {
+      for (const revision of await db
+        .select({
+          id: storefrontPageRevisions.id,
+          pageId: storefrontPageRevisions.pageId,
+          document: storefrontPageRevisions.document,
+        })
+        .from(storefrontPageRevisions)
+        .where(
+          inArray(
+            storefrontPageRevisions.id,
+            pageRevisionIds.slice(start, start + 50),
+          ),
+        ))
+        pageRevisions.set(revision.id, revision);
+    }
+    // A Page whose revision is gone is left out, as the join used to.
+    const publishedPages = pageRows.flatMap((page) => {
+      const revisionId = carried.get(`page:${page.id}`);
+      const revision = revisionId ? pageRevisions.get(revisionId) : undefined;
+      return revisionId && revision?.pageId === page.id
+        ? [{ ...page, revisionId, document: revision.document }]
+        : [];
+    });
 
     const pageHandles = new Map<string, string>();
     for (const page of publishedPages) {
@@ -802,10 +1000,10 @@ export const storefrontContentPublicationDal = {
    * an author knows it by.
    *
    * Mirrors how a publication is assembled: the template being published and
-   * the shell (which travels with every publish) at their drafts, and every
-   * other template and page at what is already published. Checked before the
-   * publish is confirmed, so it answers about the release the author is about
-   * to make rather than the one already out.
+   * a pending shell (which travels with every publish) at their drafts, and
+   * every other template and page as `resolveForTheme` carries them. Checked
+   * before the publish is confirmed, so it answers about the release the
+   * author is about to make rather than the one already out.
    */
   async listDocumentsForPublish(data: {
     storefrontId: string;
@@ -829,47 +1027,86 @@ export const storefrontContentPublicationDal = {
           isNull(storefrontThemeTemplates.deletedAt),
         ),
       );
+    const pageRows = await db
+      .select({
+        id: storefrontPages.id,
+        handle: storefrontPages.handle,
+        publishedRevisionId: storefrontPages.publishedRevisionId,
+      })
+      .from(storefrontPages)
+      .where(
+        and(
+          eq(storefrontPages.storefrontId, data.storefrontId),
+          isNull(storefrontPages.deletedAt),
+        ),
+      );
+    const carried = await resolveCarriedRevisions({
+      storefrontId: data.storefrontId,
+      themeId: data.themeId,
+      items: [
+        ...templates.map((template) => ({
+          itemType: "template" as const,
+          contentId: template.id,
+          rowRevisionId: template.publishedRevisionId,
+        })),
+        ...pageRows.map((page) => ({
+          itemType: "page" as const,
+          contentId: page.id,
+          rowRevisionId: page.publishedRevisionId,
+        })),
+      ],
+    });
+
     const templateRevisions = new Map<string, string>();
     for (const template of templates) {
-      const revisionId =
-        template.id === data.templateId || template.type === "layout"
-          ? template.draftRevisionId
-          : template.publishedRevisionId;
+      // The same pending-shell test `publishTemplate` applies.
+      const shipsDraft =
+        template.id === data.templateId ||
+        (template.type === "layout" &&
+          Boolean(template.draftRevisionId) &&
+          template.draftRevisionId !== template.publishedRevisionId);
+      const revisionId = shipsDraft
+        ? template.draftRevisionId
+        : carried.get(`template:${template.id}`);
       if (revisionId) {
         templateRevisions.set(revisionId, template.routePath ?? template.name);
       }
     }
+    const pageRevisions = new Map<string, string>();
+    for (const page of pageRows) {
+      const revisionId = carried.get(`page:${page.id}`);
+      if (revisionId) pageRevisions.set(revisionId, page.handle);
+    }
 
+    const readChunked = async <T>(
+      ids: string[],
+      read: (chunk: string[]) => Promise<T[]>,
+    ): Promise<T[]> => {
+      const rows: T[] = [];
+      // D1 caps bound parameters per statement.
+      for (let start = 0; start < ids.length; start += 50)
+        rows.push(...(await read(ids.slice(start, start + 50))));
+      return rows;
+    };
     const [revisionRows, pages] = await Promise.all([
-      templateRevisions.size > 0
-        ? db
-            .select({
-              id: storefrontThemeTemplateRevisions.id,
-              document: storefrontThemeTemplateRevisions.document,
-            })
-            .from(storefrontThemeTemplateRevisions)
-            .where(
-              inArray(storefrontThemeTemplateRevisions.id, [
-                ...templateRevisions.keys(),
-              ]),
-            )
-        : Promise.resolve([]),
-      db
-        .select({
-          document: storefrontPageRevisions.document,
-          handle: storefrontPages.handle,
-        })
-        .from(storefrontPages)
-        .innerJoin(
-          storefrontPageRevisions,
-          eq(storefrontPageRevisions.id, storefrontPages.publishedRevisionId),
-        )
-        .where(
-          and(
-            eq(storefrontPages.storefrontId, data.storefrontId),
-            isNull(storefrontPages.deletedAt),
-          ),
-        ),
+      readChunked([...templateRevisions.keys()], (chunk) =>
+        db
+          .select({
+            id: storefrontThemeTemplateRevisions.id,
+            document: storefrontThemeTemplateRevisions.document,
+          })
+          .from(storefrontThemeTemplateRevisions)
+          .where(inArray(storefrontThemeTemplateRevisions.id, chunk)),
+      ),
+      readChunked([...pageRevisions.keys()], (chunk) =>
+        db
+          .select({
+            id: storefrontPageRevisions.id,
+            document: storefrontPageRevisions.document,
+          })
+          .from(storefrontPageRevisions)
+          .where(inArray(storefrontPageRevisions.id, chunk)),
+      ),
     ]);
     return [
       ...revisionRows.map((row) => ({
@@ -877,7 +1114,7 @@ export const storefrontContentPublicationDal = {
         document: row.document as unknown,
       })),
       ...pages.map((row) => ({
-        label: `/pages/${row.handle}`,
+        label: `/pages/${pageRevisions.get(row.id) ?? ""}`,
         document: row.document as unknown,
       })),
     ];

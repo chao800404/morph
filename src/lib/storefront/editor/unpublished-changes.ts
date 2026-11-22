@@ -111,6 +111,11 @@ export type TemplatePublishState = Readonly<{
   id: string;
   draftRevisionId?: string | null;
   publishedRevisionId?: string | null;
+  /**
+   * What the active release serves for it (null: nothing). Absent when the
+   * context did not say, which compares as the row alone.
+   */
+  liveRevisionId?: string | null;
 }>;
 
 export type ContentPublishDiff =
@@ -120,6 +125,21 @@ function hasUnpublishedDraft(template: TemplatePublishState): boolean {
   return Boolean(
     template.draftRevisionId &&
     template.draftRevisionId !== template.publishedRevisionId,
+  );
+}
+
+/**
+ * The page's side of `publishTemplate`'s "already live": its draft is the one
+ * it last published, and the live release serves that draft. After a rollback
+ * the second half fails while the first holds, and a publish puts the draft
+ * back; reading only the row said "Published" and kept Publish disabled.
+ */
+function pageHasUnpublishedChanges(page: TemplatePublishState): boolean {
+  if (hasUnpublishedDraft(page)) return true;
+  return Boolean(
+    page.draftRevisionId &&
+    page.liveRevisionId !== undefined &&
+    page.liveRevisionId !== page.draftRevisionId,
   );
 }
 
@@ -141,7 +161,7 @@ export function describeContentChanges(scope: {
   page: TemplatePublishState | null | undefined;
   layout: TemplatePublishState | null | undefined;
 }): ContentPublishDiff {
-  if (scope.page && hasUnpublishedDraft(scope.page)) {
+  if (scope.page && pageHasUnpublishedChanges(scope.page)) {
     return { changed: true, reason: "page" };
   }
   if (

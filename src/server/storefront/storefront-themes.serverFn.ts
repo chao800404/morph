@@ -772,6 +772,7 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
                     result.previousPublishedRevisionId,
                   previousPublishedSourceRevisionId:
                     result.previousPublishedSourceRevisionId,
+                  previousShell: result.previousShell,
                 }),
               deploy: () =>
                 deployReleaseArtifact({

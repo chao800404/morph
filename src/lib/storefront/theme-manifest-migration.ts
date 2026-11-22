@@ -29,7 +29,18 @@ export type ThemeManifestMigrationTarget = Readonly<{
   baseDocument?: unknown;
   draftGeneration?: number;
   draftRevision: ThemeManifestMigrationRevision | null;
+  /**
+   * The revision the next publish carries for this item, which the migrated
+   * copy replaces as the row's published revision.
+   */
   publishedRevision: ThemeManifestMigrationRevision | null;
+  /**
+   * The row's own published pointer, when it is not `publishedRevision`: a
+   * rollback left the row naming a revision the live release no longer
+   * serves. The write is still checked against the row as it stands; absent
+   * means the pointer is `publishedRevision`.
+   */
+  publishedPointerId?: string | null;
   maxRevisionVersion: number;
 }>;
 
@@ -188,7 +199,10 @@ function planTarget(args: {
       kind: target.kind,
       id: target.id,
       expectedDraftRevisionId: target.draftRevision?.id ?? null,
-      expectedPublishedRevisionId: target.publishedRevision?.id ?? null,
+      expectedPublishedRevisionId:
+        target.publishedPointerId !== undefined
+          ? target.publishedPointerId
+          : (target.publishedRevision?.id ?? null),
       ...(target.draftGeneration === undefined
         ? {}
         : { expectedDraftGeneration: target.draftGeneration }),

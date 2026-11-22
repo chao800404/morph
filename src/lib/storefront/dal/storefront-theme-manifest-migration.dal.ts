@@ -17,6 +17,7 @@ import {
   type ThemeManifestMigrationTarget,
 } from "../theme-manifest-migration";
 import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
+import { resolveCarriedRevisions } from "./storefront-content-publication.dal";
 import { and, asc, eq, isNull } from "drizzle-orm";
 
 function revisionFromRow(row: {
@@ -40,15 +41,27 @@ function targetFromRevisions(args: {
   draftGeneration?: number;
   draftRevisionId: string | null;
   publishedRevisionId: string | null;
+  /** What the next publish carries for it (`resolveCarriedRevisions`). */
+  carriedRevisionId: string | null;
   revisions: readonly ThemeManifestMigrationRevision[];
 }): ThemeManifestMigrationTarget {
   const draftRevision =
     args.revisions.find((revision) => revision.id === args.draftRevisionId) ??
     null;
+  // After a rollback the row can name a revision the live release no longer
+  // serves. Migrating that one would make a fresh, never-served copy of the
+  // rolled-away content, which the next publish then carries. The copy is
+  // made of what the next publish would carry instead; the row's pointer is
+  // still what the write is checked against.
+  const rolledAway =
+    args.publishedRevisionId !== null &&
+    args.carriedRevisionId !== args.publishedRevisionId;
+  const publishedSourceId = rolledAway
+    ? args.carriedRevisionId
+    : args.publishedRevisionId;
   const publishedRevision =
-    args.revisions.find(
-      (revision) => revision.id === args.publishedRevisionId,
-    ) ?? null;
+    args.revisions.find((revision) => revision.id === publishedSourceId) ??
+    null;
   return {
     kind: args.kind,
     id: args.id,
@@ -60,6 +73,7 @@ function targetFromRevisions(args: {
       : { draftGeneration: args.draftGeneration }),
     draftRevision,
     publishedRevision,
+    ...(rolledAway ? { publishedPointerId: args.publishedRevisionId } : {}),
     maxRevisionVersion: args.revisions.reduce(
       (maxVersion, revision) => Math.max(maxVersion, revision.version),
       0,
@@ -187,6 +201,23 @@ export async function readThemeManifestMigrationSnapshot(
     pageRevisionsByOwner.set(row.pageId, revisions);
   }
 
+  const carried = await resolveCarriedRevisions({
+    storefrontId,
+    themeId,
+    items: [
+      ...templateRows.map((row) => ({
+        itemType: "template" as const,
+        contentId: row.id,
+        rowRevisionId: row.publishedRevisionId,
+      })),
+      ...pageRows.map((row) => ({
+        itemType: "page" as const,
+        contentId: row.id,
+        rowRevisionId: row.publishedRevisionId,
+      })),
+    ],
+  });
+
   const templates = templateRows.map((row) =>
     targetFromRevisions({
       kind: "template",
@@ -195,6 +226,7 @@ export async function readThemeManifestMigrationSnapshot(
       draftGeneration: row.draftGeneration ?? 1,
       draftRevisionId: row.draftRevisionId,
       publishedRevisionId: row.publishedRevisionId,
+      carriedRevisionId: carried.get(`template:${row.id}`) ?? null,
       revisions: templateRevisionsByOwner.get(row.id) ?? [],
     }),
   );
@@ -204,6 +236,7 @@ export async function readThemeManifestMigrationSnapshot(
       id: row.id,
       draftRevisionId: row.draftRevisionId,
       publishedRevisionId: row.publishedRevisionId,
+      carriedRevisionId: carried.get(`page:${row.id}`) ?? null,
       revisions: pageRevisionsByOwner.get(row.id) ?? [],
     }),
   );

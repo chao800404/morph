@@ -12,6 +12,18 @@ import {
   prepareTemplateDocumentWrite,
 } from "./storefront-theme.dal";
 import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
+import { storefrontReleaseDal } from "./storefront-release.dal";
+import { storefrontPageDal } from "./storefront-page.dal";
+import { describeContentChanges } from "../editor/unpublished-changes";
+import {
+  applyThemeManifestMigration,
+  readThemeManifestMigrationSnapshot,
+} from "./storefront-theme-manifest-migration.dal";
+import { buildThemeManifestMigrationPlan } from "../theme-manifest-migration";
+import {
+  THEME_START_BUILD_DEPENDENCIES,
+  THEME_START_RUNTIME_DEPENDENCIES,
+} from "../compiler/theme-start-toolchain";
 import { TEMPLATE_DRAFT_GENERATION_MISMATCH } from "../theme-write-errors";
 import { env as workerEnv } from "cloudflare:workers";
 import { createThemePreviewContentSnapshot } from "../compiler/theme-preview-content";
@@ -6372,5 +6384,778 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
     await expect(publish(twoRoutes(true))).resolves.toMatchObject({
       releaseId: expect.any(String),
     });
+  });
+});
+
+/**
+ * A rollback moves only the live pointer (`activateRelease`); template and
+ * Page rows keep recording the revision their own last publish sealed. The
+ * next publish must start from the release the rollback restored and replace
+ * only what that publish ships, not quietly bring back every other page's
+ * rolled-away content from those rows.
+ *
+ * Driven through the product's own publish (`publishTemplate`, the Dashboard
+ * Page publish) and rollback (`activateRelease`); a draft save is seeded as
+ * the row state a draft write leaves (new revision, draft pointer, generation).
+ */
+describe("publishing one page after a rollback", () => {
+  const SOURCE = "22222222-2222-4222-8222-222222222222";
+  const BUILD = "33333333-3333-4333-8333-333333333333";
+  const PAGE = "page-faq";
+
+  const documentOf = (title: string) => ({
+    version: 1 as const,
+    sections: [{ id: "hero", type: "hero", enabled: true, props: { title } }],
+  });
+  const titleOf = (document: unknown) => {
+    const parsed =
+      typeof document === "string" ? JSON.parse(document) : document;
+    return (parsed as { sections?: { props?: { title?: string } }[] } | null)
+      ?.sections?.[0]?.props?.title;
+  };
+
+  const insertTemplate = (
+    id: string,
+    type: string,
+    routePath: string | null,
+    title: string,
+  ) => {
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, route_path, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+         VALUES (?, 'theme-a', ?, ?, ?, ?, ?, NULL, 1, 'now', 'now')`,
+      )
+      .run(
+        id,
+        type,
+        id,
+        routePath,
+        JSON.stringify(documentOf(title)),
+        `rev-${title}`,
+      );
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions (id, template_id, version, document, created_at)
+         VALUES (?, ?, 1, ?, 'now')`,
+      )
+      .run(`rev-${title}`, id, JSON.stringify(documentOf(title)));
+  };
+
+  /** The rows a draft write leaves: a new revision the draft points at. */
+  const saveDraft = (templateId: string, title: string) => {
+    const { version } = sqlite
+      .prepare(
+        "SELECT MAX(version) AS version FROM storefront_theme_template_revisions WHERE template_id = ?",
+      )
+      .get(templateId) as { version: number };
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions (id, template_id, version, document, created_at)
+         VALUES (?, ?, ?, ?, 'now')`,
+      )
+      .run(
+        `rev-${title}`,
+        templateId,
+        version + 1,
+        JSON.stringify(documentOf(title)),
+      );
+    sqlite
+      .prepare(
+        `UPDATE storefront_theme_templates
+           SET draft_revision_id = ?, document = ?, draft_generation = draft_generation + 1
+         WHERE id = ?`,
+      )
+      .run(`rev-${title}`, JSON.stringify(documentOf(title)), templateId);
+  };
+
+  const templateRow = (id: string) =>
+    sqlite
+      .prepare(
+        "SELECT id, draft_revision_id AS draftRevisionId, published_revision_id AS publishedRevisionId, draft_generation AS draftGeneration FROM storefront_theme_templates WHERE id = ?",
+      )
+      .get(id) as {
+      id: string;
+      draftRevisionId: string;
+      publishedRevisionId: string | null;
+      draftGeneration: number;
+    };
+
+  /**
+   * The Theme publish as the server function runs it: activate, then record
+   * the deployment once the artifact reached the Worker. `deployed: false` is
+   * a publish whose deploy failed and was restored.
+   */
+  const publish = async (
+    templateId: string,
+    { deployed = true }: { deployed?: boolean } = {},
+  ) => {
+    const result = await publishOnly(templateId);
+    if (!result?.releaseId || !result.releaseCreated) return result;
+    if (deployed) {
+      await storefrontReleaseDal.recordDeployedThemeBuild({
+        storefrontId: "storefront-a",
+        releaseId: result.releaseId,
+        themeBuildId: result.themeBuildId,
+      });
+    } else {
+      await storefrontThemeDal.restoreFailedPublish({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId,
+        releaseId: result.releaseId,
+        releaseGeneration: result.releaseGeneration,
+        previousActiveReleaseId: result.previousActiveReleaseId,
+        previousPublishedRevisionId: result.previousPublishedRevisionId,
+        previousPublishedSourceRevisionId:
+          result.previousPublishedSourceRevisionId,
+        previousShell: result.previousShell,
+      });
+    }
+    return result;
+  };
+
+  const publishOnly = (templateId: string) => {
+    const row = templateRow(templateId);
+    const { releaseGeneration } = sqlite
+      .prepare(
+        "SELECT release_generation AS releaseGeneration FROM storefront_themes WHERE id = 'theme-a'",
+      )
+      .get() as { releaseGeneration: number };
+    return storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: workspaceRevisionFiles,
+      verifySourceRevision: acceptRevision,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId,
+      sourceRevisionId: SOURCE,
+      themeBuildId: BUILD,
+      expectedDraftRevisionId: row.draftRevisionId,
+      expectedDraftGeneration: row.draftGeneration,
+      expectedReleaseGeneration: releaseGeneration,
+    });
+  };
+
+  /** The Dashboard's Page publish; returns the revision it published. */
+  const publishPage = async (title: string) => {
+    const exists = sqlite
+      .prepare("SELECT id FROM storefront_pages WHERE id = ?")
+      .get(PAGE);
+    if (!exists) {
+      await storefrontPageDal.create({
+        id: PAGE,
+        storefrontId: "storefront-a",
+        title: "FAQ",
+        handle: "faq",
+        publish: true,
+        createdBy: "user-a",
+      });
+    }
+    await storefrontPageDal.update({
+      id: PAGE,
+      storefrontId: "storefront-a",
+      title: "FAQ",
+      handle: "faq",
+      document: { ...documentOf(title), handle: "faq" },
+      publish: true,
+      hasPublishedVersion: true,
+      createdBy: "user-a",
+    });
+    return (
+      sqlite
+        .prepare("SELECT published_revision_id AS id FROM storefront_pages")
+        .get() as { id: string }
+    ).id;
+  };
+
+  const active = () =>
+    sqlite
+      .prepare(
+        `SELECT s.active_release_id AS releaseId, r.content_publication_id AS publicationId
+           FROM storefronts s JOIN storefront_releases r ON r.id = s.active_release_id
+          WHERE s.id = 'storefront-a'`,
+      )
+      .get() as { releaseId: string; publicationId: string };
+
+  const pins = (publicationId: string) =>
+    Object.fromEntries(
+      (
+        sqlite
+          .prepare(
+            "SELECT content_id AS contentId, revision_id AS revisionId FROM storefront_content_publication_items WHERE publication_id = ? AND deleted_at IS NULL",
+          )
+          .all(publicationId) as { contentId: string; revisionId: string }[]
+      ).map((item) => [item.contentId, item.revisionId]),
+    );
+
+  const rollBackTo = (releaseId: string) =>
+    storefrontReleaseDal.activateRelease({
+      storefrontId: "storefront-a",
+      releaseId,
+      expectedActiveReleaseId: active().releaseId,
+    });
+
+  beforeEach(() => {
+    // The Page DAL writes through Drizzle's batch, which the better-sqlite3
+    // driver lacks; D1's is a transaction.
+    const db = drizzle(sqlite, { schema: storefrontSchema });
+    vi.mocked(getDb).mockResolvedValue(
+      Object.assign(db, {
+        batch: async (queries: Array<{ run: () => unknown }>) =>
+          sqlite.transaction(() => queries.map((query) => query.run()))(),
+      }) as never,
+    );
+    sqlite.exec(`
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+        VALUES ('${SOURCE}', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');
+      DROP TABLE storefront_page_revisions;
+      CREATE TABLE storefront_page_revisions (
+        id text PRIMARY KEY NOT NULL,
+        page_id text NOT NULL,
+        version integer NOT NULL,
+        document text NOT NULL,
+        created_by text NOT NULL,
+        created_at text NOT NULL,
+        published_at text
+      );
+    `);
+    insertTemplate("tpl-home", "index", null, "A0");
+    insertTemplate("tpl-about", "page", "/about", "B1");
+    insertTemplate("tpl-shell", "layout", null, "L1");
+  });
+
+  /**
+   * Release 1: B1, L1, P1. Release 2: B2, L2, P2. Rolled back to release 1,
+   * then only the home page (A1) is published.
+   */
+  const rollBackThenPublishHome = async (
+    afterRollback?: () => Promise<void> | void,
+  ) => {
+    const p1 = await publishPage("P1");
+    await publish("tpl-about");
+    const release1 = active();
+
+    saveDraft("tpl-about", "B2");
+    saveDraft("tpl-shell", "L2");
+    const p2 = await publishPage("P2");
+    await publish("tpl-about");
+    const release2 = active();
+    expect(pins(release2.publicationId)).toEqual({
+      "tpl-about": "rev-B2",
+      "tpl-shell": "rev-L2",
+      [PAGE]: p2,
+    });
+
+    await rollBackTo(release1.releaseId);
+    expect(active().releaseId).toBe(release1.releaseId);
+    await afterRollback?.();
+
+    saveDraft("tpl-home", "A1");
+    const result = await publish("tpl-home");
+    return { p1, p2, release1, release2, result, release3: active() };
+  };
+
+  it("pins the other page at the revision the restored release served", async () => {
+    const { release1, release2, result, release3 } =
+      await rollBackThenPublishHome();
+
+    expect(result).toMatchObject({ releaseCreated: true, unchanged: false });
+    expect([release1.releaseId, release2.releaseId]).not.toContain(
+      release3.releaseId,
+    );
+    // What the public route reads for the active release.
+    expect(
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedRouteDocument({
+          publicationId: release3.publicationId,
+          routePath: "/about",
+        }),
+      ),
+    ).toBe("B1");
+    expect(pins(release3.publicationId)["tpl-about"]).toBe("rev-B1");
+    // The page this publish was for does go live.
+    expect(pins(release3.publicationId)["tpl-home"]).toBe("rev-A1");
+    expect(
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedTemplateDocument({
+          publicationId: release3.publicationId,
+          templateType: "index",
+        }),
+      ),
+    ).toBe("A1");
+  });
+
+  it("keeps the shared layout at the restored release when this publish has no layout change", async () => {
+    const { release3 } = await rollBackThenPublishHome();
+
+    expect(
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedTemplateDocument({
+          publicationId: release3.publicationId,
+          templateType: "layout",
+        }),
+      ),
+    ).toBe("L1");
+    expect(pins(release3.publicationId)["tpl-shell"]).toBe("rev-L1");
+  });
+
+  it("keeps a storefront Page at the restored release", async () => {
+    const { p1, release3 } = await rollBackThenPublishHome();
+
+    expect(
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedPageDocument({
+          publicationId: release3.publicationId,
+          handle: "faq",
+        }),
+      ),
+    ).toBe("P1");
+    expect(pins(release3.publicationId)[PAGE]).toBe(p1);
+  });
+
+  it("still ships a layout edited after the rollback, since that edit is pending", async () => {
+    const { release3 } = await rollBackThenPublishHome(() =>
+      saveDraft("tpl-shell", "L3"),
+    );
+
+    expect(pins(release3.publicationId)["tpl-shell"]).toBe("rev-L3");
+    expect(templateRow("tpl-shell").publishedRevisionId).toBe("rev-L3");
+  });
+
+  it("still carries a Page published from the Dashboard after the rollback", async () => {
+    let p3 = "";
+    const { release3 } = await rollBackThenPublishHome(async () => {
+      p3 = await publishPage("P3");
+    });
+
+    // A Page publish records the author's choice on the row and goes live
+    // with the next release; no release has sealed it, so it is not one the
+    // rollback took away.
+    expect(pins(release3.publicationId)[PAGE]).toBe(p3);
+  });
+
+  it("keeps what a publish whose deploy failed sealed, since it never went live", async () => {
+    await publishPage("P1");
+    await publish("tpl-about");
+    const release1 = active();
+    const p2 = await publishPage("P2");
+    saveDraft("tpl-about", "B2");
+    saveDraft("tpl-shell", "L2");
+    await publish("tpl-about", { deployed: false });
+    expect(active().releaseId).toBe(release1.releaseId);
+
+    saveDraft("tpl-home", "A1");
+    await publish("tpl-home");
+
+    // Restored to its previous publish, the page is carried at it; the Page
+    // publish and the layout edit nobody saw live are still waiting, and go.
+    expect(pins(active().publicationId)).toEqual({
+      "tpl-home": "rev-A1",
+      "tpl-about": "rev-B1",
+      "tpl-shell": "rev-L2",
+      [PAGE]: p2,
+    });
+  });
+
+  /** `describeContentChanges` as the editor runs it, on its own context. */
+  const editorDiff = async (pageId: string) => {
+    const context = await storefrontThemeDal.findEditorContext(
+      "storefront-a",
+      "theme-a",
+    );
+    const byId = (id: string) =>
+      context!.templates.find((template) => template.id === id);
+    return describeContentChanges({
+      page: byId(pageId),
+      layout: byId("tpl-shell"),
+    });
+  };
+
+  it("shows a page the rollback took off the storefront as unpublished, and publishing it puts it back", async () => {
+    const { p1 } = await rollBackThenPublishHome();
+
+    // B's draft is the one it last published, but the live release serves
+    // B1: Publish is lit on B, as `publishTemplate` would publish it.
+    expect(await editorDiff("tpl-about")).toEqual({
+      changed: true,
+      reason: "page",
+    });
+    // The page just published and the layout nobody edited are not pending.
+    expect(await editorDiff("tpl-home")).toEqual({ changed: false });
+
+    const result = await publish("tpl-about");
+    expect(result).toMatchObject({ releaseCreated: true, unchanged: false });
+    // B2 goes back; everything else is what the active release served.
+    expect(pins(active().publicationId)).toEqual({
+      "tpl-home": "rev-A1",
+      "tpl-about": "rev-B2",
+      "tpl-shell": "rev-L1",
+      [PAGE]: p1,
+    });
+    expect(await editorDiff("tpl-about")).toEqual({ changed: false });
+  });
+
+  it("changes nothing in the editor's state without a rollback", async () => {
+    await publish("tpl-about");
+    saveDraft("tpl-about", "B2");
+    expect(await editorDiff("tpl-about")).toEqual({
+      changed: true,
+      reason: "page",
+    });
+    await publish("tpl-about");
+    expect(await editorDiff("tpl-about")).toEqual({ changed: false });
+    // Never published: pending, as before.
+    expect(await editorDiff("tpl-home")).toEqual({
+      changed: true,
+      reason: "page",
+    });
+    // An edit still reads as one.
+    saveDraft("tpl-about", "B3");
+    expect(await editorDiff("tpl-about")).toEqual({
+      changed: true,
+      reason: "page",
+    });
+  });
+
+  /** A Document write through the shared draft writer every editor write uses. */
+  const writeDocument = async (templateId: string, title: string) => {
+    const row = templateRow(templateId);
+    const write = await prepareTemplateDocumentWrite({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId,
+      document: documentOf(title),
+      sourceGeneration: 1,
+      draftRevisionId: row.draftRevisionId,
+      publishedRevisionId: row.publishedRevisionId,
+      expectedDraftGeneration: row.draftGeneration,
+      createdBy: "user-a",
+    });
+    await workerEnv.DATABASE.batch([write.guard, ...write.mutations]);
+    return write.result;
+  };
+  const revisionTitle = (revisionId: string) =>
+    titleOf(
+      (
+        sqlite
+          .prepare(
+            "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+          )
+          .get(revisionId) as { document: string }
+      ).document,
+    );
+
+  it("never edits a draft a publication pins in place, after a publish whose deploy failed", async () => {
+    await publish("tpl-about");
+    const release1 = active();
+    saveDraft("tpl-about", "B2");
+    const failed = await publish("tpl-about", { deployed: false });
+    expect(active().releaseId).toBe(release1.releaseId);
+    // Restored: the row says B1 again, while the failed release pins B2.
+    expect(templateRow("tpl-about")).toMatchObject({
+      draftRevisionId: "rev-B2",
+      publishedRevisionId: "rev-B1",
+    });
+    const failedPublication = (
+      sqlite
+        .prepare(
+          "SELECT content_publication_id AS id FROM storefront_releases WHERE id = ?",
+        )
+        .get(failed!.releaseId) as { id: string }
+    ).id;
+    expect(pins(failedPublication)["tpl-about"]).toBe("rev-B2");
+
+    const written = await writeDocument("tpl-about", "B3");
+
+    expect(written.draftRevisionId).not.toBe("rev-B2");
+    expect(templateRow("tpl-about").draftRevisionId).toBe(
+      written.draftRevisionId,
+    );
+    expect(revisionTitle("rev-B2")).toBe("B2");
+    expect(
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedRouteDocument({
+          publicationId: failedPublication,
+          routePath: "/about",
+        }),
+      ),
+    ).toBe("B2");
+  });
+
+  it("never edits a draft a Build Preview sealed in place, and a rolled-back-to release still serves its own revision", async () => {
+    await publish("tpl-about");
+    const release1 = active();
+    saveDraft("tpl-about", "B2");
+    await publish("tpl-about");
+    const release2 = active();
+    await rollBackTo(release1.releaseId);
+
+    // A draft the build sealed is pinned by the build's publication.
+    saveDraft("tpl-home", "A1");
+    const home = templateRow("tpl-home");
+    const { releaseGeneration } = sqlite
+      .prepare(
+        "SELECT release_generation AS releaseGeneration FROM storefront_themes WHERE id = 'theme-a'",
+      )
+      .get() as { releaseGeneration: number };
+    const sealed = await storefrontContentPublicationDal.sealForThemeBuild({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      sourceRevisionId: SOURCE,
+      templateId: "tpl-home",
+      expectedDraftRevisionId: home.draftRevisionId,
+      expectedDraftGeneration: home.draftGeneration,
+      expectedSourceGeneration: 1,
+      expectedReleaseGeneration: releaseGeneration,
+    });
+    const writtenHome = await writeDocument("tpl-home", "A2");
+    expect(writtenHome.draftRevisionId).not.toBe("rev-A1");
+    expect(revisionTitle("rev-A1")).toBe("A1");
+    expect(pins(sealed.id)["tpl-home"]).toBe("rev-A1");
+
+    // B's draft B2 is what release 2 pinned.
+    const writtenAbout = await writeDocument("tpl-about", "B3");
+    expect(writtenAbout.draftRevisionId).not.toBe("rev-B2");
+    expect(revisionTitle("rev-B2")).toBe("B2");
+    await rollBackTo(release2.releaseId);
+    expect(
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedRouteDocument({
+          publicationId: active().publicationId,
+          routePath: "/about",
+        }),
+      ),
+    ).toBe("B2");
+  });
+
+  it("restores the layout's row after a publish whose deploy failed, so its edit still reads as pending", async () => {
+    await publish("tpl-home");
+    await publish("tpl-about");
+    expect(await editorDiff("tpl-home")).toEqual({ changed: false });
+    saveDraft("tpl-shell", "L2");
+    saveDraft("tpl-about", "B2");
+    await publish("tpl-about", { deployed: false });
+
+    // The layout row is back at what the live release serves.
+    expect(templateRow("tpl-shell").publishedRevisionId).toBe("rev-L1");
+    // So a page with nothing of its own offers to publish the layout edit
+    // that never went live, rather than reading "Published".
+    expect(await editorDiff("tpl-home")).toEqual({
+      changed: true,
+      reason: "layout",
+    });
+    await publish("tpl-home");
+    expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L2");
+    expect(await editorDiff("tpl-home")).toEqual({ changed: false });
+  });
+
+  it("does not let a release whose deploy failed be activated", async () => {
+    await publish("tpl-about");
+    const release1 = active();
+    saveDraft("tpl-about", "B2");
+    const failed = await publish("tpl-about", { deployed: false });
+    expect(active().releaseId).toBe(release1.releaseId);
+
+    await expect(rollBackTo(failed!.releaseId)).rejects.toThrow(
+      "RELEASE_NOT_ACTIVATABLE",
+    );
+    expect(active().releaseId).toBe(release1.releaseId);
+  });
+
+  it("migrates the revision the live release serves, not one a rollback took away", async () => {
+    const legacyFiles = [
+      {
+        path: "package.json",
+        content: JSON.stringify({
+          dependencies: THEME_START_RUNTIME_DEPENDENCIES,
+          devDependencies: THEME_START_BUILD_DEPENDENCIES,
+        }),
+        mime: "application/json",
+        entry: 0,
+      },
+      {
+        path: "src/router.tsx",
+        content: "export const router = {};",
+        mime: "text/typescript",
+        entry: 0,
+      },
+      {
+        path: "src/routes/__root.tsx",
+        content: `import { createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: () => <main /> });`,
+        mime: "text/typescript",
+        entry: 0,
+      },
+      {
+        path: "src/routes/index.tsx",
+        content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/")({ component: () => <main /> });`,
+        mime: "text/typescript",
+        entry: 1,
+      },
+      {
+        path: "src/components/sections/Hero.tsx",
+        content: `export const contentFields = { title: { type: "text" } } as const;
+export default function Hero() { return <section />; }`,
+        mime: "text/typescript",
+        entry: 0,
+      },
+      {
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          entry: "src/routes/index.tsx",
+          router: {
+            framework: "tanstack-start",
+            previewAdapter: "tanstack-router-client",
+            routesDirectory: "src/routes",
+            rootRoute: "src/routes/__root.tsx",
+            generatedRouteTree: "src/routeTree.gen.ts",
+          },
+          components: {
+            "hero.default": {
+              source: "src/components/sections/Hero.tsx",
+              contentFields: { title: { type: "text" } },
+            },
+          },
+        }),
+        mime: "application/json",
+        entry: 0,
+      },
+    ];
+    sqlite.exec(`
+      ALTER TABLE storefront_themes ADD COLUMN source_index_version integer;
+      ALTER TABLE storefront_themes ADD COLUMN source_index_status text;
+      ALTER TABLE storefront_themes ADD COLUMN source_index text;
+      ALTER TABLE storefront_theme_revisions ADD COLUMN source_index text;
+    `);
+    for (const [index, file] of legacyFiles.entries()) {
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_files
+            (id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at)
+           VALUES (?, 'storefront-a', 'theme-a', ?, ?, ?, ?, 1, 'now', 'now')`,
+        )
+        .run(`file-${index}`, file.path, file.content, file.mime, file.entry);
+    }
+    // B's documents name their component by the legacy manifest key.
+    const legacyRefs = () =>
+      sqlite.exec(`
+        UPDATE storefront_theme_template_revisions
+          SET document = json_set(document, '$.sections[0].componentRef', 'hero.default')
+          WHERE template_id = 'tpl-about';
+        UPDATE storefront_theme_templates
+          SET document = json_set(document, '$.sections[0].componentRef', 'hero.default')
+          WHERE id = 'tpl-about';
+      `);
+
+    legacyRefs();
+    await publish("tpl-about");
+    const release1 = active();
+    saveDraft("tpl-about", "B2");
+    legacyRefs();
+    await publish("tpl-about");
+    await rollBackTo(release1.releaseId);
+
+    const snapshot = await readThemeManifestMigrationSnapshot(
+      "storefront-a",
+      "theme-a",
+    );
+    const plan = buildThemeManifestMigrationPlan(snapshot!);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.status).toBe("ready");
+    await applyThemeManifestMigration({
+      plan: plan as typeof plan & { status: "ready" },
+      sourceManifest: {} as never,
+      sourceIndexBefore: {} as never,
+      createdBy: "user-a",
+    });
+
+    // Release 1's own revision is history and stays as it was.
+    expect(revisionTitle("rev-B1")).toBe("B1");
+    saveDraft("tpl-home", "A1");
+    await publish("tpl-home");
+    expect(
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedRouteDocument({
+          publicationId: active().publicationId,
+          routePath: "/about",
+        }),
+      ),
+    ).toBe("B1");
+    // B's draft was migrated too, and still reads as not live.
+    expect(await editorDiff("tpl-about")).toEqual({
+      changed: true,
+      reason: "page",
+    });
+  });
+
+  it("seals a content-bound build with the same set the publish then checks it against", async () => {
+    const p1 = await publishPage("P1");
+    await publish("tpl-about");
+    const release1 = active();
+    saveDraft("tpl-about", "B2");
+    saveDraft("tpl-shell", "L2");
+    await publishPage("P2");
+    await publish("tpl-about");
+    await rollBackTo(release1.releaseId);
+    saveDraft("tpl-home", "A1");
+
+    // Build Preview seals the content it builds with.
+    const home = templateRow("tpl-home");
+    const { releaseGeneration } = sqlite
+      .prepare(
+        "SELECT release_generation AS releaseGeneration FROM storefront_themes WHERE id = 'theme-a'",
+      )
+      .get() as { releaseGeneration: number };
+    const sealed = await storefrontContentPublicationDal.sealForThemeBuild({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      sourceRevisionId: SOURCE,
+      templateId: "tpl-home",
+      expectedDraftRevisionId: home.draftRevisionId,
+      expectedDraftGeneration: home.draftGeneration,
+      expectedSourceGeneration: 1,
+      expectedReleaseGeneration: releaseGeneration,
+    });
+    expect(pins(sealed.id)).toEqual({
+      "tpl-home": "rev-A1",
+      "tpl-about": "rev-B1",
+      "tpl-shell": "rev-L1",
+      [PAGE]: p1,
+    });
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_builds SET content_publication_id = ?, content_dependency = 'dependent' WHERE id = ?",
+      )
+      .run(sealed.id, BUILD);
+
+    // The publish seals the same set, so the bound build is accepted.
+    await expect(publish("tpl-home")).resolves.toMatchObject({
+      releaseCreated: true,
+    });
+    expect(pins(active().publicationId)).toEqual(pins(sealed.id));
+  });
+
+  it("checks the same documents before confirming as it seals", async () => {
+    const { release3 } = await rollBackThenPublishHome();
+    saveDraft("tpl-home", "A2");
+
+    const titles = (
+      await storefrontContentPublicationDal.listDocumentsForPublish({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "tpl-home",
+      })
+    )
+      .map(({ label, document }) => `${label}=${titleOf(document)}`)
+      .sort();
+    expect(pins(release3.publicationId)["tpl-about"]).toBe("rev-B1");
+    expect(titles).toEqual([
+      "/about=B1",
+      "/pages/faq=P1",
+      "tpl-home=A2",
+      "tpl-shell=L1",
+    ]);
   });
 });
