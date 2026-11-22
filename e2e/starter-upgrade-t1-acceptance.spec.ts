@@ -11,7 +11,10 @@ import {
 } from "@playwright/test";
 
 import { queryLifecycleD1 } from "../scripts/verify-published-artifact.mjs";
-import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
+import {
+  STOREFRONT_STARTER_TEMPLATE_VERSION,
+  createDefaultStorefrontLayoutDocument,
+} from "../src/lib/storefront/default-storefront-document";
 import {
   SAMPLE_OFFSETS,
   assertServerFnSuccess,
@@ -914,6 +917,22 @@ function resolveBinding(
     (section) => section.id === binding.section,
   )!.props;
   const value = valueAt(props ?? {}, location);
+  if (value === undefined && binding.field === "image") {
+    // A Document from before the image was grouped (v11: `imageSrc`,
+    // `imageAlt`), which the Starter's components still read
+    // (`image?.src ?? imageSrc`): the image binds those.
+    const prefix = location.slice(0, location.length - "image".length);
+    const src = valueAt(props ?? {}, `${prefix}imageSrc`);
+    if (typeof src === "string") {
+      return {
+        ok: true,
+        templateId: holders[0]!.templateId,
+        location: `${prefix}imageSrc`,
+        kind: "value",
+        value: { src, alt: valueAt(props ?? {}, `${prefix}imageAlt`) },
+      };
+    }
+  }
   if (value === undefined) {
     return { ok: false, reason: `no stored value at ${location}` };
   }
@@ -1120,6 +1139,67 @@ function rowIdentityProblems(
   return problems;
 }
 
+/** Marks a resolution to a Starter default no Document holds. */
+const NO_DOCUMENT = "(no Document: Starter default)";
+
+/**
+ * The one narrow exemption from "resolves to its Document" (shake-out
+ * main2-run1, 2026-11-22): a v11 or v15 store had no layout Document (it
+ * came at v16; the shell rendered its own defaults), so after the upgrade
+ * the Header and Footer still have no Document section and show the current
+ * Starter's defaults. Applies only to starter-header/starter-footer, only
+ * when this case seeded an empty layout (pre-v16) and no Document holds the
+ * section; the field must then show exactly the current default Layout
+ * Document's value at its path. Such a field binds no stored value, so it is
+ * clicked but not written (exerciseAnnotations). Every stored author value
+ * is still compared before and after elsewhere.
+ */
+function unstoredLayoutDefault(
+  run: CaseRun,
+  binding: CanvasBinding,
+  drafts: DraftDocument[],
+): Resolution | null {
+  if (
+    !binding.section ||
+    !["starter-header", "starter-footer"].includes(binding.section) ||
+    !binding.field
+  ) {
+    return null;
+  }
+  if (!seeds.get(run.label)?.layout.startsWith("emptied")) return null;
+  if (sectionProps(drafts, binding.section) !== null) return null;
+  const defaults =
+    createDefaultStorefrontLayoutDocument().sections.find(
+      (section) => section.id === binding.section,
+    )?.props ?? {};
+  const location = binding.path ?? binding.field;
+  const value = valueAt(defaults, location);
+  if (value === undefined) {
+    return {
+      ok: false,
+      reason: `no Document holds ${binding.section} (no layout Document before v16), and the Starter default has nothing at ${location}`,
+    };
+  }
+  if (!binding.container && typeof value === "string" && value.trim() !== binding.text) {
+    return {
+      ok: false,
+      reason: `no Document holds ${binding.section}; shows ${JSON.stringify(binding.text.slice(0, 80))}, not the Starter default ${JSON.stringify(value.slice(0, 80))}`,
+    };
+  }
+  return { ok: true, templateId: NO_DOCUMENT, location, kind: "value", value };
+}
+
+/** resolveBinding, or the narrow pre-v16 layout exemption above. */
+function resolveForCase(
+  run: CaseRun,
+  binding: CanvasBinding,
+  drafts: DraftDocument[],
+): Resolution {
+  const resolved = resolveBinding(binding, drafts);
+  if (resolved.ok) return resolved;
+  return unstoredLayoutDefault(run, binding, drafts) ?? resolved;
+}
+
 type AnnotationPair = {
   from: CanvasBinding;
   to: CanvasBinding;
@@ -1223,7 +1303,7 @@ function expectUpgradeKeptAnnotations(
     if (from.path !== null && from.path !== to.path) {
       misbound.push(`${name}: path ${from.path} -> ${to.path ?? "-"}`);
     }
-    const is = resolveBinding(to, after.drafts);
+    const is = resolveForCase(run, to, after.drafts);
     if (!is.ok) {
       misbound.push(`${name} after: ${is.reason}`);
       continue;
@@ -1231,7 +1311,8 @@ function expectUpgradeKeptAnnotations(
     // Before the upgrade, read where it binds now: a moved one in its
     // target's section (and at its path, when it had none), a renamed one
     // under the field it is named now.
-    const was = resolveBinding(
+    const was = resolveForCase(
+      run,
       {
         ...from,
         section: how === "moved" ? to.section : from.section,
@@ -1260,23 +1341,28 @@ function expectUpgradeKeptAnnotations(
     if (lost.length) {
       misbound.push(`${name}: D1 value at ${is.location} lost ${lost.join(", ")}`);
     }
-    misbound.push(
-      ...rowIdentityProblems(
-        name,
-        to.section!,
-        is.location,
-        before.drafts,
-        after.drafts,
-        before.authorContent,
-        after.authorContent,
-      ),
-    );
+    if (is.templateId !== NO_DOCUMENT) {
+      misbound.push(
+        ...rowIdentityProblems(
+          name,
+          to.section!,
+          is.location,
+          before.drafts,
+          after.drafts,
+          before.authorContent,
+          after.authorContent,
+        ),
+      );
+    }
   }
   const targets = new Set(pairs.map(({ to }) => to.key));
   const added = after.canvas.bindings
     .filter((b) => !beforeKeys.has(b.key) && !targets.has(b.key))
     .map((b) => b.key);
   run.record.fact("annotationChecks", {
+    unstoredLayout: pairs
+      .filter(({ to }) => resolveForCase(run, to, after.drafts).ok && resolveBinding(to, after.drafts).ok === false)
+      .map(({ to }) => to.key),
     before: before.canvas.bindings.length,
     after: after.canvas.bindings.length,
     pairs: pairs.map(({ from, to, how }) => ({
@@ -1573,7 +1659,7 @@ async function exerciseAnnotations(
     };
     results.push(result);
     try {
-      const where = resolveBinding(binding, draftDocuments(run.scope));
+      const where = resolveForCase(run, binding, draftDocuments(run.scope));
       if (!where.ok) throw new Error(`does not resolve: ${where.reason}`);
       result.kind = where.kind;
       result.location = where.location;
@@ -1634,7 +1720,9 @@ async function exerciseAnnotations(
       ).toBe(binding.section);
       if (where.kind === "value") {
         result.outcome ??=
-          "selected; binds a list row, card or image, whose text fields are written through their own annotations";
+          where.templateId === NO_DOCUMENT
+            ? "selected; no Document holds this section (a pre-v16 store had no layout Document), so it shows the Starter default and is not written"
+            : "selected; binds a list row, card or image, whose text fields are written through their own annotations";
         continue;
       }
       const original = where.value as string;
@@ -1921,7 +2009,7 @@ function expectV11AfterUpgrade(
       after.canvas.bindings
         .map((binding) => ({
           binding,
-          where: resolveBinding(binding, after.drafts),
+          where: resolveForCase(run, binding, after.drafts),
         }))
         .filter(({ where }) => !where.ok)
         .map(
