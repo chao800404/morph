@@ -115,7 +115,15 @@ export interface StorefrontThemeEditorDTO {
     routeStructure?:
       ThemeRouteSectionResult | SourceAnalysisRouteStructure | null;
     draftRevisionId: string | null;
+    /** The revision this template's own last publish chose. */
     publishedRevisionId: string | null;
+    /**
+     * The revision the active release serves for this template, or null when
+     * it serves none (or nothing is live). Differs from `publishedRevisionId`
+     * after a rollback, which moves only the live pointer. Optional so a
+     * context built without it compares as the row alone.
+     */
+    liveRevisionId?: string | null;
     draftGeneration: number;
   }>;
   /**

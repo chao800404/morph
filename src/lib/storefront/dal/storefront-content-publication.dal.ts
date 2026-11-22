@@ -160,7 +160,7 @@ type CarriedItemType = "template" | "page";
  *
  * Returns `type:contentId` to revision id; an absent key is not carried.
  */
-async function resolveCarriedRevisions(data: {
+export async function resolveCarriedRevisions(data: {
   storefrontId: string;
   themeId: string;
   items: ReadonlyArray<{
