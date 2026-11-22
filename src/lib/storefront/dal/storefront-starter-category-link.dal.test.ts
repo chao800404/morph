@@ -1231,3 +1231,170 @@ describe("the default Documents store only what the current Starter declares", (
     expect(undeclared.filter(isRead)).toEqual(["starter-story.imagePosition"]);
   });
 });
+
+// --- Themes already recorded at v30 -----------------------------------------
+
+/**
+ * The home every store created at Starter v30 was born with, before the
+ * default Document moved to `link` and `action`: the cards' bare `href` and
+ * the hero's and story's `actionHref`, in the places the new keys now hold.
+ * Built from today's default so nothing else differs.
+ */
+function v30BornHomeDocument(): StorefrontPageDocument {
+  const home = createDefaultStorefrontHomeDocument();
+  const rename = (record: Row, from: string, to: string, value: unknown) =>
+    Object.fromEntries(
+      Object.entries(record).map(([key, existing]) =>
+        key === from ? [to, value] : [key, existing],
+      ),
+    );
+  return {
+    ...home,
+    sections: home.sections.map((section) => {
+      const props = section.props as Row;
+      if (section.id === SECTION_ID) {
+        return {
+          ...section,
+          props: {
+            ...props,
+            items: (props.items as Row[]).map((row) =>
+              rename(row, "link", "href", destinationOf(row)),
+            ),
+          },
+        } as typeof section;
+      }
+      if (section.id === HERO_ID) {
+        // The old default spread the legacy hero and added its ref last.
+        const { componentRef, ...rest } = section;
+        return {
+          ...rest,
+          props: rename(props, "action", "actionHref", actionDestination(props)),
+          componentRef,
+        } as typeof section;
+      }
+      if (section.id === STORY_ID) {
+        return {
+          ...section,
+          props: rename(props, "action", "actionHref", actionDestination(props)),
+        } as typeof section;
+      }
+      return section;
+    }),
+  };
+}
+
+const V30_CARD_URLS = [
+  "/collections/morning-table",
+  "/collections/quiet-corners",
+  "/collections/soft-essentials",
+];
+
+function recordedStarterVersion(): number {
+  return (
+    JSON.parse(
+      (
+        sqlite
+          .prepare("SELECT metadata FROM storefront_themes WHERE id = ?")
+          .get(THEME_ID) as { metadata: string }
+      ).metadata,
+    ) as { starterTemplateVersion: number }
+  ).starterTemplateVersion;
+}
+
+/**
+ * The upgrade as the editor offers it: whenever the recorded version is not
+ * current, even with no file to change (`editor-starter-upgrade-notice.tsx`).
+ */
+async function applyOfferedUpgrade() {
+  const reviewed = await storefrontDal.reviewStarterUpgrade({
+    storefrontId: STOREFRONT_ID,
+    themeId: THEME_ID,
+  });
+  if (!reviewed) throw new Error("no review");
+  if (
+    !reviewed.review.applies ||
+    (reviewed.versionState === "current" &&
+      reviewed.review.changes.length === 0)
+  ) {
+    return { reviewed, applied: null };
+  }
+  const applied = await storefrontDal.applyReviewedStarterUpgrade({
+    storefrontId: STOREFRONT_ID,
+    themeId: THEME_ID,
+    createdBy: "user-a",
+    expectedSourceGeneration: reviewed.sourceGeneration,
+    starterDigest: reviewed.review.digest,
+  });
+  return { reviewed, applied };
+}
+
+describe("a Theme recorded at Starter v30 with the old destinations", () => {
+  describe("born at v30 from the default Document before it moved to link", () => {
+    beforeEach(() => {
+      seed({
+        starterVersion: 30,
+        files: starterThemeWorkspaceFiles(),
+        home: v30BornHomeDocument(),
+      });
+    });
+
+    it("renders the cards and the story without their destinations today (reverse check)", async () => {
+      const cards = cardHrefs(await renderHome());
+      for (const url of V30_CARD_URLS) expect(cards).not.toContain(url);
+      expect(cardHrefs(await renderSection(STORY_ID))).not.toContain(
+        "/pages/about",
+      );
+    });
+
+    it("is offered the upgrade, and after it every card and action links where it was seeded to", async () => {
+      const { reviewed, applied } = await applyOfferedUpgrade();
+      expect(reviewed.versionState).toBe("available");
+      expect(
+        reviewed.contentMigration.sections.map((item) => item.sectionId),
+      ).toEqual([HERO_ID, SECTION_ID, STORY_ID]);
+      expect(applied?.status).toBe("applied");
+      expect(recordedStarterVersion()).toBe(
+        STOREFRONT_STARTER_TEMPLATE_VERSION,
+      );
+
+      expect((await storedRows()).map(destinationOf)).toEqual(V30_CARD_URLS);
+      expect(cardHrefs(await renderHome())).toEqual(V30_CARD_URLS);
+      for (const [sectionId, url] of [
+        [HERO_ID, "/collections/new"],
+        [STORY_ID, "/pages/about"],
+      ] as const) {
+        const props = await storedProps(sectionId);
+        expect(props).not.toHaveProperty("actionHref");
+        expect(actionDestination(props)).toBe(url);
+        expect(cardHrefs(await renderSection(sectionId))).toEqual([url]);
+      }
+    });
+
+    it("moves nothing on a second offer", async () => {
+      await applyOfferedUpgrade();
+      const again = await applyOfferedUpgrade();
+      expect(again.applied).toBeNull();
+      expect(again.reviewed.contentMigration).toEqual({
+        sections: [],
+        kept: [],
+      });
+    });
+  });
+
+  it("upgraded to v30 before the migration existed: the author's URLs come back", async () => {
+    seed({
+      starterVersion: 30,
+      files: starterThemeWorkspaceFiles(),
+      home: homeWithActionHrefs(),
+    });
+    const { applied } = await applyOfferedUpgrade();
+    expect(applied?.status).toBe("applied");
+    expect(cardHrefs(await renderHome())).toEqual(AUTHORED_URLS);
+    expect(cardHrefs(await renderSection(HERO_ID))).toEqual([
+      AUTHORED_HERO_URL,
+    ]);
+    expect(cardHrefs(await renderSection(STORY_ID))).toEqual([
+      AUTHORED_STORY_URL,
+    ]);
+  });
+});

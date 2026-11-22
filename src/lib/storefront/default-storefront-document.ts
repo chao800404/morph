@@ -66,8 +66,15 @@ import {
  *     the one release its request was resolved to (G3). Browser reads are new
  *     requests and send none. Preview runtime is unchanged: a Theme created
  *     from 30 records none, as from 29.
+ * 31: no file changes. A Theme recorded at 30 is offered the upgrade so its
+ *     content migration runs (`starter-category-link-migration.ts`): a store
+ *     created at 30 before the default Document moved to `link` and
+ *     `action`, or upgraded to 30 before that migration existed, still holds
+ *     the cards' `href` and the actions' `actionHref`, which the Starter's
+ *     components no longer read. Preview runtime is unchanged: a Theme
+ *     created from 31 records none, as from 30.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 30;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 31;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 
