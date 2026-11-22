@@ -477,6 +477,29 @@ export async function seedSingletonCases(page: Page, built: Fixture) {
 }
 
 /**
+ * Writes one layout case (l1) onto `built`'s Theme as its root layout and
+ * stores its seed in the layout Document through the editor's own write, then
+ * saves the case shape over it, as `seedSingletonCases` does for the layout
+ * alone: the home route and the Theme's other pages are left as they are.
+ */
+export async function seedLayoutCase(page: Page, built: Fixture, testCase: BasCase) {
+  if (!testCase.layout) throw new Error(`${testCase.id} is not a layout case`);
+  const scope = built.scope;
+  const seeded = await writeThemeFiles(page, scope, [
+    { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+    singletonCaseFile(testCase, true),
+  ]);
+  expect(seeded.success, JSON.stringify(seeded)).toBe(true);
+  for (const [section, props] of Object.entries(testCase.seed)) {
+    await storeSingletonSlot(page, scope, "layout", section, { ...props });
+  }
+  expect(await storedCaseSections(built, testCase)).toEqual(testCase.seed);
+  const saved = await writeThemeFiles(page, scope, [singletonCaseFile(testCase, false)]);
+  expect(saved.success, JSON.stringify(saved)).toBe(true);
+  expect(await storedCaseSections(built, testCase)).toEqual(testCase.seed);
+}
+
+/**
  * Writes route cases onto `built`'s Theme, each on its own route
  * (`testCase.routePath`, e.g. `/b1-p1`), stores their seed in each route's own
  * Document through the editor's own write, then saves the case shapes over

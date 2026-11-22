@@ -3,7 +3,10 @@ import path from "node:path";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
 import { queryLifecycleD1 } from "../scripts/verify-published-artifact.mjs";
-import { B1_EXTRA_CASES } from "../src/lib/test-utils/binding-acceptance-b1-cases";
+import {
+  B1_EXTRA_CASES,
+  B1_HOME_LAYOUT_CASES,
+} from "../src/lib/test-utils/binding-acceptance-b1-cases";
 import {
   storedSectionsOf,
   type BasCase,
@@ -11,6 +14,7 @@ import {
   type StoredSections,
 } from "../src/lib/test-utils/binding-acceptance-cases";
 import {
+  seedLayoutCase,
   seedRouteCases,
   storedCaseSections,
   walkCase,
@@ -24,6 +28,7 @@ import {
   latestRelease,
   openEditor,
   publishShowingRelease,
+  servedRelease,
   serverFn,
   signedInPage,
   storefrontFetcher,
@@ -62,8 +67,39 @@ import { themeScopeFromEditorPath } from "./native-compat";
  *   P3  rollback with `expectedActiveReleaseId`: a stale expectation is
  *       refused first; only the active release changes
  *   P4  the public site, reloaded, is back to release 1
- *   P5  the editor, reloaded, keeps release 2's drafts (Q6: the current
- *       rollback semantics, read back on both sides)
+ *   P5  the editor, reloaded, keeps the drafts it had before the rollback
+ *       (Q6: the current rollback semantics, read back on both sides)
+ *
+ * Publish scope (user decision 2026-11-22, handoff 2026-11-21
+ * m1-acceptance-plan.md "Publish scope"). Publish is per page: it seals the
+ * Document of the page open in the editor, and every other page's Document
+ * keeps the revision it last published (`publishedRevisionId`), so another
+ * page's unpublished draft stays unpublished. The exception is the shared
+ * layout: a pending layout draft is sealed by whichever page is published
+ * (`storefrontThemeDal.publishTemplate`, `pendingShell`, passed to
+ * `resolveForTheme` as `alsoPublish`), so a single-page publish can change
+ * the shared blocks every other page shows. l1 is the run Theme's root
+ * layout (`seedLayoutCase`), seeded before release 1 and sealed by its first
+ * publish; it is unchanged through release 2.
+ *
+ *   S-a  p1 holds an unpublished draft and p2 a new one; p2 is published
+ *        from its own editor (release 3). Read back: release 3 pins exactly
+ *        release 2's items except p2's new draft; p1's template row and its
+ *        pin are release 2's; the public site serves release 3 and p1's
+ *        page still shows p1's published value, never its draft.
+ *   S-b  l1 (the layout) holds a pending draft, p1 still its unpublished
+ *        one, p2 nothing new; p2 is published again (release 4). Read back:
+ *        release 4 pins exactly release 3's items except the layout, now
+ *        its draft revision; the layout row is published; p1's and p2's
+ *        rows and pins are unchanged; the public site serves release 4 and
+ *        p1's page shows the new shared block over p1's published body.
+ *
+ * Every public step records the release Core served (the ETag of
+ * `/_morph/content`, `"<releaseId>:<path>"`) and the ledger row records
+ * every item the release pins (`pins`) and the version ids checked
+ * (`detail`). A merchant-facing display of this scope before publishing is
+ * a product requirement tracked separately; this spec does not test UI for
+ * it.
  *
  * Q10: the Theme records full Start (`recordFullStartTheme`), and every
  * preview start this spec observes must answer container transport + full
@@ -114,6 +150,21 @@ const EDITED = [P1, P2, P5] as const;
 /** A4: published as the code shows them, never written. */
 const CODE = [P3, P4A, P6] as const;
 const ALL = [...EDITED, ...CODE] as const;
+const L1_CASE = B1_HOME_LAYOUT_CASES.find((testCase) => testCase.id === "l1")!;
+/**
+ * The layout case on this Theme: walked from the home page, and seen there
+ * and on p1's page (the page whose unpublished draft S-b keeps out).
+ */
+const L1: BasCase = {
+  ...L1_CASE,
+  layout: {
+    ...L1_CASE.layout!,
+    pages: [
+      L1_CASE.layout!.pages.find((page) => page.routePath === "/")!,
+      { routePath: P1.routePath, routeFile: P1.routeFile },
+    ],
+  },
+};
 
 /** Every case's own sections, as one release (or the drafts) hold them. */
 type CaseValues = Readonly<Record<string, StoredSections>>;
@@ -159,9 +210,18 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
   let origin = "";
   let release1 = "";
   let release2 = "";
+  /** Publish scope S-a (p2 alone) and S-b (p2 with a pending layout). */
+  let release3 = "";
+  let release4 = "";
   let publication1: string | null = null;
   let values1: CaseValues | null = null;
   let values2: CaseValues | null = null;
+  /** Release 3 and 4's route values (S-b changes only the layout). */
+  let values3: CaseValues | null = null;
+  /** The drafts after S-b: release 3's, plus p1's unpublished draft. */
+  let draftsLast: CaseValues | null = null;
+  /** l1's sections as S-b sealed them (releases 1-3 hold the seed). */
+  let layoutSealed: StoredSections | null = null;
   /** A4's route Documents' draft revisions right after seeding. */
   let codeRevisions: Record<string, string> = {};
   let contentTsBefore: string | null = null;
@@ -314,6 +374,78 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     ),
   });
 
+  /** A template row's ids: a route Document's, or the layout's. */
+  const templateRow = (where: { routePath: string } | "layout") => {
+    const select = `SELECT id, draft_revision_id AS draft, published_revision_id AS published
+         FROM storefront_theme_templates
+        WHERE theme_id = ?1 AND deleted_at IS NULL`;
+    const rows =
+      where === "layout"
+        ? queryD1(`${select} AND type = 'layout'`, scope!.themeId)
+        : queryD1(`${select} AND route_path = ?2`, scope!.themeId, where.routePath);
+    expect(rows, `one ${where === "layout" ? "layout" : where.routePath} template`).toHaveLength(1);
+    return {
+      id: String(rows[0]!.id),
+      draft: rows[0]!.draft == null ? null : String(rows[0]!.draft),
+      published: rows[0]!.published == null ? null : String(rows[0]!.published),
+    };
+  };
+  const routeRow = (testCase: BasCase) => templateRow({ routePath: testCase.routePath });
+  const layoutRow = () => templateRow("layout");
+
+  /** The layout revision a release's own content publication pins. */
+  const pinnedLayout = (releaseId: string) =>
+    queryD1(
+      `SELECT i.revision_id AS id
+         FROM storefront_releases rel
+         JOIN storefront_content_publication_items i
+           ON i.publication_id = rel.content_publication_id AND i.item_type = 'template' AND i.deleted_at IS NULL
+         JOIN storefront_theme_templates t ON t.id = i.content_id
+        WHERE rel.id = ?1 AND t.theme_id = ?2 AND t.type = 'layout'`,
+      releaseId,
+      scope!.themeId,
+    ).map((row) => String(row.id));
+
+  /** l1's sections in the layout revision a release pins. */
+  const releaseLayout = (releaseId: string): StoredSections => {
+    const rows = queryD1(
+      `SELECT r.document AS document
+         FROM storefront_releases rel
+         JOIN storefront_content_publication_items i
+           ON i.publication_id = rel.content_publication_id AND i.item_type = 'template' AND i.deleted_at IS NULL
+         JOIN storefront_theme_template_revisions r ON r.id = i.revision_id
+         JOIN storefront_theme_templates t ON t.id = r.template_id
+        WHERE rel.id = ?1 AND t.theme_id = ?2 AND t.type = 'layout'`,
+      releaseId,
+      scope!.themeId,
+    );
+    expect(rows, `release ${releaseId} pins one layout revision`).toHaveLength(1);
+    const stored = storedSectionsOf(JSON.parse(String(rows[0]!.document)) as StoredDocument);
+    return Object.fromEntries(L1.slots.flatMap((slot) => (stored[slot] ? [[slot, stored[slot]]] : [])));
+  };
+
+  /** Every item a release pins, `<itemType>:<contentId>` to revision id. */
+  const pinMap = (releaseId: string) => {
+    const pins = evidence!.pins(releaseId);
+    expect(pins.length, `release ${releaseId} pins its content`).toBeGreaterThan(0);
+    const map: Record<string, string> = Object.fromEntries(
+      pins.map((pin) => [`${pin.itemType}:${pin.contentId}`, pin.revisionId]),
+    );
+    expect(Object.keys(map), `release ${releaseId} pins each item once`).toHaveLength(pins.length);
+    return map;
+  };
+
+  /**
+   * The release Core serves on the home page and every route page, read from
+   * the ETag of each content read: all of them must name `expected`.
+   */
+  const expectServed = async (expected: string) => {
+    for (const pagePath of [HOME, ...ALL.map((testCase) => testCase.routePath)]) {
+      expect(await servedRelease(origin, pagePath), `${pagePath} is served from release ${expected}`).toBe(expected);
+    }
+    return expected;
+  };
+
   /** A Design walk on the case's own route that must pass in full. */
   const designWalk = async (page: Page, testCase: BasCase, mode: "inspector" | "inline", step: string) => {
     evidence!.observePreviewStarts(page);
@@ -341,6 +473,34 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
   };
 
   /**
+   * l1's walk, from the home page: the layout Document holds a new value in
+   * the one field Design wrote, the edit is shown on p1's page too, and no
+   * route Document is written.
+   */
+  const layoutWalk = async (page: Page, mode: "inspector" | "inline", step: string) => {
+    evidence!.observePreviewStarts(page);
+    const before = await storedCaseSections(fx!, L1);
+    const routes = await draftValues();
+    await walkCase(page, L1, mode, fx!);
+    expect(test.info().errors, `l1 ${mode} Design walk`).toEqual([]);
+    const after = await storedCaseSections(fx!, L1);
+    const { section, field } = editedField(L1);
+    expect(valueOf(after, L1), `l1 ${mode} wrote a new value`).not.toBe(valueOf(before, L1));
+    expect(after, `l1 changed in ${section}.${field} only`).toEqual({
+      ...before,
+      [section]: { ...before[section], [field]: valueOf(after, L1) },
+    });
+    expect(await draftValues(), "a layout walk writes no route Document").toEqual(routes);
+    evidence!.ledger({
+      case: "l1",
+      step,
+      action: `${mode === "inspector" ? "Inspector" : "canvas"} write (layout, from the home page)`,
+      detail: { layout: layoutRow() },
+    });
+    return after;
+  };
+
+  /**
    * The public site shows `values`: on each route page the raw HTML carries
    * every element's value and `/_morph/content` every stored one; in a
    * browser with no cookie every element shows its value in place, on load
@@ -349,6 +509,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
   const expectPublic = async (
     browser: Browser,
     values: CaseValues,
+    layout: StoredSections,
     absent: readonly string[],
     label: string,
   ) => {
@@ -358,6 +519,9 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     expect(home.status, "the home page is served").toBe(200);
     const homeContent = await storefront(`/_morph/content?path=${encodeURIComponent(HOME)}`);
     expect(homeContent.status, "home content is served").toBe(200);
+    for (const element of L1.elements) {
+      expect(home.body, `home HTML carries the layout's ${element.tag}[${element.nth}]`).toContain(element.text(layout));
+    }
     for (const value of absent) {
       expect(home.body, "home HTML carries no other release's value").not.toContain(value);
       expect(homeContent.body, "home content carries no other release's value").not.toContain(value);
@@ -367,6 +531,11 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
       expect(html.status, `${testCase.routePath} is served`).toBe(200);
       const content = await storefront(`/_morph/content?path=${encodeURIComponent(testCase.routePath)}`);
       expect(content.status, `${testCase.routePath} content is served`).toBe(200);
+      for (const element of L1.elements) {
+        expect(html.body, `${testCase.routePath} HTML carries the layout's ${element.tag}[${element.nth}]`).toContain(
+          element.text(layout),
+        );
+      }
       for (const element of testCase.elements) {
         const shown = element.text(values[testCase.id]!);
         expect(html.body, `${testCase.routePath} HTML carries ${element.tag}[${element.nth}]`).toContain(shown);
@@ -387,6 +556,15 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
       for (const pagePath of [HOME, ...ALL.map((testCase) => testCase.routePath)]) {
         const cases = ALL.filter((testCase) => testCase.routePath === pagePath);
         const shown = async (when: string) => {
+          // The layout's shared block, on every page.
+          const shell = shopper.locator(`[data-bas-case="${L1.id}"]`);
+          await expect(shell, `${pagePath} renders the layout's l1 ${when}`).toBeVisible({ timeout: 30_000 });
+          for (const element of L1.elements) {
+            await expect(
+              shell.locator(element.tag).nth(element.nth),
+              `${pagePath} l1 ${element.tag}[${element.nth}] ${when}`,
+            ).toHaveText(element.text(layout), { timeout: 30_000 });
+          }
           for (const testCase of cases) {
             const root = shopper.locator(`[data-bas-case="${testCase.id}"]`);
             await expect(root, `${pagePath} renders ${testCase.id} ${when}`).toBeVisible({ timeout: 30_000 });
@@ -501,11 +679,16 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
       // Each case on its own route of the run's Theme, seeded through the
       // editor's own writes.
       await seedRouteCases(page, fx!, ALL);
+      // l1 becomes the Theme's root layout, its shared block on every page
+      // (publish scope, S-b).
+      await seedLayoutCase(page, fx!, L1);
       expect(await draftValues()).toEqual(Object.fromEntries(ALL.map((testCase) => [testCase.id, testCase.seed])));
+      expect(await storedCaseSections(fx!, L1)).toEqual(L1.seed);
       codeRevisions = draftRevisions(CODE);
       for (const testCase of ALL) {
         evidence!.ledger({ case: testCase.id, step: "seed", action: "editor seed write", routePath: testCase.routePath });
       }
+      evidence!.ledger({ case: "l1", step: "seed", action: "editor seed write (layout)", detail: { layout: layoutRow() } });
 
       const domain = (await serverFn(page, DOMAINS, "createStorefrontDomain", {
         storefrontId: scope!.storefrontId,
@@ -578,6 +761,11 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     const values = await draftValues();
     expectIsolated(values);
     expectCodeUnwritten();
+    // The seeded layout is pending: no release has sealed it yet.
+    const layout0 = layoutRow();
+    expect(layout0.draft, "the layout has a draft").toBeTruthy();
+    expect(layout0.published, "the seeded layout is not published yet").not.toBe(layout0.draft);
+    expect(await storedCaseSections(fx!, L1)).toEqual(L1.seed);
 
     // Connected but never published: nothing is served, the draft least of all.
     const storefront = storefrontFetcher(origin);
@@ -602,19 +790,29 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     publication1 = (await releaseBuild(release1)).releaseContent;
     expect(publication1).toBeTruthy();
     expectCodeUnwritten();
+    // The first publish sealed the pending layout; release 1 carries it.
+    expect(layoutRow(), "the layout is published at its seeded draft").toEqual({
+      ...layout0,
+      published: layout0.draft,
+    });
+    expect(pinnedLayout(release1), "release 1 pins the seeded layout").toEqual([layout0.draft]);
+    expect(releaseLayout(release1)).toEqual(L1.seed);
 
     const served = await serveActiveRelease(valueOf(values.p1, P1), release1, origin);
     expect(served.releaseId).toBe(release1);
+    const servedId = await expectServed(release1);
     values1 = values;
-    const shots = await expectPublic(browser, values1, [], "r1");
+    const shots = await expectPublic(browser, values1, L1.seed, [], "r1");
     evidence!.ledger({
-      case: "p1,p2,p5,p3,p4a,p6",
+      case: "p1,p2,p5,p3,p4a,p6,l1",
       step: "R1/P1-P2",
       action: "publish",
       releaseId: release1,
       activeBefore,
       activeAfter: evidence!.activeRelease(),
       evidence: shots,
+      servedReleaseId: servedId,
+      detail: { layout: layoutRow() },
     });
     evidence!.note({ release1, publication1 });
   });
@@ -643,10 +841,12 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     for (const [index, value] of r2.entries()) expect(value).not.toBe(r1[index]);
 
     // The draft is not public while release 1 is active.
-    const hidden = await expectPublic(browser, values1!, r2, "r2-draft-unpublished");
+    expect(await expectServed(release1)).toBe(release1);
+    const hidden = await expectPublic(browser, values1!, L1.seed, r2, "r2-draft-unpublished");
 
     const { serveActiveRelease } = harness!;
     const activeBefore = evidence!.activeRelease();
+    const layout1 = layoutRow();
     // Only A3's pages changed: each is published from its own editor, and
     // release 2 (the last) carries A4's release 1 revisions forward.
     const before2 = await publishedState();
@@ -662,21 +862,226 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     const publication2 = (await releaseBuild(release2)).releaseContent;
     expect(publication2).toBeTruthy();
     expect(publication2).not.toBe(publication1);
+    // No layout change was pending: release 2 carries release 1's layout.
+    expect(layoutRow()).toEqual(layout1);
+    expect(pinnedLayout(release2)).toEqual(pinnedLayout(release1));
+    expect(releaseLayout(release2)).toEqual(L1.seed);
 
     const served = await serveActiveRelease(valueOf(values.p1, P1), release2, origin);
     expect(served.releaseId).toBe(release2);
+    const servedId = await expectServed(release2);
     values2 = values;
-    const shots = await expectPublic(browser, values2, r1, "r2");
+    const shots = await expectPublic(browser, values2, L1.seed, r1, "r2");
     evidence!.ledger({
-      case: "p1,p2,p5,p3,p4a,p6",
+      case: "p1,p2,p5,p3,p4a,p6,l1",
       step: "R2/P1-P2",
       action: "publish",
       releaseId: release2,
       activeBefore,
       activeAfter: evidence!.activeRelease(),
       evidence: [...hidden, ...shots],
+      servedReleaseId: servedId,
+      detail: { layout: layoutRow() },
     });
     evidence!.note({ release2, publication2 });
+  });
+
+  test("publish scope: p1 per-field route desc edited in the Inspector and left unpublished", async ({ page }) => {
+    await designWalk(page, P1, "inspector", "S-a/S1-S5");
+  });
+
+  test("publish scope: p2 cross-name alias route heading edited on the canvas, to be published on its own", async ({ page }) => {
+    await designWalk(page, P2, "inline", "S-a/S1-S5");
+  });
+
+  test("publish scope: publishing p2 from its own editor seals p2 only, p1's unpublished draft stays off the public site", async ({ page, browser }) => {
+    test.setTimeout(20 * 60_000);
+    evidence!.observePreviewStarts(page);
+    const drafts = await draftValues();
+    // p1 and p2 hold new drafts; every other route Document is release 2's.
+    expect(drafts).toEqual({ ...values2!, p1: drafts.p1, p2: drafts.p2 });
+    expect(valueOf(drafts.p1, P1), "p1 holds a new draft").not.toBe(valueOf(values2!.p1, P1));
+    expect(valueOf(drafts.p2, P2), "p2 holds a new draft").not.toBe(valueOf(values2!.p2, P2));
+    expectCodeUnwritten();
+    const p1Before = routeRow(P1);
+    const p2Before = routeRow(P2);
+    const layoutBefore = layoutRow();
+    expect(p1Before.draft, "p1's draft is unpublished").not.toBe(p1Before.published);
+    expect(pinnedRevisions(release2, P1.routePath), "p1's published revision is release 2's").toEqual([
+      p1Before.published,
+    ]);
+    expect(p2Before.draft, "p2's draft is unpublished").not.toBe(p2Before.published);
+    expect(layoutBefore.draft, "no layout change is pending").toBe(layoutBefore.published);
+    const pinsBefore = pinMap(release2);
+    // Neither draft is public while release 2 is active.
+    const unpublished = [valueOf(drafts.p1, P1), valueOf(drafts.p2, P2)];
+    expect(await expectServed(release2)).toBe(release2);
+    const hidden = await expectPublic(browser, values2!, L1.seed, unpublished, "scope-a-before");
+
+    const { serveActiveRelease } = harness!;
+    const activeBefore = evidence!.activeRelease();
+    const before3 = await publishedState();
+    release3 = await publishPages(page, [P2], "S-a/P1-publish");
+    const state3 = await publishedState();
+    expect(state3.active).toBe(release3);
+    expect(state3.releases).toBe(before3.releases + 1);
+
+    // p2's draft is published; p1's row, draft and published revision alike,
+    // and the layout's are exactly as they were.
+    expect(routeRow(P2), "p2 is published at its draft").toEqual({ ...p2Before, published: p2Before.draft });
+    expect(routeRow(P1), "publishing p2 leaves p1's row alone").toEqual(p1Before);
+    expect(layoutRow(), "publishing p2 leaves the layout alone").toEqual(layoutBefore);
+    // Release 3 pins release 2's items with exactly one change: p2's draft.
+    expect(pinMap(release3), "release 3 = release 2 + p2's draft").toEqual({
+      ...pinsBefore,
+      [`template:${p2Before.id}`]: p2Before.draft,
+    });
+    expect(pinnedRevisions(release3, P1.routePath), "release 3 pins p1's published revision").toEqual([
+      p1Before.published,
+    ]);
+    expect(pinnedRevisions(release3, P1.routePath)).not.toEqual([p1Before.draft]);
+    expect(pinnedLayout(release3)).toEqual(pinnedLayout(release2));
+    values3 = { ...values2!, p2: drafts.p2! };
+    expect(releaseValues(release3)).toEqual(values3);
+    expect(releaseLayout(release3)).toEqual(L1.seed);
+    // The older releases are untouched.
+    expect(releaseValues(release2)).toEqual(values2);
+    expect(releaseValues(release1)).toEqual(values1);
+
+    const served = await serveActiveRelease(valueOf(values3.p2, P2), release3, origin);
+    expect(served.releaseId).toBe(release3);
+    const servedId = await expectServed(release3);
+    // p1's page shows p1's published value; its draft is nowhere.
+    const p1Page = await storefrontFetcher(origin)(P1.routePath);
+    expect(p1Page.status).toBe(200);
+    expect(p1Page.body, "p1's page shows its published value").toContain(valueOf(values2!.p1, P1));
+    expect(p1Page.body, "p1's page does not show its draft").not.toContain(valueOf(drafts.p1, P1));
+    const shots = await expectPublic(
+      browser,
+      values3,
+      L1.seed,
+      [valueOf(drafts.p1, P1), valueOf(values2!.p2, P2), ...editedValues(values1!)],
+      "scope-a",
+    );
+    evidence!.ledger({
+      case: "p2 (p1 unpublished)",
+      step: "S-a/P1-P2",
+      action: "publish p2 alone",
+      routePath: P2.routePath,
+      releaseId: release3,
+      activeBefore,
+      activeAfter: evidence!.activeRelease(),
+      evidence: [...hidden, ...shots],
+      servedReleaseId: servedId,
+      detail: {
+        p1: { ...routeRow(P1), pinnedInRelease2: pinnedRevisions(release2, P1.routePath), pinnedInRelease3: pinnedRevisions(release3, P1.routePath) },
+        p2: { ...routeRow(P2), pinnedInRelease2: pinnedRevisions(release2, P2.routePath), pinnedInRelease3: pinnedRevisions(release3, P2.routePath) },
+        layout: { ...layoutRow(), pinnedInRelease2: pinnedLayout(release2), pinnedInRelease3: pinnedLayout(release3) },
+      },
+    });
+    evidence!.note({ release3 });
+  });
+
+  test("publish scope: l1 layout-shared second instance edited on the canvas and left pending", async ({ page }) => {
+    layoutSealed = await layoutWalk(page, "inline", "S-b/S1-S5");
+  });
+
+  test("publish scope: publishing p2 with a pending layout seals the layout too, p1's page shows the new shared block over its published body", async ({ page, browser }) => {
+    test.setTimeout(20 * 60_000);
+    evidence!.observePreviewStarts(page);
+    const drafts = await draftValues();
+    // p1 still holds its unpublished draft; everything else is release 3's.
+    expect(drafts).toEqual({ ...values3!, p1: drafts.p1 });
+    expect(valueOf(drafts.p1, P1), "p1 still holds its unpublished draft").not.toBe(valueOf(values3!.p1, P1));
+    expectCodeUnwritten();
+    const layoutDraft = await storedCaseSections(fx!, L1);
+    expect(layoutDraft, "the layout draft is the walk's").toEqual(layoutSealed);
+    expect(valueOf(layoutDraft, L1), "the layout holds a new draft").not.toBe(valueOf(L1.seed, L1));
+    const p1Before = routeRow(P1);
+    const p2Before = routeRow(P2);
+    const layoutBefore = layoutRow();
+    expect(layoutBefore.draft, "a layout change is pending").not.toBe(layoutBefore.published);
+    expect(pinnedLayout(release3), "release 3 pins the layout's published revision").toEqual([layoutBefore.published]);
+    expect(p1Before.draft, "p1's draft is still unpublished").not.toBe(p1Before.published);
+    expect(p2Before.draft, "p2 has nothing new").toBe(p2Before.published);
+    const pinsBefore = pinMap(release3);
+    // Neither the layout draft nor p1's is public while release 3 is active.
+    expect(await expectServed(release3)).toBe(release3);
+    const hidden = await expectPublic(
+      browser,
+      values3!,
+      L1.seed,
+      [valueOf(layoutDraft, L1), valueOf(drafts.p1, P1)],
+      "scope-b-before",
+    );
+
+    const { serveActiveRelease } = harness!;
+    const activeBefore = evidence!.activeRelease();
+    const before4 = await publishedState();
+    release4 = await publishPages(page, [P2], "S-b/P1-publish");
+    const state4 = await publishedState();
+    expect(state4.active).toBe(release4);
+    expect(state4.releases).toBe(before4.releases + 1);
+
+    // Publishing p2 sealed the pending layout: the layout row is published at
+    // its draft and release 4 pins that revision. p1's and p2's rows are as
+    // they were.
+    expect(layoutRow(), "the layout is published at its draft").toEqual({
+      ...layoutBefore,
+      published: layoutBefore.draft,
+    });
+    expect(routeRow(P1), "publishing p2 leaves p1's row alone").toEqual(p1Before);
+    expect(routeRow(P2), "p2's row is unchanged").toEqual(p2Before);
+    // Release 4 pins release 3's items with exactly one change: the layout.
+    expect(pinMap(release4), "release 4 = release 3 + the layout's draft").toEqual({
+      ...pinsBefore,
+      [`template:${layoutBefore.id}`]: layoutBefore.draft,
+    });
+    expect(pinnedLayout(release4), "release 4 pins the layout draft").toEqual([layoutBefore.draft]);
+    expect(pinnedRevisions(release4, P1.routePath), "release 4 pins p1's published revision").toEqual([
+      p1Before.published,
+    ]);
+    expect(pinnedRevisions(release4, P2.routePath)).toEqual(pinnedRevisions(release3, P2.routePath));
+    expect(releaseValues(release4)).toEqual(values3);
+    expect(releaseLayout(release4)).toEqual(layoutDraft);
+    // Release 3 still pins the layout it was published with.
+    expect(pinnedLayout(release3)).toEqual([layoutBefore.published]);
+    expect(releaseLayout(release3)).toEqual(L1.seed);
+
+    const served = await serveActiveRelease(valueOf(layoutDraft, L1), release4, origin);
+    expect(served.releaseId).toBe(release4);
+    const servedId = await expectServed(release4);
+    // p1's page: the new shared block, over p1's published body.
+    const p1Page = await storefrontFetcher(origin)(P1.routePath);
+    expect(p1Page.status).toBe(200);
+    expect(p1Page.body, "p1's page shows the new shared block").toContain(valueOf(layoutDraft, L1));
+    expect(p1Page.body, "p1's page shows its published value").toContain(valueOf(values3!.p1, P1));
+    expect(p1Page.body, "p1's page does not show its draft").not.toContain(valueOf(drafts.p1, P1));
+    const shots = await expectPublic(
+      browser,
+      values3!,
+      layoutDraft,
+      [valueOf(drafts.p1, P1), valueOf(values2!.p2, P2), ...editedValues(values1!)],
+      "scope-b",
+    );
+    draftsLast = drafts;
+    evidence!.ledger({
+      case: "p2 + pending l1 (p1 unpublished)",
+      step: "S-b/P1-P2",
+      action: "publish p2 with a pending layout",
+      routePath: P2.routePath,
+      releaseId: release4,
+      activeBefore,
+      activeAfter: evidence!.activeRelease(),
+      evidence: [...hidden, ...shots],
+      servedReleaseId: servedId,
+      detail: {
+        p1: { ...routeRow(P1), pinnedInRelease3: pinnedRevisions(release3, P1.routePath), pinnedInRelease4: pinnedRevisions(release4, P1.routePath) },
+        p2: { ...routeRow(P2), pinnedInRelease3: pinnedRevisions(release3, P2.routePath), pinnedInRelease4: pinnedRevisions(release4, P2.routePath) },
+        layout: { ...layoutRow(), pinnedInRelease3: pinnedLayout(release3), pinnedInRelease4: pinnedLayout(release4) },
+      },
+    });
+    evidence!.note({ release4 });
   });
 
   test("rollback to release 1 with expectedActiveReleaseId: a stale expectation is refused, then the public site is back to release 1 after a reload", async ({ page, browser }) => {
@@ -684,7 +1089,8 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     evidence!.observePreviewStarts(page);
     const { serveActiveRelease } = harness!;
     const before = await publishedState();
-    expect(before.active).toBe(release2);
+    // The last release made is S-b's.
+    expect(before.active).toBe(release4);
 
     await openEditor(page);
     // Taken once the editor is open, so nothing opening it does is read as
@@ -698,23 +1104,24 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     })) as { success: boolean; message?: string; error?: string };
     expect(stale.success, "a stale expectedActiveReleaseId is refused").toBe(false);
     expect(stale.error).toBe("RELEASE_ACTIVATION_CONFLICT");
-    expect((await publishedState()).active).toBe(release2);
+    expect((await publishedState()).active).toBe(release4);
     expect(rollbackSnapshot(), "a refused rollback changes nothing").toEqual(snapshot0);
     evidence!.ledger({
-      case: "p1,p2,p5,p3,p4a,p6",
+      case: "p1,p2,p5,p3,p4a,p6,l1",
       step: "P3",
       action: "rollback refused (stale expectedActiveReleaseId)",
       releaseId: release1,
-      activeBefore: release2,
+      activeBefore: release4,
       activeAfter: evidence!.activeRelease(),
       expectedActiveReleaseId: release1,
       result: stale.error ?? "refused",
+      servedReleaseId: await expectServed(release4),
     });
 
     const activated = (await serverFn(page, RELEASES, "activateStorefrontRelease", {
       storefrontId: scope!.storefrontId,
       releaseId: release1,
-      expectedActiveReleaseId: release2,
+      expectedActiveReleaseId: release4,
     })) as { success: boolean; message?: string };
     expect(activated.success, activated.message).toBe(true);
 
@@ -723,37 +1130,53 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
     expect(after.releases).toBe(before.releases);
     // P3: only the active release moved. Release, publication and revision
     // counts, the theme's generations and every template row are unchanged;
-    // the drafts keep release 2's values and each release its own.
+    // the drafts keep their pre-rollback values and each release its own.
     expect(rollbackSnapshot(), "a rollback moves the active release only").toEqual(snapshot0);
-    expect(await draftValues()).toEqual(values2);
+    expect(await draftValues()).toEqual(draftsLast);
+    expect(await storedCaseSections(fx!, L1)).toEqual(layoutSealed);
     expect(releaseValues(release1)).toEqual(values1);
     expect(releaseValues(release2)).toEqual(values2);
+    expect(releaseValues(release3)).toEqual(values3);
+    expect(releaseValues(release4)).toEqual(values3);
+    expect(releaseLayout(release1)).toEqual(L1.seed);
+    expect(releaseLayout(release4)).toEqual(layoutSealed);
     expectCodeUnwritten();
 
-    // P4: the public site, reloaded, is back to release 1 everywhere.
+    // P4: the public site, reloaded, is back to release 1 everywhere, the
+    // layout's seeded block included.
     const restored = await serveActiveRelease(valueOf(values1!.p1, P1), release1, origin);
     expect(restored.releaseId).toBe(release1);
     expect(restored.contentPublicationId).toBe(publication1);
-    const shots = await expectPublic(browser, values1!, editedValues(values2!), "rollback");
+    const servedId = await expectServed(release1);
+    const shots = await expectPublic(
+      browser,
+      values1!,
+      L1.seed,
+      [...editedValues(values2!), ...editedValues(draftsLast!), valueOf(layoutSealed!, L1)],
+      "rollback",
+    );
     evidence!.ledger({
-      case: "p1,p2,p5,p3,p4a,p6",
+      case: "p1,p2,p5,p3,p4a,p6,l1",
       step: "P3-P4",
       action: "rollback",
       releaseId: release1,
-      activeBefore: release2,
+      activeBefore: release4,
       activeAfter: evidence!.activeRelease(),
-      expectedActiveReleaseId: release2,
+      expectedActiveReleaseId: release4,
       result: "activated",
       evidence: shots,
+      servedReleaseId: servedId,
     });
   });
 
-  test("after the rollback the editor reloads with the release 2 drafts on every route under full Start", async ({ page }) => {
+  test("after the rollback the editor reloads with the pre-rollback drafts on every route under full Start", async ({ page }) => {
     test.setTimeout(10 * 60_000);
     evidence!.observePreviewStarts(page);
-    // P5 (Q6): the rollback moved the public site only; the editor keeps
-    // release 2's drafts, in storage and on the canvas, route by route.
-    expect(await draftValues()).toEqual(values2);
+    // P5 (Q6): the rollback moved the public site only; the editor keeps the
+    // drafts it had (S-b's: p1's unpublished draft, the sealed layout), in
+    // storage and on the canvas, route by route.
+    expect(await draftValues()).toEqual(draftsLast);
+    expect(await storedCaseSections(fx!, L1)).toEqual(layoutSealed);
     const shots: string[] = [];
     for (const testCase of ALL) {
       await page.goto(editorRouteUrl(testCase.routePath), { waitUntil: "domcontentloaded" });
@@ -764,7 +1187,14 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
         await expect(
           root.locator(element.tag).nth(element.nth),
           `canvas ${testCase.id} ${element.tag}[${element.nth}] shows the draft`,
-        ).toHaveText(element.text(values2![testCase.id]!), { timeout: 30_000 });
+        ).toHaveText(element.text(draftsLast![testCase.id]!), { timeout: 30_000 });
+      }
+      const shell = previewFrame(page).locator(`[data-bas-case="${L1.id}"]`);
+      for (const element of L1.elements) {
+        await expect(
+          shell.locator(element.tag).nth(element.nth),
+          `canvas ${testCase.routePath} l1 ${element.tag}[${element.nth}] shows the layout draft`,
+        ).toHaveText(element.text(layoutSealed!), { timeout: 30_000 });
       }
       // Full Start served this canvas: Start's own router is the preview's.
       const frame = previewFrameOf(page);
@@ -784,16 +1214,18 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
       await page.screenshot({ path: shot, fullPage: true });
       shots.push(path.basename(shot));
     }
-    expect(await draftValues(), "reloading wrote nothing").toEqual(values2);
+    expect(await draftValues(), "reloading wrote nothing").toEqual(draftsLast);
+    expect(await storedCaseSections(fx!, L1), "reloading wrote nothing to the layout").toEqual(layoutSealed);
     expectCodeUnwritten();
     evidence!.expectFullStartObserved();
     evidence!.ledger({
-      case: "p1,p2,p5,p3,p4a,p6",
+      case: "p1,p2,p5,p3,p4a,p6,l1",
       step: "P5",
       action: "editor reload after rollback",
       activeBefore: release1,
       activeAfter: evidence!.activeRelease(),
       evidence: shots,
+      detail: { p1: routeRow(P1), layout: layoutRow() },
     });
   });
 });

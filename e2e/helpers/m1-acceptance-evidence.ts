@@ -83,6 +83,28 @@ export type LedgerRow = {
   expectedActiveReleaseId: string | null;
   result: string | null;
   evidence: string[];
+  /**
+   * The release Core served for the storefront's host right after the step,
+   * read from the ETag of its content read (`servedRelease`), when the step
+   * reached the public site.
+   */
+  servedReleaseId: string | null;
+  /**
+   * Every item the release's own content publication pins, read from D1:
+   * which revision each template (page, route Document, layout) and Page
+   * used in that release.
+   */
+  pins: PublicationPin[] | null;
+  /** Step-specific version ids (draft, published, pinned) the spec checked. */
+  detail: Record<string, unknown> | null;
+};
+
+export type PublicationPin = {
+  itemType: string;
+  contentId: string;
+  revisionId: string;
+  templateType: string | null;
+  routePath: string | null;
 };
 
 export type PreviewStart = {
@@ -171,6 +193,27 @@ export function m1Evidence(options: {
       scope.storefrontId,
     );
 
+  /** What a release's own content publication pins, item by item. */
+  const pins = (releaseId: string): PublicationPin[] =>
+    q(
+      `SELECT i.item_type AS itemType, i.content_id AS contentId, i.revision_id AS revisionId,
+              json_extract(i.metadata, '$.templateType') AS templateType,
+              json_extract(i.metadata, '$.routePath') AS routePath
+         FROM storefront_releases r
+         JOIN storefront_content_publication_items i
+           ON i.publication_id = r.content_publication_id AND i.deleted_at IS NULL
+        WHERE r.id = ?1 AND r.storefront_id = ?2
+        ORDER BY i.item_type, routePath, i.content_id`,
+      releaseId,
+      scope.storefrontId,
+    ).map((pin) => ({
+      itemType: String(pin.itemType),
+      contentId: String(pin.contentId),
+      revisionId: String(pin.revisionId),
+      templateType: str(pin.templateType),
+      routePath: str(pin.routePath),
+    }));
+
   /** The active release of the storefront, read from D1. */
   const activeRelease = () => str(themeRow()?.active);
 
@@ -190,6 +233,8 @@ export function m1Evidence(options: {
     expectedActiveReleaseId?: string | null;
     result?: string | null;
     evidence?: string[];
+    servedReleaseId?: string | null;
+    detail?: Record<string, unknown> | null;
   }) => {
     const theme = themeRow();
     const template = row.routePath
@@ -244,6 +289,9 @@ export function m1Evidence(options: {
       expectedActiveReleaseId: row.expectedActiveReleaseId ?? null,
       result: row.result ?? null,
       evidence: row.evidence ?? [],
+      servedReleaseId: row.servedReleaseId ?? null,
+      pins: release ? pins(String(release.id)) : null,
+      detail: row.detail ?? null,
     });
     writeLedger();
     return rows[rows.length - 1]!;
@@ -392,6 +440,7 @@ export function m1Evidence(options: {
 
   return {
     ledger,
+    pins,
     activeRelease,
     observePreviewStarts,
     expectFullStartObserved,

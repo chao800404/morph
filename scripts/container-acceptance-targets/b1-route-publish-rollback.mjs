@@ -2,7 +2,10 @@
 /**
  * M1 1a, A3 and A4: the B1 route cases (p1, p2, p5 edited; p3, p4a, p6 as
  * code) on non-home pages with their own route Documents, published, served,
- * rolled back and reloaded. Only the container transport can run it:
+ * rolled back and reloaded, with the publish scope cases between release 2
+ * and the rollback (S-a: another page's unpublished draft stays out of a
+ * single-page publish; S-b: a pending shared layout is sealed by it). Only
+ * the container transport can run it:
  * publishing builds in the Sandbox container, and the spec skips itself at
  * file level elsewhere (the shards and the full Start job use local-sidecar).
  *
@@ -34,8 +37,13 @@ export const TARGET = Object.freeze({
       "release 2: p2 cross-name alias route heading edited in the Inspector through Design",
       "release 2: p5 second same-text instance title edited on the canvas through Design",
       "release 2: the draft stays off the public site until published, then the public site shows release 2",
+      "publish scope: p1 per-field route desc edited in the Inspector and left unpublished",
+      "publish scope: p2 cross-name alias route heading edited on the canvas, to be published on its own",
+      "publish scope: publishing p2 from its own editor seals p2 only, p1's unpublished draft stays off the public site",
+      "publish scope: l1 layout-shared second instance edited on the canvas and left pending",
+      "publish scope: publishing p2 with a pending layout seals the layout too, p1's page shows the new shared block over its published body",
       "rollback to release 1 with expectedActiveReleaseId: a stale expectation is refused, then the public site is back to release 1 after a reload",
-      "after the rollback the editor reloads with the release 2 drafts on every route under full Start",
+      "after the rollback the editor reloads with the pre-rollback drafts on every route under full Start",
     ].map((title) => `${DESCRIBE} › ${title}`),
   ),
 });
