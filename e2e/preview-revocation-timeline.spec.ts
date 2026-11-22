@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 import Database from "better-sqlite3";
@@ -48,12 +57,12 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  *                             construction, on a fresh admin of their own.
  *   notice-lost               the grants revoked in D1 only (no push), 3 s
  *                             after the sockets opened (A7's case)
- *   notice-lost-after-renewal the same, once the server has renewed the SAME
- *                             grant each socket uses: its stored `expires_at`
- *                             advanced, read read-only from this run's D1
- *                             (user decision 2026-11-22). Revoked at once
- *                             after the advance is observed; never on an
- *                             estimate. No advance seen: INCOMPLETE.
+ *   notice-lost-after-renewal the same, revoked at once after each case
+ *                             socket's lease was renewed: its SECOND
+ *                             successful verification (the registration's is
+ *                             the first), as the Durable Object reports it
+ *                             (see "Renewal" below). Never on an estimate.
+ *                             No renewal seen: INCOMPLETE.
  *   notice-lost-after-renewal-idle
  *                             the same, and the sockets send nothing after R:
  *                             only the lease tick can end them (the design's
@@ -71,6 +80,37 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  * "incomplete: re-login during formal case", is never retried and never
  * passes. (After R, a redirect to /sign-in is the revocation's own effect and
  * is only recorded.)
+ *
+ * Renewal (user decision 2026-11-22). A grant's stored `expires_at` never
+ * moves; what renews is the socket lease's `V`, in the preview's Durable
+ * Object. With MORPH_PREVIEW_LEASE_DIAGNOSTICS=1 in what Wrangler loads, the
+ * DO writes `[preview-lease-verified] {connectionId, grantId, path, sequence,
+ * sentAt, settledAt}` each time a "valid" result has advanced `V`
+ * (preview-socket-lease-diagnostics.ts). The dev server prints it, and the
+ * run's log (M1_1C_WORKER_LOG, the runner's captured output) is read from
+ * where this case started, never written.
+ *
+ * Which connection is the case's: a line whose grant is one of this case's
+ * grants and whose path is the echo socket's, and whose first verification
+ * (sequence 1, sent synchronously at registration, before the 101) was sent
+ * inside that socket's open window [sent, open returned] (±5 ms rounding).
+ * The two sockets are opened one after the other, so the windows barely
+ * touch; a registration inside both is ambiguous, and exactly one connection
+ * must fall in each window. Anything else is INCOMPLETE, never guessed.
+ *
+ * For each of the two connections the case waits for sequence 2, the first
+ * renewal; once both are in, it revokes at once. "Verification effective"
+ * is that line's settledAt (V updated), "revoke committed" is b (the D1
+ * write returned). The window between them is fixed in advance at
+ * VERIFY_TO_REVOKE_WINDOW_MS = 1 s for every connection; over it, the case is
+ * INCOMPLETE (still measured and saved). Why 1 s: the worst case is R right
+ * at the renewal, and every ms R comes later shortens what is measured (the
+ * lease still lapses at V + L), so the window bounds how far the case may
+ * understate the worst case. 1 s is half the design's eps (2 s), so a
+ * measurement within it still says something about L + eps, and it leaves
+ * room for the log path (DO console → dev server → log file → this reader,
+ * polled every 20 ms), the D1 write, and the two sockets' renewals falling
+ * a few hundred ms apart (they are opened one after the other).
  *
  * Verdicts, as A7 judges them. With R in [a, b] and an event at T, against a
  * limit D: pass T - a <= D; over T - b > D; uncertain otherwise. Only pass is
@@ -138,12 +178,25 @@ const CLOSE_WAIT_MS = 75_000;
 const MIN_PROBE_AFTER_B_MS = 5_000;
 /**
  * How long, after the later socket's first echo, the after-renewal cases wait
- * for the server to renew each socket's grant (its stored `expires_at`
- * advanced). A busy socket's lease renews from L/2 on, so twice the lease is
- * well past where a renewal is due. Not seen by then: the case is incomplete.
+ * for each case socket's first lease renewal (its sequence 2). A busy
+ * socket's lease renews from L/2 on, so twice the lease is well past where a
+ * renewal is due. Not seen by then: the case is incomplete.
  */
 const RENEWAL_WAIT_MS = 2 * LEASE_MS;
-const RENEWAL_POLL_MS = 100;
+/** How often the run's log is read for new lease lines. */
+const LEASE_EVENT_POLL_MS = 20;
+/** Fixed in advance; see "Renewal" above. */
+const VERIFY_TO_REVOKE_WINDOW_MS = 1_000;
+/**
+ * Slack on each socket's open window: the page, this process and the DO read
+ * one machine clock, in whole ms, so only rounding is allowed for.
+ */
+const OPEN_WINDOW_SLACK_MS = 5;
+/** How long after both first echoes the registration lines may take. */
+const REGISTRATION_LINE_WAIT_MS = 10_000;
+const WORKER_LOG = process.env.M1_1C_WORKER_LOG;
+// preview-socket-lease-diagnostics.ts
+const LEASE_VERIFIED_PREFIX = "[preview-lease-verified]";
 const E2E_USER_ID =
   process.env.MORPH_E2E_USER_ID ?? "00000000-0000-4000-8000-00000000e2e1";
 
@@ -334,19 +387,6 @@ function d1File(): string {
 }
 function d1All(sql: string, ...params: unknown[]) {
   const db = new Database(d1File(), { timeout: 10_000 });
-  try {
-    return db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-  } finally {
-    db.close();
-  }
-}
-/** A read-only connection: the renewal watch never writes. */
-function d1ReadOnly(sql: string, ...params: unknown[]) {
-  const db = new Database(d1File(), {
-    readonly: true,
-    fileMustExist: true,
-    timeout: 10_000,
-  });
   try {
     return db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   } finally {
@@ -821,13 +861,13 @@ const MECHANISM: Record<
   },
   "notice-lost-after-renewal": {
     mechanism:
-      "grants revoked in D1 only, at once after the server-side renewal of each socket's own grant (stored expires_at advanced) was observed",
+      "grants revoked in D1 only, at once after each case socket's lease renewal (its second successful verification, the DO's [preview-lease-verified] sequence 2) was seen; the sockets keep sending",
     pushExpected: false,
     ownUser: false,
   },
   "notice-lost-after-renewal-idle": {
     mechanism:
-      "grants revoked in D1 only, at once after the server-side renewal of each socket's own grant (stored expires_at advanced) was observed; the sockets send nothing after R",
+      "grants revoked in D1 only, at once after each case socket's lease renewal (its second successful verification, the DO's [preview-lease-verified] sequence 2) was seen; the sockets send nothing after R",
     pushExpected: false,
     ownUser: false,
   },
@@ -970,72 +1010,157 @@ function liveGrantsOf(userId: string, since: string): CaseGrant[] {
   }));
 }
 
-type RenewalWatch = {
+/** A colour code a terminal-aware dev server may put around a line. */
+const ANSI_COLOUR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+/** One `[preview-lease-verified]` line, as the Durable Object wrote it. */
+type LeaseLine = {
+  connectionId: string;
   grantId: string;
-  kind: string;
-  expiresAtBefore: string;
-  expiresAtAfter: string | null;
-  /** First read that saw expires_at advanced, grant still live: renewalAt. */
-  renewalObservedAt: number | null;
-  reads: number;
-  firstReadAt: number | null;
-  lastReadAt: number | null;
-  revokedAtSeen: string | null;
+  path: string;
+  sequence: number;
+  sentAt: number;
+  settledAt: number;
+  /** When this reader first saw the line (this process's clock). */
+  seenAt: number;
 };
 
 /**
- * Watches, read-only, each socket's own grant until the server has renewed
- * it: its stored expires_at later than before, not revoked, not expired.
- * Returns when every grant renewed (confirmedAt) or the deadline passed.
+ * Reads the run's log for lease lines, from the size it had when the reader
+ * was made: only this case's lines, and read-only (the runner is the log's
+ * one writer). A line is taken from its prefix to its end, whatever the dev
+ * server put before it; a line still being written waits for its newline.
  */
-async function watchRenewal(
-  grants: CaseGrant[],
-  deadline: number,
-): Promise<{ watches: RenewalWatch[]; confirmedAt: number | null }> {
-  const watches: RenewalWatch[] = grants.map((g) => ({
-    grantId: g.id,
-    kind: g.kind,
-    expiresAtBefore: g.expiresAt,
-    expiresAtAfter: null,
-    renewalObservedAt: null,
-    reads: 0,
-    firstReadAt: null,
-    lastReadAt: null,
-    revokedAtSeen: null,
-  }));
-  const placeholders = grants.map(() => "?").join(", ");
-  while (Date.now() < deadline) {
-    const rows = d1ReadOnly(
-      `SELECT id, expires_at, revoked_at FROM storefront_preview_access_grants
-        WHERE id IN (${placeholders})`,
-      ...grants.map((g) => g.id),
-    );
-    const readAt = Date.now();
-    for (const watch of watches) {
-      const row = rows.find((r) => String(r.id) === watch.grantId);
-      watch.reads += 1;
-      watch.firstReadAt ??= readAt;
-      watch.lastReadAt = readAt;
-      if (!row) continue;
-      const expiresAt = String(row.expires_at);
-      watch.expiresAtAfter = expiresAt;
-      watch.revokedAtSeen = row.revoked_at ? String(row.revoked_at) : null;
-      if (
-        watch.renewalObservedAt === null &&
-        Date.parse(expiresAt) > Date.parse(watch.expiresAtBefore) &&
-        !row.revoked_at &&
-        Date.parse(expiresAt) > readAt
-      ) {
-        watch.renewalObservedAt = readAt;
+function leaseLineReader(file: string) {
+  let offset = existsSync(file) ? statSync(file).size : 0;
+  let partial = "";
+  const lines: LeaseLine[] = [];
+  const malformed: string[] = [];
+  const read = () => {
+    if (!existsSync(file)) return;
+    const size = statSync(file).size;
+    if (size <= offset) return;
+    const fd = openSync(file, "r");
+    try {
+      const buffer = Buffer.alloc(size - offset);
+      const got = readSync(fd, buffer, 0, buffer.length, offset);
+      offset += got;
+      partial += buffer.subarray(0, got).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+    const parts = partial.split(/\r?\n/);
+    partial = parts.pop() ?? "";
+    const seenAt = Date.now();
+    for (const raw of parts) {
+      const at = raw.indexOf(LEASE_VERIFIED_PREFIX);
+      if (at < 0) continue;
+      const text = raw
+        .slice(at + LEASE_VERIFIED_PREFIX.length)
+        .replace(ANSI_COLOUR, "")
+        .trim();
+      try {
+        const v = JSON.parse(text) as Record<string, unknown>;
+        if (
+          typeof v.connectionId !== "string" ||
+          typeof v.grantId !== "string" ||
+          typeof v.path !== "string" ||
+          typeof v.sequence !== "number" ||
+          typeof v.sentAt !== "number" ||
+          typeof v.settledAt !== "number"
+        ) {
+          malformed.push(text.slice(0, 200));
+          continue;
+        }
+        lines.push({
+          connectionId: v.connectionId,
+          grantId: v.grantId,
+          path: v.path,
+          sequence: v.sequence,
+          sentAt: v.sentAt,
+          settledAt: v.settledAt,
+          seenAt,
+        });
+      } catch {
+        malformed.push(text.slice(0, 200));
       }
     }
-    if (watches.every((w) => w.renewalObservedAt !== null)) {
-      return { watches, confirmedAt: Date.now() };
-    }
-    await new Promise((resolve) => setTimeout(resolve, RENEWAL_POLL_MS));
-  }
-  return { watches, confirmedAt: null };
+  };
+  return { read, lines, malformed };
 }
+
+type CaseConnection = {
+  surface: Surface;
+  connectionId: string;
+  grantId: string;
+  grantKind: string | null;
+  path: string;
+  /** The socket's open window this connection's registration fell in. */
+  openWindow: { from: number; to: number };
+  registration: LeaseLine;
+  /** Its sequence 2: the first renewal. */
+  renewal: LeaseLine | null;
+};
+
+/**
+ * Finds the case's two echo connections among the lease lines (see
+ * "Renewal" in the header). Returns why when it cannot prove them.
+ */
+function caseConnections(
+  lines: LeaseLine[],
+  grants: CaseGrant[],
+  windows: Record<Surface, { from: number; to: number }>,
+): { connections: CaseConnection[] } | { reason: string; candidates: unknown } {
+  const grantKind = new Map(grants.map((g) => [g.id, g.kind]));
+  const registrations = lines.filter(
+    (l) => l.sequence === 1 && grantKind.has(l.grantId) && l.path.endsWith(`/${ECHO}`),
+  );
+  const candidates = registrations.map((l) => ({
+    connectionId: l.connectionId,
+    grantId: l.grantId,
+    path: l.path,
+    sentAt: l.sentAt,
+  }));
+  const within = (l: LeaseLine, surface: Surface) =>
+    l.sentAt >= windows[surface].from - OPEN_WINDOW_SLACK_MS &&
+    l.sentAt <= windows[surface].to + OPEN_WINDOW_SLACK_MS;
+  // A registration inside both windows could be either socket's.
+  const both = registrations.filter((l) => within(l, "frame") && within(l, "tab"));
+  if (both.length) {
+    return {
+      reason: `${both.length} echo connection(s) registered where the two sockets' open windows overlap (frame ${windows.frame.from}..${windows.frame.to}, tab ${windows.tab.from}..${windows.tab.to})`,
+      candidates,
+    };
+  }
+  const connections: CaseConnection[] = [];
+  for (const surface of ["frame", "tab"] as const) {
+    const w = windows[surface];
+    const inWindow = registrations.filter((l) => within(l, surface));
+    if (inWindow.length !== 1) {
+      return {
+        reason: `${inWindow.length} echo connections of this case's grants registered inside the ${surface} socket's open window (${w.from}..${w.to}); exactly 1 is required`,
+        candidates,
+      };
+    }
+    const registration = inWindow[0]!;
+    connections.push({
+      surface,
+      connectionId: registration.connectionId,
+      grantId: registration.grantId,
+      grantKind: grantKind.get(registration.grantId) ?? null,
+      path: registration.path,
+      openWindow: w,
+      registration,
+      renewal: null,
+    });
+  }
+  if (connections[0]!.connectionId === connections[1]!.connectionId) {
+    return { reason: "both sockets resolved to one connection", candidates };
+  }
+  return { connections };
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Merges this case into the timeline file, which survives a worker restart. */
 function saveCase(trigger: Trigger, result: Record<string, unknown>) {
@@ -1071,7 +1196,7 @@ function saveCase(trigger: Trigger, result: Record<string, unknown>) {
     preparation:
       "Sign-ins only before the formal case; one Retry-After wait on a 429; a second 429, or any re-login after the formal case started, makes the case incomplete (failed, never retried).",
     renewal:
-      "After-renewal cases: the server-side renewal is the same grant's stored expires_at advancing (read-only D1 read); revoked at once after it is observed; none observed = incomplete.",
+      `After-renewal cases: the renewal is each case socket's second successful lease verification (sequence 2 of the DO's [preview-lease-verified] line for that connection; the registration's is 1), read from the run's log; revoked at once after both are seen; none seen, or a socket that cannot be proven the case's = incomplete; verification effective (settledAt) -> revoke committed (b) over ${VERIFY_TO_REVOKE_WINDOW_MS} ms for any connection = incomplete.`,
   };
   all.cases[trigger] = result;
   writeFileSync(OUT, JSON.stringify(all, null, 2));
@@ -1106,6 +1231,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
   const authRedirectsAfterR: Array<Record<string, unknown>> = [];
   let grants: CaseGrant[] = [];
   let renewal: Record<string, unknown> | null = null;
+  let leaseReader: ReturnType<typeof leaseLineReader> | null = null;
   let fullySaved = false;
   const watchSignInRequests = (owner: BrowserContext, label: string) =>
     owner.on("request", (request) => {
@@ -1216,6 +1342,15 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     // incomplete.
     formal.started = true;
     formal.startedAt = Date.now();
+    if (renewalCase) {
+      if (!WORKER_LOG || !existsSync(WORKER_LOG)) {
+        throw new IncompleteCase(
+          `incomplete: the run's log (M1_1C_WORKER_LOG=${String(WORKER_LOG)}) cannot be read, so no lease renewal can be seen`,
+        );
+      }
+      // From here: this case's lease lines only.
+      leaseReader = leaseLineReader(WORKER_LOG);
+    }
     watchSignInRequests(context, "case");
     if (other) {
       watchSignInRequests(other.context(), "other-session");
@@ -1472,12 +1607,16 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
 
     // 4. One echo socket in each, busy.
     const openSent: Record<Surface, number> = { frame: 0, tab: 0 };
+    /** When the open came back here: after the 101, so after registration. */
+    const openReturned: Record<Surface, number> = { frame: 0, tab: 0 };
     const socks: Record<Surface, string> = {
       frame: `${trigger}-frame-${Date.now()}`,
       tab: `${trigger}-tab-${Date.now()}`,
     };
+    // One after the other: the tab's opens only once the frame's is open.
     for (const { surface, target } of targets) {
       openSent[surface] = await openBusySocket(target, surface, socks[surface]);
+      openReturned[surface] = Date.now();
     }
     const firstEcho = (surface: Surface) =>
       events.find((e) => e.kind === "ws-echo" && e.surface === surface)?.t ??
@@ -1515,29 +1654,68 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
 
     // 5. When to revoke.
     if (renewalCase) {
-      // The server-side renewal of the same grant: its stored expires_at
-      // advanced (read-only, this run's D1), the grant still live. Revoke at
-      // once after both are observed. No estimate stands in for it.
+      // Each case socket's first lease renewal, as its Durable Object
+      // reported it (see "Renewal" in the header). Revoke at once once both
+      // are seen. No estimate stands in for it.
+      const reader = leaseReader!;
       const laterEcho = Math.max(firstEcho("frame")!, firstEcho("tab")!);
-      const deadline = laterEcho + RENEWAL_WAIT_MS;
-      const watched = await watchRenewal(grants, deadline);
+      const windows = {
+        frame: { from: openSent.frame, to: openReturned.frame },
+        tab: { from: openSent.tab, to: openReturned.tab },
+      };
       renewal = {
         source:
-          "storefront_preview_access_grants.expires_at of the socket's own grant, read-only from this run's D1",
+          "[preview-lease-verified] lines (MORPH_PREVIEW_LEASE_DIAGNOSTICS=1) read from the run's log, this case's only",
+        windowMs: VERIFY_TO_REVOKE_WINDOW_MS,
         socketsOpenSentAt: openSent,
+        socketsOpenReturnedAt: openReturned,
         firstEchoAt: { frame: firstEcho("frame"), tab: firstEcho("tab") },
-        deadline,
-        confirmedAt: watched.confirmedAt,
-        watches: watched.watches,
       };
-      if (watched.confirmedAt === null) {
+      // a. Which connections are the case's.
+      let found: ReturnType<typeof caseConnections> = {
+        reason: "no lease line read yet",
+        candidates: [],
+      };
+      const registrationDeadline = laterEcho + REGISTRATION_LINE_WAIT_MS;
+      while (true) {
+        reader.read();
+        found = caseConnections(reader.lines, grants, windows);
+        if ("connections" in found || Date.now() >= registrationDeadline) break;
+        await sleep(LEASE_EVENT_POLL_MS);
+      }
+      if (!("connections" in found)) {
+        renewal.identification = found;
+        renewal.malformedLines = reader.malformed;
         throw new IncompleteCase(
-          `incomplete: no server-side renewal of the same grant observed: stored expires_at did not advance within ${RENEWAL_WAIT_MS} ms of the sockets' first echo (${watched.watches
-            .map(
-              (w) =>
-                `${w.kind} ${w.grantId}: ${w.expiresAtBefore} -> ${String(w.expiresAtAfter)}, ${w.reads} reads`,
-            )
-            .join("; ")}); not revoked`,
+          `incomplete: the case's sockets could not be proven among the lease lines: ${found.reason}; not revoked`,
+        );
+      }
+      const connections = found.connections;
+      renewal.connections = connections;
+      // b. Each one's sequence 2, then revoke at once.
+      const deadline = laterEcho + RENEWAL_WAIT_MS;
+      renewal.deadline = deadline;
+      while (true) {
+        reader.read();
+        for (const c of connections) {
+          c.renewal ??=
+            reader.lines.find(
+              (l) => l.connectionId === c.connectionId && l.sequence === 2,
+            ) ?? null;
+        }
+        if (connections.every((c) => c.renewal) || Date.now() >= deadline) break;
+        await sleep(LEASE_EVENT_POLL_MS);
+      }
+      renewal.confirmedAt = connections.every((c) => c.renewal)
+        ? Date.now()
+        : null;
+      renewal.malformedLines = reader.malformed;
+      if (renewal.confirmedAt === null) {
+        throw new IncompleteCase(
+          `incomplete: no lease renewal (sequence 2) seen within ${RENEWAL_WAIT_MS} ms of the sockets' first echo for ${connections
+            .filter((c) => !c.renewal)
+            .map((c) => `${c.surface} ${c.connectionId}`)
+            .join(", ")}; not revoked`,
         );
       }
     } else {
@@ -1649,13 +1827,45 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     }
     bMark = b;
     await stopSending();
+    // Verification effective (settledAt of sequence 2) -> revoke committed
+    // (b), per connection, against the window fixed in advance.
+    let renewalOverWindow: string | null = null;
     if (renewal) {
-      const watches = renewal.watches as RenewalWatch[];
+      const connections = renewal.connections as CaseConnection[];
       renewal.revokeWindow = { a, b };
       renewal.confirmToRevokeMs = a - Number(renewal.confirmedAt);
-      renewal.renewalToRevokeMs = Object.fromEntries(
-        watches.map((w) => [w.kind, a - Number(w.renewalObservedAt)]),
-      );
+      const intervals = connections.map((c) => {
+        const r = c.renewal!;
+        const effectiveToCommittedMs = b - r.settledAt;
+        return {
+          surface: c.surface,
+          connectionId: c.connectionId,
+          grantId: c.grantId,
+          grantKind: c.grantKind,
+          registration: {
+            sentAt: c.registration.sentAt,
+            settledAt: c.registration.settledAt,
+          },
+          renewal: {
+            sequence: r.sequence,
+            sentAt: r.sentAt,
+            settledAt: r.settledAt,
+            seenAt: r.seenAt,
+          },
+          sinceRegistrationMs: r.sentAt - c.registration.sentAt,
+          logDelayMs: r.seenAt - r.settledAt,
+          effectiveToRevokeSentMs: a - r.settledAt,
+          effectiveToRevokeCommittedMs: effectiveToCommittedMs,
+          withinWindow: effectiveToCommittedMs <= VERIFY_TO_REVOKE_WINDOW_MS,
+        };
+      });
+      renewal.verificationToRevoke = intervals;
+      const over = intervals.filter((x) => !x.withinWindow);
+      if (over.length) {
+        renewalOverWindow = `incomplete: verification effective -> revoke committed over the ${VERIFY_TO_REVOKE_WINDOW_MS} ms window (${over
+          .map((x) => `${x.surface} ${x.effectiveToRevokeCommittedMs} ms`)
+          .join(", ")})`;
+      }
     }
     const readBackAt = Date.now();
     const readBack: {
@@ -1910,10 +2120,10 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     const measuredReLogins = relogins.length > 0;
     const result = {
       trigger,
-      status: measuredReLogins ? "incomplete" : "measured",
+      status: measuredReLogins || renewalOverWindow ? "incomplete" : "measured",
       incompleteReason: measuredReLogins
         ? "incomplete: re-login during formal case"
-        : null,
+        : renewalOverWindow,
       separate: trigger === "grant-expiry",
       mechanism: spec.mechanism,
       pushExpected: spec.pushExpected,
@@ -1956,7 +2166,17 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
     }
     if (renewal) {
       console.log(
-        `[1c] ${trigger} renewal confirmedAt=a${Number(renewal.confirmedAt) - a}ms renewalToRevoke=${JSON.stringify(renewal.renewalToRevokeMs)}`,
+        `[1c] ${trigger} renewal confirmedAt=a${Number(renewal.confirmedAt) - a}ms verificationToRevoke=${JSON.stringify(
+          (
+            renewal.verificationToRevoke as Array<Record<string, unknown>>
+          ).map((x) => ({
+            surface: x.surface,
+            connectionId: x.connectionId,
+            effectiveToRevokeCommittedMs: x.effectiveToRevokeCommittedMs,
+            logDelayMs: x.logDelayMs,
+            withinWindow: x.withinWindow,
+          })),
+        )}`,
       );
     }
 
@@ -1966,6 +2186,7 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
       );
     }
     expect(leaks, "no draft byte is served after b").toEqual([]);
+    if (renewalOverWindow) throw new IncompleteCase(renewalOverWindow);
     expect(harnessErrors, "the measurement was made").toEqual([]);
     for (const limit of designLimits) {
       expect(
