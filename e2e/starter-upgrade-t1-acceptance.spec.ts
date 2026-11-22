@@ -1150,9 +1150,11 @@ const NO_DOCUMENT = "(no Document: Starter default)";
  * Starter's defaults. Applies only to starter-header/starter-footer, only
  * when this case seeded an empty layout (pre-v16) and no Document holds the
  * section; the field must then show exactly the current default Layout
- * Document's value at its path. Such a field binds no stored value, so it is
- * clicked but not written (exerciseAnnotations). Every stored author value
- * is still compared before and after elsewhere.
+ * Document's value at its path, and it is recorded (annotationChecks,
+ * unstoredLayoutSelectOnly). It does not exempt the write: one text field of
+ * each such section is written for real after the upgrade
+ * (probeUnstoredLayoutWrite), and a failure there is a product finding.
+ * Every stored author value is still compared before and after elsewhere.
  */
 function unstoredLayoutDefault(
   run: CaseRun,
@@ -1597,6 +1599,141 @@ async function clickOwnPoint(
   return false;
 }
 
+const LAYOUT_SECTIONS = ["starter-header", "starter-footer"] as const;
+
+/**
+ * For each Header/Footer section no Document holds (unstoredLayoutDefault),
+ * the text field written for real: storeName (Header) and tagline (Footer)
+ * when the case uses them, else the first text field of that section.
+ */
+function layoutProbes(
+  run: CaseRun,
+  bindings: CanvasBinding[],
+  drafts: DraftDocument[],
+): Set<string> {
+  const probes = new Set<string>();
+  for (const section of LAYOUT_SECTIONS) {
+    const text = bindings.filter((binding) => {
+      if (binding.section !== section || binding.container) return false;
+      const where = resolveForCase(run, binding, drafts);
+      return where.ok && where.templateId === NO_DOCUMENT && typeof where.value === "string";
+    });
+    const preferred = section === "starter-header" ? "storeName" : "tagline";
+    const pick = text.find((binding) => binding.field === preferred) ?? text[0];
+    if (pick) probes.add(pick.key);
+  }
+  return probes;
+}
+
+/**
+ * The first write into a Header or Footer no Document holds, as an author
+ * makes it after the upgrade: the field's own Inspector control, a new
+ * value. Then a Document must hold the section with that value (D1), the
+ * canvas must show it, every other Header/Footer field shown must keep its
+ * text (no default lost or blanked by the first write), and the nav,
+ * explore and help rows stored must keep their ids through the restore,
+ * which puts the original value back and reads it back. Any failure is a
+ * product finding, never an exemption.
+ */
+async function probeUnstoredLayoutWrite(
+  page: Page,
+  run: CaseRun,
+  binding: CanvasBinding,
+  element: Locator,
+  where: Extract<Resolution, { ok: true }>,
+  n: number,
+  result: Exercise,
+) {
+  const section = binding.section!;
+  const location = where.location;
+  const original = where.value as string;
+  const isLayout = (item: CanvasBinding) =>
+    (LAYOUT_SECTIONS as readonly string[]).includes(item.section ?? "");
+  const othersBefore = new Map(
+    (await canvasBindings(page))
+      .filter((item) => isLayout(item) && item.key !== binding.key)
+      .map((item) => [item.key, item.text]),
+  );
+  const problems: string[] = [];
+  const compareOthers = async (when: string) => {
+    const now = new Map(
+      (await canvasBindings(page))
+        .filter((item) => isLayout(item) && item.key !== binding.key)
+        .map((item) => [item.key, item.text]),
+    );
+    for (const [key, text] of othersBefore) {
+      if (!now.has(key)) problems.push(`${when}: ${key} is gone`);
+      else if (now.get(key) !== text) {
+        problems.push(`${when}: ${key} ${JSON.stringify(text.slice(0, 40))} -> ${JSON.stringify(now.get(key)!.slice(0, 40))}`);
+      }
+    }
+  };
+  const rowIds = () => {
+    const drafts = draftDocuments(run.scope);
+    return Object.fromEntries(
+      LAYOUT_SECTIONS.flatMap((name) => {
+        const props = (sectionProps(drafts, name) ?? {}) as Record<string, unknown>;
+        return ["navItems", "exploreItems", "helpItems"]
+          .filter((key) => Array.isArray(props[key]))
+          .map((key) => [
+            `${name}/${key}`,
+            (props[key] as Array<Record<string, unknown>>).map((row) => row?.id ?? null),
+          ]);
+      }),
+    ) as Record<string, unknown[]>;
+  };
+  const stored = () => {
+    const props = sectionProps(draftDocuments(run.scope), section);
+    return props ? valueAt(props, location) : undefined;
+  };
+  const target = await inspectorControlFor(page, original, binding);
+  result.controlRule = target.rule;
+  result.controlCandidates = target.candidates;
+  const maxLength = Number((await target.control.getAttribute("maxlength")) ?? Infinity);
+  const written = `1b${n}-${randomUUID().slice(0, 6)}`;
+  result.written = written;
+  result.maxLength = Number.isFinite(maxLength) ? maxLength : null;
+  expect(written.length).toBeLessThanOrEqual(maxLength);
+  await typeInto(target.control, written);
+  await expect
+    .poll(stored, {
+      timeout: 30_000,
+      message: `a Document now holds ${section} with ${location} = the written value`,
+    })
+    .toBe(written);
+  await expect(element).toHaveText(written, { timeout: 30_000 });
+  result.canvasShowedWrite = true;
+  await compareOthers("after the first write");
+  const idsAfterWrite = rowIds();
+  await typeInto((await inspectorControlFor(page, written, binding)).control, original);
+  await expect
+    .poll(stored, { timeout: 30_000, message: `${section} ${location} is put back` })
+    .toBe(original);
+  await expect(element).toHaveText(original.trim(), { timeout: 30_000 });
+  result.canvasShowedRestore = true;
+  await compareOthers("after the restore");
+  const idsAfterRestore = rowIds();
+  for (const [list, ids] of Object.entries(idsAfterWrite)) {
+    if (ids.some((id) => typeof id !== "string")) problems.push(`${list}: a stored row has no id`);
+    if (JSON.stringify(idsAfterRestore[list]) !== JSON.stringify(ids)) {
+      problems.push(`${list}: row ids ${JSON.stringify(ids)} -> ${JSON.stringify(idsAfterRestore[list] ?? null)}`);
+    }
+  }
+  result.layoutProbe = {
+    section,
+    location,
+    othersCompared: othersBefore.size,
+    idsAfterWrite,
+    idsAfterRestore,
+    problems,
+  };
+  if (problems.length) {
+    throw new Error(`first write to ${section}: ${problems.slice(0, 6).join("; ")}`);
+  }
+  result.outcome =
+    "written into a section no Document held (pre-v16 store); a Document now holds it with the value; other Header/Footer fields unchanged; row ids stable; restored and read back";
+}
+
 type Exercise = {
   key: string;
   section: string | null;
@@ -1614,6 +1751,8 @@ type Exercise = {
   /** Which rule picked the Inspector control, and every control that showed the value. */
   controlRule?: string;
   controlCandidates?: InspectorCandidate[];
+  /** The first write into a pre-v16 store's Header or Footer (probeUnstoredLayoutWrite). */
+  layoutProbe?: unknown;
   /** The control's `maxlength`, when it has one. */
   maxLength?: number | null;
   outcome?: string;
@@ -1649,7 +1788,27 @@ async function exerciseAnnotations(
     (key) => !current.some((binding) => binding.key === key),
   );
   expect(missing, "every annotation to use is on the canvas").toEqual([]);
+  // A pre-v16 store's Header and Footer have no Document (unstoredLayoutDefault).
+  // One text field of each is written for real (layoutProbes), last, since its
+  // write gives that section a Document; the others are selected only.
+  const probes = layoutProbes(run, current, draftDocuments(run.scope));
+  current.sort(
+    (a, b) => Number(probes.has(a.key)) - Number(probes.has(b.key)),
+  );
   const results: Exercise[] = [];
+  if (seeds.get(run.label)?.layout.startsWith("emptied")) {
+    for (const section of LAYOUT_SECTIONS) {
+      if (![...probes].some((key) => key.startsWith(`${section}|`))) {
+        results.push({
+          key: `${section}|(probe)`,
+          section,
+          field: null,
+          path: null,
+          error: `no text field of ${section} on the canvas to write for real`,
+        });
+      }
+    }
+  }
   for (const [n, binding] of current.entries()) {
     const result: Exercise = {
       key: binding.key,
@@ -1719,9 +1878,13 @@ async function exerciseAnnotations(
         "the click selects an element of this section",
       ).toBe(binding.section);
       if (where.kind === "value") {
+        if (probes.has(binding.key)) {
+          await probeUnstoredLayoutWrite(page, run, binding, element, where, n, result);
+          continue;
+        }
         result.outcome ??=
           where.templateId === NO_DOCUMENT
-            ? "selected; no Document holds this section (a pre-v16 store had no layout Document), so it shows the Starter default and is not written"
+            ? "selected only; no Document holds this section (a pre-v16 store had no layout Document) and it shows the Starter default; the section's write is probed through another field"
             : "selected; binds a list row, card or image, whose text fields are written through their own annotations";
         continue;
       }
@@ -1796,6 +1959,12 @@ async function exerciseAnnotations(
 
 /** The exercise's verdict: every pre-upgrade annotation present was used. */
 function expectAnnotationsExercised(run: CaseRun, results: Exercise[]) {
+  run.record.fact("unstoredLayoutSelectOnly", results
+    .filter((r) => r.templateId === NO_DOCUMENT && !r.layoutProbe && !r.error)
+    .map((r) => r.key));
+  run.record.fact("unstoredLayoutWritten", results
+    .filter((r) => r.layoutProbe)
+    .map((r) => ({ key: r.key, ok: !r.error })));
   run.record.fact("annotationExercise", {
     total: results.length,
     written: results.filter((r) => r.outcome?.startsWith("written")).length,
