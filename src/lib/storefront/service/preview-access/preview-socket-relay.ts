@@ -14,9 +14,12 @@ import {
  *   (4401 or 4503), the container with a normal close.
  * - Either side closing or failing ends the other and the lease.
  * - While open, a timer ticks the lease so an idle socket whose grant was
- *   revoked is still closed promptly (A5 "idle sockets"; no DO alarm, A8).
- *   The bound does not rest on the timer: a frame is only ever forwarded
- *   under the lease.
+ *   revoked is still closed promptly (A5 "idle sockets"; no DO alarm, A8):
+ *   the ticks renew it ahead of its lapse (`previewSocketRenewAheadMs`), so
+ *   with the notice lost it closes within L of the revocation, not after
+ *   V + L plus up to a tick. The same one interval does it; there is no
+ *   other timer. The forwarding bound does not rest on the timer: a frame
+ *   is only ever forwarded under the lease.
  */
 
 /**
@@ -62,8 +65,28 @@ export type PreviewSocketRelay = Readonly<{
   readonly closed: boolean;
 }>;
 
-/** The tick period: a lapsed idle socket is checked within this. */
+/** The tick period. */
 export const PREVIEW_SOCKET_TICK_MS = 5_000;
+/**
+ * The time an idle socket's renewal is given to come back before its lease
+ * lapses: a D1 round trip plus timer lateness, with room to spare.
+ */
+export const PREVIEW_SOCKET_RENEW_MARGIN_MS = 5_000;
+
+/**
+ * How far ahead of the lapse a tick renews an idle socket: one tick period
+ * plus the margin, so some tick sends the renewal in
+ * `[V + L - tick - margin, V + L - margin)`. Without a notice, a revoked
+ * grant is then read by a query sent before `V + L - margin`, and the socket
+ * closes 4401 before `R + L - margin + D` (R > V: the revocation committed
+ * after V's query read the grant; D: that query's round trip). With the
+ * production values: renewed every 20 to 25 s while idle, closed within
+ * 25 s + D of the revocation, inside L = 30 s for any D under 5 s. The
+ * lease caps it at L / 2.
+ */
+export function previewSocketRenewAheadMs(tickMs: number): number {
+  return tickMs + PREVIEW_SOCKET_RENEW_MARGIN_MS;
+}
 
 /** A close code a peer may be sent: 1005/1006 are reported, never sent. */
 function sendableCode(code: number | undefined): number {
@@ -99,6 +122,7 @@ export function relayPreviewSocket(args: {
   const stopTimer =
     args.clearInterval ??
     ((handle) => clearInterval(handle as ReturnType<typeof setInterval>));
+  const tickMs = args.tickMs ?? PREVIEW_SOCKET_TICK_MS;
   let ended = false;
   let timer: unknown = null;
 
@@ -115,6 +139,7 @@ export function relayPreviewSocket(args: {
     verify: args.verify,
     ...(args.onVerified ? { onVerified: args.onVerified } : {}),
     leaseMs: args.leaseMs ?? PREVIEW_SOCKET_LEASE_MS,
+    renewAheadMs: previewSocketRenewAheadMs(tickMs),
     forward: (direction, frame) => {
       const target =
         direction === "to-container" ? args.container : args.browser;
@@ -184,10 +209,7 @@ export function relayPreviewSocket(args: {
   );
 
   if (!lease.closed) {
-    timer = startTimer(
-      () => lease.tick(),
-      args.tickMs ?? PREVIEW_SOCKET_TICK_MS,
-    );
+    timer = startTimer(() => lease.tick(), tickMs);
   } else {
     finish();
   }
