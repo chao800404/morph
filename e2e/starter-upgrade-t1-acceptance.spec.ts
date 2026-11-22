@@ -1647,18 +1647,48 @@ async function probeUnstoredLayoutWrite(
   const section = binding.section!;
   const location = where.location;
   const original = where.value as string;
+  // A list row whose text is the written field's (navItems.0 around
+  // navItems.0.label) changes with it; it is left out of the text
+  // comparison only, and its stored fields and id are checked in D1 below
+  // (main3-run1, v15: navItems#0 "Shop" -> the written label).
+  const enclosesWritten = (item: CanvasBinding) =>
+    item.section === section &&
+    item.container &&
+    item.path !== null &&
+    binding.path !== null &&
+    binding.path.startsWith(`${item.path}.`);
   const isLayout = (item: CanvasBinding) =>
-    (LAYOUT_SECTIONS as readonly string[]).includes(item.section ?? "");
+    (LAYOUT_SECTIONS as readonly string[]).includes(item.section ?? "") &&
+    item.key !== binding.key &&
+    !enclosesWritten(item);
+  const shownBefore = await canvasBindings(page);
+  const enclosing = shownBefore.filter(enclosesWritten).map((item) => item.key);
   const othersBefore = new Map(
-    (await canvasBindings(page))
-      .filter((item) => isLayout(item) && item.key !== binding.key)
-      .map((item) => [item.key, item.text]),
+    shownBefore.filter(isLayout).map((item) => [item.key, item.text]),
   );
+  // Every value the section stores after a write must be the default it
+  // showed (or the written value at the written path): nothing blanked, no
+  // row's other fields changed.
+  const defaults = (createDefaultStorefrontLayoutDocument().sections.find(
+    (item) => item.id === section,
+  )?.props ?? {}) as Record<string, unknown>;
+  const storedProblems = (when: string, expected: string) => {
+    const props = sectionProps(draftDocuments(run.scope), section);
+    if (!props) return [`${when}: no Document holds ${section}`];
+    return leavesOf(props)
+      .filter(([path]) => path !== "id" && !path.endsWith(".id"))
+      .flatMap(([path, value]) => {
+        const want = path === location ? expected : valueAt(defaults, path);
+        return value === want
+          ? []
+          : [`${when}: D1 ${section}.${path} = ${JSON.stringify(value)}, not ${JSON.stringify(want)}`];
+      });
+  };
   const problems: string[] = [];
   const compareOthers = async (when: string) => {
     const now = new Map(
       (await canvasBindings(page))
-        .filter((item) => isLayout(item) && item.key !== binding.key)
+        .filter(isLayout)
         .map((item) => [item.key, item.text]),
     );
     for (const [key, text] of othersBefore) {
@@ -1704,6 +1734,8 @@ async function probeUnstoredLayoutWrite(
   await expect(element).toHaveText(written, { timeout: 30_000 });
   result.canvasShowedWrite = true;
   await compareOthers("after the first write");
+  problems.push(...storedProblems("after the first write", written));
+  const storedAfterWrite = sectionProps(draftDocuments(run.scope), section);
   const idsAfterWrite = rowIds();
   await typeInto((await inspectorControlFor(page, written, binding)).control, original);
   await expect
@@ -1712,6 +1744,8 @@ async function probeUnstoredLayoutWrite(
   await expect(element).toHaveText(original.trim(), { timeout: 30_000 });
   result.canvasShowedRestore = true;
   await compareOthers("after the restore");
+  problems.push(...storedProblems("after the restore", original));
+  const storedAfterRestore = sectionProps(draftDocuments(run.scope), section);
   const idsAfterRestore = rowIds();
   for (const [list, ids] of Object.entries(idsAfterWrite)) {
     if (ids.some((id) => typeof id !== "string")) problems.push(`${list}: a stored row has no id`);
@@ -1723,6 +1757,9 @@ async function probeUnstoredLayoutWrite(
     section,
     location,
     othersCompared: othersBefore.size,
+    enclosingRowsCheckedInD1: enclosing,
+    storedAfterWrite,
+    storedAfterRestore,
     idsAfterWrite,
     idsAfterRestore,
     problems,
