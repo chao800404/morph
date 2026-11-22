@@ -8,6 +8,7 @@ import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  PUBLISH_SCOPE_CHANGED,
   storefrontThemeDal,
   prepareTemplateDocumentWrite,
 } from "./storefront-theme.dal";
@@ -3129,6 +3130,170 @@ export default function SiteHeader() { return <header />; }`;
       releases: count("storefront_releases"),
       publications: count("storefront_content_publications"),
     }).toEqual(before);
+  });
+
+  describe("the publish scope the confirmation shows is the one sealed", () => {
+    const PAGE_REVISION = "11111111-1111-4111-8111-111111111111";
+    const SOURCE_REVISION = "22222222-2222-4222-8222-222222222222";
+    const BUILD = "33333333-3333-4333-8333-333333333333";
+    const LAYOUT_REVISION = "44444444-4444-4444-8444-444444444441";
+    const NEWER_LAYOUT_REVISION = "44444444-4444-4444-8444-444444444442";
+    const scopeIds = {
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+    };
+    const tableCount = (table: string) =>
+      (
+        sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+          count: number;
+        }
+      ).count;
+    const layoutRow = () =>
+      sqlite
+        .prepare(
+          "SELECT draft_revision_id AS draft, published_revision_id AS published FROM storefront_theme_templates WHERE id = 'layout-a'",
+        )
+        .get();
+
+    function seedPage() {
+      sqlite.exec(`
+        INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+        VALUES
+          ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+           '${PAGE_REVISION}', 'now', 'now');
+        INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES
+          ('${PAGE_REVISION}', 'template-a', 1, '{"version":1,"sections":[]}', 'now');
+        INSERT INTO storefront_theme_revisions
+          (id, storefront_id, theme_id, revision_number, source_generation, message, source, snapshot, created_at, updated_at)
+        VALUES
+          ('${SOURCE_REVISION}', 'storefront-a', 'theme-a', 1, 1,
+           'Frozen checkpoint', 'publish', '[]', 'now', 'now');
+      `);
+    }
+    /** A layout whose draft is `revisionId` and was never published. */
+    function seedLayoutDraft(revisionId: string, version = 1) {
+      sqlite.exec(`
+        INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES
+          ('${revisionId}', 'layout-a', ${version}, '{"version":1,"sections":[]}', 'now');
+      `);
+      const existing = sqlite
+        .prepare(
+          "SELECT id FROM storefront_theme_templates WHERE id = 'layout-a'",
+        )
+        .get();
+      if (existing) {
+        sqlite.exec(
+          `UPDATE storefront_theme_templates SET draft_revision_id = '${revisionId}', draft_generation = draft_generation + 1 WHERE id = 'layout-a'`,
+        );
+      } else {
+        sqlite.exec(`
+          INSERT INTO storefront_theme_templates
+            (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+          VALUES
+            ('layout-a', 'theme-a', 'layout', 'Layout', '{"version":1,"sections":[]}',
+             '${revisionId}', 'now', 'now');
+        `);
+      }
+    }
+    const publish = (expectedSharedLayoutRevisionId: string | null) =>
+      storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
+        verifySourceRevision: acceptRevision,
+        ...scopeIds,
+        sourceRevisionId: SOURCE_REVISION,
+        themeBuildId: BUILD,
+        expectedDraftRevisionId: PAGE_REVISION,
+        expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 1,
+        expectedSharedLayoutRevisionId,
+      });
+
+    it("no layout pending: reads this page only, and publishes leaving no layout behind", async () => {
+      seedPage();
+      await expect(
+        storefrontThemeDal.findPublishScope(scopeIds),
+      ).resolves.toEqual({ sharedLayout: null });
+      await expect(publish(null)).resolves.toMatchObject({
+        releaseCreated: true,
+      });
+    });
+
+    it("refuses to answer for a template another storefront owns", async () => {
+      seedPage();
+      seedLayoutDraft(LAYOUT_REVISION);
+      await expect(
+        storefrontThemeDal.findPublishScope({
+          ...scopeIds,
+          storefrontId: "other-store",
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it("a layout pending: names its draft, and the confirmed publish seals it", async () => {
+      seedPage();
+      seedLayoutDraft(LAYOUT_REVISION);
+      const scope = await storefrontThemeDal.findPublishScope(scopeIds);
+      expect(scope).toEqual({
+        sharedLayout: { templateId: "layout-a", revisionId: LAYOUT_REVISION },
+      });
+      await expect(
+        publish(scope!.sharedLayout!.revisionId),
+      ).resolves.toMatchObject({ releaseCreated: true });
+      expect(layoutRow()).toEqual({
+        draft: LAYOUT_REVISION,
+        published: LAYOUT_REVISION,
+      });
+      // Sealed, so the next confirmation is this page only again.
+      await expect(
+        storefrontThemeDal.findPublishScope(scopeIds),
+      ).resolves.toEqual({ sharedLayout: null });
+    });
+
+    it.each([
+      {
+        name: "a layout became pending after the confirmation showed this page only",
+        arrange: () => seedLayoutDraft(LAYOUT_REVISION),
+        shown: null,
+      },
+      {
+        name: "the pending layout changed after the confirmation named it",
+        arrange: () => {
+          seedLayoutDraft(LAYOUT_REVISION);
+          seedLayoutDraft(NEWER_LAYOUT_REVISION, 2);
+        },
+        shown: LAYOUT_REVISION,
+      },
+    ])(
+      "scope changed before confirm ($name): refused, nothing written",
+      async ({ arrange, shown }) => {
+        seedPage();
+        arrange();
+        const before = {
+          releases: tableCount("storefront_releases"),
+          publications: tableCount("storefront_content_publications"),
+          layout: layoutRow(),
+        };
+        await expect(publish(shown)).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+        expect({
+          releases: tableCount("storefront_releases"),
+          publications: tableCount("storefront_content_publications"),
+          layout: layoutRow(),
+        }).toEqual(before);
+        expect(
+          sqlite
+            .prepare(
+              "SELECT active_release_id AS id FROM storefronts WHERE id = 'storefront-a'",
+            )
+            .get(),
+        ).toEqual({ id: null });
+      },
+    );
   });
 
   it("reports what the Theme Worker already runs, read before this publish activates anything", async () => {

@@ -296,6 +296,26 @@ describe("publish storefront theme template input schema", () => {
       expectedDraftRevisionId: "55555555-5555-4555-8555-555555555555",
     });
 
+    // The confirmed scope: a layout revision, or null for this page only.
+    expect(
+      publishStorefrontThemeTemplateInputSchema.parse({
+        ...valid,
+        expectedSharedLayoutRevisionId: null,
+      }).expectedSharedLayoutRevisionId,
+    ).toBeNull();
+    expect(
+      publishStorefrontThemeTemplateInputSchema.parse({
+        ...valid,
+        expectedSharedLayoutRevisionId: "77777777-7777-4777-8777-777777777777",
+      }).expectedSharedLayoutRevisionId,
+    ).toBe("77777777-7777-4777-8777-777777777777");
+    expect(() =>
+      publishStorefrontThemeTemplateInputSchema.parse({
+        ...valid,
+        expectedSharedLayoutRevisionId: "not-a-revision",
+      }),
+    ).toThrow();
+
     // Missing expectedDraftRevisionId
     expect(() =>
       publishStorefrontThemeTemplateInputSchema.parse({

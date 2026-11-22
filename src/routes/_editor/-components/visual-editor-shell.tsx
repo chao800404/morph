@@ -611,6 +611,13 @@ import {
   publishMediaCheckQuery,
   publishMediaCheckState,
 } from "./editor-publish-media-check";
+import {
+  EditorPublishScope,
+  publishScopeConfirmation,
+  publishScopeExpectation,
+  publishScopeQuery,
+  publishScopeState,
+} from "./editor-publish-scope";
 import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-media.serverFn";
 
 /**
@@ -2028,6 +2035,13 @@ export function VisualEditorShell({
   );
   /** The note of the last publish, for "Rebuild and publish" to repeat. */
   const lastPublishNoteRef = useRef<string | undefined>(undefined);
+  /**
+   * The scope the author last confirmed, for "Rebuild and publish" to repeat:
+   * a rebuild is the same publish, not a new decision about the layout.
+   */
+  const lastPublishScopeRef = useRef<{
+    expectedSharedLayoutRevisionId: string | null;
+  } | null>(null);
   /** Set once `handlePublish` exists; see the rebuild-required refusal. */
   const rebuildAndPublishRef = useRef<() => Promise<void>>(async () => {});
   const publishMutation = useMutation({
@@ -2039,6 +2053,7 @@ export function VisualEditorShell({
       expectedDraftRevisionId: string;
       expectedDraftGeneration: number;
       expectedReleaseGeneration: number;
+      expectedSharedLayoutRevisionId: string | null;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return sendEditorWrite(
@@ -2056,6 +2071,8 @@ export function VisualEditorShell({
               expectedDraftRevisionId: variables.expectedDraftRevisionId,
               expectedDraftGeneration: variables.expectedDraftGeneration,
               expectedReleaseGeneration: variables.expectedReleaseGeneration,
+              expectedSharedLayoutRevisionId:
+                variables.expectedSharedLayoutRevisionId,
             },
           }),
       );
@@ -6665,6 +6682,32 @@ export function VisualEditorShell({
     () => context.templates.find((template) => template.type === "layout"),
     [context.templates],
   );
+  // Asked when the confirmation opens, from the same selection the publish
+  // seals: whether the shared layout goes live with this page. The layout's
+  // pending edits are committed first so they are part of the answer.
+  const publishScopeLayoutId = layoutTemplate?.id;
+  const publishScopeQueryResult = useQuery({
+    ...publishScopeQuery(
+      {
+        storefrontId: context.storefront.id,
+        themeId: context.theme.id,
+        templateId: activeTemplate?.id ?? "",
+      },
+      publishScopeLayoutId
+        ? () =>
+            // Content the flush holds back stops the publish itself, with
+            // its own reason (`handlePublish` flushes again); here it only
+            // must not hide what the server already has pending.
+            flushTemplatePendingProps(publishScopeLayoutId).catch(() => {})
+        : undefined,
+    ),
+    enabled: isPublishNoteOpen && Boolean(activeTemplate?.id),
+  });
+  const publishScope = publishScopeState(publishScopeQueryResult);
+  const publishScopeConfirm = publishScopeConfirmation(
+    publishConfirm,
+    publishScope,
+  );
   /**
    * Every section this page's Document stores, whether its source shows it
    * or not. A new section must not take one of their ids.
@@ -10102,6 +10145,12 @@ export function VisualEditorShell({
 
   const handlePublish = useCallback(
     async (
+      /**
+       * What the author confirmed goes live besides the page: the shared
+       * layout draft the confirmation named, or null for this page only.
+       * Sent with the publish, which is refused if the layout moved on.
+       */
+      scope: Readonly<{ expectedSharedLayoutRevisionId: string | null }>,
       note?: string,
       /**
        * `rebuild`: the author asked for a new build of this source after a
@@ -10111,6 +10160,7 @@ export function VisualEditorShell({
       options: Readonly<{ rebuild?: boolean }> = {},
     ) => {
       lastPublishNoteRef.current = note;
+      lastPublishScopeRef.current = scope;
       const publishTarget = publishTargetRef.current;
       // Publishing is not asking to save: whatever is unanswered is checked
       // and saved first, through Check and save, or nothing is published.
@@ -10416,6 +10466,7 @@ export function VisualEditorShell({
         expectedDraftRevisionId: publishDraftRevisionId,
         expectedDraftGeneration: publishDraftGeneration,
         expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
+        expectedSharedLayoutRevisionId: scope.expectedSharedLayoutRevisionId,
       });
     },
     [
@@ -10437,17 +10488,24 @@ export function VisualEditorShell({
     ],
   );
 
-  rebuildAndPublishRef.current = () =>
-    handlePublish(lastPublishNoteRef.current, { rebuild: true });
+  rebuildAndPublishRef.current = async () => {
+    const scope = lastPublishScopeRef.current;
+    if (!scope) return;
+    await handlePublish(scope, lastPublishNoteRef.current, { rebuild: true });
+  };
 
   const confirmPublish = useCallback(async () => {
+    // Only a scope the confirmation established may be confirmed; unknown
+    // never stands in for "this page only".
+    const scope = publishScopeExpectation(publishScope);
+    if (!scope) return;
     // Closed first: the run reports itself on the toolbar button, and leaving
     // the panel open over a disabled field only invites a second click.
     setIsPublishNoteOpen(false);
     const note = publishNote;
     setPublishNote("");
-    await handlePublish(note);
-  }, [handlePublish, publishNote]);
+    await handlePublish(scope, note);
+  }, [handlePublish, publishNote, publishScope]);
 
   const pendingSourceConflicts = useMemo(
     () => sourceConflictPaths(workspaceFiles),
@@ -20326,7 +20384,7 @@ export function VisualEditorShell({
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
-                      if (!publishConfirm.disabled) void confirmPublish();
+                      if (!publishScopeConfirm.disabled) void confirmPublish();
                     }
                   }}
                 />
@@ -20334,6 +20392,10 @@ export function VisualEditorShell({
                   You can rename it later from Release history.
                 </p>
               </div>
+              <EditorPublishScope
+                state={publishScope}
+                onRetry={() => void publishScopeQueryResult.refetch()}
+              />
               <EditorPublishMediaCheck state={publishMediaCheck} />
               <div className="flex justify-end gap-2">
                 <Button
@@ -20349,10 +20411,10 @@ export function VisualEditorShell({
                   variant="form"
                   size="xs"
                   data-publish-confirm
-                  disabled={publishConfirm.disabled}
+                  disabled={publishScopeConfirm.disabled}
                   onClick={() => void confirmPublish()}
                 >
-                  {publishConfirm.label}
+                  {publishScopeConfirm.label}
                 </Button>
               </div>
             </PopoverContent>

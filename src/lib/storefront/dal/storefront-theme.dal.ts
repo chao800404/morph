@@ -1189,7 +1189,107 @@ function assertRenderingModeReady(document: StorefrontPageDocument) {
   }
 }
 
+/**
+ * The shared layout's draft a publish of `templateId` would also seal, or
+ * null when the layout has nothing pending (or is the template itself).
+ *
+ * The one place that decides it: `publishTemplate` seals exactly this, and
+ * `findPublishScope` reports exactly this to the publish confirmation, so
+ * what the author is shown and what goes live cannot be worked out twice.
+ */
+async function readPendingSharedLayout(themeId: string, templateId: string) {
+  const db = await getDb();
+  // The shell wraps every page and has no URL of its own, so it can never be
+  // the template a publish targets. Left behind, its edits would sit in a
+  // draft forever while the dashboard reported the site as published.
+  const [shell] = await db
+    .select({
+      id: storefrontThemeTemplates.id,
+      draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+      publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+      document: storefrontThemeTemplateRevisions.document,
+    })
+    .from(storefrontThemeTemplates)
+    .innerJoin(
+      storefrontThemeTemplateRevisions,
+      eq(
+        storefrontThemeTemplateRevisions.id,
+        storefrontThemeTemplates.draftRevisionId,
+      ),
+    )
+    .where(
+      and(
+        eq(storefrontThemeTemplates.themeId, themeId),
+        eq(storefrontThemeTemplates.type, "layout"),
+        isNull(storefrontThemeTemplates.deletedAt),
+      ),
+    )
+    .limit(1);
+  return shell &&
+    shell.id !== templateId &&
+    shell.draftRevisionId &&
+    shell.draftRevisionId !== shell.publishedRevisionId
+    ? {
+        id: shell.id,
+        revisionId: shell.draftRevisionId,
+        document: shell.document,
+      }
+    : null;
+}
+
+/**
+ * Raised when the shared layout a publish would seal is not the one the
+ * author confirmed: it became pending, changed, or was published elsewhere
+ * after the confirmation read it.
+ */
+export const PUBLISH_SCOPE_CHANGED = "PUBLISH_SCOPE_CHANGED";
+
 export const storefrontThemeDal = {
+  /**
+   * What a publish of this page would seal besides the page: the shared
+   * layout's pending draft, or nothing. Read by the publish confirmation,
+   * under the same ownership join `publishTemplate` starts from; null when
+   * the storefront, theme or template is not there.
+   */
+  async findPublishScope(data: {
+    storefrontId: string;
+    themeId: string;
+    templateId: string;
+  }): Promise<{
+    sharedLayout: { templateId: string; revisionId: string } | null;
+  } | null> {
+    const db = await getDb();
+    const [template] = await db
+      .select({ id: storefrontThemeTemplates.id })
+      .from(storefrontThemeTemplates)
+      .innerJoin(
+        storefrontThemes,
+        eq(storefrontThemeTemplates.themeId, storefrontThemes.id),
+      )
+      .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
+      .where(
+        and(
+          eq(storefronts.id, data.storefrontId),
+          eq(storefrontThemes.id, data.themeId),
+          eq(storefrontThemeTemplates.id, data.templateId),
+          isNull(storefronts.deletedAt),
+          isNull(storefrontThemes.deletedAt),
+          isNull(storefrontThemeTemplates.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!template) return null;
+    const pending = await readPendingSharedLayout(
+      data.themeId,
+      data.templateId,
+    );
+    return {
+      sharedLayout: pending
+        ? { templateId: pending.id, revisionId: pending.revisionId }
+        : null,
+    };
+  },
+
   /** Reuses the content revision writer and both source/draft concurrency guards. */
   async updateRenderPolicy(
     data: z.infer<typeof updateStorefrontThemeRenderPolicyInputSchema> & {
@@ -2675,6 +2775,12 @@ export const storefrontThemeDal = {
     expectedDraftRevisionId: string;
     expectedDraftGeneration: number;
     expectedReleaseGeneration: number;
+    /**
+     * The shared layout draft the author was shown this publish would also
+     * seal (`findPublishScope`), or null for "this page only". Any other
+     * pending layout refuses the publish (`PUBLISH_SCOPE_CHANGED`).
+     */
+    expectedSharedLayoutRevisionId?: string | null;
     themeBuildId?: string;
     createdBy?: string;
     /** What changed, for recognising this release in the history later. */
@@ -2868,50 +2974,36 @@ export const storefrontThemeDal = {
     // Remove each refusal only alongside its end-to-end implementation.
     assertRenderingModeReady(document);
 
-    // The shell wraps every page and has no URL of its own, so it can never be
-    // the template a publish targets. Left behind, its edits would sit in a
-    // draft forever while the dashboard reported the site as published.
-    const [shell] = await db
-      .select({
-        id: storefrontThemeTemplates.id,
-        draftRevisionId: storefrontThemeTemplates.draftRevisionId,
-        publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
-        document: storefrontThemeTemplateRevisions.document,
-      })
-      .from(storefrontThemeTemplates)
-      .innerJoin(
-        storefrontThemeTemplateRevisions,
-        eq(
-          storefrontThemeTemplateRevisions.id,
-          storefrontThemeTemplates.draftRevisionId,
-        ),
-      )
-      .where(
-        and(
-          eq(storefrontThemeTemplates.themeId, data.themeId),
-          eq(storefrontThemeTemplates.type, "layout"),
-          isNull(storefrontThemeTemplates.deletedAt),
-        ),
-      )
-      .limit(1);
-    const pendingShell =
-      shell &&
-      shell.id !== data.templateId &&
-      shell.draftRevisionId &&
-      shell.draftRevisionId !== shell.publishedRevisionId
-        ? {
-            id: shell.id,
-            revisionId: shell.draftRevisionId,
-            document: normalizeDocumentRowIds(
-              storefrontPageDocumentSchema.parse(
-                typeof shell.document === "string"
-                  ? JSON.parse(shell.document)
-                  : shell.document,
-              ),
-              shell.id,
-            ).value,
-          }
-        : null;
+    // The same read `findPublishScope` answers the confirmation from.
+    const shell = await readPendingSharedLayout(data.themeId, data.templateId);
+    const pendingShell = shell
+      ? {
+          id: shell.id,
+          revisionId: shell.revisionId,
+          document: normalizeDocumentRowIds(
+            storefrontPageDocumentSchema.parse(
+              typeof shell.document === "string"
+                ? JSON.parse(shell.document)
+                : shell.document,
+            ),
+            shell.id,
+          ).value,
+        }
+      : null;
+
+    // The author confirmed a scope; never seal more (or other) than that. A
+    // layout that became pending, changed, or went live elsewhere after the
+    // confirmation read it refuses the publish with nothing written, the way
+    // a draft that moved on does. Omitted only by callers with no
+    // confirmation to honour.
+    if (
+      data.expectedSharedLayoutRevisionId !== undefined &&
+      (pendingShell?.revisionId ?? null) !== data.expectedSharedLayoutRevisionId
+    ) {
+      throw new Error(
+        `${PUBLISH_SCOPE_CHANGED}: The shared layout changed after this publish was confirmed.`,
+      );
+    }
 
     // A page publish also seals the pending layout: do not let a website
     // default bypass the same check by entering through that side of the batch.

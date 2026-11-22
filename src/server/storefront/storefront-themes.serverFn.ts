@@ -13,7 +13,10 @@ import {
   PUBLISH_HIDDEN_SECTION_UNSUPPORTED,
   PUBLISH_HIDE_REBUILD_REQUIRED,
 } from "@/lib/storefront/content/section-hide-check";
-import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
+import {
+  PUBLISH_SCOPE_CHANGED,
+  storefrontThemeDal,
+} from "@/lib/storefront/dal/storefront-theme.dal";
 import {
   createReleasePreviewQueueMessage,
   type ThemeBuildQueue,
@@ -849,6 +852,12 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
         return fail(
           "Another release was published. Refresh the latest release before publishing again.",
           { error: "RELEASE_GENERATION_CONFLICT" },
+        );
+      }
+      if (message.includes(`${PUBLISH_SCOPE_CHANGED}:`)) {
+        return fail(
+          "The shared layout changed after you opened Publish. Nothing was published; open Publish again to review what will go live.",
+          { error: PUBLISH_SCOPE_CHANGED },
         );
       }
       if (message.includes(TEMPLATE_DRAFT_CONFLICT)) {
