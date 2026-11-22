@@ -765,7 +765,10 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     }
   });
 
-  // Read each start answer before the page closes (Q10 counts every answer).
+  // Settle every start request before the page closes (Q10 counts every
+  // answer): a start still in flight when a test body ends would otherwise
+  // be answered while Playwright closes the context, and its read rejected
+  // with "Test ended." (R-a, red2/green, 2026-11-22).
   test.afterEach(async () => {
     await evidence?.settlePreviewStarts();
   });
