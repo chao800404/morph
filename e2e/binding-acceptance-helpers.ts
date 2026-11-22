@@ -476,6 +476,86 @@ export async function seedSingletonCases(page: Page, built: Fixture) {
   }
 }
 
+/**
+ * Writes one layout case (l1) onto `built`'s Theme as its root layout and
+ * stores its seed in the layout Document through the editor's own write, then
+ * saves the case shape over it, as `seedSingletonCases` does for the layout
+ * alone: the home route and the Theme's other pages are left as they are.
+ */
+export async function seedLayoutCase(page: Page, built: Fixture, testCase: BasCase) {
+  if (!testCase.layout) throw new Error(`${testCase.id} is not a layout case`);
+  const scope = built.scope;
+  const seeded = await writeThemeFiles(page, scope, [
+    { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+    singletonCaseFile(testCase, true),
+  ]);
+  expect(seeded.success, JSON.stringify(seeded)).toBe(true);
+  for (const [section, props] of Object.entries(testCase.seed)) {
+    await storeSingletonSlot(page, scope, "layout", section, { ...props });
+  }
+  expect(await storedCaseSections(built, testCase)).toEqual(testCase.seed);
+  const saved = await writeThemeFiles(page, scope, [singletonCaseFile(testCase, false)]);
+  expect(saved.success, JSON.stringify(saved)).toBe(true);
+  expect(await storedCaseSections(built, testCase)).toEqual(testCase.seed);
+}
+
+/**
+ * Writes route cases onto `built`'s Theme, each on its own route
+ * (`testCase.routePath`, e.g. `/b1-p1`), stores their seed in each route's own
+ * Document through the editor's own write, then saves the case shapes over
+ * the seed. Saving source writes no content: each Document still holds the
+ * seed afterwards. Home and layout cases go through `seedSingletonCases`.
+ */
+export async function seedRouteCases(
+  page: Page,
+  built: Fixture,
+  cases: readonly BasCase[],
+) {
+  const scope = built.scope;
+  for (const testCase of cases) {
+    if (isSingleton(testCase)) throw new Error(`${testCase.id} is not a route case`);
+  }
+  const seeded = await writeThemeFiles(page, scope, [
+    { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+    ...cases.map((testCase) => ({
+      path: testCase.routeFile,
+      content: basRouteSource(testCase, SPELLING, { seed: true }),
+    })),
+  ]);
+  expect(seeded.success, JSON.stringify(seeded)).toBe(true);
+  for (const testCase of cases) {
+    for (const [section, props] of Object.entries(testCase.seed)) {
+      const ensured = await ensureRouteDocument(page, scope, testCase.routePath);
+      const stored = (await serverFn(page, THEMES, "updateStorefrontThemeSectionProps", {
+        ...scope,
+        templateId: ensured.id,
+        sectionId: section,
+        props: { ...props },
+        expectedDraftGeneration: ensured.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(page, scope),
+        routePath: testCase.routePath,
+      })) as { success: boolean };
+      expect(
+        stored.success,
+        `seed ${testCase.routePath} ${section}: ${JSON.stringify(stored)}`,
+      ).toBe(true);
+    }
+    expect(await storedCaseSections(built, testCase)).toEqual(testCase.seed);
+  }
+  const saved = await writeThemeFiles(
+    page,
+    scope,
+    cases.map((testCase) => ({
+      path: testCase.routeFile,
+      content: basRouteSource(testCase, SPELLING),
+    })),
+  );
+  expect(saved.success, JSON.stringify(saved)).toBe(true);
+  for (const testCase of cases) {
+    expect(await storedCaseSections(built, testCase)).toEqual(testCase.seed);
+  }
+}
+
 /** A case's own sections as its draft Document stores them, read raw from D1. */
 export async function storedCaseSections(fx: Fixture, testCase: BasCase) {
   return caseSections(testCase, storedSectionsOf(await rawDocument(fx, documentOf(testCase))));
@@ -703,18 +783,22 @@ const LOCATE = {
 /**
  * One walk. `on` names the Theme to walk on when the caller owns it (the
  * publish acceptance walks the singleton cases on the run's own Theme);
- * otherwise the fixture the case and mode use.
+ * otherwise the fixture the case and mode use. `route` keeps a route case on
+ * the route the caller seeded (the non-home publish acceptance walks each
+ * case on its own `/b1-pN` route, in both modes, across releases); without
+ * it a route case walks on the mode's own route.
  */
 export async function walkCase(
   page: Page,
   sharedCase: BasCase,
   mode: Mode,
   on?: Fixture,
+  route?: Readonly<{ routePath: string; routeFile: string }>,
 ) {
   test.setTimeout(420_000);
   // This walk's own route and Document, on the Theme that holds them.
   const fx = on ?? fixtureFor(sharedCase, mode);
-  const testCase: BasCase = { ...sharedCase, ...routeFor(sharedCase, mode) };
+  const testCase: BasCase = { ...sharedCase, ...(route ?? routeFor(sharedCase, mode)) };
   const walk: Walk = {
     runtime: RUNTIME,
     mode,

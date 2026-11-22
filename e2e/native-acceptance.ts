@@ -92,6 +92,26 @@ function storefrontRequest(origin: string, path: string): Promise<Response> {
 }
 
 /**
+ * The release Core serves at `origin` for `pathname`: Core names the release
+ * it resolved for the hostname in the ETag of its content read
+ * (`"<releaseId>:<path>"`, storefront-production.service.ts). The read must
+ * answer 200 and name exactly that path.
+ */
+export async function servedRelease(origin: string, pathname: string) {
+  const response = await storefrontRequest(
+    origin,
+    `/_morph/content?path=${encodeURIComponent(pathname)}`,
+  );
+  await response.arrayBuffer();
+  expect(response.status, `the content read for ${pathname} answers`).toBe(200);
+  const etag = response.headers.get("etag") ?? "";
+  const named = /^(?:W\/)?"([^":]+):(.*)"$/.exec(etag);
+  expect(named, `the content read names its release (ETag ${etag})`).not.toBeNull();
+  expect(named![2], `the ETag names ${pathname}`).toBe(pathname);
+  return named![1]!;
+}
+
+/**
  * Requests on the storefront at `origin`, following a same-site redirect as
  * a browser would: static assets answer `/page` with a redirect to `/page/`.
  */
