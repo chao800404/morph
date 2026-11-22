@@ -363,11 +363,9 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
         start.draftGeneration + 1,
       );
       await expectHistory(page, { depth: 1, undo: true, redo: false });
-      await expect(sectionWrapper(page)).toHaveAttribute(
-        "hidden",
-        "",
-        { timeout: 30_000 },
-      );
+      // Hidden means gone from the preview: the hide guard renders nothing
+      // for the slot, not a wrapper carrying `hidden` (M3 P3).
+      await expect(sectionWrapper(page)).toHaveCount(0, { timeout: 30_000 });
       await expect(show).toBeVisible();
 
       const undone = await step(
@@ -390,11 +388,7 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
         undone.draftGeneration + 1,
       );
       await expectHistory(page, { depth: 1, undo: true, redo: false });
-      await expect(sectionWrapper(page)).toHaveAttribute(
-        "hidden",
-        "",
-        { timeout: 30_000 },
-      );
+      await expect(sectionWrapper(page)).toHaveCount(0, { timeout: 30_000 });
 
       // What was saved is what a fresh load reads: the editor holds the
       // section hidden (its Show control), with nothing more recorded or

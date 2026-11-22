@@ -18,9 +18,10 @@ import { componentPropElements } from "./theme-content-provenance";
 
 const injectTestFiles = (
   files: Array<{ path: string; content: string }>,
+  options: Parameters<typeof injectPreviewBindings>[1] = {},
 ) => {
   const hasRoute = files.some((file) => file.path.startsWith("src/routes/"));
-  if (!hasRoute) return injectPreviewBindings(files);
+  if (!hasRoute) return injectPreviewBindings(files, options);
 
   const suppliedPaths = new Set(files.map((file) => file.path));
   const platformFiles = livePreviewPlatformFiles().filter(
@@ -33,11 +34,24 @@ const injectTestFiles = (
       content: `export default function ${name}() { return null; }`,
     }))
     .filter((file) => !suppliedPaths.has(file.path));
-  return injectPreviewBindings([...files, ...platformFiles, ...routeComponents]);
+  return injectPreviewBindings(
+    [...files, ...platformFiles, ...routeComponents],
+    options,
+  );
 };
 
 const run = (content: string, path = "src/components/Hero.tsx") =>
   injectTestFiles([{ path, content }]).files[0]!.content;
+/**
+ * The same, without Morph's hide guard (`theme-hide-guard.ts`): for a test of
+ * the editor's own wrappers, which the guard would enclose. The guard's own
+ * nesting with them is tested in `theme-hide-guard.test.ts`.
+ */
+const runWithoutHideGuard = (
+  content: string,
+  path = "src/components/Hero.tsx",
+) =>
+  injectTestFiles([{ path, content }], { hideGuards: false }).files[0]!.content;
 
 const DECLARES = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
@@ -970,7 +984,7 @@ describe("wrappers written back to back", () => {
   };
 
   it("closes one section before the next one opens", async () => {
-    const out = run(
+    const out = runWithoutHideGuard(
       `import { content } from "../morph/content";
 import Promo from "../components/Promo";
 export default function Page() {
@@ -1026,7 +1040,7 @@ export default function Hero({ heading, tagline }) {
   });
 
   it("closes a section before the content wrapper beside it opens", async () => {
-    const out = run(
+    const out = runWithoutHideGuard(
       `import { content } from "../morph/content";
 import Promo from "../components/Promo";
 export const contentFields = { heading: { type: "text" } } as const;

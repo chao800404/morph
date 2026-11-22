@@ -21,7 +21,7 @@ import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
+import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
 
 /**
  * M1 source isolation, G1 (handoff/2026-10-27/m1-item4-source-isolation-
@@ -161,7 +161,7 @@ async function buildWorker(): Promise<string> {
     entry: "src/routes/index.tsx",
     inputHash: "c".repeat(64),
     compilerId: "tailwind-v4-build",
-    compilerVersion: withThemeMorphSdkIdentity(TAILWIND_VERSION),
+    compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
     toolchainId: START_TOOLCHAIN.id,
     files: THEME_FILES as never,
   });
