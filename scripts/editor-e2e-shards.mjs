@@ -94,7 +94,8 @@ export const EDITOR_SHARDS = [
     // M1 1a A3/A4, the B1 route cases published and rolled back: container
     // transport and full Start only, so it skips here at file level. Its
     // exact tests are listed in
-    // scripts/container-acceptance-targets/b1-route-publish-rollback.mjs.
+    // scripts/container-acceptance-targets/b1-route-publish-rollback.mjs;
+    // no CI step runs that check yet (the formal M1 1a run does).
     "b1-route-publish-rollback-acceptance.spec.ts",
     "build-preview-isolated.spec.ts",
     "loader-data-binding.spec.ts",
