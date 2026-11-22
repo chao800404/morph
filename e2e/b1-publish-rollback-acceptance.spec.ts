@@ -460,6 +460,6 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
       result: "activated",
     });
     // Q10: every preview this spec saw ran on the container under full Start.
-    evidence!.expectFullStartObserved();
+    await evidence!.expectFullStartObserved();
   });
 });

@@ -113,7 +113,8 @@ import { themeScopeFromEditorPath } from "./native-compat";
  *        into release 4; the public site serves release 5, every other
  *        page shows release 1's values and p2 its draft.
  *
- * These fail on 155f52d, where a publish carries the template rows'
+ * These fail before #429 (99b2f84; this branch is based on a main that has
+ * it), where a publish carries the template rows'
  * published revisions forward instead of the live release's. Every test in
  * this describe is a prerequisite of R-a/R-b, so the describe carries the
  * tag `@publish-after-rollback`: `-g @publish-after-rollback` runs them with
@@ -322,7 +323,8 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     const rows = queryD1(
       `SELECT t.route_path AS route_path, r.document AS document
          FROM storefront_releases rel
-         JOIN storefront_content_publication_items i ON i.publication_id = rel.content_publication_id
+         JOIN storefront_content_publication_items i
+           ON i.publication_id = rel.content_publication_id AND i.item_type = 'template' AND i.deleted_at IS NULL
          JOIN storefront_theme_template_revisions r ON r.id = i.revision_id
          JOIN storefront_theme_templates t ON t.id = r.template_id
         WHERE rel.id = ?1 AND t.theme_id = ?2`,
@@ -463,10 +465,15 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
    * the ETag of each content read: all of them must name `expected`.
    */
   const expectServed = async (expected: string) => {
+    const named = new Set<string>();
     for (const pagePath of [HOME, ...ALL.map((testCase) => testCase.routePath)]) {
-      expect(await servedRelease(origin, pagePath), `${pagePath} is served from release ${expected}`).toBe(expected);
+      const read = await servedRelease(origin, pagePath);
+      expect(read, `${pagePath} is served from release ${expected}`).toBe(expected);
+      named.add(read);
     }
-    return expected;
+    // What the ETags named, not what was expected: the ledger records this.
+    expect(named.size, "every page names one release").toBe(1);
+    return [...named][0]!;
   };
 
   /** A Design walk on the case's own route that must pass in full. */
@@ -656,7 +663,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     step: string,
   ): Promise<string> => {
     let previous = (await publishedState()).active;
-    for (const testCase of pages) {
+    for (const [index, testCase] of pages.entries()) {
       const activeBefore = evidence!.activeRelease();
       await openEditor(page, testCase ? editorRouteUrl(testCase.routePath) : EDITOR_PATH!);
       await (await publishShowingRelease(page)).close();
@@ -685,6 +692,14 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
         releaseId,
         activeBefore,
         activeAfter: evidence!.activeRelease(),
+        // No ETag is read here: the public site is read once the round's last
+        // release is active, on that step's own row.
+        detail: {
+          served:
+            index < pages.length - 1
+              ? `never served: an intermediate release of ${step}; the next publish replaced it before any public read`
+              : `the round's last release: the public read and its served release id are on the step's own row`,
+        },
       });
       previous = releaseId;
     }
@@ -699,6 +714,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
       // Q10: full Start recorded on the Theme itself, before any case preview.
       await evidence!.recordFullStartTheme(page);
       contentTsBefore = await evidence!.contentTsSha256(page);
+      expect(contentTsBefore, "content.ts is hashed before the run").toMatch(/^[0-9a-f]{64}$/);
       // Each case on its own route of the run's Theme, seeded through the
       // editor's own writes.
       await seedRouteCases(page, fx!, ALL);
@@ -720,7 +736,12 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
       expect(domain.success, domain.message).toBe(true);
       domainId = domain.data!.id;
       origin = `http://${HOST}:${new URL(test.info().project.use.baseURL!).port}`;
-      evidence!.note({ contentTsSha256Before: contentTsBefore, contentTsEdited: null, contentTsNote: "1a does not compare content.ts with the Starter's; it only checks this spec left it unchanged" });
+      evidence!.note({
+        contentTsSha256: contentTsBefore,
+        contentTsSha256Before: contentTsBefore,
+        contentTsEdited: null,
+        contentTsNote: "1a does not compare content.ts with the Starter's; the last test requires this spec left it unchanged",
+      });
       evidence!.writeIdentity(false);
     } finally {
       await page.context().close();
@@ -733,10 +754,6 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
         const page = await signedInPage(browser);
         try {
           await page.goto("/", { waitUntil: "domcontentloaded" });
-          if (evidence) {
-            const after = await evidence.contentTsSha256(page).catch(() => null);
-            evidence.note({ contentTsSha256After: after, contentTsUnchangedByRun: after === contentTsBefore });
-          }
           // As in the lifecycle spec: the local stand-in domain has no
           // Cloudflare custom domain, and a primary domain cannot be deleted.
           await harness?.writeD1(
@@ -1240,7 +1257,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     expect(await draftValues(), "reloading wrote nothing").toEqual(draftsLast);
     expect(await storedCaseSections(fx!, L1), "reloading wrote nothing to the layout").toEqual(layoutSealed);
     expectCodeUnwritten();
-    evidence!.expectFullStartObserved();
+    await evidence!.expectFullStartObserved();
     evidence!.ledger({
       case: "p1,p2,p5,p3,p4a,p6,l1",
       step: "P5",
@@ -1291,7 +1308,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     const live = pinnedRevisions(release1, P2.routePath);
     expect(live, "release 1 pins one p2 revision").toHaveLength(1);
     expect(live[0], "the rollback took p2's published revision off the storefront").not.toBe(p2.published);
-    expect(await expectServed(release1)).toBe(release1);
+    const servedBefore = await expectServed(release1);
 
     await openEditor(page, editorRouteUrl(P2.routePath));
     const status = page.locator("[data-editor-save-status]");
@@ -1314,7 +1331,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
       activeBefore: release1,
       activeAfter: evidence!.activeRelease(),
       evidence: [path.basename(shot)],
-      servedReleaseId: release1,
+      servedReleaseId: servedBefore,
       detail: { p2: { ...p2, pinnedInRelease1: live }, unpublishedReason: reason },
     });
   });
@@ -1379,7 +1396,8 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
       valueOf(draftsLast!.p1, P1),
       valueOf(layoutSealed!, L1),
     ];
-    for (const value of absent) expect(valueOf(values5.p2, P2), "p2's new value is not one that must be absent").not.toBe(value);
+    // The proof that every other page is release 1's is the pin-map equality
+    // above; the public reads below show the same on the storefront.
     const shots = await expectPublic(browser, values5, L1.seed, absent, "after-rollback-publish");
     evidence!.ledger({
       case: "p2 (after rollback to release 1)",
@@ -1398,5 +1416,13 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
       },
     });
     evidence!.note({ release5 });
+
+    // content.ts: this spec writes Documents only, never the content module.
+    const contentTsAfter = await evidence!.contentTsSha256(page);
+    evidence!.note({ contentTsSha256After: contentTsAfter, contentTsUnchangedByRun: contentTsAfter === contentTsBefore });
+    expect(contentTsBefore, "content.ts was hashed before the run").toMatch(/^[0-9a-f]{64}$/);
+    expect(contentTsAfter, "content.ts is unchanged by the run").toBe(contentTsBefore);
+    // Q10 again, now over every preview start of the whole chain.
+    await evidence!.expectFullStartObserved();
   });
 });

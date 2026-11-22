@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -110,7 +110,10 @@ export type PublicationPin = {
 export type PreviewStart = {
   atUtc: string;
   test: string;
+  /** null: the answer could not be read or decoded. Q10 fails on it. */
   success: boolean | null;
+  /** Why the answer could not be decoded, when it could not. */
+  undecodable: string | null;
   kind: string | null;
   previewRuntime: string | null;
   workspaceFingerprint: string | null;
@@ -156,6 +159,8 @@ export function m1Evidence(options: {
   const { item, spec, scope, stateDir } = options;
   const rows: LedgerRow[] = [];
   const starts: PreviewStart[] = [];
+  /** Response listeners still reading an answer; Q10 awaits them first. */
+  const pendingStarts = new Set<Promise<void>>();
   const startedAt = new Date().toISOString();
   let outDir: string | null = null;
   let identityExtra: Record<string, unknown> = {};
@@ -300,39 +305,54 @@ export function m1Evidence(options: {
   /** Records every preview start answer `page` receives. */
   const observePreviewStarts = (page: Page) => {
     const title = test.info().title;
-    page.on("response", async (response) => {
+    page.on("response", (response) => {
       if (!isServerFunctionCall(response.url(), "startThemePreviewServer")) return;
-      const body = await response.text().catch(() => "");
-      let decoded: Record<string, unknown> | null = null;
-      try {
-        decoded = decodeServerFnResult(body) as Record<string, unknown>;
-      } catch {
-        decoded = null;
-      }
-      const data = (decoded?.data ?? null) as Record<string, unknown> | null;
-      starts.push({
-        atUtc: new Date().toISOString(),
-        test: title,
-        success: typeof decoded?.success === "boolean" ? decoded.success : null,
-        kind: str(data?.kind),
-        previewRuntime: str(data?.previewRuntime),
-        workspaceFingerprint: str(data?.workspaceFingerprint),
-      });
-      writeLedger();
+      const read = (async () => {
+        let undecodable: string | null = null;
+        let decoded: Record<string, unknown> | null = null;
+        try {
+          decoded = decodeServerFnResult(await response.text()) as Record<string, unknown>;
+          if (!decoded || typeof decoded.success !== "boolean") {
+            undecodable = "the answer has no boolean success";
+          }
+        } catch (error) {
+          undecodable = `unreadable answer: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+          decoded = null;
+        }
+        const data = (decoded?.data ?? null) as Record<string, unknown> | null;
+        starts.push({
+          atUtc: new Date().toISOString(),
+          test: title,
+          success: undecodable ? null : (decoded!.success as boolean),
+          undecodable,
+          kind: str(data?.kind),
+          previewRuntime: str(data?.previewRuntime),
+          workspaceFingerprint: str(data?.workspaceFingerprint),
+        });
+        writeLedger();
+      })();
+      pendingStarts.add(read);
+      void read.finally(() => pendingStarts.delete(read));
     });
   };
 
   /**
    * Q10: at least one preview start was answered in this spec, and every
-   * successful answer names the container transport and full Start.
+   * answer it received (failed ones included) was decodable, successful and
+   * named the container transport and full Start. Answers still being read
+   * are awaited first, so a late one is not missed.
    */
-  const expectFullStartObserved = () => {
-    const served = starts.filter((start) => start.success === true);
-    expect(served.length, "a preview start was observed in this spec").toBeGreaterThan(0);
+  const expectFullStartObserved = async () => {
+    while (pendingStarts.size > 0) await Promise.all([...pendingStarts]);
+    expect(starts.length, "a preview start was observed in this spec").toBeGreaterThan(0);
     expect(
-      served.map((start) => `${start.kind}/${start.previewRuntime}`),
-      "every preview this spec saw was served by the container transport under full Start",
-    ).toEqual(served.map(() => "cloudflare-sandbox/start"));
+      starts.map((start) =>
+        start.success === null
+          ? `undecodable (${start.undecodable}) in ${start.test}`
+          : `${start.success ? "ok" : "failed"}/${start.kind}/${start.previewRuntime}`,
+      ),
+      "every preview start answer was decodable, succeeded, and came from the container transport under full Start",
+    ).toEqual(starts.map(() => "ok/cloudflare-sandbox/start"));
   };
 
   /**
@@ -364,7 +384,8 @@ export function m1Evidence(options: {
       },
       { module: THEME_FILES, scope, path: CONTENT_TS },
     )) as string | null;
-    return content === null ? null : createHash("sha256").update(content).digest("hex");
+    expect(content, `${CONTENT_TS} is readable through the editor's file read`).not.toBeNull();
+    return createHash("sha256").update(content!).digest("hex");
   };
 
   /** Extra identity fields a spec learns as it runs (release ids, hashes). */
@@ -375,16 +396,21 @@ export function m1Evidence(options: {
   /** The run's identity record (plan 2.4), rewritten with what is known now. */
   const writeIdentity = (ended: boolean) => {
     const theme = themeRow();
-    const freezeSha = process.env.M1_FREEZE_SHA ?? null;
+    const freezeSha = process.env.M1_FREEZE_SHA || null;
     const head = git("rev-parse", "HEAD");
     let productDiffEmpty: boolean | null = null;
-    if (freezeSha && head) {
-      try {
-        execFileSync("git", ["diff", "--quiet", freezeSha, head, "--", ...PRODUCT_PATHS], { stdio: "ignore" });
-        productDiffEmpty = true;
-      } catch {
-        productDiffEmpty = false;
-      }
+    let productDiffCheck: string;
+    if (!freezeSha) {
+      productDiffCheck = "operator must verify: M1_FREEZE_SHA is not set, so the product diff was not checked";
+    } else {
+      expect(head, "the run's head is readable").not.toBeNull();
+      const diff = spawnSync("git", ["diff", "--quiet", freezeSha, head!, "--", ...PRODUCT_PATHS], { stdio: "ignore" });
+      // 0 = no diff, 1 = a diff; anything else means the check itself failed.
+      expect([0, 1], `git diff ${freezeSha}..${head} ran (status ${diff.status})`).toContain(diff.status);
+      productDiffEmpty = diff.status === 0;
+      productDiffCheck = productDiffEmpty
+        ? `checked: no product diff between ${freezeSha} and ${head}`
+        : `FAILED: ${head} changes product paths against ${freezeSha}`;
     }
     let starterVersion: number | null = null;
     try {
@@ -404,6 +430,7 @@ export function m1Evidence(options: {
       main: git("rev-parse", "origin/main"),
       freezeSha,
       productDiffEmpty,
+      productDiffCheck,
       productPaths: PRODUCT_PATHS,
       storefrontId: scope.storefrontId,
       themeId: scope.themeId,
@@ -426,15 +453,24 @@ export function m1Evidence(options: {
       tanstackReactStart: packageVersion("@tanstack/react-start")?.version ?? null,
       playwright: packageVersion("@playwright/test")?.version ?? null,
       sandboxImage: sandboxImageLine(),
-      // Not read here: the spec runs inside the runner's machine lock, and no
-      // docker command runs under a lock. The operator records it outside.
-      docker: null,
+      // Not run here: the spec runs inside the runner's machine lock, and no
+      // docker command runs under a lock (it left dbus-daemon holding the
+      // shared lock, 2026-10-22). The dev-run script reads it before taking
+      // the lock and passes it in M1_DOCKER_VERSION.
+      docker: process.env.M1_DOCKER_VERSION || null,
+      dockerNote: process.env.M1_DOCKER_VERSION
+        ? "read by the run script outside the lock (M1_DOCKER_VERSION)"
+        : "not read: no docker command runs under the machine lock and M1_DOCKER_VERSION was not set; the run script's env-before.txt records it",
       load: loadavg(),
       startedAt,
       endedAt: ended ? new Date().toISOString() : null,
       ...identityExtra,
     };
     writeFileSync(file("identity"), `${JSON.stringify(identity, null, 2)}\n`);
+    // Written first, so a refused run still leaves its record.
+    if (freezeSha) {
+      expect(productDiffEmpty, `identity: ${productDiffCheck}`).toBe(true);
+    }
     return identity;
   };
 
