@@ -88,8 +88,8 @@ export const EDITOR_SHARDS = [
     "astro-publish-acceptance.spec.ts",
     "authored-content.spec.ts",
     // Container transport and full Start only, so it skips here. Its exact
-    // tests are listed in scripts/container-acceptance-targets/; no CI step
-    // runs that check until the container jobs are wired (stage 3).
+    // tests are listed in scripts/container-acceptance-targets/; the
+    // editor-e2e-container-publish job runs that check.
     "b1-publish-rollback-acceptance.spec.ts",
     "build-preview-isolated.spec.ts",
     "loader-data-binding.spec.ts",

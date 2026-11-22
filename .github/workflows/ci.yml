@@ -1298,3 +1298,1041 @@ jobs:
           path: test-results/
           retention-days: 7
           if-no-files-found: error
+
+  # Stage 3 (M1 1d): the B1 publish and rollback acceptance and the public
+  # storefront navigation matrix, both of which publish, so both build in
+  # the Sandbox container. The editor-e2e-container job's pattern: one
+  # runner invocation per target under the isolated launcher, each checked
+  # against its exact target list (each title once, passed, zero skip, zero
+  # retry) and its own runner handover before the next one starts, with a
+  # network window per invocation. Local exclusive runs, one sample each:
+  # B1 5.4 min (1be332c), navigation 3.0 min (aef0e82).
+  editor-e2e-container-publish:
+    name: Editor E2E container publish acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Use the primary Ubuntu archive for apt
+        run: |
+          grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
+            echo "::error::The runner's Ubuntu sources no longer read /etc/apt/apt-mirrors.txt; this step would change nothing."
+            exit 1
+          }
+          printf '%s\tpriority:%s\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2 \
+            | sudo tee /etc/apt/apt-mirrors.txt
+
+      - name: Install Chromium for Playwright
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
+          for attempt in 1 2 3; do
+            install_log=$(mktemp "/tmp/playwright-install-${attempt}-XXXXXX.log")
+            log_dev_ino=$(stat -L -c "%d:%i" "$install_log" 2>/dev/null || true)
+            status=0
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > "$install_log" 2>&1 &
+            install_pid=$!
+            wait "$install_pid" || status=$?
+            cat "$install_log"
+            if [ "$status" -eq 0 ]; then
+              rm -f "$install_log"
+              exit 0
+            fi
+            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" "$install_log"; then
+              echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              rm -f "$install_log"
+              exit "$status"
+            fi
+            echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
+            sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            is_attempt_descendant() {
+              local p=$1
+              [ -d "/proc/$p" ] || return 1
+              local pgid
+              pgid=$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null || true)
+              if [ -n "$pgid" ] && [ "$pgid" = "$install_pid" ]; then
+                return 0
+              fi
+              [ -n "$log_dev_ino" ] || return 1
+              for fd_name in $(sudo -n ls "/proc/$p/fd" 2>/dev/null || ls "/proc/$p/fd" 2>/dev/null || true); do
+                local fd_dev_ino
+                fd_dev_ino=$(sudo -n stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || true)
+                if [ -n "$fd_dev_ino" ] && [ "$fd_dev_ino" = "$log_dev_ino" ]; then
+                  local flags
+                  flags=$(sudo -n awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || true)
+                  if [ -n "$flags" ] && [ $(( flags & 3 )) -ne 0 ]; then
+                    return 0
+                  fi
+                fi
+              done
+              return 1
+            }
+            for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+              [ -f "$lock_file" ] || continue
+              for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
+                if is_attempt_descendant "$lock_pid"; then
+                  echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
+                  sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                else
+                  echo "::warning::Unconfirmed lock holder $lock_pid on $lock_file (not verified attempt writer); skipping termination."
+                fi
+              done
+            done
+            for log_pid in $(sudo -n fuser "$install_log" 2>/dev/null || fuser "$install_log" 2>/dev/null || true); do
+              if is_attempt_descendant "$log_pid"; then
+                sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+              else
+                echo "::warning::Unconfirmed or read-only process $log_pid holding log; skipping termination."
+              fi
+            done
+            rm -f "$install_log"
+            if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
+              echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::Chromium install failed after 3 attempts (last exit $status)."
+          exit "$status"
+
+      - name: Write the run's environment
+        run: |
+          cat > .env.e2e <<EOF
+          E2E_EMAIL=editor-e2e@morph.invalid
+          E2E_PASSWORD=$(openssl rand -hex 24)
+          E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+          EOF
+          cat > .dev.vars <<EOF
+          MORPH_THEME_PREVIEW_RUNTIME=start
+          MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
+          MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+          MORPH_PREVIEW_REQUEST_TRACE=1
+          EOF
+
+      - name: Give new container interfaces no IPv6 link-local address
+        run: |
+          sudo sysctl -w net.ipv6.conf.default.addr_gen_mode=1
+          if [ "$(sysctl -n net.ipv6.conf.default.addr_gen_mode)" != 1 ]; then
+            echo "::error::net.ipv6.conf.default.addr_gen_mode did not take."
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/container-network"
+          mkdir -p "$dir"
+          ip -o addr show > "$dir/addresses-before.txt"
+          nohup ip -ts -o monitor link address > "$dir/ip-monitor.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/ip-monitor.pid"
+          sleep 0.2
+          sudo ip link add morphprobe0 type veth peer name morphprobe1
+          sudo ip link del morphprobe0
+          for i in $(seq 1 50); do
+            grep -q 'Deleted [0-9]*: morphprobe0' "$dir/ip-monitor.log" && exit 0
+            sleep 0.1
+          done
+          echo "::error::The interface monitor did not report a probe link, so container interfaces would go unrecorded."
+          exit 1
+
+      - name: Record container diagnostics
+        run: |
+          nohup node scripts/container-diagnostics.mjs record "$RUNNER_TEMP/container-diagnostics"             > "$RUNNER_TEMP/container-diagnostics.out" 2>&1 &
+          for i in $(seq 1 50); do
+            grep -q '"ev":"recording"' "$RUNNER_TEMP/container-diagnostics/recorder.ndjson" 2>/dev/null && exit 0
+            sleep 0.1
+          done
+          echo "::warning::Container diagnostics did not start; the run goes on without them."
+
+      - name: Mark B1 publish and rollback container window start
+        run: |
+          printf '{"name":"b1-publish-rollback-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe b1-publish-rollback-start "$RUNNER_TEMP/container-network"
+
+      - name: Run B1 publish and rollback container acceptance
+        id: b1_publish_rollback_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/b1-publish-rollback.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/b1-publish-rollback-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/b1-publish-rollback-acceptance.spec.ts
+
+      - name: Mark B1 publish and rollback container window end
+        if: always()
+        run: |
+          printf '{"name":"b1-publish-rollback-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe b1-publish-rollback-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve B1 publish and rollback acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/b1-publish-rollback"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/b1-publish-rollback/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/b1-publish-rollback/b1-publish-rollback.json" ]; then
+            echo "::warning::B1 publish and rollback acceptance report was not produced."
+          fi
+
+      - name: Require exact B1 publish and rollback target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/b1-publish-rollback/b1-publish-rollback.json" scripts/container-acceptance-targets/b1-publish-rollback.mjs
+
+      - name: Require B1 publish and rollback runner handover
+        id: b1_publish_rollback_handover
+        if: always() && steps.b1_publish_rollback_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/b1-publish-rollback-handover.json" e2e/b1-publish-rollback-acceptance.spec.ts
+
+      - name: Mark public navigation matrix container window start
+        run: |
+          printf '{"name":"navigation-matrix-public-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe navigation-matrix-public-start "$RUNNER_TEMP/container-network"
+
+      - name: Run public navigation matrix container acceptance
+        id: navigation_matrix_public_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/navigation-matrix-public.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/navigation-matrix-public-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/navigation-matrix-public.spec.ts
+
+      - name: Mark public navigation matrix container window end
+        if: always()
+        run: |
+          printf '{"name":"navigation-matrix-public-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe navigation-matrix-public-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve public navigation matrix acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/navigation-matrix-public"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/navigation-matrix-public/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/navigation-matrix-public/navigation-matrix-public.json" ]; then
+            echo "::warning::Public navigation matrix acceptance report was not produced."
+          fi
+
+      - name: Require exact public navigation matrix target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/navigation-matrix-public/navigation-matrix-public.json" scripts/container-acceptance-targets/navigation-matrix-public.mjs
+
+      - name: Require public navigation matrix runner handover
+        id: navigation_matrix_public_handover
+        if: always() && steps.navigation_matrix_public_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" e2e/navigation-matrix-public.spec.ts
+
+      - name: Record Stage 3 runner identities and handover results
+        if: always()
+        env:
+          B1_PUBLISH_ROLLBACK_HANDOVER_OUTCOME: ${{ steps.b1_publish_rollback_handover.outcome }}
+          NAVIGATION_MATRIX_PUBLIC_HANDOVER_OUTCOME: ${{ steps.navigation_matrix_public_handover.outcome }}
+        run: |
+          node --input-type=module - "$RUNNER_TEMP/stage3/b1-publish-rollback-handover.json" "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const paths = process.argv.slice(2);
+          const entries = [
+            ["b1-publish-rollback", paths[0], process.env.B1_PUBLISH_ROLLBACK_HANDOVER_OUTCOME],
+            ["navigation-matrix-public", paths[1], process.env.NAVIGATION_MATRIX_PUBLIC_HANDOVER_OUTCOME],
+          ];
+          for (const [name, filename, outcome] of entries) {
+            try {
+              const { runner, phase, invocationId } = JSON.parse(readFileSync(filename, "utf8"));
+              console.log(`${name} runner pid=${runner.pid} pgid=${runner.pgid} sid=${runner.sid} phase=${phase} invocation=${invocationId} handover=${outcome || "not-run"}`);
+            } catch (error) {
+              console.log(`${name} runner record unavailable; handover=${outcome || "not-run"}: ${error.message}`);
+            }
+          }
+          NODE
+
+      - name: Stop container diagnostics
+        if: always()
+        run: node scripts/container-diagnostics.mjs stop "$RUNNER_TEMP/container-diagnostics" test-results/container-diagnostics
+
+      - name: Require the run's container veths to have had no IPv6 link-local address
+        if: always()
+        run: |
+          dir="$RUNNER_TEMP/container-network"
+          log="$dir/ip-monitor.log"
+          keep_record() {
+            status=$?
+            if ! { mkdir -p test-results/container-network && cp -R "$dir"/. test-results/container-network/; }; then
+              echo "::error::The container interface record could not be kept with the results."
+              [ "$status" -ne 0 ] || status=1
+            fi
+            exit "$status"
+          }
+          trap keep_record EXIT
+          incomplete() {
+            echo "::error::Container interface evidence is incomplete: $1"
+            exit 1
+          }
+          pid=$(cat "$RUNNER_TEMP/ip-monitor.pid" 2>/dev/null) || incomplete "the monitor was never started."
+          kill -0 "$pid" 2>/dev/null || incomplete "the monitor exited before the run ended."
+          sudo ip link add morphprobe2 type veth peer name morphprobe3
+          sudo ip link del morphprobe2
+          reported=no
+          for i in $(seq 1 50); do
+            if grep -q 'Deleted [0-9]*: morphprobe2' "$log"; then
+              reported=yes
+              break
+            fi
+            sleep 0.1
+          done
+          kill "$pid"
+          for i in $(seq 1 50); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          [ "$reported" = yes ] || incomplete "the monitor stopped reporting before the run ended."
+          if grep -iE 'receive error|no buffer space' "$log"; then
+            incomplete "the monitor reported a receive error."
+          fi
+          ip -o addr show > "$dir/addresses-after.txt"
+          veths=$({ grep -oE 'veth[0-9a-f]+' "$log" || true; } | sort -u | wc -l)
+          echo "container veths seen: $veths"
+          if grep -E 'veth[0-9a-f]+.*inet6 fe80:' "$log"; then
+            echo "::error::A container veth got an IPv6 link-local address: the setting did not hold."
+            exit 1
+          fi
+          if [ "$veths" -eq 0 ]; then
+            echo "::error::No container veth was recorded, so the setting was not checked."
+            exit 1
+          fi
+
+      - name: Require each container window's veths to have come and gone inside it
+        if: always()
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" b1-publish-rollback navigation-matrix-public
+
+      - name: Keep Stage 3 records with the results
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/stage3" ]; then
+            mkdir -p test-results/stage3
+            cp -R "$RUNNER_TEMP/stage3/." test-results/stage3/
+          fi
+
+      - name: Upload results and failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-e2e-container-publish-attempt-${{ github.run_attempt }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: error
+
+  # Stage 3 (M1 1d): T1, Themes from Starter v28 and v20 upgraded by review,
+  # built, published and rolled back in the container. Alone in its job:
+  # the longest target (local exclusive run 11.9 min, fe5caf1, one sample;
+  # each test allows itself 30 min). Same pattern as editor-e2e-container.
+  editor-e2e-container-starter-publish:
+    name: Editor E2E container Starter upgrade publish acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Use the primary Ubuntu archive for apt
+        run: |
+          grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
+            echo "::error::The runner's Ubuntu sources no longer read /etc/apt/apt-mirrors.txt; this step would change nothing."
+            exit 1
+          }
+          printf '%s\tpriority:%s\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2 \
+            | sudo tee /etc/apt/apt-mirrors.txt
+
+      - name: Install Chromium for Playwright
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
+          for attempt in 1 2 3; do
+            install_log=$(mktemp "/tmp/playwright-install-${attempt}-XXXXXX.log")
+            log_dev_ino=$(stat -L -c "%d:%i" "$install_log" 2>/dev/null || true)
+            status=0
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > "$install_log" 2>&1 &
+            install_pid=$!
+            wait "$install_pid" || status=$?
+            cat "$install_log"
+            if [ "$status" -eq 0 ]; then
+              rm -f "$install_log"
+              exit 0
+            fi
+            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" "$install_log"; then
+              echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              rm -f "$install_log"
+              exit "$status"
+            fi
+            echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
+            sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            is_attempt_descendant() {
+              local p=$1
+              [ -d "/proc/$p" ] || return 1
+              local pgid
+              pgid=$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null || true)
+              if [ -n "$pgid" ] && [ "$pgid" = "$install_pid" ]; then
+                return 0
+              fi
+              [ -n "$log_dev_ino" ] || return 1
+              for fd_name in $(sudo -n ls "/proc/$p/fd" 2>/dev/null || ls "/proc/$p/fd" 2>/dev/null || true); do
+                local fd_dev_ino
+                fd_dev_ino=$(sudo -n stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || true)
+                if [ -n "$fd_dev_ino" ] && [ "$fd_dev_ino" = "$log_dev_ino" ]; then
+                  local flags
+                  flags=$(sudo -n awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || true)
+                  if [ -n "$flags" ] && [ $(( flags & 3 )) -ne 0 ]; then
+                    return 0
+                  fi
+                fi
+              done
+              return 1
+            }
+            for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+              [ -f "$lock_file" ] || continue
+              for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
+                if is_attempt_descendant "$lock_pid"; then
+                  echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
+                  sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                else
+                  echo "::warning::Unconfirmed lock holder $lock_pid on $lock_file (not verified attempt writer); skipping termination."
+                fi
+              done
+            done
+            for log_pid in $(sudo -n fuser "$install_log" 2>/dev/null || fuser "$install_log" 2>/dev/null || true); do
+              if is_attempt_descendant "$log_pid"; then
+                sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+              else
+                echo "::warning::Unconfirmed or read-only process $log_pid holding log; skipping termination."
+              fi
+            done
+            rm -f "$install_log"
+            if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
+              echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::Chromium install failed after 3 attempts (last exit $status)."
+          exit "$status"
+
+      - name: Write the run's environment
+        run: |
+          cat > .env.e2e <<EOF
+          E2E_EMAIL=editor-e2e@morph.invalid
+          E2E_PASSWORD=$(openssl rand -hex 24)
+          E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+          EOF
+          cat > .dev.vars <<EOF
+          MORPH_THEME_PREVIEW_RUNTIME=start
+          MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
+          MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+          MORPH_PREVIEW_REQUEST_TRACE=1
+          EOF
+
+      - name: Give new container interfaces no IPv6 link-local address
+        run: |
+          sudo sysctl -w net.ipv6.conf.default.addr_gen_mode=1
+          if [ "$(sysctl -n net.ipv6.conf.default.addr_gen_mode)" != 1 ]; then
+            echo "::error::net.ipv6.conf.default.addr_gen_mode did not take."
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/container-network"
+          mkdir -p "$dir"
+          ip -o addr show > "$dir/addresses-before.txt"
+          nohup ip -ts -o monitor link address > "$dir/ip-monitor.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/ip-monitor.pid"
+          sleep 0.2
+          sudo ip link add morphprobe0 type veth peer name morphprobe1
+          sudo ip link del morphprobe0
+          for i in $(seq 1 50); do
+            grep -q 'Deleted [0-9]*: morphprobe0' "$dir/ip-monitor.log" && exit 0
+            sleep 0.1
+          done
+          echo "::error::The interface monitor did not report a probe link, so container interfaces would go unrecorded."
+          exit 1
+
+      - name: Record container diagnostics
+        run: |
+          nohup node scripts/container-diagnostics.mjs record "$RUNNER_TEMP/container-diagnostics"             > "$RUNNER_TEMP/container-diagnostics.out" 2>&1 &
+          for i in $(seq 1 50); do
+            grep -q '"ev":"recording"' "$RUNNER_TEMP/container-diagnostics/recorder.ndjson" 2>/dev/null && exit 0
+            sleep 0.1
+          done
+          echo "::warning::Container diagnostics did not start; the run goes on without them."
+
+      - name: Mark Starter upgrade publish container window start
+        run: |
+          printf '{"name":"starter-upgrade-publish-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe starter-upgrade-publish-start "$RUNNER_TEMP/container-network"
+
+      - name: Run Starter upgrade publish container acceptance
+        id: starter_upgrade_publish_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/starter-upgrade-publish.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/starter-upgrade-publish-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/starter-upgrade-publish-acceptance.spec.ts
+
+      - name: Mark Starter upgrade publish container window end
+        if: always()
+        run: |
+          printf '{"name":"starter-upgrade-publish-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe starter-upgrade-publish-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve Starter upgrade publish acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/starter-upgrade-publish"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/starter-upgrade-publish/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/starter-upgrade-publish/starter-upgrade-publish.json" ]; then
+            echo "::warning::Starter upgrade publish acceptance report was not produced."
+          fi
+
+      - name: Require exact Starter upgrade publish target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/starter-upgrade-publish/starter-upgrade-publish.json" scripts/container-acceptance-targets/starter-upgrade-publish.mjs
+
+      - name: Require Starter upgrade publish runner handover
+        id: starter_upgrade_publish_handover
+        if: always() && steps.starter_upgrade_publish_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/starter-upgrade-publish-handover.json" e2e/starter-upgrade-publish-acceptance.spec.ts
+
+      - name: Record Stage 3 runner identities and handover results
+        if: always()
+        env:
+          STARTER_UPGRADE_PUBLISH_HANDOVER_OUTCOME: ${{ steps.starter_upgrade_publish_handover.outcome }}
+        run: |
+          node --input-type=module - "$RUNNER_TEMP/stage3/starter-upgrade-publish-handover.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const paths = process.argv.slice(2);
+          const entries = [
+            ["starter-upgrade-publish", paths[0], process.env.STARTER_UPGRADE_PUBLISH_HANDOVER_OUTCOME],
+          ];
+          for (const [name, filename, outcome] of entries) {
+            try {
+              const { runner, phase, invocationId } = JSON.parse(readFileSync(filename, "utf8"));
+              console.log(`${name} runner pid=${runner.pid} pgid=${runner.pgid} sid=${runner.sid} phase=${phase} invocation=${invocationId} handover=${outcome || "not-run"}`);
+            } catch (error) {
+              console.log(`${name} runner record unavailable; handover=${outcome || "not-run"}: ${error.message}`);
+            }
+          }
+          NODE
+
+      - name: Stop container diagnostics
+        if: always()
+        run: node scripts/container-diagnostics.mjs stop "$RUNNER_TEMP/container-diagnostics" test-results/container-diagnostics
+
+      - name: Require the run's container veths to have had no IPv6 link-local address
+        if: always()
+        run: |
+          dir="$RUNNER_TEMP/container-network"
+          log="$dir/ip-monitor.log"
+          keep_record() {
+            status=$?
+            if ! { mkdir -p test-results/container-network && cp -R "$dir"/. test-results/container-network/; }; then
+              echo "::error::The container interface record could not be kept with the results."
+              [ "$status" -ne 0 ] || status=1
+            fi
+            exit "$status"
+          }
+          trap keep_record EXIT
+          incomplete() {
+            echo "::error::Container interface evidence is incomplete: $1"
+            exit 1
+          }
+          pid=$(cat "$RUNNER_TEMP/ip-monitor.pid" 2>/dev/null) || incomplete "the monitor was never started."
+          kill -0 "$pid" 2>/dev/null || incomplete "the monitor exited before the run ended."
+          sudo ip link add morphprobe2 type veth peer name morphprobe3
+          sudo ip link del morphprobe2
+          reported=no
+          for i in $(seq 1 50); do
+            if grep -q 'Deleted [0-9]*: morphprobe2' "$log"; then
+              reported=yes
+              break
+            fi
+            sleep 0.1
+          done
+          kill "$pid"
+          for i in $(seq 1 50); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          [ "$reported" = yes ] || incomplete "the monitor stopped reporting before the run ended."
+          if grep -iE 'receive error|no buffer space' "$log"; then
+            incomplete "the monitor reported a receive error."
+          fi
+          ip -o addr show > "$dir/addresses-after.txt"
+          veths=$({ grep -oE 'veth[0-9a-f]+' "$log" || true; } | sort -u | wc -l)
+          echo "container veths seen: $veths"
+          if grep -E 'veth[0-9a-f]+.*inet6 fe80:' "$log"; then
+            echo "::error::A container veth got an IPv6 link-local address: the setting did not hold."
+            exit 1
+          fi
+          if [ "$veths" -eq 0 ]; then
+            echo "::error::No container veth was recorded, so the setting was not checked."
+            exit 1
+          fi
+
+      - name: Require each container window's veths to have come and gone inside it
+        if: always()
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" starter-upgrade-publish
+
+      - name: Keep Stage 3 records with the results
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/stage3" ]; then
+            mkdir -p test-results/stage3
+            cp -R "$RUNNER_TEMP/stage3/." test-results/stage3/
+          fi
+
+      - name: Upload results and failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-e2e-container-starter-publish-attempt-${{ github.run_attempt }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: error
+
+  # Stage 3 (M1 1d): #214 A7's relayed Theme WebSocket, the full Start
+  # preview's content sync, and Starter upgrade case E (a toolchain pin
+  # refused by the container build). Case E runs alone from its spec, so
+  # its step selects it with --grep, and the target check refuses any
+  # other test of that file in the report. A7 writes its timeline to
+  # P4_ACCEPTANCE_OUT, kept with the results. Local exclusive runs, one
+  # sample each: A7 3.5 min (508ef89), content sync 1.2 min, case E
+  # 4.4 min (fe5caf1). Same pattern as editor-e2e-container.
+  editor-e2e-container-preview:
+    name: Editor E2E container socket, content sync and case E acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Use the primary Ubuntu archive for apt
+        run: |
+          grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
+            echo "::error::The runner's Ubuntu sources no longer read /etc/apt/apt-mirrors.txt; this step would change nothing."
+            exit 1
+          }
+          printf '%s\tpriority:%s\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2 \
+            | sudo tee /etc/apt/apt-mirrors.txt
+
+      - name: Install Chromium for Playwright
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
+          for attempt in 1 2 3; do
+            install_log=$(mktemp "/tmp/playwright-install-${attempt}-XXXXXX.log")
+            log_dev_ino=$(stat -L -c "%d:%i" "$install_log" 2>/dev/null || true)
+            status=0
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > "$install_log" 2>&1 &
+            install_pid=$!
+            wait "$install_pid" || status=$?
+            cat "$install_log"
+            if [ "$status" -eq 0 ]; then
+              rm -f "$install_log"
+              exit 0
+            fi
+            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" "$install_log"; then
+              echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              rm -f "$install_log"
+              exit "$status"
+            fi
+            echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
+            sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            is_attempt_descendant() {
+              local p=$1
+              [ -d "/proc/$p" ] || return 1
+              local pgid
+              pgid=$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null || true)
+              if [ -n "$pgid" ] && [ "$pgid" = "$install_pid" ]; then
+                return 0
+              fi
+              [ -n "$log_dev_ino" ] || return 1
+              for fd_name in $(sudo -n ls "/proc/$p/fd" 2>/dev/null || ls "/proc/$p/fd" 2>/dev/null || true); do
+                local fd_dev_ino
+                fd_dev_ino=$(sudo -n stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || true)
+                if [ -n "$fd_dev_ino" ] && [ "$fd_dev_ino" = "$log_dev_ino" ]; then
+                  local flags
+                  flags=$(sudo -n awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || true)
+                  if [ -n "$flags" ] && [ $(( flags & 3 )) -ne 0 ]; then
+                    return 0
+                  fi
+                fi
+              done
+              return 1
+            }
+            for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+              [ -f "$lock_file" ] || continue
+              for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
+                if is_attempt_descendant "$lock_pid"; then
+                  echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
+                  sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                else
+                  echo "::warning::Unconfirmed lock holder $lock_pid on $lock_file (not verified attempt writer); skipping termination."
+                fi
+              done
+            done
+            for log_pid in $(sudo -n fuser "$install_log" 2>/dev/null || fuser "$install_log" 2>/dev/null || true); do
+              if is_attempt_descendant "$log_pid"; then
+                sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+              else
+                echo "::warning::Unconfirmed or read-only process $log_pid holding log; skipping termination."
+              fi
+            done
+            rm -f "$install_log"
+            if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
+              echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::Chromium install failed after 3 attempts (last exit $status)."
+          exit "$status"
+
+      - name: Write the run's environment
+        run: |
+          cat > .env.e2e <<EOF
+          E2E_EMAIL=editor-e2e@morph.invalid
+          E2E_PASSWORD=$(openssl rand -hex 24)
+          E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+          EOF
+          cat > .dev.vars <<EOF
+          MORPH_THEME_PREVIEW_RUNTIME=start
+          MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
+          MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+          MORPH_PREVIEW_REQUEST_TRACE=1
+          EOF
+
+      - name: Give new container interfaces no IPv6 link-local address
+        run: |
+          sudo sysctl -w net.ipv6.conf.default.addr_gen_mode=1
+          if [ "$(sysctl -n net.ipv6.conf.default.addr_gen_mode)" != 1 ]; then
+            echo "::error::net.ipv6.conf.default.addr_gen_mode did not take."
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/container-network"
+          mkdir -p "$dir"
+          ip -o addr show > "$dir/addresses-before.txt"
+          nohup ip -ts -o monitor link address > "$dir/ip-monitor.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/ip-monitor.pid"
+          sleep 0.2
+          sudo ip link add morphprobe0 type veth peer name morphprobe1
+          sudo ip link del morphprobe0
+          for i in $(seq 1 50); do
+            grep -q 'Deleted [0-9]*: morphprobe0' "$dir/ip-monitor.log" && exit 0
+            sleep 0.1
+          done
+          echo "::error::The interface monitor did not report a probe link, so container interfaces would go unrecorded."
+          exit 1
+
+      - name: Record container diagnostics
+        run: |
+          nohup node scripts/container-diagnostics.mjs record "$RUNNER_TEMP/container-diagnostics"             > "$RUNNER_TEMP/container-diagnostics.out" 2>&1 &
+          for i in $(seq 1 50); do
+            grep -q '"ev":"recording"' "$RUNNER_TEMP/container-diagnostics/recorder.ndjson" 2>/dev/null && exit 0
+            sleep 0.1
+          done
+          echo "::warning::Container diagnostics did not start; the run goes on without them."
+
+      - name: Mark preview socket container window start
+        run: |
+          printf '{"name":"preview-socket-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe preview-socket-start "$RUNNER_TEMP/container-network"
+
+      - name: Run preview socket container acceptance
+        id: preview_socket_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/preview-socket.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/preview-socket-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+          P4_ACCEPTANCE_OUT: test-results/preview-socket-timeline.json
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/preview-socket-acceptance.spec.ts
+
+      - name: Mark preview socket container window end
+        if: always()
+        run: |
+          printf '{"name":"preview-socket-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe preview-socket-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve preview socket acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/preview-socket"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/preview-socket/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/preview-socket/preview-socket.json" ]; then
+            echo "::warning::Preview socket acceptance report was not produced."
+          fi
+
+      - name: Require exact preview socket target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/preview-socket/preview-socket.json" scripts/container-acceptance-targets/preview-socket-acceptance.mjs
+
+      - name: Require preview socket runner handover
+        id: preview_socket_handover
+        if: always() && steps.preview_socket_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/preview-socket-handover.json" e2e/preview-socket-acceptance.spec.ts
+
+      - name: Mark Start content sync container window start
+        run: |
+          printf '{"name":"start-container-content-sync-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe start-container-content-sync-start "$RUNNER_TEMP/container-network"
+
+      - name: Run Start content sync container acceptance
+        id: start_content_sync_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/start-container-content-sync.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/start-container-content-sync-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/start-container-content-sync.spec.ts
+
+      - name: Mark Start content sync container window end
+        if: always()
+        run: |
+          printf '{"name":"start-container-content-sync-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe start-container-content-sync-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve Start content sync acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/start-container-content-sync"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/start-container-content-sync/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/start-container-content-sync/start-container-content-sync.json" ]; then
+            echo "::warning::Start content sync acceptance report was not produced."
+          fi
+
+      - name: Require exact Start content sync target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/start-container-content-sync/start-container-content-sync.json" scripts/container-acceptance-targets/start-container-content-sync.mjs
+
+      - name: Require Start content sync runner handover
+        id: start_content_sync_handover
+        if: always() && steps.start_content_sync_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/start-container-content-sync-handover.json" e2e/start-container-content-sync.spec.ts
+
+      - name: Mark Starter upgrade case E container window start
+        run: |
+          printf '{"name":"starter-upgrade-case-e-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe starter-upgrade-case-e-start "$RUNNER_TEMP/container-network"
+
+      - name: Run Starter upgrade case E container acceptance
+        id: starter_upgrade_case_e_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/starter-upgrade-case-e.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/starter-upgrade-case-e-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/starter-upgrade.spec.ts --grep "E\. a toolchain pin an earlier Starter wrote"
+
+      - name: Mark Starter upgrade case E container window end
+        if: always()
+        run: |
+          printf '{"name":"starter-upgrade-case-e-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe starter-upgrade-case-e-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve Starter upgrade case E acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/starter-upgrade-case-e"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/starter-upgrade-case-e/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/starter-upgrade-case-e/starter-upgrade-case-e.json" ]; then
+            echo "::warning::Starter upgrade case E acceptance report was not produced."
+          fi
+
+      - name: Require exact Starter upgrade case E target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/starter-upgrade-case-e/starter-upgrade-case-e.json" scripts/container-acceptance-targets/starter-upgrade-case-e.mjs
+
+      - name: Require Starter upgrade case E runner handover
+        id: starter_upgrade_case_e_handover
+        if: always() && steps.starter_upgrade_case_e_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/starter-upgrade-case-e-handover.json" e2e/starter-upgrade.spec.ts
+
+      - name: Record Stage 3 runner identities and handover results
+        if: always()
+        env:
+          PREVIEW_SOCKET_HANDOVER_OUTCOME: ${{ steps.preview_socket_handover.outcome }}
+          START_CONTENT_SYNC_HANDOVER_OUTCOME: ${{ steps.start_content_sync_handover.outcome }}
+          STARTER_UPGRADE_CASE_E_HANDOVER_OUTCOME: ${{ steps.starter_upgrade_case_e_handover.outcome }}
+        run: |
+          node --input-type=module - "$RUNNER_TEMP/stage3/preview-socket-handover.json" "$RUNNER_TEMP/stage3/start-container-content-sync-handover.json" "$RUNNER_TEMP/stage3/starter-upgrade-case-e-handover.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const paths = process.argv.slice(2);
+          const entries = [
+            ["preview-socket", paths[0], process.env.PREVIEW_SOCKET_HANDOVER_OUTCOME],
+            ["start-container-content-sync", paths[1], process.env.START_CONTENT_SYNC_HANDOVER_OUTCOME],
+            ["starter-upgrade-case-e", paths[2], process.env.STARTER_UPGRADE_CASE_E_HANDOVER_OUTCOME],
+          ];
+          for (const [name, filename, outcome] of entries) {
+            try {
+              const { runner, phase, invocationId } = JSON.parse(readFileSync(filename, "utf8"));
+              console.log(`${name} runner pid=${runner.pid} pgid=${runner.pgid} sid=${runner.sid} phase=${phase} invocation=${invocationId} handover=${outcome || "not-run"}`);
+            } catch (error) {
+              console.log(`${name} runner record unavailable; handover=${outcome || "not-run"}: ${error.message}`);
+            }
+          }
+          NODE
+
+      - name: Stop container diagnostics
+        if: always()
+        run: node scripts/container-diagnostics.mjs stop "$RUNNER_TEMP/container-diagnostics" test-results/container-diagnostics
+
+      - name: Require the run's container veths to have had no IPv6 link-local address
+        if: always()
+        run: |
+          dir="$RUNNER_TEMP/container-network"
+          log="$dir/ip-monitor.log"
+          keep_record() {
+            status=$?
+            if ! { mkdir -p test-results/container-network && cp -R "$dir"/. test-results/container-network/; }; then
+              echo "::error::The container interface record could not be kept with the results."
+              [ "$status" -ne 0 ] || status=1
+            fi
+            exit "$status"
+          }
+          trap keep_record EXIT
+          incomplete() {
+            echo "::error::Container interface evidence is incomplete: $1"
+            exit 1
+          }
+          pid=$(cat "$RUNNER_TEMP/ip-monitor.pid" 2>/dev/null) || incomplete "the monitor was never started."
+          kill -0 "$pid" 2>/dev/null || incomplete "the monitor exited before the run ended."
+          sudo ip link add morphprobe2 type veth peer name morphprobe3
+          sudo ip link del morphprobe2
+          reported=no
+          for i in $(seq 1 50); do
+            if grep -q 'Deleted [0-9]*: morphprobe2' "$log"; then
+              reported=yes
+              break
+            fi
+            sleep 0.1
+          done
+          kill "$pid"
+          for i in $(seq 1 50); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          [ "$reported" = yes ] || incomplete "the monitor stopped reporting before the run ended."
+          if grep -iE 'receive error|no buffer space' "$log"; then
+            incomplete "the monitor reported a receive error."
+          fi
+          ip -o addr show > "$dir/addresses-after.txt"
+          veths=$({ grep -oE 'veth[0-9a-f]+' "$log" || true; } | sort -u | wc -l)
+          echo "container veths seen: $veths"
+          if grep -E 'veth[0-9a-f]+.*inet6 fe80:' "$log"; then
+            echo "::error::A container veth got an IPv6 link-local address: the setting did not hold."
+            exit 1
+          fi
+          if [ "$veths" -eq 0 ]; then
+            echo "::error::No container veth was recorded, so the setting was not checked."
+            exit 1
+          fi
+
+      - name: Require each container window's veths to have come and gone inside it
+        if: always()
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" preview-socket start-container-content-sync starter-upgrade-case-e
+
+      - name: Keep Stage 3 records with the results
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/stage3" ]; then
+            mkdir -p test-results/stage3
+            cp -R "$RUNNER_TEMP/stage3/." test-results/stage3/
+          fi
+
+      - name: Upload results and failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-e2e-container-preview-attempt-${{ github.run_attempt }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: error

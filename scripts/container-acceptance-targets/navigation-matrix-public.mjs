@@ -7,10 +7,10 @@
  * preview cells stay in navigation-matrix.spec.ts).
  *
  * `node scripts/check-container-acceptance.mjs <report> <this module>` requires
- * exactly these titles, each once, passed with zero skip and zero retry. No CI
- * step runs that check yet; wiring the container step is a separate change.
- * Until then these cells are unproven in CI. A renamed cell changes this list
- * in the same commit.
+ * exactly these titles, each once, passed with zero skip and zero retry. The
+ * editor-e2e-container-publish job runs that check after its own container
+ * step. Wiring does not count as a CI pass; a candidate still needs a fresh
+ * successful run. A renamed cell changes this list in the same commit.
  */
 export const TARGET = Object.freeze({
   file: "navigation-matrix-public.spec.ts",

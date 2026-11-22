@@ -81,7 +81,15 @@ test("every script the container acceptance job runs is a rule or excluded with 
     new URL(".github/workflows/ci.yml", REPO_ROOT),
     "utf8",
   );
-  const job = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  // Every Stage 3 container job runs the same scripts (M1 1d).
+  const job = [
+    "editor-e2e-container",
+    "editor-e2e-container-publish",
+    "editor-e2e-container-starter-publish",
+    "editor-e2e-container-preview",
+  ]
+    .map((key) => withoutComments(jobBlock(workflow, key)))
+    .join("\n");
   const run = new Set(
     job
       .split("\n")
