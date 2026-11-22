@@ -3218,9 +3218,31 @@ export default function SiteHeader() { return <header />; }`;
       seedPage();
       await expect(
         storefrontThemeDal.findPublishScope(scopeIds),
-      ).resolves.toEqual({ sharedLayout: null });
+      ).resolves.toEqual({ sharedLayout: null, layout: null });
       await expect(publish(null)).resolves.toMatchObject({
         releaseCreated: true,
+      });
+    });
+
+    it("a layout never published and with no draft yet: reads as going live with the page", async () => {
+      seedPage();
+      sqlite.exec(`
+        INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+        VALUES
+          ('layout-a', 'theme-a', 'layout', 'Layout', '{"version":1,"sections":[]}',
+           NULL, 'now', 'now');
+      `);
+      // The editor's publish writes its first draft and the publish seals it.
+      await expect(
+        storefrontThemeDal.findPublishScope(scopeIds),
+      ).resolves.toEqual({
+        sharedLayout: null,
+        layout: {
+          templateId: "layout-a",
+          draftRevisionId: null,
+          firstPublish: true,
+        },
       });
     });
 
@@ -3241,6 +3263,11 @@ export default function SiteHeader() { return <header />; }`;
       const scope = await storefrontThemeDal.findPublishScope(scopeIds);
       expect(scope).toEqual({
         sharedLayout: { templateId: "layout-a", revisionId: LAYOUT_REVISION },
+        layout: {
+          templateId: "layout-a",
+          draftRevisionId: LAYOUT_REVISION,
+          firstPublish: false,
+        },
       });
       await expect(
         publish(scope!.sharedLayout!.revisionId),
@@ -3252,7 +3279,14 @@ export default function SiteHeader() { return <header />; }`;
       // Sealed, so the next confirmation is this page only again.
       await expect(
         storefrontThemeDal.findPublishScope(scopeIds),
-      ).resolves.toEqual({ sharedLayout: null });
+      ).resolves.toEqual({
+        sharedLayout: null,
+        layout: {
+          templateId: "layout-a",
+          draftRevisionId: LAYOUT_REVISION,
+          firstPublish: false,
+        },
+      });
     });
 
     it.each([
@@ -4478,6 +4512,60 @@ describe("preparing an untouched template for its first publish", () => {
         .prepare("SELECT created_by FROM storefront_theme_template_revisions")
         .get(),
     ).toEqual({ created_by: "user-1" });
+  });
+  it("a first publish with an untouched layout: the confirmed scope holds for the layout draft the publish's own preparation writes", async () => {
+    seedUntouched();
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, created_at, updated_at)
+      VALUES ('layout-initial', 'theme-a', 'layout', 'Layout',
+        '{"version":1,"sections":[{"id":"header","type":"header","enabled":true,"props":{"storeName":"Shop"}}]}', 'now', 'now');
+    `);
+    // What the confirmation reads before the editor prepares anything (the
+    // M1 lifecycle E2E's first publish): the layout goes live too.
+    const scope = await storefrontThemeDal.findPublishScope({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-initial",
+    });
+    expect(scope).toEqual({
+      sharedLayout: null,
+      layout: {
+        templateId: "layout-initial",
+        draftRevisionId: null,
+        firstPublish: true,
+      },
+    });
+    // The editor's publish then prepares the page and the layout.
+    const page = await prepare();
+    const layout = await prepare({ templateId: "layout-initial" });
+    const publishWith = (expectedSharedLayoutRevisionId: string | null) =>
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-initial",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: page!.draftRevisionId,
+        expectedDraftGeneration: page!.draftGeneration,
+        expectedReleaseGeneration: 1,
+        expectedSharedLayoutRevisionId,
+        readSourceRevisionFiles: workspaceRevisionFiles,
+        verifySourceRevision: acceptRevision,
+      });
+    // Sent as read, the preparation's draft is a layout nobody confirmed.
+    await expect(publishWith(null)).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+    // Sent for the draft that preparation left, it seals that draft.
+    await expect(publishWith(layout!.draftRevisionId)).resolves.toMatchObject({
+      releaseCreated: true,
+    });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT published_revision_id AS published FROM storefront_theme_templates WHERE id = 'layout-initial'",
+        )
+        .get(),
+    ).toEqual({ published: layout!.draftRevisionId });
   });
   it("refuses a stale source generation without creating a revision", async () => {
     seedUntouched();

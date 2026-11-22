@@ -36,7 +36,18 @@ export const publishScopeQuery = (
 export type PublishScopeState =
   | { status: "checking" }
   | { status: "failed" }
-  | { status: "done"; sharedLayoutRevisionId: string | null };
+  | {
+      status: "done";
+      /** The layout's pending draft the publish seals, or null for none. */
+      sharedLayoutRevisionId: string | null;
+      /** The layout's draft as the confirmation read it (null: none yet). */
+      layoutDraftRevisionId: string | null;
+      /**
+       * The layout has never been published and has no draft: this publish
+       * writes its first draft and seals it, so it goes live too.
+       */
+      layoutFirstPublish: boolean;
+    };
 
 export function publishScopeState(query: {
   isPending: boolean;
@@ -46,6 +57,11 @@ export function publishScopeState(query: {
     success: boolean;
     data?: {
       sharedLayout: { templateId: string; revisionId: string } | null;
+      layout: {
+        templateId: string;
+        draftRevisionId: string | null;
+        firstPublish: boolean;
+      } | null;
     } | null;
   };
 }): PublishScopeState {
@@ -55,11 +71,29 @@ export function publishScopeState(query: {
   if (query.isError || !query.data?.success || !query.data.data) {
     return { status: "failed" };
   }
+  const { sharedLayout, layout } = query.data.data;
   return {
     status: "done",
-    sharedLayoutRevisionId: query.data.data.sharedLayout?.revisionId ?? null,
+    sharedLayoutRevisionId: sharedLayout?.revisionId ?? null,
+    layoutDraftRevisionId: layout?.draftRevisionId ?? null,
+    layoutFirstPublish: layout?.firstPublish ?? false,
   };
 }
+
+/** Whether the confirmation says the shared layout goes live with the page. */
+export function publishScopeIncludesLayout(
+  state: Extract<PublishScopeState, { status: "done" }>,
+) {
+  return state.sharedLayoutRevisionId !== null || state.layoutFirstPublish;
+}
+
+/** A confirmed scope, as `handlePublish` carries it to the publish. */
+export type PublishScopeExpectation = Readonly<{
+  /** Sent with the publish: the pending layout revision it may seal. */
+  expectedSharedLayoutRevisionId: string | null;
+  /** The layout draft this scope describes (null: none yet). */
+  layoutDraftRevisionId: string | null;
+}>;
 
 /**
  * The scope a confirmation may publish with, or null while it is unknown.
@@ -68,10 +102,64 @@ export function publishScopeState(query: {
  */
 export function publishScopeExpectation(
   state: PublishScopeState,
-): { expectedSharedLayoutRevisionId: string | null } | null {
+): PublishScopeExpectation | null {
   return state.status === "done"
-    ? { expectedSharedLayoutRevisionId: state.sharedLayoutRevisionId }
+    ? {
+        expectedSharedLayoutRevisionId: state.sharedLayoutRevisionId,
+        layoutDraftRevisionId: state.layoutDraftRevisionId,
+      }
     : null;
+}
+
+/**
+ * What this publish's own draft preparation did to the layout: the draft it
+ * started from (null: none) and the draft it left. Chained across the
+ * preparations one publish makes, so `fromRevisionId` stays the first base.
+ */
+export type LayoutPreparation = Readonly<{
+  fromRevisionId: string | null;
+  revisionId: string;
+}>;
+
+export function chainLayoutPreparation(
+  previous: LayoutPreparation | null,
+  fromRevisionId: string | null,
+  revisionId: string,
+): LayoutPreparation {
+  return {
+    fromRevisionId:
+      previous && previous.revisionId === fromRevisionId
+        ? previous.fromRevisionId
+        : fromRevisionId,
+    revisionId,
+  };
+}
+
+/**
+ * The confirmed scope restated for the drafts this publish itself prepared.
+ *
+ * Preparing the layout for a build seal writes a layout revision (its first
+ * draft, or a branch of one a publication pins) with the content it started
+ * from, after the confirmation read the scope. When that preparation started
+ * from exactly the draft the confirmation described, the revision it left is
+ * the one the author confirmed, and the publish is sent with it. Any other
+ * base is a change nobody confirmed: the scope stays as read and the server
+ * refuses the publish (`PUBLISH_SCOPE_CHANGED`).
+ */
+export function publishScopeAfterPreparation(
+  scope: PublishScopeExpectation,
+  preparation: LayoutPreparation | null,
+): PublishScopeExpectation {
+  if (
+    !preparation ||
+    preparation.fromRevisionId !== scope.layoutDraftRevisionId
+  ) {
+    return scope;
+  }
+  return {
+    expectedSharedLayoutRevisionId: preparation.revisionId,
+    layoutDraftRevisionId: preparation.revisionId,
+  };
 }
 
 /** The confirmation button, given the media check's and the scope's state. */
@@ -80,7 +168,7 @@ export function publishScopeConfirmation(
   state: PublishScopeState,
 ): { disabled: boolean; label: string } {
   if (state.status !== "done") return { disabled: true, label: base.label };
-  if (state.sharedLayoutRevisionId !== null && base.label === "Publish") {
+  if (publishScopeIncludesLayout(state) && base.label === "Publish") {
     return { disabled: base.disabled, label: "Publish page and layout" };
   }
   return base;
@@ -119,7 +207,7 @@ export function EditorPublishScope({
     );
   }
   // This page only: the confirmation reads as it always has.
-  if (state.sharedLayoutRevisionId === null) return null;
+  if (!publishScopeIncludesLayout(state)) return null;
   return (
     <div
       role="status"

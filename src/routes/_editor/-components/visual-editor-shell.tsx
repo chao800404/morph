@@ -612,9 +612,13 @@ import {
   publishMediaCheckState,
 } from "./editor-publish-media-check";
 import {
+  chainLayoutPreparation,
   EditorPublishScope,
+  type LayoutPreparation,
+  publishScopeAfterPreparation,
   publishScopeConfirmation,
   publishScopeExpectation,
+  type PublishScopeExpectation,
   publishScopeQuery,
   publishScopeState,
 } from "./editor-publish-scope";
@@ -2039,9 +2043,12 @@ export function VisualEditorShell({
    * The scope the author last confirmed, for "Rebuild and publish" to repeat:
    * a rebuild is the same publish, not a new decision about the layout.
    */
-  const lastPublishScopeRef = useRef<{
-    expectedSharedLayoutRevisionId: string | null;
-  } | null>(null);
+  const lastPublishScopeRef = useRef<PublishScopeExpectation | null>(null);
+  /**
+   * What the running publish's own draft preparation did to the layout, so
+   * the confirmed scope is sent for the revision that preparation left.
+   */
+  const layoutPreparationRef = useRef<LayoutPreparation | null>(null);
   /** Set once `handlePublish` exists; see the rebuild-required refusal. */
   const rebuildAndPublishRef = useRef<() => Promise<void>>(async () => {});
   const publishMutation = useMutation({
@@ -10131,6 +10138,13 @@ export function VisualEditorShell({
           draftRevisionId = prepared.data.draftRevisionId;
           draftGeneration = prepared.data.draftGeneration;
         }
+        if (layoutTemplate && each.id === layoutTemplate.id) {
+          layoutPreparationRef.current = chainLayoutPreparation(
+            layoutPreparationRef.current,
+            currentDraftId ?? null,
+            prepared.data.draftRevisionId,
+          );
+        }
       }
       return { templateId: template.id, draftRevisionId, draftGeneration };
     },
@@ -10150,7 +10164,7 @@ export function VisualEditorShell({
        * layout draft the confirmation named, or null for this page only.
        * Sent with the publish, which is refused if the layout moved on.
        */
-      scope: Readonly<{ expectedSharedLayoutRevisionId: string | null }>,
+      scope: PublishScopeExpectation,
       note?: string,
       /**
        * `rebuild`: the author asked for a new build of this source after a
@@ -10161,6 +10175,7 @@ export function VisualEditorShell({
     ) => {
       lastPublishNoteRef.current = note;
       lastPublishScopeRef.current = scope;
+      layoutPreparationRef.current = null;
       const publishTarget = publishTargetRef.current;
       // Publishing is not asking to save: whatever is unanswered is checked
       // and saved first, through Check and save, or nothing is published.
@@ -10458,6 +10473,13 @@ export function VisualEditorShell({
         return;
       }
 
+      // The layout revision this publish's own preparation left stands for
+      // the one the author confirmed; kept so a rebuild repeats this scope.
+      const sealedScope = publishScopeAfterPreparation(
+        scope,
+        layoutPreparationRef.current,
+      );
+      lastPublishScopeRef.current = sealedScope;
       await publishMutation.mutateAsync({
         templateId: publishTemplate.id,
         sourceRevisionId: publishBuild?.sourceRevisionId,
@@ -10466,7 +10488,8 @@ export function VisualEditorShell({
         expectedDraftRevisionId: publishDraftRevisionId,
         expectedDraftGeneration: publishDraftGeneration,
         expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
-        expectedSharedLayoutRevisionId: scope.expectedSharedLayoutRevisionId,
+        expectedSharedLayoutRevisionId:
+          sealedScope.expectedSharedLayoutRevisionId,
       });
     },
     [

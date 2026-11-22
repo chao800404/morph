@@ -907,7 +907,7 @@ beforeEach(() => {
   checkPublishScope.mockImplementation(async () => ({
     success: true,
     message: "ok",
-    data: { sharedLayout: null },
+    data: { sharedLayout: null, layout: null },
   }));
   vi.spyOn(toast, "error").mockImplementation(() => "");
   vi.spyOn(toast, "success").mockImplementation(() => "");

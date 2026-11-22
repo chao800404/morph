@@ -1255,6 +1255,11 @@ export const storefrontThemeDal = {
    * layout's pending draft, or nothing. Read by the publish confirmation,
    * under the same ownership join `publishTemplate` starts from; null when
    * the storefront, theme or template is not there.
+   *
+   * `layout` is the layout row as read, for the editor's own publish
+   * preparation (which may write a layout revision before the publish) and
+   * for a layout that has never been published: it has no draft yet, the
+   * publish writes its first one and seals it, so it goes live too.
    */
   async findPublishScope(data: {
     storefrontId: string;
@@ -1262,6 +1267,11 @@ export const storefrontThemeDal = {
     templateId: string;
   }): Promise<{
     sharedLayout: { templateId: string; revisionId: string } | null;
+    layout: {
+      templateId: string;
+      draftRevisionId: string | null;
+      firstPublish: boolean;
+    } | null;
   } | null> {
     const db = await getDb();
     const [template] = await db
@@ -1288,10 +1298,34 @@ export const storefrontThemeDal = {
       data.themeId,
       data.templateId,
     );
+    const [layout] = await db
+      .select({
+        id: storefrontThemeTemplates.id,
+        draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+        publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+      })
+      .from(storefrontThemeTemplates)
+      .where(
+        and(
+          eq(storefrontThemeTemplates.themeId, data.themeId),
+          eq(storefrontThemeTemplates.type, "layout"),
+          isNull(storefrontThemeTemplates.deletedAt),
+        ),
+      )
+      .limit(1);
     return {
       sharedLayout: pending
         ? { templateId: pending.id, revisionId: pending.revisionId }
         : null,
+      layout:
+        layout && layout.id !== data.templateId
+          ? {
+              templateId: layout.id,
+              draftRevisionId: layout.draftRevisionId ?? null,
+              firstPublish:
+                !layout.draftRevisionId && !layout.publishedRevisionId,
+            }
+          : null,
     };
   },
 
