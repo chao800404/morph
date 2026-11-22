@@ -185,8 +185,9 @@ const CONTENT = "src/morph/content.ts";
 const MANIFEST = "morph.theme.json";
 const OTHER_ROUTE = "/order-transfer";
 const OTHER_ROUTE_HEADING = "訂單轉移確認";
-/** The Starter this run upgrades to; the review lists below are against it. */
-const UPGRADE_TARGET_STARTER = 30;
+// The upgrade target is STOREFRONT_STARTER_TEMPLATE_VERSION, read where it is
+// used (apply), never pinned here; the review lists below were recorded
+// against Starter 30 and fail loudly where a later Starter differs.
 const AUTHOR_EDIT = "\n// author edit: keep this line\n";
 
 type Fixture = {
@@ -612,7 +613,6 @@ async function finishSetUp(
       const editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home!.id}`;
       await openEditor(page, editorPath);
       const original = await workspace(page, scope);
-      expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(UPGRADE_TARGET_STARTER);
       expect(starterVersion(scope)).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
       for (const file of V28.files) {
         if (V28_REVIEW.includes(file.path)) {
@@ -3482,7 +3482,9 @@ function expectUpgradeKeptAuthorContent(
   after: ReadBack,
   listed: string[],
 ) {
-  const changed = expectDocumentsKeptAndListed(before, after, listed);
+  // Every case now upgrades its own version's Documents (seedOldShapeDocuments),
+  // so props are kept at their path or their documented migrated path.
+  const changed = expectDocumentsKeptAndListed(before, after, listed, true);
   // The canvas shows the same author content before and after. An old
   // workspace whose canvas does not render before the upgrade fails this
   // softly: nothing to compare is not a pass, and the steps after it still
@@ -3878,8 +3880,9 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
     browser: Browser,
     version: 11 | 15 | 26,
   ) {
-    // v11 and v15 also write and read back their annotations; v11 publishes.
-    if (version !== 26) test.setTimeout(75 * 60_000);
+    // Seeding, links and copy edits for all; v11/v15 also use their
+    // annotations; v11 publishes.
+    test.setTimeout(75 * 60_000);
     const old = fixture(version);
     const run = await setUpCase(page, `b1-v${version}`, version);
     try {
@@ -3891,12 +3894,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         await installStarter(page, run, old);
         await expectOpeningWritesNothing(page, run, version);
       });
-      if (version !== 26) {
-        await run.record.step(
-          "the version's own Documents, with sentinels, seeded before the upgrade",
-          () => seedOldShapeDocuments(page, run, old, marker),
-        );
-      }
+      await run.record.step(
+        "the version's own Documents, with sentinels, seeded before the upgrade",
+        () => seedOldShapeDocuments(page, run, old, marker),
+      );
       const before = await run.record.step("before-upgrade read-back", () =>
         readBack(page, browser, run, "before", marker, {
           canvasRequired: false,
@@ -3952,7 +3953,7 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           return keys;
         },
       );
-      if (version !== 26) {
+      {
         // The category cards' links (a), before any edit to them.
         await run.record.step(
           "(a) category cards link to the author's URL on the canvas after the upgrade",
@@ -3978,19 +3979,19 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         } else {
           recordLinks(run, "a: published or served page", {
             reached: false,
-            reason: "not verified (by design, Q4): v15 is read back only; it is not published",
+            reason: `not verified (by design, Q4): v${version} is read back only; it is not published`,
           });
           recordLinks(run, "a: actions on the published or served page", {
             reached: false,
-            reason: "not verified (by design, Q4): v15 is read back only; it is not published",
+            reason: `not verified (by design, Q4): v${version} is read back only; it is not published`,
           });
           recordSentinels(run, "served: published or served page", {
             reached: false,
-            reason: "not verified (by design, Q4): v15 is read back only; it is not published",
+            reason: `not verified (by design, Q4): v${version} is read back only; it is not published`,
           });
           recordPositions(run, "a: published or served page", {
             reached: false,
-            reason: "not verified (by design, Q4): v15 is read back only; it is not published",
+            reason: `not verified (by design, Q4): v${version} is read back only; it is not published`,
           });
         }
         await run.record.step(
@@ -4045,6 +4046,8 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
     page,
     browser,
   }) => {
+    // Seeding, sentinel read-backs and copy edits add to the publish cases.
+    test.setTimeout(75 * 60_000);
     const run = await setUpCase(page, "b1-v28", 28, "run storefront");
     try {
       const storefront = storefrontFetcher(origin(run.host));
@@ -4053,6 +4056,12 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         await expectOpeningWritesNothing(page, run, 28);
       });
       const contentA = `m1-1b-v28-a-${randomUUID().slice(0, 8)}`;
+      // v28's own Documents (with contentA as the hero marker), so R0 serves
+      // what a v28 store held and the upgrade migrates it.
+      await run.record.step(
+        "the version's own Documents, with sentinels, seeded before the upgrade",
+        () => seedOldShapeDocuments(page, run, V28, contentA),
+      );
       const r0 = await publicStep(
         run,
         "R0 published from v28's own bytes",
@@ -4105,6 +4114,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           "the upgraded workspace is the current Starter",
         ).toEqual([]);
       });
+      await run.record.step(
+        "(a) every seeded value kept after the upgrade: D1, editor read, canvas",
+        () => expectSeededContent(page, run, "after the upgrade, before any edit", true),
+      );
       const contentB = `m1-1b-v28-b-${randomUUID().slice(0, 8)}`;
       const r1 = await publicStep(
         run,
@@ -4121,6 +4134,14 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           await serveRelease(run, contentB, made);
           await expectPublicSite(storefront, contentB, [contentA]);
           return made;
+        },
+      );
+      await run.record.step(
+        "(a) every seeded value on the served page after R1 (its only edit is the hero eyebrow)",
+        async () => {
+          const home = await storefront("/");
+          expect(home.status).toBe(200);
+          expectSeededContentServed(run, home.body, "served page after R1");
         },
       );
       await run.record.step("published read-back", async () => {
@@ -4161,6 +4182,18 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           expect(rolled.public.home?.hasMarker).toBe(true);
           await savedField(page, run.scope, draftD);
         },
+      );
+      await run.record.step(
+        "(b) after the first copy-only edit, category cards still link to the author's URL",
+        () => expectCardLinksAfterCopyEdit(page, run),
+      );
+      await run.record.step(
+        "(b) after a first copy-only edit, hero and story action buttons still link to the author's URL",
+        () => expectActionLinksAfterCopyEdit(page, run),
+      );
+      await run.record.step(
+        "(b) every seeded value kept after the first edits: D1, editor read, canvas",
+        () => expectSeededContent(page, run, "after the first edits", true),
       );
       await run.record.step("full Start", async () => expectFullStart(run));
     } finally {
@@ -4406,6 +4439,7 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
     const original = V26.files.find((file) => file.path === CONTENT);
     expect(original, "v26 has a content module").toBeDefined();
     const edited = original!.content + AUTHOR_EDIT;
+    test.setTimeout(75 * 60_000);
     const run = await setUpCase(page, "b2-v26", 26, "run storefront");
     try {
       const storefront = storefrontFetcher(origin(run.host));
@@ -4419,6 +4453,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           await installStarter(page, run, V26, { [CONTENT]: edited });
           await expectOpeningWritesNothing(page, run, 26);
         },
+      );
+      await run.record.step(
+        "the version's own Documents, with sentinels, seeded before the upgrade",
+        () => seedOldShapeDocuments(page, run, V26, marker),
       );
       const before = await run.record.step("before-upgrade read-back", () =>
         readBack(page, browser, run, "before", marker, {
@@ -4465,6 +4503,10 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           );
         },
       );
+      await run.record.step(
+        "(a) every seeded value kept after the upgrade: D1, editor read, canvas",
+        () => expectSeededContent(page, run, "after the upgrade, before any edit", true),
+      );
       // Connected first, so the step below records what the host served
       // before this case published (another case's release, or none).
       await run.record.step("domain connected", () => connectDomain(page, run));
@@ -4492,6 +4534,26 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           expect(published.public.content?.hasMarker).toBe(true);
           return made;
         },
+      );
+      await run.record.step(
+        "(a) every seeded value on the published page (no edit since the upgrade)",
+        async () => {
+          const home = await storefront("/");
+          expect(home.status).toBe(200);
+          expectSeededContentServed(run, home.body, "published page");
+        },
+      );
+      await run.record.step(
+        "(b) after the first copy-only edit, category cards still link to the author's URL",
+        () => expectCardLinksAfterCopyEdit(page, run),
+      );
+      await run.record.step(
+        "(b) after a first copy-only edit, hero and story action buttons still link to the author's URL",
+        () => expectActionLinksAfterCopyEdit(page, run),
+      );
+      await run.record.step(
+        "(b) every seeded value kept after the first edits: D1, editor read, canvas",
+        () => expectSeededContent(page, run, "after the first edits", true),
       );
       await run.record.step("full Start", async () => expectFullStart(run));
     } finally {
