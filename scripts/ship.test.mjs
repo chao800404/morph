@@ -37,6 +37,7 @@ import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
 import {
   CONTAINER_ACCEPTANCE_CHECK,
   CONTAINER_PRESENTATION_ACK_CHECK,
+  CONTAINER_STAGE3_CHECKS,
   EXPECTED_CI_CHECKS,
   START_PREVIEW_SHARD_CHECKS,
   VALIDATION_CHECKS,
@@ -78,6 +79,7 @@ const baseGreen = () => [
   ...START_PREVIEW_SHARD_CHECKS.map(success),
   success(CONTAINER_ACCEPTANCE_CHECK),
   success(CONTAINER_PRESENTATION_ACK_CHECK),
+  ...CONTAINER_STAGE3_CHECKS.map(success),
 ];
 const without = (checks, name) => checks.filter((check) => check.name !== name);
 const replaced = (checks, name, patch) =>
@@ -95,6 +97,9 @@ describe("the expected set of checks", () => {
       ACCEPTANCE,
       CONTAINER_ACCEPTANCE_CHECK,
       CONTAINER_PRESENTATION_ACK_CHECK,
+      "Editor E2E container publish acceptance",
+      "Editor E2E container Starter upgrade publish acceptance",
+      "Editor E2E container socket, content sync and case E acceptance",
     ]);
   });
 

@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   CLOCK_BOUND_MS,
+  KNOWN_WINDOWS,
   MARKERS,
+  WINDOWS,
+  windowsFor,
   parseMicros,
   parseRfc3339Micros,
   parseMonitorLog,
@@ -53,20 +56,57 @@ const MARK = {
   "preview-access-end": 200,
 };
 
+/** editor-e2e-container's layout: two windows, one veth in each. */
+const DEFAULT_LAYOUT = {
+  marks: MARK,
+  markers: MARKERS,
+  /** @type {[number, number, number, string][]} */
+  veths: [
+    [20, 30, 6, "veth771669f"],
+    [150, 160, 24, "vethd4c0052"],
+  ],
+  end: 201,
+};
+
+/**
+ * Three windows one after another, one veth in each, as a Stage 3 job that
+ * names its windows records them.
+ * @param {string[]} names
+ */
+function layoutFor(names) {
+  /** @type {Record<string, number>} */
+  const marks = {};
+  /** @type {[number, number, number, string][]} */
+  const veths = [];
+  names.forEach((name, i) => {
+    marks[`${name}-start`] = 10 + 100 * i;
+    marks[`${name}-end`] = 100 + 100 * i;
+    veths.push([20 + 100 * i, 30 + 100 * i, 6 + 2 * i, `veth${String(i).repeat(7)}a`]);
+  });
+  return {
+    marks,
+    markers: names.flatMap((name) => [`${name}-start`, `${name}-end`]),
+    veths,
+    end: 101 + 100 * (names.length - 1),
+  };
+}
+
 /**
  * A whole good record; `change` edits its parts before they are written.
  * @param {(parts: { marks: Record<string, number>, lines: [number, string][], probes: Record<string, unknown>[] }) => void} [change]
+ * @param {typeof DEFAULT_LAYOUT} [layout]
  */
-function record(change) {
-  const marks = { ...MARK };
+function record(change, layout = DEFAULT_LAYOUT) {
+  const marks = { ...layout.marks };
+  const MARKERS = layout.markers;
+  const end = layout.end;
   /** @type {[number, string][]} */
   const lines = [
     [1, link(1, 4, "morphprobe0")],
     [1.01, link(1.01, 4, "morphprobe0", true)],
-    ...veth(20, 30, 6, "veth771669f"),
-    ...veth(150, 160, 24, "vethd4c0052"),
-    [201, link(201, 26, "morphprobe2")],
-    [201.01, link(201.01, 26, "morphprobe2", true)],
+    ...layout.veths.flatMap(([from, to, index, name]) => veth(from, to, index, name)),
+    [end, link(end, 26, "morphprobe2")],
+    [end + 0.01, link(end + 0.01, 26, "morphprobe2", true)],
     // The host's own link-local addresses are not a container's.
     [21, fe80(21, 3, "docker0")],
   ];
@@ -117,6 +157,48 @@ test("a record whose windows each made and removed their own veths, on one clock
     result.clock.map((c) => [c.marker, c.ipSkewMs, c.dockerSkewMs]),
     MARKERS.map((marker) => [marker, 0, 0]),
   );
+});
+
+test("a job that names its windows is checked against exactly those, in that order", () => {
+  const names = ["preview-socket", "start-container-content-sync", "starter-upgrade-case-e"];
+  const windows = windowsFor(names);
+  const layout = layoutFor(names);
+  const result = verifyContainerNetworkWindows(record(undefined, layout), { windows });
+  assert.deepEqual(
+    result.windows.map((w) => [w.name, w.veths]),
+    names.map((name) => [name, 1]),
+  );
+  assert.equal(result.clock.length, 6);
+  // The default stays editor-e2e-container's two windows.
+  assert.deepEqual(WINDOWS.map((w) => w.name), ["lifecycle", "preview-access"]);
+  assert.deepEqual(
+    MARKERS,
+    ["lifecycle-start", "lifecycle-end", "preview-access-start", "preview-access-end"],
+  );
+  // Another job's record never passes as the default's, nor in another order,
+  // nor with a window left out.
+  const refusesWith = (/** @type {any} */ input, /** @type {any} */ options, /** @type {string} */ code) =>
+    assert.throws(
+      () => verifyContainerNetworkWindows(input, options),
+      (error) => error instanceof Error && error.message.startsWith(`${code}: `),
+      code,
+    );
+  refusesWith(record(undefined, layout), {}, "NETWORK_BAD_MARKERS");
+  refusesWith(record(undefined, layout), { windows: windowsFor([...names].reverse()) }, "NETWORK_BAD_MARKERS");
+  refusesWith(record(undefined, layout), { windows: windowsFor(names.slice(0, 2)) }, "NETWORK_BAD_MARKERS");
+  // A window with no veth of its own fails here as in the default layout.
+  refusesWith(
+    record(undefined, { ...layout, veths: layout.veths.slice(0, 2) }),
+    { windows },
+    "NETWORK_WINDOW_NO_VETH",
+  );
+});
+
+test("only known windows can be named, each once", () => {
+  for (const name of KNOWN_WINDOWS) assert.equal(windowsFor([name])[0].start, `${name}-start`);
+  assert.throws(() => windowsFor([]), /^Error: NETWORK_BAD_WINDOWS: /);
+  assert.throws(() => windowsFor(["lifecycle", "preview"]), /^Error: NETWORK_BAD_WINDOWS: unknown window preview/);
+  assert.throws(() => windowsFor(["lifecycle", "lifecycle"]), /^Error: NETWORK_BAD_WINDOWS: a window is named twice/);
 });
 
 test("timestamps keep their sub-millisecond digits, and ip's zone-less time is read as UTC", () => {
@@ -289,6 +371,13 @@ test("the probe records what it saw, numbers its links, and records a failure in
     const written = readFileSync(path.join(dir, "clock-probes.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     assert.deepEqual(written, [first, second]);
     assert.throws(() => recordClockProbe(dir, "preview-start"), /^Error: CLOCK_BAD_PROBES: unknown marker/);
+    // Any known window's markers, whichever job takes the probe.
+    const named = recordClockProbe(dir, "starter-upgrade-case-e-end", {
+      now,
+      run: (command) => (command === "docker" ? ok(`"${utc(11)}"\n`) : ok()),
+    });
+    assert.equal(named.link, "morphclk2");
+    assert.equal(named.marker, "starter-upgrade-case-e-end");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -319,6 +408,25 @@ test("the command line passes a good record and fails a missing or bad one with 
     const linkLocal = run();
     assert.equal(linkLocal.status, 1);
     assert.match(linkLocal.stdout, /^::error::NETWORK_VETH_LINK_LOCAL: vethd4c0052/m);
+
+    // A job naming its windows on the command line.
+    const names = ["b1-publish-rollback", "navigation-matrix-public"];
+    const named = record(undefined, layoutFor(names));
+    writeFileSync(path.join(dir, "windows.ndjson"), named.windows);
+    writeFileSync(path.join(dir, "ip-monitor.log"), named.monitorLog);
+    writeFileSync(path.join(dir, "clock-probes.ndjson"), named.clockProbes);
+    const namedRun = (/** @type {string[]} */ ...windows) =>
+      spawnSync(process.execPath, [CHECKER, "check", dir, ...windows], { encoding: "utf8" });
+    const namedPassed = namedRun(...names);
+    assert.equal(namedPassed.status, 0, namedPassed.stdout + namedPassed.stderr);
+    assert.match(namedPassed.stdout, /^b1-publish-rollback window .*: 1 container veths/m);
+    assert.match(namedPassed.stdout, /^navigation-matrix-public window .*: 1 container veths/m);
+    const asDefault = namedRun();
+    assert.equal(asDefault.status, 1);
+    assert.match(asDefault.stdout, /^::error::NETWORK_BAD_MARKERS: /m);
+    const unknown = namedRun("b1-publish-rollback", "navigation-matrix");
+    assert.equal(unknown.status, 1);
+    assert.match(unknown.stdout, /^::error::NETWORK_BAD_WINDOWS: unknown window navigation-matrix$/m);
 
     const usage = spawnSync(process.execPath, [CHECKER], { encoding: "utf8" });
     assert.equal(usage.status, 1);

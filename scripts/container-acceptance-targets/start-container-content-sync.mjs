@@ -5,10 +5,10 @@
  * the preview is served by the local sidecar, and the spec skips itself.
  *
  * `node scripts/check-container-acceptance.mjs <report> <this module>` requires
- * exactly these titles, each once, passed with zero skip and zero retry. No CI
- * step runs that check yet; wiring the container step is a separate change.
- * Until then this case is unproven in CI. A renamed case changes this list in
- * the same commit.
+ * exactly these titles, each once, passed with zero skip and zero retry. The
+ * editor-e2e-container-preview job runs that check after its own container
+ * step. Wiring does not count as a CI pass; a candidate still needs a fresh
+ * successful run. A renamed case changes this list in the same commit.
  */
 export const TARGET = Object.freeze({
   file: "start-container-content-sync.spec.ts",

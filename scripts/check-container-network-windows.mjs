@@ -3,10 +3,12 @@
  * Stage 3's per-window network check (v3 plan, "網路窗口"), and the clock
  * probe it rests on.
  *
- * The container job runs two runner invocations under one interface monitor
- * (`ip -ts -o monitor link address`) and marks each one's window in
- * windows.ndjson. The job-wide link-local step only knows that the whole job
- * saw a veth and that no veth got an fe80 address. This checker asks the same
+ * A container job runs its runner invocations (two in editor-e2e-container,
+ * the default; the other Stage 3 jobs name theirs on the `check` command
+ * line) under one interface monitor (`ip -ts -o monitor link address`) and
+ * marks each one's window in windows.ndjson. The job-wide link-local step
+ * only knows that the whole job saw a veth and that no veth got an fe80
+ * address. This checker asks the same
  * of each window: container veths were created and deleted inside it, none
  * lives across a window edge or between windows, and none got an IPv6
  * link-local address (#382).
@@ -22,23 +24,59 @@
  * fails as such: absence never passes.
  *
  *   node scripts/check-container-network-windows.mjs probe <marker> <dir>
- *   node scripts/check-container-network-windows.mjs check <dir>
+ *   node scripts/check-container-network-windows.mjs check <dir> [<window>...]
  */
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** The windows in order, each as its start and end marker. */
-export const WINDOWS = Object.freeze([
-  Object.freeze({ name: "lifecycle", start: "lifecycle-start", end: "lifecycle-end" }),
-  Object.freeze({
-    name: "preview-access",
-    start: "preview-access-start",
-    end: "preview-access-end",
-  }),
+/**
+ * Every runner window a container job may mark, one per container target
+ * invocation. A job names its own windows, in order, on the `check` command
+ * line; a marker or window not listed here is refused.
+ */
+export const KNOWN_WINDOWS = Object.freeze([
+  "lifecycle",
+  "preview-access",
+  "b1-publish-rollback",
+  "navigation-matrix-public",
+  "starter-upgrade-publish",
+  "preview-socket",
+  "start-container-content-sync",
+  "starter-upgrade-case-e",
 ]);
-export const MARKERS = Object.freeze(WINDOWS.flatMap((w) => [w.start, w.end]));
+const KNOWN_MARKERS = Object.freeze(
+  KNOWN_WINDOWS.flatMap((name) => [`${name}-start`, `${name}-end`]),
+);
+
+/**
+ * The windows of one job in order, each as its start and end marker.
+ * @param {readonly string[]} names
+ */
+export function windowsFor(names) {
+  if (!Array.isArray(names) || names.length === 0) {
+    failed("NETWORK_BAD_WINDOWS", "a job must name at least one window");
+  }
+  for (const name of names) {
+    if (!KNOWN_WINDOWS.includes(name)) {
+      failed("NETWORK_BAD_WINDOWS", `unknown window ${name}`);
+    }
+  }
+  if (new Set(names).size !== names.length) {
+    failed("NETWORK_BAD_WINDOWS", `a window is named twice: ${names.join(", ")}`);
+  }
+  return Object.freeze(
+    names.map((name) => Object.freeze({ name, start: `${name}-start`, end: `${name}-end` })),
+  );
+}
+
+/** @param {ReturnType<typeof windowsFor>} windows */
+const markersOf = (windows) => Object.freeze(windows.flatMap((w) => [w.start, w.end]));
+
+/** The editor-e2e-container job's windows, the default when none are named. */
+export const WINDOWS = windowsFor(["lifecycle", "preview-access"]);
+export const MARKERS = markersOf(WINDOWS);
 
 /**
  * The plan sets no number. A wrong clock here is a zone offset (at least
@@ -124,8 +162,12 @@ function ndjson(text, what) {
   });
 }
 
-/** @param {string} text */
-export function parseMarkers(text) {
+/**
+ * @param {string} text
+ * @param {ReturnType<typeof windowsFor>} [windows]
+ */
+export function parseMarkers(text, windows = WINDOWS) {
+  const MARKERS = markersOf(windows);
   const records = ndjson(text, "windows.ndjson");
   const names = records.map((r) => r?.name);
   if (JSON.stringify(names) !== JSON.stringify(MARKERS)) {
@@ -149,7 +191,7 @@ export function parseMarkers(text) {
       failed("NETWORK_BAD_MARKERS", `marker ${MARKERS[i]} is earlier than ${MARKERS[i - 1]}`);
     }
   }
-  for (const w of WINDOWS) {
+  for (const w of windows) {
     if (!(at[w.start] < at[w.end])) {
       failed("NETWORK_BAD_MARKERS", `window ${w.name} is empty`);
     }
@@ -198,24 +240,32 @@ export function parseMonitorLog(text) {
  * with the markers (a monitor on another zone fails as that, not as a window
  * that looks empty), then the windows.
  * @param {{ windows: string, monitorLog: string, clockProbes: string }} record
- * @param {{ boundMs?: number }} [options]
+ * @param {{ boundMs?: number, windows?: ReturnType<typeof windowsFor> }} [options]
  */
-export function verifyContainerNetworkWindows(record, { boundMs = CLOCK_BOUND_MS } = {}) {
-  const markers = parseMarkers(record.windows);
+export function verifyContainerNetworkWindows(
+  record,
+  { boundMs = CLOCK_BOUND_MS, windows: expected = WINDOWS } = {},
+) {
+  const markers = parseMarkers(record.windows, expected);
   const events = parseMonitorLog(record.monitorLog);
-  const clock = verifyClockProbes(markers, events, record.clockProbes, { boundMs });
-  const windows = verifyWindows(markers, events);
+  const clock = verifyClockProbes(markers, events, record.clockProbes, {
+    boundMs,
+    windows: expected,
+  });
+  const windows = verifyWindows(markers, events, expected);
   return { windows, clock };
 }
 
 /**
- * Each window's veths, with the monitor shown to cover both windows. Times
+ * Each window's veths, with the monitor shown to cover every window. Times
  * are compared as UTC; only verifyClockProbes shows that is right.
  * @param {Record<string, number>} markers
  * @param {ReturnType<typeof parseMonitorLog>} events
+ * @param {ReturnType<typeof windowsFor>} [windows]
  */
-export function verifyWindows(markers, events) {
-  // The monitor ran across both windows: it reported the job's first probe
+export function verifyWindows(markers, events, windows = WINDOWS) {
+  const MARKERS = markersOf(windows);
+  // The monitor ran across every window: it reported the job's first probe
   // before the first window and its last probe after the last one.
   const startProbe = events.find((e) => e.name === MONITOR_START_PROBE && e.deleted);
   const endProbe = events.find((e) => e.name === MONITOR_END_PROBE && e.deleted);
@@ -239,7 +289,7 @@ export function verifyWindows(markers, events) {
 
   /** @param {number} micros */
   const windowOf = (micros) =>
-    WINDOWS.find((w) => markers[w.start] <= micros && micros <= markers[w.end]) ?? null;
+    windows.find((w) => markers[w.start] <= micros && micros <= markers[w.end]) ?? null;
 
   /** @type {Map<string, typeof events>} */
   const byVeth = new Map();
@@ -250,7 +300,7 @@ export function verifyWindows(markers, events) {
     byVeth.set(event.name, list);
   }
   /** @type {Record<string, string[]>} */
-  const perWindow = Object.fromEntries(WINDOWS.map((w) => [w.name, []]));
+  const perWindow = Object.fromEntries(windows.map((w) => [w.name, []]));
   for (const [name, list] of byVeth) {
     const firstEvent = list[0];
     const lastEvent = list[list.length - 1];
@@ -270,12 +320,12 @@ export function verifyWindows(markers, events) {
     }
     perWindow[home.name].push(name);
   }
-  for (const w of WINDOWS) {
+  for (const w of windows) {
     if (perWindow[w.name].length === 0) {
       failed("NETWORK_WINDOW_NO_VETH", `no container veth was created and deleted in the ${w.name} window`);
     }
   }
-  return WINDOWS.map((w) => ({
+  return windows.map((w) => ({
     name: w.name,
     start: iso(markers[w.start]),
     end: iso(markers[w.end]),
@@ -289,9 +339,15 @@ export function verifyWindows(markers, events) {
  * @param {Record<string, number>} markers
  * @param {ReturnType<typeof parseMonitorLog>} events
  * @param {string} clockProbes
- * @param {{ boundMs?: number }} [options]
+ * @param {{ boundMs?: number, windows?: ReturnType<typeof windowsFor> }} [options]
  */
-export function verifyClockProbes(markers, events, clockProbes, { boundMs = CLOCK_BOUND_MS } = {}) {
+export function verifyClockProbes(
+  markers,
+  events,
+  clockProbes,
+  { boundMs = CLOCK_BOUND_MS, windows = WINDOWS } = {},
+) {
+  const MARKERS = markersOf(windows);
   const boundMicros = boundMs * 1000;
   // Clock: one probe per marker, in marker order.
   const probes = ndjson(clockProbes, "clock-probes.ndjson");
@@ -360,7 +416,7 @@ export function verifyClockProbes(markers, events, clockProbes, { boundMs = CLOC
  * @param {string} marker
  */
 export function recordClockProbe(dir, marker, adapters = {}) {
-  if (!MARKERS.includes(marker)) failed("CLOCK_BAD_PROBES", `unknown marker ${marker}`);
+  if (!KNOWN_MARKERS.includes(marker)) failed("CLOCK_BAD_PROBES", `unknown marker ${marker}`);
   const now = adapters.now ?? (() => new Date());
   const run =
     adapters.run ??
@@ -435,8 +491,11 @@ if (
       } else {
         console.log(`Clock probe at ${entry.marker}: ${entry.link} between ${entry.ipBefore} and ${entry.ipAfter}; Docker ${entry.docker}`);
       }
-    } else if (mode === "check" && rest.length === 1) {
-      const result = verifyContainerNetworkWindows(readNetworkRecord(rest[0]));
+    } else if (mode === "check" && rest.length >= 1) {
+      // The job's windows in order; editor-e2e-container's when none are named.
+      const [dir, ...names] = rest;
+      const windows = names.length > 0 ? windowsFor(names) : WINDOWS;
+      const result = verifyContainerNetworkWindows(readNetworkRecord(dir), { windows });
       for (const c of result.clock) {
         console.log(`clock at ${c.marker}: monitor ${c.ipSkewMs} ms, Docker ${c.dockerSkewMs} ms outside its readings`);
       }
@@ -445,7 +504,7 @@ if (
       }
     } else {
       console.error(
-        "Usage: node scripts/check-container-network-windows.mjs probe <marker> <dir> | check <dir>",
+        "Usage: node scripts/check-container-network-windows.mjs probe <marker> <dir> | check <dir> [<window>...]",
       );
       process.exitCode = 1;
     }

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
   CHECK_DEPENDENCIES,
+  CONTAINER_STAGE3_CHECKS,
   VALIDATE_CHECK,
   VALIDATION_CHECKS,
 } from "./ci-required-checks.mjs";
@@ -29,6 +30,63 @@ const workflow = readFileSync(
   "utf8",
 );
 const jobs = ["validate-typecheck", "validate-test", "validate-build"];
+
+/**
+ * Stage 3's container jobs beyond editor-e2e-container (M1 1d): each runs its
+ * targets in this order, one runner invocation and one network window per
+ * target, as editor-e2e-container runs lifecycle and preview access.
+ */
+const STAGE3_JOBS = {
+  "editor-e2e-container-publish": [
+    {
+      label: "B1 publish and rollback",
+      id: "b1_publish_rollback",
+      window: "b1-publish-rollback",
+      spec: "b1-publish-rollback-acceptance.spec.ts",
+      target: "b1-publish-rollback.mjs",
+    },
+    {
+      label: "public navigation matrix",
+      id: "navigation_matrix_public",
+      window: "navigation-matrix-public",
+      spec: "navigation-matrix-public.spec.ts",
+      target: "navigation-matrix-public.mjs",
+    },
+  ],
+  "editor-e2e-container-starter-publish": [
+    {
+      label: "Starter upgrade publish",
+      id: "starter_upgrade_publish",
+      window: "starter-upgrade-publish",
+      spec: "starter-upgrade-publish-acceptance.spec.ts",
+      target: "starter-upgrade-publish.mjs",
+    },
+  ],
+  "editor-e2e-container-preview": [
+    {
+      label: "preview socket",
+      id: "preview_socket",
+      window: "preview-socket",
+      spec: "preview-socket-acceptance.spec.ts",
+      target: "preview-socket-acceptance.mjs",
+    },
+    {
+      label: "Start content sync",
+      id: "start_content_sync",
+      window: "start-container-content-sync",
+      spec: "start-container-content-sync.spec.ts",
+      target: "start-container-content-sync.mjs",
+    },
+    {
+      label: "Starter upgrade case E",
+      id: "starter_upgrade_case_e",
+      window: "starter-upgrade-case-e",
+      spec: "starter-upgrade.spec.ts",
+      target: "starter-upgrade-case-e.mjs",
+      grep: "E\\. a toolchain pin an earlier Starter wrote",
+    },
+  ],
+};
 
 test("validation runs independently with the complete original commands", () => {
   const commands = [
@@ -146,6 +204,12 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   // "covered".
   const wiredElsewhere = {
     "editor-e2e-container-presentation-ack": ["presentation-ack-refresh.mjs"],
+    ...Object.fromEntries(
+      Object.entries(STAGE3_JOBS).map(([job, targets]) => [
+        job,
+        targets.map((t) => t.target),
+      ]),
+    ),
   };
   for (const [job, names] of Object.entries(wiredElsewhere)) {
     assert.deepEqual(targetsIn(withoutComments(jobBlock(workflow, job))), names);
@@ -156,14 +220,10 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
     [...wired, ...wiredOutsideContainer].sort(),
     "every target the workflow checks must belong to a pinned job",
   );
-  const deferred = [
-    "b1-publish-rollback.mjs",
-    "navigation-matrix-public.mjs",
-    "preview-socket-acceptance.mjs",
-    "start-container-content-sync.mjs",
-    "starter-upgrade-case-e.mjs",
-    "starter-upgrade-publish.mjs",
-  ];
+  // A target module added without a CI step must be listed here, with the
+  // change that will wire it. All six deferred by #396 are wired (M1 1d).
+  /** @type {string[]} */
+  const deferred = [];
 
   assert.deepEqual(wired, ["preview-access-container.mjs"]);
   assert.deepEqual([...deferred].sort(), deferred);
@@ -350,6 +410,187 @@ test("Stage 3 probes the clock at each window marker and checks every window's v
   );
 });
 
+test("each Stage 3 job reports its own check, on the container runner, within the container jobs' timeout", () => {
+  assert.deepEqual(
+    Object.keys(STAGE3_JOBS).flatMap((key) => jobCheckNames(workflow, key)),
+    CONTAINER_STAGE3_CHECKS,
+  );
+  for (const key of Object.keys(STAGE3_JOBS)) {
+    const block = withoutComments(jobBlock(workflow, key));
+    assert.match(block, /^ {4}runs-on: ubuntu-24\.04$/m, key);
+    assert.match(block, /^ {4}timeout-minutes: 30$/m, key);
+    assert.doesNotMatch(block, /^ {4}(?:needs|if|strategy):/m, `${key} runs on its own`);
+    assert.doesNotMatch(block, /continue-on-error/, key);
+    // The same setup as the other container jobs: the steps up to the first
+    // container window are presentation-ack's, word for word.
+    const ack = withoutComments(
+      jobBlock(workflow, "editor-e2e-container-presentation-ack"),
+    );
+    const setup = (/** @type {string} */ job, /** @type {string} */ until) =>
+      job.slice(job.indexOf("    steps:\n"), job.indexOf(until));
+    assert.equal(
+      setup(block, "      - name: Mark "),
+      setup(ack, "      - name: Run presentation-ack container acceptance"),
+      `${key} sets up as the presentation-ack job does`,
+    );
+  }
+});
+
+test("each Stage 3 job runs each target once, isolated, then checks its exact titles and its handover before the next", async () => {
+  for (const [key, targets] of Object.entries(STAGE3_JOBS)) {
+    const job = withoutComments(jobBlock(workflow, key));
+    const at = (/** @type {string} */ name) => job.indexOf(`      - name: ${name}\n`);
+    const order = [];
+    for (const t of targets) {
+      const { TARGET } = await import(
+        new URL(`./container-acceptance-targets/${t.target}`, import.meta.url).href
+      );
+      assert.equal(TARGET.file, t.spec, `${t.target} names its spec`);
+      const report = `test-results/${t.window}.json`;
+      const kept = `"$RUNNER_TEMP/stage3/${t.window}/${t.window}.json"`;
+      const handover = `\${{ runner.temp }}/stage3/${t.window}-handover.json`;
+
+      const run = stepBlock(job, `Run ${t.label} container acceptance`);
+      assert.match(run, new RegExp(`^ {8}id: ${t.id}_run$`, "m"));
+      assert.doesNotMatch(run, /^ {8}if:/m, `${key}: ${t.label} runs only after everything before it passed`);
+      for (const line of [
+        "MORPH_E2E_TRANSPORT: cloudflare-sandbox",
+        "MORPH_E2E_PREVIEW_RUNTIME: start",
+        "MORPH_THEME_PREVIEW_RUNTIME: start",
+        `MORPH_E2E_REPORT_PATH: ${report}`,
+        `MORPH_E2E_HANDOVER_RECORD: ${handover}`,
+        'MORPH_E2E_LOCK: "1"',
+        "MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock",
+      ]) {
+        assert.ok(run.includes(`\n          ${line}\n`), `${key}: ${t.label} sets ${line}`);
+      }
+      const command = /^ {8}run: (.+)$/m.exec(run)?.[1];
+      assert.equal(
+        command,
+        `exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/${t.spec}${
+          t.grep ? ` --grep "${t.grep}"` : ""
+        }`,
+        `${key}: ${t.label} runs its spec alone, under the isolated launcher`,
+      );
+
+      const preserve = stepBlock(job, `Preserve ${t.label} acceptance report`);
+      assert.match(preserve, /^ {8}if: always\(\)$/m);
+      assert.ok(preserve.includes(`cp -R test-results/. "$RUNNER_TEMP/stage3/${t.window}/"`));
+
+      // Target mode: each listed title once, passed, zero skip, zero retry,
+      // and no unlisted test of the file.
+      const check = stepBlock(job, `Require exact ${t.label} target`);
+      assert.doesNotMatch(check, /^ {8}if:/m);
+      assert.equal(
+        /^ {8}run: (.+)$/m.exec(check)?.[1],
+        `node scripts/check-container-acceptance.mjs ${kept} scripts/container-acceptance-targets/${t.target}`,
+      );
+
+      const gate = stepBlock(job, `Require ${t.label} runner handover`);
+      assert.match(gate, new RegExp(`^ {8}id: ${t.id}_handover$`, "m"));
+      assert.match(
+        gate,
+        new RegExp(`^ {8}if: always\\(\\) && steps\\.${t.id}_run\\.outcome != 'skipped'$`, "m"),
+      );
+      assert.match(gate, /^ {10}MORPH_E2E_LOCK_FILE: \/tmp\/morph-editor-e2e\.lock$/m);
+      assert.equal(
+        /^ {8}run: (.+)$/m.exec(gate)?.[1],
+        `node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/${t.window}-handover.json" e2e/${t.spec}`,
+      );
+
+      for (const [edge, always] of [
+        ["start", false],
+        ["end", true],
+      ]) {
+        const name = `Mark ${t.label} container window ${edge}`;
+        const step = stepBlock(job, name);
+        const mark = step.indexOf(`printf '{"name":"${t.window}-${edge}","utc":"%s"}\\n'`);
+        const probe = step.indexOf(
+          `node scripts/check-container-network-windows.mjs probe ${t.window}-${edge} "$RUNNER_TEMP/container-network"`,
+        );
+        assert.ok(mark >= 0 && probe > mark, `${key}: ${name} marks, then probes the clock`);
+        assert.equal(/^ {8}if: always\(\)$/m.test(step), always, name);
+      }
+
+      order.push(
+        `Mark ${t.label} container window start`,
+        `Run ${t.label} container acceptance`,
+        `Mark ${t.label} container window end`,
+        `Preserve ${t.label} acceptance report`,
+        `Require exact ${t.label} target`,
+        `Require ${t.label} runner handover`,
+      );
+    }
+    order.push(
+      "Record Stage 3 runner identities and handover results",
+      "Stop container diagnostics",
+      "Require the run's container veths to have had no IPv6 link-local address",
+      "Require each container window's veths to have come and gone inside it",
+      "Keep Stage 3 records with the results",
+      "Upload results and failure traces",
+    );
+    const positions = order.map(at);
+    assert.ok(positions.every((p) => p >= 0), `${key}: every step exists`);
+    assert.deepEqual([...positions].sort((a, b) => a - b), positions, `${key}: steps in order`);
+
+    // Each spec once, and nothing else run under the launcher.
+    const invoked = [
+      ...job.matchAll(
+        /exec node scripts\/run-container-e2e-isolated\.mjs scripts\/run-editor-e2e\.mjs e2e\/([^\s]+)/g,
+      ),
+    ].map((m) => m[1]);
+    assert.deepEqual(invoked, targets.map((t) => t.spec), key);
+    assert.doesNotMatch(job, /node scripts\/run-editor-e2e\.mjs/, `${key}: never outside the launcher`);
+
+    const windows = stepBlock(job, "Require each container window's veths to have come and gone inside it");
+    assert.match(windows, /^ {8}if: always\(\)$/m);
+    assert.equal(
+      /^ {8}run: (.+)$/m.exec(windows)?.[1],
+      `node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" ${targets.map((t) => t.window).join(" ")}`,
+    );
+    const record = stepBlock(job, "Record Stage 3 runner identities and handover results");
+    assert.match(record, /^ {8}if: always\(\)$/m);
+    for (const t of targets) {
+      assert.ok(
+        record.includes(`${t.id.toUpperCase()}_HANDOVER_OUTCOME: \${{ steps.${t.id}_handover.outcome }}`),
+        `${key}: records ${t.label}'s handover outcome`,
+      );
+    }
+    assert.doesNotMatch(record, /\?\? "not-run"/);
+    const keep = stepBlock(job, "Keep Stage 3 records with the results");
+    assert.match(keep, /cp -R "\$RUNNER_TEMP\/stage3\/\." test-results\/stage3\//);
+    const upload = stepBlock(job, "Upload results and failure traces");
+    assert.match(upload, /^ {10}path: test-results\/$/m);
+    assert.match(upload, new RegExp(`^ {10}name: ${key}-attempt-\\$\\{\\{ github\\.run_attempt \\}\\}$`, "m"));
+    assert.match(upload, /^ {10}if-no-files-found: error$/m);
+  }
+});
+
+test("every Stage 3 window is one the network check knows, and each job names its own in run order", async () => {
+  const { KNOWN_WINDOWS } = await import("./check-container-network-windows.mjs");
+  const named = Object.values(STAGE3_JOBS).flatMap((targets) => targets.map((t) => t.window));
+  assert.deepEqual(
+    [...named, "lifecycle", "preview-access"].sort(),
+    [...KNOWN_WINDOWS].sort(),
+    "every known window belongs to exactly one job's step",
+  );
+  assert.equal(new Set(named).size, named.length);
+});
+
+test("case E's step selects exactly case E of its spec", async () => {
+  const { TARGET } = await import("./container-acceptance-targets/starter-upgrade-case-e.mjs");
+  const [caseE] = STAGE3_JOBS["editor-e2e-container-preview"].filter((t) => t.grep);
+  const source = readFileSync(new URL(`../e2e/${caseE.spec}`, import.meta.url), "utf8");
+  const titles = [...source.matchAll(/^\s+test\(\s*"([^"]+)"/gm)].map((m) => m[1]);
+  assert.ok(titles.length > 1, "the spec has more tests than case E");
+  const grep = new RegExp(caseE.grep);
+  const selected = titles.filter((title) => grep.test(title));
+  assert.deepEqual(
+    selected.map((title) => `Starter upgrade, reviewed by the author › ${title}`),
+    TARGET.titles,
+  );
+});
+
 test("every job that installs Chromium first puts the primary Ubuntu archive ahead of the Azure mirror", () => {
   const installers = jobKeys(workflow).filter((key) =>
     withoutComments(jobBlock(workflow, key)).includes(
@@ -437,7 +678,23 @@ const CONTAINER_JOBS = [
     key: "editor-e2e-container-presentation-ack",
     runStepName: "- name: Run presentation-ack container acceptance",
   },
+  ...Object.entries(STAGE3_JOBS).map(([key, targets]) => ({
+    key,
+    runStepName: `- name: Run ${targets[0].label} container acceptance`,
+  })),
 ];
+
+test("the Stage 3 jobs' link-local steps are editor-e2e-container's, word for word", () => {
+  // The behaviour tests below exercise editor-e2e-container's scripts; the
+  // other Stage 3 jobs are held to the very same scripts.
+  const container = withoutComments(jobBlock(workflow, "editor-e2e-container"));
+  for (const key of Object.keys(STAGE3_JOBS)) {
+    const block = withoutComments(jobBlock(workflow, key));
+    for (const name of [LINK_LOCAL_STEP, LINK_LOCAL_CHECK]) {
+      assert.equal(stepScript(block, name).script, stepScript(container, name).script, `${key}: ${name}`);
+    }
+  }
+});
 
 test("only the native-Docker container jobs give new interfaces no IPv6 link-local address, before any container exists", () => {
   const containerKeys = new Set(CONTAINER_JOBS.map((job) => job.key));

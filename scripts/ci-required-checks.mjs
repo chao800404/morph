@@ -40,6 +40,13 @@ export const CONTAINER_ACCEPTANCE_CHECK =
 export const CONTAINER_PRESENTATION_ACK_CHECK =
   "Editor E2E container presentation-ack acceptance";
 
+/** Stage 3's other container targets (M1 1d), one job per group. */
+export const CONTAINER_STAGE3_CHECKS = [
+  "Editor E2E container publish acceptance",
+  "Editor E2E container Starter upgrade publish acceptance",
+  "Editor E2E container socket, content sync and case E acceptance",
+];
+
 /** @param {number} shard @param {number} [count] */
 export const editorShardCheckName = (shard, count = EDITOR_SHARD_COUNT) =>
   `Editor E2E shard ${shard}/${count}`;
@@ -67,6 +74,7 @@ export const EXPECTED_CI_CHECKS = [
   E2E_ACCEPTANCE_CHECK,
   CONTAINER_ACCEPTANCE_CHECK,
   CONTAINER_PRESENTATION_ACK_CHECK,
+  ...CONTAINER_STAGE3_CHECKS,
 ];
 
 /**

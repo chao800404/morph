@@ -6,10 +6,10 @@
  * E2E_EXPECT_PREVIEW_TRANSPORT=cloudflare-sandbox).
  *
  * `node scripts/check-container-acceptance.mjs <report> <this module>` requires
- * exactly these titles, each once, passed with zero skip and zero retry. No CI
- * step runs that check yet; wiring the container step is a separate change
- * (stage 3). Until then these cases are unproven in CI. A renamed case changes
- * this list in the same commit.
+ * exactly these titles, each once, passed with zero skip and zero retry. The
+ * editor-e2e-container-preview job runs that check after its own container
+ * step. Wiring does not count as a CI pass; a candidate still needs a fresh
+ * successful run. A renamed case changes this list in the same commit.
  */
 const DESCRIBE = "A7: a Theme WebSocket relayed under its preview grant";
 
