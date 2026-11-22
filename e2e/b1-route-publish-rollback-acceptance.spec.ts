@@ -101,6 +101,25 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * a product requirement tracked separately; this spec does not test UI for
  * it.
  *
+ * Publish after rollback (PR #429, fix/publish-after-rollback). After the
+ * rollback to release 1, p2's row still names the S-a revision as published
+ * while release 1, now live, pins its release 1 revision: the rollback took
+ * p2's published content off the storefront.
+ *
+ *   R-a  p2's editor shows unpublished changes and Publish is enabled.
+ *   R-b  p2 alone is published from its own editor (release 5). Read back:
+ *        release 5 pins exactly release 1's items except p2, at its draft;
+ *        the layout stays at release 1's revision, not the one S-b sealed
+ *        into release 4; the public site serves release 5, every other
+ *        page shows release 1's values and p2 its draft.
+ *
+ * These fail on 155f52d, where a publish carries the template rows'
+ * published revisions forward instead of the live release's. Every test in
+ * this describe is a prerequisite of R-a/R-b, so the describe carries the
+ * tag `@publish-after-rollback`: `-g @publish-after-rollback` runs them with
+ * the whole chain. A grep that selects R-a/R-b alone fails at their
+ * prerequisite check; it never passes or skips.
+ *
  * Q10: the Theme records full Start (`recordFullStartTheme`), and every
  * preview start this spec observes must answer container transport + full
  * Start. The spec writes the plan's ledger (2.3) and identity record (2.4)
@@ -193,7 +212,7 @@ const ownRoute = (testCase: BasCase) => ({
 
 const slug = (value: string) => value.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "home";
 
-test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () => {
+test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag: "@publish-after-rollback" }, () => {
   test.describe.configure({ mode: "serial" });
   test.use({ actionTimeout: 60_000 });
 
@@ -213,6 +232,10 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
   /** Publish scope S-a (p2 alone) and S-b (p2 with a pending layout). */
   let release3 = "";
   let release4 = "";
+  /** Publish after rollback: p2 alone, published while release 1 is live. */
+  let release5 = "";
+  /** Set when the editor reload after the rollback passed (P5). */
+  let reloadedAfterRollback = false;
   let publication1: string | null = null;
   let values1: CaseValues | null = null;
   let values2: CaseValues | null = null;
@@ -1227,5 +1250,153 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", () =>
       evidence: shots,
       detail: { p1: routeRow(P1), layout: layoutRow() },
     });
+    reloadedAfterRollback = true;
+  });
+
+  /**
+   * R-a/R-b run only after the whole chain: a grep that selected them alone
+   * left these unset, and that is a failure, never a pass.
+   */
+  const expectChainRan = () => {
+    expect(
+      {
+        release1: Boolean(release1),
+        release4: Boolean(release4),
+        values1: Boolean(values1),
+        draftsLast: Boolean(draftsLast),
+        layoutSealed: Boolean(layoutSealed),
+        reloadedAfterRollback,
+      },
+      "publish after rollback runs after its prerequisites (-g @publish-after-rollback)",
+    ).toEqual({
+      release1: true,
+      release4: true,
+      values1: true,
+      draftsLast: true,
+      layoutSealed: true,
+      reloadedAfterRollback: true,
+    });
+  };
+
+  test("publish after rollback: p2, whose published revision the rollback took off the storefront, shows unpublished changes and Publish is enabled", async ({ page }) => {
+    test.setTimeout(10 * 60_000);
+    expectChainRan();
+    evidence!.observePreviewStarts(page);
+    // Release 1 is live; p2's row still names S-a's revision as published,
+    // which release 4 pinned and release 1 does not.
+    expect((await publishedState()).active).toBe(release1);
+    const p2 = routeRow(P2);
+    expect(p2.draft, "p2 has no unpublished draft of its own").toBe(p2.published);
+    expect(pinnedRevisions(release4, P2.routePath), "release 4 pins p2's published revision").toEqual([p2.published]);
+    const live = pinnedRevisions(release1, P2.routePath);
+    expect(live, "release 1 pins one p2 revision").toHaveLength(1);
+    expect(live[0], "the rollback took p2's published revision off the storefront").not.toBe(p2.published);
+    expect(await expectServed(release1)).toBe(release1);
+
+    await openEditor(page, editorRouteUrl(P2.routePath));
+    const status = page.locator("[data-editor-save-status]");
+    await expect(status, "p2's editor reports unpublished changes").toHaveAttribute(
+      "data-publish-state",
+      "unpublished",
+      { timeout: 30_000 },
+    );
+    await expect(page.getByRole("button", { name: /^Publish$/ }), "Publish is enabled on p2").toBeEnabled({
+      timeout: 30_000,
+    });
+    const reason = await status.getAttribute("data-unpublished-reason");
+    const shot = path.join(evidence!.evidenceDir(), "editor-after-rollback-publish-state-b1-p2.png");
+    await page.screenshot({ path: shot, fullPage: true });
+    evidence!.ledger({
+      case: "p2",
+      step: "R-a",
+      action: "editor after rollback: unpublished changes, Publish enabled",
+      routePath: P2.routePath,
+      activeBefore: release1,
+      activeAfter: evidence!.activeRelease(),
+      evidence: [path.basename(shot)],
+      servedReleaseId: release1,
+      detail: { p2: { ...p2, pinnedInRelease1: live }, unpublishedReason: reason },
+    });
+  });
+
+  test("publish after rollback: publishing p2 alone pins its draft and release 1's revision for every other page and the layout", async ({ page, browser }) => {
+    test.setTimeout(20 * 60_000);
+    expectChainRan();
+    evidence!.observePreviewStarts(page);
+    expect((await publishedState()).active).toBe(release1);
+    const p2Before = routeRow(P2);
+    const pins1 = pinMap(release1);
+    const layout1 = pinnedLayout(release1);
+    const layout4 = pinnedLayout(release4);
+    expect(layout1, "release 1 pins one layout revision").toHaveLength(1);
+    expect(layout4, "release 4 pins another layout revision").not.toEqual(layout1);
+    expect(await draftValues(), "the drafts are the pre-rollback ones").toEqual(draftsLast);
+
+    const { serveActiveRelease } = harness!;
+    const before5 = await publishedState();
+    release5 = await publishPages(page, [P2], "R-b/P1-publish");
+    const state5 = await publishedState();
+    expect(state5.active).toBe(release5);
+    expect(state5.releases).toBe(before5.releases + 1);
+    expect(routeRow(P2), "p2 is published at its draft").toEqual({ ...p2Before, published: p2Before.draft });
+
+    // Release 5 pins release 1's items with exactly one change: p2's draft.
+    expect(pinMap(release5), "release 5 = release 1 + p2's draft").toEqual({
+      ...pins1,
+      [`template:${p2Before.id}`]: p2Before.draft,
+    });
+    expect(pinnedLayout(release5), "release 5 keeps release 1's layout, not release 4's").toEqual(layout1);
+    for (const testCase of ALL.filter((candidate) => candidate !== P2)) {
+      expect(
+        pinnedRevisions(release5, testCase.routePath),
+        `release 5 pins ${testCase.routePath} at release 1's revision`,
+      ).toEqual(pinnedRevisions(release1, testCase.routePath));
+    }
+    const values5: CaseValues = { ...values1!, p2: draftsLast!.p2! };
+    expect(releaseValues(release5)).toEqual(values5);
+    expect(releaseLayout(release5)).toEqual(L1.seed);
+    // Older releases are untouched.
+    expect(releaseValues(release1)).toEqual(values1);
+    expect(releaseLayout(release4)).toEqual(layoutSealed);
+
+    const served = await serveActiveRelease(valueOf(values5.p2, P2), release5, origin);
+    expect(served.releaseId).toBe(release5);
+    const servedId = await expectServed(release5);
+    const storefront = storefrontFetcher(origin);
+    const p1Page = await storefront(P1.routePath);
+    expect(p1Page.status).toBe(200);
+    expect(p1Page.body, "p1's page shows release 1's value").toContain(valueOf(values1!.p1, P1));
+    expect(p1Page.body, "p1's page shows release 1's layout, not release 4's").not.toContain(
+      valueOf(layoutSealed!, L1),
+    );
+    const p2Page = await storefront(P2.routePath);
+    expect(p2Page.status).toBe(200);
+    expect(p2Page.body, "p2's page shows its new value").toContain(valueOf(values5.p2, P2));
+    const absent = [
+      valueOf(values2!.p1, P1),
+      valueOf(values2!.p2, P2),
+      valueOf(values2!.p5, P5),
+      valueOf(draftsLast!.p1, P1),
+      valueOf(layoutSealed!, L1),
+    ];
+    for (const value of absent) expect(valueOf(values5.p2, P2), "p2's new value is not one that must be absent").not.toBe(value);
+    const shots = await expectPublic(browser, values5, L1.seed, absent, "after-rollback-publish");
+    evidence!.ledger({
+      case: "p2 (after rollback to release 1)",
+      step: "R-b/P1-P2",
+      action: "publish p2 alone after the rollback",
+      routePath: P2.routePath,
+      releaseId: release5,
+      activeBefore: release1,
+      activeAfter: evidence!.activeRelease(),
+      evidence: shots,
+      servedReleaseId: servedId,
+      detail: {
+        p1: { ...routeRow(P1), pinnedInRelease1: pinnedRevisions(release1, P1.routePath), pinnedInRelease5: pinnedRevisions(release5, P1.routePath) },
+        p2: { ...routeRow(P2), pinnedInRelease1: pinnedRevisions(release1, P2.routePath), pinnedInRelease5: pinnedRevisions(release5, P2.routePath) },
+        layout: { ...layoutRow(), pinnedInRelease1: layout1, pinnedInRelease4: layout4, pinnedInRelease5: pinnedLayout(release5) },
+      },
+    });
+    evidence!.note({ release5 });
   });
 });

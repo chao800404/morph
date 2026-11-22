@@ -4,7 +4,9 @@
  * code) on non-home pages with their own route Documents, published, served,
  * rolled back and reloaded, with the publish scope cases between release 2
  * and the rollback (S-a: another page's unpublished draft stays out of a
- * single-page publish; S-b: a pending shared layout is sealed by it). Only
+ * single-page publish; S-b: a pending shared layout is sealed by it), and
+ * after the editor reload a publish of p2 alone while release 1 is live
+ * (PR #429: it must pin release 1's revisions for everything else). Only
  * the container transport can run it:
  * publishing builds in the Sandbox container, and the spec skips itself at
  * file level elsewhere (the shards and the full Start job use local-sidecar).
@@ -44,6 +46,8 @@ export const TARGET = Object.freeze({
       "publish scope: publishing p2 with a pending layout seals the layout too, p1's page shows the new shared block over its published body",
       "rollback to release 1 with expectedActiveReleaseId: a stale expectation is refused, then the public site is back to release 1 after a reload",
       "after the rollback the editor reloads with the pre-rollback drafts on every route under full Start",
+      "publish after rollback: p2, whose published revision the rollback took off the storefront, shows unpublished changes and Publish is enabled",
+      "publish after rollback: publishing p2 alone pins its draft and release 1's revision for every other page and the layout",
     ].map((title) => `${DESCRIBE} › ${title}`),
   ),
 });
