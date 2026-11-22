@@ -223,7 +223,7 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   // A target module added without a CI step must be listed here, with the
   // change that will wire it. All six deferred by #396 are wired (M1 1d).
   /** @type {string[]} */
-  const deferred = [];
+  const deferred = ["b1-route-publish-rollback.mjs"];
 
   assert.deepEqual(wired, ["preview-access-container.mjs"]);
   assert.deepEqual([...deferred].sort(), deferred);
