@@ -1,7 +1,12 @@
+import { env } from "cloudflare:workers";
 import { Sandbox } from "@cloudflare/sandbox";
 import { storefrontPreviewAccessDal } from "@/lib/storefront/dal/storefront-preview-access.dal";
 import { reverifyPreviewAccessGrant } from "@/lib/storefront/service/preview-access/preview-access";
 import { PREVIEW_SOCKET_LEASE_MS } from "@/lib/storefront/service/preview-access/preview-socket-lease";
+import {
+  previewLeaseEventsEnabled,
+  previewLeaseVerifiedReporter,
+} from "@/lib/storefront/service/preview-access/preview-socket-lease-events";
 import {
   PREVIEW_SOCKET_GRANT_HEADER,
   PREVIEW_SOCKET_HOST_HEADER,
@@ -84,10 +89,21 @@ export class PreviewSandbox extends Sandbox {
 
     const sockets = this.previewSockets.get(grantId) ?? new Set();
     this.previewSockets.set(grantId, sockets);
+    // Diagnostics only, off by default (preview-socket-lease-events.ts).
+    const onVerified = previewLeaseEventsEnabled(
+      env as unknown as Record<string, unknown>,
+    )
+      ? previewLeaseVerifiedReporter({
+          connectionId: crypto.randomUUID(),
+          grantId,
+          path: new URL(request.url).pathname,
+        })
+      : undefined;
     const relay = relayPreviewSocket({
       browser: server as unknown as RelaySocket,
       container: container as unknown as RelaySocket,
       now: () => Date.now(),
+      ...(onVerified ? { onVerified } : {}),
       verify: async () => {
         // Throws on a D1 error: the lease reads that as "unavailable".
         const result = await reverifyPreviewAccessGrant({

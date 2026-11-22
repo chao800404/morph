@@ -47,6 +47,18 @@ export type PreviewSocketDirection = "to-container" | "to-browser";
 export type PreviewSocketVerification = "valid" | "revoked" | "unavailable";
 export type PreviewSocketFrame = string | ArrayBuffer;
 
+/**
+ * One verification that moved `V` forward (diagnostics only). `sequence`
+ * counts this socket's advances from 1, the first being its registration's;
+ * `sentAt` is the new `V` (its query's send time); `settledAt` is the clock
+ * once `V` was updated.
+ */
+export type PreviewSocketVerifiedEvent = Readonly<{
+  sequence: number;
+  sentAt: number;
+  settledAt: number;
+}>;
+
 export type PreviewSocketLeaseOptions = Readonly<{
   /** The DO instance's clock, read at each event (D51). */
   now: () => number;
@@ -61,6 +73,12 @@ export type PreviewSocketLeaseOptions = Readonly<{
   ) => void;
   /** Called once, when the lease ends the socket. */
   close: (code: number, reason: string) => void;
+  /**
+   * Diagnostics only, absent unless switched on: told each time a "valid"
+   * result has advanced `V`, after the update. It cannot change the lease:
+   * it is told nothing else, and whatever it throws is dropped.
+   */
+  onVerified?: (event: PreviewSocketVerifiedEvent) => void;
   leaseMs?: number;
   maxHeldFrames?: number;
   maxHeldBytes?: number;
@@ -109,6 +127,8 @@ export function createPreviewSocketLease(
   }> = [];
   let heldBytes = 0;
   let closed = false;
+  /** How many verifications have advanced `V` (diagnostics only). */
+  let advances = 0;
 
   const leaseHolds = (now: number) =>
     verifiedAt !== null && now < verifiedAt + leaseMs;
@@ -152,7 +172,19 @@ export function createPreviewSocketLease(
       );
       return;
     }
-    if (verifiedAt === null || sentAt > verifiedAt) verifiedAt = sentAt;
+    if (verifiedAt === null || sentAt > verifiedAt) {
+      verifiedAt = sentAt;
+      if (options.onVerified) {
+        advances += 1;
+        try {
+          options.onVerified({
+            sequence: advances,
+            sentAt,
+            settledAt: options.now(),
+          });
+        } catch {}
+      }
+    }
 
     if (heldSince === null) return;
     const now = options.now();

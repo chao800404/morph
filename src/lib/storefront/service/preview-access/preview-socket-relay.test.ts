@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { PreviewSocketVerification } from "./preview-socket-lease";
+import type {
+  PreviewSocketVerification,
+  PreviewSocketVerifiedEvent,
+} from "./preview-socket-lease";
 import { type RelaySocket, relayPreviewSocket } from "./preview-socket-relay";
 
 type Listener = (event: {
@@ -33,7 +36,9 @@ function fakeSocket(name: string) {
   };
 }
 
-function relayHarness() {
+function relayHarness(
+  onVerified?: (event: PreviewSocketVerifiedEvent) => void,
+) {
   let clock = 0;
   const answers: Array<(v: PreviewSocketVerification) => Promise<void>> = [];
   const browser = fakeSocket("browser");
@@ -55,6 +60,7 @@ function relayHarness() {
     onEnd: () => {
       ended += 1;
     },
+    ...(onVerified ? { onVerified } : {}),
     leaseMs: 1000,
     setInterval: (cb) => {
       const t = { cb, cleared: false };
@@ -163,5 +169,23 @@ describe("the preview socket relay (#214 P4)", () => {
     await h.answers[0]!("valid");
     h.browser.emit("message", { data: "x" });
     expect(h.browser.closes[0]!.code).toBe(1011);
+  });
+
+  it("hands its lease's verification diagnostics through, from the registration's on", async () => {
+    const events: PreviewSocketVerifiedEvent[] = [];
+    const h = relayHarness((event) => events.push(event));
+    await h.answers[0]!("valid");
+    h.advance(1000);
+    h.timers[0]!.cb();
+    await h.answers[1]!("valid");
+    expect(events).toEqual([
+      { sequence: 1, sentAt: 0, settledAt: 0 },
+      { sequence: 2, sentAt: 1000, settledAt: 1000 },
+    ]);
+    h.advance(1000);
+    h.timers[0]!.cb();
+    await h.answers[2]!("revoked");
+    expect(events).toHaveLength(2);
+    expect(h.browser.closes[0]!.code).toBe(4401);
   });
 });
