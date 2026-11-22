@@ -4,9 +4,9 @@ import { storefrontPreviewAccessDal } from "@/lib/storefront/dal/storefront-prev
 import { reverifyPreviewAccessGrant } from "@/lib/storefront/service/preview-access/preview-access";
 import { PREVIEW_SOCKET_LEASE_MS } from "@/lib/storefront/service/preview-access/preview-socket-lease";
 import {
-  previewLeaseDiagnosticsEnabled,
+  previewLeaseEventsEnabled,
   previewLeaseVerifiedReporter,
-} from "@/lib/storefront/service/preview-access/preview-socket-lease-diagnostics";
+} from "@/lib/storefront/service/preview-access/preview-socket-lease-events";
 import {
   PREVIEW_SOCKET_GRANT_HEADER,
   PREVIEW_SOCKET_HOST_HEADER,
@@ -89,8 +89,8 @@ export class PreviewSandbox extends Sandbox {
 
     const sockets = this.previewSockets.get(grantId) ?? new Set();
     this.previewSockets.set(grantId, sockets);
-    // Diagnostics only, off by default (preview-socket-lease-diagnostics.ts).
-    const onVerified = previewLeaseDiagnosticsEnabled(
+    // Diagnostics only, off by default (preview-socket-lease-events.ts).
+    const onVerified = previewLeaseEventsEnabled(
       env as unknown as Record<string, unknown>,
     )
       ? previewLeaseVerifiedReporter({

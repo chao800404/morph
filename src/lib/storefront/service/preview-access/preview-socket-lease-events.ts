@@ -23,7 +23,7 @@ import type { PreviewSocketVerifiedEvent } from "./preview-socket-lease";
  * - `sentAt`: the new `V`, the D1 query's send time; `settledAt`: the clock
  *   once `V` was updated. Both by the Durable Object's clock (D51).
  *
- * Off unless `MORPH_PREVIEW_LEASE_DIAGNOSTICS` is exactly "1". Off, no
+ * Off unless `MORPH_PREVIEW_LEASE_EVENTS` is exactly "1". Off, no
  * connection id is made and the lease is given no callback: the only cost is
  * reading the binding once per relayed socket. On or off, the lease decides
  * and forwards exactly as before; the line is written after its decision and
@@ -31,13 +31,13 @@ import type { PreviewSocketVerifiedEvent } from "./preview-socket-lease";
  * token, grant secret or host.
  */
 
-export const PREVIEW_LEASE_DIAGNOSTICS_VAR = "MORPH_PREVIEW_LEASE_DIAGNOSTICS";
+export const PREVIEW_LEASE_EVENTS_VAR = "MORPH_PREVIEW_LEASE_EVENTS";
 export const PREVIEW_LEASE_VERIFIED_PREFIX = "[preview-lease-verified]";
 
-export function previewLeaseDiagnosticsEnabled(
+export function previewLeaseEventsEnabled(
   bindings: Record<string, unknown> | undefined,
 ): boolean {
-  return bindings?.[PREVIEW_LEASE_DIAGNOSTICS_VAR] === "1";
+  return bindings?.[PREVIEW_LEASE_EVENTS_VAR] === "1";
 }
 
 export type PreviewLeaseVerifiedLine = Readonly<{

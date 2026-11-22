@@ -39,9 +39,9 @@ import { Sandbox } from "@cloudflare/sandbox";
 import { parseJsonc } from "../../scripts/theme-runtime-wiring-scan.mjs";
 import { PREVIEW_EGRESS_HEADER } from "@/lib/storefront/service/preview-egress-policy";
 import {
-  PREVIEW_LEASE_DIAGNOSTICS_VAR,
+  PREVIEW_LEASE_EVENTS_VAR,
   PREVIEW_LEASE_VERIFIED_PREFIX,
-} from "@/lib/storefront/service/preview-access/preview-socket-lease-diagnostics";
+} from "@/lib/storefront/service/preview-access/preview-socket-lease-events";
 import { PreviewSandbox } from "./preview-sandbox";
 
 describe("the Live Preview container class", () => {
@@ -357,7 +357,7 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
   describe("lease verification diagnostics (M1 1c)", () => {
     const bindings = env as unknown as Record<string, unknown>;
     afterEach(() => {
-      delete bindings[PREVIEW_LEASE_DIAGNOSTICS_VAR];
+      delete bindings[PREVIEW_LEASE_EVENTS_VAR];
       vi.restoreAllMocks();
     });
     const leaseLines = (log: { mock: { calls: unknown[][] } }) =>
@@ -369,7 +369,7 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
       ["unset", undefined],
       ["not exactly 1", "true"],
     ])("writes nothing with the switch %s", async (_name, value) => {
-      if (value !== undefined) bindings[PREVIEW_LEASE_DIAGNOSTICS_VAR] = value;
+      if (value !== undefined) bindings[PREVIEW_LEASE_EVENTS_VAR] = value;
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       const uuid = vi.spyOn(crypto, "randomUUID");
       sdk.fetch.mockResolvedValue(switched(fakeSocket()));
@@ -382,7 +382,7 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
     });
 
     it("writes one line per advance, with ids, the path and times only", async () => {
-      bindings[PREVIEW_LEASE_DIAGNOSTICS_VAR] = "1";
+      bindings[PREVIEW_LEASE_EVENTS_VAR] = "1";
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       const container = fakeSocket();
       sdk.fetch.mockResolvedValue(switched(container));
@@ -416,7 +416,7 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
     });
 
     it("gives each relayed socket its own connection id", async () => {
-      bindings[PREVIEW_LEASE_DIAGNOSTICS_VAR] = "1";
+      bindings[PREVIEW_LEASE_EVENTS_VAR] = "1";
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       sdk.fetch.mockImplementation(async () => switched(fakeSocket()));
       const object = sandbox();
