@@ -6653,9 +6653,16 @@ describe("publishing one page after a rollback", () => {
    */
   const publish = async (
     templateId: string,
-    { deployed = true }: { deployed?: boolean } = {},
+    {
+      deployed = true,
+      expectedSharedLayoutRevisionId,
+    }: {
+      deployed?: boolean;
+      /** The scope a confirmation established; omitted, none is checked. */
+      expectedSharedLayoutRevisionId?: string | null;
+    } = {},
   ) => {
-    const result = await publishOnly(templateId);
+    const result = await publishOnly(templateId, expectedSharedLayoutRevisionId);
     if (!result?.releaseId || !result.releaseCreated) return result;
     if (deployed) {
       await storefrontReleaseDal.recordDeployedThemeBuild({
@@ -6680,7 +6687,10 @@ describe("publishing one page after a rollback", () => {
     return result;
   };
 
-  const publishOnly = (templateId: string) => {
+  const publishOnly = (
+    templateId: string,
+    expectedSharedLayoutRevisionId?: string | null,
+  ) => {
     const row = templateRow(templateId);
     const { releaseGeneration } = sqlite
       .prepare(
@@ -6698,6 +6708,7 @@ describe("publishing one page after a rollback", () => {
       expectedDraftRevisionId: row.draftRevisionId,
       expectedDraftGeneration: row.draftGeneration,
       expectedReleaseGeneration: releaseGeneration,
+      expectedSharedLayoutRevisionId,
     });
   };
 
@@ -7113,6 +7124,72 @@ describe("publishing one page after a rollback", () => {
     await publish("tpl-home");
     expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L2");
     expect(await editorDiff("tpl-home")).toEqual({ changed: false });
+  });
+
+  /**
+   * The Publish confirmation's answer (`findPublishScope`) against what the
+   * publish then seals for the shared layout, across the release states the
+   * carry (`resolveCarriedRevisions`) treats differently.
+   */
+  describe("the publish confirmation's layout scope", () => {
+    const scopeOf = async (templateId: string) =>
+      (
+        await storefrontThemeDal.findPublishScope({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId,
+        })
+      )?.sharedLayout?.revisionId ?? null;
+
+    it("reads this page only after a rollback with no layout edit, and the layout stays at the restored release", async () => {
+      let shown: string | null | undefined;
+      await rollBackThenPublishHome(async () => {
+        // The row still names L2 as published while release 1 serves L1;
+        // nothing pending, and the carry keeps L1, so "this page only" holds.
+        shown = await scopeOf("tpl-home");
+        expect(shown).toBeNull();
+      });
+      // The editor's own layout signal agrees: with home published, nothing
+      // (layout included) reads as pending on it.
+      expect(await editorDiff("tpl-home")).toEqual({ changed: false });
+      expect(await scopeOf("tpl-home")).toBeNull();
+      saveDraft("tpl-about", "B3");
+      await publish("tpl-about", { expectedSharedLayoutRevisionId: shown });
+      expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L1");
+    });
+
+    it("names a layout edited after a rollback, and the confirmed publish ships exactly that draft", async () => {
+      await rollBackThenPublishHome(() => saveDraft("tpl-shell", "L3"));
+      // The home publish above sealed L3 already; edit again and confirm.
+      saveDraft("tpl-shell", "L4");
+      saveDraft("tpl-about", "B3");
+      const shown = await scopeOf("tpl-about");
+      expect(shown).toBe("rev-L4");
+      await publish("tpl-about", { expectedSharedLayoutRevisionId: shown });
+      expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L4");
+      expect(await scopeOf("tpl-about")).toBeNull();
+    });
+
+    it("names the layout again after a publish whose deploy failed, since it never went live", async () => {
+      await publish("tpl-home");
+      saveDraft("tpl-shell", "L2");
+      saveDraft("tpl-about", "B2");
+      const shown = await scopeOf("tpl-about");
+      expect(shown).toBe("rev-L2");
+      await publish("tpl-about", {
+        deployed: false,
+        expectedSharedLayoutRevisionId: shown,
+      });
+
+      expect(await scopeOf("tpl-home")).toBe("rev-L2");
+      // The publish names it too: a "this page only" confirmation is refused.
+      await expect(
+        publishOnly("tpl-home", null),
+      ).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+      await publish("tpl-home", { expectedSharedLayoutRevisionId: "rev-L2" });
+      expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L2");
+      expect(await scopeOf("tpl-home")).toBeNull();
+    });
   });
 
   it("does not let a release whose deploy failed be activated", async () => {

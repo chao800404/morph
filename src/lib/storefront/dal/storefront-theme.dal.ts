@@ -1232,6 +1232,11 @@ async function readPendingSharedLayout(themeId: string, templateId: string) {
     ? {
         id: shell.id,
         revisionId: shell.draftRevisionId,
+        /**
+         * What the layout's row names as published before this publish, so a
+         * failed deploy can put it back (`restoreFailedPublish`).
+         */
+        publishedRevisionId: shell.publishedRevisionId,
         document: shell.document,
       }
     : null;
@@ -3396,13 +3401,12 @@ export const storefrontThemeDal = {
        * The pending layout this publish also recorded as published, and the
        * revision its row named before, so a failed deploy can put it back.
        */
-      previousShell:
-        pendingShell && shell
-          ? {
-              templateId: pendingShell.id,
-              publishedRevisionId: shell.publishedRevisionId,
-            }
-          : null,
+      previousShell: shell
+        ? {
+            templateId: shell.id,
+            publishedRevisionId: shell.publishedRevisionId,
+          }
+        : null,
       sourceRevisionId,
       // The page's row moves on only when its draft was written above; a
       // publish that seals only the shell, or republishes the same draft,
