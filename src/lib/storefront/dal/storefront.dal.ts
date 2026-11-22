@@ -10,8 +10,7 @@ import {
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 import { normalizeDocumentRowIds } from "../editor/normalize-row-ids";
 import {
-  migrateStarterCategoryLinks,
-  STARTER_CATEGORY_LIST_FIELD,
+  migrateStarterDocumentLinks,
   type StarterCategoryLinkMigrationResult,
   type StarterContentMigrationPreview,
 } from "../starter-category-link-migration";
@@ -235,7 +234,7 @@ function planStarterContentMigration(
   const { capabilities } = resolveThemeContentCapabilitiesFromFiles(files);
   return templates.map((template) => ({
     template,
-    result: migrateStarterCategoryLinks(
+    result: migrateStarterDocumentLinks(
       template.document,
       template.id,
       (section) => {
@@ -253,7 +252,7 @@ function planStarterContentMigration(
               ? (section.componentRef ?? null)
               : null;
         if (!componentRef) return null;
-        return capabilities[componentRef]?.fields[STARTER_CATEGORY_LIST_FIELD];
+        return capabilities[componentRef]?.fields ?? null;
       },
     ),
   }));

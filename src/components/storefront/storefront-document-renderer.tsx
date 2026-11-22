@@ -238,6 +238,33 @@ export function StorefrontDocumentRenderer({
   );
 }
 
+/**
+ * A section's destination as this renderer reads it. Since links were unified
+ * the Starter stores it as `action` (`{ href, target }`, or a bare string); a
+ * section written before then holds `actionHref` and `actionTarget`, which
+ * are read as they are.
+ */
+function withActionHrefFromLink(
+  props: Record<string, any>,
+): Record<string, any> {
+  if ("actionHref" in props) return props;
+  const action = props.action;
+  const link =
+    typeof action === "string"
+      ? { href: action }
+      : typeof action === "object" && action !== null
+        ? action
+        : null;
+  if (!link || typeof link.href !== "string") return props;
+  return {
+    ...props,
+    actionHref: link.href,
+    ...(link.target === "_self" || link.target === "_blank"
+      ? { actionTarget: link.target }
+      : {}),
+  };
+}
+
 function renderSection(
   section: StorefrontSection,
   themeFiles?: Array<{ path: string; content: string }>,
@@ -255,7 +282,13 @@ function renderSection(
   const rawProps = resolveThemeMediaInSlotValues(
     (section.props ?? {}) as Record<string, any>,
   );
-  const parsed = schema ? schema.safeParse(rawProps) : null;
+  const parsed = schema
+    ? schema.safeParse(
+        section.type === "hero" || section.type === "image-with-text"
+          ? withActionHrefFromLink(rawProps)
+          : rawProps,
+      )
+    : null;
   const parsedData = parsed?.success ? parsed.data : rawProps;
   const componentPath = getComponentFilePath(
     section.type,

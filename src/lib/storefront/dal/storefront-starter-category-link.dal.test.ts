@@ -29,6 +29,7 @@ import {
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
 import { starterThemeWorkspaceFiles } from "../starter-theme-files";
+import { resolveThemeContentCapabilitiesFromFiles } from "../theme-content-capability-resolver";
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -166,7 +167,10 @@ vi.mock("../storage/theme-storage.server", () => ({
 }));
 
 import { storefrontDal } from "./storefront.dal";
-import { storefrontThemeDal } from "./storefront-theme.dal";
+import {
+  resolveSectionSourceComponent,
+  storefrontThemeDal,
+} from "./storefront-theme.dal";
 
 let sqlite: Database.Database;
 
@@ -838,5 +842,392 @@ describe("a list write keeps stored row values the source does not declare", () 
     expect((await storedRows()).map((row) => row.href)).toEqual(
       AUTHORED_URLS.slice(1),
     );
+  });
+});
+
+// --- Hero and ImageWithText: `actionHref` beside `action` -------------------
+
+const HERO_ID = "starter-hero";
+const STORY_ID = "starter-story";
+// Neither equals the component's own default (`/collections/new`, `#`), so a
+// button showing one proves the author's value reached it.
+const AUTHORED_HERO_URL = "/collections/authored-hero";
+const AUTHORED_STORY_URL = "/pages/authored-story";
+
+/** The home with its hero and story as the old Starters seeded them. */
+function homeWithActionHrefs(
+  refs: { hero: string; story: string } = {
+    hero: "hero.default",
+    story: "image-with-text.default",
+  },
+  overrides: { hero?: Row; story?: Row } = {},
+): StorefrontPageDocument {
+  const home = homeDocumentWith(hrefCategorySection());
+  const withAction = (
+    section: StorefrontPageDocument["sections"][number],
+    componentRef: string,
+    values: Row,
+  ) => {
+    const { action: _action, ...props } = section.props as Row;
+    return {
+      ...section,
+      componentRef,
+      props: { ...props, ...values },
+    } as typeof section;
+  };
+  return {
+    ...home,
+    sections: home.sections.map((section) =>
+      section.id === HERO_ID
+        ? withAction(section, refs.hero, {
+            actionLabel: "Authored hero label",
+            actionHref: AUTHORED_HERO_URL,
+            ...overrides.hero,
+          })
+        : section.id === STORY_ID
+          ? withAction(section, refs.story, {
+              actionLabel: "Authored story label",
+              actionHref: AUTHORED_STORY_URL,
+              ...overrides.story,
+            })
+          : section,
+    ),
+  };
+}
+
+async function storedProps(sectionId: string): Promise<Row> {
+  const context = await editorContext();
+  const home = context.templates.find((template) => template.id === HOME_ID)!;
+  return home.document.sections.find((section) => section.id === sectionId)!
+    .props as Row;
+}
+
+/** The rendered HTML of one section, from the Documents the editor reads. */
+async function renderSection(sectionId: string) {
+  const context = await editorContext();
+  const documentOf = (type: string) =>
+    context.templates.find((template) => template.type === type)!.document;
+  const { html } = await renderLivePreviewRoute({
+    files: workspaceFiles(),
+    documents: { index: documentOf("index"), layout: documentOf("layout") },
+  });
+  const start = html.indexOf(`data-storefront-section-id="${sectionId}"`);
+  expect(start, `section ${sectionId} renders`).toBeGreaterThan(-1);
+  const end = html.indexOf("data-storefront-section-id=", start + 30);
+  return html.slice(start, end === -1 ? undefined : end);
+}
+
+function actionDestination(props: Row): string | undefined {
+  const action = props.action;
+  if (typeof action === "string") return action;
+  if (action && typeof action === "object") {
+    return (action as { href?: string }).href;
+  }
+  return undefined;
+}
+
+async function editSectionCopy(sectionId: string, props: Row) {
+  const context = await editorContext();
+  const home = context.templates.find((template) => template.id === HOME_ID)!;
+  return storefrontThemeDal.updateSectionProps({
+    storefrontId: STOREFRONT_ID,
+    themeId: THEME_ID,
+    templateId: HOME_ID,
+    sectionId,
+    props,
+    expectedDraftGeneration: home.draftGeneration,
+    expectedSourceGeneration: sourceGeneration(),
+    createdBy: "user-a",
+    routePath: "/",
+  });
+}
+
+describe.each([11, 15, 20] as const)(
+  "the hero and story actions through the upgrade from Starter v%i",
+  (version) => {
+    beforeEach(() => {
+      seed({
+        starterVersion: version,
+        files: fixtureFiles(version),
+        home: homeWithActionHrefs(),
+      });
+    });
+
+    it.each([
+      [HERO_ID, AUTHORED_HERO_URL, "Authored hero label"],
+      [STORY_ID, AUTHORED_STORY_URL, "Authored story label"],
+    ])(
+      "(a) %s links to the author URL after the upgrade, before any edit",
+      async (sectionId, url, label) => {
+        await upgradeToSettled();
+        const html = await renderSection(sectionId);
+        expect(cardHrefs(html)).toEqual([url]);
+        expect(html).toContain(label);
+        const props = await storedProps(sectionId);
+        expect(actionDestination(props)).toBe(url);
+        expect(props.actionLabel).toBe(label);
+      },
+    );
+
+    it.each([
+      [HERO_ID, AUTHORED_HERO_URL],
+      [STORY_ID, AUTHORED_STORY_URL],
+    ])(
+      "(b) %s keeps the author URL after a first copy-only edit",
+      async (sectionId, url) => {
+        await upgradeToSettled();
+        const result = await editSectionCopy(sectionId, {
+          heading: "An edited heading",
+        });
+        expect(result?.droppedProps).toEqual([]);
+        const html = await renderSection(sectionId);
+        expect(html).toContain("An edited heading");
+        expect(cardHrefs(html)).toEqual([url]);
+        const props = await storedProps(sectionId);
+        expect(props.heading).toBe("An edited heading");
+        expect(actionDestination(props)).toBe(url);
+      },
+    );
+  },
+);
+
+describe("the action migration limits", () => {
+  it("carries a stored actionTarget into the link and removes both old keys", async () => {
+    seed({
+      starterVersion: 20,
+      files: fixtureFiles(20),
+      home: homeWithActionHrefs(undefined, {
+        story: {
+          actionHref: "https://example.com/story",
+          actionTarget: "_blank",
+        },
+      }),
+    });
+    await upgradeToSettled();
+    const props = await storedProps(STORY_ID);
+    expect(props.action).toEqual({
+      href: "https://example.com/story",
+      target: "_blank",
+    });
+    expect(props).not.toHaveProperty("actionHref");
+    expect(props).not.toHaveProperty("actionTarget");
+    const anchor = (await renderSection(STORY_ID)).match(/<a\b[^>]*>/)?.[0];
+    expect(anchor).toContain('href="https://example.com/story"');
+    expect(anchor).toContain('target="_blank"');
+  });
+
+  it("never overwrites an existing action, leaves an unknown shape, and reports both", async () => {
+    seed({
+      starterVersion: 20,
+      files: fixtureFiles(20),
+      home: homeWithActionHrefs(undefined, {
+        hero: { action: { href: "/collections/kept-action" } },
+        story: { actionHref: 7 },
+      }),
+    });
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    expect(reviewed?.contentMigration.kept).toEqual(
+      expect.arrayContaining([
+        {
+          templateId: HOME_ID,
+          sectionId: HERO_ID,
+          field: "action",
+          row: null,
+          reason: "link-present",
+        },
+        {
+          templateId: HOME_ID,
+          sectionId: STORY_ID,
+          field: "action",
+          row: null,
+          reason: "href-not-a-link",
+        },
+      ]),
+    );
+    await upgradeToSettled();
+    const hero = await storedProps(HERO_ID);
+    expect(hero.action).toEqual({ href: "/collections/kept-action" });
+    expect(hero.actionHref).toBe(AUTHORED_HERO_URL);
+    expect((await storedProps(STORY_ID)).actionHref).toBe(7);
+  });
+
+  it("lists both actions in the review Content list", async () => {
+    seed({
+      starterVersion: 20,
+      files: fixtureFiles(20),
+      home: homeWithActionHrefs(),
+    });
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    expect(reviewed?.contentMigration.sections).toEqual(
+      expect.arrayContaining([
+        {
+          templateId: HOME_ID,
+          templateName: "Default",
+          sectionId: HERO_ID,
+          field: "action",
+          rows: null,
+        },
+        {
+          templateId: HOME_ID,
+          templateName: "Default",
+          sectionId: STORY_ID,
+          field: "action",
+          rows: null,
+        },
+      ]),
+    );
+  });
+
+  it("is idempotent: upgrading the migrated Theme again moves nothing", async () => {
+    seed({
+      starterVersion: 20,
+      files: fixtureFiles(20),
+      home: homeWithActionHrefs(),
+    });
+    await upgradeToSettled();
+    const before = await storedProps(HERO_ID);
+    expect(actionDestination(before)).toBe(AUTHORED_HERO_URL);
+    sqlite
+      .prepare("UPDATE storefront_themes SET metadata = ? WHERE id = ?")
+      .run(JSON.stringify({ starterTemplateVersion: 20 }), THEME_ID);
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    expect(reviewed?.contentMigration).toEqual({ sections: [], kept: [] });
+    expect(await storedProps(HERO_ID)).toEqual(before);
+  });
+});
+
+describe("a top-level write keeps stored props the source does not declare", () => {
+  beforeEach(() => {
+    seed({
+      starterVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
+      files: starterThemeWorkspaceFiles(),
+      home: homeWithActionHrefs({
+        hero: "src/components/Hero.tsx",
+        story: "src/components/ImageWithText.tsx",
+      }),
+    });
+  });
+
+  it("keeps an undeclared prop the write did not mention", async () => {
+    const result = await editSectionCopy(STORY_ID, { heading: "Edited" });
+    expect(result?.droppedProps).toEqual([]);
+    const props = await storedProps(STORY_ID);
+    expect(props.heading).toBe("Edited");
+    expect(props.actionHref).toBe(AUTHORED_STORY_URL);
+  });
+
+  it("keeps an undeclared prop the write sent back unchanged", async () => {
+    const result = await editSectionCopy(STORY_ID, {
+      heading: "Edited",
+      actionHref: AUTHORED_STORY_URL,
+    });
+    expect(result?.droppedProps).toEqual([]);
+    expect((await storedProps(STORY_ID)).actionHref).toBe(AUTHORED_STORY_URL);
+  });
+
+  it("refuses and reports an undeclared prop the write sent changed", async () => {
+    const result = await editSectionCopy(STORY_ID, {
+      heading: "Edited",
+      actionHref: "/pages/changed",
+    });
+    expect(result?.droppedProps).toEqual(["actionHref"]);
+    expect((await storedProps(STORY_ID)).actionHref).toBe(AUTHORED_STORY_URL);
+  });
+});
+
+describe("a store created today: every action", () => {
+  it.each([
+    [HERO_ID, "/collections/new"],
+    [STORY_ID, "/pages/about"],
+  ])("renders %s linking to %s", async (sectionId, url) => {
+    const { html } = await renderLivePreviewRoute({
+      files: starterThemeWorkspaceFiles(),
+      documents: {
+        index: createDefaultStorefrontHomeDocument(),
+        layout: createDefaultStorefrontLayoutDocument(),
+      },
+    });
+    const start = html.indexOf(`data-storefront-section-id="${sectionId}"`);
+    const end = html.indexOf("data-storefront-section-id=", start + 30);
+    expect(cardHrefs(html.slice(start, end === -1 ? undefined : end))).toEqual([
+      url,
+    ]);
+  });
+});
+
+describe("the default Documents store only what the current Starter declares", () => {
+  // The sweep: a key the component rendering a section does not declare (nor,
+  // for a row, carry as its id) is content no author can see or edit.
+  it("has no stored key outside the declared fields", () => {
+    const files = starterThemeWorkspaceFiles().map((file) => ({
+      path: file.path,
+      content: file.content,
+    }));
+    const { capabilities } = resolveThemeContentCapabilitiesFromFiles(files);
+    const undeclared: string[] = [];
+    const documents: Array<[string, StorefrontPageDocument]> = [
+      ["index", createDefaultStorefrontHomeDocument()],
+      ["layout", createDefaultStorefrontLayoutDocument()],
+    ];
+    for (const [templateType, document] of documents) {
+      for (const section of document.sections) {
+        const source = resolveSectionSourceComponent({
+          framework: null,
+          templateType,
+          sectionId: section.id,
+          files,
+        });
+        const ref =
+          source.kind === "confirmed"
+            ? source.componentRef
+            : section.componentRef;
+        const fields = ref ? capabilities[ref]?.fields : undefined;
+        if (!fields) {
+          undeclared.push(`${section.id}: no declared fields (${source.kind})`);
+          continue;
+        }
+        for (const [key, value] of Object.entries(section.props)) {
+          const definition = fields[key];
+          if (!definition) {
+            undeclared.push(`${section.id}.${key}`);
+            continue;
+          }
+          if (definition.type !== "array" || !Array.isArray(value)) continue;
+          const rowFields = definition.fields ?? {};
+          value.forEach((row, index) => {
+            for (const rowKey of Object.keys(row as Row)) {
+              if (rowKey !== "id" && !rowFields[rowKey]) {
+                undeclared.push(`${section.id}.${key}.${index}.${rowKey}`);
+              }
+            }
+          });
+        }
+      }
+    }
+    // A key some Starter component still reads (as a prop or row value) is
+    // rendered but not Design-editable; one no component reads is lost.
+    const components = files.filter((file) =>
+      file.path.startsWith("src/components/"),
+    );
+    const isRead = (path: string) => {
+      const key = path.split(".").pop()!;
+      return components.some((file) =>
+        new RegExp(`\\b${key}\\b`).test(file.content),
+      );
+    };
+    expect(undeclared.filter((path) => !isRead(path))).toEqual([]);
+    // Pinned: rendered by ImageWithText (`imagePosition = "center"`) but not
+    // among its declared fields, so it shows and cannot be edited. Not a lost
+    // value; left as it is.
+    expect(undeclared.filter(isRead)).toEqual(["starter-story.imagePosition"]);
   });
 });

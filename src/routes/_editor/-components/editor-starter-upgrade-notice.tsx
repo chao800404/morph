@@ -55,13 +55,13 @@ type Review = {
 };
 
 const CONTENT_KEPT: Record<StarterCategoryLinkKeptReason, string> = {
-  "link-present": "Kept: this card already has a destination in its link.",
+  "link-present": "Kept: it already has a destination in its link.",
   "href-not-a-link":
     "Kept: its old destination is not an address the link field accepts.",
   "component-reads-href":
-    "Kept: the component showing these cards still reads their old destination.",
+    "Kept: the component showing it still reads its old destination.",
   "component-unconfirmed":
-    "Kept: the Theme's source does not say which component shows these cards.",
+    "Kept: the Theme's source does not say which component shows it.",
 };
 
 /** The content an applied upgrade moves, and what it leaves, with why. */
@@ -81,21 +81,25 @@ function ContentMigrationList({
       <ul className="space-y-1">
         {migration.sections.map((item) => (
           <li
-            key={`${item.templateId}:${item.sectionId}`}
+            key={`${item.templateId}:${item.sectionId}:${item.field}`}
             data-content-migrated={item.sectionId}
           >
-            {item.templateName}: {item.rows} category{" "}
-            {item.rows === 1 ? "card keeps its" : "cards keep their"}{" "}
-            destination, moved to the link field the upgraded section reads.
+            {item.templateName}, {item.sectionId}:{" "}
+            {item.rows === null
+              ? "its action keeps its destination"
+              : item.rows === 1
+                ? "1 card keeps its destination"
+                : `${item.rows} cards keep their destination`}
+            , moved to the link field the upgraded section reads.
           </li>
         ))}
         {migration.kept.map((item) => (
           <li
-            key={`${item.templateId}:${item.sectionId}:${item.row ?? "all"}`}
+            key={`${item.templateId}:${item.sectionId}:${item.field}:${item.row ?? "all"}`}
             data-content-kept-reason={item.reason}
             className="text-muted-foreground"
           >
-            {item.row === null ? "" : `Card ${item.row + 1}. `}
+            {`${item.sectionId}, ${item.row === null ? item.field : `card ${item.row + 1}`}. `}
             {CONTENT_KEPT[item.reason]}
           </li>
         ))}
