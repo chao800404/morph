@@ -52,7 +52,6 @@ import {
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
-  themeSourceGeneration,
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
@@ -1078,10 +1077,23 @@ function rowIdentityProblems(
   location: string,
   beforeDrafts: DraftDocument[],
   afterDrafts: DraftDocument[],
+  beforeRead?: AuthorContent,
+  afterRead?: AuthorContent,
 ): string[] {
   const was = sectionProps(beforeDrafts, section);
   const is = sectionProps(afterDrafts, section);
   if (!was || !is) return [`${name}: section ${section} is not in one Document`];
+  // An old store's rows have no stored id; the editor's read gives each one
+  // (normalizeDocumentRowIds) and that is the row's identity until an edit
+  // stores it. Used only where D1 holds none.
+  const readProps = (read: AuthorContent | undefined) =>
+    read
+      ? Object.values(read)
+          .map((sections) => sections[section])
+          .find((props) => props !== undefined)
+      : undefined;
+  const wasRead = readProps(beforeRead);
+  const isRead = readProps(afterRead);
   const problems: string[] = [];
   const parts = location.split(".");
   parts.forEach((part, index) => {
@@ -1091,8 +1103,10 @@ function rowIdentityProblems(
       row !== null && typeof row === "object"
         ? (row as { id?: unknown }).id
         : undefined;
-    const idBefore = idOf(valueAt(was, prefix));
-    const idAfter = idOf(valueAt(is, prefix));
+    const idBefore =
+      idOf(valueAt(was, prefix)) ?? idOf(valueAt(wasRead ?? {}, prefix));
+    const idAfter =
+      idOf(valueAt(is, prefix)) ?? idOf(valueAt(isRead ?? {}, prefix));
     if (typeof idBefore !== "string" || typeof idAfter !== "string") {
       problems.push(
         `${name}: row ${prefix} has no id (before ${String(idBefore)}, after ${String(idAfter)})`,
@@ -1137,7 +1151,7 @@ function expectUpgradeKeptAnnotations(
   after: ReadBack,
   listed: string[],
 ) {
-  const changed = expectDocumentsKeptAndListed(before, after, listed);
+  const changed = expectDocumentsKeptAndListed(before, after, listed, true);
   expect(
     before.canvas.rendered,
     "the canvas rendered the author's marker before the upgrade",
@@ -1235,8 +1249,16 @@ function expectUpgradeKeptAnnotations(
         `${name}: ${was.templateId}/${was.location} -> ${is.templateId}/${is.location}`,
       );
     }
-    if (JSON.stringify(was.value) !== JSON.stringify(is.value)) {
-      misbound.push(`${name}: its D1 value at ${is.location} changed`);
+    // The value kept, at the same place or where a documented migration
+    // moves it (href -> link.href, actionHref -> action.href, ...).
+    const lost =
+      typeof was.value === "string"
+        ? was.value === is.value
+          ? []
+          : [JSON.stringify(was.value)]
+        : valueKeptProblems(was.value, is.value);
+    if (lost.length) {
+      misbound.push(`${name}: D1 value at ${is.location} lost ${lost.join(", ")}`);
     }
     misbound.push(
       ...rowIdentityProblems(
@@ -1245,6 +1267,8 @@ function expectUpgradeKeptAnnotations(
         is.location,
         before.drafts,
         after.drafts,
+        before.authorContent,
+        after.authorContent,
       ),
     );
   }
@@ -1728,12 +1752,9 @@ function expectAnnotationsExercised(run: CaseRun, results: Exercise[]) {
 const V11_LIMITATION =
   "v11 pre-upgrade limitation: canvas marker not rendered (existing behaviour, proven by handoff/2026-11-22/m1-harness/1b/v11-proof/result.json and rendered-fields.json: the original v11 fixture rendered with Core's content shows the default eyebrow, not the marker, and renders no Document field at all; no v11 file but content.ts names MorphContentProvider). Exempt: the before/after canvas comparison of the fields v11 does not render from the Document (all of them).";
 const V11_DEFAULT_EYEBROW = "New collection";
-/**
- * The pre-upgrade canvas keys whose text v11 renders from the Document, and
- * which are therefore still compared before/after. Empty by the proof
- * (rendered-fields.json: 0 of 80 sentinels rendered).
- */
-const V11_FIELDS_RENDERED_FROM_DOCUMENT: readonly string[] = [];
+/** The v11 fixture the proof (handoff 2026-11-22 v11-proof) rendered. */
+const V11_FIXTURE_SHA256 =
+  "e4568e974890a865733f807c3cbbae3a91e025395c2e45489058f0787f18c3b8";
 
 /**
  * Before v11's upgrade: the author's value is read back from the Documents
@@ -1786,15 +1807,28 @@ async function expectV11PreUpgradeLimitation(
     await renderedText(page),
     "v11's canvas does not show the marker",
   ).not.toContain(marker);
+  expect(old.sha256, "the v11 fixture is the one the proof rendered").toBe(
+    V11_FIXTURE_SHA256,
+  );
   const shown = await canvasBindings(page);
   writeJson(evidenceDir(`1b-${run.label}/before`), "v11-canvas-bindings.json", shown);
-  const compared = shown
-    .filter((binding) => V11_FIELDS_RENDERED_FROM_DOCUMENT.includes(binding.key))
-    .map((binding) => binding.key);
+  // Every v11 field holds a sentinel (seedOldShapeDocuments). The fields
+  // still compared are those whose sentinel the pre-upgrade canvas shows:
+  // by the proof none, and any one is a failure here.
+  const values = seeded(run).sentinels.map((item) => item.value);
+  const text = await renderedText(page);
+  const compared = [
+    ...shown
+      .filter((binding) => values.some((value) => binding.text.includes(value)))
+      .map((binding) => binding.key),
+    ...values
+      .filter((value) => text.includes(value))
+      .map((value) => `text ${value}`),
+  ];
   expect(
     compared,
-    "every field v11 renders from the Document is on its canvas",
-  ).toEqual([...V11_FIELDS_RENDERED_FROM_DOCUMENT]);
+    "v11's pre-upgrade canvas shows no Document value (the proven exemption covers every field)",
+  ).toEqual([]);
   run.record.fact("v11FieldSplit", {
     exempt: shown
       .filter((binding) => !compared.includes(binding.key))
@@ -1802,7 +1836,7 @@ async function expectV11PreUpgradeLimitation(
     compared,
     comparedNote:
       compared.length === 0
-        ? "none: the v11 canvas renders no Document field (rendered-fields.json)"
+        ? "none: no seeded sentinel shows on the pre-upgrade v11 canvas (as rendered-fields.json proves)"
         : null,
   });
   run.record.fact("limitation", V11_LIMITATION);
@@ -1848,7 +1882,7 @@ function expectV11AfterUpgrade(
   listed: string[],
   v11Canvas: CanvasBinding[],
 ) {
-  const changed = expectDocumentsKeptAndListed(before, after, listed);
+  const changed = expectDocumentsKeptAndListed(before, after, listed, true);
   expect(
     after.drafts.map((draft) => draft.templateId).sort(),
     "the upgrade keeps the same templates",
@@ -1856,7 +1890,12 @@ function expectV11AfterUpgrade(
   const was = documentLeaves(before.drafts);
   const is = documentLeaves(after.drafts);
   const valuesChanged = [...was.keys()]
-    .filter((key) => !is.has(key) || is.get(key) !== was.get(key))
+    .filter((key) => !/(^|[./])id$/.test(key))
+    .filter((key) => {
+      const [template, section, ...path] = key.split("/");
+      const moved = `${template}/${section}/${migratedPath(path.join("/"))}`;
+      return is.get(key) !== was.get(key) && is.get(moved) !== was.get(key);
+    })
     .map(
       (key) =>
         `${key}: ${JSON.stringify(was.get(key))} -> ${is.has(key) ? JSON.stringify(is.get(key)) : "(gone)"}`,
@@ -1869,18 +1908,13 @@ function expectV11AfterUpgrade(
   expect
     .soft(valuesChanged, "(a) every author value in D1 is kept by the upgrade")
     .toEqual([]);
-  const afterByKey = new Map(after.canvas.bindings.map((b) => [b.key, b]));
-  expect
-    .soft(
-      v11Canvas
-        .filter((binding) =>
-          V11_FIELDS_RENDERED_FROM_DOCUMENT.includes(binding.key),
-        )
-        .filter((binding) => afterByKey.get(binding.key)?.text !== binding.text)
-        .map((binding) => binding.key),
-      "(b) every field v11 renders from the Document shows the same text after",
-    )
-    .toEqual([]);
+  // (b) The fields v11 renders from the Document are compared before/after;
+  // expectV11PreUpgradeLimitation proved there are none (a sentinel shown
+  // before the upgrade fails there), so this records the empty set.
+  run.record.fact("v11ComparedFields", {
+    compared: [],
+    exempt: v11Canvas.map((binding) => binding.key),
+  });
   expect(after.canvas.bindings.length).toBeGreaterThan(0);
   expect
     .soft(
@@ -1898,6 +1932,492 @@ function expectV11AfterUpgrade(
     )
     .toEqual([]);
   return changed;
+}
+
+/**
+ * Pre-upgrade Documents in each version's OWN shape, with sentinels (review of
+ * d371b94, 2026-11-22). Provisioning writes the current Starter's Documents,
+ * and installing an old Starter's files leaves them as they are, so without
+ * this every version would upgrade a Document already in the new shape
+ * (`link.href`, `action.href`) and a reset to defaults would pass. Each case
+ * replaces them, before the upgrade, with the default home (and, from v16,
+ * layout) Document its Starter shipped (e2e/fixtures/starter-history-documents,
+ * generated from src/lib/storefront/default-storefront-document.ts at the
+ * fixture's source commit), with every text and URL field set to a unique
+ * sentinel, and checks after the upgrade, and after the first edits, that
+ * D1, the editor's read, the canvas and the served page hold each sentinel
+ * where the upgrade must keep it.
+ */
+type ShapedDocument = {
+  version?: number;
+  sections: Array<{ id: string; props?: Record<string, unknown> }>;
+};
+
+type OldDocuments = {
+  starterVersion: number;
+  sourceCommit: string;
+  sourceFile: string;
+  sourceBlob: string;
+  sourceSha256: string;
+  home: ShapedDocument;
+  layout: ShapedDocument | null;
+};
+
+function oldDocuments(old: Fixture): OldDocuments {
+  const loaded = JSON.parse(
+    readFileSync(
+      join(
+        process.cwd(),
+        "e2e/fixtures/starter-history-documents",
+        `v${old.starterVersion}.json`,
+      ),
+      "utf8",
+    ),
+  ) as OldDocuments;
+  expect(loaded.starterVersion).toBe(old.starterVersion);
+  expect(
+    loaded.sourceCommit,
+    "the Documents come from the commit that recorded this Starter",
+  ).toBe(old.sourceCommit);
+  return loaded;
+}
+
+/** One seeded value: where it is before the upgrade and where it must be after. */
+type Sentinel = {
+  template: "index" | "layout";
+  section: string;
+  before: string;
+  after: string;
+  value: string;
+  kind: "text" | "url" | "position";
+};
+
+type Seeded = {
+  documents: Omit<OldDocuments, "home" | "layout">;
+  layout: string;
+  sentinels: Sentinel[];
+  cards: CardUrl[];
+  actions: ActionUrl[];
+};
+
+const seeds = new Map<string, Seeded>();
+
+function seeded(run: CaseRun): Seeded {
+  const seed = seeds.get(run.label);
+  expect(seed, "the case seeded its pre-upgrade Documents").toBeDefined();
+  return seed!;
+}
+
+const SENTINEL_TEXT_KEYS = new Set([
+  "eyebrow",
+  "heading",
+  "description",
+  "actionLabel",
+  "label",
+  "body",
+  "title",
+  "caption",
+  "placeholder",
+  "number",
+  "storeName",
+  "tagline",
+  "exploreHeading",
+  "helpHeading",
+  "cartLabel",
+  "copyrightText",
+]);
+
+/**
+ * Where an old-shape path's value belongs after the documented migrations
+ * (#430, f600fae): a row's or a section's own `href` → `link.href`,
+ * `actionHref` → `action.href`, `actionTarget` → `action.target`; and the
+ * grouped image (`imageSrc`/`imageAlt` → `image.src`/`image.alt`).
+ */
+function migratedPath(path: string): string {
+  const parts = path.split(".");
+  const last = parts[parts.length - 1];
+  const parent = parts[parts.length - 2];
+  const head = parts.slice(0, -1);
+  if (last === "href" && !["link", "action", "cartLink"].includes(parent ?? "")) {
+    return [...head, "link", "href"].join(".");
+  }
+  const moved: Record<string, string[]> = {
+    actionHref: ["action", "href"],
+    actionTarget: ["action", "target"],
+    imageSrc: ["image", "src"],
+    imageAlt: ["image", "alt"],
+  };
+  return last && moved[last] ? [...head, ...moved[last]!].join(".") : path;
+}
+
+/** Every primitive leaf of a value, by dotted path. */
+function leavesOf(value: unknown, prefix = ""): Array<[string, unknown]> {
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, inner]) =>
+      leavesOf(inner, prefix ? `${prefix}.${key}` : key),
+    );
+  }
+  return [[prefix, value]];
+}
+
+/**
+ * The before value's leaves that the after value does not keep, at the same
+ * path or the documented migrated one. Row ids are compared separately.
+ */
+function valueKeptProblems(before: unknown, after: unknown): string[] {
+  return leavesOf(before)
+    .filter(([path]) => path !== "id" && !path.endsWith(".id"))
+    .filter(
+      ([path, value]) =>
+        valueAt(after, path) !== value && valueAt(after, migratedPath(path)) !== value,
+    )
+    .map(([path, value]) => `${path}=${JSON.stringify(value)}`);
+}
+
+/** Replaces every text and URL field with a unique sentinel, recording each. */
+function sentinelize(
+  document: ShapedDocument,
+  template: Sentinel["template"],
+  tag: string,
+  marker: string,
+  sentinels: Sentinel[],
+) {
+  for (const section of document.sections) {
+    const walk = (value: unknown, path: string): unknown => {
+      if (Array.isArray(value)) {
+        return value.map((item, index) => walk(item, `${path}.${index}`));
+      }
+      if (value !== null && typeof value === "object") {
+        return Object.fromEntries(
+          Object.entries(value).map(([key, inner]) => [
+            key,
+            walk(inner, path ? `${path}.${key}` : key),
+          ]),
+        );
+      }
+      if (typeof value !== "string") return value;
+      const key = path.split(".").pop()!;
+      // The case's own marker, checked by the existing read-backs.
+      if (section.id === "starter-hero" && path === "eyebrow") return marker;
+      if (section.id === "starter-story" && path === "imagePosition") {
+        sentinels.push({
+          template,
+          section: section.id,
+          before: path,
+          after: path,
+          value: STORY_POSITION,
+          kind: "position",
+        });
+        return STORY_POSITION;
+      }
+      const n = sentinels.length;
+      if (SENTINEL_TEXT_KEYS.has(key)) {
+        const sentinel = `S${n}-${tag}`;
+        sentinels.push({
+          template,
+          section: section.id,
+          before: path,
+          after: path,
+          value: sentinel,
+          kind: "text",
+        });
+        return sentinel;
+      }
+      if (key === "href" || key === "actionHref") {
+        const sentinel = `/m1-1b/u${n}-${tag}`;
+        sentinels.push({
+          template,
+          section: section.id,
+          before: path,
+          after: migratedPath(path),
+          value: sentinel,
+          kind: "url",
+        });
+        return sentinel;
+      }
+      return value;
+    };
+    section.props = walk(section.props ?? {}, "") as Record<string, unknown>;
+  }
+}
+
+/**
+ * Before the upgrade: the version's own default Documents with sentinels,
+ * written into the Document the editor reads (the draft revision, else the
+ * template row) of the case's home and layout templates, then verified from
+ * D1 (read-only) and the editor's read. Before v16 a store had no layout
+ * Document (its shell rendered its own defaults); the layout template the
+ * current provisioning created is emptied instead, which is as close as a
+ * store of today can get (recorded).
+ *
+ * Seeded directly rather than through the editor's write: today's write
+ * path normalizes a Document to the current shape on save, so it cannot
+ * produce what an old store held. No old Starter declares the story's
+ * `imagePosition` either (v11's manifest, v15's and v20's `contentFields`).
+ */
+async function seedOldShapeDocuments(
+  page: Page,
+  run: CaseRun,
+  old: Fixture,
+  marker: string,
+) {
+  const documents = oldDocuments(old);
+  const tag = randomUUID().slice(0, 4);
+  const sentinels: Sentinel[] = [];
+  const home = structuredClone(documents.home);
+  sentinelize(home, "index", tag, marker, sentinels);
+  const layout: ShapedDocument = documents.layout
+    ? structuredClone(documents.layout)
+    : { version: documents.home.version ?? 1, sections: [] };
+  if (documents.layout) sentinelize(layout, "layout", tag, marker, sentinels);
+  const rows = queryD1(
+    `SELECT t.id AS id, t.type AS type, t.route_path AS route_path, r.id AS revision_id
+       FROM storefront_theme_templates t
+       LEFT JOIN storefront_theme_template_revisions r
+         ON r.id = t.draft_revision_id AND r.template_id = t.id
+      WHERE t.theme_id = ?1 AND t.deleted_at IS NULL`,
+    run.scope.themeId,
+  );
+  const target = (type: string) => {
+    const found = rows.filter(
+      (row) => row.type === type && (type !== "index" || row.route_path == null),
+    );
+    expect(found.length, `one ${type} template`).toBe(1);
+    return found[0]!;
+  };
+  const written: Record<string, unknown> = {};
+  for (const [type, document] of [
+    ["index", home],
+    ["layout", layout],
+  ] as const) {
+    const row = target(type);
+    const text = sqlText(JSON.stringify(document));
+    execLocalD1(
+      row.revision_id
+        ? `UPDATE storefront_theme_template_revisions SET document = ${text} WHERE id = ${sqlText(String(row.revision_id))};`
+        : `UPDATE storefront_theme_templates SET document = ${text} WHERE id = ${sqlText(String(row.id))};`,
+    );
+    written[type] = {
+      templateId: row.id,
+      into: row.revision_id ? "draft revision" : "template row",
+    };
+  }
+  // Read-only verification: D1 holds exactly what was written.
+  const drafts = draftDocuments(run.scope);
+  expect(
+    drafts.find((draft) => draft.templateId === target("index").id)?.sections,
+    "D1 holds the seeded home Document",
+  ).toEqual(home.sections);
+  expect(
+    drafts.find((draft) => draft.templateId === target("layout").id)?.sections,
+    "D1 holds the seeded layout Document",
+  ).toEqual(layout.sections);
+  // The old keys, not the new ones.
+  const categories = (sectionProps(drafts, "starter-categories")?.items ??
+    []) as Array<Record<string, unknown>>;
+  const oldKeyProblems = [
+    ...categories.flatMap((row, index) => [
+      ...(typeof row.href === "string" ? [] : [`categories row ${index} has no href`]),
+      ...("link" in row ? [`categories row ${index} already has link`] : []),
+    ]),
+    ...ACTION_SECTIONS.flatMap((section) => {
+      const props = sectionProps(drafts, section) ?? {};
+      return [
+        ...(typeof props.actionHref === "string" ? [] : [`${section} has no actionHref`]),
+        ...("action" in props ? [`${section} already has action`] : []),
+      ];
+    }),
+  ];
+  expect(oldKeyProblems, "D1 holds the old keys (href, actionHref), not the new ones").toEqual([]);
+  // The editor's read, and the row ids it gives the old rows (no stored ids).
+  const context = await editorContext(page, run.scope);
+  const served = (section: string) =>
+    context.templates
+      .flatMap((template) => template.document.sections)
+      .find((item) => item.id === section)?.props ?? {};
+  const serverItems = (served("starter-categories").items ?? []) as Array<
+    Record<string, unknown>
+  >;
+  const find = (section: string, path: string) =>
+    sentinels.find((item) => item.section === section && item.before === path)
+      ?.value ?? null;
+  const cards: CardUrl[] = categories.map((_, row) => ({
+    row,
+    id: serverItems[row]?.id,
+    title: find("starter-categories", `items.${row}.title`),
+    url: find("starter-categories", `items.${row}.href`),
+    shape: "href",
+  }));
+  const actions: ActionUrl[] = ACTION_SECTIONS.map((section) => ({
+    section,
+    url: find(section, "actionHref"),
+    shape: "actionHref",
+    label: find(section, "actionLabel"),
+  }));
+  const serverProblems = sentinels
+    .filter((item) => item.template === "index")
+    .filter((item) => valueAt(served(item.section), item.before) !== item.value)
+    .map((item) => `${item.section}/${item.before}`);
+  expect(serverProblems, "the editor reads every seeded value").toEqual([]);
+  expect(
+    cards.filter((card) => typeof card.id !== "string").map((card) => card.row),
+    "the editor's read gives each old row an id",
+  ).toEqual([]);
+  const seed: Seeded = {
+    documents: {
+      starterVersion: documents.starterVersion,
+      sourceCommit: documents.sourceCommit,
+      sourceFile: documents.sourceFile,
+      sourceBlob: documents.sourceBlob,
+      sourceSha256: documents.sourceSha256,
+    },
+    layout: documents.layout
+      ? "the version's own layout Document"
+      : "emptied: no layout Document existed before v16 (the template row exists because today's provisioning made it)",
+    sentinels,
+    cards,
+    actions,
+  };
+  seeds.set(run.label, seed);
+  writeJson(run.dir, "seeded.json", { ...seed, written, home, layout });
+  recordPositions(run, "stored before the upgrade", {
+    method:
+      "seeded with the version's own default Document (top-level string props.imagePosition of starter-story, the shape its Starter provisioned); no old Starter declares imagePosition, so no author could store it through the editor",
+    declaredIn: declaresStoryPosition(old),
+    value: STORY_POSITION,
+    d1: storedStoryPosition(run.scope),
+  });
+  expect(storedStoryPosition(run.scope), "D1 holds the non-default story position").toBe(
+    STORY_POSITION,
+  );
+}
+
+const sentinelRecords = new Map<string, Record<string, unknown>>();
+
+function recordSentinels(run: CaseRun, point: string, value: unknown) {
+  const record = sentinelRecords.get(run.label) ?? {};
+  record[point] = value;
+  sentinelRecords.set(run.label, record);
+  writeJson(run.dir, "sentinels.json", record);
+}
+
+/**
+ * Every sentinel where the upgrade must keep it: in D1 and in the editor's
+ * read at its post-upgrade path, each category row with the row id the
+ * editor gave it before the upgrade, and, when `canvas`, on the canvas
+ * (text shown, URL as a link, the position rendered).
+ */
+async function expectSeededContent(
+  page: Page,
+  run: CaseRun,
+  point: string,
+  canvas: boolean,
+) {
+  const seed = seeded(run);
+  const drafts = draftDocuments(run.scope);
+  const context = await editorContext(page, run.scope);
+  const reads: Array<[string, Array<{ type: string | null; sections: DraftDocument["sections"] }>]> = [
+    ["D1", drafts],
+    [
+      "editor read",
+      context.templates.map((template) => ({
+        type: (template as { type?: string }).type ?? null,
+        sections: template.document.sections,
+      })),
+    ],
+  ];
+  const problems: string[] = [];
+  for (const item of seed.sentinels) {
+    for (const [name, documents] of reads) {
+      const props = documents
+        .filter((document) => document.type === item.template)
+        .map((document) => document.sections.find((section) => section.id === item.section)?.props)
+        .find((found) => found !== undefined);
+      const value = valueAt(props ?? {}, item.after);
+      if (value !== item.value) {
+        problems.push(
+          `${name} ${item.section}/${item.after}: ${JSON.stringify(value)}, not ${item.value}`,
+        );
+      }
+    }
+  }
+  const items = (sectionProps(drafts, "starter-categories")?.items ?? []) as Array<
+    Record<string, unknown>
+  >;
+  for (const card of seed.cards) {
+    const id = items[card.row]?.id;
+    if (id !== card.id) {
+      problems.push(`D1 categories row ${card.row} is ${String(id)}, not ${String(card.id)}`);
+    }
+  }
+  let shown: unknown = null;
+  if (canvas) {
+    await openEditorWithHero(page, run);
+    const text = await renderedText(page);
+    const frame = await previewFrame(page)
+      .locator("body")
+      .evaluate((body) => ({
+        placeholders: [...body.querySelectorAll("[placeholder]")].map(
+          (node) => node.getAttribute("placeholder") ?? "",
+        ),
+        links: [...body.querySelectorAll("a[href]")].map((anchor) => {
+          const url = new URL(anchor.getAttribute("href")!, location.href);
+          return `${url.pathname}${url.search}${url.hash}`;
+        }),
+      }));
+    const position = await canvasStoryPosition(page);
+    for (const item of seed.sentinels) {
+      if (item.kind === "text" && !text.includes(item.value) && !frame.placeholders.includes(item.value)) {
+        problems.push(`canvas does not show ${item.section}/${item.after} ${item.value}`);
+      }
+      if (item.kind === "url" && !frame.links.includes(urlPath(item.value))) {
+        problems.push(`canvas has no link to ${item.section}/${item.after} ${item.value}`);
+      }
+      if (item.kind === "position" && position.computed !== position.expected) {
+        problems.push(`canvas story image renders ${position.computed}, not ${position.expected}`);
+      }
+    }
+    shown = { placeholders: frame.placeholders, links: frame.links, position };
+  }
+  recordSentinels(run, point, {
+    reached: true,
+    canvas,
+    sentinels: seed.sentinels.length,
+    shown,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, `every seeded value is kept (${point})`)
+    .toEqual([]);
+}
+
+/** Every sentinel on a published or served page: text shown, URL as a link, the position. */
+function expectSeededContentServed(run: CaseRun, html: string, where: string) {
+  const seed = seeded(run);
+  const links = [...html.matchAll(/<a\b[^>]*\bhref="([^"]*)"/gi)].map((match) =>
+    urlPath(match[1]!.replace(/&amp;/g, "&")),
+  );
+  const problems = seed.sentinels.flatMap((item) => {
+    if (item.kind === "text" && !html.includes(item.value)) {
+      return [`no ${item.section}/${item.after} ${item.value}`];
+    }
+    if (item.kind === "url" && !links.includes(urlPath(item.value))) {
+      return [`no link to ${item.section}/${item.after} ${item.value}`];
+    }
+    if (item.kind === "position" && !new RegExp(`object-position\\s*:\\s*${item.value}`, "i").test(html)) {
+      return [`no image with object-position ${item.value}`];
+    }
+    return [];
+  });
+  recordSentinels(run, `served: ${where}`, {
+    reached: true,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, `every seeded value is on the ${where}`)
+    .toEqual([]);
 }
 
 /**
@@ -2024,9 +2544,8 @@ function canvasLinkProblems(
 async function expectCardLinksOnCanvas(
   page: Page,
   run: CaseRun,
-  before: ReadBack,
 ) {
-  const expected = categoryCardUrls(before.drafts);
+  const expected = seeded(run).cards;
   await openEditorWithHero(page, run);
   const shown = await canvasCardLinks(page);
   const problems = canvasLinkProblems(expected, shown);
@@ -2045,11 +2564,10 @@ async function expectCardLinksOnCanvas(
 /** (a) on a published or served page: each card is an anchor to its URL holding its title. */
 function expectCardLinksServed(
   run: CaseRun,
-  before: ReadBack,
   html: string,
   where: string,
 ) {
-  const expected = categoryCardUrls(before.drafts);
+  const expected = seeded(run).cards;
   const anchors = [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].map(
     (match) => ({
       href: /\bhref="([^"]*)"/i.exec(match[1]!)?.[1] ?? null,
@@ -2092,9 +2610,8 @@ function expectCardLinksServed(
 async function expectCardLinksAfterCopyEdit(
   page: Page,
   run: CaseRun,
-  before: ReadBack,
 ) {
-  const expected = categoryCardUrls(before.drafts);
+  const expected = seeded(run).cards;
   const point = "b: after the first copy-only edit";
   recordLinks(run, point, { reached: false });
   await openEditorWithHero(page, run);
@@ -2245,49 +2762,6 @@ function actionUrls(
   });
 }
 
-/**
- * Before the upgrade: a URL of the author's own on each action, written the
- * way the Inspector writes a field, in the shape the installed old Starter
- * declares, and read back from D1.
- */
-async function setAuthorActionUrls(page: Page, run: CaseRun, version: number) {
-  const shape = version >= 20 ? "action.href" : "actionHref";
-  const set: Record<string, string> = {};
-  for (const section of ACTION_SECTIONS) {
-    const url = `/m1-1b/${run.label}-${section}-${randomUUID().slice(0, 6)}`;
-    expect(["/collections/new", "#"]).not.toContain(url);
-    const context = await editorContext(page, run.scope);
-    const template = context.templates.find((item) =>
-      item.document.sections.some((entry) => entry.id === section),
-    );
-    expect(template, `a Document holds ${section}`).toBeDefined();
-    const written = (await serverFn(
-      page,
-      THEMES,
-      "updateStorefrontThemeSectionProps",
-      {
-        ...run.scope,
-        templateId: template!.id,
-        sectionId: section,
-        props: shape === "action.href" ? { action: { href: url } } : { actionHref: url },
-        expectedDraftGeneration: template!.draftGeneration,
-        expectedSourceGeneration: await themeSourceGeneration(page, run.scope),
-      },
-    )) as { success: boolean; message?: string };
-    expect(written.success, written.message).toBe(true);
-    set[section] = url;
-  }
-  const stored = actionUrls(draftDocuments(run.scope), [shape]);
-  recordLinks(run, "author action URLs set before the upgrade", {
-    shape,
-    set,
-    stored,
-  });
-  for (const item of stored) {
-    expect(item.url, `${item.section}'s ${shape} in D1`).toBe(set[item.section]);
-  }
-}
-
 /** Each section's action button on the canvas: the anchor it is, or sits in. */
 async function canvasActionLinks(page: Page) {
   return previewFrame(page)
@@ -2339,9 +2813,8 @@ function actionLinkProblems(
 async function expectActionLinksOnCanvas(
   page: Page,
   run: CaseRun,
-  before: ReadBack,
 ) {
-  const expected = actionUrls(before.drafts, ["action.href", "actionHref"]);
+  const expected = seeded(run).actions;
   await openEditorWithHero(page, run);
   await expect
     .poll(async () => (await canvasActionLinks(page)).filter((b) => b.button).length, {
@@ -2366,11 +2839,10 @@ async function expectActionLinksOnCanvas(
 /** (a) on a published or served page: an anchor to each URL holding its label. */
 function expectActionLinksServed(
   run: CaseRun,
-  before: ReadBack,
   html: string,
   where: string,
 ) {
-  const expected = actionUrls(before.drafts, ["action.href", "actionHref"]);
+  const expected = seeded(run).actions;
   const anchors = [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].map(
     (match) => ({
       href: /\bhref="([^"]*)"/i.exec(match[1]!)?.[1] ?? null,
@@ -2413,9 +2885,8 @@ function expectActionLinksServed(
 async function expectActionLinksAfterCopyEdit(
   page: Page,
   run: CaseRun,
-  before: ReadBack,
 ) {
-  const expected = actionUrls(before.drafts, ["action.href", "actionHref"]);
+  const expected = seeded(run).actions;
   const point = "b: actions after a first copy-only edit";
   recordLinks(run, point, { reached: false });
   await openEditorWithHero(page, run);
@@ -2479,6 +2950,10 @@ async function expectActionLinksAfterCopyEdit(
       ),
     );
     edits.push({ section, leaf, copy, stored, shown });
+    if (section === "starter-story") {
+      // The first edit of another story field: the image position must hold.
+      await expectStoryPositionAfterEdit(page, run, `starter-story heading -> ${copy}`);
+    }
     // The heading back, read back.
     await typeInto((await inspectorControlFor(page, copy, binding!)).control, original);
     await expect
@@ -2500,6 +2975,164 @@ async function expectActionLinksAfterCopyEdit(
 }
 
 /**
+ * The story image's position as upgrade compatibility (user decision
+ * 2026-11-22: `starter-story.imagePosition` is not made editable this
+ * round). Every Starter's ImageWithText renders `imagePosition` as the
+ * image's `style.objectPosition` (default "center"; the Starter's provisioned
+ * Document stores "center center", default-storefront-document.ts). Points,
+ * strict, recorded in positions.json with reached/ok/problems:
+ *   - before the upgrade, a non-default position is stored and read back;
+ *   - (a) after the upgrade, before any edit: D1 still holds it, the canvas
+ *     image's computed object-position is that value's, and the published
+ *     or served page renders it where the case has one;
+ *   - (b) after the first edit of another story field (its heading, in the
+ *     action-link (b) step): still stored and still rendered.
+ */
+const STORY_POSITION = "top left";
+
+const positionRecords = new Map<string, Record<string, unknown>>();
+
+function recordPositions(run: CaseRun, point: string, value: unknown) {
+  const record = positionRecords.get(run.label) ?? {};
+  record[point] = value;
+  positionRecords.set(run.label, record);
+  writeJson(run.dir, "positions.json", record);
+}
+
+/** Whether the installed old Starter declares the story's imagePosition. */
+function declaresStoryPosition(old: Fixture) {
+  const sources = old.files.filter(
+    (file) =>
+      file.path.endsWith("ImageWithText.tsx") ||
+      file.path.includes("starter-story") ||
+      file.path === MANIFEST,
+  );
+  return sources
+    .filter((file) =>
+      file.path === MANIFEST
+        ? Object.entries(
+            (JSON.parse(file.content) as {
+              components?: Record<string, { contentFields?: Record<string, unknown> }>;
+            }).components ?? {},
+          ).some(
+            ([name, component]) =>
+              name.startsWith("image-with-text") &&
+              "imagePosition" in (component.contentFields ?? {}),
+          )
+        : /export const contentFields[\s\S]*?\bimagePosition\s*:/.test(
+            /export const contentFields[\s\S]*?\n\}/.exec(file.content)?.[0] ?? "",
+          ),
+    )
+    .map((file) => file.path);
+}
+
+/** The story's stored imagePosition in D1 (null when absent). */
+function storedStoryPosition(scope: ThemeScope) {
+  const value = sectionProps(draftDocuments(scope), "starter-story")?.imagePosition;
+  return typeof value === "string" ? value : null;
+}
+
+/** The story image's computed object-position, and STORY_POSITION's computed form. */
+async function canvasStoryPosition(page: Page) {
+  return previewFrame(page)
+    .locator("body")
+    .evaluate((body, wanted) => {
+      const section = body.querySelector('[data-storefront-section-id="starter-story"]');
+      const image =
+        (section?.querySelector('img[style*="object-position"]') as HTMLImageElement | null) ??
+        (section?.querySelector("img") as HTMLImageElement | null);
+      const probe = document.createElement("img");
+      probe.style.objectPosition = wanted;
+      probe.style.display = "none";
+      body.appendChild(probe);
+      const expected = getComputedStyle(probe).objectPosition;
+      probe.remove();
+      return {
+        image: image !== null,
+        inline: image?.style.objectPosition ?? null,
+        computed: image ? getComputedStyle(image).objectPosition : null,
+        expected,
+      };
+    }, STORY_POSITION);
+}
+
+function positionProblems(
+  stored: string | null,
+  shown: Awaited<ReturnType<typeof canvasStoryPosition>>,
+) {
+  const problems: string[] = [];
+  if (stored !== STORY_POSITION) {
+    problems.push(`D1 holds ${JSON.stringify(stored)}, not ${JSON.stringify(STORY_POSITION)}`);
+  }
+  if (!shown.image) problems.push("no story image on the canvas");
+  else if (shown.computed !== shown.expected) {
+    problems.push(`the story image renders object-position ${shown.computed}, not ${shown.expected} (${STORY_POSITION})`);
+  }
+  return problems;
+}
+
+/** (a) After the upgrade, before any edit: stored and rendered on the canvas. */
+async function expectStoryPositionAfterUpgrade(page: Page, run: CaseRun) {
+  await openEditorWithHero(page, run);
+  await expect(
+    previewFrame(page).locator('[data-storefront-section-id="starter-story"] img').first(),
+  ).toBeAttached({ timeout: 120_000 });
+  const stored = storedStoryPosition(run.scope);
+  const shown = await canvasStoryPosition(page);
+  const problems = positionProblems(stored, shown);
+  recordPositions(run, "a: canvas after the upgrade, before any edit", {
+    reached: true,
+    stored,
+    shown,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, "(a) the story image position is kept and rendered after the upgrade")
+    .toEqual([]);
+}
+
+/** (a) On a published or served page: the story image carries the position. */
+function expectStoryPositionServed(run: CaseRun, html: string, where: string) {
+  const images = [...html.matchAll(/<img\b[^>]*>/gi)].map((match) => match[0]);
+  const positioned = images.filter((tag) =>
+    /object-position\s*:\s*([^;"]+)/i.exec(tag)?.[1]?.trim().toLowerCase() ===
+    STORY_POSITION,
+  );
+  const problems =
+    positioned.length === 1
+      ? []
+      : [`${positioned.length} images on the ${where} carry object-position ${STORY_POSITION}`];
+  recordPositions(run, `a: ${where}`, {
+    reached: true,
+    positioned,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, `(a) the story image on the ${where} renders the author's position`)
+    .toEqual([]);
+}
+
+/** (b) After the first edit of another story field: stored and rendered. */
+async function expectStoryPositionAfterEdit(page: Page, run: CaseRun, edit: string) {
+  const stored = storedStoryPosition(run.scope);
+  const shown = await canvasStoryPosition(page);
+  const problems = positionProblems(stored, shown);
+  recordPositions(run, "b: after the first edit of another story field", {
+    reached: true,
+    edit,
+    stored,
+    shown,
+    problems,
+    ok: problems.length === 0,
+  });
+  expect
+    .soft(problems, "(b) the story image position survives an edit of another story field")
+    .toEqual([]);
+}
+
+/**
  * (d) v11 published after its upgrade, on its own storefront, and the
  * published result read through the release the publish shows (the
  * storefront has no domain: domains reach only the run's storefront). The
@@ -2511,7 +3144,6 @@ async function publishV11(
   page: Page,
   run: CaseRun,
   marker: string,
-  before: ReadBack,
 ) {
   await openEditor(page, run.editorPath);
   const draftHero = sectionProps(draftDocuments(run.scope), "starter-hero");
@@ -2536,8 +3168,10 @@ async function publishV11(
       "the published content's hero holds the author's value",
     ).toBe(marker);
     // (a) on the published page: before any edit to the cards.
-    expectCardLinksServed(run, before, home.body, "published release page");
-    expectActionLinksServed(run, before, home.body, "published release page");
+    expectCardLinksServed(run, home.body, "published release page");
+    expectActionLinksServed(run, home.body, "published release page");
+    expectStoryPositionServed(run, home.body, "published release page");
+    expectSeededContentServed(run, home.body, "published release page");
     run.record.fact("publishedRead", {
       homeStatus: home.status,
       homeSha256: sha256(home.body),
@@ -2875,9 +3509,21 @@ function expectDocumentsKeptAndListed(
   before: ReadBack,
   after: ReadBack,
   listed: string[],
+  migrated = false,
 ) {
   for (const [template, sections] of Object.entries(before.authorContent)) {
     for (const [section, props] of Object.entries(sections)) {
+      if (migrated) {
+        // An old-shape Document (seedOldShapeDocuments): every value is kept,
+        // at its path or where a documented migration moves it.
+        expect
+          .soft(
+            valueKeptProblems(props, after.authorContent[template]?.[section]),
+            `${template} ${section} props kept`,
+          )
+          .toEqual([]);
+        continue;
+      }
       expect
         .soft(
           after.authorContent[template]?.[section],
@@ -3247,8 +3893,8 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
       });
       if (version !== 26) {
         await run.record.step(
-          "author's own action URLs set before the upgrade",
-          () => setAuthorActionUrls(page, run, version),
+          "the version's own Documents, with sentinels, seeded before the upgrade",
+          () => seedOldShapeDocuments(page, run, old, marker),
         );
       }
       const before = await run.record.step("before-upgrade read-back", () =>
@@ -3310,34 +3956,54 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         // The category cards' links (a), before any edit to them.
         await run.record.step(
           "(a) category cards link to the author's URL on the canvas after the upgrade",
-          () => expectCardLinksOnCanvas(page, run, before),
+          () => expectCardLinksOnCanvas(page, run),
         );
         await run.record.step(
           "(a) hero and story action buttons link to the author's URL on the canvas after the upgrade",
-          () => expectActionLinksOnCanvas(page, run, before),
+          () => expectActionLinksOnCanvas(page, run),
+        );
+        await run.record.step(
+          "(a) story image position kept and rendered on the canvas after the upgrade",
+          () => expectStoryPositionAfterUpgrade(page, run),
+        );
+        await run.record.step(
+          "(a) every seeded value kept after the upgrade: D1, editor read, canvas",
+          () => expectSeededContent(page, run, "after the upgrade, before any edit", true),
         );
         if (version === 11) {
           // Published before any edit, so the release shows (a) too.
           await run.record.step("published, public result read", () =>
-            publishV11(page, run, marker, before),
+            publishV11(page, run, marker),
           );
         } else {
           recordLinks(run, "a: published or served page", {
             reached: false,
-            reason: "v15 is read back only; it is not published (Q4)",
+            reason: "not verified (by design, Q4): v15 is read back only; it is not published",
           });
           recordLinks(run, "a: actions on the published or served page", {
             reached: false,
-            reason: "v15 is read back only; it is not published (Q4)",
+            reason: "not verified (by design, Q4): v15 is read back only; it is not published",
+          });
+          recordSentinels(run, "served: published or served page", {
+            reached: false,
+            reason: "not verified (by design, Q4): v15 is read back only; it is not published",
+          });
+          recordPositions(run, "a: published or served page", {
+            reached: false,
+            reason: "not verified (by design, Q4): v15 is read back only; it is not published",
           });
         }
         await run.record.step(
           "(b) after the first copy-only edit, category cards still link to the author's URL",
-          () => expectCardLinksAfterCopyEdit(page, run, before),
+          () => expectCardLinksAfterCopyEdit(page, run),
         );
         await run.record.step(
           "(b) after a first copy-only edit, hero and story action buttons still link to the author's URL",
-          () => expectActionLinksAfterCopyEdit(page, run, before),
+          () => expectActionLinksAfterCopyEdit(page, run),
+        );
+        await run.record.step(
+          "(b) every seeded value kept after the first edits: D1, editor read, canvas",
+          () => expectSeededContent(page, run, "after the first edits", true),
         );
       }
       if (toUse) {
@@ -3537,8 +4203,8 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         await expectOpeningWritesNothing(page, run, 20);
       });
       await run.record.step(
-        "author's own action URLs set before the upgrade",
-        () => setAuthorActionUrls(page, run, 20),
+        "the version's own Documents, with sentinels, seeded before the upgrade",
+        () => seedOldShapeDocuments(page, run, V20, baselineMarker),
       );
       const before = await run.record.step("before-upgrade read-back", () =>
         readBack(page, browser, run, "before", baselineMarker, {
@@ -3596,11 +4262,19 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
       });
       await run.record.step(
         "(a) category cards link to the author's URL on the canvas after the upgrade",
-        () => expectCardLinksOnCanvas(page, run, before),
+        () => expectCardLinksOnCanvas(page, run),
       );
       await run.record.step(
         "(a) hero and story action buttons link to the author's URL on the canvas after the upgrade",
-        () => expectActionLinksOnCanvas(page, run, before),
+        () => expectActionLinksOnCanvas(page, run),
+      );
+      await run.record.step(
+        "(a) story image position kept and rendered on the canvas after the upgrade",
+        () => expectStoryPositionAfterUpgrade(page, run),
+      );
+      await run.record.step(
+        "(a) every seeded value kept after the upgrade: D1, editor read, canvas",
+        () => expectSeededContent(page, run, "after the upgrade, before any edit", true),
       );
       const contentB = `m1-1b-v20-b-${randomUUID().slice(0, 8)}`;
       const upgraded = await publicStep(
@@ -3619,19 +4293,27 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         },
       );
       await run.record.step(
-        "(a) category cards link to the author's URL on the served page",
+        "(a) on the served page after the upgraded publish (its only edit is the hero eyebrow): cards, actions, position, seeded values",
         async () => {
           const home = await storefront("/");
           expect(home.status).toBe(200);
           expectCardLinksServed(
             run,
-            before,
             home.body,
             "served page after the upgraded publish",
           );
           expectActionLinksServed(
             run,
-            before,
+            home.body,
+            "served page after the upgraded publish",
+          );
+          expectStoryPositionServed(
+            run,
+            home.body,
+            "served page after the upgraded publish",
+          );
+          expectSeededContentServed(
+            run,
             home.body,
             "served page after the upgraded publish",
           );
@@ -3685,11 +4367,15 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
       );
       await run.record.step(
         "(b) after the first copy-only edit, category cards still link to the author's URL",
-        () => expectCardLinksAfterCopyEdit(page, run, before),
+        () => expectCardLinksAfterCopyEdit(page, run),
       );
       await run.record.step(
         "(b) after a first copy-only edit, hero and story action buttons still link to the author's URL",
-        () => expectActionLinksAfterCopyEdit(page, run, before),
+        () => expectActionLinksAfterCopyEdit(page, run),
+      );
+      await run.record.step(
+        "(b) every seeded value kept after the first edits: D1, editor read, canvas",
+        () => expectSeededContent(page, run, "after the first edits", true),
       );
       // After every publish-result check, so its draft writes (each put back
       // and read back) cannot move what those checks saw.
