@@ -144,7 +144,34 @@ describe("the publish's own layout preparation", () => {
     });
   });
 
-  it("an unchanged layout branched for the build seal: still the confirmed layout", () => {
+  it("an untouched layout left as it is: this page only stays this page only", () => {
+    // The preparation returns the layout's own published revision and writes
+    // nothing, so the layout is carried, not pending: the server still seals
+    // no shared layout and expects null.
+    const scope = {
+      expectedSharedLayoutRevisionId: null,
+      layoutDraftRevisionId: PUBLISHED_LAYOUT,
+    };
+    const prepared = chainLayoutPreparation(
+      null,
+      PUBLISHED_LAYOUT,
+      PUBLISHED_LAYOUT,
+    );
+    expect(publishScopeAfterPreparation(scope, prepared)).toBe(scope);
+    expect(
+      publishScopeAfterPreparation(scope, prepared)
+        .expectedSharedLayoutRevisionId,
+    ).toBeNull();
+    // Prepared twice in one publish, still nothing written.
+    expect(
+      publishScopeAfterPreparation(
+        scope,
+        chainLayoutPreparation(prepared, PUBLISHED_LAYOUT, PUBLISHED_LAYOUT),
+      ),
+    ).toBe(scope);
+  });
+
+  it("a layout re-prepared into a new revision from the confirmed draft: sent for that revision", () => {
     const scope = {
       expectedSharedLayoutRevisionId: null,
       layoutDraftRevisionId: PUBLISHED_LAYOUT,
@@ -165,12 +192,13 @@ describe("the publish's own layout preparation", () => {
       expectedSharedLayoutRevisionId: LAYOUT_REVISION,
       layoutDraftRevisionId: LAYOUT_REVISION,
     };
+    // Prepared in place: nothing new was written, the confirmed scope stands.
     expect(
       publishScopeAfterPreparation(
         scope,
         chainLayoutPreparation(null, LAYOUT_REVISION, LAYOUT_REVISION),
-      ).expectedSharedLayoutRevisionId,
-    ).toBe(LAYOUT_REVISION);
+      ),
+    ).toBe(scope);
     expect(
       publishScopeAfterPreparation(
         scope,
@@ -215,6 +243,17 @@ describe("the publish's own layout preparation", () => {
       ),
     ).toBe(scope);
     expect(publishScopeAfterPreparation(scope, null)).toBe(scope);
+    // The same holds for a confirmed pending layout.
+    const pending = {
+      expectedSharedLayoutRevisionId: LAYOUT_REVISION,
+      layoutDraftRevisionId: LAYOUT_REVISION,
+    };
+    expect(
+      publishScopeAfterPreparation(
+        pending,
+        chainLayoutPreparation(null, OTHER_LAYOUT, PREPARED_LAYOUT),
+      ),
+    ).toBe(pending);
   });
 });
 

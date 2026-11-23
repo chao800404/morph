@@ -145,6 +145,12 @@ export function chainLayoutPreparation(
  * the one the author confirmed, and the publish is sent with it. Any other
  * base is a change nobody confirmed: the scope stays as read and the server
  * refuses the publish (`PUBLISH_SCOPE_CHANGED`).
+ *
+ * A preparation that left the draft it started from wrote nothing: an
+ * untouched layout (draft = published revision) is left as it is and stays
+ * carried, not pending, so "this page only" (null) is still the scope the
+ * server seals. Restating it as the layout's own revision would make every
+ * such publish refused.
  */
 export function publishScopeAfterPreparation(
   scope: PublishScopeExpectation,
@@ -152,6 +158,7 @@ export function publishScopeAfterPreparation(
 ): PublishScopeExpectation {
   if (
     !preparation ||
+    preparation.fromRevisionId === preparation.revisionId ||
     preparation.fromRevisionId !== scope.layoutDraftRevisionId
   ) {
     return scope;
