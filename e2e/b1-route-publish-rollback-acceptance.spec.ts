@@ -118,7 +118,10 @@ import { themeScopeFromEditorPath } from "./native-compat";
  *        editor's preparation for a build over the page and the layout
  *        (`prepareContentDraftForBuild({ alwaysPrepare: true })`, the step a
  *        publish whose plan is `build` runs too), then p1 is published from
- *        its own editor (release 6). Read back: the Build Preview left the
+ *        its own editor (release 6). Read back: p2's editor, which has
+ *        nothing of its own to publish, reads "published" with nothing to
+ *        publish after the Build Preview, so the editor does not list the
+ *        layout as a pending change; the Build Preview left the
  *        layout row as it was; release 6 pins exactly release 5's items
  *        except p1, at its draft, and the layout at release 1's revision;
  *        the public site serves release 6 and release 4's layout value is on
@@ -1487,6 +1490,56 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     await page.screenshot({ path: buildShot, fullPage: true });
     await page.keyboard.press("Escape");
     await expect(buildPreview).toBeHidden({ timeout: 30_000 });
+
+    // What the merchant sees: the editor does not list the shared layout as
+    // a pending, unpublished change. p1's own toolbar cannot show it, since
+    // p1's unpublished draft comes first in `describeContentChanges` and its
+    // reason is "Page content edited" either way. p2 has nothing of its own
+    // to publish (R-b published it at its draft, and release 5 serves that
+    // draft), so on p2's editor the toolbar's publish state is the layout's
+    // and the theme source's alone: "published" and "Nothing to publish"
+    // when the layout row is untouched, "unpublished" and "Shared layout
+    // edited" when preparing the build forked the layout's draft (draft !=
+    // published, `hasUnpublishedDraft`). The fork is there from the first
+    // render, so a forked layout never reads "published", even for a moment.
+    await openEditor(page, editorRouteUrl(P2.routePath));
+    const p2Status = page.locator("[data-editor-save-status]");
+    const readP2Status = async () => ({
+      publishState: await p2Status.getAttribute("data-publish-state"),
+      unpublishedReason: await p2Status.getAttribute("data-unpublished-reason"),
+    });
+    const layoutNotPending = { publishState: "published", unpublishedReason: "Nothing to publish" };
+    const statusShot = path.join(evidence!.evidenceDir(), "editor-after-build-preview-layout-not-pending-b1-p2.png");
+    try {
+      await expect
+        .poll(readP2Status, {
+          message: "after the Build Preview, p2's editor does not list the shared layout as an unpublished change",
+          timeout: 30_000,
+        })
+        .toEqual(layoutNotPending);
+      await expect(page.getByRole("button", { name: /^Publish$/ }), "Publish is disabled on p2").toBeDisabled({
+        timeout: 30_000,
+      });
+    } finally {
+      const observed = await readP2Status().catch(() => null);
+      await page.screenshot({ path: statusShot, fullPage: true }).catch(() => undefined);
+      evidence!.ledger({
+        case: "l1 (after rollback, Build Preview on p1, read on p2)",
+        step: "R-c/Build Preview/editor publish state",
+        action: "p2's editor after the Build Preview on p1: the shared layout is not an unpublished change",
+        routePath: P2.routePath,
+        activeBefore: release5,
+        activeAfter: evidence!.activeRelease(),
+        evidence: [path.basename(statusShot)],
+        servedReleaseId: servedBefore,
+        detail: {
+          editorPublishState: { expected: layoutNotPending, observed },
+          p2: routeRow(P2),
+          layout: layoutRow(),
+        },
+      });
+    }
+
     // Preparing the untouched layout for the build wrote nothing to it.
     expect(layoutRow(), "the Build Preview leaves the untouched layout row alone").toEqual(layoutBefore);
     expect(await storedCaseSections(fx!, L1), "the layout draft is still release 4's").toEqual(layoutSealed);
