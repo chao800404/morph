@@ -397,7 +397,8 @@ describe("compareStoredWrite: the edited section's componentRef", () => {
               items: [{ id: "p1", number: "01", title: "T", body: "B" }],
             },
           },
-        ] as StoredDocument["sections"],
+          // Section-level keys StoredDocument does not name, compared all the same.
+        ] as unknown as StoredDocument["sections"],
       },
     ];
   }

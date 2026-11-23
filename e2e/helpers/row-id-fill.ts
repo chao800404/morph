@@ -15,12 +15,17 @@
  *   (b) a row that had no `id` key, in the Document the write went to, now
  *       holding exactly the id the editor's read immediately before the write
  *       showed for that row: same section, same array, same index, and the
- *       read's row otherwise equal to the stored row.
+ *       read's row otherwise equal to the stored row;
+ *   (c) only on the edited section, its componentRef changed from exactly
+ *       the fixed expectation's old ref to exactly its new ref
+ *       (`componentRefRewrite`, a hand-checked table the caller owns: the
+ *       first write stores the route-derived component path in place of a
+ *       legacy registry ref; user decision 2026-11-23).
  * Anything else fails: an existing id changed, an id on a different row or
  * on something that is not a row, rows reordered, added or removed, a link
  * or any other leaf changed, a section-level key changed. After the restore
  * the Document must be the pre-write one plus exactly the ids the write
- * filled.
+ * filled and exactly the componentRef rewrites it made.
  */
 
 /** A template's Document as D1 holds it, or as the editor read it. */
@@ -217,6 +222,49 @@ export function compareStoredWrite(input: StoredWriteInput): WriteComparison {
     });
   };
 
+  const componentRefRewrites: RewrittenComponentRef[] = [];
+  const rewrite = input.componentRefRewrite ?? null;
+  if (rewrite && input.edit && rewrite.sectionId !== input.edit.sectionId) {
+    problems.push(
+      `componentRef expectation names ${rewrite.sectionId}, the write edits ${input.edit.sectionId}`,
+    );
+  }
+
+  /** A section's componentRef differs: allowed only as the fixed rewrite. */
+  const checkRewrite = (
+    templateId: string,
+    sectionId: string,
+    from: unknown,
+    to: unknown,
+  ) => {
+    const where = `${templateId}/${sectionId}/componentRef`;
+    const refused = (reason: string) =>
+      problems.push(`${where}: ${show(from)} -> ${show(to)}, ${reason}`);
+    if (!rewrite) return refused("no fixed expectation allows a change here");
+    if (templateId !== input.templateId) {
+      return refused("in a Document the write did not go to");
+    }
+    if (sectionId !== rewrite.sectionId) {
+      return refused(`the fixed expectation is for ${rewrite.sectionId}`);
+    }
+    if (input.edit && sectionId !== input.edit.sectionId) {
+      return refused("not the edited section");
+    }
+    if (from !== rewrite.from) {
+      return refused(`the fixed expectation rewrites only ${show(rewrite.from)}`);
+    }
+    if (to !== rewrite.to) {
+      return refused(`the fixed expectation rewrites only to ${show(rewrite.to)}`);
+    }
+    componentRefRewrites.push({
+      key: where,
+      templateId,
+      sectionId,
+      from: rewrite.from,
+      to: rewrite.to,
+    });
+  };
+
   const walk = (
     templateId: string,
     sectionId: string,
@@ -245,6 +293,16 @@ export function compareStoredWrite(input: StoredWriteInput): WriteComparison {
       for (const key of keys) {
         if (row && key === "id" && !has(want, "id") && has(got, "id")) {
           checkFill(templateId, sectionId, path, got.id);
+          continue;
+        }
+        if (
+          path.length === 0 &&
+          key === "componentRef" &&
+          has(want, key) &&
+          has(got, key) &&
+          !Object.is(want[key], got[key])
+        ) {
+          checkRewrite(templateId, sectionId, want[key], got[key]);
           continue;
         }
         if (!has(want, key) || !has(got, key)) {
@@ -294,5 +352,14 @@ export function compareStoredWrite(input: StoredWriteInput): WriteComparison {
       );
     }
   }
-  return { problems, filledRowIds, componentRefRewrites: [] };
+  if (input.expectedRewrites) {
+    const pairs = (rewrites: RewrittenComponentRef[]) =>
+      JSON.stringify(rewrites.map((r) => [r.key, r.from, r.to]).sort());
+    if (pairs(componentRefRewrites) !== pairs(input.expectedRewrites)) {
+      problems.push(
+        `componentRef rewrites ${pairs(input.expectedRewrites)} after the write, ${pairs(componentRefRewrites)} now`,
+      );
+    }
+  }
+  return { problems, filledRowIds, componentRefRewrites };
 }
