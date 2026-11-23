@@ -17,6 +17,8 @@ import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
   answerFramePings,
   frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
 } from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { listStorefrontThemeFiles } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -800,11 +802,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
   });
 
   it("a new document re-reads the view", async () => {
+    // Each document names itself, so a reload is a new document's ready.
+    modelCurrentBridge();
     readRouteBindings.mockResolvedValue(bindingView());
     await settled(context, HOME, V2_READY);
     await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(1));
     await flush();
 
+    reloadFrameDocument();
     fromPreview({
       type: "morph:storefront-preview-ready",
       servedInstance: {
