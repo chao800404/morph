@@ -199,9 +199,12 @@ const MANIFEST = "morph.theme.json";
  * default-imports each page-owned component and renders it with
  * `content("<section>")`, review.json lists those files as written, the
  * shipped components have default exports, and the stored Documents hold the
- * old refs). A write to one of these sections stores the route-derived path
- * in place of the legacy registry ref. v20 case only; every other case and
- * section allows no componentRef change. Before each such write the stored
+ * old refs; the same facts checked for B1 v11 and v15 in the formal round-2
+ * evidence 2026-11-24/m1-formal/1b/attempt-1/b1b2/evidence/1b-b1-v11 and
+ * 1b-b1-v15). A write to one of these sections stores the route-derived path
+ * in place of the legacy registry ref. B1 v11, v15 and v20 only; every other
+ * case (B2, v26, v28, v30) and section allows no componentRef change. Before
+ * each such write the stored
  * source is checked against this table (sourceMatchesRefExpectation), with
  * plain text checks, never the product's resolver.
  */
@@ -213,7 +216,7 @@ type ComponentRefExpectation = {
   /** The route's default import of expectedNewRef. */
   importSpecifier: string;
 };
-const V20_COMPONENT_REF_EXPECTATIONS: readonly ComponentRefExpectation[] = [
+const STARTER_LEGACY_INDEX_REF_EXPECTATIONS: readonly ComponentRefExpectation[] = [
   {
     sectionId: "starter-introduction",
     oldRef: "editorial-intro.default",
@@ -1900,7 +1903,7 @@ type Exercise = {
   filledRowIds?: FilledRowId[];
   /**
    * The edited section's componentRef as the write changed it, from the
-   * fixed table's old ref to its new one (V20_COMPONENT_REF_EXPECTATIONS);
+   * fixed table's old ref to its new one (STARTER_LEGACY_INDEX_REF_EXPECTATIONS);
    * kept through the restore.
    */
   componentRefRewrites?: Array<{ key: string; sectionId: string; from: string; to: string }>;
@@ -1925,7 +1928,7 @@ type Exercise = {
  * listed target); every one of them must be on the canvas.
  *
  * `refExpectations`: the sections whose write may change componentRef, and to
- * what (V20_COMPONENT_REF_EXPECTATIONS); none by default.
+ * what (STARTER_LEGACY_INDEX_REF_EXPECTATIONS); none by default.
  */
 async function exerciseAnnotations(
   page: Page,
@@ -4559,7 +4562,16 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
           async () =>
             expectAnnotationsExercised(
               run,
-              await exerciseAnnotations(page, run, toUse),
+              await exerciseAnnotations(
+                page,
+                run,
+                toUse,
+                // B1 v11 and v15 only (hand-checked, 2026-11-24 round 2);
+                // v26 is not exercised here and allows no ref change.
+                version === 11 || version === 15
+                  ? STARTER_LEGACY_INDEX_REF_EXPECTATIONS
+                  : [],
+              ),
             ),
         );
       }
@@ -5130,7 +5142,7 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
               page,
               run,
               v20Kept!.exerciseKeys,
-              V20_COMPONENT_REF_EXPECTATIONS,
+              STARTER_LEGACY_INDEX_REF_EXPECTATIONS,
             ),
           );
           expect(
