@@ -10,6 +10,12 @@ import {
 } from "@/lib/storefront/editor/selection-source-baseline";
 import { isEditablePublicTextPath } from "@/lib/storefront/editor/public-text-file";
 import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
+import { sectionPropsWriteData } from "@/lib/storefront/editor/section-props-write-data";
+import {
+  astroDesignSelectionRequest,
+  resolveAstroDesignSelection,
+} from "@/lib/storefront/editor/astro-design-selection";
+import type { AstroRouteBindingsView } from "@/lib/storefront/source-language/astro-route-bindings";
 import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
 import { writeThemePublicTextFile } from "../-queries/theme-binary-files";
 import {
@@ -2620,6 +2626,13 @@ export function VisualEditorShell({
       routePath?: string;
       resetProps?: string[];
       /**
+       * Astro only (M2 PR-F): a confirmed Design selection's v2 id and Core's
+       * component digest (`astroWriteIdentity`), verified again by Core.
+       * Absent on every Start write, which is sent as before.
+       */
+      identity?: string;
+      componentDigest?: string;
+      /**
        * A resend whose out-of-date refusal is read back before the author
        * is told anything (`settleRefused`): that refusal is not reported
        * here, so the author gets one message, after the read-back.
@@ -2639,21 +2652,14 @@ export function VisualEditorShell({
         "theme",
         () =>
           updateStorefrontThemeSectionProps({
-            data: {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-              templateId: variables.templateId ?? activeTemplate.id,
-              sectionId: variables.sectionId,
-              props: variables.props,
-              expectedDraftGeneration: variables.expectedDraftGeneration,
-              expectedSourceGeneration: variables.expectedSourceGeneration,
-              ...(variables.routePath
-                ? { routePath: variables.routePath }
-                : {}),
-              ...(variables.resetProps?.length
-                ? { resetProps: variables.resetProps }
-                : {}),
-            },
+            data: sectionPropsWriteData(
+              {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                activeTemplateId: activeTemplate.id,
+              },
+              variables,
+            ),
           }),
       );
     },
@@ -6746,6 +6752,64 @@ export function VisualEditorShell({
     pendingThemeRoute,
     search.routePath,
   ]);
+  /**
+   * Core's binding view of the Astro page the editor is on (M2 PR-D/PR-F),
+   * read for the saved source generation the workspace holds: a new
+   * generation is a new key. What Design may offer on the page is decided by
+   * this view's status (`astroDesignPageStatus`), never by the framework's
+   * name; it is a hint only, as every write is verified again by Core.
+   */
+  const astroBindingSourceGeneration = useThemeWorkspaceStore((state) => {
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    return Math.max(
+      state.getAcceptedSourceGeneration(scope),
+      state.getObservedSourceGeneration(scope),
+    );
+  });
+  const astroBindingRoutePath =
+    context.theme.framework === "astro" &&
+    activeThemeRoute?.kind === "route" &&
+    !isThemeEndpointRoute(activeThemeRoute)
+      ? activeThemeRoute.path
+      : null;
+  const astroBindingsQuery = useQuery({
+    ...storefrontThemeQueries.routeBindings(
+      context.storefront.id,
+      context.theme.id,
+      astroBindingRoutePath ?? "/",
+      astroBindingSourceGeneration,
+    ),
+    enabled:
+      astroBindingRoutePath !== null &&
+      Number.isSafeInteger(astroBindingSourceGeneration) &&
+      astroBindingSourceGeneration >= 1,
+  });
+  /** For the preview message handler, which is not rebuilt for it. */
+  const astroBindingViewRef = useRef<AstroRouteBindingsView | null>(null);
+  astroBindingViewRef.current =
+    astroBindingRoutePath !== null && astroBindingsQuery.data?.success === true
+      ? astroBindingsQuery.data.data
+      : null;
+  /**
+   * Re-reads the view once a new document is on screen (plan v2 §5.1: the
+   * reload after an Astro edit re-confirms explicitly). Not on every
+   * keystroke: the key changes only with the source generation.
+   */
+  const refetchAstroBindingsRef = useRef<() => void>(() => {});
+  refetchAstroBindingsRef.current = () => {
+    // The first read is the query's own; only a later document re-reads.
+    if (
+      astroBindingRoutePath === null ||
+      !astroBindingsQuery.isFetched ||
+      astroBindingsQuery.isFetching
+    ) {
+      return;
+    }
+    void astroBindingsQuery.refetch();
+  };
   const routeStructurePending = Boolean(
     (pendingRoutePath !== null &&
       !editorRoutePathsMatch(pendingRoutePath, search.routePath) &&
@@ -13314,6 +13378,9 @@ export function VisualEditorShell({
           ),
         });
         setFrameRecordSequence((sequence) => sequence + 1);
+        // An Astro page shows an edit only in a new document (reload, 6.3):
+        // what Core confirms on it is read again for that document.
+        refetchAstroBindingsRef.current();
         // Tell this document what the editor can read back, only when this
         // ready carries a document id and the bridge said it reads the token.
         // The id names the round, not a permission: the bridge ignores any
@@ -13648,6 +13715,33 @@ export function VisualEditorShell({
           toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
             id: "source-location-stale",
           });
+          return;
+        }
+        // M2 PR-F: what Core's binding view says of the clicked instance,
+        // shown beside the locate (plan v2 §6.2, display 1). Still no Design
+        // selection and nothing written: Astro content writes wait for an
+        // Astro presentation acknowledgement (#399), which the bridge does
+        // not give yet. A click on no section says nothing new.
+        const astroSelection = resolveAstroDesignSelection({
+          request: astroDesignSelectionRequest(
+            message,
+            previewFrameRecordRef.current?.previewKey === previewKey &&
+              previewFrameRecordRef.current.readyRound ===
+                previewReadyRoundRef.current
+              ? previewFrameRecordRef.current.capabilities
+              : new Set<PreviewCapability>(),
+          ),
+          view: astroBindingViewRef.current,
+          workspaceSourceGeneration: currentContentSourceGeneration(),
+          routePath: currentSearchRoutePathRef.current ?? "/",
+        });
+        if (
+          astroSelection.status === "refused" &&
+          astroSelection.hint.reason !== "outside-section"
+        ) {
+          toast.info(astroSelection.hint.message, {
+            id: "astro-design-status",
+          });
         }
         return;
       }
@@ -13820,6 +13914,7 @@ export function VisualEditorShell({
     confirmPreviewStyleRevision,
     context.storefront.id,
     context.theme.id,
+    currentContentSourceGeneration,
     handleSwapThemeFileSiblings,
     handleUpdateThemeFileStyle,
     isSelectionMode,

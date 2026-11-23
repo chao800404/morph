@@ -60,6 +60,7 @@ const getThemeEditor = vi.hoisted(() => vi.fn());
 const saveThemeFile = vi.hoisted(() => vi.fn());
 const getThemeFile = vi.hoisted(() => vi.fn());
 const getSession = vi.hoisted(() => vi.fn());
+const readRouteBindings = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "@/server/storefront/storefront-themes.serverFn",
@@ -67,6 +68,7 @@ vi.mock(
     ...(await importOriginal<Record<string, unknown>>()),
     updateStorefrontThemeSectionProps: updateSectionProps,
     getStorefrontThemeEditor: getThemeEditor,
+    readThemeRouteBindings: readRouteBindings,
   }),
 );
 vi.mock(
@@ -319,7 +321,15 @@ const flush = () =>
   });
 
 /** Renders the route's page, signed in as OWNER, and brings the frame up. */
-async function settled(themeContext: StorefrontThemeEditorDTO = context) {
+async function settled(
+  themeContext: StorefrontThemeEditorDTO = context,
+  page: {
+    template: "index" | "page";
+    templateId: string;
+    routePath: string;
+  } = { template: "page", templateId: TEMPLATE_ID, routePath: ROUTE_PATH },
+  capabilities?: string[],
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -341,14 +351,14 @@ async function settled(themeContext: StorefrontThemeEditorDTO = context) {
         context={themeContext}
         search={
           {
-            template: "page",
-            templateId: TEMPLATE_ID,
-            routePath: ROUTE_PATH,
+            template: page.template,
+            templateId: page.templateId,
+            routePath: page.routePath,
             viewport: "desktop",
           } as StorefrontThemeEditorSearch
         }
         onSearchChange={vi.fn()}
-        navigatingRoutePath={ROUTE_PATH}
+        navigatingRoutePath={page.routePath}
         currentUser={OWNER}
       />
     </QueryClientProvider>,
@@ -360,6 +370,7 @@ async function settled(themeContext: StorefrontThemeEditorDTO = context) {
       kind: "known",
       instance: { session: SESSION, serial: 1 },
     },
+    ...(capabilities ? { capabilities } : {}),
   });
   await flush();
   const request = log
@@ -368,12 +379,12 @@ async function settled(themeContext: StorefrontThemeEditorDTO = context) {
   fromPreview({
     type: "morph:storefront-preview-route-applied",
     routeRequestId: request?.routeRequestId,
-    routePath: ROUTE_PATH,
+    routePath: page.routePath,
   });
   fromPreview({
     type: "morph:storefront-preview-structure",
     nodes: [],
-    routePath: ROUTE_PATH,
+    routePath: page.routePath,
   });
   await flush();
 }
@@ -408,6 +419,12 @@ beforeEach(() => {
   getThemeFile.mockReset();
   getThemeFile.mockResolvedValue(stored());
   updateSectionProps.mockReset();
+  readRouteBindings.mockReset();
+  readRouteBindings.mockResolvedValue({
+    success: false,
+    message: "not read in this test",
+    error: "ROUTE_BINDINGS_UNAVAILABLE",
+  });
   saveThemeFile.mockReset();
   saveThemeFile.mockImplementation(
     async (request: { data: { path: string; content: string } }) => ({
@@ -619,5 +636,199 @@ describe("Start-only page and section structure stays off on an Astro Theme", ()
     expect(
       sections.queryByText(SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE),
     ).toBeNull();
+  });
+});
+
+describe("an Astro click is checked against Core's binding view (M2 PR-F)", () => {
+  const NONCE = "0123456789abcdef";
+  const SRC = "a".repeat(64);
+  const DIGEST = "c".repeat(64);
+  const MARKER = `${NONCE}:2:${SRC}:30:60`;
+  const HOME = { template: "index" as const, templateId: "template-1", routePath: "/" };
+  const V2_READY = ["astro-identity-v2", "section-presentation-ack-v1"];
+
+  const bindingView = (overrides: Record<string, unknown> = {}) => ({
+    success: true,
+    message: "Route bindings read",
+    data: {
+      routePath: "/",
+      routeFile: ASTRO_PAGE,
+      sourceGeneration: 3,
+      routeSourceDigest: SRC,
+      boundaryRule: 2,
+      status: { kind: "confirmed" },
+      instances: [
+        {
+          identity: { rule: 2, src: SRC, start: 30, end: 60 },
+          componentDigest: DIGEST,
+          componentPath: "src/components/Hero.astro",
+          componentName: "Hero",
+          section: "hero",
+          componentRef: "src/components/Hero.astro#default",
+          sectionType: "hero",
+          declaredFields: ["title"],
+          claims: [{ slot: "hero", field: "title" }],
+        },
+      ],
+      ...overrides,
+    },
+  });
+
+  /** A located click on the page's <h1> that names a v2 boundary instance. */
+  function boundaryClick(selectionRevision: number, sourceDigest = DIGEST) {
+    fromPreview({
+      type: "morph:storefront-preview-select-section",
+      sectionId: `source:${ASTRO_PAGE}`,
+      componentType: "h1",
+      kind: "heading",
+      sourceFilePath: ASTRO_PAGE,
+      sourceLocation: `${ASTRO_PAGE}:5:3`,
+      sourceVersion: astroPreviewSourceHash(ASTRO_SOURCE),
+      previewBoundary: { marker: MARKER, selectable: true, reason: null },
+      sourceDigest,
+      locatedAt: null,
+      elementKey: null,
+      fieldKey: null,
+      field: null,
+      fieldPath: null,
+      descendantFields: [],
+      tagName: "h1",
+      role: null,
+      inputType: null,
+      styleRevision: 0,
+      className: "",
+      isSection: false,
+      inspectorOverride: null,
+      computedStyle: null,
+      parentComputedStyle: null,
+      sectionComputedStyle: null,
+      documentRect: null,
+      selectionRevision,
+    });
+  }
+
+  const hinted = (pattern: RegExp) =>
+    vi
+      .mocked(toast.info)
+      .mock.calls.some(
+        ([text, options]) =>
+          typeof text === "string" &&
+          pattern.test(text) &&
+          (options as { id?: string } | undefined)?.id ===
+            "astro-design-status",
+      );
+
+  it("reads the view for the page and the workspace's source generation", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME, V2_READY);
+
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    expect(readRouteBindings.mock.calls[0]![0]).toEqual({
+      data: {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        routePath: "/",
+        expectedSourceGeneration: 3,
+      },
+    });
+  });
+
+  it("a click on an instance Core confirmed still only locates, writes nothing, and says nothing more", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME, V2_READY);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    await flush();
+
+    boundaryClick(1);
+    expect(
+      await screen.findByRole(
+        "textbox",
+        { name: "Code editor" },
+        { timeout: 15_000 },
+      ),
+    ).toBeTruthy();
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(hinted(/./)).toBe(false);
+  });
+
+  it("a frame digest other than Core's asks for a preview reload (class A)", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME, V2_READY);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    await flush();
+
+    boundaryClick(1, "e".repeat(64));
+    await flush();
+
+    expect(hinted(/Reload the preview/)).toBe(true);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("a view refused for a missing parser binding says this environment has none", async () => {
+    readRouteBindings.mockResolvedValue(
+      bindingView({
+        status: {
+          kind: "refused",
+          class: "temporarily-unconfirmable",
+          reason: "parser-binding-missing",
+          detail: "the .astro parser could not confirm this file",
+        },
+        instances: [],
+      }),
+    );
+    await settled(context, HOME, V2_READY);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    await flush();
+
+    boundaryClick(1);
+    await flush();
+
+    expect(hinted(/no \.astro analysis service/)).toBe(true);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("a frame older than the v2 identity asks for a reload", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    await flush();
+
+    boundaryClick(1);
+    await flush();
+
+    expect(hinted(/Reload the preview/)).toBe(true);
+  });
+
+  it("a new document re-reads the view", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME, V2_READY);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(1));
+    await flush();
+
+    fromPreview({
+      type: "morph:storefront-preview-ready",
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
+      capabilities: V2_READY,
+    });
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(2));
+  });
+
+  it("a TanStack Start Theme never reads a binding view", async () => {
+    const startContext = {
+      ...context,
+      theme: { ...context.theme, framework: null },
+    } as unknown as StorefrontThemeEditorDTO;
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: startContext,
+    });
+    await settled(startContext, HOME, V2_READY);
+    await flush();
+
+    expect(readRouteBindings).not.toHaveBeenCalled();
   });
 });
