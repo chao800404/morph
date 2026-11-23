@@ -24,6 +24,14 @@
  *   (`SANDBOX_START_BUDGET_MS`, from the start of the run). Destroys and waits
  *   are bounded by it too.
  *
+ * The acquire and the probe are bounded by the same deadline, here and not
+ * only by the SDK: a start RPC that never answers would otherwise hold the
+ * build in `building` with no error (a local E2E run, 2026-11-23). Reaching
+ * the deadline throws `SandboxStartTimeoutError`, which is not a recognised
+ * start failure and so is not retried. What answers after it is never used:
+ * a session acquired late is destroyed, and a probe answering late finds its
+ * session already destroyed and the start already failed.
+ *
  * Every attempt is the same build, with the same frozen input and the same
  * Sandbox id; attempts are told apart only by their number in the build log.
  * A failed start leaves no artifact, since artifacts are stored only after a
@@ -160,6 +168,48 @@ export type SandboxStartOptions<Session> = Readonly<{
   random?: () => number;
 }>;
 
+/** The start step that did not answer in time. */
+export type SandboxStartStage = "acquire" | "probe";
+
+/**
+ * The start phase reached its deadline inside one attempt's acquire or probe.
+ * Its fields are the build's diagnostics: which step, which attempt, how long
+ * the start phase had run, how long that step was allowed, and whether the
+ * attempt's container was confirmed destroyed (null when no session was ever
+ * handed over).
+ */
+export class SandboxStartTimeoutError extends Error {
+  readonly code = "SANDBOX_START_TIMEOUT";
+  readonly stage: SandboxStartStage;
+  readonly attempt: number;
+  readonly elapsedMs: number;
+  readonly boundMs: number;
+  readonly destroyConfirmed: boolean | null;
+
+  constructor(
+    fields: Readonly<{
+      stage: SandboxStartStage;
+      attempt: number;
+      elapsedMs: number;
+      boundMs: number;
+      destroyConfirmed: boolean | null;
+    }>,
+  ) {
+    super(
+      `SANDBOX_START_TIMEOUT: the container's ${fields.stage} did not answer within ${fields.boundMs} ms (attempt ${fields.attempt}, ${fields.elapsedMs} ms into the start phase); a timeout is not retried.`,
+    );
+    this.name = "SandboxStartTimeoutError";
+    this.stage = fields.stage;
+    this.attempt = fields.attempt;
+    this.elapsedMs = fields.elapsedMs;
+    this.boundMs = fields.boundMs;
+    this.destroyConfirmed = fields.destroyConfirmed;
+  }
+}
+
+/** `within`'s own rejection, told apart from the work's. */
+class BoundExceeded extends Error {}
+
 async function within<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -167,7 +217,7 @@ async function within<T>(work: Promise<T>, ms: number): Promise<T> {
       work,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`did not finish within ${ms} ms`)),
+          () => reject(new BoundExceeded(`did not finish within ${ms} ms`)),
           ms,
         );
       }),
@@ -201,18 +251,71 @@ export async function startBuildSandbox<Session>(
   /** A destroy waits no longer than its own bound, nor past the deadline. */
   const destroyBound = () =>
     Math.max(1, Math.min(destroyTimeoutMs, options.deadline - now()));
+  /** An acquire or probe waits no longer than the deadline. */
+  const stepBound = () => Math.max(1, options.deadline - now());
+  const startedAt = now();
+  const timedOut = (
+    stage: SandboxStartStage,
+    attempt: number,
+    boundMs: number,
+    destroyConfirmed: boolean | null,
+  ) => {
+    const error = new SandboxStartTimeoutError({
+      stage,
+      attempt,
+      elapsedMs: now() - startedAt,
+      boundMs,
+      destroyConfirmed,
+    });
+    options.log("error", error.message);
+    return error;
+  };
 
   for (let attempt = 1; ; attempt += 1) {
     options.log(
       "info",
       `Starting the Sandbox container (attempt ${attempt} of at most ${attempts})...`,
     );
-    const session = await options.acquire();
-    let ready = false;
+    const acquireBound = stepBound();
+    const acquiring = options.acquire();
+    let session: Session;
     try {
-      await options.probe(session);
+      session = await within(acquiring, acquireBound);
+    } catch (error) {
+      if (!(error instanceof BoundExceeded)) throw error;
+      // A session handed over after the start failed is nobody's: destroy it
+      // when it comes, and never use it.
+      acquiring.then(
+        (late) => {
+          within(options.destroy(late), destroyTimeoutMs).catch(() => {});
+        },
+        () => {},
+      );
+      throw timedOut("acquire", attempt, acquireBound, null);
+    }
+    let ready = false;
+    const probeBound = stepBound();
+    try {
+      await within(options.probe(session), probeBound);
       ready = true;
     } catch (error) {
+      if (error instanceof BoundExceeded) {
+        // The deadline has passed, so this destroy keeps its own bound
+        // rather than the deadline's: the start fails either way, and whether
+        // its container is gone belongs in the diagnostics. A probe answering
+        // after this is never awaited again.
+        let destroyConfirmed = true;
+        try {
+          await within(options.destroy(session), destroyTimeoutMs);
+        } catch (destroyError) {
+          destroyConfirmed = false;
+          options.log(
+            "error",
+            `The container of attempt ${attempt} could not be confirmed destroyed: ${messageOf(destroyError)}`,
+          );
+        }
+        throw timedOut("probe", attempt, probeBound, destroyConfirmed);
+      }
       const kind = classifySandboxStartError(error);
       // Destroyed before anything else, retry or not: a session that failed
       // to start is not handed back to anyone who would clean it up.
