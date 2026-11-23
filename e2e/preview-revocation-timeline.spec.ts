@@ -22,6 +22,7 @@ import {
   type Page,
 } from "@playwright/test";
 
+import { decideCloseBeforeB } from "./helpers/revocation-close-before-b";
 import { editHero, openEditor, savedField, serverFn } from "./native-acceptance";
 import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
 
@@ -124,7 +125,14 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  *
  * Live at R (every case). Each socket must have an echo, or a container
  * receipt (the fixture keeps receipt times), within LIVE_BEFORE_MS = 500 ms
- * before a, and must still be open at b; otherwise a harness error. The idle
+ * before a, and must still be open at b; otherwise a harness error. Sign-out
+ * only: sign-out closes the sockets while it handles the request, so a 4401
+ * close in [a, b) of a socket live before a, with a 2xx answer, is the event
+ * measured, not a harness error; it is recorded as closedDuringRequest (raw
+ * close time, a, b) and judged like any close (T - a <= b - a, so a pass
+ * whenever the request took under 30 s). Any other close before b, in any
+ * trigger, is still a harness error (helpers/revocation-close-before-b.ts).
+ * The idle
  * case stops sending just BEFORE a (so nothing it sends can follow R), and is
  * judged live just before that stop; it records the frames the page had sent
  * and the container had received at the stop and at b, and framesSentAfterR
@@ -1287,7 +1295,7 @@ function saveCase(trigger: Trigger, result: Record<string, unknown>) {
     verdict:
       "pass: T - a <= D; over: T - b > D; uncertain otherwise. HTTP, per kind: the first request sent at or after b refused and sent within 30 s of a, and none served. Idle case: data verdicts not applicable.",
     failsOn:
-      "harness error (incl. a socket closed before b or not live within 500 ms before a / the idle stop; trigger rows or read-back wrong), incomplete case, draft byte after b, any probe sent at or after b served, a non-exempt page request after b served (exempt: preview-auth only), and in EVERY case design limits not met: data within 32 s (idle: not applicable) and 4401 close within 37 s, each a pass.",
+      "harness error (incl. a socket closed before b, except sign-out's 4401 close in [a, b) of a socket live before a with a 2xx answer (closedDuringRequest), or not live within 500 ms before a / the idle stop; trigger rows or read-back wrong), incomplete case, draft byte after b, any probe sent at or after b served, a non-exempt page request after b served (exempt: preview-auth only), and in EVERY case design limits not met: data within 32 s (idle: not applicable) and 4401 close within 37 s, each a pass.",
     target:
       "TARGET 30 s reported with the same verdicts: pass = met, over = not met, uncertain = uncertain. The 30 s threshold stands; its guarantee is unproven, and these numbers are trial observations.",
     preparation:
@@ -2256,10 +2264,18 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         harnessErrors.push(
           `${surface}: no echo and no container receipt within ${LIVE_BEFORE_MS} ms before ${idleStop ? "sending stopped" : "a"}`,
         );
-      if (close && close.t < b)
-        harnessErrors.push(
-          `${surface}: the socket closed before b (b${close.t - b} ms, code ${close.status})`,
-        );
+      const closeBeforeB = decideCloseBeforeB({
+        trigger,
+        surface,
+        a,
+        b,
+        liveBeforeA: echoBeforeR || receiptBeforeR,
+        triggerStatus:
+          typeof triggerAnswer.status === "number" ? triggerAnswer.status : null,
+        close: close ? { t: close.t, status: close.status } : null,
+      });
+      if (closeBeforeB.outcome === "harness-error")
+        harnessErrors.push(closeBeforeB.error);
       // M4: what the idle page sent, and the container had, at stop and at b.
       let idleFrames: Record<string, unknown> | undefined;
       if (idleStop) {
@@ -2324,6 +2340,14 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         closedAt: close?.t ?? null,
         closeCode: close?.status ?? null,
         closeTimedOut: !close,
+        // Sign-out only: a 4401 close in [a, b) of a live socket, with an ok
+        // answer (see the header). Raw times; null when the socket was open
+        // at b. Its close verdicts below are the same judge(close.t, a, b):
+        // longestMs = close.t - a <= b - a, so within the request.
+        closedDuringRequest:
+          closeBeforeB.outcome === "closed-during-request"
+            ? closeBeforeB.closedDuringRequest
+            : null,
         liveBeforeR: { at: live, echo: echoBeforeR, containerReceipt: receiptBeforeR },
         container: record
           ? {
