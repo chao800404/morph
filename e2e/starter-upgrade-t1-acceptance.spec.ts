@@ -35,6 +35,11 @@ import {
   writeJson,
 } from "./helpers/m1-evidence";
 import {
+  compareStoredWrite,
+  type FilledRowId,
+  type WriteComparison,
+} from "./helpers/row-id-fill";
+import {
   DOMAINS,
   RELEASES,
   THEMES,
@@ -186,6 +191,101 @@ const PACKAGE = "package.json";
 const LAYOUT = "src/layouts/StorefrontLayout.tsx";
 const CONTENT = "src/morph/content.ts";
 const MANIFEST = "morph.theme.json";
+
+/**
+ * The componentRef the first write to a section may store, fixed by hand
+ * (user decision 2026-11-23; checked by the lead against the trial evidence
+ * harness-fix-e2e/1b-v20-green2/evidence/1b-b1-v20: after/src__routes__index.tsx
+ * default-imports each page-owned component and renders it with
+ * `content("<section>")`, review.json lists those files as written, the
+ * shipped components have default exports, and the stored Documents hold the
+ * old refs). A write to one of these sections stores the route-derived path
+ * in place of the legacy registry ref. v20 case only; every other case and
+ * section allows no componentRef change. Before each such write the stored
+ * source is checked against this table (sourceMatchesRefExpectation), with
+ * plain text checks, never the product's resolver.
+ */
+type ComponentRefExpectation = {
+  sectionId: string;
+  oldRef: string;
+  expectedNewRef: string;
+  routeFile: string;
+  /** The route's default import of expectedNewRef. */
+  importSpecifier: string;
+};
+const V20_COMPONENT_REF_EXPECTATIONS: readonly ComponentRefExpectation[] = [
+  {
+    sectionId: "starter-introduction",
+    oldRef: "editorial-intro.default",
+    expectedNewRef: "src/components/page-sections/index/starter-introduction/index.tsx",
+    routeFile: "src/routes/index.tsx",
+    importSpecifier: "../components/page-sections/index/starter-introduction/index",
+  },
+  {
+    sectionId: "starter-principles",
+    oldRef: "principles.default",
+    expectedNewRef: "src/components/page-sections/index/starter-principles/index.tsx",
+    routeFile: "src/routes/index.tsx",
+    importSpecifier: "../components/page-sections/index/starter-principles/index",
+  },
+  {
+    sectionId: "starter-newsletter",
+    oldRef: "newsletter.default",
+    expectedNewRef: "src/components/page-sections/index/starter-newsletter/index.tsx",
+    routeFile: "src/routes/index.tsx",
+    importSpecifier: "../components/page-sections/index/starter-newsletter/index",
+  },
+];
+
+/**
+ * Whether the stored source still says what the table says: the route file
+ * exists, default-imports the expected module, and spreads
+ * `content("<section>")` into that import; the module exists with a default
+ * export; the stored section holds the old ref, or already the new one (then
+ * no change is allowed). Returns what does not match.
+ */
+function sourceMatchesRefExpectation(
+  files: Record<string, string>,
+  expectation: ComponentRefExpectation,
+  storedRef: unknown,
+): string[] {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const drift: string[] = [];
+  const route = files[expectation.routeFile];
+  if (typeof route !== "string") {
+    drift.push(`${expectation.routeFile} is not in the Theme source`);
+  } else {
+    const imported = new RegExp(
+      `^\\s*import\\s+([A-Za-z_$][\\w$]*)\\s+from\\s+["']${escape(expectation.importSpecifier)}["'];?\\s*$`,
+      "m",
+    ).exec(route)?.[1];
+    if (!imported) {
+      drift.push(
+        `${expectation.routeFile} has no default import of "${expectation.importSpecifier}"`,
+      );
+    } else if (
+      !new RegExp(
+        `<${escape(imported)}\\s+\\{\\s*\\.\\.\\.content\\(\\s*["']${escape(expectation.sectionId)}["']\\s*\\)\\s*\\}`,
+      ).test(route)
+    ) {
+      drift.push(
+        `${expectation.routeFile} does not render <${imported} {...content("${expectation.sectionId}")} />`,
+      );
+    }
+  }
+  const component = files[expectation.expectedNewRef];
+  if (typeof component !== "string") {
+    drift.push(`${expectation.expectedNewRef} is not in the Theme source`);
+  } else if (!/\bexport\s+default\b/.test(component)) {
+    drift.push(`${expectation.expectedNewRef} has no default export`);
+  }
+  if (storedRef !== expectation.oldRef && storedRef !== expectation.expectedNewRef) {
+    drift.push(
+      `section ${expectation.sectionId} stores componentRef ${JSON.stringify(storedRef)}, neither ${expectation.oldRef} nor ${expectation.expectedNewRef}`,
+    );
+  }
+  return drift;
+}
 const OTHER_ROUTE = "/order-transfer";
 const OTHER_ROUTE_HEADING = "訂單轉移確認";
 // The upgrade target is STOREFRONT_STARTER_TEMPLATE_VERSION, read where it is
@@ -1792,6 +1892,21 @@ type Exercise = {
   layoutProbe?: unknown;
   /** The control's `maxlength`, when it has one. */
   maxLength?: number | null;
+  /**
+   * Row ids the write stored that D1 did not hold before: rows stored without
+   * an `id`, given the one the editor's read before the write showed
+   * (compareStoredWrite). Still there after the restore.
+   */
+  filledRowIds?: FilledRowId[];
+  /**
+   * The edited section's componentRef as the write changed it, from the
+   * fixed table's old ref to its new one (V20_COMPONENT_REF_EXPECTATIONS);
+   * kept through the restore.
+   */
+  componentRefRewrites?: Array<{ key: string; sectionId: string; from: string; to: string }>;
+  /** compareStoredWrite's last answer for the write and for the restore. */
+  writeProblems?: string[];
+  restoreProblems?: string[];
   outcome?: string;
   error?: string;
 };
@@ -1808,11 +1923,15 @@ type Exercise = {
  *
  * `keys` are post-upgrade keys (for v15, a moved or renamed annotation's
  * listed target); every one of them must be on the canvas.
+ *
+ * `refExpectations`: the sections whose write may change componentRef, and to
+ * what (V20_COMPONENT_REF_EXPECTATIONS); none by default.
  */
 async function exerciseAnnotations(
   page: Page,
   run: CaseRun,
   keys: ReadonlySet<string>,
+  refExpectations: readonly ComponentRefExpectation[] = [],
 ): Promise<Exercise[]> {
   const dir = evidenceDir(`1b-${run.label}/exercise`);
   await openEditor(page, run.editorPath);
@@ -1927,7 +2046,49 @@ async function exerciseAnnotations(
       }
       const original = where.value as string;
       const expectedLeaf = `${where.templateId}/${binding.section}/${where.location}`;
-      const start = documentLeaves(draftDocuments(run.scope));
+      // The Documents as the editor reads them, rows given the ids it shows
+      // (findEditorContext's normalizeDocumentRowIds, in memory only), read
+      // through the editor's own server function just before D1 and the
+      // write: the first edit to a Document whose rows were stored without
+      // an `id` persists those ids (1b formal attempt 1, v20 rolled back).
+      const normalizedRead = (await editorContext(page, run.scope)).templates.map(
+        (template) => ({
+          templateId: template.id,
+          sections: template.document.sections,
+        }),
+      );
+      const startDrafts = draftDocuments(run.scope);
+      const start = documentLeaves(startDrafts);
+      // A section the fixed table lists may have its componentRef rewritten
+      // by this write; first, the stored source must still say what the
+      // table says.
+      const refExpectation = refExpectations.find(
+        (expectation) => expectation.sectionId === binding.section,
+      );
+      const componentRefRewrite = refExpectation
+        ? {
+            sectionId: refExpectation.sectionId,
+            from: refExpectation.oldRef,
+            to: refExpectation.expectedNewRef,
+          }
+        : null;
+      if (refExpectation) {
+        const storedSection = startDrafts
+          .find((draft) => draft.templateId === where.templateId)
+          ?.sections.find((section) => section.id === refExpectation.sectionId) as
+          | { componentRef?: unknown }
+          | undefined;
+        const drift = sourceMatchesRefExpectation(
+          await workspace(page, run.scope),
+          refExpectation,
+          storedSection?.componentRef,
+        );
+        if (drift.length) {
+          throw new Error(
+            `source drifted from the fixed expectation for ${refExpectation.sectionId}: ${drift.join("; ")}`,
+          );
+        }
+      }
       const target = await inspectorControlFor(page, original, binding);
       result.controlRule = target.rule;
       result.controlCandidates = target.candidates;
@@ -1949,16 +2110,44 @@ async function exerciseAnnotations(
         original,
       );
       await typeInto(target.control, written);
+      // The whole of D1 against the pre-write Documents: only the edited
+      // leaf, plus missing row ids filled with exactly the ids the editor
+      // read showed, plus, for a section the fixed table lists, its
+      // componentRef from exactly the old ref to exactly the new one
+      // (compareStoredWrite).
+      let afterWrite: WriteComparison = {
+        problems: [],
+        filledRowIds: [],
+        componentRefRewrites: [],
+      };
       await expect
         .poll(
-          () =>
-            changedLeaves(start, documentLeaves(draftDocuments(run.scope))),
+          () => {
+            afterWrite = compareStoredWrite({
+              before: startDrafts,
+              normalizedRead,
+              after: draftDocuments(run.scope),
+              templateId: where.templateId,
+              edit: {
+                sectionId: binding.section!,
+                location: where.location,
+                value: written,
+              },
+              componentRefRewrite,
+            });
+            result.writeProblems = afterWrite.problems;
+            return afterWrite.problems;
+          },
           {
             timeout: 30_000,
-            message: `the write lands only at ${expectedLeaf}`,
+            message: `the write lands only at ${expectedLeaf} (and fills only missing row ids as the editor read them)`,
           },
         )
-        .toEqual([expectedLeaf]);
+        .toEqual([]);
+      result.filledRowIds = afterWrite.filledRowIds;
+      result.componentRefRewrites = afterWrite.componentRefRewrites.map(
+        ({ key, sectionId, from, to }) => ({ key, sectionId, from, to }),
+      );
       const stored = documentLeaves(draftDocuments(run.scope));
       result.wroteLeaves = changedLeaves(start, stored);
       expect(stored.get(expectedLeaf)).toBe(written);
@@ -1969,17 +2158,34 @@ async function exerciseAnnotations(
         (await inspectorControlFor(page, written, binding)).control,
         original,
       );
+      // Back to the pre-write Documents, plus exactly the ids the write filled.
       await expect
         .poll(
-          () =>
-            changedLeaves(start, documentLeaves(draftDocuments(run.scope))),
+          () => {
+            const restored = compareStoredWrite({
+              before: startDrafts,
+              normalizedRead,
+              after: draftDocuments(run.scope),
+              templateId: where.templateId,
+              edit: null,
+              expectedFills: afterWrite.filledRowIds,
+              componentRefRewrite,
+              expectedRewrites: afterWrite.componentRefRewrites,
+            });
+            result.restoreProblems = restored.problems;
+            return restored.problems;
+          },
           {
             timeout: 30_000,
             message: `the original value is back at ${expectedLeaf}`,
           },
         )
         .toEqual([]);
-      result.restoredLeaves = [];
+      // Empty, or only the filled ids' leaves.
+      result.restoredLeaves = changedLeaves(
+        start,
+        documentLeaves(draftDocuments(run.scope)),
+      );
       await expect(element).toHaveText(original.trim(), { timeout: 30_000 });
       result.canvasShowedRestore = true;
       result.outcome = "written, read back, restored, read back";
@@ -2009,6 +2215,15 @@ function expectAnnotationsExercised(run: CaseRun, results: Exercise[]) {
       .length,
     failed: results.filter((r) => r.error).length,
   });
+  run.record.fact("annotationRowIdsFilled", results
+    .filter((r) => r.filledRowIds?.length)
+    .map((r) => ({
+      key: r.key,
+      filled: r.filledRowIds!.map(({ key, path, id }) => ({ key, path, id })),
+    })));
+  run.record.fact("annotationComponentRefRewrites", results
+    .filter((r) => r.componentRefRewrites?.length)
+    .map((r) => ({ key: r.key, rewrites: r.componentRefRewrites })));
   expect(
     results.filter((r) => r.kind === "text" && !r.error).length,
     "text annotations were written and read back",
@@ -4911,7 +5126,12 @@ test.describe("M1 1b Starter upgrade and compatibility on full Start", () => {
         async () => {
           expectAnnotationsExercised(
             run,
-            await exerciseAnnotations(page, run, v20Kept!.exerciseKeys),
+            await exerciseAnnotations(
+              page,
+              run,
+              v20Kept!.exerciseKeys,
+              V20_COMPONENT_REF_EXPECTATIONS,
+            ),
           );
           expect(
             activeRelease(run.scope),
