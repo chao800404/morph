@@ -22,6 +22,7 @@ import {
   type Page,
 } from "@playwright/test";
 
+import { decideCloseBeforeB } from "./helpers/revocation-close-before-b";
 import { editHero, openEditor, savedField, serverFn } from "./native-acceptance";
 import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
 
@@ -2256,10 +2257,18 @@ async function revocationTimeline(browser: Browser, trigger: Trigger) {
         harnessErrors.push(
           `${surface}: no echo and no container receipt within ${LIVE_BEFORE_MS} ms before ${idleStop ? "sending stopped" : "a"}`,
         );
-      if (close && close.t < b)
-        harnessErrors.push(
-          `${surface}: the socket closed before b (b${close.t - b} ms, code ${close.status})`,
-        );
+      const closeBeforeB = decideCloseBeforeB({
+        trigger,
+        surface,
+        a,
+        b,
+        liveBeforeA: echoBeforeR || receiptBeforeR,
+        triggerStatus:
+          typeof triggerAnswer.status === "number" ? triggerAnswer.status : null,
+        close: close ? { t: close.t, status: close.status } : null,
+      });
+      if (closeBeforeB.outcome === "harness-error")
+        harnessErrors.push(closeBeforeB.error);
       // M4: what the idle page sent, and the container had, at stop and at b.
       let idleFrames: Record<string, unknown> | undefined;
       if (idleStop) {
