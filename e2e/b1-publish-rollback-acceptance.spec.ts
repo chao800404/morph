@@ -298,6 +298,11 @@ test.describe("B1 publish and rollback on the home and layout-shared cases", () 
     }
   });
 
+  // Settle every start request before the page closes (Q10 counts every answer).
+  test.afterEach(async () => {
+    await evidence?.settlePreviewStarts();
+  });
+
   test.afterAll(async ({ browser }) => {
     try {
       if (domainId) {

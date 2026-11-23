@@ -112,6 +112,22 @@ import { themeScopeFromEditorPath } from "./native-compat";
  *        the layout stays at release 1's revision, not the one S-b sealed
  *        into release 4; the public site serves release 5, every other
  *        page shows release 1's values and p2 its draft.
+ *   R-c  The layout is still untouched since the rollback: its row names
+ *        release 4's revision as both draft and published, and release 5
+ *        pins release 1's. On p1's editor the toolbar Build Preview runs the
+ *        editor's preparation for a build over the page and the layout
+ *        (`prepareContentDraftForBuild({ alwaysPrepare: true })`, the step a
+ *        publish whose plan is `build` runs too), then p1 is published from
+ *        its own editor (release 6). Read back: p2's editor, which has
+ *        nothing of its own to publish, reads "published" with nothing to
+ *        publish after the Build Preview, so the editor does not list the
+ *        layout as a pending change; the Build Preview left the
+ *        layout row as it was; release 6 pins exactly release 5's items
+ *        except p1, at its draft, and the layout at release 1's revision;
+ *        the public site serves release 6 and release 4's layout value is on
+ *        no page. Before fix/rollback-build-layout-reseal the preparation
+ *        forked the layout's revision into a new draft holding release 4's
+ *        layout, which the next publish sealed as a pending layout edit.
  *
  * These fail before #429 (99b2f84; this branch is based on a main that has
  * it), where a publish carries the template rows'
@@ -235,6 +251,10 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
   let release4 = "";
   /** Publish after rollback: p2 alone, published while release 1 is live. */
   let release5 = "";
+  /** Release 5's route values (R-c reads them as its starting point). */
+  let values5: CaseValues | null = null;
+  /** R-c: p1 published after a Build Preview, the layout untouched. */
+  let release6 = "";
   /** Set when the editor reload after the rollback passed (P5). */
   let reloadedAfterRollback = false;
   let publication1: string | null = null;
@@ -746,6 +766,14 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     } finally {
       await page.context().close();
     }
+  });
+
+  // Settle every start request before the page closes (Q10 counts every
+  // answer): a start still in flight when a test body ends would otherwise
+  // be answered while Playwright closes the context, and its read rejected
+  // with "Test ended." (R-a, red2/green, 2026-11-22).
+  test.afterEach(async () => {
+    await evidence?.settlePreviewStarts();
   });
 
   test.afterAll(async ({ browser }) => {
@@ -1369,7 +1397,7 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
         `release 5 pins ${testCase.routePath} at release 1's revision`,
       ).toEqual(pinnedRevisions(release1, testCase.routePath));
     }
-    const values5: CaseValues = { ...values1!, p2: draftsLast!.p2! };
+    values5 = { ...values1!, p2: draftsLast!.p2! };
     expect(releaseValues(release5)).toEqual(values5);
     expect(releaseLayout(release5)).toEqual(L1.seed);
     // Older releases are untouched.
@@ -1423,6 +1451,179 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     expect(contentTsBefore, "content.ts was hashed before the run").toMatch(/^[0-9a-f]{64}$/);
     expect(contentTsAfter, "content.ts is unchanged by the run").toBe(contentTsBefore);
     // Q10 again, now over every preview start of the whole chain.
+    await evidence!.expectFullStartObserved();
+  });
+
+  test("publish after rollback: a Build Preview on p1 leaves the untouched layout alone, and publishing p1 keeps release 1's layout revision", async ({ page, browser }) => {
+    test.setTimeout(30 * 60_000);
+    expectChainRan();
+    expect({ release5: Boolean(release5), values5: Boolean(values5) }, "R-c runs after R-b").toEqual({
+      release5: true,
+      values5: true,
+    });
+    evidence!.observePreviewStarts(page);
+    expect((await publishedState()).active).toBe(release5);
+    const layout1 = pinnedLayout(release1);
+    const layout4 = pinnedLayout(release4);
+    // The layout is untouched since the rollback: its row still names release
+    // 4's revision as draft and published, and the live release pins release 1's.
+    const layoutBefore = layoutRow();
+    expect(layoutBefore.draft, "no layout change is pending").toBe(layoutBefore.published);
+    expect([layoutBefore.published], "the layout row names release 4's revision").toEqual(layout4);
+    expect(pinnedLayout(release5), "release 5 pins release 1's layout").toEqual(layout1);
+    const p1Before = routeRow(P1);
+    expect(p1Before.draft, "p1 still holds its unpublished draft").not.toBe(p1Before.published);
+    expect(await draftValues(), "the drafts are the pre-rollback ones, p2's published").toEqual(draftsLast);
+    const pins5 = pinMap(release5);
+    const servedBefore = await expectServed(release5);
+
+    // The toolbar Build Preview on p1's editor: the same preparation over the
+    // page and the layout as a publish that builds, then the build.
+    await openEditor(page, editorRouteUrl(P1.routePath));
+    const build = page.locator("button[data-editor-build-action]");
+    await build.click();
+    await expect(build).toHaveAttribute("data-build-pending", "true", { timeout: 30_000 });
+    await expect(build).toHaveAttribute("data-build-pending", "false", { timeout: 9 * 60_000 });
+    const buildPreview = page.locator('[aria-label="Build preview"]');
+    await expect(buildPreview, "the Build Preview is shown").toBeVisible({ timeout: 60_000 });
+    const buildShot = path.join(evidence!.evidenceDir(), "build-preview-after-rollback-b1-p1.png");
+    await page.screenshot({ path: buildShot, fullPage: true });
+    await page.keyboard.press("Escape");
+    await expect(buildPreview).toBeHidden({ timeout: 30_000 });
+
+    // What the merchant sees: the editor does not list the shared layout as
+    // a pending, unpublished change. p1's own toolbar cannot show it, since
+    // p1's unpublished draft comes first in `describeContentChanges` and its
+    // reason is "Page content edited" either way. p2 has nothing of its own
+    // to publish (R-b published it at its draft, and release 5 serves that
+    // draft), so on p2's editor the toolbar's publish state is the layout's
+    // and the theme source's alone: "published" and "Nothing to publish"
+    // when the layout row is untouched, "unpublished" and "Shared layout
+    // edited" when preparing the build forked the layout's draft (draft !=
+    // published, `hasUnpublishedDraft`). The fork is there from the first
+    // render, so a forked layout never reads "published", even for a moment.
+    await openEditor(page, editorRouteUrl(P2.routePath));
+    const p2Status = page.locator("[data-editor-save-status]");
+    const readP2Status = async () => ({
+      publishState: await p2Status.getAttribute("data-publish-state"),
+      unpublishedReason: await p2Status.getAttribute("data-unpublished-reason"),
+    });
+    const layoutNotPending = { publishState: "published", unpublishedReason: "Nothing to publish" };
+    const statusShot = path.join(evidence!.evidenceDir(), "editor-after-build-preview-layout-not-pending-b1-p2.png");
+    try {
+      await expect
+        .poll(readP2Status, {
+          message: "after the Build Preview, p2's editor does not list the shared layout as an unpublished change",
+          timeout: 30_000,
+        })
+        .toEqual(layoutNotPending);
+      await expect(page.getByRole("button", { name: /^Publish$/ }), "Publish is disabled on p2").toBeDisabled({
+        timeout: 30_000,
+      });
+    } finally {
+      const observed = await readP2Status().catch(() => null);
+      await page.screenshot({ path: statusShot, fullPage: true }).catch(() => undefined);
+      evidence!.ledger({
+        case: "l1 (after rollback, Build Preview on p1, read on p2)",
+        step: "R-c/Build Preview/editor publish state",
+        action: "p2's editor after the Build Preview on p1: the shared layout is not an unpublished change",
+        routePath: P2.routePath,
+        activeBefore: release5,
+        activeAfter: evidence!.activeRelease(),
+        evidence: [path.basename(statusShot)],
+        servedReleaseId: servedBefore,
+        detail: {
+          editorPublishState: { expected: layoutNotPending, observed },
+          p2: routeRow(P2),
+          layout: layoutRow(),
+        },
+      });
+    }
+    // p2's editor started its preview on load, and the status above can read
+    // before that start is answered. Read the answer before leaving p2:
+    // navigating away cancels the request without a `requestfailed` event,
+    // so the start would stay in flight and count as unanswered.
+    await evidence!.settlePreviewStarts();
+
+    // Preparing the untouched layout for the build wrote nothing to it.
+    expect(layoutRow(), "the Build Preview leaves the untouched layout row alone").toEqual(layoutBefore);
+    expect(await storedCaseSections(fx!, L1), "the layout draft is still release 4's").toEqual(layoutSealed);
+    expect((await publishedState()).active, "a Build Preview activates nothing").toBe(release5);
+    evidence!.ledger({
+      case: "p1, l1 (after rollback, layout untouched)",
+      step: "R-c/Build Preview",
+      action: "toolbar Build Preview on p1 after the rollback",
+      routePath: P1.routePath,
+      activeBefore: release5,
+      activeAfter: evidence!.activeRelease(),
+      evidence: [path.basename(buildShot)],
+      servedReleaseId: servedBefore,
+      detail: { p1: routeRow(P1), layout: { ...layoutRow(), pinnedInRelease1: layout1, pinnedInRelease4: layout4, pinnedInRelease5: pinnedLayout(release5) } },
+    });
+
+    const { serveActiveRelease } = harness!;
+    const before6 = await publishedState();
+    release6 = await publishPages(page, [P1], "R-c/P1-publish");
+    const state6 = await publishedState();
+    expect(state6.active).toBe(release6);
+    expect(state6.releases).toBe(before6.releases + 1);
+    // The Build Preview's seal pins p1's draft, so a publish that prepares
+    // again may fork it: read the row the publish left, not the one before.
+    const p1After = routeRow(P1);
+    expect(p1After.id).toBe(p1Before.id);
+    expect(p1After.published, "p1 is published at its draft").toBe(p1After.draft);
+    expect(layoutRow(), "publishing p1 leaves the untouched layout row alone").toEqual(layoutBefore);
+
+    // Release 6 pins release 5's items with exactly one change: p1's draft.
+    expect(pinMap(release6), "release 6 = release 5 + p1's draft").toEqual({
+      ...pins5,
+      [`template:${p1After.id}`]: p1After.draft,
+    });
+    expect(pinnedLayout(release6), "release 6 keeps release 1's layout, not release 4's").toEqual(layout1);
+    const values6: CaseValues = { ...values5!, p1: draftsLast!.p1! };
+    expect(releaseValues(release6)).toEqual(values6);
+    expect(releaseLayout(release6)).toEqual(L1.seed);
+    // Older releases are untouched.
+    expect(releaseValues(release5)).toEqual(values5);
+    expect(releaseLayout(release4)).toEqual(layoutSealed);
+
+    const served = await serveActiveRelease(valueOf(values6.p1, P1), release6, origin);
+    expect(served.releaseId).toBe(release6);
+    const servedId = await expectServed(release6);
+    const p1Page = await storefrontFetcher(origin)(P1.routePath);
+    expect(p1Page.status).toBe(200);
+    expect(p1Page.body, "p1's page shows its new value").toContain(valueOf(values6.p1, P1));
+    expect(p1Page.body, "p1's page shows release 1's layout, not release 4's").not.toContain(
+      valueOf(layoutSealed!, L1),
+    );
+    const absent = [
+      valueOf(values2!.p1, P1),
+      valueOf(values2!.p2, P2),
+      valueOf(values2!.p5, P5),
+      valueOf(layoutSealed!, L1),
+    ];
+    const shots = await expectPublic(browser, values6, L1.seed, absent, "after-rollback-build-preview-publish");
+    evidence!.ledger({
+      case: "p1 (after rollback, Build Preview, layout untouched)",
+      step: "R-c/P1-P2",
+      action: "publish p1 after a Build Preview, after the rollback",
+      routePath: P1.routePath,
+      releaseId: release6,
+      activeBefore: release5,
+      activeAfter: evidence!.activeRelease(),
+      evidence: shots,
+      servedReleaseId: servedId,
+      detail: {
+        p1: { ...routeRow(P1), pinnedInRelease5: pinnedRevisions(release5, P1.routePath), pinnedInRelease6: pinnedRevisions(release6, P1.routePath) },
+        layout: { ...layoutRow(), pinnedInRelease1: layout1, pinnedInRelease4: layout4, pinnedInRelease6: pinnedLayout(release6) },
+      },
+    });
+    evidence!.note({ release6 });
+
+    // content.ts: a Build Preview writes no source either.
+    const contentTsAfter = await evidence!.contentTsSha256(page);
+    evidence!.note({ contentTsSha256After: contentTsAfter, contentTsUnchangedByRun: contentTsAfter === contentTsBefore });
+    expect(contentTsAfter, "content.ts is unchanged by the run").toBe(contentTsBefore);
     await evidence!.expectFullStartObserved();
   });
 });

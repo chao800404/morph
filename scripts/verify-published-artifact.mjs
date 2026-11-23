@@ -15,6 +15,15 @@
  * D1 has a history of `SQLITE_BUSY`/`SQLITE_LOCKED` under concurrent access, and
  * a second Miniflare instance opened while a build is still writing would be
  * inventing a race this run does not need.
+ *
+ * D1 is read through `queryLifecycleD1` (a read-only handle with a busy
+ * timeout), not through the platform proxy's D1 binding. The proxy's workerd
+ * opens the same sqlite file as the dev server with no busy timeout, so a
+ * write the dev server is making at that instant fails the read at once:
+ * workerd logs `database is locked: SQLITE_BUSY` and the binding reports only
+ * `D1_ERROR: ... internal error; reference = ...` (1a red and green2 runs,
+ * 2026-11-22, after a rollback with the editor open). The proxy still serves
+ * R2, and is given no D1 binding, so it never opens the database.
  */
 import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
@@ -40,17 +49,21 @@ const HANDOFF_SCHEMA_VERSION = 2;
  * them. It also keeps this verifier from breaking every time the app's config
  * grows a binding it does not read.
  */
-function verifierConfig() {
+function verifierConfig({ d1 = true } = {}) {
   return {
     name: "morph-e2e-artifact-verifier",
     compatibility_date: "2026-03-24",
-    d1_databases: [
-      {
-        binding: "DATABASE",
-        database_name: "morph-d1-global",
-        database_id: "43d5c881-bd19-4020-92cc-3945d8b5cb39",
-      },
-    ],
+    ...(d1
+      ? {
+          d1_databases: [
+            {
+              binding: "DATABASE",
+              database_name: "morph-d1-global",
+              database_id: "43d5c881-bd19-4020-92cc-3945d8b5cb39",
+            },
+          ],
+        }
+      : {}),
     r2_buckets: [{ binding: "R2_BUCKET", bucket_name: "morph-r2-global" }],
   };
 }
@@ -86,7 +99,7 @@ const PUBLISHED_STATE_SQL = `
   FROM storefronts s
   JOIN storefront_releases r ON r.id = s.active_release_id
   JOIN storefront_theme_builds b ON b.id = r.theme_build_id
-  WHERE s.id = ?
+  WHERE s.id = ?1
 `;
 
 /**
@@ -319,7 +332,8 @@ export async function verifyPublishedArtifact({ handoffPath, persistTo, outDir }
   const { getPlatformProxy } = await import("wrangler");
   const configPath = path.join(outDir, "..", "verifier.wrangler.json");
   await mkdir(path.dirname(configPath), { recursive: true });
-  await writeFile(configPath, JSON.stringify(verifierConfig()));
+  // R2 only: D1 is read through `queryLifecycleD1` (see the file's docblock).
+  await writeFile(configPath, JSON.stringify(verifierConfig({ d1: false })));
 
   const platform = await getPlatformProxy({
     configPath,
@@ -334,9 +348,9 @@ export async function verifyPublishedArtifact({ handoffPath, persistTo, outDir }
   });
 
   try {
-    const state = await platform.env.DATABASE.prepare(PUBLISHED_STATE_SQL)
-      .bind(handoff.storefrontId)
-      .first();
+    const state =
+      queryLifecycleD1(persistTo, PUBLISHED_STATE_SQL, handoff.storefrontId)[0] ??
+      null;
 
     if (!state) {
       throw new Error(
@@ -412,14 +426,16 @@ export async function verifyPublishedArtifact({ handoffPath, persistTo, outDir }
     // complex. The same limit was met once before, in
     // `0054_normalize_sales_channel_timestamps.sql`, where a GLOB had to become
     // length/instr arithmetic.
-    const edited = await platform.env.DATABASE.prepare(
-      `SELECT count(*) AS carries
-         FROM storefront_content_publication_items i
-         JOIN storefront_theme_template_revisions t ON t.id = i.revision_id
-        WHERE i.publication_id = ? AND instr(t.document, ?) > 0`,
-    )
-      .bind(state.content_publication_id, handoff.marker)
-      .first();
+    const edited =
+      queryLifecycleD1(
+        persistTo,
+        `SELECT count(*) AS carries
+           FROM storefront_content_publication_items i
+           JOIN storefront_theme_template_revisions t ON t.id = i.revision_id
+          WHERE i.publication_id = ?1 AND instr(t.document, ?2) > 0`,
+        state.content_publication_id,
+        handoff.marker,
+      )[0] ?? null;
     if (!edited || edited.carries === 0) {
       throw new Error(
         `EDIT_NOT_PUBLISHED: the live release's content publication ${state.content_publication_id} includes no template revision containing "${handoff.marker}". A release was published, but not this run's edit.`,

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { loadavg } from "node:os";
 import path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
 
 import { queryLifecycleD1 } from "../../scripts/verify-published-artifact.mjs";
 import { PREVIEW_BRIDGE_SOURCE_HASH } from "../../src/lib/storefront/compiler/preview-bridge-sources.generated";
@@ -107,8 +107,27 @@ export type PublicationPin = {
   routePath: string | null;
 };
 
+type InFlightStart = {
+  test: string;
+  sentAtUtc: string;
+  /** The `response` event came; its body is being read. */
+  answered: boolean;
+  settled: boolean;
+  done: Promise<void>;
+  finish: () => void;
+};
+
+/**
+ * How long `settlePreviewStarts` waits for start requests still in flight
+ * when a test body ends. A start past it is recorded as unanswered, which
+ * fails Q10.
+ */
+const START_SETTLE_BOUND_MS = 120_000;
+
 export type PreviewStart = {
   atUtc: string;
+  /** When the browser sent the start request. */
+  sentAtUtc?: string;
   test: string;
   /** null: the answer could not be read or decoded. Q10 fails on it. */
   success: boolean | null;
@@ -159,8 +178,19 @@ export function m1Evidence(options: {
   const { item, spec, scope, stateDir } = options;
   const rows: LedgerRow[] = [];
   const starts: PreviewStart[] = [];
-  /** Response listeners still reading an answer; Q10 awaits them first. */
-  const pendingStarts = new Set<Promise<void>>();
+  /**
+   * Start requests the browser aborted itself (net::ERR_ABORTED: a
+   * navigation or the editor dropped the request) before any answer came.
+   * They are not answers, so Q10 does not count them, but they are kept in
+   * the ledger rather than dropped.
+   */
+  const abortedStarts: Array<{ atUtc: string; sentAtUtc: string; test: string; reason: string }> = [];
+  /**
+   * Every start request sent, from the `request` event on. One is in flight
+   * until its answer was read (or could not be), the request failed, or the
+   * settle bound recorded it as unanswered. Each settles exactly once.
+   */
+  const inFlightStarts = new Map<Request, InFlightStart>();
   const startedAt = new Date().toISOString();
   let outDir: string | null = null;
   let identityExtra: Record<string, unknown> = {};
@@ -183,7 +213,7 @@ export function m1Evidence(options: {
   const writeLedger = () =>
     writeFileSync(
       file("ledger"),
-      `${JSON.stringify({ schema: "m1-ledger/1", item, spec, themeId: scope.themeId, storefrontId: scope.storefrontId, rows, previewStarts: starts }, null, 2)}\n`,
+      `${JSON.stringify({ schema: "m1-ledger/1", item, spec, themeId: scope.themeId, storefrontId: scope.storefrontId, rows, previewStarts: starts, previewStartsAborted: abortedStarts }, null, 2)}\n`,
     );
 
   const themeRow = () =>
@@ -302,12 +332,65 @@ export function m1Evidence(options: {
     return rows[rows.length - 1]!;
   };
 
-  /** Records every preview start answer `page` receives. */
+  /** Settles one start request once: records `start` (an answer or a failure). */
+  const settleStart = (entry: InFlightStart, start: Omit<PreviewStart, "atUtc" | "test" | "sentAtUtc"> | null, aborted?: string) => {
+    if (entry.settled) {
+      // The bound already recorded this start as unanswered, which stands.
+      if (start) console.warn(`[m1-evidence] preview start sent ${entry.sentAtUtc} settled after its bound; Q10 keeps it as unanswered`);
+      return;
+    }
+    entry.settled = true;
+    const atUtc = new Date().toISOString();
+    if (aborted !== undefined) {
+      abortedStarts.push({ atUtc, sentAtUtc: entry.sentAtUtc, test: entry.test, reason: aborted });
+    } else if (start) {
+      starts.push({ atUtc, sentAtUtc: entry.sentAtUtc, test: entry.test, ...start });
+    }
+    writeLedger();
+    entry.finish();
+  };
+
+  const unanswered = (undecodable: string) => ({
+    success: null,
+    undecodable: undecodable.slice(0, 300),
+    kind: null,
+    previewRuntime: null,
+    workspaceFingerprint: null,
+  });
+
+  /**
+   * Tracks every preview start request `page` sends, from the request until
+   * its answer is read, and records each answer. A request that fails
+   * before an answer is recorded as a failed start; one the browser aborted
+   * itself is kept apart (see `abortedStarts`).
+   */
   const observePreviewStarts = (page: Page) => {
     const title = test.info().title;
+    const track = (request: Request) => {
+      let entry = inFlightStarts.get(request);
+      if (!entry) {
+        let finish!: () => void;
+        const done = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        entry = { test: title, sentAtUtc: new Date().toISOString(), answered: false, settled: false, done, finish };
+        // Kept once settled, so a later event for the same request (a failure
+        // after its body read failed, an answer after the bound) finds it
+        // settled and cannot record the request a second time.
+        inFlightStarts.set(request, entry);
+      }
+      return entry;
+    };
+    const isStart = (request: Request) => isServerFunctionCall(request.url(), "startThemePreviewServer");
+    page.on("request", (request) => {
+      if (isStart(request)) track(request);
+    });
     page.on("response", (response) => {
-      if (!isServerFunctionCall(response.url(), "startThemePreviewServer")) return;
-      const read = (async () => {
+      const request = response.request();
+      if (!isStart(request)) return;
+      const entry = track(request);
+      entry.answered = true;
+      void (async () => {
         let undecodable: string | null = null;
         let decoded: Record<string, unknown> | null = null;
         try {
@@ -316,34 +399,79 @@ export function m1Evidence(options: {
             undecodable = "the answer has no boolean success";
           }
         } catch (error) {
-          undecodable = `unreadable answer: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+          undecodable = `unreadable answer (HTTP ${response.status()}): ${error instanceof Error ? error.message : String(error)}`;
           decoded = null;
         }
-        const data = (decoded?.data ?? null) as Record<string, unknown> | null;
-        starts.push({
-          atUtc: new Date().toISOString(),
-          test: title,
-          success: undecodable ? null : (decoded!.success as boolean),
-          undecodable,
+        if (undecodable) {
+          settleStart(entry, unanswered(undecodable));
+          return;
+        }
+        const data = (decoded!.data ?? null) as Record<string, unknown> | null;
+        settleStart(entry, {
+          success: decoded!.success as boolean,
+          undecodable: null,
           kind: str(data?.kind),
           previewRuntime: str(data?.previewRuntime),
           workspaceFingerprint: str(data?.workspaceFingerprint),
         });
-        writeLedger();
       })();
-      pendingStarts.add(read);
-      void read.finally(() => pendingStarts.delete(read));
     });
+    page.on("requestfailed", (request) => {
+      if (!isStart(request)) return;
+      const entry = track(request);
+      // An answer whose body then failed is settled by its body read, with
+      // that read's error.
+      if (entry.answered) return;
+      const errorText = request.failure()?.errorText ?? "unknown failure";
+      if (errorText === "net::ERR_ABORTED") {
+        settleStart(entry, null, `aborted by the browser before an answer (${errorText})`);
+        return;
+      }
+      settleStart(entry, unanswered(`the start request failed before an answer: ${errorText}`));
+    });
+  };
+
+  /**
+   * Waits until every start request sent so far has settled: its answer read,
+   * or its failure recorded. Called after each test, while its page is still
+   * open, so no test ends with a start in flight and no answer is read after
+   * its page closed (Playwright then rejects the read with "Test ended.",
+   * although the server answered). A start still unsettled after
+   * `START_SETTLE_BOUND_MS` is recorded as unanswered, which fails Q10.
+   */
+  const settlePreviewStarts = async () => {
+    const pending = [...inFlightStarts.values()].filter((entry) => !entry.settled);
+    if (pending.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, START_SETTLE_BOUND_MS);
+    });
+    try {
+      await Promise.race([Promise.all(pending.map((entry) => entry.done)), bound]);
+    } finally {
+      clearTimeout(timer);
+    }
+    for (const entry of pending) {
+      if (entry.settled) continue;
+      settleStart(
+        entry,
+        unanswered(
+          `no answer within ${START_SETTLE_BOUND_MS / 1000} s of the settle (${entry.answered ? "the answer's body was still being read" : "the request was still in flight"})`,
+        ),
+      );
+    }
+    // A start sent while waiting is settled too.
+    if ([...inFlightStarts.values()].some((entry) => !entry.settled)) await settlePreviewStarts();
   };
 
   /**
    * Q10: at least one preview start was answered in this spec, and every
    * answer it received (failed ones included) was decodable, successful and
-   * named the container transport and full Start. Answers still being read
-   * are awaited first, so a late one is not missed.
+   * named the container transport and full Start. Starts still in flight
+   * are settled first, so a late one is not missed.
    */
   const expectFullStartObserved = async () => {
-    while (pendingStarts.size > 0) await Promise.all([...pendingStarts]);
+    await settlePreviewStarts();
     expect(starts.length, "a preview start was observed in this spec").toBeGreaterThan(0);
     expect(
       starts.map((start) =>
@@ -444,6 +572,7 @@ export function m1Evidence(options: {
       transport: process.env.E2E_EXPECT_PREVIEW_TRANSPORT ?? null,
       runtime: process.env.MORPH_E2E_PREVIEW_RUNTIME ?? null,
       observedPreviewStarts: starts.map((start) => `${start.kind}/${start.previewRuntime}/${start.success}`),
+      abortedPreviewStarts: abortedStarts.length,
       node: process.version,
       pnpm: /pnpm\/(\S+)/.exec(process.env.npm_config_user_agent ?? "")?.[1] ?? null,
       wrangler: wrangler?.version ?? null,
@@ -479,6 +608,7 @@ export function m1Evidence(options: {
     pins,
     activeRelease,
     observePreviewStarts,
+    settlePreviewStarts,
     expectFullStartObserved,
     recordFullStartTheme,
     contentTsSha256,
