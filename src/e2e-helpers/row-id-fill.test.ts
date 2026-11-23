@@ -170,7 +170,11 @@ describe("compareStoredWrite: the write", () => {
       templateId: LAYOUT,
       edit: storeNameEdit,
     });
-    expect(result).toEqual({ problems: [], filledRowIds: [] });
+    expect(result).toEqual({
+      problems: [],
+      filledRowIds: [],
+      componentRefRewrites: [],
+    });
   });
 
   it("rejects a change of an id the Document already held", () => {
@@ -358,5 +362,216 @@ describe("compareStoredWrite: the restore", () => {
       expectedFills: fills,
     });
     expect(result.problems).not.toEqual([]);
+  });
+});
+
+describe("compareStoredWrite: the edited section's componentRef", () => {
+  const INTRO_NEW = "src/components/page-sections/index/starter-introduction/index.tsx";
+  const PRINCIPLES_NEW = "src/components/page-sections/index/starter-principles/index.tsx";
+  const introRewrite = {
+    sectionId: "starter-introduction",
+    from: "editorial-intro.default",
+    to: INTRO_NEW,
+  };
+
+  /** An index Document whose sections still store legacy registry refs. */
+  function home(): StoredDocument[] {
+    return [
+      {
+        templateId: INDEX,
+        sections: [
+          {
+            id: "starter-introduction",
+            type: "editorial-intro",
+            componentRef: "editorial-intro.default",
+            enabled: true,
+            props: { label: "Intro", heading: "H", body: "B" },
+          },
+          {
+            id: "starter-principles",
+            type: "principles",
+            componentRef: "principles.default",
+            enabled: true,
+            props: {
+              label: "Principles",
+              items: [{ id: "p1", number: "01", title: "T", body: "B" }],
+            },
+          },
+        ] as StoredDocument["sections"],
+      },
+    ];
+  }
+
+  type Section = StoredDocument["sections"][number] & Record<string, unknown>;
+  const sectionOf = (docs: StoredDocument[], id: string) =>
+    docs[0]!.sections.find((s) => s.id === id) as Section;
+
+  /** The stored Documents after the write: the edit, plus `change`. */
+  function afterWrite(change?: (docs: StoredDocument[]) => void, edited = "Intro 2") {
+    const docs = clone(home());
+    sectionOf(docs, "starter-introduction").props!.label = edited;
+    change?.(docs);
+    return docs;
+  }
+
+  const introEdit = {
+    sectionId: "starter-introduction",
+    location: "label",
+    value: "Intro 2",
+  };
+
+  function write(after: StoredDocument[], rewrite = introRewrite as typeof introRewrite | null, before = home()) {
+    return compareStoredWrite({
+      before,
+      normalizedRead: before,
+      after,
+      templateId: INDEX,
+      edit: introEdit,
+      componentRefRewrite: rewrite,
+    });
+  }
+
+  const rewritten = (docs: StoredDocument[]) => {
+    sectionOf(docs, "starter-introduction").componentRef = INTRO_NEW;
+  };
+
+  it("accepts the edited section's legacy ref rewritten to exactly the fixed route-derived path", () => {
+    const result = write(afterWrite(rewritten));
+    expect(result.problems).toEqual([]);
+    expect(result.componentRefRewrites).toEqual([
+      {
+        key: `${INDEX}/starter-introduction/componentRef`,
+        templateId: INDEX,
+        sectionId: "starter-introduction",
+        from: "editorial-intro.default",
+        to: INTRO_NEW,
+      },
+    ]);
+  });
+
+  it("accepts the write when the ref is left as it was", () => {
+    const result = write(afterWrite());
+    expect(result.problems).toEqual([]);
+    expect(result.componentRefRewrites).toEqual([]);
+  });
+
+  it("rejects the ref rewritten to the old manifest path", () => {
+    const after = afterWrite((docs) => {
+      sectionOf(docs, "starter-introduction").componentRef = "src/components/EditorialIntro.tsx";
+    });
+    expect(write(after).problems).not.toEqual([]);
+  });
+
+  it("rejects the ref rewritten to another existing component's path", () => {
+    const after = afterWrite((docs) => {
+      sectionOf(docs, "starter-introduction").componentRef = PRINCIPLES_NEW;
+    });
+    expect(write(after).problems).not.toEqual([]);
+  });
+
+  it("rejects a sibling section's ref changed", () => {
+    const after = afterWrite((docs) => {
+      rewritten(docs);
+      sectionOf(docs, "starter-principles").componentRef = PRINCIPLES_NEW;
+    });
+    expect(write(after).problems).not.toEqual([]);
+  });
+
+  it("rejects a ref change on an edited section the table does not list", () => {
+    const after = afterWrite(rewritten);
+    expect(write(after, null).problems).not.toEqual([]);
+  });
+
+  it("rejects a table entry for a section other than the edited one", () => {
+    const before = home();
+    const after = clone(before);
+    sectionOf(after, "starter-principles").props!.label = "P2";
+    sectionOf(after, "starter-introduction").componentRef = INTRO_NEW;
+    const result = compareStoredWrite({
+      before,
+      normalizedRead: before,
+      after,
+      templateId: INDEX,
+      edit: { sectionId: "starter-principles", location: "label", value: "P2" },
+      componentRefRewrite: introRewrite,
+    });
+    expect(result.problems).not.toEqual([]);
+  });
+
+  it("rejects the rewrite when the stored ref is not the table's old ref", () => {
+    const before = home();
+    sectionOf(before, "starter-introduction").componentRef = "editorial-intro.alt";
+    const after = clone(before);
+    sectionOf(after, "starter-introduction").props!.label = "Intro 2";
+    rewritten(after);
+    expect(write(after, introRewrite, before).problems).not.toEqual([]);
+  });
+
+  it("rejects a section's type or enabled changed alongside the rewrite", () => {
+    const typed = afterWrite((docs) => {
+      rewritten(docs);
+      sectionOf(docs, "starter-introduction").type = "intro";
+    });
+    expect(write(typed).problems).not.toEqual([]);
+    const hidden = afterWrite((docs) => {
+      rewritten(docs);
+      sectionOf(docs, "starter-introduction").enabled = false;
+    });
+    expect(write(hidden).problems).not.toEqual([]);
+  });
+
+  describe("the restore", () => {
+    function restoreOf(after: StoredDocument[]) {
+      const made = write(afterWrite(rewritten)).componentRefRewrites;
+      return compareStoredWrite({
+        before: home(),
+        normalizedRead: home(),
+        after,
+        templateId: INDEX,
+        edit: null,
+        componentRefRewrite: introRewrite,
+        expectedFills: [],
+        expectedRewrites: made,
+      });
+    }
+
+    it("accepts the value back with the same rewrite kept", () => {
+      const after = clone(home());
+      rewritten(after);
+      const result = restoreOf(after);
+      expect(result.problems).toEqual([]);
+      expect(result.componentRefRewrites.map((r) => r.to)).toEqual([INTRO_NEW]);
+    });
+
+    it("rejects the rewrite reverted", () => {
+      expect(restoreOf(home()).problems).not.toEqual([]);
+    });
+
+    it("rejects another change added", () => {
+      const after = clone(home());
+      rewritten(after);
+      sectionOf(after, "starter-principles").componentRef = PRINCIPLES_NEW;
+      expect(restoreOf(after).problems).not.toEqual([]);
+      const leaf = clone(home());
+      rewritten(leaf);
+      sectionOf(leaf, "starter-introduction").props!.heading = "H2";
+      expect(restoreOf(leaf).problems).not.toEqual([]);
+    });
+
+    it("rejects a rewrite the write did not make", () => {
+      const after = clone(home());
+      rewritten(after);
+      const result = compareStoredWrite({
+        before: home(),
+        normalizedRead: home(),
+        after,
+        templateId: INDEX,
+        edit: null,
+        componentRefRewrite: introRewrite,
+        expectedFills: [],
+        expectedRewrites: [],
+      });
+      expect(result.problems).not.toEqual([]);
+    });
   });
 });

@@ -40,9 +40,28 @@ export type FilledRowId = {
   id: string;
 };
 
+/**
+ * One section's componentRef as a fixed, hand-checked expectation: the
+ * legacy registry ref the Document stores and the route-derived source path
+ * the first write may store instead.
+ */
+export type ComponentRefRewrite = {
+  sectionId: string;
+  from: string;
+  to: string;
+};
+
+/** A componentRef the write changed, as allowed by a ComponentRefRewrite. */
+export type RewrittenComponentRef = ComponentRefRewrite & {
+  /** `template/section/componentRef`. */
+  key: string;
+  templateId: string;
+};
+
 export type WriteComparison = {
   problems: string[];
   filledRowIds: FilledRowId[];
+  componentRefRewrites: RewrittenComponentRef[];
 };
 
 export type StoredWriteInput = {
@@ -58,6 +77,13 @@ export type StoredWriteInput = {
   edit: { sectionId: string; location: string; value: unknown } | null;
   /** The restore: exactly the ids the write filled must still be there. */
   expectedFills?: FilledRowId[];
+  /**
+   * The fixed expectation for the edited section's componentRef, when it has
+   * one; for the write it must name the edited section.
+   */
+  componentRefRewrite?: ComponentRefRewrite | null;
+  /** The restore: exactly the componentRef rewrites the write made. */
+  expectedRewrites?: RewrittenComponentRef[];
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -268,5 +294,5 @@ export function compareStoredWrite(input: StoredWriteInput): WriteComparison {
       );
     }
   }
-  return { problems, filledRowIds };
+  return { problems, filledRowIds, componentRefRewrites: [] };
 }
