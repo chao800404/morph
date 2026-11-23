@@ -1539,6 +1539,11 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
         },
       });
     }
+    // p2's editor started its preview on load, and the status above can read
+    // before that start is answered. Read the answer before leaving p2:
+    // navigating away cancels the request without a `requestfailed` event,
+    // so the start would stay in flight and count as unanswered.
+    await evidence!.settlePreviewStarts();
 
     // Preparing the untouched layout for the build wrote nothing to it.
     expect(layoutRow(), "the Build Preview leaves the untouched layout row alone").toEqual(layoutBefore);
