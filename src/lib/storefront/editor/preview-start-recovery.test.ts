@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   previewStartAcceptanceLabel,
   readPreviewStartRecovery,
+  type PreviewStartRecovery,
 } from "./preview-start-recovery";
 
 /**
@@ -11,7 +12,7 @@ import {
  * reads it. A recovered start is the product working, and still evidence
  * that a container died, so acceptance never counts it as passed.
  */
-const RECOVERED = {
+const RECOVERED: PreviewStartRecovery = {
   stage: "preview-server-start",
   reason: "sandbox-interrupted",
   signal: "runtime-connection-closing",
@@ -22,7 +23,9 @@ const RECOVERED = {
 
 const PASSING = "ok/cloudflare-sandbox/start";
 
-const answered = (extra: Record<string, unknown> = {}) => ({
+type ObservedStart = Parameters<typeof previewStartAcceptanceLabel>[0];
+
+const answered = (extra: Partial<ObservedStart> = {}): ObservedStart => ({
   test: "a spec",
   success: true,
   undecodable: null,
