@@ -96,6 +96,7 @@ import {
 } from "@/lib/storefront/service/preview-content-confirm";
 import {
   previewContentDraftGenerations,
+  reportingInstance,
   withConfirmingInstance,
 } from "@/lib/storefront/service/preview-content-basis";
 
@@ -556,10 +557,15 @@ export const syncThemePreviewContent = createServerFn({ method: "POST" })
               });
             })()
           : selection.writeContent
-            ? await selection.writeContent({
-                previewId,
-                content: JSON.stringify(content),
-              })
+            ? reportingInstance(
+                await selection.writeContent({
+                  previewId,
+                  content: JSON.stringify(content),
+                }),
+                (instance) => {
+                  confirmingInstance = instance;
+                },
+              )
             : (() => {
                 throw new Error("PREVIEW_CONTENT_SYNC_UNAVAILABLE");
               })();
@@ -648,7 +654,12 @@ export const confirmThemePreviewContent = createServerFn({ method: "POST" })
               });
             })()
           : selection.confirmContent
-            ? await selection.confirmContent({ previewId, ticket })
+            ? reportingInstance(
+                await selection.confirmContent({ previewId, ticket }),
+                (instance) => {
+                  confirmingInstance = instance;
+                },
+              )
             : (() => {
                 throw new Error("PREVIEW_CONTENT_SYNC_UNAVAILABLE");
               })();
@@ -665,7 +676,7 @@ export const confirmThemePreviewContent = createServerFn({ method: "POST" })
         ticket: confirmed.ticket,
       };
     }
-    // The instance whose Worker confirmed it (container transport), for the
+    // The instance whose Worker confirmed it (either transport), for the
     // Astro basis ack's comparison in the editor; nothing Core checks.
     const instance = confirmingInstance();
     return ok("Live Preview content confirmed", {

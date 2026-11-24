@@ -1,3 +1,4 @@
+import type { PreviewContentWriteResult } from "@/lib/storefront/compiler/preview-content-write";
 import type { PreviewContentConfirmDeps } from "./preview-content-confirm";
 
 /**
@@ -69,4 +70,25 @@ export function withConfirmingInstance(deps: PreviewContentConfirmDeps): {
     },
     instance: () => last,
   };
+}
+
+/**
+ * The same rule for a transport that confirms on its own side (the local
+ * one): its answer names the instance its probe was matched against. That
+ * instance is recorded only from an applied answer, and only as the
+ * transport named it; nothing is made up where it named none. The answer
+ * itself goes on unchanged.
+ */
+export function reportingInstance(
+  result: PreviewContentWriteResult,
+  record: (instance: () => string | null) => void,
+): PreviewContentWriteResult {
+  const instance =
+    result.applied &&
+    typeof result.instance === "string" &&
+    result.instance.length > 0
+      ? result.instance
+      : null;
+  record(() => instance);
+  return result;
 }
