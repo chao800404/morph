@@ -2847,5 +2847,157 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       expect(s.harness.destroyed).toBe(0);
       expect(other.destroyed).toBe(1);
     });
+
+    /**
+     * The other tab's Theme differs from A's in one file, and neither start
+     * carries versions: the fence's "equal versions pass, the later write
+     * wins" would let A's late layout replace B's. Only the current-start
+     * record can stop it.
+     */
+    const THEME_B = THEME.map((file) =>
+      file.path === "src/components/Hero.tsx"
+        ? { ...file, content: file.content.replace("<h1>", '<h1 data-tab="b">') }
+        : file,
+    );
+
+    /** What one clean start of `files` lays out, read from a fresh container. */
+    const cleanStartOf = async (files: typeof THEME) => {
+      const probe = createSession("ready");
+      const result = await startWith(probe, { files });
+      expect(result.ok).toBe(true);
+      return {
+        stagingWrites: probe.writePaths.filter((file) =>
+          file.startsWith(PREVIEW_START_STAGING_PREFIX),
+        ).length,
+        sources: new Map(
+          files.map((file) => [
+            `/workspace/${file.path}`,
+            probe.written.get(`/workspace/${file.path}`),
+          ]),
+        ),
+      };
+    };
+
+    it.each([
+      ["between two of its staging writes", "staging"],
+      ["just before its fence", "fence"],
+      ["just before its startProcess", "startProcess"],
+    ] as const)(
+      "B claims the same previewId while A's retry is %s: A stops before its next container step, writes nothing after B's claim, answers superseded, and the workspace holds B's bytes",
+      async (_label, point) => {
+        const cleanA = await cleanStartOf(THEME);
+        const cleanB = await cleanStartOf(THEME_B);
+        // There is a staging write after the first one, and a last one.
+        expect(cleanA.stagingWrites).toBeGreaterThan(1);
+        expect(cleanB.sources.get("/workspace/src/components/Hero.tsx")).toContain(
+          'data-tab="b"',
+        );
+
+        let retrying = false;
+        let claimed = false;
+        let execs = 0;
+        let b = null as StartResult | null;
+        const s = setup({
+          failures: 1,
+          guarded: false,
+          onPause: () => {
+            retrying = true;
+          },
+        });
+        const real = withRealStartGuard(s.harness, s.time.now);
+        /** Everything the container holds or was asked to do, so far. */
+        const container = () => ({
+          written: new Map(s.harness.written),
+          writes: s.harness.writePaths.length,
+          deletes: s.harness.deletedPaths.length,
+          mkdirs: s.mkdirCalls,
+          execs,
+          commands: s.harness.commands.length,
+          exposed: s.harness.exposed.length,
+          unexposed: s.harness.unexposed.length,
+          sleepAfter: s.harness.sleepAfter.length,
+          killed: s.harness.killed.length,
+          destroyed: s.harness.destroyed,
+        });
+        let afterB = null as ReturnType<typeof container> | null;
+        const claimByB = async () => {
+          claimed = true;
+          b = await otherTab(s).start({ ...startInput(), files: THEME_B });
+          afterB = container();
+        };
+
+        const exec = s.harness.session.exec.bind(s.harness.session);
+        override(
+          s.harness,
+          "exec",
+          async (...args: Parameters<PreviewServerSession["exec"]>) => {
+            execs += 1;
+            return exec(...args);
+          },
+        );
+        const writeFile = s.harness.session.writeFile.bind(s.harness.session);
+        let retryStagingWrites = 0;
+        override(
+          s.harness,
+          "writeFile",
+          async (...args: Parameters<PreviewServerSession["writeFile"]>) => {
+            await writeFile(...args);
+            if (
+              !retrying ||
+              claimed ||
+              !String(args[0]).startsWith(PREVIEW_START_STAGING_PREFIX)
+            ) {
+              return;
+            }
+            retryStagingWrites += 1;
+            if (
+              (point === "staging" && retryStagingWrites === 1) ||
+              (point === "fence" &&
+                retryStagingWrites === cleanA.stagingWrites)
+            ) {
+              await claimByB();
+            }
+          },
+        );
+        const setSleepAfter = s.harness.session.setSleepAfter!.bind(
+          s.harness.session,
+        );
+        // The last container step before the dev server is started (no
+        // running server to replace, no content stamp for this runtime).
+        override(s.harness, "setSleepAfter", async (value: string | number) => {
+          await setSleepAfter(value);
+          if (point === "startProcess" && retrying && !claimed) {
+            await claimByB();
+          }
+        });
+
+        const { result: a, starts } = await records(() => s.start());
+
+        expect(claimed).toBe(true);
+        const bResult = b!;
+        expect(bResult.ok).toBe(true);
+        const bAttempt = bResult.attemptId!;
+
+        // A answers superseded: never ready, never recovered, no third try.
+        expect(a.ok).toBe(false);
+        if (a.ok) return;
+        expect(a.stage).toBe("preview-start-superseded");
+        expect(a.recoveredFrom).toBeUndefined();
+        const aStarts = starts.filter((start) => start.attemptId !== bAttempt);
+        expect(aStarts).toHaveLength(2);
+        expect(a.retryOf).toBe(aStarts[0]!.attemptId);
+
+        // Nothing at all reached the container from A after B's claim.
+        expect(container()).toEqual(afterB);
+        // B's Theme files are laid out exactly as a clean start of B's.
+        for (const [file, bytes] of cleanB.sources) {
+          expect(s.harness.written.get(file)).toBe(bytes);
+        }
+        expect(real.record()).toMatchObject({
+          attemptId: bAttempt,
+          stopped: false,
+        });
+      },
+    );
   });
 });
