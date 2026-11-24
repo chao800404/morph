@@ -18,7 +18,7 @@ concurrency:
 
 env:
   # 1 for the first push (check the evidence is complete), then a second commit sets 8.
-  RUNS: "1"
+  RUNS: "8"
   TESTED_SHA: 4af80b418342ed078e0ee6e8785e24508f7d9d8e
   SPEC: e2e/preview-transport.spec.ts
   PER_RUN_S: "600"
