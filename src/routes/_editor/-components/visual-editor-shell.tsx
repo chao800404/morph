@@ -5626,6 +5626,11 @@ export function VisualEditorShell({
    */
   const frameShowsEditorPageRef = useRef<() => boolean>(() => false);
   const frameOnAnotherRouteRef = useRef<() => boolean>(() => false);
+  /**
+   * Whether the frame on screen answered the editor's latest route request
+   * in this round (`latestRouteRequestAnswered`); assigned with the two above.
+   */
+  const frameAnsweredRouteRequestRef = useRef<() => boolean>(() => false);
   // The editor's own page can change too (and a ready ends the round the
   // frame's report was for): the paused notice is read again then.
   useEffect(() => {
@@ -6913,11 +6918,52 @@ export function VisualEditorShell({
     }
     void astroBindingsQuery.refetch();
   };
+  /**
+   * Review finding 3: a re-derive answered before the frame said which page
+   * it shows waits here, as the click path does not take a click then
+   * either (`frameShowsEditorPage`). One at a time: a newer ready drops it.
+   */
+  const astroRederiveAwaitingPageRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+    identity: string;
+    settle: () => void;
+  } | null>(null);
+  /**
+   * Settles the waiting re-derive once the page is known: on the editor's
+   * page it is matched; answered from another page, the kept selection is
+   * cleared without a hint (a section not on screen is not "uneditable").
+   * Unknown keeps waiting. Run after every preview message.
+   */
+  const resumeAstroRederiveOnPageRef = useRef<() => void>(() => {});
+  resumeAstroRederiveOnPageRef.current = () => {
+    const parked = astroRederiveAwaitingPageRef.current;
+    if (!parked) return;
+    if (
+      parked.previewKey !== previewKeyRef.current ||
+      parked.readyRound !== previewReadyRoundRef.current
+    ) {
+      astroRederiveAwaitingPageRef.current = null;
+      return;
+    }
+    if (!documentNavigationRef.current || frameShowsEditorPageRef.current()) {
+      astroRederiveAwaitingPageRef.current = null;
+      parked.settle();
+      return;
+    }
+    if (!frameAnsweredRouteRequestRef.current()) return;
+    astroRederiveAwaitingPageRef.current = null;
+    const focus = astroDesignFocusRef.current;
+    if (focus?.rederiving && focus.selection?.identity === parked.identity) {
+      dispatchAstroDesignFocus({ kind: "deselected" });
+    }
+  };
   rederiveAstroDesignFocusRef.current = (
     readyPreviewKey,
     readyRound,
     basisConfirming,
   ) => {
+    astroRederiveAwaitingPageRef.current = null;
     const selection = astroDesignFocusRef.current?.selection ?? null;
     dispatchAstroDesignFocus({ kind: "document-replaced" });
     if (!selection) return;
@@ -6947,23 +6993,38 @@ export function VisualEditorShell({
         ) {
           return;
         }
-        const result = rederiveAstroDesignSelection({
-          selection,
-          view,
-          workspaceSourceGeneration: currentContentSourceGeneration(),
-          routePath: currentSearchRoutePathRef.current ?? "/",
-        });
-        dispatchAstroDesignFocus({
-          kind: "rederived",
+        // Matched, and its basis asked for, only on a frame that shows the
+        // editor's page; until the frame says so this waits (finding 3).
+        astroRederiveAwaitingPageRef.current = {
+          previewKey: readyPreviewKey,
+          readyRound,
           identity: selection.identity,
-          result,
-        });
-        if (result.status === "confirmed") {
-          issueAstroBasisPresentationRef.current(
-            result.sectionId,
-            result.identity,
-          );
-        }
+          settle: () => {
+            const result = rederiveAstroDesignSelection({
+              selection,
+              view,
+              workspaceSourceGeneration: currentContentSourceGeneration(),
+              routePath: currentSearchRoutePathRef.current ?? "/",
+            });
+            dispatchAstroDesignFocus({
+              kind: "rederived",
+              identity: selection.identity,
+              result,
+            });
+            // Only when the focus took it: a click meanwhile has its own
+            // token, which this must not replace.
+            if (
+              result.status === "confirmed" &&
+              astroDesignFocusRef.current?.selection === result
+            ) {
+              issueAstroBasisPresentationRef.current(
+                result.sectionId,
+                result.identity,
+              );
+            }
+          },
+        };
+        resumeAstroRederiveOnPageRef.current();
       });
   };
   const routeStructurePending = Boolean(
@@ -13372,7 +13433,16 @@ export function VisualEditorShell({
               kind: "basis-acknowledged",
               sectionId: message.token.sectionId,
             });
-          } else if (message.reason !== "superseded") {
+          } else if (
+            message.reason !== "superseded" &&
+            // A frame on another page has no such section on screen: that
+            // is not "can't be edited" (finding 3; the applied map below
+            // sets the same case aside).
+            !(
+              message.reason === "section-missing" &&
+              !frameShowsEditorPageRef.current()
+            )
+          ) {
             dispatchAstroDesignFocus({
               kind: "basis-unconfirmed",
               sectionId: message.token.sectionId,
@@ -14233,21 +14303,35 @@ export function VisualEditorShell({
     // The same predicate, for the Inspector's live typing.
     frameShowsEditorPageRef.current = frameShowsEditorPage;
     frameOnAnotherRouteRef.current = frameOnAnotherRoute;
+    const frameAnsweredRouteRequest = () =>
+      latestRouteRequestAnswered(previewReadyRoundRef.current);
+    frameAnsweredRouteRequestRef.current = frameAnsweredRouteRequest;
     // After each message is handled: whether the frame now names another
     // page, for the paused notice only.
     const noteFrameShowsOtherPage = () =>
       setFrameShowsOtherPage(frameOnAnotherRoute());
+    // And an Astro re-derive waiting for the frame to say which page it
+    // shows (review finding 3) is settled once it has.
+    const resumeAstroRederiveOnPage = () =>
+      resumeAstroRederiveOnPageRef.current();
     window.addEventListener("message", handlePreviewSelection);
     window.addEventListener("message", noteFrameShowsOtherPage);
+    window.addEventListener("message", resumeAstroRederiveOnPage);
     noteFrameShowsOtherPage();
     return () => {
       window.removeEventListener("message", handlePreviewSelection);
       window.removeEventListener("message", noteFrameShowsOtherPage);
+      window.removeEventListener("message", resumeAstroRederiveOnPage);
       if (frameShowsEditorPageRef.current === frameShowsEditorPage) {
         frameShowsEditorPageRef.current = () => false;
       }
       if (frameOnAnotherRouteRef.current === frameOnAnotherRoute) {
         frameOnAnotherRouteRef.current = () => false;
+      }
+      if (
+        frameAnsweredRouteRequestRef.current === frameAnsweredRouteRequest
+      ) {
+        frameAnsweredRouteRequestRef.current = () => false;
       }
     };
   }, [

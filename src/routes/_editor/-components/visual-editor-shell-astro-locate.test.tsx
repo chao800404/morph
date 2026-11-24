@@ -1115,10 +1115,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     });
 
     /** A new document of the same frame (a reload), stamped `servedContent`. */
-    const reloadWith = async (servedContent: {
-      ticket: number;
-      instance: string;
-    }) => {
+    const reloadWith = async (
+      servedContent: {
+        ticket: number;
+        instance: string;
+      },
+      /** The page the new document shows; another one after a followed link. */
+      framePath = "/",
+    ) => {
       reloadFrameDocument();
       fromPreview({
         type: "morph:storefront-preview-ready",
@@ -1138,12 +1142,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       fromPreview({
         type: "morph:storefront-preview-route-applied",
         routeRequestId: request?.routeRequestId,
-        routePath: "/",
+        routePath: framePath,
       });
       fromPreview({
         type: "morph:storefront-preview-structure",
         nodes: [],
-        routePath: "/",
+        routePath: framePath,
       });
       await flush();
     };
@@ -1501,6 +1505,58 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(sectionStatus()).toBeNull();
       expect(basisPosts()).toHaveLength(1);
       expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    // Review finding 3: the author followed a link in the frame. The new
+    // document is another page (the editor's page is unchanged, so the
+    // route effect does not deselect), and Core's view of the editor's page
+    // would still match the kept identity.
+    it("after a reload onto another page, the selection clears and nothing says it can't be edited", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: INSTANCE }, "/about");
+      await waitFor(() =>
+        expect(readRouteBindings.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      await flush();
+
+      // No basis asked of a frame that does not show the section.
+      expect(basisPosts()).toHaveLength(1);
+      expect(sectionStatus()).toBeNull();
+      expect(inspectorNotice()).toBeNull();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("a section-missing answer from a frame on another page is not said as can't be edited", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      // In this round the frame now names another page.
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/about",
+      });
+      await flush();
+
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "section-missing",
+      });
+      await flush();
+
+      expect(unconfirmedHint()).toBe(false);
+      expect(sectionStatus()).toBeNull();
     });
 
     it("while Core's view is read again for the new document, the section says it is checking", async () => {
