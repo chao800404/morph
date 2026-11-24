@@ -94,6 +94,10 @@ import {
   writeContainerPreviewContent,
   type PreviewContentConfirmDeps,
 } from "@/lib/storefront/service/preview-content-confirm";
+import {
+  previewContentDraftGenerations,
+  withConfirmingInstance,
+} from "@/lib/storefront/service/preview-content-basis";
 
 /**
  * Starts and stops the dev server behind a Theme's Live Preview.
@@ -335,6 +339,10 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     const servingBridge = parsePreviewServing(
       (started as { serving?: unknown }).serving,
     );
+    const contentRefresh = previewContentRefresh({
+      previewRuntime,
+      devServer: framework.ok && Boolean(framework.framework.preview.devServer),
+    });
 
     return ok("Live Preview server ready", {
       previewId,
@@ -359,10 +367,20 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
         : {}),
       // Whether the editor syncs saved content into this preview, and how the
       // canvas shows it once the preview confirms (A6b-2).
-      contentRefresh: previewContentRefresh({
-        previewRuntime,
-        devServer: framework.ok && Boolean(framework.framework.preview.devServer),
-      }),
+      contentRefresh,
+      // A page shown only by reload (Astro, option B): the ticket this start's
+      // snapshot was written under and Core's draft generation of each
+      // template in it, for the editor to compare with the page's own
+      // `morph-content` stamp. Narrowing only: Core never reads the stamp,
+      // and no write is checked against these. Absent for every other start.
+      ...(contentRefresh === "reload"
+        ? {
+            contentTicket,
+            draftGenerations: previewContentDraftGenerations(
+              previewContent.contentVersions,
+            ),
+          }
+        : {}),
       // Which runtime served this start, and — for the client-only one —
       // where the Theme uses server functions or server APIs it cannot run,
       // read from the files this start previews (a static reading: it can
@@ -515,18 +533,28 @@ export const syncThemePreviewContent = createServerFn({ method: "POST" })
     });
     if (!read.ok) return read.failure;
     const content = read.previewContent;
+    // For the Astro basis ack (option B): Core's generations in this
+    // snapshot, and the instance that confirmed it. Said to the editor only;
+    // nothing Core checks reads them.
+    const draftGenerations = previewContentDraftGenerations(
+      content.contentVersions,
+    );
+    let confirmingInstance: () => string | null = () => null;
 
     let written: PreviewContentWriteResult;
     try {
       written =
         selection.kind === "cloudflare-sandbox"
-          ? await writeContainerPreviewContent(
-              await containerContentDeps(previewId, selection.previewHostname),
-              {
+          ? await (async () => {
+              const recorded = withConfirmingInstance(
+                await containerContentDeps(previewId, selection.previewHostname),
+              );
+              confirmingInstance = recorded.instance;
+              return writeContainerPreviewContent(recorded.deps, {
                 content: JSON.stringify(content),
                 instancePath: PREVIEW_INSTANCE_PATH,
-              },
-            )
+              });
+            })()
           : selection.writeContent
             ? await selection.writeContent({
                 previewId,
@@ -555,9 +583,18 @@ export const syncThemePreviewContent = createServerFn({ method: "POST" })
         // The ticket this sync was written under: what the editor asks
         // `confirmThemePreviewContent` about, rather than sending it again.
         sentTicket: contentTicket,
+        draftGenerations,
       };
     }
-    return ok("Live Preview content applied", { ticket: written.ticket });
+    const instance = confirmingInstance();
+    return ok("Live Preview content applied", {
+      ticket: written.ticket,
+      // The snapshot this sync wrote, which `draftGenerations` describe; the
+      // preview may already read a later one (`ticket`).
+      sentTicket: contentTicket,
+      draftGenerations,
+      ...(instance ? { instance } : {}),
+    });
   });
 
 /**
@@ -596,13 +633,20 @@ export const confirmThemePreviewContent = createServerFn({ method: "POST" })
       userId: context.user.id,
     });
     let confirmed: PreviewContentWriteResult;
+    let confirmingInstance: () => string | null = () => null;
     try {
       confirmed =
         selection.kind === "cloudflare-sandbox"
-          ? await confirmContainerPreviewContent(
-              await containerContentDeps(previewId, selection.previewHostname),
-              { ticket, instancePath: PREVIEW_INSTANCE_PATH },
-            )
+          ? await (async () => {
+              const recorded = withConfirmingInstance(
+                await containerContentDeps(previewId, selection.previewHostname),
+              );
+              confirmingInstance = recorded.instance;
+              return confirmContainerPreviewContent(recorded.deps, {
+                ticket,
+                instancePath: PREVIEW_INSTANCE_PATH,
+              });
+            })()
           : selection.confirmContent
             ? await selection.confirmContent({ previewId, ticket })
             : (() => {
@@ -621,7 +665,13 @@ export const confirmThemePreviewContent = createServerFn({ method: "POST" })
         ticket: confirmed.ticket,
       };
     }
-    return ok("Live Preview content confirmed", { ticket: confirmed.ticket });
+    // The instance whose Worker confirmed it (container transport), for the
+    // Astro basis ack's comparison in the editor; nothing Core checks.
+    const instance = confirmingInstance();
+    return ok("Live Preview content confirmed", {
+      ticket: confirmed.ticket,
+      ...(instance ? { instance } : {}),
+    });
   });
 
 /**
