@@ -448,6 +448,32 @@ function refusalLeavesWorkspace(refusal: { stage: string }): boolean {
 }
 
 /**
+ * "Container failed to start", as it reaches the transport over Durable
+ * Object RPC: the message only, with at most the SDK's class name folded in
+ * front ("SandboxError: Container failed to start: ..."; round 3, formal 1c).
+ *
+ * The containers library reaches its start only for a container that is
+ * not running (`startContainerIfNotRunning`), and this failure leaves it
+ * stopped with the call's connection destroyed. The SDK's next call opens
+ * a new connection, and that starts a container again: one that would hold
+ * nothing of this start, not its staging in /tmp nor a workspace. So after
+ * it the start makes no container call at all (not its own staging
+ * clean-up, not the fail-closed marker): the fence ledger already refuses
+ * to trust a workspace without a proven commit (`fenceLedgerVouchesFor`).
+ *
+ * Only for what to skip afterwards. It is not a retry signal: this failure
+ * stays off the allow-list (user, 2026-11-24; preview-start-retry.ts).
+ */
+const CONTAINER_FAILED_TO_START =
+  /^(?:[A-Za-z]*Error: )?Container failed to start\b/;
+
+function isContainerStartFailure(error: unknown): boolean {
+  return (
+    error instanceof Error && CONTAINER_FAILED_TO_START.test(error.message)
+  );
+}
+
+/**
  * What a start has put in its staging directory, for the container to apply:
  * the files at their workspace-relative paths, and the files the plan no
  * longer has.
@@ -1230,12 +1256,14 @@ export class CloudflareSandboxVitePreviewServer {
       // Any failure clears its own staging, and only that (user,
       // 2026-11-24), except a start the preview's stop refused: the stop
       // destroyed the container and its /tmp with it, and a call would only
-      // wake it.
+      // wake it. The same holds once the container failed to start: a call
+      // would start a new one (`isContainerStartFailure`).
       if (
         !(
           error instanceof PreviewStartNotCurrentError &&
           error.refusal.stage === NOT_CURRENT_START.stopped.stage
-        )
+        ) &&
+        !isContainerStartFailure(error)
       ) {
         await this.discardStaging(session, staging);
       }
@@ -1362,15 +1390,39 @@ export class CloudflareSandboxVitePreviewServer {
     const markUntrusted = async (): Promise<
       "marked" | "another-owner" | "unproven"
     > => {
+      // Every marker call's result is logged for its attempt: a failed or
+      // refused write is not swallowed (round 3, formal 1c).
+      const logMarker = (
+        result: "marked" | "another-owner" | "unproven" | "write-failed",
+        error?: unknown,
+      ) =>
+        logPreviewServerEvent("fail-closed-marker", {
+          attemptId: observation.attemptId,
+          previewId: input.previewId,
+          guarded: Boolean(claim),
+          result,
+          ...(error === undefined
+            ? {}
+            : {
+                error: (error instanceof Error
+                  ? error.message
+                  : String(error)
+                ).slice(0, 200),
+              }),
+        });
       if (!claim) {
-        await session!
-          .writeFile(
+        try {
+          await session!.writeFile(
             THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
             newDirtyWorkspaceMarker(),
-          )
-          .catch(() => {
-            addLog("Could not mark the Live Preview workspace untrusted.");
-          });
+          );
+          logMarker("marked");
+        } catch (error) {
+          addLog("Could not mark the Live Preview workspace untrusted.");
+          // The answer is unchanged (unguarded, as before); the line says
+          // the marker was not written, and why.
+          logMarker("write-failed", error);
+        }
         return "marked";
       }
       try {
@@ -1385,15 +1437,22 @@ export class CloudflareSandboxVitePreviewServer {
             },
           },
         );
-        if (marked.ownership === "owner") return "marked";
+        if (marked.ownership === "owner") {
+          logMarker("marked");
+          return "marked";
+        }
         observation.ledger =
           marked.ownership === "superseded" ? "superseded" : "unknown";
         addLog(
           "The Live Preview workspace is no longer this start's; left unmarked.",
         );
-        return marked.ownership === "superseded" ? "another-owner" : "unproven";
-      } catch {
+        const standing =
+          marked.ownership === "superseded" ? "another-owner" : "unproven";
+        logMarker(standing);
+        return standing;
+      } catch (error) {
         addLog("Could not mark the Live Preview workspace untrusted.");
+        logMarker("unproven", error);
         return "unproven";
       }
     };
@@ -1806,7 +1865,11 @@ export class CloudflareSandboxVitePreviewServer {
         },
       ).catch(async (error: unknown) => {
         pendingStaging = null;
-        await this.discardStaging(session!, stagedStart.staging);
+        // Not after a container that failed to start: its /tmp is gone, and
+        // the call would start another container.
+        if (!isContainerStartFailure(error)) {
+          await this.discardStaging(session!, stagedStart.staging);
+        }
         throw error;
       });
       pendingStaging = null;
@@ -2224,7 +2287,15 @@ export class CloudflareSandboxVitePreviewServer {
         step: observation.step ?? null,
       };
       observation.step = undefined;
-      if (session) await this.discardStaging(session, pendingStaging);
+      // The container failed to start: any call now would start another
+      // one, holding nothing of this start (round 3, formal 1c). Its own
+      // staging went with the old container's /tmp, and the next start
+      // trusts a workspace only where the fence ledger proves a commit, so
+      // neither the clean-up nor the marker is needed.
+      const containerGone = isContainerStartFailure(error);
+      if (session && !containerGone) {
+        await this.discardStaging(session, pendingStaging);
+      }
       if (session) {
         observation.failedClosed = "start-error";
         logPreviewServerEvent("fail-closed", {
@@ -2236,7 +2307,18 @@ export class CloudflareSandboxVitePreviewServer {
             200,
           ),
         });
-        if ((await stillCurrent()) && (await markUntrusted()) === "another-owner") {
+        if (containerGone) {
+          logPreviewServerEvent("post-failure-container-call-skipped", {
+            attemptId: observation.attemptId,
+            previewId: input.previewId,
+            reason: "container-failed-to-start",
+            step: thrown.step,
+            skipped: ["own-staging-clean-up", "fail-closed-marker"],
+          });
+        } else if (
+          (await stillCurrent()) &&
+          (await markUntrusted()) === "another-owner"
+        ) {
           // Not this start's workspace any more: its failure is not the
           // preview's, and is never retried.
           return { ok: false, ...NOT_CURRENT_START.superseded, logs };
