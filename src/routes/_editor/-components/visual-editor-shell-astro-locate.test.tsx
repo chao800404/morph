@@ -695,7 +695,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
   });
 
   /** A located click on the page's <h1> that names a v2 boundary instance. */
-  function boundaryClick(selectionRevision: number, sourceDigest = DIGEST) {
+  function boundaryClick(
+    selectionRevision: number,
+    sourceDigest = DIGEST,
+    /** The file version the frame located in; another one is stale. */
+    sourceVersion = astroPreviewSourceHash(ASTRO_SOURCE),
+  ) {
     fromPreview({
       type: "morph:storefront-preview-select-section",
       sectionId: `source:${ASTRO_PAGE}`,
@@ -703,7 +708,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       kind: "heading",
       sourceFilePath: ASTRO_PAGE,
       sourceLocation: `${ASTRO_PAGE}:5:3`,
-      sourceVersion: astroPreviewSourceHash(ASTRO_SOURCE),
+      sourceVersion,
       previewBoundary: { marker: MARKER, selectable: true, reason: null },
       sourceDigest,
       locatedAt: null,
@@ -1558,6 +1563,66 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
       expect(unconfirmedHint()).toBe(false);
       expect(sectionStatus()).toBeNull();
+    });
+
+    // Review finding 7: every author click other than a confirmed one
+    // deselects, including the clicks the locate path stops early.
+    /** The hero selected, with the not-applied hint on it. */
+    const heroWithHint = async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "section-missing",
+      });
+      await flush();
+      expect(unconfirmedHint()).toBe(true);
+    };
+
+    it("a click while the frame shows another page leaves no status behind", async () => {
+      await heroWithHint();
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/about",
+      });
+      await flush();
+
+      // A revision well past any the editor minted: an author click.
+      boundaryClick(100);
+      await flush();
+
+      expect(inspectorNotice()).toBeNull();
+      expect(sectionStatus()).toBeNull();
+      expect(basisPosts()).toHaveLength(1);
+    });
+
+    it("a click whose location is from another file version leaves no status behind", async () => {
+      await heroWithHint();
+
+      boundaryClick(100, DIGEST, "00000000");
+      await flush();
+
+      expect(vi.mocked(toast.info)).toHaveBeenCalledWith(
+        SOURCE_LOCATION_STALE_MESSAGE,
+        expect.anything(),
+      );
+      expect(inspectorNotice()).toBeNull();
+      expect(sectionStatus()).toBeNull();
+      expect(basisPosts()).toHaveLength(1);
+    });
+
+    it("the frame's answer to the editor's own request is not a click and keeps the status", async () => {
+      await heroWithHint();
+
+      // Revision 0 is never newer than the editor's own.
+      boundaryClick(0);
+      await flush();
+
+      expect(unconfirmedHint()).toBe(true);
     });
 
     // Review finding 6: "Checking…" is bounded. A view read for the new

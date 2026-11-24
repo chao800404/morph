@@ -14115,6 +14115,9 @@ export function VisualEditorShell({
         canvasUnavailableForFrameworkRef.current &&
         message.sectionId.startsWith(PREVIEW_SOURCE_SECTION_PREFIX)
       ) {
+        // The frame's answer to a request of the editor's own is not a click
+        // by the author, so it neither selects nor deselects (finding 7
+        // deliberately leaves this return as it is).
         if (!previewSelection.isNewCanvasIntent(message)) return;
         // Paused while a document-navigating frame has not answered for the
         // editor's page (D3): the click may be on the page it is leaving.
@@ -14130,6 +14133,9 @@ export function VisualEditorShell({
               id: "preview-page-opening",
             });
           }
+          // The author clicked something other than the selected section
+          // (finding 7): its status is not left behind.
+          dispatchAstroDesignFocus({ kind: "deselected" });
           return;
         }
         const target = resolveSourceLocatedTarget({
@@ -14151,6 +14157,8 @@ export function VisualEditorShell({
           toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
             id: "source-location-stale",
           });
+          // A click on something else all the same (finding 7).
+          dispatchAstroDesignFocus({ kind: "deselected" });
           return;
         }
         // M2 PR-F: what Core's binding view says of the clicked instance,
