@@ -160,6 +160,7 @@ import {
   STARTER_UPGRADE_RECORD_MAX_ATTEMPTS,
   storefrontDal,
 } from "./storefront.dal";
+import { themeSourceStore } from "../storage/theme-storage.server";
 
 let sqlite: Database.Database;
 
@@ -2653,6 +2654,61 @@ describe("a Starter upgrade whose files need the full Start preview", () => {
     expect(storedRow().metadata.starterTemplateVersion).toBe(LEGACY_VERSION);
   });
 
+  // The review-to-apply race, a Starter 32 blocker. The author reviewed on
+  // start, then switches the Theme back to client before the upgrade is
+  // written. However the switch and the apply interleave, a Theme that ends on
+  // client must end with nothing of the upgrade: its files, Documents, Starter
+  // version and runtime exactly as they were.
+  //
+  // Expected, read from the code (not run): "before the apply starts" passes
+  // today; "after the apply read the runtime" is RED today. The apply reads
+  // the runtime once (`readStoredStarterVersion`), before it reads the
+  // workspace, and neither the file batch nor the record write asks again, so
+  // a switch landing after that read lets the Start-only files and the version
+  // through.
+  it.each([
+    ["before the apply starts", "before-apply"],
+    ["after the apply read the runtime, before it writes", "during-apply"],
+  ] as const)(
+    "leaves files, Documents, version and runtime as they were when the author switches back to client %s",
+    async (_label, timing) => {
+      setPreviewRuntime("start");
+      const reviewed = await review();
+      expect(reviewed.startPreview.satisfied).toBe(true);
+      const before = { row: storedRawRow(), templates: storedTemplates() };
+      const filesBefore = JSON.stringify(workspace.files.get(THEME_ID));
+      if (timing === "before-apply") {
+        setPreviewRuntime("client");
+      } else {
+        // The apply's workspace read comes after its runtime read and before
+        // any write; the switch lands there.
+        const listFiles = vi.mocked(themeSourceStore.listFiles);
+        const read = listFiles.getMockImplementation();
+        if (!read) throw new Error("the source store mock has no listFiles");
+        listFiles.mockImplementationOnce(async (...args) => {
+          setPreviewRuntime("client");
+          return read(...args);
+        });
+      }
+
+      const result = await apply(reviewed.review.digest);
+
+      // Refused, as a runtime refusal or as a lost compare-and-set.
+      expect(result.status).not.toBe("applied");
+      expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+      expect(JSON.stringify(workspace.files.get(THEME_ID))).toBe(filesBefore);
+      expect(storedTemplates()).toEqual(before.templates);
+      expect(storedRawRow()).toEqual(before.row);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(LEGACY_VERSION);
+      expect(hooks.recordWriteAttempts).toBe(0);
+      expect(
+        sqlite
+          .prepare("SELECT preview_runtime FROM storefront_themes WHERE id = ?")
+          .get(THEME_ID),
+      ).toEqual({ preview_runtime: "client" });
+    },
+  );
+
   // Reverse check: the same files and the same review apply once the author
   // has switched the Theme to the full Start preview.
   it("applies the files and records the version on a Theme that records start", async () => {
@@ -2688,5 +2744,87 @@ describe("a Starter upgrade whose files need the full Start preview", () => {
       versionRecorded: true,
     });
     expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+  });
+});
+
+describe("opening the editor on an empty Theme while the Starter needs the full Start preview", () => {
+  // A Starter 32 blocker. Opening the editor on a Theme that records an older
+  // Starter and has no files writes the current Starter and records its
+  // version (`ensureStoredStarterPreview`), just as an applied upgrade does.
+  // So it follows the upgrade's one compatibility rule, asked through the
+  // same `starterPlanFilesRequiringStartPreview`: a Theme that does not record
+  // start is not given files only the full Start preview can render, and its
+  // runtime is never switched on the author's behalf. The content module
+  // stands in for those files (see `startPreview` above).
+  //
+  // Expected, read from the code (not run): the two refusals are RED today
+  // (the workspace is initialised and the version recorded without asking);
+  // the two reverse checks pass.
+  const CONTENT = "src/morph/content.ts";
+
+  function setPreviewRuntime(runtime: string | null) {
+    sqlite
+      .prepare("UPDATE storefront_themes SET preview_runtime = ? WHERE id = ?")
+      .run(runtime, THEME_ID);
+  }
+
+  function storedRuntime() {
+    return sqlite
+      .prepare("SELECT preview_runtime FROM storefront_themes WHERE id = ?")
+      .get(THEME_ID);
+  }
+
+  function storedTemplates() {
+    return sqlite
+      .prepare(
+        "SELECT id, document, draft_generation, updated_at FROM storefront_theme_templates ORDER BY id",
+      )
+      .all();
+  }
+
+  beforeEach(() => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    startPreview.requiredPaths = [CONTENT];
+  });
+
+  it.each([null, "client"])(
+    "writes no file, Document, version or runtime into an empty Theme that records %s",
+    async (runtime) => {
+      setPreviewRuntime(runtime);
+      const before = { row: storedRawRow(), templates: storedTemplates() };
+
+      await expect(openEditor()).resolves.toBe(false);
+
+      expect(workspace.initStarterTheme).not.toHaveBeenCalled();
+      expect(workspace.files.get(THEME_ID)).toBeUndefined();
+      expect(storedRawRow()).toEqual(before.row);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(LEGACY_VERSION);
+      expect(storedTemplates()).toEqual(before.templates);
+      expect(hooks.recordWriteAttempts).toBe(0);
+      expect(storedRuntime()).toEqual({ preview_runtime: runtime });
+    },
+  );
+
+  // Reverse checks: the same empty Theme is initialised once it records start,
+  // and, as today, whenever no Starter file needs Start.
+  it("initialises an empty Theme that records start and records the version", async () => {
+    setPreviewRuntime("start");
+
+    await expect(openEditor()).resolves.toBe(true);
+
+    expect(workspace.initStarterTheme).toHaveBeenCalledTimes(1);
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+    expect(storedRuntime()).toEqual({ preview_runtime: "start" });
+  });
+
+  it("initialises an empty Theme on the client runtime as before when no Starter file needs Start", async () => {
+    startPreview.requiredPaths = null;
+    setPreviewRuntime("client");
+
+    await expect(openEditor()).resolves.toBe(true);
+
+    expect(workspace.initStarterTheme).toHaveBeenCalledTimes(1);
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+    expect(storedRuntime()).toEqual({ preview_runtime: "client" });
   });
 });
