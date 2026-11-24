@@ -3154,4 +3154,168 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       },
     );
   });
+
+  /**
+   * Review 2026-11-24, findings 1 and 6. The fail-closed marker is left
+   * alone only when another start owns the workspace (superseded) or the
+   * preview was stopped. A retry that ran out of time, or that cannot reach
+   * the Durable Object, still owns it: dirty is the safe direction, so the
+   * next start rebuilds instead of trusting what this one left.
+   */
+  describe("the fail-closed marker, and a Durable Object that cannot be reached", () => {
+    const marker = (harness: Harness) =>
+      harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH);
+
+    /** The session's check, made to throw once `broken()` is true. */
+    const breakCheck = (harness: Harness, broken: () => boolean) => {
+      const session = harness.session as unknown as Record<string, unknown>;
+      const check = session.checkPreviewStart as (input: {
+        attemptId: string;
+        next?: string;
+      }) => Promise<string>;
+      override(
+        harness,
+        "checkPreviewStart",
+        async (input: { attemptId: string; next?: string }) => {
+          if (broken()) throw new Error("Durable Object unreachable");
+          return check(input);
+        },
+      );
+    };
+
+    it("a retry whose dev server times out at the request's deadline leaves the workspace marked untrusted", async () => {
+      const s = setup({
+        behaviour: "silent",
+        failures: 1,
+        server: { startDeadlineMs: 10_000, readyTimeoutMs: 50 },
+      });
+      // The retry's dev server never answers; by the time its wait ends,
+      // the request's deadline has passed.
+      beforeReady(s.harness, () => s.time.advance(10_000));
+      const { result, starts } = await records(() => s.start());
+
+      expect(starts).toHaveLength(2);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errorMessage).toContain("PREVIEW_SERVER_TIMEOUT");
+      // The retry's fence committed its marker; the timeout must undo that.
+      expect(isDirtyWorkspaceMarker(marker(s.harness))).toBe(true);
+    });
+
+    it("a retry whose dev server exits while the Durable Object cannot be reached leaves the workspace marked untrusted", async () => {
+      let unreachable = false;
+      const s = setup({ behaviour: "exit", failures: 1 });
+      breakCheck(s.harness, () => unreachable);
+      beforeReady(s.harness, () => {
+        unreachable = true;
+      });
+      const { result, starts } = await records(() => s.start());
+
+      expect(starts).toHaveLength(2);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errorMessage).toContain("PREVIEW_SERVER_EXITED");
+      expect(isDirtyWorkspaceMarker(marker(s.harness))).toBe(true);
+    });
+
+    it("a retry stopped at a later step by its deadline leaves the workspace marked untrusted, and starts nothing", async () => {
+      let retrying = false;
+      const s = setup({
+        failures: 1,
+        server: { startDeadlineMs: 10_000 },
+        onPause: () => {
+          retrying = true;
+        },
+      });
+      // Past the deadline once the retry has fenced and exposed its port:
+      // its next step is refused by the deadline, not by another start.
+      const exposePort = s.harness.session.exposePort.bind(s.harness.session);
+      override(
+        s.harness,
+        "exposePort",
+        async (...args: Parameters<PreviewServerSession["exposePort"]>) => {
+          const exposed = await exposePort(...args);
+          if (retrying) s.time.advance(10_000);
+          return exposed;
+        },
+      );
+      const { result, starts } = await records(() => s.start());
+
+      expect(starts).toHaveLength(2);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-deadline");
+      expect(s.harness.commands).toHaveLength(0);
+      expect(isDirtyWorkspaceMarker(marker(s.harness))).toBe(true);
+    });
+
+    it("a check that throws before the retry sends no retry, and the first failure stands", async () => {
+      const s = setup({ failures: 1 });
+      breakCheck(s.harness, () => true);
+      const { result, starts, retries } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-server-start");
+      expect(result.errorMessage).toBe(INTERRUPTED_MKDIR);
+      expect(result.recoveredFrom).toBeUndefined();
+      expect(starts).toHaveLength(1);
+      expect(retries).toEqual([
+        expect.objectContaining({
+          retryOf: starts[0]!.attemptId,
+          outcome: "cancelled",
+          reason: "unconfirmed",
+        }),
+      ]);
+      expect(s.pauses).toEqual([500]);
+      expect(s.mkdirCalls).toBe(1);
+      expect(s.harness.commands).toHaveLength(0);
+    });
+
+    it("a claim that throws leaves the start unguarded: logged guarded:false, never retried", async () => {
+      const s = setup({ failures: 1 });
+      override(s.harness, "claimPreviewStart", async () => {
+        throw new Error("Durable Object unreachable");
+      });
+      const { result, starts, retries } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-server-start");
+      expect(result.errorMessage).toBe(INTERRUPTED_MKDIR);
+      expect(starts).toHaveLength(1);
+      expect(starts[0]!.guarded).toBe(false);
+      expect(starts[0]!.retry).toBeUndefined();
+      expect(retries).toEqual([]);
+      expect(s.pauses).toEqual([]);
+      expect(s.guarded!.guard.checks).toEqual([]);
+    });
+
+    it("a claim that throws does not stop a healthy start: it answers ready, unguarded", async () => {
+      const s = setup();
+      override(s.harness, "claimPreviewStart", async () => {
+        throw new Error("Durable Object unreachable");
+      });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(true);
+      expect(starts).toHaveLength(1);
+      expect(starts[0]!.guarded).toBe(false);
+      expect(s.guarded!.guard.checks).toEqual([]);
+    });
+
+    it("a first attempt whose success cannot be confirmed answers preview-start-unconfirmed, never ready", async () => {
+      const s = setup();
+      breakCheck(s.harness, () => true);
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-unconfirmed");
+      expect(result.recoveredFrom).toBeUndefined();
+      expect(starts).toHaveLength(1);
+      expect(starts[0]!.outcome).toBe("failed");
+      expect(s.harness.commands).toHaveLength(1);
+    });
+  });
 });
