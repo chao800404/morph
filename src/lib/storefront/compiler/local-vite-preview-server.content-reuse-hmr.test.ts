@@ -382,7 +382,12 @@ describe(
               previewId,
               JSON.stringify(await snapshot(`S2-${RUN}`, 2)),
             ),
-          ).toEqual({ applied: true, ticket: 2 });
+          ).toEqual({
+            applied: true,
+            ticket: 2,
+            // The dev server whose Worker named it (option B's basis).
+            instance: expect.stringMatching(/^[A-Za-z0-9-]{8,64}$/),
+          });
           const afterData = await relayedAfter(url, cursor);
 
           // The snapshot module alone, as the reuse branch writes it.

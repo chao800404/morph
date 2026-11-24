@@ -87,6 +87,24 @@ async function snapshot(headline: string, contentTicket: number) {
   });
 }
 
+/**
+ * The dev server instance stamped into the content file now: the one whose
+ * Worker a confirmation must hear from, so the one an applied write or
+ * confirmation names (option B's basis instance).
+ */
+async function stampedInstance() {
+  const text = await fs.readFile(
+    path.join(server.workspaceRootFor(PREVIEW_ID), ".morph-preview-content.json"),
+    "utf8",
+  );
+  const instance = (JSON.parse(text) as { previewInstance?: unknown })
+    .previewInstance;
+  if (typeof instance !== "string" || instance.length === 0) {
+    throw new Error("the content file names no instance");
+  }
+  return instance;
+}
+
 /** Which A6B marker the server-rendered page shows now. */
 async function shown() {
   const html = await (await fetch(`${origin}/live`)).text();
@@ -224,6 +242,7 @@ describe.skipIf(!available)(
       ).toEqual({
         applied: true,
         ticket: 101,
+        instance: await stampedInstance(),
       });
       expect(await shown()).toBe("A6B-A");
       expect(
@@ -231,6 +250,7 @@ describe.skipIf(!available)(
       ).toEqual({
         applied: true,
         ticket: 103,
+        instance: await stampedInstance(),
       });
       expect(await shown()).toBe("A6B-C");
       expect(
@@ -283,6 +303,7 @@ describe.skipIf(!available)(
       ).toEqual({
         applied: true,
         ticket: 104,
+        instance: await stampedInstance(),
       });
       expect(
         await server.writeContent(PREVIEW_ID, await snapshot("A6B-E", 104)),
@@ -321,7 +342,11 @@ describe.skipIf(!available)(
       // confirmed.
       expect(
         await server.writeContent(PREVIEW_ID, await snapshot("A6B-G", 106)),
-      ).toEqual({ applied: true, ticket: 106 });
+      ).toEqual({
+        applied: true,
+        ticket: 106,
+        instance: await stampedInstance(),
+      });
       expect(await shown()).toBe("A6B-G");
     });
 
@@ -330,6 +355,7 @@ describe.skipIf(!available)(
       expect(await server.confirmContent(PREVIEW_ID, 106)).toEqual({
         applied: true,
         ticket: 106,
+        instance: await stampedInstance(),
       });
       expect(
         await server.confirmContent(PREVIEW_ID, 999, {
