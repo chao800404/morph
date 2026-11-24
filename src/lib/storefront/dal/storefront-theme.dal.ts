@@ -102,6 +102,8 @@ import {
   themeFrameworkAllowsPreviewRuntime,
   type ThemePreviewRuntime,
 } from "@/lib/storefront/theme-preview-runtime";
+import { starterPlanFilesRequiringStartPreview } from "@/lib/storefront/starter-upgrade-start-preview";
+import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
 
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1507,6 +1509,15 @@ export const storefrontThemeDal = {
    * every read takes that for none). Otherwise nothing is written and the
    * value it does record comes back as a conflict. It is not Theme source,
    * so it neither takes nor moves `sourceGeneration`.
+   *
+   * Leaving `start` (option B, the apply-then-switch order) is refused as
+   * `PREVIEW_RUNTIME_START_REQUIRED` while the stored files include one that
+   * `starterPlanFilesRequiringStartPreview` names, and the write is
+   * conditioned on the source generation that judgement read; a source that
+   * moved since is judged again and, when nothing in it needs Start, answered
+   * as `PREVIEW_RUNTIME_SOURCE_CHANGED`. The Starter writes hold the other
+   * order: they commit only while the Theme records `start`
+   * (`prepareThemePreviewRuntimeGuard`).
    */
   async setPreviewRuntime(input: {
     storefrontId: string;
@@ -1520,6 +1531,24 @@ export const storefrontThemeDal = {
         ok: false;
         error: "PREVIEW_RUNTIME_CONFLICT";
         previewRuntime: ThemePreviewRuntime | null;
+      }>
+    /**
+     * Leaving start while the Theme holds files only the full Start preview
+     * can run (`paths`); nothing written.
+     */
+    | Readonly<{
+        ok: false;
+        error: "PREVIEW_RUNTIME_START_REQUIRED";
+        paths: readonly string[];
+      }>
+    /**
+     * The source changed after the switch judged it, and nothing in it needs
+     * Start; nothing written, so the author can judge it again.
+     */
+    | Readonly<{
+        ok: false;
+        error: "PREVIEW_RUNTIME_SOURCE_CHANGED";
+        sourceGeneration: number;
       }>
     | null
   > {
@@ -1561,13 +1590,58 @@ export const storefrontThemeDal = {
             ]),
           )
         : eq(storefrontThemes.previewRuntime, input.expectedPreviewRuntime);
+    // Leaving `start` (for client, or for none: the deployment's default is
+    // no confirmation of start) is judged on the files the Theme holds: one
+    // that needs the full Start preview keeps the Theme on start. Judged on
+    // the stored files, not on the Starter version, since the restore command
+    // puts such a module back without moving the version. A framework that is
+    // never previewed on start has nothing to judge.
+    const judgesSource =
+      input.previewRuntime !== "start" &&
+      themeFrameworkAllowsPreviewRuntime(theme.framework, "start");
+    const judgeSource = async () => {
+      const snapshot = await storefrontThemeFileDal.getSourceSnapshot(
+        input.storefrontId,
+        input.themeId,
+      );
+      if (!snapshot) return null;
+      return {
+        sourceGeneration: snapshot.sourceGeneration,
+        paths: starterPlanFilesRequiringStartPreview(snapshot.files),
+      };
+    };
+    let judgedGeneration: number | null = null;
+    if (judgesSource) {
+      const judged = await judgeSource();
+      if (!judged) return null;
+      if (judged.paths.length > 0) {
+        return {
+          ok: false,
+          error: "PREVIEW_RUNTIME_START_REQUIRED",
+          paths: judged.paths,
+        };
+      }
+      judgedGeneration = judged.sourceGeneration;
+    }
+    // One statement: the runtime the author saw and, when the files were
+    // judged, the generation they were judged at. A file written after that
+    // judgement moves the generation, so it cannot slip past it. The switch
+    // still takes no generation from the author and moves none.
     const [written] = await db
       .update(storefrontThemes)
       .set({
         previewRuntime: input.previewRuntime,
         updatedAt: new Date().toISOString(),
       })
-      .where(and(owned, stillExpected))
+      .where(
+        and(
+          owned,
+          stillExpected,
+          judgedGeneration === null
+            ? undefined
+            : eq(storefrontThemes.sourceGeneration, judgedGeneration),
+        ),
+      )
       .returning({ previewRuntime: storefrontThemes.previewRuntime });
     if (written) {
       return {
@@ -1577,10 +1651,31 @@ export const storefrontThemeDal = {
     }
     const current = await readOwned();
     if (!current) return null;
+    const recorded = recordedThemePreviewRuntime(current.previewRuntime);
+    if (judgesSource && recorded === input.expectedPreviewRuntime) {
+      // The runtime is still what the author saw, so the source moved under
+      // the judgement. Judged once more to say which: a module that needs
+      // Start now (the write that overtook the switch is kept, the switch
+      // is not), or another change, reported rather than written over.
+      const again = await judgeSource();
+      if (!again) return null;
+      if (again.paths.length > 0) {
+        return {
+          ok: false,
+          error: "PREVIEW_RUNTIME_START_REQUIRED",
+          paths: again.paths,
+        };
+      }
+      return {
+        ok: false,
+        error: "PREVIEW_RUNTIME_SOURCE_CHANGED",
+        sourceGeneration: again.sourceGeneration,
+      };
+    }
     return {
       ok: false,
       error: "PREVIEW_RUNTIME_CONFLICT",
-      previewRuntime: recordedThemePreviewRuntime(current.previewRuntime),
+      previewRuntime: recorded,
     };
   },
 
