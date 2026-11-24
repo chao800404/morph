@@ -997,6 +997,120 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(unconfirmedHint()).toBe(true);
     });
 
+    /** A new document of the same frame (a reload), stamped `servedContent`. */
+    const reloadWith = async (servedContent: {
+      ticket: number;
+      instance: string;
+    }) => {
+      reloadFrameDocument();
+      fromPreview({
+        type: "morph:storefront-preview-ready",
+        servedInstance: {
+          kind: "known",
+          instance: { session: SESSION, serial: 1 },
+        },
+        capabilities: BASIS_READY,
+        servedContent,
+      });
+      await flush();
+      const request = log
+        .filter(
+          (message) => message.type === "morph:storefront-preview-set-route",
+        )
+        .at(-1);
+      fromPreview({
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: request?.routeRequestId,
+        routePath: "/",
+      });
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/",
+      });
+      await flush();
+    };
+    const RESTARTED = "22222222-3333-4444-5555-666666666666";
+    const confirmedBy = (instance: string) =>
+      ({
+        success: true,
+        message: "Live Preview content confirmed",
+        data: { ticket: 7, instance },
+      }) as never;
+
+    // Review finding 2: the dev server restarted and stamped a new instance
+    // into the same snapshot; the reloaded page names it with Core's ticket.
+    it("a reloaded page naming Core's ticket from a restarted dev server is asked about once more, then gets its token", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      vi.mocked(confirmThemePreviewContent)
+        .mockResolvedValueOnce(confirmedBy(INSTANCE))
+        .mockResolvedValueOnce(confirmedBy(RESTARTED));
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(1));
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: RESTARTED });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(2),
+      );
+      expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenLastCalledWith({
+        data: { storefrontId: "storefront-1", themeId: "theme-1", ticket: 7 },
+      });
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(2));
+      await flush();
+
+      boundaryClick(1);
+      await flush();
+
+      const posts = basisPosts();
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.presentationToken).toMatchObject({
+        basis: { servedContent: { ticket: 7, instance: RESTARTED } },
+      });
+      expect(unconfirmedHint()).toBe(false);
+    });
+
+    it("asks once per ticket and page instance: a page Core still does not confirm is not asked about again", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      // Core keeps naming the instance from before the restart.
+      vi.mocked(confirmThemePreviewContent).mockResolvedValue(
+        confirmedBy(INSTANCE),
+      );
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: RESTARTED });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(2),
+      );
+      await flush();
+      await reloadWith({ ticket: 7, instance: RESTARTED });
+      await flush();
+      expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(2);
+
+      // Still refused: the page's instance is not the one Core named.
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(3));
+      await flush();
+      boundaryClick(1);
+      await flush();
+      expect(basisPosts()).toHaveLength(0);
+      expect(unconfirmedHint()).toBe(true);
+    });
+
     it("a frame without the basis capability (every Start frame) is never sent one", async () => {
       modelCurrentBridge();
       readRouteBindings.mockResolvedValue(bindingView());

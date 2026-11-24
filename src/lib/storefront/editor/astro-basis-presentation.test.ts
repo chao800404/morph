@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptAstroBasisAck,
+  astroBasisConfirmKey,
   astroBasisInstanceToConfirm,
   astroContentBasisEvents,
   astroBasisTokenFor,
@@ -203,21 +204,83 @@ describe("astroContentBasisEvents", () => {
 });
 
 describe("astroBasisInstanceToConfirm", () => {
+  const none: ReadonlySet<string> = new Set();
+
   it("asks Core about the stamped ticket only when it is Core's latest and its instance is unknown", () => {
     const written = { ...confirmed, instance: null };
     expect(
-      astroBasisInstanceToConfirm({ ticket: 7, instance: INSTANCE }, written),
+      astroBasisInstanceToConfirm(
+        { ticket: 7, instance: INSTANCE },
+        written,
+        none,
+      ),
     ).toBe(7);
     expect(
-      astroBasisInstanceToConfirm({ ticket: 7, instance: INSTANCE }, confirmed),
+      astroBasisInstanceToConfirm(
+        { ticket: 7, instance: INSTANCE },
+        confirmed,
+        none,
+      ),
     ).toBe(null);
     expect(
-      astroBasisInstanceToConfirm({ ticket: 6, instance: INSTANCE }, written),
+      astroBasisInstanceToConfirm(
+        { ticket: 6, instance: INSTANCE },
+        written,
+        none,
+      ),
     ).toBe(null);
-    expect(astroBasisInstanceToConfirm(null, written)).toBe(null);
+    expect(astroBasisInstanceToConfirm(null, written, none)).toBe(null);
     expect(
-      astroBasisInstanceToConfirm({ ticket: 7, instance: INSTANCE }, null),
+      astroBasisInstanceToConfirm({ ticket: 7, instance: INSTANCE }, null, none),
     ).toBe(null);
+  });
+
+  // Review finding 2: the dev server restarted and stamped a new instance
+  // into the same snapshot; the page reloaded names it with the same ticket.
+  it("asks again when the page names Core's ticket from another instance than recorded", () => {
+    expect(
+      astroBasisInstanceToConfirm(
+        { ticket: 7, instance: OTHER_INSTANCE },
+        confirmed,
+        none,
+      ),
+    ).toBe(7);
+  });
+
+  it("asks once per ticket and page instance, never again for the same pair", () => {
+    const stamp = { ticket: 7, instance: OTHER_INSTANCE };
+    const asked = new Set([astroBasisConfirmKey(stamp)]);
+    expect(astroBasisInstanceToConfirm(stamp, confirmed, asked)).toBe(null);
+    // Also after a start, whose answer named no instance: asked once, then
+    // left to the next sync rather than asked on every ready.
+    expect(
+      astroBasisInstanceToConfirm(
+        stamp,
+        { ...confirmed, instance: null },
+        asked,
+      ),
+    ).toBe(null);
+    // Another page instance, or another ticket, is another pair.
+    expect(
+      astroBasisInstanceToConfirm(
+        { ticket: 7, instance: "22222222-3333-4444-5555-666666666666" },
+        confirmed,
+        asked,
+      ),
+    ).toBe(7);
+    expect(astroBasisConfirmKey(stamp)).not.toBe(
+      astroBasisConfirmKey({ ticket: 8, instance: OTHER_INSTANCE }),
+    );
+  });
+
+  it("lets Core's answer to the re-ask replace the instance for that ticket", () => {
+    expect(
+      noteAstroContentBasis(confirmed, {
+        kind: "confirmed",
+        ticket: 7,
+        instance: OTHER_INSTANCE,
+      }),
+    ).toEqual({ ...confirmed, instance: OTHER_INSTANCE });
   });
 });
 
