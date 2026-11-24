@@ -438,6 +438,84 @@ describe("acceptAstroBasisAck", () => {
     }
   });
 
+  // c0c12af records the written ticket of a sync answered
+  // PREVIEW_CONTENT_NOT_CONFIRMED so the follow-up confirm can match it. That
+  // pending record alone must never let an ack through: only Core's
+  // confirmation of that ticket, naming the instance the frame stamps, does.
+  // The basis is built exactly as the shell builds it (each answer through
+  // astroContentBasisEvents, then noteAstroContentBasis).
+  it("a ticket recorded from a not-confirmed sync holds the ack until Core confirms the frame's instance", () => {
+    const fold = (
+      basis: AstroContentBasis | null,
+      events: ReturnType<typeof astroContentBasisEvents>,
+    ) => events.reduce(noteAstroContentBasis, basis);
+    // The frame was confirmed on ticket 7; an edit's sync wrote ticket 8 and
+    // the preview had not read it yet. The refusal here even names the old
+    // instance: a refusal confirms nothing, whatever it carries.
+    const pending = fold(
+      confirmed,
+      astroContentBasisEvents("sync", {
+        success: false,
+        error: "PREVIEW_CONTENT_NOT_CONFIRMED",
+        ticket: 7,
+        sentTicket: 8,
+        draftGenerations: { "template-1": 4 },
+        instance: INSTANCE,
+      }),
+    );
+    expect(pending).toEqual({
+      ticket: 8,
+      instance: null,
+      draftGenerations: { "template-1": 4 },
+    });
+    // The reloaded frame stamps ticket 8 from the instance that confirmed 7.
+    const stamp = { ticket: 8, instance: INSTANCE };
+    const ticket8: SectionPresentationToken = {
+      ...token,
+      documentBasis: { kind: "existing", draftGeneration: 4 },
+      basis: { kind: "astro-boundary", identity: IDENTITY, servedContent: stamp },
+    };
+
+    // 1. Pending only: no token is issued, and an ack for that very snapshot
+    //    (as a stale or forged frame could post) is held, not accepted.
+    expect(
+      astroBasisTokenFor({ ...request, servedContent: stamp, basis: pending }),
+    ).toEqual({ status: "refused", reason: "unconfirmed-instance" });
+    expect(
+      acceptAstroBasisAck({ token: ticket8, servedContent: stamp, basis: pending }),
+    ).toEqual({ accept: false, reason: "unconfirmed-instance" });
+
+    // 2. Core confirms ticket 8 and names the frame's instance: the editor now
+    //    issues that same token, and the same ack is accepted.
+    const confirmedNow = fold(
+      pending,
+      astroContentBasisEvents(
+        "confirm",
+        { success: true, data: { ticket: 8, instance: INSTANCE } },
+        8,
+      ),
+    );
+    expect(confirmedNow).toEqual({
+      ticket: 8,
+      instance: INSTANCE,
+      draftGenerations: { "template-1": 4 },
+    });
+    expect(
+      astroBasisTokenFor({
+        ...request,
+        servedContent: stamp,
+        basis: confirmedNow,
+      }),
+    ).toEqual({ status: "token", token: ticket8 });
+    expect(
+      acceptAstroBasisAck({
+        token: ticket8,
+        servedContent: stamp,
+        basis: confirmedNow,
+      }),
+    ).toEqual({ accept: true });
+  });
+
   it("is not asked about a Start token", () => {
     const start: SectionPresentationToken = {
       ...token,
