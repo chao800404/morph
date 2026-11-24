@@ -182,7 +182,7 @@ export function astroDesignNoticeOf(
       sectionId: focus.selection.sectionId,
       tone: "checking",
       message: ASTRO_SELECTION_RECHECKING_MESSAGE,
-      badge: "Checking",
+      badge: "Checking…",
       action: null,
     };
   }

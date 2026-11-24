@@ -27,7 +27,7 @@ describe("EditorAstroDesignNotice", () => {
     expect(status.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
   });
 
-  it("says the selection was cleared when there is no section any more", () => {
+  it("says the selection could not be restored when there is no section any more", () => {
     render(
       <EditorAstroDesignNotice
         notice={{
@@ -40,7 +40,9 @@ describe("EditorAstroDesignNotice", () => {
       />,
     );
     const status = screen.getByRole("status");
-    expect(status.textContent).toContain("Selection cleared");
+    expect(status.textContent).toContain(
+      "Couldn't restore your selection. Select the section again.",
+    );
     expect(status.textContent).toContain(
       "Reload the preview, then select it again.",
     );
@@ -53,7 +55,7 @@ describe("EditorAstroDesignNotice", () => {
           sectionId: "hero",
           tone: "checking",
           message: ASTRO_SELECTION_RECHECKING_MESSAGE,
-          badge: "Checking",
+          badge: "Checking…",
           action: null,
         }}
       />,
@@ -61,5 +63,8 @@ describe("EditorAstroDesignNotice", () => {
     const status = screen.getByRole("status");
     expect(status.getAttribute("data-astro-design-notice")).toBe("checking");
     expect(status.textContent).toContain(ASTRO_SELECTION_RECHECKING_MESSAGE);
+    expect(status.textContent).toContain(
+      "Checking whether this section can be edited in Design…",
+    );
   });
 });

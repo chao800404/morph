@@ -212,7 +212,7 @@ describe("stepAstroDesignFocus", () => {
       sectionId: "hero",
       tone: "checking",
       message: ASTRO_SELECTION_RECHECKING_MESSAGE,
-      badge: "Checking",
+      badge: "Checking…",
       action: null,
     });
     // An unconfirmed basis from the old document is not said meanwhile.

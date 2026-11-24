@@ -1394,7 +1394,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       await reloadWith({ ticket: 7, instance: INSTANCE });
       await waitFor(() =>
         expect(inspectorNotice()?.textContent ?? "").toContain(
-          "Selection cleared",
+          "Couldn't restore your selection. Select the section again.",
         ),
       );
 

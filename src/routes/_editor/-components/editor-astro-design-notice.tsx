@@ -36,10 +36,10 @@ export function EditorAstroDesignNotice({
       )}
       <AlertTitle className="text-xs">
         {notice.sectionId === null
-          ? "Selection cleared"
+          ? "Couldn't restore your selection. Select the section again."
           : checking
-            ? `Checking section ${notice.sectionId}`
-            : `Design unavailable for section ${notice.sectionId}`}
+            ? "Checking whether this section can be edited in Design…"
+            : "This section can't be edited in Design right now."}
       </AlertTitle>
       <AlertDescription className="text-xs">
         <p>{notice.message}</p>
