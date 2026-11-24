@@ -1228,6 +1228,99 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(unconfirmedHint()).toBe(true);
     });
 
+    /** Core's answer to the ready-time confirm waits for `answer()`. */
+    const confirmHeldUntilAnswered = () => {
+      const held = { answer: (_value: unknown) => {} };
+      vi.mocked(confirmThemePreviewContent).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            held.answer = resolve;
+          }) as never,
+      );
+      return held;
+    };
+
+    // Review finding 2: the click comes while the ready-time confirm is in
+    // flight, so its token is refused for want of Core's answer. The hint
+    // must not outlive that answer.
+    it("a click refused while Core's confirm is in flight is asked about again on Core's answer", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      const confirm = confirmHeldUntilAnswered();
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      // Core has not said yet which instance reads the start's snapshot.
+      boundaryClick(1);
+      await flush();
+      expect(basisPosts()).toHaveLength(0);
+      expect(unconfirmedHint()).toBe(true);
+
+      await act(async () => {
+        confirm.answer(confirmedBy(INSTANCE));
+      });
+      await waitFor(() => expect(basisPosts()).toHaveLength(1));
+      expect(basisPosts()[0]!.presentationToken).toMatchObject({
+        sectionId: "hero",
+        basis: {
+          kind: "astro-boundary",
+          identity: MARKER,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        },
+      });
+      expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    // Review finding 2, second case: the page reloads with the same stamp
+    // before Core answers. The (ticket, instance) was already asked, so the
+    // new document asks nothing; it waits for that same answer instead of
+    // being refused before it.
+    it("a reload while that confirm is still unanswered waits for it, then asks for the basis", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      const confirm = confirmHeldUntilAnswered();
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(1));
+      await flush();
+      boundaryClick(1);
+      await flush();
+      expect(basisPosts()).toHaveLength(0);
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(2));
+      await flush();
+      expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1);
+      expect(sectionStatus()?.getAttribute("data-astro-section-status")).toBe(
+        "checking",
+      );
+      expect(basisPosts()).toHaveLength(0);
+
+      await act(async () => {
+        confirm.answer(confirmedBy(INSTANCE));
+      });
+      await waitFor(() => expect(basisPosts()).toHaveLength(1));
+      expect(basisPosts()[0]!.presentationToken).toMatchObject({
+        sectionId: "hero",
+        basis: { servedContent: { ticket: 7, instance: INSTANCE } },
+      });
+      expect(unconfirmedHint()).toBe(false);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
     it("a frame without the basis capability (every Start frame) is never sent one", async () => {
       modelCurrentBridge();
       readRouteBindings.mockResolvedValue(bindingView());

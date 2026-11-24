@@ -3473,10 +3473,23 @@ export function VisualEditorShell({
    * ready (`astroBasisConfirmKey`): each is asked once, never on every ready.
    */
   const astroBasisConfirmAskedRef = useRef<Set<string>>(new Set());
+  /**
+   * The ready-time confirms Core has not answered yet, by
+   * `astroBasisConfirmKey`: a later ready for the same key is not asked
+   * again, and waits for this answer instead. Removed once settled.
+   */
+  const astroBasisConfirmInFlightRef = useRef<Map<string, Promise<void>>>(
+    new Map(),
+  );
   /** Issues and posts a basis token for a confirmed Astro selection. */
   const issueAstroBasisPresentationRef = useRef<
     (sectionId: string, identity: string) => void
   >(() => {});
+  /**
+   * On Core's answer to a ready-time confirm: the selected section's basis
+   * hint is evaluated again, by issuing its token once more.
+   */
+  const reissueAstroBasisAfterConfirmRef = useRef<() => void>(() => {});
   const noteAstroContentBasisEvent = useCallback(
     (event: AstroContentBasisEvent) => {
       astroContentBasisRef.current = noteAstroContentBasis(
@@ -13633,8 +13646,10 @@ export function VisualEditorShell({
           for (const key of asked) {
             if (!key.startsWith(`${instanceToConfirm}:`)) asked.delete(key);
           }
-          asked.add(astroBasisConfirmKey(readyServedContent));
-          basisConfirming = Promise.resolve()
+          const confirmKey = astroBasisConfirmKey(readyServedContent);
+          asked.add(confirmKey);
+          const inFlight = astroBasisConfirmInFlightRef.current;
+          const confirming: Promise<void> = Promise.resolve()
             .then(() =>
               confirmThemePreviewContent({
                 data: {
@@ -13652,10 +13667,35 @@ export function VisualEditorShell({
               )) {
                 noteAstroContentBasisEvent(event);
               }
+              // A selection whose basis was refused while Core had not
+              // answered yet is asked about again on the answer (review
+              // finding 2); never left saying "reload" on a confirmed basis.
+              reissueAstroBasisAfterConfirmRef.current();
             })
             .catch(() => {
               // Unanswered: the basis stays unconfirmed and Design says so.
+            })
+            .finally(() => {
+              if (inFlight.get(confirmKey) === confirming) {
+                inFlight.delete(confirmKey);
+              }
             });
+          inFlight.set(confirmKey, confirming);
+          basisConfirming = confirming;
+        } else if (
+          readyServedContent &&
+          isAstroBasisFrame(
+            new Set(message.capabilities ?? []),
+            previewContentRefreshRef.current,
+          )
+        ) {
+          // Not asked again, because an earlier ready already asked about
+          // this (ticket, page instance) and Core has not answered it yet:
+          // this document waits for that same answer (review finding 2).
+          basisConfirming =
+            astroBasisConfirmInFlightRef.current.get(
+              astroBasisConfirmKey(readyServedContent),
+            ) ?? null;
         }
         // Q3: an Astro selection is not kept from the old document; it is
         // matched again in Core's view read for this one. Never on TanStack
@@ -15840,6 +15880,30 @@ export function VisualEditorShell({
       type: "morph:storefront-preview-confirm-section-basis",
       presentationToken: token,
     });
+  };
+  // Review finding 2: a click while the ready-time confirm is in flight is
+  // refused for want of Core's answer, and the hint would outlive it. When
+  // Core answers, the selected section's token is issued again: refused
+  // again (the hint stays, with the new reason), or posted, and then the
+  // frame's `applied` clears the hint (`basis-acknowledged`). A focus still
+  // being re-derived is left to the re-derive, which waits for the confirm.
+  reissueAstroBasisAfterConfirmRef.current = () => {
+    const focus = astroDesignFocusRef.current;
+    if (
+      !focus?.selection ||
+      focus.rederiving ||
+      focus.hint === null ||
+      !focus.hint.reason.startsWith("basis-")
+    ) {
+      return;
+    }
+    if (documentNavigationRef.current && !frameShowsEditorPageRef.current()) {
+      return;
+    }
+    issueAstroBasisPresentationRef.current(
+      focus.selection.sectionId,
+      focus.selection.identity,
+    );
   };
   const syncPreviewSectionProps = useCallback(
     (
