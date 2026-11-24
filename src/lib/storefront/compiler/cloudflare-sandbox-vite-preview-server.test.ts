@@ -2370,6 +2370,14 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       ],
       ["the container failed to start (user, 11-24)", "Container failed to start."],
       [
+        "the platform had no container instance for the object (user, 11-24)",
+        "ContainerUnavailableError: there is no container instance that can be provided to this durable object",
+      ],
+      [
+        "the platform's running-instance limit (user, 11-24)",
+        "ContainerUnavailableError: maximum number of running container instances exceeded",
+      ],
+      [
         "a start timeout",
         "SANDBOX_START_TIMEOUT: the sandbox did not start within 90000 ms",
       ],
@@ -4140,6 +4148,8 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
     const withContainerStarts = (
       harness: Harness,
       failsHere: (name: ContainerCall, args: unknown[]) => boolean,
+      /** What the failing call throws. */
+      message: string = FAILED_TO_START,
     ) => {
       const counted = { starts: 0, afterFailure: [] as string[] };
       let live = false;
@@ -4155,7 +4165,7 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
             failed = true;
             live = false;
             counted.starts += 1;
-            throw new Error(FAILED_TO_START);
+            throw new Error(message);
           }
           if (!live) {
             counted.starts += 1;
@@ -4262,6 +4272,243 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
             null,
         ),
       ).toBe(true);
+    });
+
+    /**
+     * The platform's admission refusals (handoff/2026-11-24/
+     * container-unavailable-classification.md). The SDK (0.12.7,
+     * CONTAINER_UNAVAILABLE_SIGNATURES) keeps the platform's text verbatim
+     * as the message of a ContainerUnavailableError; over Durable Object RPC
+     * only the message arrives, with the class name folded in front. Same
+     * hazard as "Container failed to start": the failed connection is
+     * destroyed and the next call opens one that starts a container. Only
+     * these two whole messages are covered (user, 2026-11-24), only to skip
+     * the calls after them: they are never retried.
+     */
+    describe("the platform refused a container (two exact admission messages)", () => {
+      const NO_INSTANCE =
+        "there is no container instance that can be provided to this durable object";
+      const MAX_INSTANCES =
+        "maximum number of running container instances exceeded";
+      const REFUSALS = [
+        { label: "no instance, as the SDK keeps it", message: NO_INSTANCE },
+        {
+          label: "no instance, the class name in front",
+          message: `ContainerUnavailableError: ${NO_INSTANCE}`,
+        },
+        { label: "too many instances, as the SDK keeps it", message: MAX_INSTANCES },
+        {
+          label: "too many instances, the class name in front, capitalised",
+          message:
+            "ContainerUnavailableError: Maximum number of running container instances exceeded",
+        },
+      ];
+      const POINTS = [
+        {
+          point: "on its first container call, guarded",
+          guarded: true,
+          failsHere: (_harness: Harness) => () => true,
+          starts: 1,
+        },
+        {
+          point: "on its first container call, unguarded",
+          guarded: false,
+          failsHere: (_harness: Harness) => () => true,
+          starts: 1,
+        },
+        {
+          point: "while it was staging",
+          guarded: true,
+          failsHere: (_harness: Harness) => (name: ContainerCall) =>
+            name === "mkdir",
+          starts: 2,
+        },
+        {
+          point: "on the fence run that lays the workspace out",
+          guarded: true,
+          failsHere: (harness: Harness) => fenceRun(harness, "start"),
+          starts: 2,
+        },
+      ];
+
+      it.each(
+        REFUSALS.flatMap((refusal) =>
+          POINTS.map((point) => ({ ...refusal, ...point })),
+        ),
+      )(
+        "$label, $point: no later container call starts a container, it is not retried, and the skip is logged",
+        async ({ message, guarded, failsHere, starts: expectedStarts }) => {
+          const s = setup({ guarded });
+          const counted = withContainerStarts(
+            s.harness,
+            failsHere(s.harness),
+            message,
+          );
+          const { result, starts, retries, events } = await records(() =>
+            s.start(),
+          );
+
+          expect(result.ok).toBe(false);
+          if (result.ok) return;
+          expect(result.stage).toBe("preview-server-start");
+          expect(result.errorMessage).toBe(message);
+          // Never retried (user, 2026-11-24): the allow-list is unchanged.
+          expect(starts).toHaveLength(1);
+          expect(starts[0]!.retry).toBeUndefined();
+          expect(retries).toEqual([]);
+          expect(s.pauses).toEqual([]);
+          // No writeFile, exec or marker write after the refusal: each would
+          // open a new connection, and that starts a container.
+          expect(counted.afterFailure).toEqual([]);
+          expect(counted.starts).toBe(expectedStarts);
+          expect(s.harness.commands).toEqual([]);
+          expect(events("post-failure-container-call-skipped")).toEqual([
+            expect.objectContaining({
+              attemptId: starts[0]!.attemptId,
+              previewId: "preview-1",
+              reason: "container-admission-refused",
+              skipped: ["own-staging-clean-up", "fail-closed-marker"],
+            }),
+          ]);
+          expect(events("fail-closed-marker")).toEqual([]);
+        },
+      );
+
+      it.each([
+        { label: "no instance", message: NO_INSTANCE },
+        {
+          label: "too many instances, the class name in front",
+          message: `ContainerUnavailableError: ${MAX_INSTANCES}`,
+        },
+      ])(
+        "$label, after its fence moved files but before it committed: nothing marks the workspace, and the next start does not reuse it",
+        async ({ message }) => {
+          const s = setup();
+          expect((await s.start()).ok).toBe(true);
+          const HERO_ON_DISK = "/workspace/src/components/Hero.tsx";
+          const committedHero = s.harness.written.get(HERO_ON_DISK);
+          const THEME_HERO_2 = THEME.map((file) =>
+            file.path === "src/components/Hero.tsx"
+              ? { ...file, content: file.content.replace("<h1>", '<h1 data-v="2">') }
+              : file,
+          );
+
+          // The second start's fence is cut after it dirtied the marker and
+          // moved its files, before its ledger write and its commit; the
+          // container is then gone and the platform refuses a new one. The
+          // harness keeps the disk, the worst case: a restarted container
+          // would hold an empty /workspace.
+          const exec = s.harness.session.exec!.bind(s.harness.session);
+          const isStartFence = fenceRun(s.harness, "start");
+          let cut = false;
+          const set = s.harness.written.set.bind(s.harness.written);
+          s.harness.written.set = (key: string, value: string) => {
+            if (cut && key === PREVIEW_FENCE_LEDGER_PATH) {
+              cut = false;
+              throw new Error("the container went away inside the fence");
+            }
+            return set(key, value);
+          };
+          const counted = withContainerStarts(
+            s.harness,
+            (name, args) => {
+              if (!isStartFence(name, args)) return false;
+              // The fence runs synchronously up to the cut (the harness's
+              // exec has no await before it), then the call is refused.
+              cut = true;
+              void exec(String(args[0])).catch(() => {});
+              return true;
+            },
+            message,
+          );
+
+          const failed = await records(() => s.start({ files: THEME_HERO_2 }));
+          expect(failed.result.ok).toBe(false);
+          if (failed.result.ok) return;
+          expect(failed.result.errorMessage).toBe(message);
+          expect(counted.afterFailure).toEqual([]);
+          expect(failed.events("fail-closed-marker")).toEqual([]);
+          // What the refused attempt left, unfinished: its fence's own dirty
+          // marker over a workspace it half updated.
+          expect(
+            isDirtyWorkspaceMarker(
+              s.harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ??
+                null,
+            ),
+          ).toBe(true);
+          expect(s.harness.written.get(HERO_ON_DISK)).not.toBe(committedHero);
+
+          // Capacity again: the next start of the committed Theme.
+          const { result: next, starts } = await records(() => s.start());
+          expect(next.ok).toBe(true);
+          if (!next.ok) return;
+          expect(next.timings.workspaceReused).toBe(false);
+          expect(starts[0]!.workspace).toMatchObject({
+            reused: false,
+            previous: "dirty",
+            committed: true,
+          });
+          expect((starts[0]!.workspace as { update?: string }).update).not.toBe(
+            "none",
+          );
+          // Every Theme file is a clean start's bytes.
+          const probe = createSession("ready");
+          expect((await startWith(probe)).ok).toBe(true);
+          for (const file of THEME) {
+            const onDisk = `/workspace/${file.path}`;
+            expect(s.harness.written.get(onDisk)).toBe(probe.written.get(onDisk));
+          }
+        },
+      );
+
+      it.each([
+        [
+          "the HTTP-path signature, deliberately not covered",
+          "there is no container instance available at this time",
+        ],
+        [
+          "the SDK's teardown message under the same code",
+          "ContainerUnavailableError: The sandbox container was unavailable: the connection was torn down before it became reachable. Retry the operation.",
+        ],
+        [
+          "the SDK's upgrade-budget message under the same code",
+          "ContainerUnavailableError: Container was unavailable after exhausting upgrade retry budget (status 503)",
+        ],
+        [
+          "a start timeout",
+          "SANDBOX_START_TIMEOUT: the sandbox did not start within 90000 ms",
+        ],
+        ["the sentence inside another message", `Theme build said: ${NO_INSTANCE}`],
+        ["the sentence with more after it", `${MAX_INSTANCES}; retry later`],
+        ["another class name in front", `SandboxError: ${NO_INSTANCE}`],
+      ])(
+        "%s still marks the workspace untrusted and skips nothing",
+        async (_name, message) => {
+          const s = setup({ failures: 1, message });
+          const { result, starts, retries, events } = await records(() =>
+            s.start(),
+          );
+
+          expect(result.ok).toBe(false);
+          if (result.ok) return;
+          expect(result.errorMessage).toBe(message);
+          expect(starts).toHaveLength(1);
+          expect(retries).toEqual([]);
+          expect(events("post-failure-container-call-skipped")).toEqual([]);
+          expect(events("fail-closed-marker")).toEqual([
+            expect.objectContaining({
+              attemptId: starts[0]!.attemptId,
+              result: "marked",
+            }),
+          ]);
+          expect(
+            isDirtyWorkspaceMarker(
+              s.harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ??
+                null,
+            ),
+          ).toBe(true);
+        },
+      );
     });
   });
 
