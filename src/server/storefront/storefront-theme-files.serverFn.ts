@@ -24,6 +24,7 @@ import {
   readThemeManifestMigrationSnapshot,
 } from "@/lib/storefront/dal/storefront-theme-manifest-migration.dal";
 import { buildThemeContentShadowReport } from "@/lib/storefront/theme-content-capability-shadow";
+import { THEME_CONTENT_MODULE_PATH } from "@/lib/storefront/theme-content-slots";
 import {
   buildThemeManifestMigrationPlan,
   LEGACY_THEME_MANIFEST_PATH,
@@ -686,7 +687,7 @@ type StarterRuleWrite = {
  * identifies the restore by the operation, not by the bytes it was sent.
  *
  * The Starter file is resolved here, by path, from the current Starter's
- * workspace files; the request's `content` is never written. Whether it is
+ * workspace files, and only for the content module; the request's `content` is never written. Whether it is
  * held to `start` is judged on that resolved source, so the option-B Starter
  * write rule applies whether or not the request's bytes match it. Only ever
  * a create (`expectMissing`, no file id or version): an author's file at the
@@ -714,9 +715,13 @@ function resolveStarterFileRestore(write: {
       ),
     };
   }
-  const starterFile = starterThemeWorkspaceFiles().find(
-    (file) => file.path === write.path,
-  );
+  // Only the content module is restorable: it is the one file the editor's
+  // restore command puts back. Any other path is refused, whatever the
+  // current Starter holds there.
+  const starterFile =
+    write.path === THEME_CONTENT_MODULE_PATH
+      ? starterThemeWorkspaceFiles().find((file) => file.path === write.path)
+      : undefined;
   if (!starterFile) {
     return {
       ok: false,
