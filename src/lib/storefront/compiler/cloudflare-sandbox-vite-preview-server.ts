@@ -409,6 +409,19 @@ const NOT_CURRENT_START: Readonly<
 };
 
 /**
+ * A retry asks before each of its container steps whether it is still the
+ * current start; this carries the refusal out of the step it stopped, so
+ * the start answers it without touching the container again (no staging
+ * clean-up, no fail-closed marker: the workspace is the newer start's now).
+ */
+class PreviewStartNotCurrentError extends Error {
+  constructor(readonly refusal: { stage: string; errorMessage: string }) {
+    super(refusal.errorMessage);
+    this.name = "PreviewStartNotCurrentError";
+  }
+}
+
+/**
  * What a start has put in its staging directory, for the container to apply:
  * the files at their workspace-relative paths, and the files the plan no
  * longer has.
@@ -770,7 +783,8 @@ export class CloudflareSandboxVitePreviewServer {
   /**
    * Why a successful attempt must not be answered as ready: the request's
    * deadline has passed, or the preview's Durable Object no longer names it
-   * as the current start (or cannot say). Null to answer it.
+   * as the current start (or cannot say). Null to answer it. A retry asks
+   * the same before each of its container steps (`beforeContainerStep`).
    */
   private async refuseLateSuccess(
     request: StartRequestState,
@@ -839,6 +853,23 @@ export class CloudflareSandboxVitePreviewServer {
       // request's deadline, at most.
       result = await this.startObserved(input, observation, {
         readyTimeoutMs: Math.min(this.readyTimeoutMs, remainingMs),
+        // A retry also asks before each of its container steps, with the
+        // same check its success asks: once another start of this preview
+        // has claimed it (another tab), or it was stopped or ran out of
+        // time, it stops before its next step, so it never lays its files
+        // over the newer start's or starts a second dev server. The first
+        // attempt does not ask per step (the retry is the rare path).
+        ...(attempt.retryOf && request.guard
+          ? {
+              beforeContainerStep: async () => {
+                const refused = await this.refuseLateSuccess(
+                  request,
+                  attempt.attemptId,
+                );
+                if (refused) throw new PreviewStartNotCurrentError(refused);
+              },
+            }
+          : {}),
       });
       if (result.ok) {
         if (this.requestTrace) {
@@ -1092,7 +1123,11 @@ export class CloudflareSandboxVitePreviewServer {
       }
       return { staging, files, prune: [] };
     } catch (error) {
-      await this.discardStaging(session, staging);
+      // A start that is no longer current touches the container no more;
+      // its staging directory in /tmp is left, as after any interruption.
+      if (!(error instanceof PreviewStartNotCurrentError)) {
+        await this.discardStaging(session, staging);
+      }
       throw error;
     }
   }
@@ -1109,8 +1144,25 @@ export class CloudflareSandboxVitePreviewServer {
   private async startObserved(
     input: StartPreviewServerInput,
     observation: StartObservation,
-    limits: Readonly<{ readyTimeoutMs: number }>,
+    limits: Readonly<{
+      readyTimeoutMs: number;
+      /**
+       * Asked before each container step that changes the container
+       * (staging writes, toolchain link, fence, expose, lifecycle, stale
+       * server stop, content stamp, dev server start). Throws
+       * `PreviewStartNotCurrentError` to stop the start there.
+       */
+      beforeContainerStep?: () => Promise<void>;
+    }>,
   ): Promise<StartPreviewServerResult> {
+    const beforeContainerStep =
+      limits.beforeContainerStep ?? (async () => undefined);
+    /** For the fail-closed marker: false once this start is not current. */
+    const stillCurrent = () =>
+      beforeContainerStep().then(
+        () => true,
+        (error: unknown) => !(error instanceof PreviewStartNotCurrentError),
+      );
     const requestStartedAt = Date.now();
     const logs: string[] = [];
     const addLog = boundedPreviewLogAppender(logs, {
@@ -1175,6 +1227,8 @@ export class CloudflareSandboxVitePreviewServer {
           previewId: input.previewId,
           reason,
         });
+        // A retry another start has replaced leaves the marker to it.
+        if (!(await stillCurrent())) return;
         await session!
           .writeFile(
             THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
@@ -1219,18 +1273,30 @@ export class CloudflareSandboxVitePreviewServer {
         }
       };
       const measuredWriter: ThemeWorkspaceWriter = {
-        mkdir: (path, options) =>
-          recordFilesystemCall(() => session!.mkdir(path, options), "mkdir"),
-        writeFile: (path, content) =>
-          recordFilesystemCall(
+        mkdir: async (path, options) => {
+          await beforeContainerStep();
+          return recordFilesystemCall(
+            () => session!.mkdir(path, options),
+            "mkdir",
+          );
+        },
+        writeFile: async (path, content) => {
+          await beforeContainerStep();
+          return recordFilesystemCall(
             () => writeSandboxWorkspaceFile(session!, path, content),
             "write",
-          ),
+          );
+        },
         ...(session.listFiles
           ? { listFiles: (path, options) => session!.listFiles!(path, options) }
           : {}),
         ...(session.deleteFile
-          ? { deleteFile: (path) => session!.deleteFile!(path) }
+          ? {
+              deleteFile: async (path) => {
+                await beforeContainerStep();
+                return session!.deleteFile!(path);
+              },
+            }
           : {}),
       };
 
@@ -1256,6 +1322,8 @@ export class CloudflareSandboxVitePreviewServer {
           logs,
         };
       }
+      // It links the toolchain into /workspace.
+      await beforeContainerStep();
       const toolchainReady = await prepareSandboxToolchain(
         session,
         toolchain,
@@ -1447,6 +1515,7 @@ export class CloudflareSandboxVitePreviewServer {
       // and the marker. A start read before a newer save is refused whole
       // and leaves the workspace as it was, whichever of the two arrived
       // first. Equal versions pass: the later write wins, as for a sync.
+      await beforeContainerStep();
       observation.step = "fence";
       const applied = await runFencedWriteInSandbox(
         session as unknown as FenceSandbox,
@@ -1540,6 +1609,7 @@ export class CloudflareSandboxVitePreviewServer {
       if (activePort) {
         exposedUrl = activePort.url;
       } else {
+        await beforeContainerStep();
         const exposePortStartedAt = Date.now();
         const exposed = await session.exposePort(THEME_PREVIEW_SERVER_PORT, {
           hostname: previewHost,
@@ -1558,6 +1628,7 @@ export class CloudflareSandboxVitePreviewServer {
         digest: previewAddressDigest(exposedUrl),
       };
 
+      if (session.setSleepAfter) await beforeContainerStep();
       const configureLifecycleStartedAt = Date.now();
       if (session.setSleepAfter) {
         await session.setSleepAfter(this.sleepAfter);
@@ -1659,6 +1730,7 @@ export class CloudflareSandboxVitePreviewServer {
             )
           : true;
         if (stillRunning) {
+          await beforeContainerStep();
           await session.killProcess(alreadyServing.id);
           // `killProcess()` requests termination, but a completed RPC does
           // not guarantee that the OS has released Vite's listening socket.
@@ -1702,6 +1774,7 @@ export class CloudflareSandboxVitePreviewServer {
       // a preview whose Worker reads the snapshot takes content syncs to
       // confirm.
       if (confirmsContent) {
+        await beforeContainerStep();
         await runPreviewContentRequestInSandbox(
           session as unknown as FenceSandbox,
           {
@@ -1712,6 +1785,7 @@ export class CloudflareSandboxVitePreviewServer {
           },
         );
       }
+      await beforeContainerStep();
       const process = await session.startProcess(
         // A strict port so the server cannot quietly land on another one and
         // leave the exposed URL pointing at nothing (`--strictPort` for
@@ -1817,6 +1891,13 @@ export class CloudflareSandboxVitePreviewServer {
         serving,
       };
     } catch (error) {
+      // No longer the current start: answered as such, and nothing more is
+      // done in the container (no fail-closed marker over the newer start's
+      // workspace). Not a thrown step failure, so never classified.
+      if (error instanceof PreviewStartNotCurrentError) {
+        observation.step = undefined;
+        return { ok: false, ...error.refusal, logs };
+      }
       // Kept with the step it came from: only the start's own steps may be
       // retried, and only by `start`, which reads it.
       observation.thrown = {
@@ -1835,12 +1916,14 @@ export class CloudflareSandboxVitePreviewServer {
             200,
           ),
         });
-        await session
-          .writeFile(
-            THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-            newDirtyWorkspaceMarker(),
-          )
-          .catch(() => {});
+        if (await stillCurrent()) {
+          await session
+            .writeFile(
+              THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+              newDirtyWorkspaceMarker(),
+            )
+            .catch(() => {});
+        }
       }
       return {
         ok: false,
