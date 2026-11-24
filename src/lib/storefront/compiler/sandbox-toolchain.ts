@@ -30,6 +30,14 @@ export async function prepareSandboxToolchain(
   session: SandboxToolchainSession,
   toolchain: ThemeToolchain,
   addLog: (level: "info" | "warn" | "error", message: string) => void,
+  options: Readonly<{
+    /**
+     * False when the caller links the workspace itself: the Live Preview
+     * makes the link inside its write fence, by the workspace's owner only
+     * (user, 2026-11-24). The build links here, as before.
+     */
+    link?: boolean;
+  }> = {},
 ): Promise<
   | Readonly<{ ok: true }>
   | Readonly<{ ok: false; code: string; message: string }>
@@ -56,6 +64,13 @@ export async function prepareSandboxToolchain(
       code: "THEME_TOOLCHAIN_MISMATCH",
       message: `The container's toolchain manifest hashes to ${found}, but the build records ${toolchain.id}. It is not built with a different toolchain.`,
     };
+  }
+  if (options.link === false) {
+    addLog(
+      "info",
+      `Toolchain ${toolchain.framework} ${shortToolchainId(toolchain.id)} checked against its manifest.`,
+    );
+    return { ok: true };
   }
   const linked = await session.exec(
     `mkdir -p /workspace && rm -f /workspace/node_modules && ln -s ${toolchain.root}/node_modules /workspace/node_modules`,

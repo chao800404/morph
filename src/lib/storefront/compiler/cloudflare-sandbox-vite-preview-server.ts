@@ -1528,12 +1528,16 @@ export class CloudflareSandboxVitePreviewServer {
       const unregistered = await registerClaim();
       if (unregistered) return { ok: false, ...unregistered, logs };
 
-      // It links the toolchain into /workspace.
+      // Checks the container's toolchain manifest (read only). The
+      // workspace's link to it is made by the fence, by the owner only
+      // (user, 2026-11-24): a start that no longer owns the workspace never
+      // removes or replaces it.
       await beforeContainerStep();
       const toolchainReady = await prepareSandboxToolchain(
         session,
         toolchain,
         (_level, message) => addLog(message),
+        { link: false },
       );
       if (!toolchainReady.ok) {
         return {
@@ -1783,6 +1787,11 @@ export class CloudflareSandboxVitePreviewServer {
           // files out; refused whole, writing nothing, once a higher claim
           // is registered.
           ...(claim ? { claim } : {}),
+          // The toolchain link, made in that same step (rm + ln before).
+          link: {
+            path: "node_modules",
+            target: `${toolchain.root}/node_modules`,
+          },
           // Content syncs reach a preview whose Worker reads the snapshot
           // (6.5), so only there is a newer snapshot kept and the server
           // stamped.

@@ -159,6 +159,15 @@ export type FencedWriteRequest =
        * with no Durable Object guard) is refused once any claim is.
        */
       claim?: PreviewStartClaim;
+      /**
+       * The workspace's toolchain link (`path` relative to `root`, a
+       * symlink to `target`), made in the same locked step once the start
+       * is applied, and only then: a start refused for its claim or as
+       * stale never removes or replaces the owner's link. Left as it is
+       * when it already points at `target`, so a running dev server never
+       * sees node_modules missing.
+       */
+      link?: Readonly<{ path: string; target: string }>;
     }>;
 
 /**
@@ -243,6 +252,12 @@ export type FenceIo = {
   removeTree(dirPath: string): void;
   /** `relative` under `root`, or throws when it would leave it. */
   within(root: string, relative: string): string;
+  /**
+   * Makes `linkPath` a symlink to `target`, creating its parent; nothing
+   * when it already is one. Throws when something else is in the way that
+   * cannot be unlinked (a directory), as `rm -f` then `ln -s` did.
+   */
+  replaceLink(target: string, linkPath: string): void;
 };
 
 export type FencePlanners = Readonly<{
@@ -461,6 +476,15 @@ export function applyFencedRequest(
     const markerStands =
       (markerNow === null ? null : markerNow.trim()) ===
       request.marker.expected;
+
+    // The toolchain link, by the owner only (user, 2026-11-24): not a
+    // Theme file, so neither the marker nor the manifest covers it.
+    if (request.link) {
+      io.replaceLink(
+        request.link.target,
+        io.within(request.root, request.link.path),
+      );
+    }
 
     if (request.prune.length > 0 || request.files.length > 0) {
       io.writeText(request.marker.path, request.marker.dirty);
@@ -710,6 +734,14 @@ const io = {
   },
   // One rename on the same disk: a reader sees the old file or the new one.
   renameInto(from, to) { fs.renameSync(from, to); },
+  replaceLink(target, link) {
+    let current = null;
+    try { current = fs.readlinkSync(link); } catch {}
+    if (current === target) return;
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    try { fs.unlinkSync(link); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    fs.symlinkSync(target, link);
+  },
 };
 
 let result;
