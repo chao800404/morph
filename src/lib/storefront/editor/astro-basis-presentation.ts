@@ -98,8 +98,11 @@ function instanceOf(value: unknown): string | null {
  * answer) adds no record at all.
  *
  * - start: the snapshot it wrote (`contentTicket`, `draftGenerations`);
- * - sync, either outcome: the snapshot it wrote (`sentTicket`,
- *   `draftGenerations`), and on success the instance that confirmed it;
+ * - sync: the snapshot it wrote (`sentTicket`, `draftGenerations`) only
+ *   when the frame can be shown it — applied with the preview reading that
+ *   very ticket (and then the instance that confirmed it), or written and
+ *   not read yet (`PREVIEW_CONTENT_NOT_CONFIRMED`). Never when superseded
+ *   or overtaken by a later snapshot, or not written;
  * - confirm of `ticket`: the instance that confirmed it.
  */
 export function astroContentBasisEvents(
@@ -124,9 +127,23 @@ export function astroContentBasisEvents(
     const ticket = positiveTicket(fields.sentTicket);
     const draftGenerations = draftGenerationsOf(fields.draftGenerations);
     if (ticket === null || !draftGenerations) return events;
-    events.push({ kind: "written", ticket, draftGenerations });
-    const instance = data ? instanceOf(data.instance) : null;
-    if (instance) events.push({ kind: "confirmed", ticket, instance });
+    if (data) {
+      // Applied, but the preview may already read a later snapshot than
+      // this sync's (overtaken): the frame will never show `ticket`, so it
+      // is never the basis.
+      if (positiveTicket(data.ticket) !== ticket) return events;
+      events.push({ kind: "written", ticket, draftGenerations });
+      const instance = instanceOf(data.instance);
+      if (instance) events.push({ kind: "confirmed", ticket, instance });
+      return events;
+    }
+    // Refused: only "written, not read yet" is this sync's snapshot on the
+    // preview, which the editor confirms next and reloads onto. Superseded
+    // (a later one is held), a conflict, unconfirmable or failed: nothing
+    // the frame will be confirmed on.
+    if (answer.error === "PREVIEW_CONTENT_NOT_CONFIRMED") {
+      events.push({ kind: "written", ticket, draftGenerations });
+    }
     return events;
   }
   const ticket = positiveTicket(askedTicket);
