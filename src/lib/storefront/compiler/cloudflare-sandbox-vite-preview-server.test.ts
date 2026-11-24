@@ -20,8 +20,15 @@ import {
   THEME_PREVIEW_SERVER_PORT,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
   THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+  type PreviewServerProvider,
   type PreviewServerSession,
 } from "./cloudflare-sandbox-vite-preview-server";
+import {
+  checkPreviewStartAttempt,
+  claimPreviewStartAttempt,
+  endPreviewStartAttempts,
+  PREVIEW_START_ATTEMPT_STORAGE_KEY,
+} from "./preview-start-attempt-guard";
 import {
   START_TOOLCHAIN,
   answerToolchainCommand,
@@ -2556,6 +2563,289 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       const after = enterPreviewStart("preview-1");
       expect(after.concurrentAtEntry).toBe(0);
       after.leave();
+    });
+  });
+
+  /**
+   * Superseding is per previewId (user, 11-24): one container, and so one
+   * Durable Object, per storefront + Theme + user
+   * (`theme-preview-session-id.ts`). A second tab of the same author starts
+   * the same previewId; another Theme or another author is another previewId.
+   *
+   * These run over the real current-start record
+   * (`preview-start-attempt-guard.ts`), wired to the session the way
+   * `PreviewSandbox` wires it to its storage, rather than over the stand-in
+   * above: what is under test is that record and the start path together.
+   */
+  describe("another tab starts the same preview (real current-start record)", () => {
+    type Stored = Map<string, unknown>;
+
+    /** One preview's Durable Object storage, and the session's RPC methods over it. */
+    const withRealStartGuard = (harness: Harness, now: () => number) => {
+      const stored: Stored = new Map();
+      const storage = {
+        get: async (key: string) => stored.get(key),
+        put: async (key: string, value: unknown) => {
+          stored.set(key, value);
+        },
+      };
+      const checks: Array<{ attemptId: string; next?: string }> = [];
+      override(
+        harness,
+        "claimPreviewStart",
+        (input: { attemptId: string; deadlineAt: number }) =>
+          claimPreviewStartAttempt(storage, input),
+      );
+      override(
+        harness,
+        "checkPreviewStart",
+        (input: { attemptId: string; next?: string }) => {
+          checks.push(input);
+          return checkPreviewStartAttempt(storage, input, now());
+        },
+      );
+      override(harness, "endPreviewStarts", () =>
+        endPreviewStartAttempts(storage),
+      );
+      return {
+        checks,
+        /** What the Durable Object holds now. */
+        record: () =>
+          stored.get(PREVIEW_START_ATTEMPT_STORAGE_KEY) as
+            | { attemptId: string | null; deadlineAt: number | null; stopped: boolean }
+            | undefined,
+        /** The Durable Object's own answer for `attemptId`, now. */
+        statusOf: (attemptId: string) =>
+          checkPreviewStartAttempt(storage, { attemptId }, now()),
+      };
+    };
+
+    type StartResult = Awaited<
+      ReturnType<CloudflareSandboxVitePreviewServer["start"]>
+    >;
+
+    /** The other tab: its own request, maybe in another isolate, same container. */
+    const otherTab = (
+      ctx: Setup,
+      getSandbox: PreviewServerProvider["getSandbox"] = async () =>
+        ctx.harness.session,
+    ) =>
+      new CloudflareSandboxVitePreviewServer({
+        sandboxProvider: { getSandbox },
+        sandboxBinding: {},
+        ...retryOptions({ now: ctx.time.now, pause: async () => {} }),
+      });
+
+    const startInput = (previewId = "preview-1") => ({
+      previewId,
+      files: THEME,
+      entry: "src/pages/index.tsx",
+      previewHostname: "preview.example.com",
+      platformHostEnv: { PUBLIC_URL: "https://admin.example.net" },
+    });
+
+    /** What the container saw up to now, to show nothing touched it later. */
+    const containerSnapshot = (harness: Harness) => ({
+      writes: harness.writePaths.length,
+      deletes: harness.deletedPaths.length,
+      commands: harness.commands.length,
+      killed: harness.killed.length,
+      destroyed: harness.destroyed,
+      unexposed: harness.unexposed.length,
+    });
+
+    it("A in its 500 ms pause, B starts the same previewId: A sends no retry, answers superseded, and B's preview stays ready", async () => {
+      let b = null as StartResult | null;
+      let afterB = null as ReturnType<typeof containerSnapshot> | null;
+      let mkdirAfterB = 0;
+      const s = setup({
+        failures: 1,
+        guarded: false,
+        onPause: async (ctx) => {
+          b = await otherTab(ctx).start(startInput());
+          afterB = containerSnapshot(ctx.harness);
+          mkdirAfterB = s.mkdirCalls;
+        },
+      });
+      const real = withRealStartGuard(s.harness, s.time.now);
+      const { result: a, starts, retries } = await records(() => s.start());
+
+      // B claimed the preview and came up.
+      expect(b).not.toBeNull();
+      const bResult = b!;
+      expect(bResult.ok).toBe(true);
+      const bAttempt = bResult.attemptId!;
+      expect(bAttempt).toEqual(expect.any(String));
+
+      // A's late answer: superseded, never ready, never recovered.
+      expect(a.ok).toBe(false);
+      if (a.ok) return;
+      expect(a.stage).toBe("preview-start-superseded");
+      expect(a.recoveredFrom).toBeUndefined();
+      const aStarts = starts.filter((start) => start.attemptId !== bAttempt);
+      expect(aStarts).toHaveLength(1);
+      expect(a.attemptId).toBe(aStarts[0]!.attemptId);
+      expect(retries).toEqual([
+        expect.objectContaining({
+          retryOf: aStarts[0]!.attemptId,
+          outcome: "cancelled",
+          reason: "superseded",
+        }),
+      ]);
+      // A asked to hand over to its retry once, and was refused.
+      expect(real.checks.filter((check) => check.next)).toHaveLength(1);
+
+      // A did nothing in the container after B claimed it.
+      expect(s.mkdirCalls).toBe(mkdirAfterB);
+      expect(containerSnapshot(s.harness)).toEqual(afterB);
+      expect(s.harness.killed).toEqual([]);
+      expect(s.harness.destroyed).toBe(0);
+
+      // B is still the current start, under its own deadline.
+      expect(real.record()).toMatchObject({
+        attemptId: bAttempt,
+        stopped: false,
+      });
+      expect(await real.statusOf(bAttempt)).toBe("current");
+      expect(await real.statusOf(a.attemptId!)).toBe("superseded");
+    });
+
+    it("A's retry is running, B starts the same previewId: A's late success answers superseded, no third attempt, and B's preview stays ready", async () => {
+      let b = null as StartResult | null;
+      let afterB = null as ReturnType<typeof containerSnapshot> | null;
+      let mkdirAfterB = 0;
+      const s = setup({ failures: 1, guarded: false });
+      const real = withRealStartGuard(s.harness, s.time.now);
+      let claimedDuringRetry = false;
+      // The first attempt fails while staging, before any dev server: the
+      // first dev server to wait for its port is the retry's.
+      beforeReady(s.harness, async () => {
+        if (claimedDuringRetry) return;
+        claimedDuringRetry = true;
+        b = await otherTab(s).start(startInput());
+        afterB = containerSnapshot(s.harness);
+        mkdirAfterB = s.mkdirCalls;
+      });
+      const { result: a, starts, retries } = await records(() => s.start());
+
+      expect(claimedDuringRetry).toBe(true);
+      const bResult = b!;
+      expect(bResult.ok).toBe(true);
+      const bAttempt = bResult.attemptId!;
+
+      // A's retry came back after B claimed: superseded, never ready.
+      expect(a.ok).toBe(false);
+      if (a.ok) return;
+      expect(a.stage).toBe("preview-start-superseded");
+      expect(a.recoveredFrom).toBeUndefined();
+      const aStarts = starts.filter((start) => start.attemptId !== bAttempt);
+      // The first attempt and its one retry; nothing after B claimed.
+      expect(aStarts).toHaveLength(2);
+      expect(aStarts[1]!.retryOf).toBe(aStarts[0]!.attemptId);
+      expect(aStarts[1]!.outcome).toBe("failed");
+      expect(a.retryOf).toBe(aStarts[0]!.attemptId);
+      expect(retries.filter((retry) => retry.outcome === "sent")).toHaveLength(1);
+
+      // A's late answer stopped nothing and wrote nothing in B's container.
+      expect(s.mkdirCalls).toBe(mkdirAfterB);
+      expect(containerSnapshot(s.harness)).toEqual(afterB);
+      expect(s.harness.killed).toEqual([]);
+      expect(s.harness.destroyed).toBe(0);
+
+      expect(real.record()).toMatchObject({ attemptId: bAttempt, stopped: false });
+      expect(await real.statusOf(bAttempt)).toBe("current");
+      expect(await real.statusOf(a.attemptId!)).toBe("superseded");
+    });
+
+    it("keeps the request's original deadline across the retry: the Durable Object's record is not renewed, and a retry ready after it is not answered", async () => {
+      const t0 = 1_000_000;
+      const s = setup({
+        failures: 1,
+        guarded: false,
+        server: { startDeadlineMs: 10_000 },
+        beforeFailure: (ctx) => ctx.time.advance(4_000),
+      });
+      const real = withRealStartGuard(s.harness, s.time.now);
+      // Ready 6.5 s into the retry: inside a deadline renewed at the retry
+      // (4 s + 10 s), past the request's own (10 s).
+      beforeReady(s.harness, () => s.time.advance(6_500));
+      const { result, starts } = await records(() => s.start());
+
+      expect(starts).toHaveLength(2);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-deadline");
+      expect(result.recoveredFrom).toBeUndefined();
+      // The hand-over named the retry current under the first claim's deadline.
+      expect(real.record()).toMatchObject({
+        attemptId: starts[1]!.attemptId,
+        deadlineAt: t0 + 10_000,
+      });
+      expect(await real.statusOf(starts[1]!.attemptId as string)).toBe(
+        "expired",
+      );
+    });
+
+    it("a start of another previewId during A's pause neither supersedes A nor is touched by A's retry", async () => {
+      const other = createSession("ready");
+      let b = null as StartResult | null;
+      let otherAfterB = null as ReturnType<typeof containerSnapshot> | null;
+      const s = setup({
+        failures: 1,
+        guarded: false,
+        onPause: async (ctx) => {
+          b = await otherTab(ctx, async (_binding, id) =>
+            id === "preview-2" ? other.session : ctx.harness.session,
+          ).start(startInput("preview-2"));
+          otherAfterB = containerSnapshot(other);
+        },
+      });
+      const realA = withRealStartGuard(s.harness, s.time.now);
+      const realB = withRealStartGuard(other, s.time.now);
+      const { result: a, starts, retries } = await records(() => s.start());
+
+      const bResult = b!;
+      expect(bResult.ok).toBe(true);
+      const bAttempt = bResult.attemptId!;
+
+      // A's retry was sent and A recovered, as if B did not exist.
+      expect(a.ok).toBe(true);
+      if (!a.ok) return;
+      expect(a.recoveredFrom).toMatchObject({ attempts: 2 });
+      const aStarts = starts.filter((start) => start.previewId === "preview-1");
+      expect(aStarts).toHaveLength(2);
+      expect(retries[0]).toMatchObject({ outcome: "sent" });
+      expect(realA.record()).toMatchObject({ attemptId: a.attemptId });
+
+      // B's own record and container are its own.
+      expect(realB.record()).toMatchObject({ attemptId: bAttempt });
+      expect(await realB.statusOf(bAttempt)).toBe("current");
+      expect(containerSnapshot(other)).toEqual(otherAfterB);
+      expect(other.killed).toEqual([]);
+      expect(other.destroyed).toBe(0);
+    });
+
+    it("a stop of another previewId during A's pause does not stop A", async () => {
+      const other = createSession("ready");
+      const s = setup({
+        failures: 1,
+        guarded: false,
+        onPause: async (ctx) => {
+          await otherTab(ctx, async (_binding, id) =>
+            id === "preview-2" ? other.session : ctx.harness.session,
+          ).stop("preview-2");
+        },
+      });
+      const realA = withRealStartGuard(s.harness, s.time.now);
+      const realB = withRealStartGuard(other, s.time.now);
+      const { result: a, retries } = await records(() => s.start());
+
+      expect(a.ok).toBe(true);
+      expect(retries[0]).toMatchObject({ outcome: "sent" });
+      expect(realA.record()).toMatchObject({ stopped: false });
+      expect(realB.record()).toMatchObject({ stopped: true });
+      expect(s.harness.destroyed).toBe(0);
+      expect(other.destroyed).toBe(1);
     });
   });
 });
