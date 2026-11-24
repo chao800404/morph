@@ -411,14 +411,29 @@ const NOT_CURRENT_START: Readonly<
 /**
  * A retry asks before each of its container steps whether it is still the
  * current start; this carries the refusal out of the step it stopped, so
- * the start answers it without touching the container again (no staging
- * clean-up, no fail-closed marker: the workspace is the newer start's now).
+ * the start answers it there. What it may still do in the container then
+ * depends on the refusal (`refusalLeavesWorkspace`).
  */
 class PreviewStartNotCurrentError extends Error {
   constructor(readonly refusal: { stage: string; errorMessage: string }) {
     super(refusal.errorMessage);
     this.name = "PreviewStartNotCurrentError";
   }
+}
+
+/**
+ * Whether the workspace is no longer this start's to mark: another start
+ * of the preview owns it (superseded), or the preview was stopped (the
+ * container is gone, and a write would only wake it). A start refused for
+ * its deadline, or because the Durable Object could not be asked, still
+ * owns what it left, and still marks it untrusted: dirty is always the
+ * safe direction (review 2026-11-24, finding 1).
+ */
+function refusalLeavesWorkspace(refusal: { stage: string }): boolean {
+  return (
+    refusal.stage === NOT_CURRENT_START.superseded.stage ||
+    refusal.stage === NOT_CURRENT_START.stopped.stage
+  );
 }
 
 /**
@@ -859,6 +874,15 @@ export class CloudflareSandboxVitePreviewServer {
         // time, it stops before its next step, so it never lays its files
         // over the newer start's or starts a second dev server. The first
         // attempt does not ask per step (the retry is the rare path).
+        //
+        // Check-then-act, not atomic with the write: the DO answer and the
+        // container step are two calls, so a claim that lands between them
+        // lets that one step run after it (one fence, one startProcess, or
+        // the staging writes already in flight). Only the fence itself,
+        // judging the claim under its lock as it commits, can close that;
+        // see the fence-commit plan ("Open item (b)", fix sketch) in
+        // handoff/2026-11-24/autoretry-v2-impl.md. Review 2026-11-24,
+        // finding 4.
         ...(attempt.retryOf && request.guard
           ? {
               beforeContainerStep: async () => {
@@ -1123,9 +1147,15 @@ export class CloudflareSandboxVitePreviewServer {
       }
       return { staging, files, prune: [] };
     } catch (error) {
-      // A start that is no longer current touches the container no more;
-      // its staging directory in /tmp is left, as after any interruption.
-      if (!(error instanceof PreviewStartNotCurrentError)) {
+      // A start another one replaced, or one stopped, touches the container
+      // no more; its staging directory in /tmp is left, as after any
+      // interruption. Any other failure clears its own staging.
+      if (
+        !(
+          error instanceof PreviewStartNotCurrentError &&
+          refusalLeavesWorkspace(error.refusal)
+        )
+      ) {
         await this.discardStaging(session, staging);
       }
       throw error;
@@ -1157,11 +1187,19 @@ export class CloudflareSandboxVitePreviewServer {
   ): Promise<StartPreviewServerResult> {
     const beforeContainerStep =
       limits.beforeContainerStep ?? (async () => undefined);
-    /** For the fail-closed marker: false once this start is not current. */
+    /**
+     * For the fail-closed marker: false only once another start owns the
+     * workspace or the preview was stopped (`refusalLeavesWorkspace`); a
+     * deadline or unconfirmed refusal still writes it.
+     */
     const stillCurrent = () =>
       beforeContainerStep().then(
         () => true,
-        (error: unknown) => !(error instanceof PreviewStartNotCurrentError),
+        (error: unknown) =>
+          !(
+            error instanceof PreviewStartNotCurrentError &&
+            refusalLeavesWorkspace(error.refusal)
+          ),
       );
     const requestStartedAt = Date.now();
     const logs: string[] = [];
@@ -1891,11 +1929,29 @@ export class CloudflareSandboxVitePreviewServer {
         serving,
       };
     } catch (error) {
-      // No longer the current start: answered as such, and nothing more is
-      // done in the container (no fail-closed marker over the newer start's
-      // workspace). Not a thrown step failure, so never classified.
+      // No longer the current start: answered as such. Not a thrown step
+      // failure, so never classified. Superseded or stopped, nothing more
+      // is done in the container (no fail-closed marker over the newer
+      // start's workspace, nothing that wakes a stopped one); refused for
+      // its deadline or an unconfirmed check, the workspace is still this
+      // start's, and is marked untrusted as after any failed start.
       if (error instanceof PreviewStartNotCurrentError) {
         observation.step = undefined;
+        if (session && !refusalLeavesWorkspace(error.refusal)) {
+          observation.failedClosed = "start-not-current";
+          logPreviewServerEvent("fail-closed", {
+            attemptId: observation.attemptId,
+            previewId: input.previewId,
+            reason: "start-not-current",
+            stage: error.refusal.stage,
+          });
+          await session
+            .writeFile(
+              THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+              newDirtyWorkspaceMarker(),
+            )
+            .catch(() => {});
+        }
         return { ok: false, ...error.refusal, logs };
       }
       // Kept with the step it came from: only the start's own steps may be
