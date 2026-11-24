@@ -7865,7 +7865,9 @@ export default function Hero() { return <section />; }`,
           templateId: id,
           expectedDraftGeneration: row.draftGeneration,
           expectedSourceGeneration: 1,
-          expectedDraftRevisionId: row.draftRevisionId,
+          // As the shell sends it: no draft yet is the layout's first one.
+          expectedDraftRevisionId:
+            (row.draftRevisionId as string | null) ?? undefined,
           createdBy: "user-a",
         });
         expect(prepared, `${id} is prepared`).not.toBeNull();
@@ -8082,6 +8084,137 @@ export default function Hero() { return <section />; }`,
       expect(await servedLayoutTitle()).toBe("L3");
     });
 
+    it("scenario 3: a first publish whose preparation writes the layout's first revision: the confirmation is restated for that revision, which is sealed", async () => {
+      // A layout never published and with no draft yet: the confirmation
+      // says it goes live, and the publish writes its first draft.
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_templates SET draft_revision_id = NULL WHERE id = 'tpl-shell'",
+        )
+        .run();
+      const scope = await confirm("tpl-home");
+      expect(scope).toEqual({
+        sharedLayout: null,
+        layout: {
+          templateId: "tpl-shell",
+          draftRevisionId: null,
+          firstPublish: true,
+        },
+      });
+      expect(confirmedExpectation(scope)).toEqual({
+        expectedSharedLayoutRevisionId: null,
+        layoutDraftRevisionId: null,
+      });
+      const revisionsBefore = layoutRevisionCount();
+      const { preparation, sealedPins } = await prepareAndSeal("tpl-home");
+      expect(preparation.fromRevisionId).toBeNull();
+      expect(layoutRevisionCount()).toBe(revisionsBefore + 1);
+      expect(templateRow("tpl-shell").draftRevisionId).toBe(
+        preparation.revisionId,
+      );
+      expect(revisionTitle(preparation.revisionId)).toBe("L1");
+      const sent = publishScopeAfterPreparation(
+        confirmedExpectation(scope),
+        preparation,
+      );
+      expect(sent).toEqual({
+        expectedSharedLayoutRevisionId: preparation.revisionId,
+        layoutDraftRevisionId: preparation.revisionId,
+      });
+      // Sent as read, the first draft is a layout nobody named.
+      await expect(publishOnly("tpl-home", null)).rejects.toThrow(
+        PUBLISH_SCOPE_CHANGED,
+      );
+      await expect(
+        publish("tpl-home", {
+          expectedSharedLayoutRevisionId: sent.expectedSharedLayoutRevisionId,
+        }),
+      ).resolves.toMatchObject({ releaseCreated: true });
+      expect(sealedPins["tpl-shell"]).toBe(preparation.revisionId);
+      expect(pins(active().publicationId)["tpl-shell"]).toBe(
+        preparation.revisionId,
+      );
+      expect(templateRow("tpl-shell").publishedRevisionId).toBe(
+        preparation.revisionId,
+      );
+      expect(await servedLayoutTitle()).toBe("L1");
+    });
+
+    // Scenario 5 as the merchant runs it: the Build Preview comes between
+    // the rollback and the publish (the E2E's R-c), and the publish either
+    // reuses that build or builds again.
+    it.each([
+      { name: "the publish reuses the Build Preview's build", builds: false },
+      { name: "the publish builds again", builds: true },
+    ])(
+      "scenario 5: rollback, Build Preview, then a page publish ($name): the rolled-away layout does not return",
+      async ({ builds }) => {
+        await publish("tpl-about");
+        const release1 = active();
+        saveDraft("tpl-about", "B2");
+        saveDraft("tpl-shell", "L2");
+        await publish("tpl-about");
+        expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L2");
+        await rollBackTo(release1.releaseId);
+        expect(active().releaseId).toBe(release1.releaseId);
+        const untouched = {
+          draftRevisionId: "rev-L2",
+          publishedRevisionId: "rev-L2",
+        };
+        expect(templateRow("tpl-shell")).toMatchObject(untouched);
+        saveDraft("tpl-home", "A1");
+
+        // The toolbar Build Preview on the page.
+        const layoutRevisions = layoutRevisionCount();
+        const buildPreview = await prepareAndSeal("tpl-home");
+        expect(buildPreview.preparation).toEqual({
+          fromRevisionId: "rev-L2",
+          revisionId: "rev-L2",
+        });
+        expect(buildPreview.sealedPins["tpl-shell"]).toBe("rev-L1");
+        expect(layoutRevisionCount()).toBe(layoutRevisions);
+        expect(templateRow("tpl-shell")).toMatchObject(untouched);
+
+        // Publish opens: the layout is not part of it.
+        const scope = await confirm("tpl-home");
+        expect(scope).toEqual({
+          sharedLayout: null,
+          layout: {
+            templateId: "tpl-shell",
+            draftRevisionId: "rev-L2",
+            firstPublish: false,
+          },
+        });
+        let preparation: ReturnType<typeof chainLayoutPreparation> | null =
+          null;
+        if (builds) {
+          const again = await prepareAndSeal("tpl-home");
+          expect(again.sealedPins["tpl-shell"]).toBe("rev-L1");
+          preparation = again.preparation;
+        }
+        const sent = publishScopeAfterPreparation(
+          confirmedExpectation(scope),
+          preparation,
+        );
+        expect(sent.expectedSharedLayoutRevisionId).toBeNull();
+        // The rolled-away revision is a layout nobody confirmed.
+        await expect(publishOnly("tpl-home", "rev-L2")).rejects.toThrow(
+          PUBLISH_SCOPE_CHANGED,
+        );
+        await expect(
+          publish("tpl-home", {
+            expectedSharedLayoutRevisionId: sent.expectedSharedLayoutRevisionId,
+          }),
+        ).resolves.toMatchObject({ releaseCreated: true });
+        expect(active().releaseId).not.toBe(release1.releaseId);
+        expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L1");
+        expect(pins(active().publicationId)["tpl-about"]).toBe("rev-B1");
+        expect(layoutRevisionCount()).toBe(layoutRevisions);
+        expect(templateRow("tpl-shell")).toMatchObject(untouched);
+        expect(await servedLayoutTitle()).toBe("L1");
+      },
+    );
+
     it.each([
       {
         name: "another draft write moved the layout on",
@@ -8145,5 +8278,47 @@ export default function Hero() { return <section />; }`,
         );
       },
     );
+
+    // The case the cases above cannot reach: the other write came from
+    // another session, so this editor still holds the layout draft it
+    // confirmed and prepares from it (the shell's `currentDraftId`). The
+    // restatement trusts that base; were the preparation accepted, the
+    // revision it left (L4's content) would be sent as the confirmed scope
+    // and go live unseen. The preparation's own draft CAS is what stops it.
+    it("scenario 6: another session moved the layout on, and this editor prepares from the draft it confirmed: the preparation is refused, and so is the publish, with nothing written", async () => {
+      await publish("tpl-about");
+      saveDraft("tpl-shell", "L3");
+      saveDraft("tpl-home", "A1");
+      const scope = await confirm("tpl-home");
+      expect(scope.sharedLayout?.revisionId).toBe("rev-L3");
+      const held = templateRow("tpl-shell");
+      saveDraft("tpl-shell", "L4");
+
+      const before = publishWrites();
+      await expect(
+        storefrontThemeDal.prepareInitialTemplateDraft({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "tpl-shell",
+          expectedDraftGeneration: held.draftGeneration,
+          expectedSourceGeneration: 1,
+          expectedDraftRevisionId: held.draftRevisionId,
+          createdBy: "user-a",
+        }),
+      ).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
+      expect(publishWrites()).toEqual(before);
+
+      await expect(
+        publishOnly(
+          "tpl-home",
+          confirmedExpectation(scope).expectedSharedLayoutRevisionId,
+        ),
+      ).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+      expect(publishWrites()).toEqual(before);
+      expect(templateRow("tpl-shell")).toMatchObject({
+        draftRevisionId: "rev-L4",
+        publishedRevisionId: "rev-L1",
+      });
+    });
   });
 });
