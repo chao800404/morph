@@ -21,7 +21,10 @@ import {
   createReleasePreviewQueueMessage,
   type ThemeBuildQueue,
 } from "@/lib/storefront/service/theme-build-queue";
-import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
+import {
+  storefrontDal,
+  type StarterUpgradeIncompleteError,
+} from "@/lib/storefront/dal/storefront.dal";
 import {
   publishStorefrontThemeTemplateInputSchema,
   prepareInitialStorefrontThemeTemplateDraftInputSchema,
@@ -260,9 +263,29 @@ export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
     }
   });
 
+const STARTER_UPGRADE_RECORD_INCOMPLETE_MESSAGE =
+  "The Starter files were applied, but this Theme's Starter version was not recorded, so the upgrade is not finished. Review the upgrade again to finish it: files already applied are not written again, and anything you changed since is kept.";
+
+/**
+ * The upgrade's file batch committed and the step after it (the version
+ * record) did not (`StarterUpgradeIncompleteError` with `filesSaved`).
+ * Recognised by its name and shape so this module needs only its type.
+ */
+function starterUpgradeFilesLandedWithoutRecord(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === "StarterUpgradeIncompleteError" &&
+    (error as Partial<StarterUpgradeIncompleteError>).outcome?.filesSaved ===
+      true
+  );
+}
+
 /**
  * Applies the Starter upgrade the author reviewed. Refused, with nothing
  * written, when the workspace or the plan is no longer the one reviewed.
+ * When the files were saved but the version record was not, answered as
+ * `STARTER_UPGRADE_RECORD_INCOMPLETE`: the review then shows only the version
+ * left to record, and applying it again writes no file twice.
  */
 export const applyStorefrontStarterUpgrade = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
@@ -301,6 +324,12 @@ export const applyStorefrontStarterUpgrade = createServerFn({ method: "POST" })
       }
       return ok("Starter upgrade applied", result);
     } catch (error) {
+      if (starterUpgradeFilesLandedWithoutRecord(error)) {
+        console.error("Apply starter upgrade incomplete:", error);
+        return fail(STARTER_UPGRADE_RECORD_INCOMPLETE_MESSAGE, {
+          error: "STARTER_UPGRADE_RECORD_INCOMPLETE",
+        });
+      }
       return failure(
         "Apply starter upgrade error",
         error,

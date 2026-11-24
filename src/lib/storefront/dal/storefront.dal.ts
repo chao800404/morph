@@ -607,7 +607,12 @@ export type StarterUpgradePartialOutcome = {
     | "non-object-metadata"
     | "malformed-metadata"
     /** A content migration write kept losing to concurrent edits. */
-    | "content-migration-conflict";
+    | "content-migration-conflict"
+    /**
+     * The step after the applied file batch (home rule, content migration,
+     * record write) threw; the raw error is the thrown error's `cause`.
+     */
+    | "record-write-failed";
   filesSaved: boolean;
   attempts: number;
 };
@@ -619,11 +624,15 @@ export type StarterUpgradePartialOutcome = {
  */
 export class StarterUpgradeIncompleteError extends Error {
   readonly outcome: StarterUpgradePartialOutcome;
-  constructor(outcome: StarterUpgradePartialOutcome) {
+  constructor(
+    outcome: StarterUpgradePartialOutcome,
+    options?: { cause?: unknown },
+  ) {
     super(
       outcome.filesSaved
         ? `Starter Theme upgrade only partly completed: the files were upgraded, but the upgrade record was not saved (${outcome.reason}).`
         : `Starter Theme upgrade record was not saved (${outcome.reason}).`,
+      options,
     );
     this.name = "StarterUpgradeIncompleteError";
     this.outcome = outcome;
@@ -1415,14 +1424,39 @@ export const storefrontDal = {
       starterPlan !== null &&
       !starterPlan.kept.some((item) => item.reason === "origin-unknown");
     if (versionRecorded) {
-      assertStarterUpgradeRecorded(
-        await ensureStarterHomeDocument(db, data.themeId, {
+      // The record cannot join the file batch: the batch is the source
+      // store's, and the record is the storefront row's own revision CAS
+      // (with re-reads and retries), written only after the content
+      // migration that the recorded version names. So a failure here leaves
+      // the files saved and the version where it was. It is named as such,
+      // never as a plain failure, and the next review re-plans from the
+      // stored files: nothing already written is planned again, nothing the
+      // author changed since is overwritten, and applying it records the
+      // version (storefront-starter-upgrade-record.dal.test.ts).
+      let recorded: StarterUpgradeRecordOutcome;
+      try {
+        recorded = await ensureStarterHomeDocument(db, data.themeId, {
           filesSaved,
           storefrontId: data.storefrontId,
           record: true,
           createdBy: data.createdBy,
-        }),
-      );
+        });
+      } catch (error) {
+        if (!filesSaved) throw error;
+        throw new StarterUpgradeIncompleteError(
+          reportIncompleteStarterUpgrade(
+            { storefrontId: data.storefrontId, themeId: data.themeId },
+            {
+              status: "partial",
+              reason: "record-write-failed",
+              filesSaved,
+              attempts: 1,
+            },
+          ),
+          { cause: error },
+        );
+      }
+      assertStarterUpgradeRecorded(recorded);
     }
     return {
       status: "applied",
