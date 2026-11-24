@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   acceptAstroBasisAck,
   astroBasisInstanceToConfirm,
+  astroContentBasisEvents,
   astroBasisTokenFor,
   isAstroBasisFrame,
   noteAstroContentBasis,
@@ -128,6 +129,76 @@ describe("noteAstroContentBasis", () => {
         draftGenerations: { "template-1": 3 },
       }),
     ).toEqual(confirmed);
+  });
+});
+
+describe("astroContentBasisEvents", () => {
+  const generations = { "template-1": 3 };
+
+  it("reads what a start, a sync and a confirm said", () => {
+    expect(
+      astroContentBasisEvents("start", {
+        success: true,
+        data: { contentTicket: 7, draftGenerations: generations },
+      }),
+    ).toEqual([{ kind: "written", ticket: 7, draftGenerations: generations }]);
+    expect(
+      astroContentBasisEvents("sync", {
+        success: true,
+        data: {
+          ticket: 8,
+          sentTicket: 7,
+          draftGenerations: generations,
+          instance: INSTANCE,
+        },
+      }),
+    ).toEqual([
+      { kind: "written", ticket: 7, draftGenerations: generations },
+      { kind: "confirmed", ticket: 7, instance: INSTANCE },
+    ]);
+    expect(
+      astroContentBasisEvents("sync", {
+        success: false,
+        error: "PREVIEW_CONTENT_NOT_CONFIRMED",
+        ticket: 6,
+        sentTicket: 7,
+        draftGenerations: generations,
+      }),
+    ).toEqual([{ kind: "written", ticket: 7, draftGenerations: generations }]);
+    expect(
+      astroContentBasisEvents(
+        "confirm",
+        { success: true, data: { ticket: 7, instance: INSTANCE } },
+        7,
+      ),
+    ).toEqual([{ kind: "confirmed", ticket: 7, instance: INSTANCE }]);
+  });
+
+  it("reads nothing from a Start answer, an older Core, or a refusal", () => {
+    expect(
+      astroContentBasisEvents("start", {
+        success: true,
+        data: { contentRefresh: "router" },
+      }),
+    ).toEqual([]);
+    expect(
+      astroContentBasisEvents("sync", { success: true, data: { ticket: 7 } }),
+    ).toEqual([]);
+    expect(
+      astroContentBasisEvents(
+        "confirm",
+        { success: false, error: "PREVIEW_CONTENT_NOT_CONFIRMED", ticket: 0 },
+        7,
+      ),
+    ).toEqual([]);
+    expect(
+      astroContentBasisEvents(
+        "confirm",
+        { success: true, data: { ticket: 7, instance: "bad\"x" } },
+        7,
+      ),
+    ).toEqual([]);
+    expect(astroContentBasisEvents("sync", null)).toEqual([]);
   });
 });
 

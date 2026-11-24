@@ -66,6 +66,77 @@ export function noteAstroContentBasis(
   return { ...current, instance: event.instance };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function positiveTicket(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+function draftGenerationsOf(value: unknown): Record<string, number> | null {
+  if (!isRecord(value)) return null;
+  const generations: Record<string, number> = {};
+  for (const [templateId, generation] of Object.entries(value)) {
+    const valid = positiveTicket(generation);
+    if (templateId.length > 0 && valid !== null) generations[templateId] = valid;
+  }
+  return generations;
+}
+
+function instanceOf(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Za-z0-9-]{8,64}$/.test(value)
+    ? value
+    : null;
+}
+
+/**
+ * The events in a server function's answer, read defensively: a field that
+ * is missing or malformed contributes nothing, so an older Core (or a Start
+ * answer) adds no record at all.
+ *
+ * - start: the snapshot it wrote (`contentTicket`, `draftGenerations`);
+ * - sync, either outcome: the snapshot it wrote (`sentTicket`,
+ *   `draftGenerations`), and on success the instance that confirmed it;
+ * - confirm of `ticket`: the instance that confirmed it.
+ */
+export function astroContentBasisEvents(
+  source: "start" | "sync" | "confirm",
+  answer: unknown,
+  askedTicket?: number,
+): AstroContentBasisEvent[] {
+  if (!isRecord(answer)) return [];
+  const data =
+    answer.success === true && isRecord(answer.data) ? answer.data : null;
+  const events: AstroContentBasisEvent[] = [];
+  if (source === "start") {
+    const ticket = data ? positiveTicket(data.contentTicket) : null;
+    const draftGenerations = data ? draftGenerationsOf(data.draftGenerations) : null;
+    if (ticket !== null && draftGenerations) {
+      events.push({ kind: "written", ticket, draftGenerations });
+    }
+    return events;
+  }
+  if (source === "sync") {
+    const fields = data ?? answer;
+    const ticket = positiveTicket(fields.sentTicket);
+    const draftGenerations = draftGenerationsOf(fields.draftGenerations);
+    if (ticket === null || !draftGenerations) return events;
+    events.push({ kind: "written", ticket, draftGenerations });
+    const instance = data ? instanceOf(data.instance) : null;
+    if (instance) events.push({ kind: "confirmed", ticket, instance });
+    return events;
+  }
+  const ticket = positiveTicket(askedTicket);
+  const instance = data ? instanceOf(data.instance) : null;
+  if (ticket !== null && instance) {
+    events.push({ kind: "confirmed", ticket, instance });
+  }
+  return events;
+}
+
 /** Whether a frame takes the basis path: capability + reload refresh. */
 export function isAstroBasisFrame(
   capabilities: ReadonlySet<string>,
