@@ -1361,4 +1361,51 @@ describe("EditorSectionsPanel on a Theme of another framework", () => {
     expect(screen.getByText("Sections needing binding")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Bind Promo" })).toBeTruthy();
   });
+
+  // Q2 (handoff/2026-11-24/astro-basis-hints.md): the Astro Design status of
+  // the selected section is a badge on that section's row, beside the
+  // unavailable state; never a structure control.
+  const unconfirmed = {
+    sectionId: "hero",
+    tone: "unconfirmed" as const,
+    message:
+      "The preview is not showing the latest saved content yet. Reload the preview to edit this section.",
+    badge: "Reload preview",
+    action: "reload-preview" as const,
+  };
+
+  it("badges the selected Astro section with its status", () => {
+    renderPanel(vi.fn(), vi.fn(), {
+      ...structureProps(true),
+      astroSectionNotice: unconfirmed,
+    });
+
+    const row = document.querySelector("[data-astro-section-status]");
+    expect(row?.getAttribute("data-astro-section-status")).toBe("unconfirmed");
+    expect(row?.textContent).toContain("hero");
+    expect(row?.textContent).toContain("Reload preview");
+    expect(row?.getAttribute("title")).toBe(unconfirmed.message);
+    expect(
+      screen.getByText(SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add section" })).toBeNull();
+  });
+
+  it("shows no row for a notice with no section (a cleared selection)", () => {
+    renderPanel(vi.fn(), vi.fn(), {
+      ...structureProps(true),
+      astroSectionNotice: { ...unconfirmed, sectionId: null },
+    });
+
+    expect(document.querySelector("[data-astro-section-status]")).toBeNull();
+  });
+
+  it("never shows the Astro row on TanStack Start", () => {
+    renderPanel(vi.fn(), vi.fn(), {
+      ...structureProps(false),
+      astroSectionNotice: unconfirmed,
+    });
+
+    expect(document.querySelector("[data-astro-section-status]")).toBeNull();
+  });
 });
