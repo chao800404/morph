@@ -472,10 +472,40 @@ function refusalLeavesWorkspace(refusal: { stage: string }): boolean {
 const CONTAINER_FAILED_TO_START =
   /^(?:[A-Za-z]*Error: )?Container failed to start\b/;
 
+/**
+ * The platform's two admission refusals, as SDK 0.12.7 passes them on
+ * verbatim in a ContainerUnavailableError (CONTAINER_UNAVAILABLE_SIGNATURES),
+ * with at most that class name folded in front over Durable Object RPC.
+ * The whole message, anchored at both ends, case-insensitive (the SDK
+ * lowercases before it matches). Same hazard as above: the failed
+ * connection is destroyed, and the next call's connection starts a
+ * container (handoff/2026-11-24/container-unavailable-classification.md).
+ *
+ * Only these two (user, 2026-11-24): not the error's code, which the SDK
+ * also uses after a container ran, not the HTTP path's "available at this
+ * time", not a start timeout. Only for what to skip afterwards, never a
+ * retry signal: the allow-list (preview-start-retry.ts) is unchanged. A
+ * future SDK that rewords them misses here, which is today's behaviour.
+ */
+const CONTAINER_ADMISSION_REFUSED =
+  /^(?:ContainerUnavailableError: )?(?:there is no container instance that can be provided to this durable object|maximum number of running container instances exceeded)$/i;
+
+/** Why the container is gone after `error`, or null: calls may go on. */
+function containerStartFailure(
+  error: unknown,
+): "container-failed-to-start" | "container-admission-refused" | null {
+  if (!(error instanceof Error)) return null;
+  if (CONTAINER_FAILED_TO_START.test(error.message)) {
+    return "container-failed-to-start";
+  }
+  if (CONTAINER_ADMISSION_REFUSED.test(error.message)) {
+    return "container-admission-refused";
+  }
+  return null;
+}
+
 function isContainerStartFailure(error: unknown): boolean {
-  return (
-    error instanceof Error && CONTAINER_FAILED_TO_START.test(error.message)
-  );
+  return containerStartFailure(error) !== null;
 }
 
 /**
@@ -2411,8 +2441,10 @@ export class CloudflareSandboxVitePreviewServer {
       // one, holding nothing of this start (round 3, formal 1c). Its own
       // staging went with the old container's /tmp, and the next start
       // trusts a workspace only where the fence ledger proves a commit, so
-      // neither the clean-up nor the marker is needed.
-      const containerGone = isContainerStartFailure(error);
+      // neither the clean-up nor the marker is needed. The same once the
+      // platform refused a container (`CONTAINER_ADMISSION_REFUSED`).
+      const goneBecause = containerStartFailure(error);
+      const containerGone = goneBecause !== null;
       if (session && !containerGone) {
         await this.discardStaging(session, pendingStaging);
       }
@@ -2431,7 +2463,7 @@ export class CloudflareSandboxVitePreviewServer {
           logPreviewServerEvent("post-failure-container-call-skipped", {
             attemptId: observation.attemptId,
             previewId: input.previewId,
-            reason: "container-failed-to-start",
+            reason: goneBecause,
             step: thrown.step,
             skipped: ["own-staging-clean-up", "fail-closed-marker"],
           });
