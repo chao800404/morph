@@ -17,6 +17,12 @@ import {
   type ThemePreviewRuntime,
 } from "./theme-sandbox-workspace";
 import {
+  THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
+  THEME_PREVIEW_CONTENT_PATH,
+} from "./theme-preview-content";
+import {
+  PREVIEW_CONTENT_TICKET_HEADER,
+  PREVIEW_INSTANCE_HEADER,
   previewOutboundRefusal,
   THEME_PREVIEW_START_CLIENT_PATH,
   THEME_PREVIEW_START_CONTENT_ORIGIN,
@@ -326,6 +332,135 @@ describe("a Start Live Preview workspace (prototype)", () => {
     expect(source).toContain(
       'import startEntry from "@tanstack/react-start/server-entry"',
     );
+  });
+});
+
+/**
+ * The Worker re-imports the data file on every content read and probe, and
+ * keeps what it read in one module-global snapshot every request shares.
+ * Nothing orders two `import()`s: one started before a sync's rewrite can
+ * settle after one started later (handoff 2026-11-24 start-snapshot-race).
+ * Each import here is a promise the test settles by hand, in that order.
+ */
+describe("the Start preview Worker's shared snapshot", () => {
+  const CONTENT_URL = `${THEME_PREVIEW_START_CONTENT_ORIGIN}${THEME_PREVIEW_CONTENT_PATH}?path=/`;
+  const PROBE_URL = `https://preview.example${START_PREVIEW_ADDRESS_PROBE_PATH}`;
+  const IMPORT_CALL = `import("./${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}")`;
+
+  const dataModule = (ticket: number, title: string, instance = "server-a") => ({
+    default: {
+      templates: { index: { slots: { hero: { title } }, hiddenSlots: [] } },
+      pages: {},
+      contentTicket: ticket,
+      previewInstance: instance,
+    },
+  });
+  const indexContent = (title: string) => ({
+    slots: { hero: { title } },
+    hiddenSlots: [],
+  });
+
+  function startWorker() {
+    const imports: ((module: unknown) => void)[] = [];
+    const source = themePreviewStartWorkerSource("instance-123");
+    expect(source).toContain(IMPORT_CALL);
+    const sandbox = {
+      Request,
+      Response,
+      URL,
+      Headers,
+      fetch: globalThis.fetch as (input: string) => Promise<Response>,
+      startEntry: { fetch: async () => new Response("theme") },
+      loadDataModule: () =>
+        new Promise((resolve) => {
+          imports.push(resolve);
+        }),
+      entry: undefined as unknown as {
+        fetch: (request: Request) => Promise<Response>;
+      },
+    };
+    runInNewContext(
+      source
+        .replace(
+          'import startEntry from "@tanstack/react-start/server-entry";',
+          "",
+        )
+        .replace("export default {", "entry = {")
+        .replace(IMPORT_CALL, "loadDataModule()"),
+      sandbox,
+    );
+    return {
+      imports,
+      // Theme server code's read, through the fetch the entry installs.
+      readContent: () => sandbox.fetch(CONTENT_URL),
+      probe: () => sandbox.entry.fetch(new Request(PROBE_URL)),
+    };
+  }
+
+  it("never serves an older snapshot after a newer one when the imports settle out of order", async () => {
+    const worker = startWorker();
+    const startedFirst = worker.readContent();
+    const startedSecond = worker.readContent();
+    expect(worker.imports).toHaveLength(2);
+
+    worker.imports[1]!(dataModule(2, "newer"));
+    expect(await (await startedSecond).json()).toEqual(indexContent("newer"));
+
+    worker.imports[0]!(dataModule(1, "older"));
+    expect(await (await startedFirst).json()).toEqual(indexContent("newer"));
+
+    // And it stays: a read after both still answers the newer content.
+    const after = worker.readContent();
+    worker.imports[2]!(dataModule(2, "newer"));
+    expect(await (await after).json()).toEqual(indexContent("newer"));
+  });
+
+  it("never reports a lower ticket on the probe after a higher one", async () => {
+    const worker = startWorker();
+    const startedFirst = worker.probe();
+    const startedSecond = worker.probe();
+    expect(worker.imports).toHaveLength(2);
+
+    worker.imports[1]!(dataModule(2, "newer"));
+    expect(
+      (await startedSecond).headers.get(PREVIEW_CONTENT_TICKET_HEADER),
+    ).toBe("2");
+
+    worker.imports[0]!(dataModule(1, "older"));
+    expect((await startedFirst).headers.get(PREVIEW_CONTENT_TICKET_HEADER)).toBe(
+      "2",
+    );
+  });
+
+  it("takes an equal ticket (a restamped server) and a newer one", async () => {
+    const worker = startWorker();
+    const first = worker.probe();
+    worker.imports[0]!(dataModule(2, "two", "server-a"));
+    expect((await first).headers.get(PREVIEW_INSTANCE_HEADER)).toBe("server-a");
+
+    // The same ticket stamped for the dev server that now runs.
+    const restamped = worker.probe();
+    worker.imports[1]!(dataModule(2, "two", "server-b"));
+    const restampedResponse = await restamped;
+    expect(restampedResponse.headers.get(PREVIEW_CONTENT_TICKET_HEADER)).toBe(
+      "2",
+    );
+    expect(restampedResponse.headers.get(PREVIEW_INSTANCE_HEADER)).toBe(
+      "server-b",
+    );
+
+    const newer = worker.readContent();
+    worker.imports[2]!(dataModule(3, "three", "server-b"));
+    expect(await (await newer).json()).toEqual(indexContent("three"));
+  });
+
+  it("takes the first snapshot it reads, and one from before tickets", async () => {
+    const worker = startWorker();
+    const first = worker.readContent();
+    const legacy = dataModule(0, "legacy");
+    delete (legacy.default as { contentTicket?: number }).contentTicket;
+    worker.imports[0]!(legacy);
+    expect(await (await first).json()).toEqual(indexContent("legacy"));
   });
 });
 
