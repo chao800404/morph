@@ -1391,34 +1391,46 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(updateSectionProps).not.toHaveBeenCalled();
     });
 
-    it("an applied answer after a held one clears the hint", async () => {
+    // Review finding 8: the hint must be cleared by the frame's accepted
+    // `applied` itself (`basis-acknowledged`), not by a new click, which
+    // resets the hint on its own. Reachable without a click: the token
+    // issued again on Core's confirm answer (finding 2) is posted while the
+    // section still says it can't be edited, and only its `applied` may
+    // clear that.
+    it("the accepted applied answer to a token issued again on Core's answer is what clears the hint", async () => {
+      modelCurrentBridge();
       readRouteBindings.mockResolvedValue(bindingView());
-      const token = await selectHero();
+      const confirm = confirmHeldUntilAnswered();
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+      boundaryClick(1);
+      await flush();
+      expect(unconfirmedHint()).toBe(true);
+
+      await act(async () => {
+        confirm.answer(confirmedBy(INSTANCE));
+      });
+      await waitFor(() => expect(basisPosts()).toHaveLength(1));
+      // Posted, not yet acknowledged: still said, and no click follows.
+      expect(unconfirmedHint()).toBe(true);
+      const token = basisPosts()[0]!.presentationToken;
+
       fromPreview({
         type: "morph:storefront-preview-section-presentation-ack",
         operationId: token.operationId,
         token,
-        status: "not-applied",
-        reason: "section-missing",
-      });
-      await flush();
-      expect(unconfirmedHint()).toBe(true);
-
-      // The author clicks the section again: a new token, and this time the
-      // frame holds the boundary.
-      boundaryClick(2);
-      await flush();
-      const again = basisPosts().at(-1)!.presentationToken;
-      expect(again.operationId).not.toBe(token.operationId);
-      fromPreview({
-        type: "morph:storefront-preview-section-presentation-ack",
-        operationId: again.operationId,
-        token: again,
         status: "applied",
       });
       await flush();
 
-      expect(acceptedLine(again.operationId)).toBe(true);
+      expect(acceptedLine(token.operationId)).toBe(true);
       expect(unconfirmedHint()).toBe(false);
       expect(inspectorNotice()).toBeNull();
       expect(sectionStatus()).toBeNull();
