@@ -5,8 +5,7 @@ import { isDirtyWorkspaceMarker } from "./theme-workspace-path";
 import { THEME_PREVIEW_BRIDGE_CAPABILITIES } from "./theme-preview-bridge-entry";
 import { planFencedStart, planFencedWrite } from "./preview-write-fence";
 import {
-  applyFencedRequest,
-  applyPreviewContentRequest,
+  applyPreviewFenceRequest,
   type PreviewContentRequest,
   PREVIEW_FENCE_LEDGER_PATH,
   PREVIEW_START_STAGING_PREFIX,
@@ -43,7 +42,10 @@ type Harness = {
   encodings: Map<string, string>;
   writePaths: string[];
   deletedPaths: string[];
+  /** Dev servers launched: a refused serve gate launches none. */
   commands: string[];
+  /** Serve-gated launches the ledger refused (`gatedServeCommand`). */
+  gated: string[];
   envs: Array<Record<string, string> | undefined>;
   cwds: Array<string | undefined>;
   exposed: Array<{ port: number; hostname: string }>;
@@ -65,6 +67,7 @@ const createSession = (
   const writePaths: string[] = [];
   const deletedPaths: string[] = [];
   const commands: string[] = [];
+  const gated: string[] = [];
   const envs: Array<Record<string, string> | undefined> = [];
   const cwds: Array<string | undefined> = [];
   const exposed: Array<{ port: number; hostname: string }> = [];
@@ -108,6 +111,25 @@ const createSession = (
     },
   };
 
+  /**
+   * One run of the fence script: its request applied under "the lock" by
+   * the same dispatch the script runs (`applyPreviewFenceRequest`), and the
+   * script and request files removed, as the script removes them.
+   */
+  const runFenceScript = (scriptPath: string, requestPath: string) => {
+    const request = JSON.parse(written.get(requestPath)!) as
+      | FencedWriteRequest
+      | PreviewContentRequest;
+    written.delete(scriptPath);
+    written.delete(requestPath);
+    return applyPreviewFenceRequest(
+      { ...io, renameInto: (from, to) => io.moveFile(from, to) },
+      PREVIEW_FENCE_LEDGER_PATH,
+      request,
+      { planFencedWrite, planFencedStart },
+    );
+  };
+
   const session: PreviewServerSession = {
     async mkdir() {},
     async writeFile(path, content, options) {
@@ -133,6 +155,26 @@ const createSession = (
       written.delete(path);
     },
     async startProcess(command, options) {
+      // A guarded start launches its dev server through the serve gate
+      // (`gatedServeCommand`): the shell runs the fence script, and execs
+      // the dev server only if the ledger still names this start's claim.
+      // A refused gate exits; no dev server runs, so it is not a command.
+      const gate = /^sh -c 'node (\S+) (\S+) && exec (.+)'$/.exec(command);
+      if (gate) {
+        const standing = runFenceScript(gate[1]!, gate[2]!) as {
+          ownership?: string;
+        };
+        if (standing.ownership !== "owner") {
+          gated.push(command);
+          queueMicrotask(() => options?.onExit?.(75));
+          return {
+            id: `gated-${gated.length}`,
+            waitForPort: async () => {
+              throw new Error("Process exited before the port was ready.");
+            },
+          };
+        }
+      }
       commands.push(command);
       envs.push(options?.env);
       cwds.push(options?.cwd);
@@ -192,24 +234,7 @@ const createSession = (
       }
       const fenced = /^node (\S+) (\S+)$/.exec(command);
       if (!fenced) throw new Error(`Unexpected command: ${command}`);
-      const request = JSON.parse(written.get(fenced[2]!)!) as
-        | FencedWriteRequest
-        | PreviewContentRequest;
-      written.delete(fenced[1]!);
-      written.delete(fenced[2]!);
-      const result =
-        request.op === "content" || request.op === "stamp" || request.op === "read"
-          ? applyPreviewContentRequest(
-              {
-                ...io,
-                renameInto: (from, to) => io.moveFile(from, to),
-              },
-              request,
-            )
-          : applyFencedRequest(io, PREVIEW_FENCE_LEDGER_PATH, request, {
-              planFencedWrite,
-              planFencedStart,
-            });
+      const result = runFenceScript(fenced[1]!, fenced[2]!);
       return {
         success: true,
         exitCode: 0,
@@ -222,6 +247,7 @@ const createSession = (
   return {
     session,
     cwds,
+    gated,
     written,
     encodings,
     writePaths,
@@ -1544,6 +1570,78 @@ describe("recording what a start decided", () => {
     expect(start.vite.action).toBe("reused");
   });
 
+  /**
+   * Workspace ownership (user, 2026-11-24): the next start may reuse a
+   * workspace only if it can prove it was fully committed — a committed
+   * marker, and a fence ledger that vouches for that same commit. Otherwise
+   * it lays the workspace out again (and so restarts Vite), whatever the
+   * marker and manifest say.
+   */
+  const ledgerVouchingFor = (
+    harness: Harness,
+    change: "missing" | "another" | "nothing",
+  ) => {
+    if (change === "missing") {
+      harness.written.delete(PREVIEW_FENCE_LEDGER_PATH);
+      return;
+    }
+    const ledger = JSON.parse(harness.written.get(PREVIEW_FENCE_LEDGER_PATH)!);
+    if (change === "another") ledger.committed = "another-fingerprint";
+    else delete ledger.committed;
+    harness.written.set(PREVIEW_FENCE_LEDGER_PATH, JSON.stringify(ledger));
+  };
+
+  it("records in the fence ledger the commit a start made", async () => {
+    const harness = createSession("ready");
+    expect((await startWith(harness)).ok).toBe(true);
+    expect(
+      JSON.parse(harness.written.get(PREVIEW_FENCE_LEDGER_PATH)!).committed,
+    ).toBe(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH));
+  });
+
+  it.each([
+    ["is missing", "missing"],
+    ["vouches for another commit", "another"],
+    ["vouches for no commit", "nothing"],
+  ] as const)(
+    "does not reuse a committed marker when the fence ledger %s: lays the workspace out again and restarts Vite",
+    async (_label, change) => {
+      const harness = createSession("ready");
+      expect((await startWith(harness)).ok).toBe(true);
+      withRunningVite(harness);
+      ledgerVouchingFor(harness, change);
+      harness.writePaths.length = 0;
+
+      const log = observe();
+      const result = await startWith(harness);
+      const start = lastStart(log.events());
+      log.restore();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.timings.workspaceReused).toBe(false);
+      expect(start.workspace.update).toBe("full");
+      expect(start.vite.action).toBe("restarted");
+      expect(harness.killed).toEqual(["already-running"]);
+      expect(harness.writePaths).toContain("/workspace/src/pages/index.tsx");
+    },
+  );
+
+  it("does not take a content-only update from a manifest the fence ledger does not vouch for", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { previewContent: contentFor("one") });
+    withRunningVite(harness);
+    ledgerVouchingFor(harness, "nothing");
+
+    const log = observe();
+    await startWith(harness, { previewContent: contentFor("two") });
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.update).toBe("full");
+    expect(start.vite.action).toBe("restarted");
+  });
+
   it("does not trust a manifest the marker does not name", async () => {
     const harness = createSession("ready");
     await startWith(harness, { previewContent: contentFor("one") });
@@ -1972,6 +2070,8 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       attemptId: null as string | null,
       deadlineAt: null as number | null,
       stopped: false,
+      /** The Durable Object's claim number (user, 11-24): each claim and stop raise it. */
+      seq: 0,
       claims: [] as string[],
       checks: [] as Array<{ attemptId: string; next?: string }>,
     };
@@ -1984,6 +2084,8 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       guard.attemptId = input.attemptId;
       guard.deadlineAt = input.deadlineAt;
       guard.stopped = false;
+      guard.seq += 1;
+      return { seq: guard.seq };
     };
     session.checkPreviewStart = async (input: {
       attemptId: string;
@@ -2001,6 +2103,7 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
     session.endPreviewStarts = async () => {
       guard.stopped = true;
       guard.attemptId = null;
+      guard.seq += 1;
     };
     return {
       guard,
@@ -2010,7 +2113,7 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
           session.claimPreviewStart as (input: {
             attemptId: string;
             deadlineAt: number;
-          }) => Promise<void>
+          }) => Promise<{ seq: number }>
         )({ attemptId: "newer-request", deadlineAt: now() + 180_000 }),
     };
   };
@@ -3150,6 +3253,167 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
           stopped: false,
         });
         expect(await real.statusOf(bAttempt)).toBe("current");
+        expect(await real.statusOf(a.attemptId!)).toBe("superseded");
+      },
+    );
+
+    /**
+     * The must-test case (user, 2026-11-24): B has taken over — its claim
+     * is registered in the fence ledger — but has not committed its files
+     * yet, and A fails at that moment. A must not mark B's workspace dirty
+     * and must write nothing under /workspace; B then commits and serves its
+     * own bytes.
+     *
+     * A has laid out and committed its own Theme and launched its dev
+     * server while it still owned the workspace. B is then held inside its
+     * first staging write: its claim is in the ledger by then (registered
+     * before its first workspace step), and none of its files are in
+     * /workspace. A fails there; only after A has answered does B go on.
+     */
+    it.each([
+      ["its dev server exits", "vite-exit"],
+      ["one of its container steps throws", "step-throws"],
+    ] as const)(
+      "B has taken over in the ledger but not committed, and A fails then (%s): A marks nothing, writes nothing under /workspace, and B commits and serves its own bytes",
+      async (_label, how) => {
+        const cleanA = await cleanStartOf(THEME);
+        const cleanB = await cleanStartOf(THEME_B);
+        const HERO_FILE = "/workspace/src/components/Hero.tsx";
+        const s = setup({ failures: 0, guarded: false });
+        const real = withRealStartGuard(s.harness, s.time.now);
+
+        let bStarted = false;
+        let bHeld = false;
+        let releaseB!: () => void;
+        const bRelease = new Promise<void>((resolve) => {
+          releaseB = resolve;
+        });
+        let bAtStaging!: () => void;
+        const bStaging = new Promise<void>((resolve) => {
+          bAtStaging = resolve;
+        });
+        let bStart = null as Promise<StartResult> | null;
+
+        const writeFile = s.harness.session.writeFile.bind(s.harness.session);
+        override(
+          s.harness,
+          "writeFile",
+          async (...args: Parameters<PreviewServerSession["writeFile"]>) => {
+            if (
+              bStarted &&
+              !bHeld &&
+              String(args[0]).startsWith(PREVIEW_START_STAGING_PREFIX)
+            ) {
+              bHeld = true;
+              bAtStaging();
+              await bRelease;
+            }
+            return writeFile(...args);
+          },
+        );
+
+        /** What is shared: /workspace (marker and manifest included), the ledger, processes. */
+        const shared = () => ({
+          workspace: new Map(
+            [...s.harness.written].filter(([file]) =>
+              file.startsWith("/workspace/"),
+            ),
+          ),
+          workspaceWrites: workspaceWrites(s.harness).length,
+          workspaceDeletes: s.harness.deletedPaths.filter((file) =>
+            file.startsWith("/workspace/"),
+          ).length,
+          ledger: s.harness.written.get(PREVIEW_FENCE_LEDGER_PATH),
+          killed: s.harness.killed.length,
+        });
+        let atFailure = null as ReturnType<typeof shared> | null;
+        const takeOver = async () => {
+          bStarted = true;
+          bStart = otherTab(s).start({ ...startInput(), files: THEME_B });
+          await bStaging;
+          atFailure = shared();
+        };
+
+        if (how === "vite-exit") {
+          const startProcess = s.harness.session.startProcess.bind(
+            s.harness.session,
+          );
+          let launches = 0;
+          override(
+            s.harness,
+            "startProcess",
+            async (...args: Parameters<PreviewServerSession["startProcess"]>) => {
+              const process = await startProcess(...args);
+              if (++launches > 1) return process;
+              return {
+                ...process,
+                waitForPort: async () => {
+                  await takeOver();
+                  throw new Error("Process exited before the port was ready.");
+                },
+              };
+            },
+          );
+        } else {
+          const setSleepAfter = s.harness.session.setSleepAfter!.bind(
+            s.harness.session,
+          );
+          let calls = 0;
+          override(s.harness, "setSleepAfter", async (value: string | number) => {
+            if (++calls > 1) return setSleepAfter(value);
+            await takeOver();
+            throw new Error("setSleepAfter failed: the container did not answer");
+          });
+        }
+
+        let afterA = null as ReturnType<typeof shared> | null;
+        let b = null as StartResult | null;
+        const { result: a, starts, retries } = await records(async () => {
+          const answer = await s.start();
+          afterA = shared();
+          // Only now does B go on.
+          releaseB();
+          b = await bStart!;
+          return answer;
+        });
+
+        expect(atFailure).not.toBeNull();
+        const at = atFailure!;
+        // A owned and committed the workspace before B took over.
+        expect(at.workspace.get(HERO_FILE)).toBe(cleanA.sources.get(HERO_FILE));
+        const aMarker = at.workspace.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH);
+        expect(aMarker).toBeDefined();
+        expect(isDirtyWorkspaceMarker(aMarker ?? null)).toBe(false);
+        // B's claim is in the ledger, and none of B's files are in /workspace.
+        expect(JSON.parse(at.ledger!).owner).toMatchObject({
+          attemptId: (real.record() as { attemptId: string }).attemptId,
+        });
+
+        // A failed while B held the ledger: no dirty marker, nothing under
+        // /workspace, no ledger change, and it stopped no process.
+        expect(afterA).toEqual(at);
+
+        // A answers superseded: never ready, never retried.
+        expect(a.ok).toBe(false);
+        if (a.ok) return;
+        expect(a.stage).toBe("preview-start-superseded");
+        expect(retries).toEqual([]);
+
+        // B then committed and serves its own bytes.
+        const bResult = b!;
+        expect(bResult.ok).toBe(true);
+        const bAttempt = bResult.attemptId!;
+        const bLine = starts.find((start) => start.attemptId === bAttempt)!;
+        expect(bLine.workspace).toMatchObject({ committed: true });
+        for (const [file, bytes] of cleanB.sources) {
+          expect(s.harness.written.get(file)).toBe(bytes);
+        }
+        const bMarker = s.harness.written.get(
+          THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+        );
+        expect(isDirtyWorkspaceMarker(bMarker ?? null)).toBe(false);
+        expect(bMarker).not.toBe(aMarker);
+        expect(real.record()).toMatchObject({ attemptId: bAttempt, stopped: false });
         expect(await real.statusOf(a.attemptId!)).toBe("superseded");
       },
     );

@@ -460,7 +460,7 @@ describe("the Live Preview DO names the current preview start", () => {
     claimPreviewStart(input: {
       attemptId: string;
       deadlineAt: number;
-    }): Promise<void>;
+    }): Promise<{ seq: number }>;
     checkPreviewStart(input: {
       attemptId: string;
       next?: string;
@@ -560,6 +560,44 @@ describe("the Live Preview DO names the current preview start", () => {
     expect(await objectOver(first.ctx).checkPreviewStart({ attemptId: "a" })).toBe(
       "stopped",
     );
+  });
+
+  /**
+   * Workspace ownership (user, 2026-11-24): the container's fence ledger
+   * records the owner claim by this number, and refuses a lower one. So
+   * every claim is numbered higher than any earlier one, the retry of the
+   * same request keeps its number, and a stop raises it past every start
+   * begun before the stop.
+   */
+  it("numbers each claim higher than the one before", async () => {
+    const object = objectOver();
+    const a = await object.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    const b = await object.claimPreviewStart({ attemptId: "b", deadlineAt: DEADLINE });
+    expect(Number.isSafeInteger(a.seq)).toBe(true);
+    expect(b.seq).toBeGreaterThan(a.seq);
+  });
+
+  it("keeps the number across the retry's hand-over, and a stop raises it past every earlier claim", async () => {
+    const object = objectOver();
+    const a = await object.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    expect(
+      await object.checkPreviewStart({ attemptId: "a", next: "a2" }),
+    ).toBe("current");
+    // The hand-over issued no number: the next claim is the very next one.
+    const b = await object.claimPreviewStart({ attemptId: "b", deadlineAt: DEADLINE });
+    expect(b.seq).toBe(a.seq + 1);
+    await object.endPreviewStarts();
+    // The stop took a number of its own.
+    const c = await object.claimPreviewStart({ attemptId: "c", deadlineAt: DEADLINE });
+    expect(c.seq).toBe(b.seq + 2);
+  });
+
+  it("keeps numbering from its storage after it is evicted", async () => {
+    const first = objectOver();
+    const a = await first.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    const again = objectOver(first.ctx);
+    const b = await again.claimPreviewStart({ attemptId: "b", deadlineAt: DEADLINE });
+    expect(b.seq).toBe(a.seq + 1);
   });
 
   it("reads a record it cannot parse as no current start", async () => {

@@ -618,3 +618,188 @@ describe("the container's content requests", () => {
     expect(onDisk().templates.index.slots.hero.headline).toBe("C");
   });
 });
+
+/**
+ * Workspace ownership (user, 2026-11-24): "a newer request takes over"
+ * takes effect inside the fence's own lock. The ledger records the owner
+ * claim (the Durable Object's increasing `seq`, the attempt's ordinal
+ * within its request, and its attemptId). A start's claim is registered
+ * there; a lower one is refused and writes nothing. The same ledger decides
+ * whether a start commits files and whether anyone may write the shared
+ * dirty marker, and whether a dev server may be launched.
+ */
+describe("the container's start ownership", () => {
+  const MARKER = () => path.join(root, ".morph-preview-workspace");
+  const MANIFEST = () => path.join(root, ".morph-preview-manifest.json");
+  let stagings = 0;
+  const claim = (seq: number, attemptId: string, attempt = 1) => ({
+    seq,
+    attempt,
+    attemptId,
+  });
+
+  function ownedStart(
+    files: Record<string, string>,
+    owner: ReturnType<typeof claim> | null,
+    options: { expected?: string | null; fingerprint?: string } = {},
+  ): FencedWriteRequest {
+    const staging = path.join(dir, `own-staging-${stagings++}`);
+    for (const [file, content] of Object.entries(files)) {
+      mkdirSync(path.dirname(path.join(staging, file)), { recursive: true });
+      writeFileSync(path.join(staging, file), content);
+    }
+    return {
+      op: "start",
+      root,
+      staging,
+      files: Object.keys(files),
+      prune: [],
+      versions: {},
+      marker: {
+        path: MARKER(),
+        dirty: "dirty:start",
+        expected: options.expected ?? null,
+      },
+      commit: {
+        marker: options.fingerprint ?? "fingerprint-new",
+        manifest: { path: MANIFEST(), content: "manifest-new" },
+      },
+      ...(owner ? { claim: owner } : {}),
+    } as FencedWriteRequest;
+  }
+  const register = (owner: ReturnType<typeof claim>) =>
+    run({ op: "claim", claim: owner } as FencedWriteRequest);
+  const mark = (owner: ReturnType<typeof claim>) =>
+    run({
+      op: "mark",
+      claim: owner,
+      marker: { path: MARKER(), content: "dirty:failed" },
+    } as FencedWriteRequest);
+  /** The serve gate as the dev server's wrapper runs it: its exit status. */
+  const serve = (owner: ReturnType<typeof claim>) =>
+    spawnSync("node", prepare({ op: "serve", claim: owner } as FencedWriteRequest), {
+      encoding: "utf8",
+    }).status;
+  const ledgerText = () => readFileSync(ledger, "utf8");
+
+  it("registers a claim, and refuses a lower one", () => {
+    expect(register(claim(2, "b")).ownership).toBe("owner");
+    expect(register(claim(1, "a")).ownership).toBe("superseded");
+    expect(JSON.parse(ledgerText()).owner).toEqual(claim(2, "b"));
+  });
+
+  it("refuses a start with a lower claim than the one registered, and writes nothing", () => {
+    writeFileSync(path.join(root, HERO), "hero by b");
+    writeFileSync(MARKER(), "fingerprint-b");
+    register(claim(2, "b"));
+    const before = ledgerText();
+    const request = ownedStart({ [HERO]: "hero by a" }, claim(1, "a"), {
+      expected: "fingerprint-b",
+    });
+
+    const result = run(request);
+
+    expect(result.ownership).toBe("superseded");
+    expect(result.committed).toBe(false);
+    expect(result.changed).toEqual([]);
+    expect(read(HERO)).toBe("hero by b");
+    expect(read(".morph-preview-workspace")).toBe("fingerprint-b");
+    expect(existsSync(MANIFEST())).toBe(false);
+    expect(ledgerText()).toBe(before);
+    // Its own staging only is cleared.
+    expect(existsSync((request as { staging: string }).staging)).toBe(false);
+  });
+
+  it("lets a higher claim take over at its fence, lays out, commits and records what it committed", () => {
+    register(claim(1, "a"));
+    const result = run(
+      ownedStart({ [HERO]: "hero by b" }, claim(2, "b"), {
+        fingerprint: "fingerprint-b",
+      }),
+    );
+
+    expect(result.ownership).toBe("owner");
+    expect(result.committed).toBe(true);
+    expect(read(HERO)).toBe("hero by b");
+    expect(read(".morph-preview-workspace")).toBe("fingerprint-b");
+    expect(JSON.parse(ledgerText())).toMatchObject({
+      owner: claim(2, "b"),
+      committed: "fingerprint-b",
+    });
+  });
+
+  it("hands over to the retry of the same request (same seq, attempt 2); the first attempt is refused after", () => {
+    register(claim(3, "a1"));
+    expect(register(claim(3, "a2", 2)).ownership).toBe("owner");
+    expect(run(ownedStart({ [HERO]: "late first" }, claim(3, "a1"))).ownership).toBe(
+      "superseded",
+    );
+    expect(existsSync(path.join(root, HERO))).toBe(false);
+    expect(mark(claim(3, "a1")).marked).toBe(false);
+    expect(serve(claim(3, "a1"))).not.toBe(0);
+  });
+
+  it("writes the dirty marker only for the registered owner, and then no longer vouches for the commit", () => {
+    run(ownedStart({ [HERO]: "hero by a" }, claim(1, "a"), { fingerprint: "fingerprint-a" }));
+    register(claim(2, "b"));
+
+    // A fails after B took over: A's marker is refused.
+    const refused = mark(claim(1, "a"));
+    expect(refused).toMatchObject({ ownership: "superseded", marked: false });
+    expect(read(".morph-preview-workspace")).toBe("fingerprint-a");
+
+    // B, the owner, may mark it; the ledger then vouches for nothing.
+    const marked = mark(claim(2, "b"));
+    expect(marked).toMatchObject({ ownership: "owner", marked: true });
+    expect(read(".morph-preview-workspace")).toBe("dirty:failed");
+    expect(JSON.parse(ledgerText()).committed).toBeUndefined();
+    expect(JSON.parse(ledgerText()).owner).toEqual(claim(2, "b"));
+  });
+
+  it("proves no ownership from a ledger it cannot read: no claim, no start, no marker, no server", () => {
+    writeFileSync(MARKER(), "fingerprint-old");
+    writeFileSync(ledger, "{ not json");
+    const request = ownedStart({ [HERO]: "hero" }, claim(5, "a"), {
+      expected: "fingerprint-old",
+    });
+
+    expect(register(claim(5, "a")).ownership).toBe("unknown");
+    expect(run(request)).toMatchObject({ ownership: "unknown", committed: false, changed: [] });
+    expect(mark(claim(5, "a"))).toMatchObject({ ownership: "unknown", marked: false });
+    expect(serve(claim(5, "a"))).not.toBe(0);
+    expect(existsSync(path.join(root, HERO))).toBe(false);
+    expect(read(".morph-preview-workspace")).toBe("fingerprint-old");
+    expect(ledgerText()).toBe("{ not json");
+    expect(existsSync((request as { staging: string }).staging)).toBe(false);
+  });
+
+  it("lets the serve gate pass only for the registered owner", () => {
+    register(claim(1, "a"));
+    expect(serve(claim(1, "a"))).toBe(0);
+    register(claim(2, "b"));
+    expect(serve(claim(1, "a"))).not.toBe(0);
+    expect(serve(claim(2, "b"))).toBe(0);
+    // Nothing registered at all: nothing proves the claim either.
+    rmSync(ledger, { force: true });
+    expect(serve(claim(2, "b"))).not.toBe(0);
+  });
+
+  it("drops what it vouched for once a sync writes, and keeps the owner", () => {
+    run(ownedStart({ [HERO]: "hero v1" }, claim(1, "a"), { fingerprint: "fingerprint-a" }));
+    run({
+      op: "write",
+      root,
+      files: [{ path: HERO, content: "hero v2", fence: 2 }],
+      marker: { path: MARKER(), content: "dirty:sync" },
+    });
+    expect(JSON.parse(ledgerText()).committed).toBeUndefined();
+    expect(JSON.parse(ledgerText()).owner).toEqual(claim(1, "a"));
+  });
+
+  it("refuses a start that carries no claim once an owner is registered", () => {
+    register(claim(1, "a"));
+    const result = run(ownedStart({ [HERO]: "unclaimed" }, null));
+    expect(result.ownership).toBe("superseded");
+    expect(existsSync(path.join(root, HERO))).toBe(false);
+  });
+});
