@@ -143,11 +143,15 @@ describe("astroContentBasisEvents", () => {
         data: { contentTicket: 7, draftGenerations: generations },
       }),
     ).toEqual([{ kind: "written", ticket: 7, draftGenerations: generations }]);
+    // Applied, and the preview reads this sync's own snapshot. (This case
+    // used to read `ticket: 8` and still expect ticket 7 recorded: that is
+    // the overtaken case below, which records a ticket the frame never
+    // shows — review finding 3.)
     expect(
       astroContentBasisEvents("sync", {
         success: true,
         data: {
-          ticket: 8,
+          ticket: 7,
           sentTicket: 7,
           draftGenerations: generations,
           instance: INSTANCE,
@@ -173,6 +177,51 @@ describe("astroContentBasisEvents", () => {
         7,
       ),
     ).toEqual([{ kind: "confirmed", ticket: 7, instance: INSTANCE }]);
+  });
+
+  // Review finding 3: the preview already holds or reads a later snapshot
+  // than this sync's, so the frame will never show `sentTicket`; recording
+  // it would move the basis to a ticket no reload can bring back.
+  it("records nothing for a sync that was superseded or overtaken", () => {
+    expect(
+      astroContentBasisEvents("sync", {
+        success: true,
+        data: {
+          ticket: 8,
+          sentTicket: 7,
+          draftGenerations: generations,
+          instance: INSTANCE,
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      astroContentBasisEvents("sync", {
+        success: false,
+        error: "PREVIEW_CONTENT_SUPERSEDED",
+        ticket: 8,
+        sentTicket: 7,
+        draftGenerations: generations,
+      }),
+    ).toEqual([]);
+    // Not written, or with no Worker that could ever confirm it: no basis.
+    // Only "written, not read yet" (NOT_CONFIRMED, above) is recorded, since
+    // the editor confirms it next and reloads the page onto it.
+    for (const error of [
+      "PREVIEW_CONTENT_TICKET_CONFLICT",
+      "PREVIEW_CONTENT_UNCONFIRMABLE",
+      "WRITE_FAILED",
+    ]) {
+      expect(
+        astroContentBasisEvents("sync", {
+          success: false,
+          error,
+          ticket: 6,
+          sentTicket: 7,
+          draftGenerations: generations,
+        }),
+        error,
+      ).toEqual([]);
+    }
   });
 
   it("reads nothing from a Start answer, an older Core, or a refusal", () => {
