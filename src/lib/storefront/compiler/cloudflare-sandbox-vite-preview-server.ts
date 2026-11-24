@@ -41,11 +41,17 @@ import {
 } from "./theme-workspace-path";
 import { verifyWorkspaceOnDisk } from "./theme-workspace-verification";
 import {
+  fenceLedgerVouchesFor,
+  gatedServeCommand,
+  PREVIEW_FENCE_LEDGER_PATH,
   PREVIEW_INSTANCE_PATH,
   PREVIEW_START_STAGING_PREFIX,
   runFencedWriteInSandbox,
   runPreviewContentRequestInSandbox,
+  writePreviewServeGate,
   type FenceSandbox,
+  type PreviewClaimStanding,
+  type PreviewStartClaim,
 } from "./preview-write-fence-sandbox";
 import type { ThemePreviewContentSnapshot } from "./theme-preview-content";
 import type { PlatformHostnameEnv } from "@/lib/storefront/service/storefront-request-routing";
@@ -234,12 +240,14 @@ export type PreviewServerSession = Omit<ThemeWorkspaceWriter, "writeFile"> &
      * The preview Durable Object's current-start record (`PreviewSandbox`,
      * `preview-start-attempt-guard.ts`). A start claims it, a retry asks it
      * before it is sent, every success asks it before it is answered, and
-     * a stop ends it. A session without them is never retried.
+     * a stop ends it. A session without them is never retried. A claim
+     * returns its number, which the start registers as the workspace's
+     * owner in the container's fence ledger (user, 2026-11-24).
      */
     claimPreviewStart?(input: {
       attemptId: string;
       deadlineAt: number;
-    }): Promise<void>;
+    }): Promise<{ seq: number }>;
     checkPreviewStart?(input: {
       attemptId: string;
       next?: string;
@@ -422,12 +430,15 @@ class PreviewStartNotCurrentError extends Error {
 }
 
 /**
- * Whether the workspace is no longer this start's to mark: another start
- * of the preview owns it (superseded), or the preview was stopped (the
- * container is gone, and a write would only wake it). A start refused for
- * its deadline, or because the Durable Object could not be asked, still
- * owns what it left, and still marks it untrusted: dirty is always the
- * safe direction (review 2026-11-24, finding 1).
+ * Whether the Durable Object has already said the workspace is not this
+ * start's: another start of the preview claimed it (superseded), or the
+ * preview was stopped (the container is gone, and a write would only wake
+ * it). Then nothing shared is even attempted. Otherwise it is the fence
+ * ledger, under its lock, that decides whether this start may still write
+ * the shared marker (`op: "mark"`, user 2026-11-24): a deadline or
+ * unconfirmed refusal still marks the workspace untrusted while the ledger
+ * names this attempt's claim as its owner, and writes nothing once it
+ * names another.
  */
 function refusalLeavesWorkspace(refusal: { stage: string }): boolean {
   return (
@@ -460,6 +471,8 @@ type StartObservation = {
     fingerprint: string;
     /** The marker found: a fingerprint, `dirty` after an incremental sync, or none. */
     previous: string | null;
+    /** A committed marker the fence ledger did not vouch for: laid out again. */
+    unvouched?: true;
     change?: WorkspaceChange;
     /** What was written: nothing, only the content snapshot, or everything. */
     update?: "none" | "content-only" | "full";
@@ -487,6 +500,12 @@ type StartObservation = {
   failedClosed?: string;
   /** The start step running now, when it is one a retry may follow. */
   step?: PreviewStartRetryStep;
+  /**
+   * What the fence ledger said of this attempt's claim when it refused it
+   * (user, 2026-11-24): another claim owns the workspace, or none can be
+   * proven. Absent while the attempt owns it.
+   */
+  ledger?: Exclude<PreviewClaimStanding, "owner">;
   /** What the start threw, and in which step, when it threw. */
   thrown?: ThrownStartError;
 };
@@ -498,6 +517,11 @@ type StartRequestState = Readonly<{
   deadlineAt: number;
   /** The session its Durable Object is asked through; null: unguarded. */
   guard: PreviewServerSession | null;
+  /**
+   * The number the Durable Object issued for this request's claim, which
+   * both its attempts register in the fence ledger; null when unguarded.
+   */
+  claimSeq: number | null;
 }>;
 
 function shortMarker(marker: string | null): string | null {
@@ -668,12 +692,40 @@ export class CloudflareSandboxVitePreviewServer {
     try {
       // Claimed before any container step: from here on a newer start or a
       // stop is visible to this one.
-      const guard = await this.claimStart(
+      const claimed = await this.claimStart(
         input.previewId,
         firstAttemptId,
         deadlineAt,
       );
-      const request = { inflight, requestStartedAt, deadlineAt, guard };
+      if (claimed === "unconfirmed") {
+        // Ownership cannot be proven without a number (user, 2026-11-24):
+        // nothing shared is written, so the start does not run at all. The
+        // Durable Object that could not be asked is the one that holds the
+        // container, so nothing would have reached it either.
+        const refusal = NOT_CURRENT_START.unconfirmed;
+        logPreviewServerEvent("start", {
+          attemptId: firstAttemptId,
+          previewId: input.previewId,
+          startedAt: new Date().toISOString(),
+          concurrentAtEntry: inflight.concurrentAtEntry,
+          outcome: "failed",
+          stage: refusal.stage,
+          error: refusal.errorMessage.slice(0, 200),
+          workspace: null,
+          vite: null,
+          address: null,
+          failedClosed: null,
+          guarded: false,
+        });
+        return { ok: false, attemptId: firstAttemptId, ...refusal, logs: [] };
+      }
+      const request: StartRequestState = {
+        inflight,
+        requestStartedAt,
+        deadlineAt,
+        guard: claimed?.session ?? null,
+        claimSeq: claimed?.seq ?? null,
+      };
       const first = await this.startAttempt(input, request, {
         attemptId: firstAttemptId,
         mayRetry: true,
@@ -735,26 +787,41 @@ export class CloudflareSandboxVitePreviewServer {
 
   /**
    * Claims the preview for this start in its Durable Object, and returns
-   * the session to ask it again through. Null when it cannot be claimed: the
-   * start then runs as before, unguarded, and is never retried.
+   * the session to ask it again through, with the claim's number. Null for
+   * a session with no such guard (a provider without the Durable Object):
+   * the start then runs as before, unguarded, and is never retried.
+   * "unconfirmed" when the guard is there but the claim failed or returned
+   * no number: workspace ownership cannot be proven (user, 2026-11-24).
    */
   private async claimStart(
     previewId: string,
     attemptId: string,
     deadlineAt: number,
-  ): Promise<PreviewServerSession | null> {
+  ): Promise<
+    { session: PreviewServerSession; seq: number } | null | "unconfirmed"
+  > {
+    let session: PreviewServerSession;
     try {
-      const session = await this.acquire(previewId);
-      if (
-        typeof session.claimPreviewStart !== "function" ||
-        typeof session.checkPreviewStart !== "function"
-      ) {
-        return null;
-      }
-      await session.claimPreviewStart({ attemptId, deadlineAt });
-      return session;
+      session = await this.acquire(previewId);
     } catch {
+      // The start's own acquire answers this.
       return null;
+    }
+    if (
+      typeof session.claimPreviewStart !== "function" ||
+      typeof session.checkPreviewStart !== "function"
+    ) {
+      return null;
+    }
+    try {
+      const claimed = await session.claimPreviewStart({ attemptId, deadlineAt });
+      const seq = (claimed as { seq?: unknown } | undefined)?.seq;
+      if (typeof seq !== "number" || !Number.isSafeInteger(seq)) {
+        return "unconfirmed";
+      }
+      return { session, seq };
+    } catch {
+      return "unconfirmed";
     }
   }
 
@@ -868,6 +935,17 @@ export class CloudflareSandboxVitePreviewServer {
       // request's deadline, at most.
       result = await this.startObserved(input, observation, {
         readyTimeoutMs: Math.min(this.readyTimeoutMs, remainingMs),
+        // Both attempts register the request's number in the fence ledger;
+        // the retry outranks its first attempt (user, 2026-11-24).
+        ...(request.claimSeq !== null
+          ? {
+              claim: {
+                seq: request.claimSeq,
+                attempt: attempt.retryOf ? 2 : 1,
+                attemptId: attempt.attemptId,
+              },
+            }
+          : {}),
         // A retry also asks before each of its container steps, with the
         // same check its success asks: once another start of this preview
         // has claimed it (another tab), or it was stopped or ran out of
@@ -877,12 +955,13 @@ export class CloudflareSandboxVitePreviewServer {
         //
         // Check-then-act, not atomic with the write: the DO answer and the
         // container step are two calls, so a claim that lands between them
-        // lets that one step run after it (one fence, one startProcess, or
-        // the staging writes already in flight). Only the fence itself,
-        // judging the claim under its lock as it commits, can close that;
-        // see the fence-commit plan ("Open item (b)", fix sketch) in
-        // handoff/2026-11-24/autoretry-v2-impl.md. Review 2026-11-24,
-        // finding 4.
+        // lets that one step run after it. That is no longer what keeps a
+        // superseded attempt out of the workspace: the fence ledger is
+        // (user, 2026-11-24). Once the newer start has registered its claim
+        // there, this attempt's fence, marker, content stamp and dev server
+        // launch are refused under the container's lock, whichever attempt
+        // it is. This check only stops a retry earlier, before its own
+        // staging writes.
         ...(attempt.retryOf && request.guard
           ? {
               beforeContainerStep: async () => {
@@ -945,6 +1024,7 @@ export class CloudflareSandboxVitePreviewServer {
         ...(request.guard ? {} : { guarded: false }),
         ...(retry ? { retry: "scheduled" } : {}),
         ...(attempt.retryOf ? { retryOf: attempt.retryOf, attempt: 2 } : {}),
+        ...(observation.ledger ? { ledger: observation.ledger } : {}),
         ...(requestTraceStatus !== undefined ? { requestTraceStatus } : {}),
         ...(requestTraceRecord !== undefined ? { requestTraceRecord } : {}),
         ...(result?.ok ? { timings: result.timings } : {}),
@@ -1147,13 +1227,14 @@ export class CloudflareSandboxVitePreviewServer {
       }
       return { staging, files, prune: [] };
     } catch (error) {
-      // A start another one replaced, or one stopped, touches the container
-      // no more; its staging directory in /tmp is left, as after any
-      // interruption. Any other failure clears its own staging.
+      // Any failure clears its own staging, and only that (user,
+      // 2026-11-24), except a start the preview's stop refused: the stop
+      // destroyed the container and its /tmp with it, and a call would only
+      // wake it.
       if (
         !(
           error instanceof PreviewStartNotCurrentError &&
-          refusalLeavesWorkspace(error.refusal)
+          error.refusal.stage === NOT_CURRENT_START.stopped.stage
         )
       ) {
         await this.discardStaging(session, staging);
@@ -1183,14 +1264,22 @@ export class CloudflareSandboxVitePreviewServer {
        * `PreviewStartNotCurrentError` to stop the start there.
        */
       beforeContainerStep?: () => Promise<void>;
+      /**
+       * This attempt's claim on the workspace (user, 2026-11-24): registered
+       * in the fence ledger before the first workspace step, carried by the
+       * fence, required for the shared marker, the content stamp and the
+       * dev server launch. Absent for an unguarded start.
+       */
+      claim?: PreviewStartClaim;
     }>,
   ): Promise<StartPreviewServerResult> {
     const beforeContainerStep =
       limits.beforeContainerStep ?? (async () => undefined);
+    const claim = limits.claim;
     /**
-     * For the fail-closed marker: false only once another start owns the
-     * workspace or the preview was stopped (`refusalLeavesWorkspace`); a
-     * deadline or unconfirmed refusal still writes it.
+     * For the fail-closed marker: false once the Durable Object has said
+     * another start owns the workspace or the preview was stopped
+     * (`refusalLeavesWorkspace`); then nothing shared is attempted.
      */
     const stillCurrent = () =>
       beforeContainerStep().then(
@@ -1201,6 +1290,15 @@ export class CloudflareSandboxVitePreviewServer {
             refusalLeavesWorkspace(error.refusal)
           ),
       );
+    /** The answer of an attempt the fence ledger no longer names as owner. */
+    const notOwner = (
+      standing: Exclude<PreviewClaimStanding, "owner">,
+    ): { stage: string; errorMessage: string } => {
+      observation.ledger = standing;
+      return standing === "superseded"
+        ? NOT_CURRENT_START.superseded
+        : NOT_CURRENT_START.unconfirmed;
+    };
     const requestStartedAt = Date.now();
     const logs: string[] = [];
     const addLog = boundedPreviewLogAppender(logs, {
@@ -1249,24 +1347,22 @@ export class CloudflareSandboxVitePreviewServer {
     const toolchain = themeToolchainForFramework(framework.id);
 
     let session: PreviewServerSession | null = null;
-    try {
-      const sandboxHandleStartedAt = Date.now();
-      session = await this.acquire(input.previewId);
-      const sandboxHandleMs = Date.now() - sandboxHandleStartedAt;
-      // A start that cannot finish leaves the workspace untrusted rather than
-      // destroyed. The sandbox is shared by every tab of this preview, and
-      // destroying it took down pages another request had just brought up.
-      // The marker goes back to `dirty`, so the next start rebuilds the whole
-      // workspace and restarts Vite instead of trusting what this one left.
-      const failClosed = async (reason: string) => {
-        observation.failedClosed = reason;
-        logPreviewServerEvent("fail-closed", {
-          attemptId: observation.attemptId,
-          previewId: input.previewId,
-          reason,
-        });
-        // A retry another start has replaced leaves the marker to it.
-        if (!(await stillCurrent())) return;
+    // This attempt's own staging directory, from when it is written until
+    // the fence takes it (the fence removes it, applied or refused). A start
+    // stopped in between clears it, and only it (user, 2026-11-24).
+    let pendingStaging: string | null = null;
+    /**
+     * Writes the shared dirty marker, only while this start owns the
+     * workspace (user, 2026-11-24). Guarded, the fence ledger decides it
+     * under its lock (`op: "mark"`): "another-owner" when it names another
+     * claim, "unproven" when it cannot say (or could not be asked), and
+     * either way nothing shared was written. Unguarded, the marker is
+     * written as before.
+     */
+    const markUntrusted = async (): Promise<
+      "marked" | "another-owner" | "unproven"
+    > => {
+      if (!claim) {
         await session!
           .writeFile(
             THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
@@ -1275,6 +1371,57 @@ export class CloudflareSandboxVitePreviewServer {
           .catch(() => {
             addLog("Could not mark the Live Preview workspace untrusted.");
           });
+        return "marked";
+      }
+      try {
+        const marked = await runFencedWriteInSandbox(
+          session as unknown as FenceSandbox,
+          {
+            op: "mark",
+            claim,
+            marker: {
+              path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+              content: newDirtyWorkspaceMarker(),
+            },
+          },
+        );
+        if (marked.ownership === "owner") return "marked";
+        observation.ledger =
+          marked.ownership === "superseded" ? "superseded" : "unknown";
+        addLog(
+          "The Live Preview workspace is no longer this start's; left unmarked.",
+        );
+        return marked.ownership === "superseded" ? "another-owner" : "unproven";
+      } catch {
+        addLog("Could not mark the Live Preview workspace untrusted.");
+        return "unproven";
+      }
+    };
+    try {
+      const sandboxHandleStartedAt = Date.now();
+      session = await this.acquire(input.previewId);
+      const sandboxHandleMs = Date.now() - sandboxHandleStartedAt;
+      // A start that cannot finish leaves the workspace untrusted rather than
+      // destroyed. The sandbox is shared by every tab of this preview, and
+      // destroying it took down pages another request had just brought up.
+      // The marker goes back to `dirty`, so the next start rebuilds the whole
+      // workspace and restarts Vite instead of trusting what this one left,
+      // but only while the workspace is still this start's: once another
+      // start owns it, this one writes nothing shared and answers
+      // superseded ("another-owner").
+      const failClosed = async (
+        reason: string,
+      ): Promise<"marked" | "another-owner" | "unproven" | "left"> => {
+        observation.failedClosed = reason;
+        logPreviewServerEvent("fail-closed", {
+          attemptId: observation.attemptId,
+          previewId: input.previewId,
+          reason,
+        });
+        // The Durable Object already says it is another start's, or that the
+        // preview was stopped: nothing shared is attempted.
+        if (!(await stillCurrent())) return "left";
+        return markUntrusted();
       };
 
       let firstFilesystemCallMs = 0;
@@ -1340,6 +1487,24 @@ export class CloudflareSandboxVitePreviewServer {
 
       const workspaceStartedAt = Date.now();
       const workspacePlanStartedAt = Date.now();
+      // Before the first step that touches /workspace: from here on, a
+      // newer start that registers its claim refuses every shared write of
+      // this one under the fence's lock (user, 2026-11-24). An interruption
+      // here is the fence's own, and may be retried.
+      const registerClaim = async () => {
+        if (!claim) return null;
+        await beforeContainerStep();
+        observation.step = "fence";
+        const registered = await runFencedWriteInSandbox(
+          session as unknown as FenceSandbox,
+          { op: "claim", claim },
+        );
+        observation.step = undefined;
+        return registered.ownership && registered.ownership !== "owner"
+          ? notOwner(registered.ownership)
+          : null;
+      };
+
       const prepared = framework.planWorkspace({
         files: input.files,
         entry: input.entry,
@@ -1360,6 +1525,9 @@ export class CloudflareSandboxVitePreviewServer {
           logs,
         };
       }
+      const unregistered = await registerClaim();
+      if (unregistered) return { ok: false, ...unregistered, logs };
+
       // It links the toolchain into /workspace.
       await beforeContainerStep();
       const toolchainReady = await prepareSandboxToolchain(
@@ -1401,14 +1569,53 @@ export class CloudflareSandboxVitePreviewServer {
           existingWorkspaceFingerprint = null;
         }
       }
+      // A committed marker is trusted only when the fence ledger vouches for
+      // that very commit, with nothing written since (user, 2026-11-24).
+      // Otherwise the workspace is laid out again, whatever the marker and
+      // the manifest say. A dirty marker is not trusted anyway: the disk is
+      // read back below.
+      let markerVouched = false;
+      if (
+        existingWorkspaceFingerprint !== null &&
+        !isDirtyWorkspaceMarker(existingWorkspaceFingerprint) &&
+        session.readFile
+      ) {
+        try {
+          const value = await recordFilesystemCall(
+            () =>
+              session!.readFile!(PREVIEW_FENCE_LEDGER_PATH, {
+                encoding: "utf-8",
+              }),
+            "read",
+          );
+          markerVouched = fenceLedgerVouchesFor(
+            typeof value === "string"
+              ? value
+              : typeof value.content === "string"
+                ? value.content
+                : null,
+            existingWorkspaceFingerprint,
+          );
+        } catch {
+          markerVouched = false;
+        }
+      }
+      const trustedWorkspaceFingerprint = markerVouched
+        ? existingWorkspaceFingerprint
+        : null;
       const workspaceFingerprintReadMs =
         Date.now() - workspaceFingerprintReadStartedAt;
       const workspaceReused =
-        existingWorkspaceFingerprint === prepared.workspaceFingerprint;
+        trustedWorkspaceFingerprint === prepared.workspaceFingerprint;
       observation.workspace = {
         reused: workspaceReused,
         fingerprint: prepared.workspaceFingerprint.slice(0, 12),
         previous: shortMarker(existingWorkspaceFingerprint),
+        ...(existingWorkspaceFingerprint !== null &&
+        !isDirtyWorkspaceMarker(existingWorkspaceFingerprint) &&
+        !markerVouched
+          ? { unvouched: true }
+          : {}),
       };
 
       // Process state answers a separate question: whether the matching (or
@@ -1467,7 +1674,7 @@ export class CloudflareSandboxVitePreviewServer {
           diskIsKnown = verification.ok;
         } else {
           let previousManifest: WorkspaceManifest | null = null;
-          if (existingWorkspaceFingerprint !== null && session.readFile) {
+          if (trustedWorkspaceFingerprint !== null && session.readFile) {
             try {
               const value = await recordFilesystemCall(
                 () =>
@@ -1497,8 +1704,8 @@ export class CloudflareSandboxVitePreviewServer {
           // then the marker. A missing or mismatched one says nothing.
           diskIsKnown =
             previousManifest !== null &&
-            existingWorkspaceFingerprint !== null &&
-            previousManifest.fingerprint === existingWorkspaceFingerprint;
+            trustedWorkspaceFingerprint !== null &&
+            previousManifest.fingerprint === trustedWorkspaceFingerprint;
         }
         observation.workspace.change = change;
 
@@ -1530,6 +1737,7 @@ export class CloudflareSandboxVitePreviewServer {
             new Set(change.paths),
             input.loadBinary,
           );
+          pendingStaging = stagedStart.staging;
           observation.step = undefined;
         }
         workspaceMaterializeMs = Date.now() - workspaceMaterializeStartedAt;
@@ -1571,6 +1779,10 @@ export class CloudflareSandboxVitePreviewServer {
             expected: existingWorkspaceFingerprint,
           },
           commit: startCommit,
+          // Registered as the owner in the same locked step that lays the
+          // files out; refused whole, writing nothing, once a higher claim
+          // is registered.
+          ...(claim ? { claim } : {}),
           // Content syncs reach a preview whose Worker reads the snapshot
           // (6.5), so only there is a newer snapshot kept and the server
           // stamped.
@@ -1584,10 +1796,17 @@ export class CloudflareSandboxVitePreviewServer {
             : {}),
         },
       ).catch(async (error: unknown) => {
+        pendingStaging = null;
         await this.discardStaging(session!, stagedStart.staging);
         throw error;
       });
+      pendingStaging = null;
       observation.step = undefined;
+      if (applied.ownership !== undefined && applied.ownership !== "owner") {
+        // Another start owns the workspace (or none can be proven): this one
+        // wrote nothing, and its staging is gone with the request.
+        return { ok: false, ...notOwner(applied.ownership), logs };
+      }
       if (applied.staleGeneration) {
         observation.workspace.refused = applied.refused.length;
         return {
@@ -1722,7 +1941,9 @@ export class CloudflareSandboxVitePreviewServer {
 
       if (alreadyServing) {
         if (!session.killProcess) {
-          await failClosed("restart-unavailable");
+          if ((await failClosed("restart-unavailable")) === "another-owner") {
+            return { ok: false, ...NOT_CURRENT_START.superseded, logs };
+          }
           return {
             ok: false,
             stage: "preview-server-restart",
@@ -1782,7 +2003,11 @@ export class CloudflareSandboxVitePreviewServer {
               this.stopTimeoutMs,
             ))
           ) {
-            await failClosed("stale-vite-did-not-stop");
+            if (
+              (await failClosed("stale-vite-did-not-stop")) === "another-owner"
+            ) {
+              return { ok: false, ...NOT_CURRENT_START.superseded, logs };
+            }
             return {
               ok: false,
               stage: "preview-server-restart",
@@ -1813,24 +2038,47 @@ export class CloudflareSandboxVitePreviewServer {
       // confirm.
       if (confirmsContent) {
         await beforeContainerStep();
-        await runPreviewContentRequestInSandbox(
+        const stamped = await runPreviewContentRequestInSandbox(
           session as unknown as FenceSandbox,
           {
             op: "stamp",
             path: `${prepared.workspaceRoot}/${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}`,
             instancePath: PREVIEW_INSTANCE_PATH,
             instance: crypto.randomUUID(),
+            // Stamped only while this claim owns the workspace.
+            ...(claim ? { claim } : {}),
           },
         );
+        if (stamped.outcome === "not-owner") {
+          return { ok: false, ...notOwner("superseded"), logs };
+        }
       }
       await beforeContainerStep();
+      // A strict port so the server cannot quietly land on another one and
+      // leave the exposed URL pointing at nothing (`--strictPort` for
+      // Vite; the Astro wrapper config sets `server.strictPort`).
+      const devServerCommand = devServer
+        ? `${toolchain.root}/node_modules/.bin/astro dev --config ${devServer.configPath} --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT}`
+        : `${toolchain.root}/node_modules/.bin/vite --config ${prepared.workspaceRoot}/vite.config.ts --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT} --strictPort`;
+      // Guarded, the dev server is launched through the serve gate (user,
+      // 2026-11-24): one shell runs the fence script, which reads the ledger
+      // under the lock, and execs the dev server only if this claim is
+      // still the owner. Check and launch are one step in the container: a
+      // newer start that registers before the gate refuses this launch, and
+      // one that registers after it finds this server running and replaces
+      // or reuses it as its own. A refused gate exits, and the exit below
+      // answers it.
+      const launchCommand = claim
+        ? gatedServeCommand(
+            await writePreviewServeGate(
+              session as unknown as FenceSandbox,
+              claim,
+            ),
+            devServerCommand,
+          )
+        : devServerCommand;
       const process = await session.startProcess(
-        // A strict port so the server cannot quietly land on another one and
-        // leave the exposed URL pointing at nothing (`--strictPort` for
-        // Vite; the Astro wrapper config sets `server.strictPort`).
-        devServer
-          ? `${toolchain.root}/node_modules/.bin/astro dev --config ${devServer.configPath} --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT}`
-          : `${toolchain.root}/node_modules/.bin/vite --config ${prepared.workspaceRoot}/vite.config.ts --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT} --strictPort`,
+        launchCommand,
         {
           // Nothing from Morph's own environment. The preview holds no
           // credential, and its capability is the preview URL alone; a
@@ -1881,10 +2129,16 @@ export class CloudflareSandboxVitePreviewServer {
         limits.readyTimeoutMs,
       );
       if (outcome !== "ready") {
+        const closed = await failClosed(`vite-${outcome}`);
+        if (closed === "another-owner") {
+          // Another start owns the workspace now (or the gate refused this
+          // launch): it decides what runs in the container. Its process is
+          // left to it, nothing is marked, and the answer says so.
+          return { ok: false, ...NOT_CURRENT_START.superseded, logs };
+        }
         // This start's own process, by the id it was given: never one that
         // another request started.
         await session.killProcess?.(process.id).catch(() => {});
-        await failClosed(`vite-${outcome}`);
         return {
           ok: false,
           stage: "preview-server-start",
@@ -1937,6 +2191,11 @@ export class CloudflareSandboxVitePreviewServer {
       // start's, and is marked untrusted as after any failed start.
       if (error instanceof PreviewStartNotCurrentError) {
         observation.step = undefined;
+        // Its own staging, unless the stop took the container (and its /tmp)
+        // away: a call would only wake it.
+        if (session && error.refusal.stage !== NOT_CURRENT_START.stopped.stage) {
+          await this.discardStaging(session, pendingStaging);
+        }
         if (session && !refusalLeavesWorkspace(error.refusal)) {
           observation.failedClosed = "start-not-current";
           logPreviewServerEvent("fail-closed", {
@@ -1945,22 +2204,18 @@ export class CloudflareSandboxVitePreviewServer {
             reason: "start-not-current",
             stage: error.refusal.stage,
           });
-          await session
-            .writeFile(
-              THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-              newDirtyWorkspaceMarker(),
-            )
-            .catch(() => {});
+          if ((await markUntrusted()) === "another-owner") {
+            return { ok: false, ...NOT_CURRENT_START.superseded, logs };
+          }
         }
         return { ok: false, ...error.refusal, logs };
       }
-      // Kept with the step it came from: only the start's own steps may be
-      // retried, and only by `start`, which reads it.
-      observation.thrown = {
+      const thrown = {
         message: error instanceof Error ? error.message : String(error),
         step: observation.step ?? null,
       };
       observation.step = undefined;
+      if (session) await this.discardStaging(session, pendingStaging);
       if (session) {
         observation.failedClosed = "start-error";
         logPreviewServerEvent("fail-closed", {
@@ -1972,15 +2227,15 @@ export class CloudflareSandboxVitePreviewServer {
             200,
           ),
         });
-        if (await stillCurrent()) {
-          await session
-            .writeFile(
-              THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-              newDirtyWorkspaceMarker(),
-            )
-            .catch(() => {});
+        if ((await stillCurrent()) && (await markUntrusted()) === "another-owner") {
+          // Not this start's workspace any more: its failure is not the
+          // preview's, and is never retried.
+          return { ok: false, ...NOT_CURRENT_START.superseded, logs };
         }
       }
+      // Kept with the step it came from: only the start's own steps may be
+      // retried, and only by `start`, which reads it.
+      observation.thrown = thrown;
       return {
         ok: false,
         stage: "preview-server-start",

@@ -158,6 +158,8 @@ export class PreviewSandbox extends Sandbox {
   /**
    * A start request for this preview claims it (auto-retry v2, §3): from
    * now on it is the current start, and every earlier one is superseded.
+   * Returns the claim's number, which the start registers as the
+   * workspace's owner in the container's fence ledger (user, 2026-11-24).
    * See `preview-start-attempt-guard.ts`.
    */
   async claimPreviewStart(input: {
