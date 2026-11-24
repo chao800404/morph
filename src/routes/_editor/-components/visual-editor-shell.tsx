@@ -447,8 +447,14 @@ import {
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
 import {
+  astroDesignNoticeOf,
+  rederiveAstroDesignSelection,
+  stepAstroDesignFocus,
+  type AstroDesignFocus,
+  type AstroDesignFocusEvent,
+} from "@/lib/storefront/editor/astro-design-focus";
+import {
   acceptAstroBasisAck,
-  ASTRO_BASIS_UNCONFIRMED_MESSAGE,
   astroBasisConfirmKey,
   astroBasisInstanceToConfirm,
   astroBasisTokenFor,
@@ -3480,6 +3486,47 @@ export function VisualEditorShell({
     },
     [],
   );
+  /**
+   * The Astro section selected on the canvas and what Design says about it
+   * (Q2/Q3, `stepAstroDesignFocus`). Shown at the Inspector top and on the
+   * section's row instead of a toast. Set only from the Astro click path, so
+   * it stays null on TanStack Start. Display state only: nothing is written
+   * from it, and Core verifies every write again.
+   */
+  const [astroDesignFocus, setAstroDesignFocus] =
+    useState<AstroDesignFocus | null>(null);
+  const astroDesignFocusRef = useRef<AstroDesignFocus | null>(null);
+  const dispatchAstroDesignFocus = useCallback(
+    (event: AstroDesignFocusEvent) => {
+      const next = stepAstroDesignFocus(astroDesignFocusRef.current, event);
+      if (next === astroDesignFocusRef.current) return;
+      astroDesignFocusRef.current = next;
+      setAstroDesignFocus(next);
+    },
+    [],
+  );
+  const astroDesignNotice = useMemo(
+    () => astroDesignNoticeOf(astroDesignFocus),
+    [astroDesignFocus],
+  );
+  // Another page: its sections are not this one's, and Core's view for it
+  // would never match the kept identity (that is not a reason to reload).
+  const astroDesignFocusRoutePath = search.routePath;
+  useEffect(() => {
+    dispatchAstroDesignFocus({ kind: "deselected" });
+  }, [astroDesignFocusRoutePath, dispatchAstroDesignFocus]);
+  /**
+   * Q3: after a new document's ready, the kept selection is matched again in
+   * Core's binding view read for that document; set where the view's query
+   * is in scope.
+   */
+  const rederiveAstroDesignFocusRef = useRef<
+    (
+      previewKey: string,
+      readyRound: number,
+      basisConfirming: Promise<void> | null,
+    ) => void
+  >(() => {});
   const [sectionPresentationReady, setSectionPresentationReady] =
     useState(false);
   const sectionPresentationReadyRef = useRef(false);
@@ -6852,6 +6899,59 @@ export function VisualEditorShell({
       return;
     }
     void astroBindingsQuery.refetch();
+  };
+  rederiveAstroDesignFocusRef.current = (
+    readyPreviewKey,
+    readyRound,
+    basisConfirming,
+  ) => {
+    const selection = astroDesignFocusRef.current?.selection ?? null;
+    dispatchAstroDesignFocus({ kind: "document-replaced" });
+    if (!selection) return;
+    // The view read for this document: the refetch the ready just started,
+    // or the read already in flight (`cancelRefetch: false` joins it and
+    // never starts a second one). A page with no view to read has none.
+    const viewRead: Promise<AstroRouteBindingsView | null> =
+      astroBindingRoutePath === null ||
+      !Number.isSafeInteger(astroBindingSourceGeneration) ||
+      astroBindingSourceGeneration < 1
+        ? Promise.resolve(null)
+        : astroBindingsQuery
+            .refetch({ cancelRefetch: false })
+            .then((result) =>
+              result.data?.success === true ? result.data.data : null,
+            );
+    // A basis the ready asked Core to confirm is waited for, so the token is
+    // issued on Core's answer rather than refused before it arrives.
+    void Promise.all([viewRead, basisConfirming ?? Promise.resolve()])
+      .then(([view]) => view)
+      .catch(() => null)
+      .then((view) => {
+        // A later document asks again for itself.
+        if (
+          previewKeyRef.current !== readyPreviewKey ||
+          previewReadyRoundRef.current !== readyRound
+        ) {
+          return;
+        }
+        const result = rederiveAstroDesignSelection({
+          selection,
+          view,
+          workspaceSourceGeneration: currentContentSourceGeneration(),
+          routePath: currentSearchRoutePathRef.current ?? "/",
+        });
+        dispatchAstroDesignFocus({
+          kind: "rederived",
+          identity: selection.identity,
+          result,
+        });
+        if (result.status === "confirmed") {
+          issueAstroBasisPresentationRef.current(
+            result.sectionId,
+            result.identity,
+          );
+        }
+      });
   };
   const routeStructurePending = Boolean(
     (pendingRoutePath !== null &&
@@ -13241,10 +13341,30 @@ export function VisualEditorShell({
               presentationTraceScope(),
               `basis ack held op=${message.token.operationId} reason=${basisAck.reason}`,
             );
-            toast.info(ASTRO_BASIS_UNCONFIRMED_MESSAGE, {
-              id: "astro-basis-unconfirmed",
+            dispatchAstroDesignFocus({
+              kind: "basis-unconfirmed",
+              sectionId: message.token.sectionId,
+              reason: basisAck.reason,
             });
             return;
+          }
+        }
+        // Option B, Q2: what the frame answered about a basis is said on the
+        // section. `not-applied` (the frame does not hold the boundary once,
+        // or names another snapshot) was silent before; a newer token
+        // superseding this one says nothing, as that token is answered next.
+        if (message.token.basis) {
+          if (message.status === "applied") {
+            dispatchAstroDesignFocus({
+              kind: "basis-acknowledged",
+              sectionId: message.token.sectionId,
+            });
+          } else if (message.reason !== "superseded") {
+            dispatchAstroDesignFocus({
+              kind: "basis-unconfirmed",
+              sectionId: message.token.sectionId,
+              reason: `not-applied-${message.reason ?? "unknown"}`,
+            });
           }
         }
         pendingSectionPresentationRef.current.delete(message.operationId);
@@ -13505,6 +13625,7 @@ export function VisualEditorShell({
               astroBasisConfirmAskedRef.current,
             )
           : null;
+        let basisConfirming: Promise<void> | null = null;
         if (instanceToConfirm !== null && readyServedContent) {
           const asked = astroBasisConfirmAskedRef.current;
           // Only this ticket's asks are kept: an older ticket is never
@@ -13513,7 +13634,7 @@ export function VisualEditorShell({
             if (!key.startsWith(`${instanceToConfirm}:`)) asked.delete(key);
           }
           asked.add(astroBasisConfirmKey(readyServedContent));
-          void Promise.resolve()
+          basisConfirming = Promise.resolve()
             .then(() =>
               confirmThemePreviewContent({
                 data: {
@@ -13535,6 +13656,16 @@ export function VisualEditorShell({
             .catch(() => {
               // Unanswered: the basis stays unconfirmed and Design says so.
             });
+        }
+        // Q3: an Astro selection is not kept from the old document; it is
+        // matched again in Core's view read for this one. Never on TanStack
+        // Start, whose canvas selection is not this path.
+        if (canvasUnavailableForFrameworkRef.current) {
+          rederiveAstroDesignFocusRef.current(
+            previewKey,
+            previewReadyRoundRef.current,
+            basisConfirming,
+          );
         }
         // Tell this document what the editor can read back, only when this
         // ready carries a document id and the bridge said it reads the token.
@@ -13900,8 +14031,16 @@ export function VisualEditorShell({
         }
         // Option B: a confirmed instance asks this document to acknowledge
         // it as the basis a write would be made on. Still nothing written;
-        // the Astro Inspector input path is later work.
-        if (astroSelection.status === "confirmed") {
+        // the Astro Inspector input path is later work. The selection is
+        // kept (Q2/Q3) so its basis status can be said on the section and
+        // matched again after a reload; any other click selects nothing.
+        if (astroSelection.status !== "confirmed") {
+          dispatchAstroDesignFocus({ kind: "deselected" });
+        } else {
+          dispatchAstroDesignFocus({
+            kind: "selected",
+            selection: astroSelection,
+          });
           issueAstroBasisPresentationRef.current(
             astroSelection.sectionId,
             astroSelection.identity,
@@ -15662,10 +15801,13 @@ export function VisualEditorShell({
         `basis not issued section=${sectionId} reason=${issued.reason}`,
       );
       // A frame without the basis path says nothing new: the click hint
-      // already did. Any other refusal is class A, "reload preview".
+      // already did. Any other refusal is class A, "reload preview", said on
+      // the section (Inspector top and its row), not in a toast.
       if (issued.reason !== "not-basis-frame") {
-        toast.info(ASTRO_BASIS_UNCONFIRMED_MESSAGE, {
-          id: "astro-basis-unconfirmed",
+        dispatchAstroDesignFocus({
+          kind: "basis-unconfirmed",
+          sectionId,
+          reason: issued.reason,
         });
       }
       return;
@@ -21356,6 +21498,7 @@ export function VisualEditorShell({
           onOpenThemeRoute={handleOpenThemeRoute}
           onOpenThemeRouteCode={handleOpenThemeRouteCode}
           sectionsUnavailableForFramework={sectionsUnavailableForFramework}
+          astroSectionNotice={astroDesignNotice}
           onAddPage={
             sectionsUnavailableForFramework ? undefined : handleAddPage
           }
@@ -21901,6 +22044,7 @@ export function VisualEditorShell({
                 : null
           }
           inspectorDocumentKey={inspectorDocumentKey}
+          astroDesignNotice={astroDesignNotice}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}
