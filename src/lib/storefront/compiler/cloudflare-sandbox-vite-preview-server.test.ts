@@ -4264,4 +4264,180 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       ).toBe(true);
     });
   });
+
+  /**
+   * Two-tab race, run 1 (2026-11-24): B took over the workspace while A's
+   * freshly launched dev server was still booting, reused it, and answered
+   * ready at once. B's frame got "Container is not listening to port 5173".
+   * Reuse means the listed server serves, not that it exists.
+   */
+  describe("a start that reuses a dev server listed in the container", () => {
+    type PortCheck = (
+      port: number,
+      options?: { path?: string },
+    ) => Promise<void>;
+
+    /**
+     * The container lists the first start's dev server (proc-1) as
+     * `status`; `getProcess` hands back its process with `waitForPort`, or
+     * nothing when `handle` is "gone".
+     */
+    const withListedServer = (
+      harness: Harness,
+      status: "starting" | "running",
+      handle: PortCheck | "gone",
+    ) => {
+      const asked: string[] = [];
+      const launched = harness.commands[0]!;
+      override(harness, "listProcesses", async () => [
+        { id: "proc-1", command: launched, status },
+      ]);
+      override(harness, "getProcess", async (id: string) => {
+        asked.push(id);
+        return handle === "gone" ? null : { id, waitForPort: handle };
+      });
+      return asked;
+    };
+
+    it.each([
+      { runtime: "the standalone preview", overrides: {} },
+      { runtime: "a full Start preview", overrides: { previewRuntime: "start" as const } },
+    ])(
+      "$runtime: a server still starting is not answered ready until its port check passes, with the launch path's check, and the wait is recorded",
+      async ({ overrides }) => {
+        const s = setup();
+        expect((await s.start(overrides)).ok).toBe(true);
+        expect(s.harness.waitedPorts).toHaveLength(1);
+        const waited: Array<{ port: number; path?: string }> = [];
+        let open!: () => void;
+        const portOpen = new Promise<void>((resolve) => {
+          open = resolve;
+        });
+        let asked!: () => void;
+        const portAsked = new Promise<void>((resolve) => {
+          asked = resolve;
+        });
+        const getProcessIds = withListedServer(
+          s.harness,
+          "starting",
+          async (port, options) => {
+            waited.push({ port, path: options?.path });
+            asked();
+            await portOpen;
+          },
+        );
+
+        let settled = false;
+        const second = s.start(overrides).then((result) => {
+          settled = true;
+          return result;
+        });
+        await Promise.race([portAsked, second]);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        // Still waiting on the listed server's port.
+        expect(settled).toBe(false);
+        open();
+        const result = await second;
+
+        expect(result.ok, !result.ok ? result.errorMessage : "").toBe(true);
+        if (!result.ok) return;
+        expect(result.processId).toBe("proc-1");
+        expect(result.timings.reusedProcess).toBe(true);
+        expect(result.timings.viteReadyMs).toBeGreaterThan(0);
+        expect(result.readyMs).toBe(result.timings.viteReadyMs);
+        expect(getProcessIds).toEqual(["proc-1"]);
+        // The same port and probe path the launch path waited on.
+        expect(waited).toEqual(s.harness.waitedPorts);
+        expect(s.harness.commands).toHaveLength(1);
+        expect(s.harness.killed).toEqual([]);
+      },
+    );
+
+    it.each([
+      {
+        name: "its port check fails",
+        handle: (async () => {
+          throw new Error("Process exited before the port was ready.");
+        }) as PortCheck,
+        server: {},
+        reason: "vite-exited",
+        code: "PREVIEW_SERVER_EXITED:",
+      },
+      {
+        name: "the container no longer has the process",
+        handle: "gone" as const,
+        server: {},
+        reason: "vite-exited",
+        code: "PREVIEW_SERVER_EXITED:",
+      },
+      {
+        name: "its port check does not pass within the readiness limit",
+        handle: (() => new Promise<void>(() => {})) as PortCheck,
+        server: { readyTimeoutMs: 50 },
+        reason: "vite-timeout",
+        code: "PREVIEW_SERVER_TIMEOUT:",
+      },
+    ])(
+      "$name: not answered ready, failed closed as a launch would be, and the listed server is neither killed nor launched again",
+      async ({ handle, server, reason, code }) => {
+        const s = setup({ server });
+        expect((await s.start()).ok).toBe(true);
+        withListedServer(s.harness, "starting", handle);
+        const { result, starts } = await records(() => s.start());
+
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.stage).toBe("preview-server-start");
+        expect(result.errorMessage.startsWith(code)).toBe(true);
+        expect(starts).toHaveLength(1);
+        expect(starts[0]!.failedClosed).toBe(reason);
+        expect((starts[0]!.vite as { action: string }).action).toBe("reused");
+        expect(
+          isDirtyWorkspaceMarker(
+            s.harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ??
+              null,
+          ),
+        ).toBe(true);
+        expect(s.harness.commands).toHaveLength(1);
+        expect(s.harness.killed).toEqual([]);
+      },
+    );
+
+    it("a newer start claims the preview while this one waits on the listed server: answered superseded, nothing killed or launched", async () => {
+      const s = setup();
+      expect((await s.start()).ok).toBe(true);
+      const marker = s.harness.written.get(
+        THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      );
+      withListedServer(s.harness, "starting", async () => {
+        await s.guarded!.supersede();
+      });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-superseded");
+      expect(starts).toHaveLength(1);
+      expect((starts[0]!.vite as { action: string }).action).toBe("reused");
+      expect(s.harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
+        marker,
+      );
+      expect(s.harness.commands).toHaveLength(1);
+      expect(s.harness.killed).toEqual([]);
+    });
+
+    it("a server running and serving is still reused: answered ready without a second launch", async () => {
+      const s = setup();
+      expect((await s.start()).ok).toBe(true);
+      withListedServer(s.harness, "running", async () => {});
+      const result = await s.start();
+
+      expect(result.ok, !result.ok ? result.errorMessage : "").toBe(true);
+      if (!result.ok) return;
+      expect(result.processId).toBe("proc-1");
+      expect(result.timings.reusedProcess).toBe(true);
+      expect(s.harness.commands).toHaveLength(1);
+      expect(s.harness.killed).toEqual([]);
+    });
+  });
 });
