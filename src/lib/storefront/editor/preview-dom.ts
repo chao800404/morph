@@ -8,7 +8,9 @@ import {
 import type {
   PreviewEditableNode,
   PreviewSelectionRestoreTarget,
+  PreviewServedContent,
   PreviewStyleSnapshot,
+  SectionPresentationToken,
 } from "./preview-protocol";
 
 /**
@@ -429,6 +431,118 @@ function judgeBoundary(
   if (opens !== 1) return refuse("duplicate");
   if (elements === 0) return refuse("empty");
   return { marker: id, selectable: true, reason: null };
+}
+
+/** Why a basis token is not acknowledged; said in the frame's trace only. */
+export type AstroBasisAckCause =
+  | "no-basis"
+  | "not-document-navigation"
+  | "no-served-content"
+  | "other-snapshot"
+  | "wrong-nonce"
+  | "no-boundary"
+  | "duplicate-boundary"
+  | "unpaired-boundary"
+  | "split-boundary";
+
+export type AstroBasisAckVerdict =
+  | Readonly<{ applied: true }>
+  | Readonly<{ applied: false; cause: AstroBasisAckCause }>;
+
+/** One comment of the document, in document order, and the node holding it. */
+export type PreviewBoundaryComment = Readonly<{ text: string; parent: unknown }>;
+
+/**
+ * Whether the document holds the boundary `identity` exactly once (option B):
+ * one opening and one closing `morph:s2` comment of that id, with this
+ * preview's `nonce`, the opening first, both under the same parent. Markers
+ * of another nonce are not counted; an identity of another nonce is refused.
+ * The identity was confirmed against Core's binding view when it was
+ * selected; this only says it is still on the page, once.
+ */
+export function astroBasisBoundaryVerdict(
+  identity: string,
+  nonce: string | null,
+  comments: readonly PreviewBoundaryComment[],
+): AstroBasisAckVerdict {
+  if (!nonce || identity.split(":")[0] !== nonce) {
+    return { applied: false, cause: "wrong-nonce" };
+  }
+  const opens: Array<{ index: number; parent: unknown }> = [];
+  const closes: Array<{ index: number; parent: unknown }> = [];
+  comments.forEach((comment, index) => {
+    const match = PREVIEW_BOUNDARY_MARKER.exec(comment.text);
+    if (!match || match[2] !== nonce) return;
+    const id = `${match[2]}:${match[3]}:${match[4]}:${match[5]}:${match[6]}`;
+    if (id !== identity) return;
+    (match[1] === "/" ? closes : opens).push({ index, parent: comment.parent });
+  });
+  if (opens.length === 0 && closes.length === 0) {
+    return { applied: false, cause: "no-boundary" };
+  }
+  if (opens.length > 1 || closes.length > 1) {
+    return { applied: false, cause: "duplicate-boundary" };
+  }
+  if (
+    opens.length !== 1 ||
+    closes.length !== 1 ||
+    opens[0]!.index > closes[0]!.index
+  ) {
+    return { applied: false, cause: "unpaired-boundary" };
+  }
+  if (opens[0]!.parent !== closes[0]!.parent) {
+    return { applied: false, cause: "split-boundary" };
+  }
+  return { applied: true };
+}
+
+/**
+ * The frame's answer to a basis token (option B). Only a page that navigates
+ * as documents takes this branch at all, so a Start frame never does; the
+ * page must name the snapshot the token names (its own `morph-content`
+ * stamp, read from its navigation entry) and hold the boundary once. The
+ * page runs author code: this narrows what the editor accepts, and the
+ * editor checks the same pair against Core again.
+ */
+export function astroBasisAckVerdict(args: {
+  token: SectionPresentationToken;
+  documentNavigation: boolean;
+  nonce: string | null;
+  comments: readonly PreviewBoundaryComment[];
+  servedContent: PreviewServedContent | null;
+}): AstroBasisAckVerdict {
+  const basis = args.token.basis;
+  if (!basis) return { applied: false, cause: "no-basis" };
+  if (!args.documentNavigation) {
+    return { applied: false, cause: "not-document-navigation" };
+  }
+  if (!args.servedContent) {
+    return { applied: false, cause: "no-served-content" };
+  }
+  if (
+    args.servedContent.ticket !== basis.servedContent.ticket ||
+    args.servedContent.instance !== basis.servedContent.instance
+  ) {
+    return { applied: false, cause: "other-snapshot" };
+  }
+  return astroBasisBoundaryVerdict(basis.identity, args.nonce, args.comments);
+}
+
+/** This preview's boundary nonce, or null outside a source-selection preview. */
+export function previewBoundaryNonce(): string | null {
+  return previewSourceSelection()?.nonce ?? null;
+}
+
+/** Every comment of `root`, in document order, with its parent node. */
+export function previewBoundaryComments(
+  root: Document,
+): PreviewBoundaryComment[] {
+  const comments: PreviewBoundaryComment[] = [];
+  const walker = root.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    comments.push({ text: (node as Comment).data, parent: node.parentNode });
+  }
+  return comments;
 }
 
 const SOURCE_DIGEST = /^[0-9a-f]{64}$/;
