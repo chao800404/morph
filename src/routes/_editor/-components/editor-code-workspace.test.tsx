@@ -1314,7 +1314,11 @@ describe("EditorCodeWorkspace file creation", () => {
       });
     }
 
-    it("creates the missing module from the Starter source with the create precondition and accepted generation", async () => {
+    // The request declares itself a restore (`operation`): the server
+    // resolves the Starter file for the path and holds it to the Starter write
+    // rule, instead of inferring a restore from the bytes it was sent. The
+    // Starter source is still sent so an older server takes the same create.
+    it("creates the missing module from the Starter source with the create precondition, the accepted generation and the declared restore", async () => {
       vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
         success: true,
         message: "ok",
@@ -1338,6 +1342,7 @@ describe("EditorCodeWorkspace file creation", () => {
           mimeType: "text/typescript",
           expectMissing: true,
           expectedSourceGeneration: 5,
+          operation: "restore-starter-file",
         },
       });
       await waitFor(() => {

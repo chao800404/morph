@@ -340,6 +340,31 @@ const restore = async (expectedSourceGeneration: number) =>
     expectedSourceGeneration,
   });
 
+/**
+ * The restore command's declared request (`operation: "restore-starter-file"`):
+ * the server resolves the Starter's bytes for the path itself, so whatever
+ * the request carries as `content` is not what gets written.
+ */
+const declaredRestore = async (
+  expectedSourceGeneration: number,
+  overrides: Record<string, unknown> = {},
+) =>
+  call((await handlers()).saveStorefrontThemeFile, {
+    storefrontId: STORE,
+    themeId: THEME,
+    path: THEME_CONTENT_MODULE_PATH,
+    content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+    mimeType: "text/typescript",
+    expectMissing: true,
+    expectedSourceGeneration,
+    operation: "restore-starter-file",
+    ...overrides,
+  });
+
+/** Bytes that are not the Starter's, sent with a declared restore. */
+const NOT_THE_STARTER =
+  "export const content = () => ({}); // not the Starter's module\n";
+
 async function deleteContentModule() {
   const existing = (await contentModule())!;
   const deleted = await call((await handlers()).deleteStorefrontThemeFile, {
@@ -443,6 +468,83 @@ describe("the author's content module on the server", () => {
   });
 });
 
+describe("a restore the editor declares", () => {
+  // The server identifies a restore by the request's declared operation and
+  // resolves the Starter file for the path itself. The request's bytes are
+  // never what is written, so a later change to the restore's source or
+  // format cannot make a restore look like an author's create.
+  it("writes the Starter's own module, whatever bytes the request carries", async () => {
+    seedStarterWorkspace();
+    await deleteContentModule();
+
+    const restored = await declaredRestore(await generation(), {
+      content: NOT_THE_STARTER,
+    });
+
+    expect(restored.success, restored.message).toBe(true);
+    expect((await contentModule())?.content).toBe(
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+  });
+
+  it("refuses a path the current Starter has no file at, and writes nothing", async () => {
+    seedStarterWorkspace();
+    const before = await themeSourceStore.listFiles(STORE, THEME);
+
+    const restored = await declaredRestore(await generation(), {
+      path: "src/components/AuthorsOwn.tsx",
+      content: NOT_THE_STARTER,
+    });
+
+    expect(restored).toMatchObject({
+      success: false,
+      error: "STARTER_FILE_NOT_RESTORABLE",
+    });
+    expect(await themeSourceStore.listFiles(STORE, THEME)).toEqual(before);
+  });
+
+  it("only ever creates: a declared restore over an existing file is refused and the file is kept", async () => {
+    seedStarterWorkspace();
+    const existing = (await contentModule())!;
+    const edited = `${STARTER_THEME_CONTENT_MODULE_SOURCE}\n// mine\n`;
+    const saved = await call((await handlers()).saveStorefrontThemeFile, {
+      storefrontId: STORE,
+      themeId: THEME,
+      path: THEME_CONTENT_MODULE_PATH,
+      content: edited,
+      mimeType: "text/typescript",
+      expectedFileId: existing.id,
+      expectedVersion: existing.version,
+      expectedSourceGeneration: await generation(),
+    });
+    expect(saved.success, saved.message).toBe(true);
+    const current = (await contentModule())!;
+
+    const restored = await declaredRestore(await generation(), {
+      expectMissing: false,
+      expectedFileId: current.id,
+      expectedVersion: current.version,
+    });
+
+    expect(restored).toMatchObject({
+      success: false,
+      error: "STARTER_RESTORE_CREATE_ONLY",
+    });
+    expect((await contentModule())?.content).toBe(edited);
+  });
+
+  it("is refused by the create precondition when the file is already there", async () => {
+    seedStarterWorkspace();
+
+    const restored = await declaredRestore(await generation());
+
+    expect(restored).toMatchObject({
+      success: false,
+      error: "FILE_VERSION_CONFLICT",
+    });
+  });
+});
+
 describe("Starter writes that need the full Start preview", () => {
   // Option B, the switch-then-write order. The restore command, the empty
   // Theme's Starter init and the Starter bootstrap put the Starter's own
@@ -509,6 +611,67 @@ describe("Starter writes that need the full Start preview", () => {
       STARTER_THEME_CONTENT_MODULE_SOURCE,
     );
     expect(stored().theme).toMatchObject({ preview_runtime: "start" });
+  });
+
+  it.each([null, "client"])(
+    "refuses a declared restore on a Theme that records %s even when the request carries other bytes",
+    async (runtime) => {
+      seedStarterWorkspace();
+      await deleteContentModule();
+      setRuntime(runtime);
+      const before = stored();
+
+      // Not byte-identical to the Starter: the old inference would have taken
+      // this as an author's create. The declared operation is what counts.
+      const restored = await declaredRestore(await generation(), {
+        content: NOT_THE_STARTER,
+      });
+
+      expect(restored).toMatchObject({
+        success: false,
+        error: "STARTER_START_PREVIEW_REQUIRED",
+      });
+      expect(await contentModule()).toBeUndefined();
+      expect(stored()).toEqual(before);
+    },
+  );
+
+  it("takes a declared restore on a Theme that records start, writing the Starter's bytes", async () => {
+    seedStarterWorkspace();
+    await deleteContentModule();
+    setRuntime("start");
+
+    const restored = await declaredRestore(await generation(), {
+      content: NOT_THE_STARTER,
+    });
+
+    expect(restored.success, restored.message).toBe(true);
+    expect((await contentModule())?.content).toBe(
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+    expect(stored().theme).toMatchObject({ preview_runtime: "start" });
+  });
+
+  it("does not take an ordinary create of that path with the author's content as a restore", async () => {
+    seedStarterWorkspace();
+    await deleteContentModule();
+    setRuntime("start");
+    const authored = `${STARTER_THEME_CONTENT_MODULE_SOURCE}\n// mine\n`;
+
+    const created = await call((await handlers()).saveStorefrontThemeFile, {
+      storefrontId: STORE,
+      themeId: THEME,
+      path: THEME_CONTENT_MODULE_PATH,
+      content: authored,
+      mimeType: "text/typescript",
+      expectMissing: true,
+      expectedSourceGeneration: await generation(),
+    });
+
+    // The author's bytes, not the Starter's: an ordinary create is never
+    // resolved to the Starter file.
+    expect(created.success, created.message).toBe(true);
+    expect((await contentModule())?.content).toBe(authored);
   });
 
   it("takes the author's own module on a client Theme: only the Starter's bytes are held to start", async () => {
