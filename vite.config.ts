@@ -292,7 +292,11 @@ const config = defineConfig({
       // be told from anyone else's by name and by image; see
       // `src/server/e2e-container-isolation.ts`. Unset everywhere else, so
       // `pnpm dev` and builds keep `morph` and the shared image.
-      config: e2eWorkerConfig(process.env.MORPH_E2E_WORKER_NAME),
+      // `MORPH_E2E_ASTRO_PARSER=1` also binds `ASTRO_PARSER` for that run (the
+      // container transport's default environment declares no services).
+      config: e2eWorkerConfig(process.env.MORPH_E2E_WORKER_NAME, {
+        astroParser: process.env.MORPH_E2E_ASTRO_PARSER === "1",
+      }),
     }),
     tailwindcss(),
     tanstackStart(),

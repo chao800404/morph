@@ -843,13 +843,41 @@ describe("the e2e runner's .astro parser", () => {
     };
   }
 
-  it("refuses the parser with the container transport, before starting services", async () => {
-    const result = await runRunner({ MORPH_E2E_ASTRO_PARSER: "1" });
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /ASTRO_PARSER_NEEDS_LOCAL_PREVIEW/);
-    assert.ok(!result.stdout.includes("applying migrations"));
-    assert.deepEqual(result.leftBehind, []);
-  });
+  it(
+    "starts the parser and confirms the binding with the container transport too, handing the dev server the opt-in and the run's registry",
+    { timeout: 90_000 },
+    async () => {
+      const dir = path.join(scratch, "astro-parser-container-run");
+      await mkdir(dir, { recursive: true });
+      const report = path.join(dir, "playwright.json");
+      const parserFile = path.join(dir, "parser.json");
+      const viteFile = path.join(dir, "vite.json");
+      const result = await runRunner({
+        MORPH_E2E_ASTRO_PARSER: "1",
+        ...(await parserPorts()),
+        MORPH_E2E_REPORT_PATH: report,
+        FAKE_PARSER_FILE: parserFile,
+        FAKE_VITE_ENV_FILE: viteFile,
+      });
+      assert.doesNotMatch(result.stderr, /ASTRO_PARSER_NEEDS_LOCAL_PREVIEW/);
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-2000));
+      const out = result.stdout;
+      const ready = out.indexOf("[e2e] .astro parser ready");
+      const devServer = out.indexOf("[e2e] starting the dev server");
+      const confirmed = out.indexOf(
+        "[e2e] Core confirmed a parse through ASTRO_PARSER (compiler 0.5.1)",
+      );
+      const suite = out.indexOf("[e2e] running playwright");
+      assert.ok(ready >= 0 && ready < devServer, out.slice(-2000));
+      assert.ok(devServer < confirmed && confirmed < suite, out.slice(-2000));
+      assert.match(out, /\[e2e\] stopped astro parser/);
+      const parser = JSON.parse(await readFile(parserFile, "utf8"));
+      const vite = JSON.parse(await readFile(viteFile, "utf8"));
+      assert.equal(parser.registry, path.join(vite.stateDir, "dev-registry"));
+      assert.equal(parser.registry, vite.registry);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
 
   it("refuses a setting it does not know, before starting services", async () => {
     const result = await runRunner({
