@@ -8025,14 +8025,15 @@ export function VisualEditorShell({
       return answer;
     };
     const sync = createPreviewContentSync({
+      // Promise.resolve: the answer is passed on exactly as it came.
       sync: () =>
-        syncThemePreviewContent({ data: scope }).then((answer) =>
-          noteAnswer("sync", answer),
+        Promise.resolve(syncThemePreviewContent({ data: scope })).then(
+          (answer) => noteAnswer("sync", answer),
         ),
       confirm: (ticket) =>
-        confirmThemePreviewContent({ data: { ...scope, ticket } }).then(
-          (answer) => noteAnswer("confirm", answer, ticket),
-        ),
+        Promise.resolve(
+          confirmThemePreviewContent({ data: { ...scope, ticket } }),
+        ).then((answer) => noteAnswer("confirm", answer, ticket)),
       refresh: () => {
         if (previewContentRefresh === "reload") {
           // The page is rendered on the server; only loading it again shows
@@ -13496,13 +13497,16 @@ export function VisualEditorShell({
             )
           : null;
         if (instanceToConfirm !== null) {
-          void confirmThemePreviewContent({
-            data: {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-              ticket: instanceToConfirm,
-            },
-          })
+          void Promise.resolve()
+            .then(() =>
+              confirmThemePreviewContent({
+                data: {
+                  storefrontId: context.storefront.id,
+                  themeId: context.theme.id,
+                  ticket: instanceToConfirm,
+                },
+              }),
+            )
             .then((answer) => {
               for (const event of astroContentBasisEvents(
                 "confirm",
