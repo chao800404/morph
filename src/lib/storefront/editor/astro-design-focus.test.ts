@@ -67,8 +67,15 @@ const SELECTION: ConfirmedAstroDesignSelection = {
   fields: ["title"],
 };
 
-const selected = (): AstroDesignFocus =>
-  stepAstroDesignFocus(null, { kind: "selected", selection: SELECTION });
+/** The focus a confirmed click starts; a `selected` step always gives one. */
+const selected = (): AstroDesignFocus => {
+  const focus = stepAstroDesignFocus(null, {
+    kind: "selected",
+    selection: SELECTION,
+  });
+  if (focus === null) throw new Error("a selected step gave no focus");
+  return focus;
+};
 
 describe("rederiveAstroDesignSelection", () => {
   const args = (v: AstroRouteBindingsView | null) => ({
