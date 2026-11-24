@@ -2999,5 +2999,159 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
         });
       },
     );
+
+    /**
+     * Two tabs, first attempts only: nothing fails and nothing is retried.
+     * A claims and begins; B claims the same previewId, lays out THEME_B
+     * and comes up; only then does A go on. Neither start carries versions,
+     * so A's fence passes as "equal versions, the later write wins" and
+     * lands after B's. The current-start record is the only thing that can
+     * keep A's late layout out of the workspace B is serving.
+     *
+     * A is held inside one of its own container calls while B runs, so
+     * every later step of A (fence, expose, lifecycle, dev server) comes
+     * after B's ready answer: the snapshot taken there is "everything after
+     * B's claim" for /workspace and for processes.
+     *
+     * Red on purpose (user, 11-24): the first attempt is not checked per
+     * step, so A still runs its fence and its dev server after B. The fix
+     * belongs inside the fence's own commit (see the handoff note), not here.
+     */
+    it.each([
+      ["between two of its staging writes", "staging"],
+      ["just before its fence", "fence"],
+      ["just before its startProcess", "startProcess"],
+    ] as const)(
+      "first attempts only: B claims the same previewId while A is %s, B is ready first, and A's late completion changes nothing in the workspace B serves and answers superseded",
+      async (_label, point) => {
+        const cleanA = await cleanStartOf(THEME);
+        const cleanB = await cleanStartOf(THEME_B);
+        expect(cleanA.stagingWrites).toBeGreaterThan(1);
+        // The one file the two Themes differ in, as each lays it out.
+        const HERO_FILE = "/workspace/src/components/Hero.tsx";
+        expect(cleanB.sources.get(HERO_FILE)).toContain('data-tab="b"');
+        expect(cleanA.sources.get(HERO_FILE)).not.toBe(
+          cleanB.sources.get(HERO_FILE),
+        );
+
+        let claimed = false;
+        let b = null as StartResult | null;
+        // No failures: neither start throws, neither is retried.
+        const s = setup({ failures: 0, guarded: false });
+        const real = withRealStartGuard(s.harness, s.time.now);
+        /**
+         * What B is serving: the workspace with its marker and manifest, and
+         * the container's processes, address and lifecycle. Deliberately not
+         * A's own /tmp files or its fence exec: a fix that refuses A inside
+         * the fence still runs that exec (see the handoff note).
+         */
+        const container = () => ({
+          workspace: new Map(
+            [...s.harness.written].filter(
+              ([file]) =>
+                file.startsWith("/workspace/") ||
+                file === THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH ||
+                file === THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+            ),
+          ),
+          commands: s.harness.commands.length,
+          exposed: s.harness.exposed.length,
+          unexposed: s.harness.unexposed.length,
+          sleepAfter: s.harness.sleepAfter.length,
+          killed: s.harness.killed.length,
+          destroyed: s.harness.destroyed,
+        });
+        let afterB = null as ReturnType<typeof container> | null;
+        let writePathsAtB = 0;
+        let deletedPathsAtB = 0;
+        const claimByB = async () => {
+          claimed = true;
+          b = await otherTab(s).start({ ...startInput(), files: THEME_B });
+          afterB = container();
+          writePathsAtB = s.harness.writePaths.length;
+          deletedPathsAtB = s.harness.deletedPaths.length;
+        };
+
+        const writeFile = s.harness.session.writeFile.bind(s.harness.session);
+        let aStagingWrites = 0;
+        override(
+          s.harness,
+          "writeFile",
+          async (...args: Parameters<PreviewServerSession["writeFile"]>) => {
+            await writeFile(...args);
+            // Before B's claim, every call is A's.
+            if (
+              claimed ||
+              !String(args[0]).startsWith(PREVIEW_START_STAGING_PREFIX)
+            ) {
+              return;
+            }
+            aStagingWrites += 1;
+            if (
+              (point === "staging" && aStagingWrites === 1) ||
+              (point === "fence" && aStagingWrites === cleanA.stagingWrites)
+            ) {
+              await claimByB();
+            }
+          },
+        );
+        const setSleepAfter = s.harness.session.setSleepAfter!.bind(
+          s.harness.session,
+        );
+        // A's last container step before its dev server (fresh container:
+        // no running server to replace, no content stamp for this runtime).
+        override(s.harness, "setSleepAfter", async (value: string | number) => {
+          await setSleepAfter(value);
+          if (point === "startProcess" && !claimed) await claimByB();
+        });
+
+        const { result: a, starts, retries } = await records(() => s.start());
+
+        expect(claimed).toBe(true);
+        const bResult = b!;
+        expect(bResult.ok).toBe(true);
+        const bAttempt = bResult.attemptId!;
+
+        // First attempts only: one start line each, no retry at all.
+        expect(retries).toEqual([]);
+        const aStarts = starts.filter((start) => start.attemptId !== bAttempt);
+        expect(aStarts).toHaveLength(1);
+        expect(a.attemptId).toBe(aStarts[0]!.attemptId);
+        expect(aStarts[0]!.retryOf).toBeUndefined();
+
+        // A answers superseded: never ready, never recovered.
+        expect(a.ok).toBe(false);
+        if (a.ok) return;
+        expect(a.stage).toBe("preview-start-superseded");
+        expect(a.recoveredFrom).toBeUndefined();
+
+        // A wrote and deleted nothing in /workspace after B's claim, and
+        // started no process.
+        expect(
+          s.harness.writePaths
+            .slice(writePathsAtB)
+            .filter((file) => file.startsWith("/workspace/")),
+        ).toEqual([]);
+        expect(
+          s.harness.deletedPaths
+            .slice(deletedPathsAtB)
+            .filter((file) => file.startsWith("/workspace/")),
+        ).toEqual([]);
+        expect(s.harness.commands.length).toBe(afterB!.commands);
+        // What B serves is as B left it: workspace, marker, manifest,
+        // processes, address, lifecycle.
+        expect(container()).toEqual(afterB);
+        // Every Theme file in /workspace holds exactly B's bytes.
+        for (const [file, bytes] of cleanB.sources) {
+          expect(s.harness.written.get(file)).toBe(bytes);
+        }
+        expect(real.record()).toMatchObject({
+          attemptId: bAttempt,
+          stopped: false,
+        });
+        expect(await real.statusOf(bAttempt)).toBe("current");
+        expect(await real.statusOf(a.attemptId!)).toBe("superseded");
+      },
+    );
   });
 });
