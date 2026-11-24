@@ -92,7 +92,11 @@ vi.mock("cloudflare:workers", () => ({
           return {
             run: () => {
               const stmt = sqlite.prepare(sql);
-              if (sql.trim().toUpperCase().startsWith("SELECT")) {
+              const upper = sql.trim().toUpperCase();
+              // A statement that returns rows (a SELECT, or a write with
+              // RETURNING, as the file DAL's inserts are) answers its rows, as
+              // D1 does; better-sqlite3's run() refuses those.
+              if (upper.startsWith("SELECT") || upper.includes("RETURNING")) {
                 const res = hasNumbered ? stmt.all(params) : stmt.all(...args);
                 return { results: res };
               }
