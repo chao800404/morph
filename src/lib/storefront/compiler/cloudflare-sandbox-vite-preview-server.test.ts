@@ -2262,6 +2262,7 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       },
       starts: events("start"),
       retries: events("start-retry"),
+      events,
     };
   };
 
@@ -4081,6 +4082,177 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       expect(starts).toHaveLength(1);
       expect(starts[0]!.outcome).toBe("failed");
       expect(s.harness.commands).toHaveLength(1);
+    });
+  });
+
+  /**
+   * Round 3, formal 1c (handoff/2026-11-24/r3-1c-second-start-attribution.md).
+   * A start that fails with "Container failed to start" has lost its
+   * connection with it. The SDK's next call opens a new connection, and
+   * opening one starts the container (`startContainerForRPC`). The
+   * fail-closed marker write after the failure was that call: it started a
+   * second container that never got a workspace or a dev server, that
+   * nobody adopted or stopped, and Morph's answer waited for it (~1.36 s).
+   *
+   * The fence ledger already refuses to trust a workspace without a proven
+   * commit, and this request's own staging went with the container, so
+   * after a container-start failure the request makes no container call at
+   * all, and logs that it skipped them. Still never retried (user, 11-24).
+   */
+  describe("after the container failed to start", () => {
+    const FAILED_TO_START =
+      "SandboxError: Container failed to start: Container failed to start";
+    /** Every session method that reaches the container (not the Durable Object's guard). */
+    const CONTAINER_CALLS = [
+      "mkdir",
+      "writeFile",
+      "readFile",
+      "listFiles",
+      "deleteFile",
+      "startProcess",
+      "exposePort",
+      "unexposePort",
+      "getExposedPorts",
+      "listProcesses",
+      "killProcess",
+      "setSleepAfter",
+      "exec",
+      "destroy",
+    ] as const;
+    type ContainerCall = (typeof CONTAINER_CALLS)[number];
+
+    /**
+     * The SDK's control connection, modelled: a container call with no live
+     * connection opens one, and opening one starts the container. The first
+     * call `failsHere` matches finds the container gone: the start its new
+     * connection makes fails with "Container failed to start", the
+     * connection is destroyed, and any later call opens another one, which
+     * starts a container again.
+     */
+    const withContainerStarts = (
+      harness: Harness,
+      failsHere: (name: ContainerCall, args: unknown[]) => boolean,
+    ) => {
+      const counted = { starts: 0, afterFailure: [] as string[] };
+      let live = false;
+      let failed = false;
+      const session = harness.session as unknown as Record<string, unknown>;
+      for (const name of CONTAINER_CALLS) {
+        const original = session[name];
+        if (typeof original !== "function") continue;
+        session[name] = async (...args: unknown[]) => {
+          if (failed) {
+            counted.afterFailure.push(name);
+          } else if (failsHere(name, args)) {
+            failed = true;
+            live = false;
+            counted.starts += 1;
+            throw new Error(FAILED_TO_START);
+          }
+          if (!live) {
+            counted.starts += 1;
+            live = true;
+          }
+          return (original as (...a: unknown[]) => unknown).apply(
+            harness.session,
+            args,
+          );
+        };
+      }
+      return counted;
+    };
+
+    /** The fence run whose request is `op`, read from the request file it was given. */
+    const fenceRun =
+      (harness: Harness, op: string) =>
+      (name: ContainerCall, args: unknown[]) => {
+        if (name !== "exec") return false;
+        const fenced = /^node (\S+) (\S+)$/.exec(String(args[0]));
+        if (!fenced) return false;
+        const request = harness.written.get(fenced[2]!);
+        return request !== undefined && JSON.parse(request).op === op;
+      };
+
+    it.each([
+      {
+        name: "on its first container call, the claim's fence run (round 3's shape)",
+        guarded: true,
+        failsHere: () => () => true,
+        starts: 1,
+      },
+      {
+        name: "on its first container call, unguarded",
+        guarded: false,
+        failsHere: () => () => true,
+        starts: 1,
+      },
+      {
+        name: "while it was staging (its own staging went with the container)",
+        guarded: true,
+        failsHere: () => (name: ContainerCall) => name === "mkdir",
+        starts: 2,
+      },
+      {
+        name: "on the fence run that lays the workspace out",
+        guarded: true,
+        failsHere: (harness: Harness) => fenceRun(harness, "start"),
+        starts: 2,
+      },
+    ])(
+      "$name: no later container call starts a container, and the skip is logged with the attemptId",
+      async ({ guarded, failsHere, starts: expectedStarts }) => {
+        const s = setup({ guarded });
+        const counted = withContainerStarts(s.harness, failsHere(s.harness));
+        const { result, starts, retries, events } = await records(() =>
+          s.start(),
+        );
+
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.stage).toBe("preview-server-start");
+        expect(result.errorMessage).toBe(FAILED_TO_START);
+        // Not retried: "Container failed to start" stays off the allow-list.
+        expect(starts).toHaveLength(1);
+        expect(starts[0]!.retry).toBeUndefined();
+        expect(retries).toEqual([]);
+        expect(s.pauses).toEqual([]);
+        // The known hazard: nothing after the failure reaches the container,
+        // so the only container starts are the ones the start itself made.
+        expect(counted.afterFailure).toEqual([]);
+        expect(counted.starts).toBe(expectedStarts);
+        expect(s.harness.commands).toEqual([]);
+        // Observable, not swallowed: one line, for this attempt.
+        expect(events("post-failure-container-call-skipped")).toEqual([
+          expect.objectContaining({
+            attemptId: starts[0]!.attemptId,
+            previewId: "preview-1",
+            reason: "container-failed-to-start",
+          }),
+        ]);
+        expect(events("fail-closed-marker")).toEqual([]);
+      },
+    );
+
+    it("another failure still marks the workspace untrusted, and logs the marker's result with the attemptId", async () => {
+      // Pins the other side: only a container-start failure skips the call.
+      const s = setup({ failures: 1, message: "EACCES: permission denied, mkdir" });
+      const { result, starts, events } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      expect(starts).toHaveLength(1);
+      expect(events("post-failure-container-call-skipped")).toEqual([]);
+      expect(events("fail-closed-marker")).toEqual([
+        expect.objectContaining({
+          attemptId: starts[0]!.attemptId,
+          previewId: "preview-1",
+          result: "marked",
+        }),
+      ]);
+      expect(
+        isDirtyWorkspaceMarker(
+          s.harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH),
+        ),
+      ).toBe(true);
     });
   });
 });
