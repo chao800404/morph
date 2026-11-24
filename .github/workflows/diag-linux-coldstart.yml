@@ -1,0 +1,234 @@
+# DRAFT for review (2026-11-24). Lives only on branch diag/linux-coldstart-4af80b4,
+# which is 4af80b4 plus this one file. Push-triggered on that branch only; ci.yml
+# runs on push to main and on pull_request, so pushing this branch with no PR
+# starts nothing else. Diagnostics only: nothing here judges Morph.
+name: Diag Linux cold start
+
+on:
+  push:
+    branches:
+      - diag/linux-coldstart-4af80b4
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diag-linux-coldstart
+  cancel-in-progress: false
+
+env:
+  # 1 for the first push (check the evidence is complete), then a second commit sets 8.
+  RUNS: "1"
+  TESTED_SHA: 4af80b418342ed078e0ee6e8785e24508f7d9d8e
+  SPEC: e2e/preview-transport.spec.ts
+  PER_RUN_S: "600"
+
+jobs:
+  coldstart:
+    name: Cold starts on GitHub-hosted Ubuntu (non-WSL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+
+      # The branch is 4af80b4 plus commits that touch only this file (the first
+      # adds it with RUNS=1, the second sets RUNS=8), so every product file is
+      # byte-for-byte the frozen candidate.
+      - name: Assert the tested tree is 4af80b4 plus this workflow only
+        run: |
+          git cat-file -e "$TESTED_SHA^{commit}" || { echo "::error::$TESTED_SHA not in the fetched history"; exit 1; }
+          git merge-base --is-ancestor "$TESTED_SHA" HEAD || { echo "::error::HEAD does not descend from $TESTED_SHA"; exit 1; }
+          changed=$(git diff --name-only "$TESTED_SHA" HEAD)
+          [ "$changed" = ".github/workflows/diag-linux-coldstart.yml" ] || { echo "::error::unexpected changes: $changed"; exit 1; }
+          echo "workflow_commit=$(git rev-parse HEAD) tested=$TESTED_SHA" | tee diag-identity.txt
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for Playwright
+        timeout-minutes: 15
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Record the environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/diag"
+          {
+            echo "runner_image=${ImageOS:-?} ${ImageVersion:-?}"
+            echo "kernel=$(uname -r)"
+            echo "lsb=$(lsb_release -ds 2>/dev/null)"
+            echo "nproc=$(nproc) mem=$(free -m | awk '/Mem:/{print $2}')MB"
+            echo "docker=$(docker version --format '{{.Server.Version}} api {{.Server.APIVersion}}')"
+            echo "containerd_snapshotter=$(docker info --format '{{.DriverStatus}}')"
+            echo "node=$(node -v) pnpm=$(pnpm -v)"
+            echo "workerd=$(node -p "require('./node_modules/workerd/package.json').version" 2>/dev/null || pnpm exec workerd --version)"
+            echo "wrangler=$(pnpm exec wrangler --version 2>/dev/null | tail -1)"
+            echo "sandbox_sdk=$(node -p "require('./node_modules/@cloudflare/sandbox/package.json').version")"
+            df -h / | tail -1
+          } | tee "$RUNNER_TEMP/diag/environment.txt"
+          cp diag-identity.txt "$RUNNER_TEMP/diag/"
+
+      - name: Write the run's environment (same as ci.yml editor-e2e-container)
+        run: |
+          cat > .env.e2e <<EOF
+          E2E_EMAIL=editor-e2e@morph.invalid
+          E2E_PASSWORD=$(openssl rand -hex 24)
+          E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+          EOF
+          cat > .dev.vars <<EOF
+          MORPH_THEME_PREVIEW_RUNTIME=start
+          MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
+          MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+          MORPH_PREVIEW_REQUEST_TRACE=1
+          EOF
+
+      # Same as ci.yml (handoff 2026-11-04): new container interfaces get no
+      # IPv6 link-local address, so a veth removal cannot fail the browser.
+      - name: Give new container interfaces no IPv6 link-local address
+        run: sudo sysctl -w net.ipv6.conf.default.addr_gen_mode=1
+
+      # Docker's own API log, so "the daemon never received a create" can be
+      # shown, not only "no create event was observed". Debug logging makes
+      # dockerd log every API call ("Calling POST /vX/containers/create?...").
+      - name: Turn on dockerd API logging
+        run: |
+          sudo mkdir -p /etc/docker
+          if [ -s /etc/docker/daemon.json ]; then cur=$(sudo cat /etc/docker/daemon.json); else cur='{}'; fi
+          echo "$cur" | jq '. + {debug: true}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+          docker info --format 'debug={{.Debug}}' | tee "$RUNNER_TEMP/diag/dockerd-debug.txt"
+          date -u +%FT%TZ > "$RUNNER_TEMP/diag/dockerd-log-since.txt"
+
+      - name: Record Docker events (outside the runs)
+        run: |
+          nohup node scripts/container-diagnostics.mjs record "$RUNNER_TEMP/container-diagnostics" > "$RUNNER_TEMP/container-diagnostics.out" 2>&1 &
+          for i in $(seq 1 50); do
+            if grep -q '"ev":"recording"' "$RUNNER_TEMP/container-diagnostics/recorder.ndjson" 2>/dev/null; then
+              echo "recorder started $(date -u +%FT%T.%3NZ)" >> "$RUNNER_TEMP/diag/evidence.txt"; exit 0
+            fi
+            sleep 0.1
+          done
+          echo "EVIDENCE_INCOMPLETE recorder did not start" >> "$RUNNER_TEMP/diag/evidence.txt"
+          echo "::warning::Container diagnostics did not start; runs go on, evidence marked incomplete."
+
+      # Same command as the local repro (container-start-repro.sh): one runner
+      # invocation per cold start, each with a fresh state dir, D1 and DO ids,
+      # removing its own containers at teardown. Each run gets its own
+      # Playwright JSON report, so a skipped or not-run test cannot read as a
+      # pass; whether it reached a container start is judged afterwards from
+      # Docker's own record.
+      - name: Cold starts
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_AUTH_DIAGNOSTICS: "1"
+        run: |
+          out="$RUNNER_TEMP/diag"
+          : > "$out/run.log"; : > "$out/windows.ndjson"
+          for i in $(seq 1 "$RUNS"); do
+            s=$(date -u +%FT%T.%3NZ)
+            echo "=== run $i start $s ===" | tee -a "$out/run.log"
+            docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}' > "$out/containers-before-$i.txt" 2>&1
+            # The image ID each container of this run actually used.
+            ( while :; do docker ps -aq | xargs -r docker inspect --format '{{.Name}}|{{.Config.Image}}|{{.Image}}' 2>/dev/null; sleep 2; done ) > "$out/containers-during-$i.txt" &
+            sampler=$!
+            rc=0
+            MORPH_E2E_REPORT_PATH="$out/report-$i.json" \
+              timeout --kill-after=30s "$PER_RUN_S" pnpm test:e2e:local-preview -- "$SPEC" --output="$out/output-$i" > "$out/run-$i.log" 2>&1 || rc=$?
+            e=$(date -u +%FT%T.%3NZ)
+            kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
+            docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}' > "$out/containers-after-$i.txt" 2>&1
+            cat "$out/run-$i.log" >> "$out/run.log"
+            echo "=== run $i end $e rc=$rc ===" | tee -a "$out/run.log"
+            printf '{"run":%d,"start":"%s","end":"%s","rc":%d}\n' "$i" "$s" "$e" "$rc" >> "$out/windows.ndjson"
+            sleep 3
+          done
+
+      - name: Stop the recorder and collect Docker's logs
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/diag"
+          rc=0; node scripts/container-diagnostics.mjs stop "$RUNNER_TEMP/container-diagnostics" "$out/docker-events" > "$out/recorder-stop.log" 2>&1 || rc=$?
+          [ "$rc" = 0 ] || echo "EVIDENCE_INCOMPLETE recorder stop/export exited $rc" >> "$out/evidence.txt"
+          cp "$RUNNER_TEMP/container-diagnostics.out" "$out/recorder.out" 2>/dev/null || true
+          [ -s "$out/docker-events/docker-events.ndjson" ] || echo "EVIDENCE_INCOMPLETE no docker-events.ndjson" >> "$out/evidence.txt"
+          since=$(cat "$out/dockerd-log-since.txt" 2>/dev/null || echo '-3h')
+          sudo journalctl -u docker --since "$since" --no-pager -o short-iso-precise > "$out/dockerd.log" 2>&1 \
+            || echo "EVIDENCE_INCOMPLETE journalctl failed" >> "$out/evidence.txt"
+          grep -q 'Calling POST' "$out/dockerd.log" || echo "EVIDENCE_INCOMPLETE dockerd API log has no calls" >> "$out/evidence.txt"
+          docker image ls --digests --no-trunc --format '{{.Repository}}:{{.Tag}} {{.Digest}} {{.ID}}' > "$out/images-at-end.txt" 2>&1 || true
+
+      # Per run: did the test really run (its report), did it reach a cold
+      # start (Docker's create/start of the sidecar and the app container in
+      # that run's window), which images those containers used, and whether
+      # the previous teardown left containers behind. Runs that did not reach
+      # a start are listed apart and never count toward "n of N not reproduced".
+      - name: Judge each run's evidence
+        if: always()
+        run: |
+          cat > "$RUNNER_TEMP/judge.cjs" <<'JS'
+          const fs = require("fs"), path = require("path");
+          const dir = process.argv[2];
+          const read = (f) => { try { return fs.readFileSync(path.join(dir, f), "utf8"); } catch { return ""; } };
+          const lines = (s) => s.split("\n").filter(Boolean);
+          const windows = lines(read("windows.ndjson")).map((l) => JSON.parse(l));
+          const events = lines(read("docker-events/docker-events.ndjson")).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+          const api = lines(read("dockerd.log"));
+          const evidence = lines(read("evidence.txt"));
+          const runs = windows.map((w) => {
+            const ev = events.filter((e) => e.source === "docker" && e.type === "container" && e.t >= w.start && e.t <= w.end);
+            const n = (role, action) => ev.filter((e) => e.role === role && e.action === action).length;
+            let stats = null;
+            try { stats = JSON.parse(read(`report-${w.run}.json`)).stats ?? null; } catch {}
+            const ran = stats ? (stats.expected ?? 0) + (stats.unexpected ?? 0) + (stats.flaky ?? 0) : null;
+            const sec = (s) => s.slice(0, 19);
+            const r = {
+              run: w.run, rc: w.rc, test_ran: ran, skipped: stats ? (stats.skipped ?? 0) : null,
+              proxy_create: n("preview-proxy", "create"), proxy_start: n("preview-proxy", "start"),
+              app_create: n("preview", "create"), app_start: n("preview", "start"),
+              dockerd_create_calls: api.filter((l) => /Calling POST \S*\/containers\/create/.test(l) && sec(l) >= sec(w.start) && sec(l) <= sec(w.end)).length,
+              images: [...new Set(ev.filter((e) => e.action === "create").map((e) => `${e.role}=${e.image}`))],
+              image_ids: [...new Set(lines(read(`containers-during-${w.run}.txt`)).map((l) => l.replace(/^\//, "").replace(/-PreviewSandbox-[0-9a-f]{58}/, "-PreviewSandbox-…")))],
+              leftover_before: lines(read(`containers-before-${w.run}.txt`)).length,
+              failed_to_start_lines: (read(`run-${w.run}.log`).match(/Container failed to start/g) || []).length,
+            };
+            r.reached_cold_start = r.proxy_create > 0 && ran !== null && ran > 0 && r.skipped === 0;
+            return r;
+          });
+          const summary = {
+            evidence_complete: !evidence.some((l) => l.startsWith("EVIDENCE_INCOMPLETE")), evidence,
+            runs: runs.length,
+            reached_cold_start: runs.filter((r) => r.reached_cold_start).length,
+            with_failed_to_start: runs.filter((r) => r.failed_to_start_lines > 0).length,
+            not_reached: runs.filter((r) => !r.reached_cold_start).map((r) => r.run),
+          };
+          fs.writeFileSync(path.join(dir, "judgement.json"), JSON.stringify({ summary, runs }, null, 2));
+          console.log(JSON.stringify(summary, null, 2));
+          for (const r of runs) console.log(JSON.stringify(r));
+          JS
+          node "$RUNNER_TEMP/judge.cjs" "$RUNNER_TEMP/diag"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-linux-coldstart-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/diag/
+          retention-days: 14
+          if-no-files-found: error
