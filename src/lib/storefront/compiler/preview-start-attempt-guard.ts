@@ -33,45 +33,68 @@ type PreviewStartAttemptRecord = Readonly<{
   attemptId: string | null;
   deadlineAt: number | null;
   stopped: boolean;
+  /**
+   * The last number issued (workspace ownership, user 2026-11-24). Every
+   * claim takes the next one and returns it; the start carries it to the
+   * container's fence ledger, which refuses any claim lower than the one
+   * it has registered. A stop takes one too, so a start begun before the
+   * stop is lower than any start after it. The retry's hand-over keeps it:
+   * the retry is the same request.
+   */
+  seq: number;
 }>;
 
-const NONE: PreviewStartAttemptRecord = {
-  attemptId: null,
-  deadlineAt: null,
-  stopped: false,
-};
+/** A number read back from storage; anything else counts from zero. */
+function storedSeq(record: Record<string, unknown>): number {
+  return Number.isSafeInteger(record.seq) && (record.seq as number) >= 0
+    ? (record.seq as number)
+    : 0;
+}
 
-/** An unreadable record names no current start. */
+/** An unreadable record names no current start; its number still counts. */
 function parseRecord(value: unknown): PreviewStartAttemptRecord {
-  if (!value || typeof value !== "object") return NONE;
+  if (!value || typeof value !== "object") {
+    return { attemptId: null, deadlineAt: null, stopped: false, seq: 0 };
+  }
   const record = value as Record<string, unknown>;
+  const seq = storedSeq(record);
   if (record.stopped === true) {
-    return { attemptId: null, deadlineAt: null, stopped: true };
+    return { attemptId: null, deadlineAt: null, stopped: true, seq };
   }
   if (
     typeof record.attemptId !== "string" ||
     typeof record.deadlineAt !== "number" ||
     !Number.isFinite(record.deadlineAt)
   ) {
-    return NONE;
+    return { attemptId: null, deadlineAt: null, stopped: false, seq };
   }
   return {
     attemptId: record.attemptId,
     deadlineAt: record.deadlineAt,
     stopped: false,
+    seq,
   };
 }
 
-/** A new start request: it is the current one from now on. */
+/**
+ * A new start request: it is the current one from now on. Returns the
+ * number it was issued, higher than any issued before.
+ */
 export async function claimPreviewStartAttempt(
   storage: PreviewStartAttemptStorage,
   input: Readonly<{ attemptId: string; deadlineAt: number }>,
-): Promise<void> {
+): Promise<{ seq: number }> {
+  const previous = parseRecord(
+    await storage.get(PREVIEW_START_ATTEMPT_STORAGE_KEY),
+  );
+  const seq = previous.seq + 1;
   await storage.put(PREVIEW_START_ATTEMPT_STORAGE_KEY, {
     attemptId: input.attemptId,
     deadlineAt: input.deadlineAt,
     stopped: false,
+    seq,
   } satisfies PreviewStartAttemptRecord);
+  return { seq };
 }
 
 /**
@@ -102,13 +125,21 @@ export async function checkPreviewStartAttempt(
   return "current";
 }
 
-/** The preview was stopped: no start is current until a new one claims it. */
+/**
+ * The preview was stopped: no start is current until a new one claims it,
+ * and the stop takes a number, so every later claim outranks every start
+ * begun before it.
+ */
 export async function endPreviewStartAttempts(
   storage: PreviewStartAttemptStorage,
 ): Promise<void> {
+  const previous = parseRecord(
+    await storage.get(PREVIEW_START_ATTEMPT_STORAGE_KEY),
+  );
   await storage.put(PREVIEW_START_ATTEMPT_STORAGE_KEY, {
     attemptId: null,
     deadlineAt: null,
     stopped: true,
+    seq: previous.seq + 1,
   } satisfies PreviewStartAttemptRecord);
 }

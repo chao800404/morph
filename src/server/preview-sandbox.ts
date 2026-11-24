@@ -163,8 +163,8 @@ export class PreviewSandbox extends Sandbox {
   async claimPreviewStart(input: {
     attemptId: string;
     deadlineAt: number;
-  }): Promise<void> {
-    await claimPreviewStartAttempt(this.ctx.storage, input);
+  }): Promise<{ seq: number }> {
+    return claimPreviewStartAttempt(this.ctx.storage, input);
   }
 
   /**
