@@ -20,6 +20,8 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import type { AstroDesignNotice } from "@/lib/storefront/editor/astro-design-focus";
+import { EditorAstroDesignNotice } from "./editor-astro-design-notice";
 import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
@@ -179,6 +181,12 @@ type EditorAssistantPanelProps = {
   onTabChange?: (tab: EditorAssistantPanelTab) => void;
   /** See the Inspector's prop of the same name. */
   selectionSourceCurrent?: boolean;
+  /**
+   * The Astro Design status of the section selected on the canvas, shown at
+   * the top of the Content and Styles tabs (lead decision Q2). Null for
+   * nothing to say, and always null on TanStack Start.
+   */
+  astroDesignNotice?: AstroDesignNotice | null;
 };
 
 export type EditorAssistantPanelTab =
@@ -318,6 +326,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   documentPresentationPausedReason = null,
   inspectorDocumentKey,
   selectionSourceCurrent = false,
+  astroDesignNotice = null,
 }: EditorAssistantPanelProps) {
   // Seeded from the value the server already resolved, so both renders agree.
   const [tab, setTab] = useState<EditorAssistantPanelTab>(() =>
@@ -652,6 +661,12 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 "Preview syncing. Content writes are paused until every section confirms its current preview was applied."}
             </p>
           ) : null}
+          {astroDesignNotice ? (
+            <EditorAstroDesignNotice
+              notice={astroDesignNotice}
+              className="mx-3 mt-3 w-auto"
+            />
+          ) : null}
           {inspectorSection && !(contentRefused && tab === "content") ? (
             <InspectorCodeDefaultContext.Provider
               value={
@@ -713,7 +728,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 selectionSourceCurrent={selectionSourceCurrent}
               />
             </InspectorCodeDefaultContext.Provider>
-          ) : (
+          ) : astroDesignNotice ? null : (
             <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">
               <div className="flex size-10 items-center justify-center rounded-lg border bg-background shadow-xs">
                 <Layers3 className="size-4 text-muted-foreground" />
