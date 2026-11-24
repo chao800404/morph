@@ -26,6 +26,7 @@ import {
   DOMAINS,
   RELEASES,
   latestRelease,
+  observePublishRequests,
   openEditor,
   publishShowingRelease,
   servedRelease,
@@ -269,6 +270,13 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
   /** A4's route Documents' draft revisions right after seeding. */
   let codeRevisions: Record<string, string> = {};
   let contentTsBefore: string | null = null;
+  /**
+   * #436: the layout scope each publish request carried, as the browser sent
+   * it, keyed by the release that publish created.
+   */
+  const sentLayoutScope = new Map<string, string | null>();
+  /** The same, in publish order with each round's step. */
+  const sentLayoutScopes: Array<{ step: string; where: string; releaseId: string; sent: string | null }> = [];
 
   const queryD1 = (sql: string, ...params: unknown[]) =>
     queryLifecycleD1(STATE_DIR!, sql, ...params) as Array<Record<string, unknown>>;
@@ -437,6 +445,16 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
   };
   const routeRow = (testCase: BasCase) => templateRow({ routePath: testCase.routePath });
   const layoutRow = () => templateRow("layout");
+  /** The Theme's home Document (`index`, no route path). */
+  const homeTemplateId = () => {
+    const rows = queryD1(
+      `SELECT id FROM storefront_theme_templates
+        WHERE theme_id = ?1 AND type = 'index' AND route_path IS NULL AND deleted_at IS NULL`,
+      scope!.themeId,
+    );
+    expect(rows, "one home template").toHaveLength(1);
+    return String(rows[0]!.id);
+  };
 
   /** The layout revision a release's own content publication pins. */
   const pinnedLayout = (releaseId: string) =>
@@ -686,11 +704,51 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     for (const [index, testCase] of pages.entries()) {
       const activeBefore = evidence!.activeRelease();
       await openEditor(page, testCase ? editorRouteUrl(testCase.routePath) : EDITOR_PATH!);
-      await (await publishShowingRelease(page)).close();
-      const releaseId = await latestRelease(page, scope!);
       const where = testCase ? testCase.routePath : HOME;
+      const templateId = testCase ? routeRow(testCase).id : homeTemplateId();
+      const layoutBefore = layoutRow();
+      // #436: the request the browser actually sent, observed only.
+      const requests = await observePublishRequests(page);
+      try {
+        await (await publishShowingRelease(page)).close();
+      } finally {
+        requests.stop();
+      }
+      const releaseId = await latestRelease(page, scope!);
       expect(releaseId, `publishing ${where} creates a release`).not.toBe(previous);
       expect((await publishedState()).active, `publishing ${where} activates its release`).toBe(releaseId);
+      const sent = requests.sent();
+      expect(
+        sent.map((request) => request.templateId),
+        `publishing ${where} sent one publish request, for its own page`,
+      ).toEqual([templateId]);
+      expect(sent[0]!.statesLayoutScope, `publishing ${where} states its layout scope`).toBe(true);
+      const sentScope = sent[0]!.expectedSharedLayoutRevisionId as string | null;
+      // What the release that went live holds for the layout, read back.
+      const layoutAfter = layoutRow();
+      const layoutPinned = pinnedLayout(releaseId);
+      if (layoutBefore.draft !== null && layoutBefore.draft === layoutBefore.published) {
+        // Untouched layout: "this page only", and the live release's layout
+        // is carried, whatever the row names (after a rollback, not the same).
+        expect(sentScope, `publishing ${where} with an untouched layout sends "this page only"`).toBeNull();
+        expect(layoutAfter, `publishing ${where} leaves the untouched layout row alone`).toEqual(layoutBefore);
+        expect(previous, `publishing ${where}: an untouched layout was published, so a release was live`).toBeTruthy();
+        expect(layoutPinned, `publishing ${where} keeps the live release's layout revision`).toEqual(
+          pinnedLayout(previous!),
+        );
+      } else {
+        // Pending (or first) layout: the scope names the revision this
+        // release seals, and the layout row is published at it.
+        expect(sentScope, `publishing ${where} with a pending layout names a layout revision`).toEqual(
+          expect.any(String),
+        );
+        expect(layoutAfter.published, `publishing ${where} publishes the layout at the confirmed revision`).toBe(
+          sentScope,
+        );
+        expect(layoutPinned, `the release from ${where} pins the confirmed layout revision`).toEqual([sentScope]);
+      }
+      sentLayoutScope.set(releaseId, sentScope);
+      sentLayoutScopes.push({ step, where, releaseId, sent: sentScope });
       if (testCase) {
         const draft = queryD1(
           `SELECT draft_revision_id AS id FROM storefront_theme_templates
@@ -715,6 +773,12 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
         // No ETag is read here: the public site is read once the round's last
         // release is active, on that step's own row.
         detail: {
+          publishScope: {
+            sentExpectedSharedLayoutRevisionId: sentScope,
+            layoutBefore,
+            layoutAfter,
+            layoutPinned,
+          },
           served:
             index < pages.length - 1
               ? `never served: an intermediate release of ${step}; the next publish replaced it before any public read`
@@ -865,6 +929,13 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
     });
     expect(pinnedLayout(release1), "release 1 pins the seeded layout").toEqual([layout0.draft]);
     expect(releaseLayout(release1)).toEqual(L1.seed);
+    // #436, as the browser sent it: the first publish (home) named the pending
+    // seeded layout; every later page of the round found it published and
+    // sent "this page only".
+    expect(
+      sentLayoutScopes.filter((request) => request.step === "R1/P1-publish").map((request) => request.sent),
+      "release 1's publishes sent the seeded layout first, then this page only",
+    ).toEqual([layout0.draft, ...ALL.map(() => null)]);
 
     const served = await serveActiveRelease(valueOf(values.p1, P1), release1, origin);
     expect(served.releaseId).toBe(release1);
@@ -1106,6 +1177,11 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
       [`template:${layoutBefore.id}`]: layoutBefore.draft,
     });
     expect(pinnedLayout(release4), "release 4 pins the layout draft").toEqual([layoutBefore.draft]);
+    // #436, as the browser sent it: the publish request named the pending
+    // layout draft, the one release 4 pins and the row now publishes.
+    expect(sentLayoutScope.get(release4), "S-b's publish request named the pending layout draft").toBe(
+      layoutBefore.draft,
+    );
     expect(pinnedRevisions(release4, P1.routePath), "release 4 pins p1's published revision").toEqual([
       p1Before.published,
     ]);
@@ -1580,6 +1656,11 @@ test.describe("B1 non-home route Documents publish and rollback (A3, A4)", { tag
       [`template:${p1After.id}`]: p1After.draft,
     });
     expect(pinnedLayout(release6), "release 6 keeps release 1's layout, not release 4's").toEqual(layout1);
+    // #436, as the browser sent it: after the Build Preview the publish
+    // request still said "this page only" (null), not the layout's own
+    // revision (release 4's, which the server would refuse or seal).
+    expect(sentLayoutScope.has(release6), "R-c's publish request was observed").toBe(true);
+    expect(sentLayoutScope.get(release6), "R-c's publish request sent this page only").toBeNull();
     const values6: CaseValues = { ...values5!, p1: draftsLast!.p1! };
     expect(releaseValues(release6)).toEqual(values6);
     expect(releaseLayout(release6)).toEqual(L1.seed);

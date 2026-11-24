@@ -8294,6 +8294,20 @@ export default function Hero() { return <section />; }`,
       const held = templateRow("tpl-shell");
       saveDraft("tpl-shell", "L4");
 
+      // The release list and the live pointer, named on their own: a
+      // TEMPLATE_DRAFT_GENERATION_MISMATCH answer is acceptable here only
+      // because no release was created or activated (2026-11-24 decision).
+      const releaseIds = () =>
+        (
+          sqlite
+            .prepare("SELECT id FROM storefront_releases ORDER BY id")
+            .all() as { id: string }[]
+        ).map((row) => row.id);
+      const releasesBefore = releaseIds();
+      const liveBefore = active();
+      expect(releasesBefore, "the setup published one release").toContain(
+        liveBefore.releaseId,
+      );
       const before = publishWrites();
       await expect(
         storefrontThemeDal.prepareInitialTemplateDraft({
@@ -8307,6 +8321,12 @@ export default function Hero() { return <section />; }`,
         }),
       ).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
       expect(publishWrites()).toEqual(before);
+      expect(releaseIds(), "the refused preparation created no release").toEqual(
+        releasesBefore,
+      );
+      expect(active(), "the refused preparation activated nothing").toEqual(
+        liveBefore,
+      );
 
       await expect(
         publishOnly(
@@ -8315,6 +8335,12 @@ export default function Hero() { return <section />; }`,
         ),
       ).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
       expect(publishWrites()).toEqual(before);
+      expect(releaseIds(), "the refused publish created no release").toEqual(
+        releasesBefore,
+      );
+      expect(active(), "the refused publish activated nothing").toEqual(
+        liveBefore,
+      );
       expect(templateRow("tpl-shell")).toMatchObject({
         draftRevisionId: "rev-L4",
         publishedRevisionId: "rev-L1",

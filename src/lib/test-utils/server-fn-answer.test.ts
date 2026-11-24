@@ -1,9 +1,10 @@
 // @vitest-environment node
 import { defaultSerovalPlugins } from "@tanstack/router-core";
-import { toCrossJSONAsync, toCrossJSONStream } from "seroval";
+import { toCrossJSONAsync, toCrossJSONStream, toJSONAsync } from "seroval";
 import { describe, expect, it } from "vitest";
 import {
   assertServerFnSuccess,
+  decodeServerFnRequestData,
   decodeServerFnResult,
 } from "./server-fn-answer";
 
@@ -157,5 +158,44 @@ describe("assertServerFnSuccess", () => {
     const objectMessage = thrown(() => assertServerFnSuccess(objectError));
     expect(objectMessage).toMatch(/error=\(withheld object\)/);
     expect(objectMessage).not.toContain(TOKEN);
+  });
+});
+
+describe("decodeServerFnRequestData", () => {
+  /** A call's body as start-client-core's `serverFnFetcher` posts it. */
+  const request = async (payload: unknown) =>
+    JSON.stringify(await toJSONAsync(payload, { plugins }));
+
+  it("returns the data sent, null and an absent field told apart", async () => {
+    const data = {
+      templateId: "tpl-home",
+      expectedDraftGeneration: 3,
+      expectedSharedLayoutRevisionId: null,
+      note: undefined,
+    };
+    const body = await request({ data });
+    // The text check a reader might write does not see the null.
+    expect(body).not.toContain('"expectedSharedLayoutRevisionId":null');
+    const decoded = decodeServerFnRequestData(body) as Record<string, unknown>;
+    expect(decoded).toEqual(data);
+    expect(decoded.expectedSharedLayoutRevisionId).toBeNull();
+    expect("expectedSharedLayoutRevisionId" in decoded).toBe(true);
+    expect(
+      decodeServerFnRequestData(
+        await request({ data: { expectedSharedLayoutRevisionId: "rev-1" } }),
+      ),
+    ).toEqual({ expectedSharedLayoutRevisionId: "rev-1" });
+  });
+
+  it("fails on a body that is not decodable or has no data", async () => {
+    const message = thrown(() =>
+      decodeServerFnRequestData(`{"token":"${TOKEN}" oops`),
+    );
+    expect(message).toMatch(/not decodable .*body length \d+/);
+    expect(message).not.toContain(TOKEN);
+    const noData = await request({ context: { token: TOKEN } });
+    const missing = thrown(() => decodeServerFnRequestData(noData));
+    expect(missing).toMatch(/no "data" payload \(decoded object\)/);
+    expect(missing).not.toContain(TOKEN);
   });
 });

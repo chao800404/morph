@@ -18,6 +18,7 @@ import {
   editorContext,
   expectHydrated,
   latestRelease,
+  observePublishRequests,
   openEditor,
   publishShowingRelease,
   savedField,
@@ -109,6 +110,33 @@ test.describe("M1 container lifecycle acceptance", () => {
 
   async function queryD1(sql: string, ...params: unknown[]) {
     return queryLifecycleD1(STATE_DIR!, sql, ...params);
+  }
+
+  /** The Theme's shared layout row (#436: what a publish's scope is about). */
+  async function layoutRowOf(themeId: string) {
+    const rows = (await queryD1(
+      `SELECT id, draft_revision_id AS draft, published_revision_id AS published
+         FROM storefront_theme_templates
+        WHERE theme_id = ?1 AND type = 'layout' AND deleted_at IS NULL`,
+      themeId,
+    )) as Array<{ id: string; draft: string | null; published: string | null }>;
+    expect(rows, "the Theme has one layout template").toHaveLength(1);
+    return rows[0]!;
+  }
+
+  /** The layout revision a release's own content publication pins. */
+  async function pinnedLayoutOf(releaseId: string, themeId: string) {
+    const rows = (await queryD1(
+      `SELECT i.revision_id AS id
+         FROM storefront_releases rel
+         JOIN storefront_content_publication_items i
+           ON i.publication_id = rel.content_publication_id AND i.item_type = 'template' AND i.deleted_at IS NULL
+         JOIN storefront_theme_templates t ON t.id = i.content_id
+        WHERE rel.id = ?1 AND t.theme_id = ?2 AND t.type = 'layout'`,
+      releaseId,
+      themeId,
+    )) as Array<{ id: string }>;
+    return rows.map((row) => String(row.id));
   }
 
   async function queryLifecycleSnapshot(
@@ -434,7 +462,18 @@ test.describe("M1 container lifecycle acceptance", () => {
     // =========================================================================
     // 2. Container Native Build & Publish -> Release 1
     // =========================================================================
-    const shown1 = await publishShowingRelease(page);
+    // #436 scenario 3 (first publish): the Starter's layout has never been
+    // drafted or published, so this publish writes its first draft and seals
+    // it. The request the browser sends is observed only, never changed.
+    const layoutBefore1 = await layoutRowOf(scope!.themeId);
+    expect(
+      { draft: layoutBefore1.draft, published: layoutBefore1.published },
+      "before the first publish the Starter's layout has no draft and no published revision",
+    ).toEqual({ draft: null, published: null });
+    const publishRequests1 = await observePublishRequests(page);
+    const shown1 = await publishShowingRelease(page).finally(() =>
+      publishRequests1.stop(),
+    );
     await shown1.close();
 
     const release1 = await latestRelease(page, scope!);
@@ -485,6 +524,37 @@ test.describe("M1 container lifecycle acceptance", () => {
     const stateAfterPub1 = await publishedState();
     expect(stateAfterPub1.active).toBe(release1);
     expect(stateAfterPub1.releases).toBe(relCount0 + 1);
+
+    // #436 scenario 3, read back: the scope the browser sent names the
+    // layout's first draft, which the layout row now publishes and the
+    // active release 1 pins.
+    const sent1 = publishRequests1.sent();
+    expect(
+      sent1.map((request) => request.templateId),
+      "release 1: one publish request, for the home page",
+    ).toEqual([home0.id]);
+    expect(
+      sent1[0]!.statesLayoutScope,
+      "release 1's publish request states its layout scope",
+    ).toBe(true);
+    const layoutAfter1 = await layoutRowOf(scope!.themeId);
+    expect(layoutAfter1.id).toBe(layoutBefore1.id);
+    expect(
+      layoutAfter1.published,
+      "the first publish published the layout",
+    ).toEqual(expect.any(String));
+    expect(
+      layoutAfter1.draft,
+      "the layout is published at its first draft",
+    ).toBe(layoutAfter1.published);
+    expect(
+      sent1[0]!.expectedSharedLayoutRevisionId,
+      "the first publish request named the layout draft it sealed",
+    ).toBe(layoutAfter1.published);
+    expect(
+      await pinnedLayoutOf(release1, scope!.themeId),
+      "release 1 pins the confirmed layout revision",
+    ).toEqual([layoutAfter1.published]);
 
     // =========================================================================
     // 3. Storefront Verification & Draft B Edit
@@ -757,7 +827,16 @@ test.describe("M1 container lifecycle acceptance", () => {
     // =========================================================================
     // 4. Container Native Build & Publish -> Release 2
     // =========================================================================
-    const shown2 = await publishShowingRelease(page);
+    // #436: the layout is untouched since release 1, so this publish is
+    // "this page only" and release 1's layout revision is carried.
+    const layoutBefore2 = await layoutRowOf(scope!.themeId);
+    expect(layoutBefore2, "the layout is untouched since release 1").toEqual(
+      layoutAfter1,
+    );
+    const publishRequests2 = await observePublishRequests(page);
+    const shown2 = await publishShowingRelease(page).finally(() =>
+      publishRequests2.stop(),
+    );
     await shown2.close();
 
     const release2 = await latestRelease(page, scope!);
@@ -802,6 +881,31 @@ test.describe("M1 container lifecycle acceptance", () => {
     const stateAfterPub2 = await publishedState();
     expect(stateAfterPub2.active).toBe(release2);
     expect(stateAfterPub2.releases).toBe(relCount0 + 2);
+
+    // #436, read back: the request sent "this page only" (null, stated, not
+    // left out), the layout row is as it was, and the active release 2 pins
+    // release 1's layout revision.
+    const sent2 = publishRequests2.sent();
+    expect(
+      sent2.map((request) => request.templateId),
+      "release 2: one publish request, for the home page",
+    ).toEqual([home0.id]);
+    expect(
+      sent2[0]!.statesLayoutScope,
+      "release 2's publish request states its layout scope",
+    ).toBe(true);
+    expect(
+      sent2[0]!.expectedSharedLayoutRevisionId,
+      "release 2's publish request sent this page only",
+    ).toBeNull();
+    expect(
+      await layoutRowOf(scope!.themeId),
+      "publishing the home page leaves the untouched layout row alone",
+    ).toEqual(layoutBefore2);
+    expect(
+      await pinnedLayoutOf(release2, scope!.themeId),
+      "release 2 keeps release 1's layout revision",
+    ).toEqual([layoutAfter1.published]);
 
     // Switch 8799 harness to Release 2
     await serveActiveRelease(contentB, release2, origin);

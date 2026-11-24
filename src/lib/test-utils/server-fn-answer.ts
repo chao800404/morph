@@ -1,5 +1,5 @@
 import { defaultSerovalPlugins } from "@tanstack/router-core";
-import { fromCrossJSON } from "seroval";
+import { fromCrossJSON, fromJSON } from "seroval";
 
 /**
  * Reading what a server function answered, for tests that only see the wire.
@@ -116,4 +116,41 @@ export function assertServerFnSuccess(body: string): ServerFnSuccess {
     );
   }
   return result as ServerFnSuccess;
+}
+
+const REQUEST_PREFIX = "server function request";
+
+/**
+ * The `data` a server function call sent, decoded from its request body.
+ *
+ * start-client-core's `serverFnFetcher` posts
+ * `JSON.stringify(await toJSONAsync({ data, context? }))`: seroval's JSON
+ * tree, not the cross-JSON an answer uses, so a field such as
+ * `expectedSharedLayoutRevisionId: null` is a constant node, never the text
+ * `"expectedSharedLayoutRevisionId":null`. A body that is not decodable or
+ * has no `data` throws, as `decodeServerFnResult` does, and the failure
+ * never repeats the body.
+ */
+export function decodeServerFnRequestData(body: string): unknown {
+  let decoded: unknown;
+  try {
+    decoded = fromJSON(JSON.parse(body), {
+      plugins: [...defaultSerovalPlugins],
+    });
+  } catch (cause) {
+    const name = cause instanceof Error ? cause.name : kindOf(cause);
+    throw new Error(
+      `${REQUEST_PREFIX} is not decodable seroval JSON (${name}, body length ${body.length})`,
+    );
+  }
+  if (
+    typeof decoded !== "object" ||
+    decoded === null ||
+    !Object.prototype.hasOwnProperty.call(decoded, "data")
+  ) {
+    throw new Error(
+      `${REQUEST_PREFIX} has no "data" payload (decoded ${kindOf(decoded)})`,
+    );
+  }
+  return (decoded as { data: unknown }).data;
 }
