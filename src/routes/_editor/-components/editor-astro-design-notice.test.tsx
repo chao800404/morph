@@ -96,7 +96,7 @@ describe("EditorAstroDesignStatusBar", () => {
 });
 
 describe("EditorAstroDesignNotice", () => {
-  it("names the section and says what to do when its basis is unconfirmed", () => {
+  it("says what is wrong and what to do when its basis is unconfirmed, without naming the section", () => {
     render(
       <EditorAstroDesignNotice
         notice={{
@@ -111,8 +111,15 @@ describe("EditorAstroDesignNotice", () => {
     const status = screen.getByRole("status");
     expect(status.getAttribute("data-astro-design-notice")).toBe("unconfirmed");
     expect(status.getAttribute("aria-live")).toBe("polite");
-    expect(status.textContent).toContain("hero");
+    expect(status.textContent).toContain(
+      "This section can't be edited in Design right now.",
+    );
     expect(status.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+    // The Inspector is already scoped to the selected section (dce31fa made
+    // the wording plain), so the section id is not repeated here. The status
+    // bar, which sits outside any section context, does name it.
+    expect(status.textContent).not.toContain("hero");
+    expect(status.textContent).not.toContain("Section:");
   });
 
   it("says the selection could not be restored when there is no section any more", () => {
