@@ -15,6 +15,7 @@ import {
 import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
 import { storefrontReleaseDal } from "./storefront-release.dal";
 import { storefrontPageDal } from "./storefront-page.dal";
+import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
 import { describeContentChanges } from "../editor/unpublished-changes";
 import {
   applyThemeManifestMigration,
@@ -8345,6 +8346,312 @@ export default function Hero() { return <section />; }`,
         draftRevisionId: "rev-L4",
         publishedRevisionId: "rev-L1",
       });
+    });
+  });
+});
+
+describe("switching a Theme's preview away from start (option B)", () => {
+  // The apply-then-switch order. A Theme that holds a module only the full
+  // Start preview can run must not be switched to client, nor cleared to the
+  // deployment's default (which is no confirmation of start). That is judged
+  // on the stored files, not on the Starter version the Theme records: the
+  // restore command puts a Start-only module back without moving it. The
+  // check is bound to the source generation it read, so a file written after
+  // it cannot slip past; the switch itself never takes or moves the
+  // generation, so an author's save is never lost to it.
+  //
+  // Expected, read from the code (not run): RED for the refusals, the race
+  // and the code-edit conflict (setPreviewRuntime reads no file today); the
+  // other cases pass.
+  const CONTENT = "src/morph/content.ts";
+  const START_ONLY = `import { createServerFn } from "@tanstack/react-start";
+export const readPage = createServerFn({ method: "GET" }).handler(async () => null);
+`;
+  const CLIENT_SAFE = `export const content = (slot: string) => ({ slot });
+`;
+
+  const setRuntime = (runtime: string | null) =>
+    sqlite
+      .prepare(
+        "UPDATE storefront_themes SET preview_runtime = ? WHERE id = 'theme-a'",
+      )
+      .run(runtime);
+  const setStarterVersion = (version: number) =>
+    sqlite
+      .prepare("UPDATE storefront_themes SET metadata = ? WHERE id = 'theme-a'")
+      .run(JSON.stringify({ starterTemplateVersion: version }));
+  const insertFile = (path: string, content: string) =>
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_files (id, storefront_id, theme_id, path, content, mime_type, version, created_at, updated_at)
+         VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'text/typescript', 1, 'now', 'now')`,
+      )
+      .run(crypto.randomUUID(), path, content);
+  const themeRow = () =>
+    sqlite
+      .prepare(
+        "SELECT preview_runtime, source_generation, metadata, updated_at FROM storefront_themes WHERE id = 'theme-a'",
+      )
+      .get() as {
+      preview_runtime: string | null;
+      source_generation: number;
+      metadata: string | null;
+      updated_at: string;
+    };
+  const files = () =>
+    sqlite
+      .prepare(
+        "SELECT path, content, version FROM storefront_theme_files WHERE theme_id = 'theme-a' AND deleted_at IS NULL ORDER BY path",
+      )
+      .all();
+  const switchTo = (
+    previewRuntime: "client" | "start" | null,
+    expectedPreviewRuntime: "client" | "start" | null,
+  ) =>
+    storefrontThemeDal.setPreviewRuntime({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      previewRuntime,
+      expectedPreviewRuntime,
+    });
+  /** A Starter write held to start, as the restore and the upgrade make it. */
+  const starterWrite = (expectedSourceGeneration: number) =>
+    storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [{ path: CONTENT, content: START_ONLY, expectMissing: true }],
+      { expectedSourceGeneration, requirePreviewRuntime: "start" },
+    );
+  /**
+   * Runs `inject` once, right after the switch's check has read the files
+   * and their generation, and before it writes.
+   */
+  function afterSwitchReadsFiles(
+    inject: (snapshot: { sourceGeneration: number }) => Promise<void>,
+  ) {
+    const read = storefrontThemeFileDal.getSourceSnapshot.bind(
+      storefrontThemeFileDal,
+    );
+    const spy = vi
+      .spyOn(storefrontThemeFileDal, "getSourceSnapshot")
+      .mockImplementationOnce(async (...args) => {
+        const snapshot = await read(...args);
+        if (!snapshot) throw new Error("the switch read no snapshot");
+        await inject(snapshot);
+        return snapshot;
+      });
+    spies.push(spy);
+    return spy;
+  }
+  /** A Start-only module on a Theme that does not record start. */
+  const incompatible = () => {
+    const runtime = themeRow().preview_runtime;
+    const startOnly = (files() as Array<{ content: string }>).some(
+      (file) => file.content === START_ONLY,
+    );
+    return startOnly && runtime !== "start";
+  };
+
+  const spies: Array<{ mockRestore(): void }> = [];
+  afterEach(() => {
+    for (const spy of spies.splice(0)) spy.mockRestore();
+  });
+
+  it.each(["client", null] as const)(
+    "refuses switching a start Theme to %s while it holds a Start-only module, and writes nothing",
+    async (target) => {
+      setRuntime("start");
+      insertFile(CONTENT, START_ONLY);
+      const before = themeRow();
+
+      await expect(switchTo(target, "start")).resolves.toEqual({
+        ok: false,
+        error: "PREVIEW_RUNTIME_START_REQUIRED",
+        paths: [CONTENT],
+      });
+
+      expect(themeRow()).toEqual(before);
+    },
+  );
+
+  it("judges the stored files, not the Starter version the Theme records", async () => {
+    // Below the first Starter that needs Start, with the module restored.
+    setStarterVersion(31);
+    setRuntime("start");
+    insertFile(CONTENT, START_ONLY);
+    await expect(switchTo("client", "start")).resolves.toMatchObject({
+      ok: false,
+      error: "PREVIEW_RUNTIME_START_REQUIRED",
+    });
+
+    // At or past it, with the author's own module that needs no Start.
+    sqlite.exec("DELETE FROM storefront_theme_files");
+    insertFile(CONTENT, CLIENT_SAFE);
+    setStarterVersion(32);
+    await expect(switchTo("client", "start")).resolves.toEqual({
+      ok: true,
+      previewRuntime: "client",
+    });
+    expect(themeRow().preview_runtime).toBe("client");
+  });
+
+  it("switches to client and leaves the source generation where it was when nothing needs Start", async () => {
+    setRuntime("start");
+    insertFile(CONTENT, CLIENT_SAFE);
+    const before = themeRow();
+
+    await expect(switchTo("client", "start")).resolves.toEqual({
+      ok: true,
+      previewRuntime: "client",
+    });
+
+    expect(themeRow().source_generation).toBe(before.source_generation);
+  });
+
+  it("never judges the files of a switch to start", async () => {
+    setRuntime("client");
+    insertFile(CONTENT, START_ONLY);
+    const snapshot = vi.spyOn(storefrontThemeFileDal, "getSourceSnapshot");
+    spies.push(snapshot);
+
+    await expect(switchTo("start", "client")).resolves.toEqual({
+      ok: true,
+      previewRuntime: "start",
+    });
+    expect(snapshot).not.toHaveBeenCalled();
+  });
+
+  it("refuses the switch when a Start-only file is written after its check read the files, and leaves both consistent", async () => {
+    setRuntime("start");
+    insertFile("src/routes/index.tsx", CLIENT_SAFE);
+    const generationBefore = themeRow().source_generation;
+    afterSwitchReadsFiles(async (snapshot) => {
+      // The restore (or an upgrade) lands in that window, on a Theme that
+      // still records start.
+      await starterWrite(snapshot.sourceGeneration);
+    });
+
+    const result = await switchTo("client", "start");
+
+    expect(result).toEqual({
+      ok: false,
+      error: "PREVIEW_RUNTIME_START_REQUIRED",
+      paths: [CONTENT],
+    });
+    // The file write is whole and the switch left nothing: still start.
+    expect(themeRow()).toMatchObject({
+      preview_runtime: "start",
+      source_generation: generationBefore + 1,
+    });
+    expect(files()).toContainEqual({
+      path: CONTENT,
+      content: START_ONLY,
+      version: 1,
+    });
+    expect(incompatible()).toBe(false);
+  });
+
+  it("refuses the Starter write when the switch to client committed first, and writes nothing", async () => {
+    setRuntime("start");
+    const seenByWriter = themeRow().source_generation;
+    await expect(switchTo("client", "start")).resolves.toEqual({
+      ok: true,
+      previewRuntime: "client",
+    });
+    const before = { theme: themeRow(), files: files() };
+
+    await expect(starterWrite(seenByWriter)).rejects.toThrow(
+      "PREVIEW_RUNTIME_START_REQUIRED",
+    );
+
+    expect({ theme: themeRow(), files: files() }).toEqual(before);
+    expect(incompatible()).toBe(false);
+  });
+
+  it("reports an author's code save that lands during the switch as a conflict, and keeps the save", async () => {
+    setRuntime("start");
+    insertFile(CONTENT, CLIENT_SAFE);
+    const [existing] = await storefrontThemeFileDal.listFiles(
+      "storefront-a",
+      "theme-a",
+    );
+    if (!existing) throw new Error("no file");
+    const edited = `${CLIENT_SAFE}// the author's edit\n`;
+    afterSwitchReadsFiles(async (snapshot) => {
+      await storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: CONTENT,
+            content: edited,
+            expectedFileId: existing.id,
+            expectedVersion: existing.version,
+          },
+        ],
+        { expectedSourceGeneration: snapshot.sourceGeneration },
+      );
+    });
+    const generationBefore = themeRow().source_generation;
+
+    const result = await switchTo("client", "start");
+
+    // Not written over the files it judged, and not silently dropped either:
+    // the author is told the source changed, with the generation it is at.
+    expect(result).toEqual({
+      ok: false,
+      error: "PREVIEW_RUNTIME_SOURCE_CHANGED",
+      sourceGeneration: generationBefore + 1,
+    });
+    expect(themeRow().preview_runtime).toBe("start");
+    expect(files()).toEqual([{ path: CONTENT, content: edited, version: 2 }]);
+  });
+
+  it("takes an author's code save made at the generation read before a switch landed", async () => {
+    setRuntime("start");
+    insertFile(CONTENT, CLIENT_SAFE);
+    const [existing] = await storefrontThemeFileDal.listFiles(
+      "storefront-a",
+      "theme-a",
+    );
+    if (!existing) throw new Error("no file");
+    const seenByEditor = themeRow().source_generation;
+    await expect(switchTo("client", "start")).resolves.toMatchObject({
+      ok: true,
+    });
+    const edited = `${CLIENT_SAFE}// saved after the switch\n`;
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [
+          {
+            path: CONTENT,
+            content: edited,
+            expectedFileId: existing.id,
+            expectedVersion: existing.version,
+          },
+        ],
+        { expectedSourceGeneration: seenByEditor },
+      ),
+    ).resolves.toMatchObject({ sourceGeneration: seenByEditor + 1 });
+
+    expect(files()).toEqual([{ path: CONTENT, content: edited, version: 2 }]);
+    expect(themeRow().preview_runtime).toBe("client");
+  });
+
+  it("does not judge an Astro Theme's files: it is never previewed on start", async () => {
+    sqlite
+      .prepare(
+        "UPDATE storefront_themes SET framework = 'astro' WHERE id = 'theme-a'",
+      )
+      .run();
+    insertFile("src/lib/read.ts", START_ONLY);
+
+    await expect(switchTo("client", null)).resolves.toEqual({
+      ok: true,
+      previewRuntime: "client",
     });
   });
 });
