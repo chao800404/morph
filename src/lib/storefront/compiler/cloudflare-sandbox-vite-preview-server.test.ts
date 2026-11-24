@@ -2162,7 +2162,8 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       behaviour?: Parameters<typeof createSession>[0];
       guarded?: boolean;
       beforeFailure?: (ctx: Setup) => void;
-      onPause?: (ctx: Setup) => Promise<void> | void;
+      /** Its result is awaited and ignored (a claim answers `{ seq }`). */
+      onPause?: (ctx: Setup) => Promise<unknown> | void;
       server?: Record<string, unknown>;
     } = {},
   ) => {
@@ -2216,8 +2217,14 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
     };
   };
 
-  /** Runs `hook` when the dev server is about to report itself ready. */
-  const beforeReady = (harness: Harness, hook: () => Promise<void> | void) => {
+  /**
+   * Runs `hook` when the dev server is about to report itself ready. Its
+   * result is awaited and ignored (a claim answers `{ seq }`).
+   */
+  const beforeReady = (
+    harness: Harness,
+    hook: () => Promise<unknown> | void,
+  ) => {
     const startProcess = harness.session.startProcess.bind(harness.session);
     override(
       harness,
@@ -3918,8 +3925,9 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
    * ledger's registered owner, so their marker goes through.
    */
   describe("the fail-closed marker, and a Durable Object that cannot be reached", () => {
+    /** The workspace marker, null when none was written. */
     const marker = (harness: Harness) =>
-      harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH);
+      harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ?? null;
 
     /** The session's check, made to throw once `broken()` is true. */
     const breakCheck = (harness: Harness, broken: () => boolean) => {
@@ -4250,7 +4258,8 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       ]);
       expect(
         isDirtyWorkspaceMarker(
-          s.harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH),
+          s.harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ??
+            null,
         ),
       ).toBe(true);
     });
