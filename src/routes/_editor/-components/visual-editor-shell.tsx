@@ -626,6 +626,7 @@ import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
 import { EditorSourceConflictNotice } from "./editor-source-conflict-notice";
+import { EditorAstroDesignStatusBar } from "./editor-astro-design-notice";
 import {
   EditorUnconfirmedSavesNotice,
   UNCONFIRMED_SAVE_HOLD,
@@ -6714,9 +6715,10 @@ export function VisualEditorShell({
    * one the editor does not know. Its frame names no page and its preview is
    * not proven one document, so what the canvas sends is never taken.
    */
-  const canvasUnavailableForFrameworkRef = useRef(false);
-  canvasUnavailableForFrameworkRef.current =
+  const canvasUnavailableForFramework =
     (context.theme.framework ?? "tanstack-start") !== "tanstack-start";
+  const canvasUnavailableForFrameworkRef = useRef(false);
+  canvasUnavailableForFrameworkRef.current = canvasUnavailableForFramework;
   /**
    * Pages and sections are TanStack Start structure: route files and their
    * `content()` slots. On another framework the stored Document sections are
@@ -21271,6 +21273,22 @@ export function VisualEditorShell({
           onRetry={onRetryThemeRead}
         />
         <div inert={editorLock !== null} className="flex flex-col">
+          {/* Review finding 1: an Astro click opens Code, which hides the
+              Design surface holding the Inspector and the section row. The
+              same notice (one focus state) is said here, outside both mode
+              surfaces, while Code is shown; in Design those two say it.
+              Mounted for the whole Theme, empty while nothing is said, so
+              its text is announced when it arrives. Never on TanStack
+              Start, whose focus is always null. */}
+          {canvasUnavailableForFramework ? (
+            <EditorAstroDesignStatusBar
+              notice={
+                editorMode === "code" && editorLock === null
+                  ? astroDesignNotice
+                  : null
+              }
+            />
+          ) : null}
           {refusedInlineText ? (
             <div
               role="alert"
