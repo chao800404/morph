@@ -550,6 +550,12 @@ type StartRequestState = Readonly<{
   claimSeq: number | null;
 }>;
 
+/** A sandbox handle, and how long getting it took. */
+type AcquiredPreviewSession = Readonly<{
+  session: PreviewServerSession;
+  ms: number;
+}>;
+
 function shortMarker(marker: string | null): string | null {
   if (marker === null) return null;
   return isDirtyWorkspaceMarker(marker) ? "dirty" : marker.slice(0, 12);
@@ -651,6 +657,47 @@ function readFailure(error: unknown): "missing" | "unreadable" {
     : "unreadable";
 }
 
+/**
+ * The checks a start passes before it may touch a container: its preview
+ * host and the framework the Theme records. Pure and cheap. A start that
+ * fails one acquires no container, claims nothing and changes nothing
+ * (docs/astro-theme-plan.md, A1).
+ */
+function resolveStartPrerequisites(
+  input: StartPreviewServerInput,
+):
+  | Readonly<{ ok: true; previewHost: string; framework: ThemeFrameworkAdapter }>
+  | Readonly<{ ok: false; stage: string; errorMessage: string }> {
+  // One rule, shared with the editor side that later frames the URL. A
+  // preview on any platform host would put Theme code in Morph's cookie jar.
+  const host = resolveThemePreviewServerHost({
+    configuredPreviewHostname: input.previewHostname,
+    env: input.platformHostEnv,
+  });
+  if (!host.enabled) {
+    return {
+      ok: false,
+      stage: "preview-origin",
+      errorMessage: `${host.reason}: A Live Preview that runs Theme JavaScript needs its own host, separate from every Morph hostname.`,
+    };
+  }
+  const recordedFramework = resolveThemeFramework(input.framework, {
+    astroThemes: input.astroThemes === true,
+  });
+  if (!recordedFramework.ok) {
+    return {
+      ok: false,
+      stage: "preview-framework",
+      errorMessage: recordedFramework.message,
+    };
+  }
+  return {
+    ok: true,
+    previewHost: host.hostname,
+    framework: recordedFramework.framework,
+  };
+}
+
 export class CloudflareSandboxVitePreviewServer {
   private readonly sandboxBinding?: unknown;
   private readonly sandboxProvider?: PreviewServerProvider;
@@ -686,6 +733,15 @@ export class CloudflareSandboxVitePreviewServer {
       ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
+  /** `acquire`, with how long getting the handle took. */
+  private async acquireTimed(
+    previewId: string,
+  ): Promise<AcquiredPreviewSession> {
+    const startedAt = Date.now();
+    const session = await this.acquire(previewId);
+    return { session, ms: Date.now() - startedAt };
+  }
+
   private async acquire(previewId: string): Promise<PreviewServerSession> {
     if (this.sandboxProvider) {
       return this.sandboxProvider.getSandbox(this.sandboxBinding, previewId);
@@ -716,13 +772,22 @@ export class CloudflareSandboxVitePreviewServer {
     const deadlineAt = requestStartedAt + this.startDeadlineMs;
     const firstAttemptId = newPreviewAttemptId();
     try {
+      // A start refused before any container (its preview host, its
+      // framework) acquires none and claims nothing: claiming acquires the
+      // container. Its one attempt runs unguarded and stops at the same
+      // check, before its own acquire, so it never reaches a container and
+      // has no workspace to own.
+      const refusedBeforeContainer = !resolveStartPrerequisites(input).ok;
+      // One handle for the claim and the first attempt.
+      const firstAcquire = refusedBeforeContainer
+        ? null
+        : this.acquireTimed(input.previewId);
       // Claimed before any container step: from here on a newer start or a
       // stop is visible to this one.
-      const claimed = await this.claimStart(
-        input.previewId,
-        firstAttemptId,
-        deadlineAt,
-      );
+      const claimed =
+        firstAcquire === null
+          ? null
+          : await this.claimStart(firstAcquire, firstAttemptId, deadlineAt);
       if (claimed === "unconfirmed") {
         // Ownership cannot be proven without a number (user, 2026-11-24):
         // nothing shared is written, so the start does not run at all. The
@@ -755,6 +820,7 @@ export class CloudflareSandboxVitePreviewServer {
       const first = await this.startAttempt(input, request, {
         attemptId: firstAttemptId,
         mayRetry: true,
+        ...(firstAcquire ? { acquired: firstAcquire } : {}),
       });
       if (!first.retry) return first.result;
 
@@ -820,7 +886,7 @@ export class CloudflareSandboxVitePreviewServer {
    * no number: workspace ownership cannot be proven (user, 2026-11-24).
    */
   private async claimStart(
-    previewId: string,
+    acquiring: Promise<AcquiredPreviewSession>,
     attemptId: string,
     deadlineAt: number,
   ): Promise<
@@ -828,9 +894,9 @@ export class CloudflareSandboxVitePreviewServer {
   > {
     let session: PreviewServerSession;
     try {
-      session = await this.acquire(previewId);
+      ({ session } = await acquiring);
     } catch {
-      // The start's own acquire answers this.
+      // The first attempt awaits the same handle, and answers this.
       return null;
     }
     if (
@@ -930,7 +996,13 @@ export class CloudflareSandboxVitePreviewServer {
   private async startAttempt(
     input: StartPreviewServerInput,
     request: StartRequestState,
-    attempt: { attemptId: string; mayRetry: boolean; retryOf?: string },
+    attempt: {
+      attemptId: string;
+      mayRetry: boolean;
+      retryOf?: string;
+      /** The handle the claim reached for (first attempt only). */
+      acquired?: Promise<AcquiredPreviewSession>;
+    },
   ): Promise<{
     result: StartPreviewServerResult;
     retry: {
@@ -961,6 +1033,7 @@ export class CloudflareSandboxVitePreviewServer {
       // request's deadline, at most.
       result = await this.startObserved(input, observation, {
         readyTimeoutMs: Math.min(this.readyTimeoutMs, remainingMs),
+        ...(attempt.acquired ? { acquired: attempt.acquired } : {}),
         // Both attempts register the request's number in the fence ledger;
         // the retry outranks its first attempt (user, 2026-11-24).
         ...(request.claimSeq !== null
@@ -1299,6 +1372,12 @@ export class CloudflareSandboxVitePreviewServer {
        * dev server launch. Absent for an unguarded start.
        */
       claim?: PreviewStartClaim;
+      /**
+       * The sandbox handle this start already reached for to claim the
+       * preview (first attempt only), so it is not acquired a second time.
+       * A rejected one fails this attempt as its own acquire would.
+       */
+      acquired?: Promise<AcquiredPreviewSession>;
     }>,
   ): Promise<StartPreviewServerResult> {
     const beforeContainerStep =
@@ -1333,35 +1412,16 @@ export class CloudflareSandboxVitePreviewServer {
       maxLines: this.maxLogLines,
     });
 
-    // One rule, shared with the editor side that later frames the URL. A
-    // preview on any platform host would put Theme code in Morph's cookie jar.
-    const host = resolveThemePreviewServerHost({
-      configuredPreviewHostname: input.previewHostname,
-      env: input.platformHostEnv,
-    });
-    if (!host.enabled) {
+    const prerequisites = resolveStartPrerequisites(input);
+    if (!prerequisites.ok) {
       return {
         ok: false,
-        stage: "preview-origin",
-        errorMessage: `${host.reason}: A Live Preview that runs Theme JavaScript needs its own host, separate from every Morph hostname.`,
+        stage: prerequisites.stage,
+        errorMessage: prerequisites.errorMessage,
         logs,
       };
     }
-    const previewHost = host.hostname;
-    // Before any container is acquired: a framework Morph cannot preview
-    // costs nothing and changes nothing.
-    const recordedFramework = resolveThemeFramework(input.framework, {
-      astroThemes: input.astroThemes === true,
-    });
-    if (!recordedFramework.ok) {
-      return {
-        ok: false,
-        stage: "preview-framework",
-        errorMessage: recordedFramework.message,
-        logs,
-      };
-    }
-    const framework = recordedFramework.framework;
+    const { previewHost, framework } = prerequisites;
     // A framework's own dev server (`astro dev`), when its adapter names one;
     // otherwise Vite with the generated `vite.config.ts`.
     const devServer = framework.preview.devServer;
@@ -1457,9 +1517,12 @@ export class CloudflareSandboxVitePreviewServer {
       }
     };
     try {
-      const sandboxHandleStartedAt = Date.now();
-      session = await this.acquire(input.previewId);
-      const sandboxHandleMs = Date.now() - sandboxHandleStartedAt;
+      // The handle the claim was asked through, when this attempt was handed
+      // one: a start reaches for its container once, whatever the answer.
+      const acquired = await (limits.acquired ??
+        this.acquireTimed(input.previewId));
+      session = acquired.session;
+      const sandboxHandleMs = acquired.ms;
       // A start that cannot finish leaves the workspace untrusted rather than
       // destroyed. The sandbox is shared by every tab of this preview, and
       // destroying it took down pages another request had just brought up.
