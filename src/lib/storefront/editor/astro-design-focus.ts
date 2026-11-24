@@ -6,6 +6,7 @@ import {
   type AstroDesignHint,
   type AstroDesignSelection,
 } from "./astro-design-selection";
+import { PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS } from "./preview-document-navigation";
 
 /**
  * The Astro section the author selected on the canvas, and what Design says
@@ -71,6 +72,18 @@ export function astroBasisUnconfirmedHint(reason: string): AstroDesignHint {
 /** Said on the section while Core's view for the new document is read. */
 export const ASTRO_SELECTION_RECHECKING_MESSAGE =
   "The preview reloaded. Checking this section against the saved source again.";
+
+/**
+ * How long "Checking…" is said before the re-derive gives up and clears the
+ * selection, with the reload hint (fail closed, as for no view): a view read
+ * or confirm that never settles, a frame that never says which page it
+ * shows, or an answer dropped for a frame that never became ready. The same
+ * bound as a document page switch (`PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS`,
+ * below the heartbeat's 15 s), since it waits on the same new document.
+ * Giving up early only clears a display; Core still verifies every write.
+ */
+export const ASTRO_SELECTION_RECHECK_TIMEOUT_MS =
+  PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS;
 
 /**
  * The kept selection matched again in Core's view for the new document, by

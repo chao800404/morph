@@ -447,6 +447,7 @@ import {
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
 import {
+  ASTRO_SELECTION_RECHECK_TIMEOUT_MS,
   astroDesignNoticeOf,
   rederiveAstroDesignSelection,
   stepAstroDesignFocus,
@@ -6958,15 +6959,50 @@ export function VisualEditorShell({
       dispatchAstroDesignFocus({ kind: "deselected" });
     }
   };
+  /**
+   * Review finding 6: the bound on "Checking…" for the latest re-derive
+   * (`ASTRO_SELECTION_RECHECK_TIMEOUT_MS`). A newer ready replaces it.
+   */
+  const astroRederiveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  useEffect(
+    () => () => {
+      if (astroRederiveTimerRef.current !== null) {
+        clearTimeout(astroRederiveTimerRef.current);
+        astroRederiveTimerRef.current = null;
+      }
+    },
+    [],
+  );
   rederiveAstroDesignFocusRef.current = (
     readyPreviewKey,
     readyRound,
     basisConfirming,
   ) => {
     astroRederiveAwaitingPageRef.current = null;
+    if (astroRederiveTimerRef.current !== null) {
+      clearTimeout(astroRederiveTimerRef.current);
+      astroRederiveTimerRef.current = null;
+    }
     const selection = astroDesignFocusRef.current?.selection ?? null;
     dispatchAstroDesignFocus({ kind: "document-replaced" });
     if (!selection) return;
+    // Not answered in time (a read or confirm that never settles, a frame
+    // that never says its page, or an answer dropped for a frame that never
+    // became ready): fail closed as for no view. The reducer ignores this
+    // once the focus is no longer this selection's re-derive.
+    astroRederiveTimerRef.current = setTimeout(() => {
+      astroRederiveTimerRef.current = null;
+      if (astroRederiveAwaitingPageRef.current?.readyRound === readyRound) {
+        astroRederiveAwaitingPageRef.current = null;
+      }
+      dispatchAstroDesignFocus({
+        kind: "rederived",
+        identity: selection.identity,
+        result: { status: "checking" },
+      });
+    }, ASTRO_SELECTION_RECHECK_TIMEOUT_MS);
     // The view read for this document: the refetch the ready just started,
     // or the read already in flight (`cancelRefetch: false` joins it and
     // never starts a second one). A page with no view to read has none.
@@ -7000,6 +7036,10 @@ export function VisualEditorShell({
           readyRound,
           identity: selection.identity,
           settle: () => {
+            if (astroRederiveTimerRef.current !== null) {
+              clearTimeout(astroRederiveTimerRef.current);
+              astroRederiveTimerRef.current = null;
+            }
             const result = rederiveAstroDesignSelection({
               selection,
               view,

@@ -31,6 +31,7 @@ import {
   touchThemePreviewServer,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import { ASTRO_BASIS_UNCONFIRMED_MESSAGE } from "@/lib/storefront/editor/astro-basis-presentation";
+import { ASTRO_SELECTION_RECHECK_TIMEOUT_MS } from "@/lib/storefront/editor/astro-design-focus";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
@@ -1557,6 +1558,50 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
       expect(unconfirmedHint()).toBe(false);
       expect(sectionStatus()).toBeNull();
+    });
+
+    // Review finding 6: "Checking…" is bounded. A view read for the new
+    // document that never answers clears the selection, with the hint, once
+    // the bound has passed.
+    it("a view read that never answers stops saying Checking after the bound, and clears the selection", async () => {
+      // Every timer the shell starts is on the faked clock, which also moves
+      // with real time, so the frame's message pump and the waits run.
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "setInterval",
+          "clearInterval",
+          "Date",
+        ],
+        shouldAdvanceTime: true,
+      });
+      readRouteBindings
+        .mockResolvedValueOnce(bindingView())
+        .mockImplementation(() => new Promise(() => {}));
+      await selectHero();
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(sectionStatus()?.getAttribute("data-astro-section-status")).toBe(
+          "checking",
+        ),
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ASTRO_SELECTION_RECHECK_TIMEOUT_MS);
+      });
+
+      expect(sectionStatus()).toBeNull();
+      const notice = inspectorNotice();
+      expect(notice?.getAttribute("data-astro-design-notice")).toBe(
+        "unconfirmed",
+      );
+      expect(notice?.textContent ?? "").toContain(
+        "Couldn't restore your selection. Select the section again.",
+      );
+      expect(basisPosts()).toHaveLength(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
     });
 
     it("while Core's view is read again for the new document, the section says it is checking", async () => {
