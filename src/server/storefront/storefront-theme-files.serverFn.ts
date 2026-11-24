@@ -1,4 +1,10 @@
-import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
+import {
+  fail,
+  failure,
+  ok,
+  parseInput,
+  type ServerFailure,
+} from "@/lib/db/server-result";
 import {
   resolveThemeRollbackPlan,
   rollbackFileOf,
@@ -644,10 +650,12 @@ function starterStartPreviewRequired() {
 
 /**
  * Whether a create puts the current Starter's own file back, byte for byte,
- * and that file needs the full Start preview: the editor's "Restore Starter
- * Content Module" command, or anything else that sends the same create. Such
- * a write is held to the Starter write rule. An author's own file, whatever
- * it imports, is not a Starter write and is not held to it.
+ * and that file needs the full Start preview. The editor's restore command
+ * declares itself (`resolveStarterFileRestore`); this is the extra check for
+ * a create that does not, such as an older editor's restore or the
+ * Starter's bytes pasted into a new file. Such a write is held to the
+ * Starter write rule. An author's own file, whatever it imports, is not a
+ * Starter write and is not held to it.
  */
 function createRestoresStartOnlyStarterFile(write: {
   path: string;
@@ -664,6 +672,73 @@ function createRestoresStartOnlyStarterFile(write: {
       { path: write.path, content: write.content },
     ]).length > 0
   );
+}
+
+/** The bytes a single-file save writes, and the Starter rule it is held to. */
+type StarterRuleWrite = {
+  content: string;
+  mimeType?: string;
+  requirePreviewRuntime?: "start";
+};
+
+/**
+ * A declared restore (`operation: "restore-starter-file"`): the server
+ * identifies the restore by the operation, not by the bytes it was sent.
+ *
+ * The Starter file is resolved here, by path, from the current Starter's
+ * workspace files; the request's `content` is never written. Whether it is
+ * held to `start` is judged on that resolved source, so the option-B Starter
+ * write rule applies whether or not the request's bytes match it. Only ever
+ * a create (`expectMissing`, no file id or version): an author's file at the
+ * path, edited or not, is never replaced from here, and the create
+ * precondition in the save's batch refuses one that appeared meanwhile.
+ */
+function resolveStarterFileRestore(write: {
+  path: string;
+  expectMissing?: boolean;
+  expectedFileId?: string;
+  expectedVersion?: number;
+}):
+  | { ok: true; write: StarterRuleWrite }
+  | { ok: false; refusal: ServerFailure } {
+  if (
+    !write.expectMissing ||
+    write.expectedFileId !== undefined ||
+    write.expectedVersion !== undefined
+  ) {
+    return {
+      ok: false,
+      refusal: fail(
+        "A Starter file is restored only where the Theme has none; it never replaces a file.",
+        { error: "STARTER_RESTORE_CREATE_ONLY" },
+      ),
+    };
+  }
+  const starterFile = starterThemeWorkspaceFiles().find(
+    (file) => file.path === write.path,
+  );
+  if (!starterFile) {
+    return {
+      ok: false,
+      refusal: fail(
+        `The current Starter has no file at ${write.path} to restore.`,
+        { error: "STARTER_FILE_NOT_RESTORABLE" },
+      ),
+    };
+  }
+  return {
+    ok: true,
+    write: {
+      content: starterFile.content,
+      mimeType: starterFile.mimeType,
+      requirePreviewRuntime:
+        starterPlanFilesRequiringStartPreview([
+          { path: starterFile.path, content: starterFile.content },
+        ]).length > 0
+          ? "start"
+          : undefined,
+    },
+  };
 }
 
 export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
@@ -1040,13 +1115,28 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
     if (data.operation === "design-structure") {
       return saveDesignStructureWrite(data, context);
     }
+    // What is written. A declared restore writes the Starter file the server
+    // resolves for the path; anything else writes the request's bytes, and a
+    // create of the Starter's own Start-only bytes is still held to `start`.
+    let write: StarterRuleWrite = {
+      content: data.content,
+      mimeType: data.mimeType,
+      requirePreviewRuntime: createRestoresStartOnlyStarterFile(data)
+        ? "start"
+        : undefined,
+    };
+    if (data.operation === "restore-starter-file") {
+      const restore = resolveStarterFileRestore(data);
+      if (!restore.ok) return restore.refusal;
+      write = restore.write;
+    }
     try {
       const saved = await themeSourceStore.saveFile(
         data.storefrontId,
         data.themeId,
         data.path,
-        data.content,
-        data.mimeType,
+        write.content,
+        write.mimeType,
         {
           expectedFileId: data.expectedFileId,
           expectedVersion: data.expectedVersion,
@@ -1056,11 +1146,9 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,
-          // The restore command puts a Starter file back: held to `start`
-          // in the save's own batch when that file needs it.
-          requirePreviewRuntime: createRestoresStartOnlyStarterFile(data)
-            ? "start"
-            : undefined,
+          // A Starter file put back is held to `start` in the save's own
+          // batch when that file needs it.
+          requirePreviewRuntime: write.requirePreviewRuntime,
         },
       );
       return ok("Theme file saved", saved);
