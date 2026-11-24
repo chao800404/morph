@@ -2,9 +2,11 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -641,7 +643,12 @@ describe("the container's start ownership", () => {
   function ownedStart(
     files: Record<string, string>,
     owner: ReturnType<typeof claim> | null,
-    options: { expected?: string | null; fingerprint?: string } = {},
+    options: {
+      expected?: string | null;
+      fingerprint?: string;
+      /** The toolchain the workspace's node_modules link should point at. */
+      linkTarget?: string;
+    } = {},
   ): FencedWriteRequest {
     const staging = path.join(dir, `own-staging-${stagings++}`);
     for (const [file, content] of Object.entries(files)) {
@@ -665,6 +672,9 @@ describe("the container's start ownership", () => {
         manifest: { path: MANIFEST(), content: "manifest-new" },
       },
       ...(owner ? { claim: owner } : {}),
+      ...(options.linkTarget
+        ? { link: { path: "node_modules", target: options.linkTarget } }
+        : {}),
     } as FencedWriteRequest;
   }
   const register = (owner: ReturnType<typeof claim>) =>
@@ -794,6 +804,46 @@ describe("the container's start ownership", () => {
     });
     expect(JSON.parse(ledgerText()).committed).toBeUndefined();
     expect(JSON.parse(ledgerText()).owner).toEqual(claim(1, "a"));
+  });
+
+  /**
+   * The toolchain link (follow-up, user 2026-11-24): the workspace's
+   * node_modules symlink is made inside the fence, by the owner only, so a
+   * start that no longer owns the workspace never removes or replaces it.
+   */
+  const LINK = () => path.join(root, "node_modules");
+  const toolchain = (name: string) => {
+    const target = path.join(dir, name, "node_modules");
+    mkdirSync(target, { recursive: true });
+    return target;
+  };
+
+  it("links the workspace to its toolchain under the lock, and leaves a link that already points there", () => {
+    const target = toolchain("toolchain-a");
+    run(ownedStart({ [HERO]: "hero" }, claim(1, "a"), { linkTarget: target }));
+    expect(readlinkSync(LINK())).toBe(target);
+    const before = lstatSync(LINK()).ino;
+
+    // The same toolchain again: not removed and made again (no moment
+    // without a node_modules under a running dev server).
+    run(ownedStart({ [HERO]: "hero" }, claim(1, "a"), { linkTarget: target }));
+    expect(readlinkSync(LINK())).toBe(target);
+    expect(lstatSync(LINK()).ino).toBe(before);
+  });
+
+  it("leaves the owner's link alone for a start whose claim is outranked", () => {
+    const ownerTarget = toolchain("toolchain-b");
+    const lateTarget = toolchain("toolchain-a");
+    run(ownedStart({ [HERO]: "hero by b" }, claim(2, "b"), { linkTarget: ownerTarget }));
+    const before = lstatSync(LINK()).ino;
+
+    const late = run(
+      ownedStart({ [HERO]: "hero by a" }, claim(1, "a"), { linkTarget: lateTarget }),
+    );
+
+    expect(late.ownership).toBe("superseded");
+    expect(readlinkSync(LINK())).toBe(ownerTarget);
+    expect(lstatSync(LINK()).ino).toBe(before);
   });
 
   it("refuses a start that carries no claim once an owner is registered", () => {

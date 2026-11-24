@@ -46,6 +46,10 @@ type Harness = {
   commands: string[];
   /** Serve-gated launches the ledger refused (`gatedServeCommand`). */
   gated: string[];
+  /** Symlinks the fence made in the container: link path to target. */
+  links: Map<string, string>;
+  /** Every link the fence was asked to make, in order. */
+  linkOps: Array<{ link: string; target: string }>;
   envs: Array<Record<string, string> | undefined>;
   cwds: Array<string | undefined>;
   exposed: Array<{ port: number; hostname: string }>;
@@ -68,6 +72,8 @@ const createSession = (
   const deletedPaths: string[] = [];
   const commands: string[] = [];
   const gated: string[] = [];
+  const links = new Map<string, string>();
+  const linkOps: Array<{ link: string; target: string }> = [];
   const envs: Array<Record<string, string> | undefined> = [];
   const cwds: Array<string | undefined> = [];
   const exposed: Array<{ port: number; hostname: string }> = [];
@@ -108,6 +114,10 @@ const createSession = (
         throw new Error(`PREVIEW_FENCE_PATH_ESCAPE: ${relative}`);
       }
       return resolved;
+    },
+    replaceLink(target, link) {
+      linkOps.push({ link, target });
+      links.set(link, target);
     },
   };
 
@@ -248,6 +258,8 @@ const createSession = (
     session,
     cwds,
     gated,
+    links,
+    linkOps,
     written,
     encodings,
     writePaths,
@@ -2719,6 +2731,8 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       );
       return {
         checks,
+        /** The Durable Object's storage lost: its record, and its number, gone. */
+        forget: () => stored.clear(),
         /** What the Durable Object holds now. */
         record: () =>
           stored.get(PREVIEW_START_ATTEMPT_STORAGE_KEY) as
@@ -3454,6 +3468,442 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
         expect(await real.statusOf(a.attemptId!)).toBe("superseded");
       },
     );
+
+    /** Everything shared the container holds or runs, to show a refused start changed none of it. */
+    const sharedState = (harness: Harness) => ({
+      written: new Map(harness.written),
+      links: new Map(harness.links),
+      commands: harness.commands.length,
+      killed: harness.killed.length,
+      exposed: harness.exposed.length,
+      unexposed: harness.unexposed.length,
+      sleepAfter: harness.sleepAfter.length,
+      destroyed: harness.destroyed,
+    });
+
+    /**
+     * Durable Object outages (follow-up, user 2026-11-24: "DO unreachable:
+     * refuse the new start, and keep the existing workspace and processes
+     * untouched"). Two separate cases.
+     */
+    it("a brief Durable Object outage refuses the start in it, touches nothing, and the next start after it succeeds", async () => {
+      const s = setup({ failures: 0, guarded: false });
+      withRealStartGuard(s.harness, s.time.now);
+      expect((await s.start()).ok).toBe(true);
+      const before = sharedState(s.harness);
+
+      const claim = (s.harness.session as unknown as Record<string, unknown>)
+        .claimPreviewStart as (input: unknown) => Promise<{ seq: number }>;
+      let down = true;
+      override(s.harness, "claimPreviewStart", async (input: unknown) => {
+        if (down) throw new Error("Durable Object unreachable");
+        return claim(input);
+      });
+      const { result: during, starts } = await records(() => s.start());
+
+      expect(during.ok).toBe(false);
+      if (during.ok) return;
+      expect(during.stage).toBe("preview-start-unconfirmed");
+      expect(starts[0]!.guarded).toBe(false);
+      // The workspace, its ledger, its link and its processes, as they were.
+      expect(sharedState(s.harness)).toEqual(before);
+
+      down = false;
+      const after = await s.start();
+      expect(after.ok).toBe(true);
+      if (!after.ok) return;
+      // The workspace the outage left alone is still the committed one.
+      expect(after.timings.workspaceReused).toBe(true);
+    });
+
+    it("a lost Durable Object record (numbers restart) is refused by the live container's higher owner, untouched, until the stop and rebuild recover", async () => {
+      const s = setup({ failures: 0, guarded: false });
+      const real = withRealStartGuard(s.harness, s.time.now);
+      // The container's ledger reaches seq 3.
+      for (let round = 0; round < 3; round += 1) {
+        expect((await s.start()).ok).toBe(true);
+      }
+      const ledgerOwner = () =>
+        JSON.parse(s.harness.written.get(PREVIEW_FENCE_LEDGER_PATH)!).owner as {
+          seq: number;
+        };
+      expect(ledgerOwner().seq).toBe(3);
+
+      // The Durable Object's storage is lost: its numbers start again at 1.
+      real.forget();
+      const before = sharedState(s.harness);
+      for (const expectedSeq of [1, 2]) {
+        const refused = await s.start();
+        expect(refused.ok).toBe(false);
+        if (refused.ok) return;
+        // A lower number than the live container's owner: refused at its
+        // registration, before any workspace step.
+        expect(refused.stage).toBe("preview-start-superseded");
+        expect(ledgerOwner().seq).toBe(3);
+        expect(sharedState(s.harness)).toEqual(before);
+        expect((real.record() as unknown as { seq: number }).seq).toBe(expectedSeq);
+      }
+
+      // The existing stop: the Durable Object takes a number, and the
+      // container is destroyed (a replacement holds no ledger).
+      const destroy = s.harness.session.destroy.bind(s.harness.session);
+      override(s.harness, "destroy", async () => {
+        await destroy();
+        s.harness.written.clear();
+        s.harness.links.clear();
+      });
+      await s.server.stop("preview-1");
+
+      // The rebuild: laid out whole in the new container, and ready.
+      const rebuilt = await s.start();
+      expect(rebuilt.ok).toBe(true);
+      if (!rebuilt.ok) return;
+      expect(rebuilt.timings.workspaceReused).toBe(false);
+      expect(ledgerOwner().seq).toBe(4);
+    });
+
+    /**
+     * Read-back pairs (follow-up, user 2026-11-24: a dirty marker keeps the
+     * disk read-back, but the read-back only decides HOW to update; it never
+     * decides that a start may skip its fence, its ownership or its commit).
+     */
+    const HERO_PATH = "src/components/Hero.tsx";
+    const HERO_ON_DISK = `/workspace/${HERO_PATH}`;
+    /** One dev server the container lists as running. */
+    const withListedVite = (harness: Harness) => {
+      let running = true;
+      override(harness, "listProcesses", async () =>
+        running
+          ? [
+              {
+                id: "already-running",
+                command: `${START_TOOLCHAIN.root}/node_modules/.bin/vite --config /workspace/vite.config.ts`,
+                status: "running",
+              },
+            ]
+          : [],
+      );
+      const kill = harness.session.killProcess!.bind(harness.session);
+      override(harness, "killProcess", async (id?: string) => {
+        await kill(id);
+        if (id === "already-running") running = false;
+      });
+    };
+    /** A Code Save's incremental sync, as the server function sends it. */
+    const syncFile = (harness: Harness, file: string, content: string) =>
+      runFencedWriteInSandbox(harness.session as unknown as FenceSandbox, {
+        op: "write",
+        root: "/workspace",
+        files: [{ path: file, content, fence: 2 }],
+        marker: {
+          path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+          content: "dirty:sync",
+        },
+      });
+    const THEME_HERO_2 = THEME.map((file) =>
+      file.path === HERO_PATH
+        ? { ...file, content: file.content.replace("<h1>", "<h1 data-v=\"2\">") }
+        : file,
+    );
+
+    it("after a normal incremental sync, the read-back finds the disk as planned: files and dev server are reused, and the commit is made", async () => {
+      const s = setup({ failures: 0, guarded: false });
+      withRealStartGuard(s.harness, s.time.now);
+      expect((await s.start()).ok).toBe(true);
+      withListedVite(s.harness);
+      // The save's sync lays the saved Hero out exactly as a start would.
+      const laid = (await cleanStartOf(THEME_HERO_2)).sources.get(HERO_ON_DISK)!;
+      await syncFile(s.harness, HERO_PATH, laid);
+      expect(
+        isDirtyWorkspaceMarker(
+          s.harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ?? null,
+        ),
+      ).toBe(true);
+      const writesBefore = workspaceWrites(s.harness).length;
+
+      const { result, starts } = await records(() =>
+        s.start({ files: THEME_HERO_2 }),
+      );
+
+      expect(result.ok).toBe(true);
+      expect(starts[0]!.workspace).toMatchObject({
+        previous: "dirty",
+        update: "none",
+        committed: true,
+      });
+      expect(
+        (starts[0]!.workspace as { verification: { read: number } }).verification
+          .read,
+      ).toBeGreaterThan(0);
+      expect((starts[0]!.vite as { action: string }).action).toBe("reused");
+      expect(s.harness.killed).toEqual([]);
+      // Only the manifest, then the marker: no Theme file rewritten.
+      expect(workspaceWrites(s.harness).slice(writesBefore)).toEqual([
+        THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+        THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      ]);
+    });
+
+    it.each([
+      ["a half-written workspace", "half-written"],
+      ["files the plan does not have", "leftover"],
+      ["a read-back that fails", "read-back-fails"],
+    ] as const)(
+      "a dirty marker over %s forces a full rebuild and a dev server restart",
+      async (_label, how) => {
+        const s = setup({ failures: 0, guarded: false });
+        withRealStartGuard(s.harness, s.time.now);
+        expect((await s.start()).ok).toBe(true);
+        withListedVite(s.harness);
+        const LEFTOVER = "/workspace/src/components/Leftover.tsx";
+        s.harness.written.set(
+          THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+          "dirty:start-halfway",
+        );
+        if (how === "half-written") {
+          // A start stopped mid-way: one file cut short, one not there yet.
+          const hero = s.harness.written.get(HERO_ON_DISK)!;
+          s.harness.written.set(HERO_ON_DISK, hero.slice(0, hero.length >> 1));
+          s.harness.written.delete("/workspace/src/pages/index.tsx");
+        } else if (how === "leftover") {
+          s.harness.written.set(LEFTOVER, "export default () => null;\n");
+        } else {
+          // The read-back's own listing fails; the later prune listing works.
+          const list = s.harness.session.listFiles!.bind(s.harness.session);
+          let listings = 0;
+          override(
+            s.harness,
+            "listFiles",
+            async (...args: Parameters<NonNullable<PreviewServerSession["listFiles"]>>) => {
+              if (++listings === 1) throw new Error("listing failed");
+              return list(...args);
+            },
+          );
+        }
+
+        const { result, starts } = await records(() => s.start());
+
+        expect(result.ok).toBe(true);
+        expect(starts[0]!.workspace).toMatchObject({
+          previous: "dirty",
+          update: "full",
+          committed: true,
+        });
+        if (how === "read-back-fails") {
+          expect(
+            (starts[0]!.workspace as { verification: unknown }).verification,
+          ).toEqual({ failed: "unlistable" });
+        }
+        expect((starts[0]!.vite as { action: string }).action).toBe("restarted");
+        expect(s.harness.killed).toEqual(["already-running"]);
+        const clean = await cleanStartOf(THEME);
+        for (const [file, bytes] of clean.sources) {
+          expect(s.harness.written.get(file)).toBe(bytes);
+        }
+        expect(s.harness.written.has(LEFTOVER)).toBe(false);
+      },
+    );
+
+    it("B takes over after A's read-back began: although A's read-back matches, A commits nothing, reuses no process and is not answered ready", async () => {
+      const s = setup({ failures: 0, guarded: false });
+      const real = withRealStartGuard(s.harness, s.time.now);
+      expect((await s.start()).ok).toBe(true);
+      withListedVite(s.harness);
+      // What a sync leaves after writing what the plan already has: a dirty
+      // marker over a disk that matches.
+      s.harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty:sync");
+
+      let armed = true;
+      let b = null as StartResult | null;
+      let afterB = null as ReturnType<typeof sharedState> | null;
+      const read = s.harness.session.readFile!.bind(s.harness.session);
+      override(
+        s.harness,
+        "readFile",
+        async (...args: Parameters<NonNullable<PreviewServerSession["readFile"]>>) => {
+          // A's read-back reads its first planned file: B claims, lays out
+          // (its own read-back finds the same disk) and is ready, first.
+          if (armed && String(args[0]).startsWith("/workspace/src/")) {
+            armed = false;
+            b = await otherTab(s).start(startInput());
+            afterB = sharedState(s.harness);
+          }
+          return read(...args);
+        },
+      );
+      const { result: a, starts } = await records(() => s.start());
+
+      const bResult = b!;
+      expect(bResult.ok).toBe(true);
+      const aLine = starts.find((start) => start.attemptId === a.attemptId)!;
+      // A's read-back matched: it would have updated nothing...
+      expect(aLine.workspace).toMatchObject({ previous: "dirty", update: "none" });
+      // ...and still A commits nothing, reuses no process, is not ready.
+      expect((aLine.workspace as { committed?: boolean }).committed).not.toBe(true);
+      expect(aLine.vite).toBeNull();
+      expect(a.ok).toBe(false);
+      if (a.ok) return;
+      expect(a.stage).toBe("preview-start-superseded");
+      expect(sharedState(s.harness)).toEqual(afterB);
+      expect(
+        JSON.parse(s.harness.written.get(PREVIEW_FENCE_LEDGER_PATH)!).owner,
+      ).toMatchObject({ attemptId: bResult.attemptId });
+      expect(real.record()).toMatchObject({ attemptId: bResult.attemptId });
+    });
+
+    /**
+     * The serve gate's gap (follow-up, user 2026-11-24): the gate releases
+     * the fence lock before its shell execs the dev server, so B can take
+     * over in between. Modelled here with the container's processes: the
+     * gate's shell is listed as running from the moment it is started, a
+     * kill ends it (and reports its exit), and only a shell still alive
+     * after the gap execs its dev server. The real-container half of this
+     * check (how the sandbox lists and stops that shell) is the lead's to
+     * run in the container E2E.
+     */
+    it("B takes over in the gap between A's serve gate and its exec: B's dev server serves B's bytes, and A's cleanup kills nothing of B's", async () => {
+      const cleanB = await cleanStartOf(THEME_B);
+      const s = setup({ failures: 0, guarded: false });
+      const real = withRealStartGuard(s.harness, s.time.now);
+      type Proc = {
+        id: string;
+        command: string;
+        onExit?: (code: number | null) => void;
+        running: boolean;
+      };
+      const procs: Proc[] = [];
+      const exec = s.harness.session.exec.bind(s.harness.session);
+      override(s.harness, "listProcesses", async () =>
+        procs
+          .filter((proc) => proc.running)
+          .map((proc) => ({ id: proc.id, command: proc.command, status: "running" })),
+      );
+      override(s.harness, "killProcess", async (id?: string) => {
+        s.harness.killed.push(id);
+        const proc = procs.find((entry) => entry.id === id && entry.running);
+        if (proc) {
+          proc.running = false;
+          queueMicrotask(() => proc.onExit?.(143));
+        }
+      });
+      const exited = (id: string) => ({
+        id,
+        waitForPort: async () => {
+          throw new Error("Process exited before the port was ready.");
+        },
+      });
+      let gap = null as (() => Promise<void>) | null;
+      override(
+        s.harness,
+        "startProcess",
+        async (
+          command: string,
+          options?: { onExit?: (code: number | null) => void },
+        ) => {
+          // The shell exists, and is listed, from here on.
+          const proc: Proc = {
+            id: `proc-${procs.length + 1}`,
+            command,
+            onExit: options?.onExit,
+            running: true,
+          };
+          procs.push(proc);
+          const gate = /^sh -c 'node (\S+) (\S+) && exec (.+)'$/.exec(command);
+          if (gate) {
+            const run = await exec(`node ${gate[1]} ${gate[2]}`);
+            if (JSON.parse(run.stdout).ownership !== "owner") {
+              proc.running = false;
+              queueMicrotask(() => options?.onExit?.(75));
+              return exited(proc.id);
+            }
+            // The gate passed and released the lock; no exec yet.
+            const inGap = gap;
+            gap = null;
+            if (inGap) await inGap();
+          }
+          if (!proc.running) return exited(proc.id);
+          s.harness.commands.push(command);
+          return {
+            id: proc.id,
+            waitForPort: async () => {
+              if (!proc.running) {
+                throw new Error("Process exited before the port was ready.");
+              }
+            },
+          };
+        },
+      );
+      let b = null as StartResult | null;
+      gap = async () => {
+        b = await otherTab(s).start({ ...startInput(), files: THEME_B });
+      };
+
+      const { result: a } = await records(() => s.start());
+
+      const bResult = b!;
+      expect(bResult.ok).toBe(true);
+      if (!bResult.ok) return;
+      // B found A's shell running, replaced it, and serves its own bytes.
+      expect(bResult.processId).toBe("proc-2");
+      expect(procs.filter((proc) => proc.running).map((proc) => proc.id)).toEqual([
+        "proc-2",
+      ]);
+      expect(s.harness.commands).toEqual([procs[1]!.command]);
+      for (const [file, bytes] of cleanB.sources) {
+        expect(s.harness.written.get(file)).toBe(bytes);
+      }
+      // A: superseded, and its cleanup stopped nothing (only B's kill of A's shell).
+      expect(a.ok).toBe(false);
+      if (a.ok) return;
+      expect(a.stage).toBe("preview-start-superseded");
+      expect(s.harness.killed).toEqual(["proc-1"]);
+      expect(real.record()).toMatchObject({ attemptId: bResult.attemptId });
+    });
+
+    /**
+     * The toolchain link (follow-up fix, user 2026-11-24): the workspace's
+     * node_modules symlink (rm + ln) is made inside the fence, so a start
+     * that no longer owns the workspace never touches it. A registers, then
+     * B claims, lays out and is ready before A's next step.
+     */
+    it("B owns the workspace: A's toolchain link step neither runs nor removes B's link", async () => {
+      const s = setup({ failures: 0, guarded: false });
+      withRealStartGuard(s.harness, s.time.now);
+      const LINK = "/workspace/node_modules";
+      const exec = s.harness.session.exec.bind(s.harness.session);
+      let claims = 0;
+      let bDone = false;
+      let b = null as StartResult | null;
+      let linkOpsAtB = 0;
+      const linkCommandsAfterB: string[] = [];
+      override(s.harness, "exec", async (command: string) => {
+        if (bDone && command.includes(LINK)) linkCommandsAfterB.push(command);
+        const fenced = /^node (\S+) (\S+)$/.exec(command);
+        const op = fenced
+          ? (JSON.parse(s.harness.written.get(fenced[2]!) ?? "{}") as { op?: string }).op
+          : undefined;
+        const answer = await exec(command);
+        if (op === "claim" && ++claims === 1) {
+          b = await otherTab(s).start({ ...startInput(), files: THEME_B });
+          bDone = true;
+          linkOpsAtB = s.harness.linkOps.length;
+        }
+        return answer;
+      });
+
+      const { result: a } = await records(() => s.start());
+
+      expect(b!.ok).toBe(true);
+      expect(a.ok).toBe(false);
+      if (a.ok) return;
+      expect(a.stage).toBe("preview-start-superseded");
+      // B's start linked the workspace, inside its fence.
+      expect(linkOpsAtB).toBeGreaterThan(0);
+      expect(s.harness.links.get(LINK)).toBe(`${START_TOOLCHAIN.root}/node_modules`);
+      // A neither sent a link command nor had the fence link anything.
+      expect(linkCommandsAfterB).toEqual([]);
+      expect(s.harness.linkOps).toHaveLength(linkOpsAtB);
+    });
   });
 
   /**
