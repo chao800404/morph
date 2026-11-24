@@ -31,7 +31,10 @@ import {
   touchThemePreviewServer,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import { ASTRO_BASIS_UNCONFIRMED_MESSAGE } from "@/lib/storefront/editor/astro-basis-presentation";
-import { ASTRO_SELECTION_RECHECK_TIMEOUT_MS } from "@/lib/storefront/editor/astro-design-focus";
+import {
+  ASTRO_SELECTION_RECHECK_TIMEOUT_MS,
+  ASTRO_SELECTION_RECHECKING_MESSAGE,
+} from "@/lib/storefront/editor/astro-design-focus";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
@@ -329,6 +332,15 @@ const flush = () =>
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
+/** The editor moved to another of its pages (search changed), as the router does. */
+let showEditorPage: (page: {
+  template: "index" | "page";
+  templateId: string;
+  routePath: string;
+}) => void = () => {
+  throw new Error("settled() has not rendered the shell");
+};
+
 /** Renders the route's page, signed in as OWNER, and brings the frame up. */
 async function settled(
   themeContext: StorefrontThemeEditorDTO = context,
@@ -362,24 +374,27 @@ async function settled(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
     treeAt(3) as never,
   );
-  render(
+  const onSearchChange = vi.fn();
+  const shellOn = (shown: typeof page) => (
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={themeContext}
         search={
           {
-            template: page.template,
-            templateId: page.templateId,
-            routePath: page.routePath,
+            template: shown.template,
+            templateId: shown.templateId,
+            routePath: shown.routePath,
             viewport: "desktop",
           } as StorefrontThemeEditorSearch
         }
-        onSearchChange={vi.fn()}
-        navigatingRoutePath={page.routePath}
+        onSearchChange={onSearchChange}
+        navigatingRoutePath={shown.routePath}
         currentUser={OWNER}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const { rerender } = render(shellOn(page));
+  showEditorPage = (next) => rerender(shellOn(next));
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
   fromPreview({
     type: "morph:storefront-preview-ready",
@@ -861,6 +876,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     // Nor shows any Astro Design status (Q2).
     expect(document.querySelector("[data-astro-design-notice]")).toBeNull();
     expect(document.querySelector("[data-astro-section-status]")).toBeNull();
+    expect(document.querySelector("[data-astro-design-status-bar]")).toBeNull();
   });
 
   /**
@@ -1709,6 +1725,170 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       });
       await waitFor(() => expect(basisPosts()).toHaveLength(2));
       expect(sectionStatus()).toBeNull();
+    });
+
+    /**
+     * Review finding 1: every Astro click opens Code, and the Inspector and
+     * the sections panel are inside the Design surface, which Code makes
+     * aria-hidden, inert and invisible. The same notice (one focus state) is
+     * said in a status bar outside both mode surfaces while Code is shown.
+     *
+     * jsdom ignores `inert`, so a query cannot prove the author sees it; the
+     * cases check that no ancestor of the bar is inert or aria-hidden.
+     */
+    describe("in Code mode, where an Astro click lands", () => {
+      const statusBar = () =>
+        document.querySelector<HTMLElement>("[data-astro-design-status-bar]");
+      const outsideHiddenSurfaces = (element: Element) =>
+        element.closest('[inert], [aria-hidden="true"]') === null;
+
+      it("a hint said at the click is in the status bar, in the node mounted before it, outside the hidden Design surface", async () => {
+        modelCurrentBridge();
+        readRouteBindings.mockResolvedValue(bindingView());
+        await settled(context, HOME, BASIS_READY, {
+          serverData: START_DATA,
+          // Rendered before the start's snapshot: the click is refused.
+          servedContent: { ticket: 6, instance: INSTANCE },
+        });
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+
+        // Mounted, and empty, before anything is said.
+        const bar = statusBar();
+        expect(bar).not.toBeNull();
+        expect(bar!.getAttribute("role")).toBe("status");
+        expect(bar!.getAttribute("aria-live")).toBe("polite");
+        expect(bar!.textContent).toBe("");
+
+        boundaryClick(1);
+        expect(
+          await screen.findByRole(
+            "textbox",
+            { name: "Code editor" },
+            { timeout: 15_000 },
+          ),
+        ).toBeTruthy();
+
+        expect(statusBar()).toBe(bar);
+        expect(bar!.getAttribute("data-astro-design-status-bar")).toBe(
+          "unconfirmed",
+        );
+        expect(bar!.textContent).toContain(
+          "This section can't be edited in Design right now.",
+        );
+        expect(bar!.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+        expect(bar!.textContent).toContain("hero");
+        expect(outsideHiddenSurfaces(bar!)).toBe(true);
+        // The Design copy is still kept, under the surface Code hides.
+        expect(inspectorPanel().closest("[inert]")).not.toBeNull();
+        expect(basisPosts()).toHaveLength(0);
+      });
+
+      it("a not-applied answer that arrives in Code is said in the bar as an update", async () => {
+        readRouteBindings.mockResolvedValue(bindingView());
+        const token = await selectHero();
+        const bar = statusBar()!;
+        expect(bar.textContent).toBe("");
+
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: token.operationId,
+          token,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+        await flush();
+
+        expect(statusBar()).toBe(bar);
+        expect(bar.getAttribute("data-astro-design-status-bar")).toBe(
+          "unconfirmed",
+        );
+        expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+        expect(outsideHiddenSurfaces(bar)).toBe(true);
+      });
+
+      it("Checking… after a reload is said in the bar while Code is shown", async () => {
+        let answerView: (value: unknown) => void = () => {};
+        readRouteBindings
+          .mockResolvedValueOnce(bindingView())
+          .mockImplementation(
+            () =>
+              new Promise((resolve) => {
+                answerView = resolve;
+              }),
+          );
+        await selectHero();
+        const bar = statusBar()!;
+
+        await reloadWith({ ticket: 7, instance: INSTANCE });
+        await waitFor(() =>
+          expect(bar.getAttribute("data-astro-design-status-bar")).toBe(
+            "checking",
+          ),
+        );
+        expect(bar.textContent).toContain(
+          "Checking whether this section can be edited in Design…",
+        );
+        expect(bar.textContent).toContain(ASTRO_SELECTION_RECHECKING_MESSAGE);
+        expect(outsideHiddenSurfaces(bar)).toBe(true);
+
+        await act(async () => {
+          answerView(bindingView());
+        });
+        await waitFor(() => expect(basisPosts()).toHaveLength(2));
+        expect(statusBar()).toBe(bar);
+        expect(bar.textContent).toBe("");
+      });
+
+      it("a new selection clears the old hint from the bar", async () => {
+        await heroWithHint();
+        const bar = statusBar()!;
+        expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+
+        // A confirmed click on the section again: a new selection.
+        boundaryClick(2);
+        await flush();
+
+        expect(basisPosts()).toHaveLength(2);
+        expect(statusBar()).toBe(bar);
+        expect(bar.getAttribute("data-astro-design-status-bar")).toBe("none");
+        expect(bar.textContent).toBe("");
+      });
+
+      it("a page change clears the old hint from the bar", async () => {
+        await heroWithHint();
+        const bar = statusBar()!;
+        expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+
+        act(() =>
+          showEditorPage({
+            template: "page",
+            templateId: TEMPLATE_ID,
+            routePath: ROUTE_PATH,
+          }),
+        );
+        await flush();
+
+        expect(statusBar()).toBe(bar);
+        expect(bar.textContent).toBe("");
+        expect(sectionStatus()).toBeNull();
+      });
+
+      it("back in Design the bar is quiet, and the Inspector and section row say it", async () => {
+        await heroWithHint();
+        const bar = statusBar()!;
+        expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+
+        fireEvent.click(
+          within(document.querySelector("header")!).getByRole("button", {
+            name: "Design",
+          }),
+        );
+        await waitFor(() => expect(bar.textContent).toBe(""));
+
+        expect(unconfirmedHint()).toBe(true);
+        expect(inspectorPanel().closest("[inert]")).toBeNull();
+      });
     });
   });
 });
