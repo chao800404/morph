@@ -109,3 +109,26 @@ describe("the Starter upgrade server functions on a Theme of another framework",
     expect(result.success).toBe(true);
   });
 });
+
+describe("the Starter upgrade apply on a Theme not previewed on Start", () => {
+  it("fails with STARTER_UPGRADE_START_PREVIEW_REQUIRED and the reason", async () => {
+    const reason = "Switch this Theme's preview to Start first.";
+    dal.applyReviewedStarterUpgrade.mockResolvedValue({
+      status: "start-preview-required",
+      paths: ["src/routes/index.tsx"],
+      reason,
+    });
+
+    const result = await call(applyStorefrontStarterUpgrade, {
+      ...ids,
+      expectedSourceGeneration: 5,
+      starterDigest: "a".repeat(64),
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "STARTER_UPGRADE_START_PREVIEW_REQUIRED",
+      message: reason,
+    });
+  });
+});

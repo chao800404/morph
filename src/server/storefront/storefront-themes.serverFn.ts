@@ -280,6 +280,13 @@ export const applyStorefrontStarterUpgrade = createServerFn({ method: "POST" })
       if (result.status === "framework-unavailable") {
         return fail(result.reason, { error: "THEME_FRAMEWORK_UNAVAILABLE" });
       }
+      // The review lists the files (`startPreview.paths`); the refusal only
+      // has to say that nothing was applied, and why.
+      if (result.status === "start-preview-required") {
+        return fail(result.reason, {
+          error: "STARTER_UPGRADE_START_PREVIEW_REQUIRED",
+        });
+      }
       if (result.status === "stale") {
         return fail(
           "The Theme changed since this upgrade was reviewed, so nothing was applied. Review it again.",

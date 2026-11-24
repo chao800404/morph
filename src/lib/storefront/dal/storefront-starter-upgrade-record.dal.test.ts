@@ -91,6 +91,31 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
+/**
+ * Which planned paths count as needing the full Start preview. Null keeps the
+ * real detection (no current Starter file below 32 needs it); a list stands in
+ * for a Starter whose files do, so the refusal is exercised on the real
+ * review, apply and record write.
+ */
+const startPreview = vi.hoisted(() => ({
+  requiredPaths: null as null | readonly string[],
+}));
+vi.mock("../starter-upgrade-start-preview", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../starter-upgrade-start-preview")>();
+  return {
+    ...actual,
+    starterPlanFilesRequiringStartPreview: (
+      files: ReadonlyArray<{ path: string; content: string }>,
+    ) =>
+      startPreview.requiredPaths === null
+        ? actual.starterPlanFilesRequiringStartPreview(files)
+        : files
+            .map((file) => file.path)
+            .filter((path) => startPreview.requiredPaths!.includes(path))
+            .sort(),
+  };
+});
 vi.mock("./storefront-theme-file.dal", () => ({
   storefrontThemeFileDal: {
     listFiles: vi.fn(
@@ -393,6 +418,7 @@ beforeEach(() => {
   hooks.recordWriteAttempts = 0;
   hooks.beforeTemplateWrite = null;
   channel.hasProducts = false;
+  startPreview.requiredPaths = null;
   workspace.files.clear();
   workspace.generation.clear();
   workspace.saveFilesBatch.mockReset();
@@ -2521,5 +2547,146 @@ describe("the Starter's new pages on a Theme created without them", () => {
       expect(settled.review.optional).toBeNull();
       expect(settled.review.changes).toEqual([]);
     });
+  });
+});
+
+describe("a Starter upgrade whose files need the full Start preview", () => {
+  // The legacy workspace's only Starter change is the content module; here it
+  // stands in for a Start-only route file (see `startPreview` above).
+  const CONTENT = "src/morph/content.ts";
+
+  function setPreviewRuntime(runtime: string | null) {
+    sqlite
+      .prepare("UPDATE storefront_themes SET preview_runtime = ? WHERE id = ?")
+      .run(runtime, THEME_ID);
+  }
+
+  function storedTemplates() {
+    return sqlite
+      .prepare(
+        "SELECT id, document, draft_generation, updated_at FROM storefront_theme_templates ORDER BY id",
+      )
+      .all();
+  }
+
+  async function review() {
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    if (!reviewed) throw new Error("no review");
+    return reviewed;
+  }
+
+  function apply(starterDigest: string) {
+    return storefrontDal.applyReviewedStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+      createdBy: "user-a",
+      expectedSourceGeneration: 5,
+      starterDigest,
+    });
+  }
+
+  beforeEach(() => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    startPreview.requiredPaths = [CONTENT];
+  });
+
+  it.each([null, "client"])(
+    "is reviewed as needing it on a Theme that records %s",
+    async (runtime) => {
+      setPreviewRuntime(runtime);
+
+      const reviewed = await review();
+
+      expect(reviewed.review.applies).toBe(true);
+      expect(reviewed.startPreview).toEqual({
+        paths: [CONTENT],
+        satisfied: false,
+        reason: expect.stringContaining("Switch this Theme's preview to Start"),
+      });
+    },
+  );
+
+  it.each([null, "client"])(
+    "writes no file and records no version on a Theme that records %s",
+    async (runtime) => {
+      setPreviewRuntime(runtime);
+      const reviewed = await review();
+      const before = { row: storedRawRow(), templates: storedTemplates() };
+      const filesBefore = JSON.stringify(workspace.files.get(THEME_ID));
+
+      await expect(apply(reviewed.review.digest)).resolves.toEqual({
+        status: "start-preview-required",
+        paths: [CONTENT],
+        reason: expect.stringContaining("nothing of this upgrade is applied"),
+      });
+
+      expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+      expect(JSON.stringify(workspace.files.get(THEME_ID))).toBe(filesBefore);
+      expect(storedRawRow()).toEqual(before.row);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(LEGACY_VERSION);
+      expect(storedTemplates()).toEqual(before.templates);
+      expect(hooks.recordWriteAttempts).toBe(0);
+      // The runtime is never switched on the author's behalf.
+      expect(
+        sqlite
+          .prepare("SELECT preview_runtime FROM storefront_themes WHERE id = ?")
+          .get(THEME_ID),
+      ).toEqual({ preview_runtime: runtime });
+    },
+  );
+
+  it("refuses a Theme switched back to client after the review, though the review allowed it", async () => {
+    setPreviewRuntime("start");
+    const reviewed = await review();
+    expect(reviewed.startPreview.satisfied).toBe(true);
+    setPreviewRuntime("client");
+
+    await expect(apply(reviewed.review.digest)).resolves.toMatchObject({
+      status: "start-preview-required",
+    });
+    expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+    expect(storedRow().metadata.starterTemplateVersion).toBe(LEGACY_VERSION);
+  });
+
+  // Reverse check: the same files and the same review apply once the author
+  // has switched the Theme to the full Start preview.
+  it("applies the files and records the version on a Theme that records start", async () => {
+    setPreviewRuntime("start");
+    const reviewed = await review();
+    expect(reviewed.startPreview).toEqual({
+      paths: [CONTENT],
+      satisfied: true,
+      reason: null,
+    });
+
+    await expect(apply(reviewed.review.digest)).resolves.toMatchObject({
+      status: "applied",
+      starter: true,
+      versionRecorded: true,
+    });
+    expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+  });
+
+  it("leaves a Theme on the client runtime upgraded as before when no planned file needs Start", async () => {
+    startPreview.requiredPaths = null;
+    setPreviewRuntime("client");
+    const reviewed = await review();
+    expect(reviewed.startPreview).toEqual({
+      paths: [],
+      satisfied: true,
+      reason: null,
+    });
+
+    await expect(apply(reviewed.review.digest)).resolves.toMatchObject({
+      status: "applied",
+      versionRecorded: true,
+    });
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
   });
 });

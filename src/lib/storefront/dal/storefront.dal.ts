@@ -48,7 +48,16 @@ import {
 import { storeCatalogDal } from "./store-catalog.dal";
 import { storeContextDal } from "./store-context.dal";
 import { themeSourceStore } from "../storage/theme-storage.server";
-import { defaultPreviewRuntimeForNewTheme } from "../theme-preview-runtime";
+import {
+  defaultPreviewRuntimeForNewTheme,
+  recordedThemePreviewRuntime,
+  type ThemePreviewRuntime,
+} from "../theme-preview-runtime";
+import {
+  starterPlanFilesRequiringStartPreview,
+  starterStartPreviewRequirement,
+  type StarterStartPreviewRequirement,
+} from "../starter-upgrade-start-preview";
 import { UNRECORDED_THEME_FRAMEWORK } from "../theme-framework/theme-framework.types";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
@@ -856,11 +865,18 @@ async function readStoredStarterVersion(
   db: StorefrontDb,
   storefrontId: string,
   themeId: string,
-): Promise<{ found: boolean; version: unknown; framework: string | null }> {
+): Promise<{
+  found: boolean;
+  version: unknown;
+  framework: string | null;
+  /** The runtime the Theme records, or null when it records none. */
+  previewRuntime: ThemePreviewRuntime | null;
+}> {
   const [theme] = await db
     .select({
       metadata: storefrontThemes.metadata,
       framework: storefrontThemes.framework,
+      previewRuntime: storefrontThemes.previewRuntime,
     })
     .from(storefrontThemes)
     .where(
@@ -875,7 +891,22 @@ async function readStoredStarterVersion(
     found: Boolean(theme),
     version: theme?.metadata?.starterTemplateVersion,
     framework: theme?.framework ?? null,
+    previewRuntime: recordedThemePreviewRuntime(theme?.previewRuntime),
   };
+}
+
+/**
+ * Whether this Theme may take the Start-only files of these planned writes
+ * (`starter-upgrade-start-preview.ts`).
+ */
+function starterPlanStartPreview(
+  files: ReadonlyArray<Readonly<{ path: string; content: string }>>,
+  previewRuntime: ThemePreviewRuntime | null,
+): StarterStartPreviewRequirement {
+  return starterStartPreviewRequirement(
+    starterPlanFilesRequiringStartPreview(files),
+    previewRuntime,
+  );
 }
 
 /** The stored Starter version, when it is one; `null` reads as pending. */
@@ -931,6 +962,12 @@ export type StarterUpgradeReviewResult = {
   currentVersion: number;
   review: StarterUpgradeReview;
   /**
+   * Whether the reviewed Starter files (its new pages included) need the full
+   * Start preview, and whether this Theme records it. When not satisfied, the
+   * apply refuses the Starter part and records no version.
+   */
+  startPreview: StarterStartPreviewRequirement;
+  /**
    * Content the Starter part moves when applied: Documents still in a shape
    * an older Starter wrote, and what is left as it is, with why.
    */
@@ -958,6 +995,16 @@ export type StarterUpgradeApplyResult =
   | { status: "not-applicable" }
   /** The Theme's framework is not Start; nothing was read or written. */
   | { status: "framework-unavailable"; reason: string }
+  /**
+   * The Starter part writes files that preview only on the full Start
+   * runtime, and the Theme does not record `start`; nothing was written and
+   * no version was recorded.
+   */
+  | {
+      status: "start-preview-required";
+      paths: readonly string[];
+      reason: string;
+    }
   /** The workspace or the plan changed since the author reviewed it. */
   | { status: "stale"; sourceGeneration: number | null };
 
@@ -1056,6 +1103,7 @@ export const storefrontDal = {
           // Nothing of the Starter is offered either, its new pages included.
           optional: null,
         },
+        startPreview: starterStartPreviewRequirement([], stored.previewRuntime),
         contentMigration: EMPTY_CONTENT_MIGRATION,
         catalog: reviewThemeCatalog([], {
           hasProducts: false,
@@ -1094,6 +1142,10 @@ export const storefrontDal = {
       storedVersion: typeof stored.version === "number" ? stored.version : null,
       currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
       review,
+      startPreview: starterPlanStartPreview(
+        [...review.plan.files, ...(review.optional?.plan.files ?? [])],
+        stored.previewRuntime,
+      ),
       contentMigration,
       catalog: reviewThemeCatalog(files, {
         hasProducts,
@@ -1206,6 +1258,23 @@ export const storefrontDal = {
             : undefined;
     if (starterPlan === undefined) {
       return { status: "stale", sourceGeneration };
+    }
+    // Asked again of the files about to be written, whatever the review
+    // showed: a Theme previewed on the client runtime is never given a page
+    // only the full Start preview can render, and its version is not moved
+    // past it. Upgrading never records the runtime itself.
+    if (starterPlan) {
+      const startPreview = starterPlanStartPreview(
+        starterPlan.plan.files,
+        stored.previewRuntime,
+      );
+      if (!startPreview.satisfied) {
+        return {
+          status: "start-preview-required",
+          paths: startPreview.paths,
+          reason: startPreview.reason ?? "",
+        };
+      }
     }
     const catalog =
       data.catalogDigest === undefined
