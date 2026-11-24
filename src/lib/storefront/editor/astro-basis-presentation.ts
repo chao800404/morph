@@ -150,17 +150,34 @@ export function isAstroBasisFrame(
   );
 }
 
+/** One ask about a page's stamp: its ticket and the instance it names. */
+export function astroBasisConfirmKey(servedContent: PreviewServedContent): string {
+  return `${servedContent.ticket}:${servedContent.instance}`;
+}
+
 /**
  * The ticket to ask Core about (`confirmThemePreviewContent`) when the frame
- * names Core's latest ticket and the instance reading it is not known yet:
- * after a start, whose answer names no instance. Null otherwise.
+ * names Core's latest ticket and Core has not said that the instance the
+ * frame names reads it: after a start, whose answer names no instance, or
+ * after a dev server restart that kept the ticket and stamped a new
+ * instance (the recorded one is then another). Null otherwise.
+ *
+ * Bounded: once per (ticket, page instance) — `asked` holds the keys
+ * (`astroBasisConfirmKey`) already asked — so a page Core does not confirm
+ * is left to the next sync, never asked about on every ready. Core's answer
+ * replaces the instance for that ticket (`noteAstroContentBasis`); a
+ * different answer leaves the page refused.
  */
 export function astroBasisInstanceToConfirm(
   servedContent: PreviewServedContent | null,
   basis: AstroContentBasis | null,
+  asked: ReadonlySet<string>,
 ): number | null {
-  if (!servedContent || !basis || basis.instance !== null) return null;
-  return servedContent.ticket === basis.ticket ? basis.ticket : null;
+  if (!servedContent || !basis) return null;
+  if (servedContent.ticket !== basis.ticket) return null;
+  if (basis.instance === servedContent.instance) return null;
+  if (asked.has(astroBasisConfirmKey(servedContent))) return null;
+  return basis.ticket;
 }
 
 export type AstroBasisRefusal =

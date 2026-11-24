@@ -449,6 +449,7 @@ import {
 import {
   acceptAstroBasisAck,
   ASTRO_BASIS_UNCONFIRMED_MESSAGE,
+  astroBasisConfirmKey,
   astroBasisInstanceToConfirm,
   astroBasisTokenFor,
   astroContentBasisEvents,
@@ -3461,6 +3462,11 @@ export function VisualEditorShell({
    * with the frame's stamp before a basis token is issued or its ack taken.
    */
   const astroContentBasisRef = useRef<AstroContentBasis | null>(null);
+  /**
+   * The (ticket, page instance) pairs Core was already asked about at a
+   * ready (`astroBasisConfirmKey`): each is asked once, never on every ready.
+   */
+  const astroBasisConfirmAskedRef = useRef<Set<string>>(new Set());
   /** Issues and posts a basis token for a confirmed Astro selection. */
   const issueAstroBasisPresentationRef = useRef<
     (sectionId: string, identity: string) => void
@@ -13484,19 +13490,29 @@ export function VisualEditorShell({
         // An Astro page shows an edit only in a new document (reload, 6.3):
         // what Core confirms on it is read again for that document.
         refetchAstroBindingsRef.current();
-        // Option B: a page naming Core's latest snapshot whose reading
-        // instance Core has not named yet (after a start) is asked about
-        // once, so its basis can be acknowledged. Writes nothing.
+        // Option B: a page naming Core's latest snapshot from an instance
+        // Core has not named for it (after a start, or a dev server restart
+        // that kept the ticket) is asked about once per (ticket, page
+        // instance), so its basis can be acknowledged. Writes nothing.
+        const readyServedContent = message.servedContent ?? null;
         const instanceToConfirm = isAstroBasisFrame(
           new Set(message.capabilities ?? []),
           previewContentRefreshRef.current,
         )
           ? astroBasisInstanceToConfirm(
-              message.servedContent ?? null,
+              readyServedContent,
               astroContentBasisRef.current,
+              astroBasisConfirmAskedRef.current,
             )
           : null;
-        if (instanceToConfirm !== null) {
+        if (instanceToConfirm !== null && readyServedContent) {
+          const asked = astroBasisConfirmAskedRef.current;
+          // Only this ticket's asks are kept: an older ticket is never
+          // Core's latest again (`noteAstroContentBasis` only moves forward).
+          for (const key of asked) {
+            if (!key.startsWith(`${instanceToConfirm}:`)) asked.delete(key);
+          }
+          asked.add(astroBasisConfirmKey(readyServedContent));
           void Promise.resolve()
             .then(() =>
               confirmThemePreviewContent({
