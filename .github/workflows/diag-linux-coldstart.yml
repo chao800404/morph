@@ -152,7 +152,7 @@ jobs:
             MORPH_E2E_REPORT_PATH="$out/report-$i.json" \
               timeout --kill-after=30s "$PER_RUN_S" pnpm test:e2e:local-preview -- "$SPEC" --output="$out/output-$i" > "$out/run-$i.log" 2>&1 || rc=$?
             e=$(date -u +%FT%T.%3NZ)
-            kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
+            kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true
             docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}' > "$out/containers-after-$i.txt" 2>&1
             cat "$out/run-$i.log" >> "$out/run.log"
             echo "=== run $i end $e rc=$rc ===" | tee -a "$out/run.log"
@@ -171,7 +171,7 @@ jobs:
           since=$(cat "$out/dockerd-log-since.txt" 2>/dev/null || echo '-3h')
           sudo journalctl -u docker --since "$since" --no-pager -o short-iso-precise > "$out/dockerd.log" 2>&1 \
             || echo "EVIDENCE_INCOMPLETE journalctl failed" >> "$out/evidence.txt"
-          grep -q 'Calling POST' "$out/dockerd.log" || echo "EVIDENCE_INCOMPLETE dockerd API log has no calls" >> "$out/evidence.txt"
+          grep -qE 'handling (GET|POST|HEAD) request|Calling (GET|POST)' "$out/dockerd.log" || echo "EVIDENCE_INCOMPLETE dockerd API log has no calls" >> "$out/evidence.txt"
           docker image ls --digests --no-trunc --format '{{.Repository}}:{{.Tag}} {{.Digest}} {{.ID}}' > "$out/images-at-end.txt" 2>&1 || true
 
       # Per run: did the test really run (its report), did it reach a cold
@@ -202,7 +202,7 @@ jobs:
               run: w.run, rc: w.rc, test_ran: ran, skipped: stats ? (stats.skipped ?? 0) : null,
               proxy_create: n("preview-proxy", "create"), proxy_start: n("preview-proxy", "start"),
               app_create: n("preview", "create"), app_start: n("preview", "start"),
-              dockerd_create_calls: api.filter((l) => /Calling POST \S*\/containers\/create/.test(l) && sec(l) >= sec(w.start) && sec(l) <= sec(w.end)).length,
+              dockerd_create_calls: api.filter((l) => /(Calling POST \S*|handling POST request.*request-url="?)(\/v[0-9.]+)?\/containers\/create\?/.test(l) && sec(l) >= sec(w.start) && sec(l) <= sec(w.end)).length,
               images: [...new Set(ev.filter((e) => e.action === "create").map((e) => `${e.role}=${e.image}`))],
               image_ids: [...new Set(lines(read(`containers-during-${w.run}.txt`)).map((l) => l.replace(/^\//, "").replace(/-PreviewSandbox-[0-9a-f]{58}/, "-PreviewSandbox-…")))],
               leftover_before: lines(read(`containers-before-${w.run}.txt`)).length,
