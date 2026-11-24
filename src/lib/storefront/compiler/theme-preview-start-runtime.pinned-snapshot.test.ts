@@ -52,7 +52,10 @@ describe("the Start preview Worker with the option off", () => {
     const source = themePreviewStartWorkerSource("start-preview-test");
     expect(source).not.toContain("node:async_hooks");
     expect(source).not.toContain("requestSnapshots");
-    expect(source).not.toContain(PREVIEW_SERVED_CONTENT_TIMING);
+    // The probe's own x-morph-content-ticket header shares the prefix; the
+    // stamp is the Server-Timing metric.
+    expect(source).not.toContain("Server-Timing");
+    expect(source).not.toContain(`${PREVIEW_SERVED_CONTENT_TIMING};desc`);
   });
 });
 

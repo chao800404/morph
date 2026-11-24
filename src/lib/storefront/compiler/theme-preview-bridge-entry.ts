@@ -540,14 +540,6 @@ function drawOverlays() {
  */
 const documentNavigation = window.__morphPreviewNavigation === "document";
 /**
- * What a ready names (option B): a page that navigates as documents also
- * answers basis tokens (\`confirm-section-basis\`). Every other page names
- * exactly BRIDGE_CAPABILITIES, as before.
- */
-const READY_CAPABILITIES: readonly PreviewCapability[] = documentNavigation
-  ? [...BRIDGE_CAPABILITIES, "astro-basis-ack-v1"]
-  : BRIDGE_CAPABILITIES;
-/**
  * How the load that made this document came about, read once as it loads
  * and then forgotten, so it describes that load and nothing older:
  *
@@ -1648,6 +1640,18 @@ function servedContentReport() {
   }
 }
 
+/**
+ * What a ready names (option B): a page that navigates as documents also
+ * answers basis tokens (\`confirm-section-basis\`). Every other page names
+ * exactly BRIDGE_CAPABILITIES, as before. A function, declared outside the
+ * routing code that tests run on its own.
+ */
+function readyCapabilities() {
+  return documentNavigation
+    ? [...BRIDGE_CAPABILITIES, "astro-basis-ack-v1"]
+    : BRIDGE_CAPABILITIES;
+}
+
 /** The stamp a ready names: only from a page that navigates as documents. */
 function readyServedContent() {
   return documentNavigation ? servedContentReport() : null;
@@ -1663,9 +1667,9 @@ function reportReady() {
   // Guarded, so this function also runs where it is cut out on its own;
   // there, and on every Start page, a ready is exactly what it was.
   const capabilities =
-    typeof READY_CAPABILITIES === "undefined"
-      ? BRIDGE_CAPABILITIES
-      : READY_CAPABILITIES;
+    typeof readyCapabilities === "function"
+      ? readyCapabilities()
+      : BRIDGE_CAPABILITIES;
   const servedContent =
     typeof readyServedContent === "function" ? readyServedContent() : null;
   // The capabilities say what this bridge reads: an editor posts a

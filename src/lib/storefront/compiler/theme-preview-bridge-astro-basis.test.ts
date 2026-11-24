@@ -30,7 +30,11 @@ describe("the bridge's basis ack", () => {
 
   it("adds the basis capability and the stamp for document navigation only", () => {
     expect(BRIDGE).toContain(
-      'const READY_CAPABILITIES: readonly PreviewCapability[] = documentNavigation\n  ? [...BRIDGE_CAPABILITIES, "astro-basis-ack-v1"]\n  : BRIDGE_CAPABILITIES;',
+      [
+        "  return documentNavigation",
+        '    ? [...BRIDGE_CAPABILITIES, "astro-basis-ack-v1"]',
+        "    : BRIDGE_CAPABILITIES;",
+      ].join("\n"),
     );
     // A function of its own, so `reportReady` still runs where tests cut it
     // out alone (theme-preview-bridge-selection-field / -presentation-trace).
@@ -59,11 +63,11 @@ describe("the bridge's basis ack", () => {
         "reportStructure",
         "window",
         "BRIDGE_CAPABILITIES",
-        "READY_CAPABILITIES",
         "documentNavigation",
         "servedContentReport",
         `let editorSupportsCodeDefault = false; let editorSupportsAstroIdentity = false;
-        ${cutFunction("readyServedContent")}\n${cutFunction("reportReady")}\nreportReady();`,
+        ${cutFunction("readyCapabilities")}
+${cutFunction("readyServedContent")}\n${cutFunction("reportReady")}\nreportReady();`,
       )(
         { previewSession: "s" },
         () => null,
@@ -71,9 +75,6 @@ describe("the bridge's basis ack", () => {
         () => {},
         { dispatchEvent: () => true },
         ["section-presentation-ack-v1"],
-        documentNavigation
-          ? ["section-presentation-ack-v1", "astro-basis-ack-v1"]
-          : ["section-presentation-ack-v1"],
         documentNavigation,
         () => stamp,
       );

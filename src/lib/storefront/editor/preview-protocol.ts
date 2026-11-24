@@ -1380,10 +1380,10 @@ function parseSectionPresentationToken(
   };
   // A Start token has no basis key at all, and parses exactly as before.
   if (value.basis === undefined) return token;
-  const basis = parseSectionPresentationBasis(value.basis);
+  const presentationBasis = parseSectionPresentationBasis(value.basis);
   // A basis token presents a saved snapshot, never an overlay.
-  if (!basis || token.overlayRevision !== 0) return null;
-  return { ...token, basis };
+  if (!presentationBasis || token.overlayRevision !== 0) return null;
+  return { ...token, basis: presentationBasis };
 }
 
 const ASTRO_BOUNDARY_IDENTITY =
