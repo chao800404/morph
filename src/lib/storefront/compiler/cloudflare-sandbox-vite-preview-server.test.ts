@@ -28,6 +28,7 @@ import {
 } from "./sandbox-toolchain.test-support";
 import { astroThemeFiles } from "../theme-framework/astro-native-prerender.fixtures";
 import { themeToolchainForFramework } from "../theme-framework/theme-toolchains";
+import { enterPreviewStart } from "./preview-server-observation";
 
 type Harness = {
   session: PreviewServerSession;
@@ -1926,40 +1927,186 @@ describe("a start read before a save that created a file", () => {
 });
 
 /**
- * PROPOSAL (handoff/2026-11-23/preview-autoretry-design.md), red until it is
- * decided and built: one automatic retry of a whole start when the sandbox
- * reports the container stopped, or its runtime connection closed, while one
- * of the start's operations was pending.
+ * One automatic retry of a whole start after a sandbox interruption
+ * (handoff/2026-11-23/preview-autoretry-design-v2.md, approved with
+ * conditions on 2026-11-23/24).
+ *
+ * - Retried only on the one allow-listed sentence, "Sandbox operation <op>
+ *   was interrupted while the runtime connection was closing", matched as
+ *   the whole message after Durable Object RPC folded the SDK's class name
+ *   in front of it, and only when the start's own container steps threw it
+ *   (staging and materializing, or the fence script). "Container failed to
+ *   start" is deliberately not on the list (user, 11-24).
+ * - At most one retry. The 500 ms pause counts inside the 30 s window, and
+ *   both are checked again after it.
+ * - One server-side deadline for the request, shared by both attempts.
+ * - The preview's Durable Object names the current start; a stopped,
+ *   superseded or expired one is never sent again and its late success is
+ *   never answered as ready.
  *
  * The error is the one PR #434's CI run met, in the form it reaches the
- * Worker: Durable Object RPC keeps only the message, and the message carries
- * the SDK's class name in front (job log, 15:41:17.436).
+ * Worker (job log, 15:41:17.436).
  */
-describe("an interrupted start (proposal: one automatic retry)", () => {
+describe("an interrupted start: one automatic retry (design v2)", () => {
   const INTERRUPTED_MKDIR =
     "OperationInterruptedError: Sandbox operation files.mkdir was interrupted while the runtime connection was closing";
-  const CONTAINER_STOPPED =
-    "OperationInterruptedError: The sandbox container stopped while the operation was pending.";
-  const SANDBOX_DESTROYED =
-    "OperationInterruptedError: The sandbox was destroyed while the operation was pending.";
+  const INTERRUPTED_FENCE =
+    "OperationInterruptedError: Sandbox operation sandbox.exec was interrupted while the runtime connection was closing";
 
-  /** A harness whose first `failures` mkdir calls throw `message`. */
-  const failingMkdir = (message: string, failures: number) => {
-    const harness = createSession("ready");
-    let calls = 0;
-    harness.session.mkdir = async () => {
-      calls += 1;
-      if (calls <= failures) throw new Error(message);
+  type GuardStatus = "current" | "superseded" | "stopped" | "expired";
+
+  /**
+   * The preview Durable Object's current-start record, as the session
+   * reaches it over RPC. A stand-in with the contract the transport relies
+   * on; the Durable Object's own logic is tested in preview-sandbox.test.ts.
+   */
+  const withStartGuard = (harness: Harness, now: () => number) => {
+    const guard = {
+      attemptId: null as string | null,
+      deadlineAt: null as number | null,
+      stopped: false,
+      claims: [] as string[],
+      checks: [] as Array<{ attemptId: string; next?: string }>,
+    };
+    const session = harness.session as unknown as Record<string, unknown>;
+    session.claimPreviewStart = async (input: {
+      attemptId: string;
+      deadlineAt: number;
+    }) => {
+      guard.claims.push(input.attemptId);
+      guard.attemptId = input.attemptId;
+      guard.deadlineAt = input.deadlineAt;
+      guard.stopped = false;
+    };
+    session.checkPreviewStart = async (input: {
+      attemptId: string;
+      next?: string;
+    }): Promise<GuardStatus> => {
+      guard.checks.push(input);
+      if (guard.stopped) return "stopped";
+      if (guard.attemptId !== input.attemptId) return "superseded";
+      if (guard.deadlineAt !== null && now() >= guard.deadlineAt) {
+        return "expired";
+      }
+      if (input.next) guard.attemptId = input.next;
+      return "current";
+    };
+    session.endPreviewStarts = async () => {
+      guard.stopped = true;
+      guard.attemptId = null;
     };
     return {
-      harness,
+      guard,
+      /** A newer start request for the same preview. */
+      supersede: () =>
+        (
+          session.claimPreviewStart as (input: {
+            attemptId: string;
+            deadlineAt: number;
+          }) => Promise<void>
+        )({ attemptId: "newer-request", deadlineAt: now() + 180_000 }),
+    };
+  };
+
+  /** Options the retry adds; cast so this block reads the same before it exists. */
+  const retryOptions = (options: Record<string, unknown>) =>
+    options as NonNullable<
+      ConstructorParameters<typeof CloudflareSandboxVitePreviewServer>[0]
+    >;
+
+  const override = (harness: Harness, name: string, value: unknown) => {
+    (harness.session as unknown as Record<string, unknown>)[name] = value;
+  };
+
+  type Setup = {
+    harness: Harness;
+    time: { now: () => number; advance: (ms: number) => void };
+    guarded: ReturnType<typeof withStartGuard> | null;
+    server: CloudflareSandboxVitePreviewServer;
+  };
+
+  const setup = (
+    options: {
+      /** How many of the first mkdir calls throw `message`. */
+      failures?: number;
+      message?: string;
+      behaviour?: Parameters<typeof createSession>[0];
+      guarded?: boolean;
+      beforeFailure?: (ctx: Setup) => void;
+      onPause?: (ctx: Setup) => Promise<void> | void;
+      server?: Record<string, unknown>;
+    } = {},
+  ) => {
+    const harness = createSession(options.behaviour ?? "ready");
+    let t = 1_000_000;
+    const time = { now: () => t, advance: (ms: number) => void (t += ms) };
+    const guarded =
+      options.guarded === false ? null : withStartGuard(harness, time.now);
+    const pauses: number[] = [];
+    let mkdirCalls = 0;
+    const ctx = { harness, time, guarded } as Setup;
+    override(harness, "mkdir", async () => {
+      mkdirCalls += 1;
+      if (mkdirCalls <= (options.failures ?? 0)) {
+        options.beforeFailure?.(ctx);
+        throw new Error(options.message ?? INTERRUPTED_MKDIR);
+      }
+    });
+    ctx.server = new CloudflareSandboxVitePreviewServer({
+      sandboxProvider: { getSandbox: async () => harness.session },
+      sandboxBinding: {},
+      ...retryOptions({
+        now: time.now,
+        pause: async (ms: number) => {
+          pauses.push(ms);
+          await options.onPause?.(ctx);
+        },
+        ...options.server,
+      }),
+    });
+    const start = (
+      overrides: Partial<
+        Parameters<CloudflareSandboxVitePreviewServer["start"]>[0]
+      > = {},
+    ) =>
+      ctx.server.start({
+        previewId: "preview-1",
+        files: THEME,
+        entry: "src/pages/index.tsx",
+        previewHostname: "preview.example.com",
+        platformHostEnv: { PUBLIC_URL: "https://admin.example.net" },
+        ...overrides,
+      });
+    return {
+      ...ctx,
+      pauses,
+      start,
       get mkdirCalls() {
-        return calls;
+        return mkdirCalls;
       },
     };
   };
 
-  const startRecords = async (run: () => Promise<unknown>) => {
+  /** Runs `hook` when the dev server is about to report itself ready. */
+  const beforeReady = (harness: Harness, hook: () => Promise<void> | void) => {
+    const startProcess = harness.session.startProcess.bind(harness.session);
+    override(
+      harness,
+      "startProcess",
+      async (...args: Parameters<PreviewServerSession["startProcess"]>) => {
+        const process = await startProcess(...args);
+        return {
+          ...process,
+          waitForPort: async (port: number, options?: { path?: string }) => {
+            await hook();
+            return process.waitForPort?.(port, options);
+          },
+        };
+      },
+    );
+  };
+
+  const records = async (run: () => Promise<unknown>) => {
     const logged: string[] = [];
     const spy = vi.spyOn(console, "log").mockImplementation((line) => {
       logged.push(String(line));
@@ -1970,128 +2117,445 @@ describe("an interrupted start (proposal: one automatic retry)", () => {
     } finally {
       spy.mockRestore();
     }
-    const starts = logged
-      .filter((line) => line.startsWith("[preview-observe] start "))
-      .map(
-        (line) =>
-          JSON.parse(line.slice("[preview-observe] start ".length)) as Record<
-            string,
-            unknown
-          >,
-      );
-    return { result: result as Awaited<ReturnType<typeof startWith>>, starts };
+    const events = (event: string) =>
+      logged
+        .filter((line) => line.startsWith(`[preview-observe] ${event} `))
+        .map(
+          (line) =>
+            JSON.parse(
+              line.slice(`[preview-observe] ${event} `.length),
+            ) as Record<string, unknown>,
+        );
+    return {
+      result: result as Awaited<ReturnType<typeof startWith>> & {
+        recoveredFrom?: Record<string, unknown>;
+        retryOf?: string;
+      },
+      starts: events("start"),
+      retries: events("start-retry"),
+    };
   };
 
-  it("retries the whole start once when its runtime connection closed mid-start", async () => {
-    const { harness } = failingMkdir(INTERRUPTED_MKDIR, 1);
-    const { result, starts } = await startRecords(() => startWith(harness));
+  describe("what is retried", () => {
+    it("runs the whole start once more when the runtime connection closed while it was staging, after a 500 ms pause", async () => {
+      const s = setup({ failures: 1 });
+      const { result, starts } = await records(() => s.start());
 
-    expect(result.ok).toBe(true);
-    // Two attempts, each with its own record, and no third.
-    expect(starts).toHaveLength(2);
-    expect(starts[0]!.outcome).toBe("failed");
-    expect(starts[1]!.outcome).toBe("ready");
-    expect(harness.commands).toHaveLength(1);
-  });
-
-  it("retries once, too, when the container stopped while an operation was pending", async () => {
-    const { harness } = failingMkdir(CONTAINER_STOPPED, 1);
-    const { result, starts } = await startRecords(() => startWith(harness));
-
-    expect(result.ok).toBe(true);
-    expect(starts).toHaveLength(2);
-  });
-
-  it("surfaces the error when the retry is interrupted as well, without a third attempt", async () => {
-    const failing = failingMkdir(INTERRUPTED_MKDIR, Number.POSITIVE_INFINITY);
-    const { result, starts } = await startRecords(() =>
-      startWith(failing.harness),
-    );
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.stage).toBe("preview-server-start");
-    expect(result.errorMessage).toContain("interrupted");
-    expect(starts).toHaveLength(2);
-    expect(starts.map((start) => start.outcome)).toEqual(["failed", "failed"]);
-    expect(starts[0]!.attemptId).not.toBe(starts[1]!.attemptId);
-    // Nothing was started in a container that never held a workspace.
-    expect(failing.harness.commands).toHaveLength(0);
-  });
-
-  it("does not retry a sandbox that was destroyed while the start was pending", async () => {
-    // Someone stopped this preview: starting again would bring back the
-    // container they just stopped.
-    const failing = failingMkdir(SANDBOX_DESTROYED, 1);
-    const { result, starts } = await startRecords(() =>
-      startWith(failing.harness),
-    );
-
-    expect(result.ok).toBe(false);
-    expect(starts).toHaveLength(1);
-    expect(failing.mkdirCalls).toBe(1);
-  });
-
-  it("does not retry an error that is not a sandbox interruption", async () => {
-    const failing = failingMkdir("EACCES: permission denied, mkdir", 1);
-    const { result, starts } = await startRecords(() =>
-      startWith(failing.harness),
-    );
-
-    expect(result.ok).toBe(false);
-    expect(starts).toHaveLength(1);
-    expect(failing.mkdirCalls).toBe(1);
-  });
-
-  it("does not retry a message that only mentions an interruption further in", async () => {
-    // Matched on the SDK's own prefix, never on a substring a Theme or a
-    // log line could carry.
-    const failing = failingMkdir(
-      `Theme build said: ${INTERRUPTED_MKDIR}`,
-      1,
-    );
-    const { result, starts } = await startRecords(() =>
-      startWith(failing.harness),
-    );
-
-    expect(result.ok).toBe(false);
-    expect(starts).toHaveLength(1);
-  });
-
-  it("does not retry a dev server that exited before it was ready", async () => {
-    // A Theme that crashes Vite crashes it again: that is the author's
-    // answer, not a transient one.
-    const harness = createSession("exit");
-    const { result, starts } = await startRecords(() =>
-      startWith(harness, {}, { readyTimeoutMs: 10_000 }),
-    );
-
-    expect(result.ok).toBe(false);
-    expect(starts).toHaveLength(1);
-    expect(harness.commands).toHaveLength(1);
-  });
-
-  it("records the retry: the answer names the failed first attempt, and each start line names the other", async () => {
-    const { harness } = failingMkdir(INTERRUPTED_MKDIR, 1);
-    const { result, starts } = await startRecords(() => startWith(harness));
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    const first = starts[0]!;
-    const second = starts[1]!;
-    // The answer is the second attempt's, and says it recovered from the
-    // first: acceptance evidence can tell a retried start from a clean one.
-    expect(result.attemptId).toBe(second.attemptId);
-    expect(
-      (result as { recoveredFrom?: unknown }).recoveredFrom,
-    ).toEqual({
-      attemptId: first.attemptId,
-      stage: "preview-server-start",
-      reason: "sandbox-interrupted",
-      errorMessage: INTERRUPTED_MKDIR,
+      expect(result.ok).toBe(true);
+      // Two attempts, each with its own record, and no third.
+      expect(starts.map((start) => start.outcome)).toEqual(["failed", "ready"]);
+      expect(starts[0]!.attemptId).not.toBe(starts[1]!.attemptId);
+      expect(s.pauses).toEqual([500]);
+      expect(s.harness.commands).toHaveLength(1);
     });
-    // The server's own record ties the two together both ways.
-    expect(first.retry).toBe("scheduled");
-    expect(second.retryOf).toBe(first.attemptId);
+
+    it("runs it once more, too, when the fence script's run was interrupted the same way", async () => {
+      const s = setup();
+      const exec = s.harness.session.exec.bind(s.harness.session);
+      let fenced = 0;
+      override(s.harness, "exec", async (command: string) => {
+        if (command.startsWith("node ") && ++fenced === 1) {
+          throw new Error(INTERRUPTED_FENCE);
+        }
+        return exec(command);
+      });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(true);
+      expect(starts).toHaveLength(2);
+      expect(result.recoveredFrom?.step).toBe("fence");
+    });
+
+    it("records the retry: the answer names the failed first attempt, and each start line names the other", async () => {
+      const s = setup({ failures: 1 });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const [first, second] = starts;
+      // The answer is the second attempt's, and says it recovered from the
+      // first: acceptance evidence can tell a retried start from a clean one.
+      expect(result.attemptId).toBe(second!.attemptId);
+      expect(result.recoveredFrom).toEqual({
+        attemptId: first!.attemptId,
+        stage: "preview-server-start",
+        reason: "sandbox-interrupted",
+        signal: "runtime-connection-closing",
+        step: "stage",
+        attempts: 2,
+        errorMessage: INTERRUPTED_MKDIR,
+      });
+      expect(first!.retry).toBe("scheduled");
+      expect(second!.retryOf).toBe(first!.attemptId);
+      expect(second!.attempt).toBe(2);
+      // The Durable Object handed "current" from the first to the second.
+      expect(s.guarded!.guard.attemptId).toBe(second!.attemptId);
+    });
+
+    it("surfaces the error when the retry is interrupted as well, without a third attempt", async () => {
+      const s = setup({ failures: Number.POSITIVE_INFINITY });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-server-start");
+      expect(result.errorMessage).toBe(INTERRUPTED_MKDIR);
+      expect(starts.map((start) => start.outcome)).toEqual(["failed", "failed"]);
+      expect(starts[0]!.retry).toBe("scheduled");
+      expect(starts[1]!.retryOf).toBe(starts[0]!.attemptId);
+      expect(starts[1]!.retry).toBeUndefined();
+      // The final failure names the attempt it retried, and claims no recovery.
+      expect(result.retryOf).toBe(starts[0]!.attemptId);
+      expect(result.recoveredFrom).toBeUndefined();
+      expect(s.pauses).toEqual([500]);
+      // Nothing was started in a container that never held a workspace.
+      expect(s.harness.commands).toHaveLength(0);
+    });
+  });
+
+  describe("what is never retried", () => {
+    it.each([
+      [
+        "the container stopped while an operation was pending (not seen on the start path yet)",
+        "OperationInterruptedError: The sandbox container stopped while the operation was pending.",
+      ],
+      [
+        "the sandbox was destroyed while the start was pending",
+        "OperationInterruptedError: The sandbox was destroyed while the operation was pending.",
+      ],
+      [
+        "the platform was updating the sandbox runtime",
+        "OperationInterruptedError: Sandbox operation files.mkdir was interrupted while the platform was updating the sandbox runtime",
+      ],
+      [
+        "the runtime connection closed unexpectedly",
+        "OperationInterruptedError: Sandbox operation files.mkdir was interrupted while the runtime connection closed unexpectedly",
+      ],
+      ["the container failed to start (user, 11-24)", "Container failed to start."],
+      [
+        "a start timeout",
+        "SANDBOX_START_TIMEOUT: the sandbox did not start within 90000 ms",
+      ],
+      [
+        "an operation that did not finish in time",
+        "Sandbox operation files.mkdir did not finish within 30000 ms",
+      ],
+      [
+        "the sentence anywhere but at the start",
+        `Theme build said: ${INTERRUPTED_MKDIR}`,
+      ],
+      ["the sentence with more after it", `${INTERRUPTED_MKDIR}; retry later`],
+      ["the sentence without the class name", INTERRUPTED_MKDIR.slice("OperationInterruptedError: ".length)],
+      ["an error that is not an interruption", "EACCES: permission denied, mkdir"],
+    ])("%s", async (_name, message) => {
+      const s = setup({ failures: 1, message });
+      const { result, starts, retries } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errorMessage).toBe(message);
+      expect(starts).toHaveLength(1);
+      expect(starts[0]!.retry).toBeUndefined();
+      expect(retries).toEqual([]);
+      expect(s.pauses).toEqual([]);
+      expect(s.mkdirCalls).toBe(1);
+    });
+
+    it("does not retry the allow-listed sentence from a step that is not the start's own staging or fence", async () => {
+      const s = setup();
+      override(s.harness, "exposePort", async () => {
+        throw new Error(
+          "OperationInterruptedError: Sandbox operation ports.expose was interrupted while the runtime connection was closing",
+        );
+      });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      expect(starts).toHaveLength(1);
+      expect(s.pauses).toEqual([]);
+    });
+
+    it("does not retry an interruption that reached the dev server's readiness check", async () => {
+      // Folded into PREVIEW_SERVER_EXITED, which a real crash also is.
+      const s = setup();
+      beforeReady(s.harness, () => {
+        throw new Error(
+          "OperationInterruptedError: Sandbox operation process.waitForPort was interrupted while the runtime connection was closing",
+        );
+      });
+      const { result, starts } = await records(() =>
+        s.start(),
+      );
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errorMessage).toContain("PREVIEW_SERVER_EXITED");
+      expect(starts).toHaveLength(1);
+      expect(s.pauses).toEqual([]);
+    });
+
+    it("does not retry a dev server that exited before it was ready", async () => {
+      const s = setup({ behaviour: "exit", server: { readyTimeoutMs: 10_000 } });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      expect(starts).toHaveLength(1);
+      expect(s.harness.commands).toHaveLength(1);
+    });
+
+    it("does not retry without the Durable Object's current-start record to check against", async () => {
+      // Unknown is not "still current": the retry could restart a preview
+      // someone stopped.
+      const s = setup({ failures: 1, guarded: false });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      expect(starts).toHaveLength(1);
+      expect(s.pauses).toEqual([]);
+      expect(s.mkdirCalls).toBe(1);
+    });
+
+    it("ends with the refusal when the retry is refused as stale: a newer save stays", async () => {
+      const HERO = "src/components/Hero.tsx";
+      // The newer save lands while the start pauses.
+      const s = setup({
+        onPause: async (ctx) => {
+          await runFencedWriteInSandbox(
+            ctx.harness.session as unknown as FenceSandbox,
+            {
+              op: "write",
+              root: "/workspace",
+              files: [
+                { path: HERO, content: "export default () => 'v2';\n", fence: 2 },
+              ],
+              generation: 5,
+              marker: {
+                path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+                content: "dirty:sync",
+              },
+            },
+          );
+        },
+      });
+      expect(
+        (await s.start({ fileVersions: { [HERO]: 1 }, sourceGeneration: 4 }))
+          .ok,
+      ).toBe(true);
+      let mkdirCalls = 0;
+      override(s.harness, "mkdir", async () => {
+        if (++mkdirCalls === 1) throw new Error(INTERRUPTED_MKDIR);
+      });
+
+      const { result, starts } = await records(() =>
+        s.start({
+          files: THEME.map((file) =>
+            file.path === HERO ? { ...file, content: `${file.content}// older\n` } : file,
+          ),
+          fileVersions: { [HERO]: 1 },
+          sourceGeneration: 4,
+        }),
+      );
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-stale");
+      expect(starts).toHaveLength(2);
+      expect(s.harness.written.get(`/workspace/${HERO}`)).toBe(
+        "export default () => 'v2';\n",
+      );
+    });
+  });
+
+  describe("a stopped or superseded start", () => {
+    it("is not sent again when the author stops the preview during the pause, and starts no container", async () => {
+      let afterStop = { writes: 0, commands: 0, execs: 0 };
+      let execs = 0;
+      const s = setup({
+        failures: 1,
+        onPause: async (ctx) => {
+          await ctx.server.stop("preview-1");
+          afterStop = {
+            writes: ctx.harness.writePaths.length,
+            commands: ctx.harness.commands.length,
+            execs,
+          };
+        },
+      });
+      const exec = s.harness.session.exec.bind(s.harness.session);
+      override(s.harness, "exec", async (command: string) => {
+        execs += 1;
+        return exec(command);
+      });
+      const { result, starts, retries } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-stopped");
+      expect(starts).toHaveLength(1);
+      expect(retries).toEqual([
+        expect.objectContaining({
+          retryOf: starts[0]!.attemptId,
+          outcome: "cancelled",
+          reason: "stopped",
+        }),
+      ]);
+      // Nothing touched the container after the stop.
+      expect(s.mkdirCalls).toBe(1);
+      expect(s.harness.writePaths).toHaveLength(afterStop.writes);
+      expect(s.harness.commands).toHaveLength(afterStop.commands);
+      expect(execs).toBe(afterStop.execs);
+      expect(s.harness.destroyed).toBe(1);
+    });
+
+    it("is not sent again when a newer start for the same preview supersedes it during the pause", async () => {
+      const s = setup({
+        failures: 1,
+        onPause: (ctx) => ctx.guarded!.supersede(),
+      });
+      const { result, starts, retries } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-superseded");
+      expect(starts).toHaveLength(1);
+      expect(retries[0]).toMatchObject({ outcome: "cancelled", reason: "superseded" });
+      expect(s.mkdirCalls).toBe(1);
+      expect(s.harness.commands).toHaveLength(0);
+      // The newer request stays the current one.
+      expect(s.guarded!.guard.attemptId).toBe("newer-request");
+    });
+
+    it("never answers ready for a start superseded while its dev server was starting", async () => {
+      const s = setup();
+      beforeReady(s.harness, () => s.guarded!.supersede());
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-superseded");
+      expect(result.recoveredFrom).toBeUndefined();
+      expect(starts).toHaveLength(1);
+      expect(starts[0]!.outcome).toBe("failed");
+      expect(s.guarded!.guard.attemptId).toBe("newer-request");
+    });
+
+    it("never answers ready for a start stopped while its dev server was starting", async () => {
+      const s = setup();
+      beforeReady(s.harness, () => s.server.stop("preview-1"));
+      const { result } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-stopped");
+    });
+
+    it("never answers ready for a retried attempt that a newer start superseded", async () => {
+      const s = setup({ failures: 1 });
+      beforeReady(s.harness, () => s.guarded!.supersede());
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-superseded");
+      expect(result.recoveredFrom).toBeUndefined();
+      expect(result.retryOf).toBe(starts[0]!.attemptId);
+      expect(starts).toHaveLength(2);
+    });
+  });
+
+  describe("the shared deadline and the 30 s window", () => {
+    it("sends nothing when the first attempt fails at 29.7 s and the pause takes it past 30 s", async () => {
+      const s = setup({
+        failures: 1,
+        beforeFailure: (ctx) => ctx.time.advance(29_700),
+        onPause: (ctx) => ctx.time.advance(500),
+      });
+      const { result, starts, retries } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // The first attempt's own failure, as if no retry existed.
+      expect(result.stage).toBe("preview-server-start");
+      expect(result.errorMessage).toBe(INTERRUPTED_MKDIR);
+      expect(s.pauses).toEqual([500]);
+      expect(starts).toHaveLength(1);
+      expect(retries[0]).toMatchObject({ outcome: "cancelled", reason: "retry-window" });
+      expect(s.mkdirCalls).toBe(1);
+      // The Durable Object was not asked to hand over to a second attempt.
+      expect(s.guarded!.guard.checks.some((check) => check.next)).toBe(false);
+    });
+
+    it("schedules no retry at all once the 30 s window has passed", async () => {
+      const s = setup({
+        failures: 1,
+        beforeFailure: (ctx) => ctx.time.advance(30_001),
+      });
+      const { starts } = await records(() => s.start());
+
+      expect(starts).toHaveLength(1);
+      expect(starts[0]!.retry).toBeUndefined();
+      expect(s.pauses).toEqual([]);
+    });
+
+    it("sends nothing when the pause takes the request past its own deadline", async () => {
+      const s = setup({
+        failures: 1,
+        server: { startDeadlineMs: 10_000 },
+        beforeFailure: (ctx) => ctx.time.advance(9_800),
+        onPause: (ctx) => ctx.time.advance(500),
+      });
+      const { result, starts, retries } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      expect(starts).toHaveLength(1);
+      expect(retries[0]).toMatchObject({ outcome: "cancelled", reason: "deadline" });
+      expect(s.mkdirCalls).toBe(1);
+    });
+
+    it("gives the second attempt only what is left of the deadline, never a full ready timeout", async () => {
+      const s = setup({
+        behaviour: "silent",
+        failures: 1,
+        server: { startDeadlineMs: 400, readyTimeoutMs: 180_000 },
+        beforeFailure: (ctx) => ctx.time.advance(300),
+      });
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errorMessage).toContain("PREVIEW_SERVER_TIMEOUT");
+      expect(result.errorMessage).toContain("within 100ms");
+      expect(starts).toHaveLength(2);
+    });
+
+    it("never answers ready for a success that came back after the deadline", async () => {
+      const s = setup({ server: { startDeadlineMs: 10_000 } });
+      beforeReady(s.harness, () => s.time.advance(10_001));
+      const { result, starts } = await records(() => s.start());
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.stage).toBe("preview-start-deadline");
+      expect(starts[0]!.outcome).toBe("failed");
+    });
+
+    it("keeps the retry inside the one start slot it entered with", async () => {
+      let seen: number | null = null;
+      const s = setup({
+        failures: 1,
+        onPause: () => {
+          const other = enterPreviewStart("preview-1");
+          seen = other.concurrentAtEntry;
+          other.leave();
+        },
+      });
+      const { starts } = await records(() => s.start());
+
+      expect(seen).toBe(1);
+      expect(starts.map((start) => start.concurrentAtEntry)).toEqual([0, 0]);
+      const after = enterPreviewStart("preview-1");
+      expect(after.concurrentAtEntry).toBe(0);
+      after.leave();
+    });
   });
 });
