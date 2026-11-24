@@ -403,6 +403,8 @@ async function settled(
     routePath: page.routePath,
   });
   await flush();
+  // For a case that changes what Core answered after the page came up.
+  return client;
 }
 
 const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
@@ -879,6 +881,9 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         ...vi.mocked(console.info).mock.calls,
         ...vi.mocked(console.warn).mock.calls,
       ].some((call) => call.some((part) => typeof part === "string" && pattern.test(part)));
+    /** The intake took an `applied` answer for `op` (its trace line). */
+    const acceptedLine = (op: string) =>
+      consoleSaid(new RegExp(` ack accepted op=${op} .*status=applied`));
     const unconfirmedHint = () =>
       vi
         .mocked(toast.info)
@@ -938,17 +943,81 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       });
       expect(updateSectionProps).not.toHaveBeenCalled();
 
-      // The frame acknowledges it; the editor takes it.
+      // The frame acknowledges it; the editor takes it. Said positively:
+      // an answer refused by any ordinary guard (unverified document, no
+      // pending token, token mismatch, not latest), or never reaching the
+      // intake, has no accepted line (review finding 5).
+      const op = posts[0]!.presentationToken.operationId;
+      expect(acceptedLine(op)).toBe(false);
       fromPreview({
         type: "morph:storefront-preview-section-presentation-ack",
-        operationId: posts[0]!.presentationToken.operationId,
+        operationId: op,
         token: posts[0]!.presentationToken,
         status: "applied",
       });
       await flush();
+      expect(acceptedLine(op)).toBe(true);
+      expect(consoleSaid(new RegExp(` ack rejected op=${op} `))).toBe(false);
       expect(consoleSaid(/basis ack held/)).toBe(false);
       expect(consoleSaid(/guard=basis-unconfirmed/)).toBe(false);
       expect(unconfirmedHint()).toBe(false);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("holds the ack when Core's basis moved between the token and its answer", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      const client = await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      boundaryClick(1);
+      await flush();
+      const posts = basisPosts();
+      expect(posts).toHaveLength(1);
+      const op = posts[0]!.presentationToken.operationId;
+
+      // Core answers that it wrote a newer snapshot (ticket 8) for this
+      // editor before the frame's answer arrives: the document the token
+      // names is now older than Core's latest.
+      act(() => {
+        client.setQueryData(
+          themePreviewServerQueries.forTheme("storefront-1", "theme-1")
+            .queryKey,
+          {
+            success: true,
+            message: "Live Preview server ready",
+            data: {
+              url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+              ...START_DATA,
+              contentTicket: 8,
+              draftGenerations: { "template-1": 5 },
+            },
+          } as never,
+        );
+      });
+      await flush();
+
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: op,
+        token: posts[0]!.presentationToken,
+        status: "applied",
+      });
+      await flush();
+
+      expect(
+        consoleSaid(new RegExp(`basis ack held op=${op} reason=other-ticket`)),
+      ).toBe(true);
+      expect(consoleSaid(/guard=basis-unconfirmed/)).toBe(true);
+      expect(acceptedLine(op)).toBe(false);
+      expect(unconfirmedHint()).toBe(true);
       expect(updateSectionProps).not.toHaveBeenCalled();
     });
 
