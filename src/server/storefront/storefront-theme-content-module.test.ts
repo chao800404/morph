@@ -503,6 +503,38 @@ describe("a restore the editor declares", () => {
     expect(await themeSourceStore.listFiles(STORE, THEME)).toEqual(before);
   });
 
+  it("restores only the content module: another Starter path is refused and nothing is written", async () => {
+    seedStarterWorkspace();
+    const route = (await themeSourceStore.listFiles(STORE, THEME)).find(
+      (file) => file.path === "src/routes/index.tsx",
+    )!;
+    const deleted = await call((await handlers()).deleteStorefrontThemeFile, {
+      storefrontId: STORE,
+      themeId: THEME,
+      path: route.path,
+      expectedFileId: route.id,
+      expectedVersion: route.version,
+      expectedSourceGeneration: await generation(),
+    });
+    expect(deleted.success, deleted.message).toBe(true);
+    const before = await themeSourceStore.listFiles(STORE, THEME);
+    const generationBefore = await generation();
+
+    // The current Starter does have a file at this path, but the editor's
+    // restore command only ever restores the content module.
+    const restored = await declaredRestore(generationBefore, {
+      path: "src/routes/index.tsx",
+      content: route.content,
+    });
+
+    expect(restored).toMatchObject({
+      success: false,
+      error: "STARTER_FILE_NOT_RESTORABLE",
+    });
+    expect(await themeSourceStore.listFiles(STORE, THEME)).toEqual(before);
+    expect(await generation()).toBe(generationBefore);
+  });
+
   it("only ever creates: a declared restore over an existing file is refused and the file is kept", async () => {
     seedStarterWorkspace();
     const existing = (await contentModule())!;
