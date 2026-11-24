@@ -132,3 +132,54 @@ describe("the Starter upgrade apply on a Theme not previewed on Start", () => {
     });
   });
 });
+
+describe("the Starter upgrade apply whose files landed but whose version record did not", () => {
+  /** What the DAL throws (`StarterUpgradeIncompleteError`), by its shape. */
+  function incomplete(filesSaved: boolean) {
+    return Object.assign(
+      new Error(
+        "Starter Theme upgrade only partly completed: the files were upgraded, but the upgrade record was not saved (record-write-failed).",
+      ),
+      {
+        name: "StarterUpgradeIncompleteError",
+        outcome: {
+          status: "partial",
+          reason: "record-write-failed",
+          filesSaved,
+          attempts: 1,
+        },
+      },
+    );
+  }
+  const apply = () =>
+    call(applyStorefrontStarterUpgrade, {
+      ...ids,
+      expectedSourceGeneration: 5,
+      starterDigest: "a".repeat(64),
+    });
+
+  it("fails with STARTER_UPGRADE_RECORD_INCOMPLETE, saying the files are in and how to finish", async () => {
+    dal.applyReviewedStarterUpgrade.mockRejectedValue(incomplete(true));
+
+    const result = await apply();
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "STARTER_UPGRADE_RECORD_INCOMPLETE",
+    });
+    expect(result.message).toMatch(/Starter files were applied/);
+    expect(result.message).toMatch(/version was not recorded/);
+    expect(result.message).toMatch(/Review the upgrade again/);
+  });
+
+  it("stays STARTER_UPGRADE_FAILED when no file was saved", async () => {
+    dal.applyReviewedStarterUpgrade.mockRejectedValue(incomplete(false));
+
+    const result = await apply();
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "STARTER_UPGRADE_FAILED",
+    });
+  });
+});

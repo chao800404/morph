@@ -719,13 +719,29 @@ describe("a restart between the file save and the record write", () => {
     };
   }
 
+  /**
+   * The apply that stopped at the record step. It used to let the raw error
+   * escape, which told no caller that the files had already been saved; it is
+   * now the incomplete-upgrade error, with the raw error as its cause.
+   */
+  async function expectStoppedAfterFiles(promise: Promise<unknown>) {
+    const stopped = await rejection(promise);
+    expect(stopped).toBeInstanceOf(StarterUpgradeIncompleteError);
+    expect((stopped as StarterUpgradeIncompleteError).outcome).toMatchObject({
+      status: "partial",
+      reason: "record-write-failed",
+      filesSaved: true,
+    });
+    expect(((stopped as Error).cause as Error).message).toBe("process stopped");
+  }
+
   it("re-plans on the next review, writes no file twice and then records the version", async () => {
     seedTheme({ starterTemplateVersion: LEGACY_VERSION });
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
     crashOnFirstRecordWrite();
 
-    await expect(applyReviewed()).rejects.toThrow("process stopped");
+    await expectStoppedAfterFiles(applyReviewed());
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: LEGACY_VERSION,
@@ -752,7 +768,7 @@ describe("a restart between the file save and the record write", () => {
     workspace.generation.set(THEME_ID, 5);
     crashOnFirstRecordWrite();
 
-    await expect(applyReviewed()).rejects.toThrow("process stopped");
+    await expectStoppedAfterFiles(applyReviewed());
     // Before the next load, another writer brings the version to current.
     competingRecordWrite(CURRENT);
     const afterOtherWriter = storedRow();
@@ -771,6 +787,210 @@ describe("a restart between the file save and the record write", () => {
     expect(storedRow()).toEqual(afterOtherWriter);
     expect(hooks.recordWriteAttempts).toBe(1);
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+  });
+
+  describe("on a Starter whose files need the full Start preview", () => {
+    // The fault the version record has on its own: the file batch commits
+    // (under its `start` guard) and the record, a separate write after it,
+    // fails. D1 rolls back only within one batch, and the record cannot join
+    // the source store's batch (see the handoff, §10), so the unfinished
+    // state has to be visible and the re-apply has to be idempotent.
+    const CONTENT_MODULE = "src/morph/content.ts";
+    const AUTHORS_MODULE = `${STARTER_THEME_CONTENT_MODULE_SOURCE}\n// the author's draft\n`;
+    const AUTHORS_HOME = {
+      version: 1,
+      sections: [
+        {
+          id: "author-banner",
+          type: "hero",
+          enabled: true,
+          props: { heading: "The author's own draft" },
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      startPreview.requiredPaths = [CONTENT_MODULE];
+    });
+
+    function seedStartTheme() {
+      seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+      sqlite
+        .prepare(
+          "UPDATE storefront_themes SET preview_runtime = 'start' WHERE id = ?",
+        )
+        .run(THEME_ID);
+      workspace.files.set(THEME_ID, legacyWorkspace());
+      workspace.generation.set(THEME_ID, 5);
+    }
+
+    function failFirstRecordWrite() {
+      hooks.beforeRecordWrite = () => {
+        hooks.beforeRecordWrite = null;
+        throw new Error("D1_ERROR: the record write failed");
+      };
+    }
+
+    const reviewNow = async () =>
+      (await storefrontDal.reviewStarterUpgrade({
+        storefrontId: STOREFRONT_ID,
+        themeId: THEME_ID,
+      }))!;
+
+    function storedHomeDocument() {
+      const row = sqlite
+        .prepare(
+          "SELECT document FROM storefront_theme_templates WHERE id = 'home'",
+        )
+        .get() as { document: string };
+      return JSON.parse(row.document) as unknown;
+    }
+
+    it("names the files as saved and the record as not, and the review shows what is left", async () => {
+      seedStartTheme();
+      failFirstRecordWrite();
+      const first = await reviewNow();
+      expect(first.review.changes.map((change) => change.path)).toEqual([
+        CONTENT_MODULE,
+      ]);
+
+      const failed = await rejection(
+        storefrontDal.applyReviewedStarterUpgrade({
+          storefrontId: STOREFRONT_ID,
+          themeId: THEME_ID,
+          createdBy: "user-a",
+          expectedSourceGeneration: first.sourceGeneration,
+          starterDigest: first.review.digest,
+        }),
+      );
+
+      // The batch committed under its `start` guard; the record did not.
+      expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+      expect(workspace.saveFilesBatch).toHaveBeenCalledWith(
+        STOREFRONT_ID,
+        THEME_ID,
+        first.review.plan.files,
+        expect.objectContaining({ requirePreviewRuntime: "start" }),
+      );
+      expect(failed).toBeInstanceOf(StarterUpgradeIncompleteError);
+      expect((failed as StarterUpgradeIncompleteError).outcome).toEqual({
+        status: "partial",
+        reason: "record-write-failed",
+        filesSaved: true,
+        attempts: 1,
+      });
+      expect((failed as Error).message).toMatch(
+        /files were upgraded, but the upgrade record was not saved/,
+      );
+      expect(storedRow().metadata.starterTemplateVersion).toBe(LEGACY_VERSION);
+
+      // What the author sees: the notice still offers the upgrade, and the
+      // review has no file left to change, only the version to record.
+      await expect(
+        storefrontDal.readStarterUpgradeStatus({
+          storefrontId: STOREFRONT_ID,
+          themeId: THEME_ID,
+        }),
+      ).resolves.toMatchObject({
+        versionState: "available",
+        storedVersion: LEGACY_VERSION,
+        currentVersion: CURRENT,
+      });
+      const after = await reviewNow();
+      expect(after).toMatchObject({
+        versionState: "available",
+        storedVersion: LEGACY_VERSION,
+        sourceGeneration: 6,
+        startPreview: { satisfied: true, paths: [] },
+      });
+      expect(after.review.applies).toBe(true);
+      expect(after.review.changes).toEqual([]);
+    });
+
+    it("re-applied, writes no file twice and keeps what the author changed in between", async () => {
+      seedStartTheme();
+      failFirstRecordWrite();
+      expect(await rejection(applyReviewed())).toBeInstanceOf(Error);
+      expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(LEGACY_VERSION);
+
+      // Between the failed apply and the next review, the author edits the
+      // module the upgrade wrote and the home Document's draft.
+      workspace.files.set(
+        THEME_ID,
+        workspace.files.get(THEME_ID)!.map((file) =>
+          file.path === CONTENT_MODULE
+            ? { ...file, content: AUTHORS_MODULE, version: file.version + 1 }
+            : file,
+        ),
+      );
+      workspace.generation.set(THEME_ID, 7);
+      sqlite
+        .prepare(
+          `UPDATE storefront_theme_templates
+           SET document = ?, draft_generation = draft_generation + 1,
+               updated_at = 'author-draft'
+           WHERE id = 'home'`,
+        )
+        .run(JSON.stringify(AUTHORS_HOME));
+
+      const reviewed = await reviewNow();
+      // The author's module is kept, not planned again.
+      expect(reviewed.review.changes).toEqual([]);
+      expect(reviewed.review.kept.map((item) => item.path)).toContain(
+        CONTENT_MODULE,
+      );
+
+      await expect(
+        storefrontDal.applyReviewedStarterUpgrade({
+          storefrontId: STOREFRONT_ID,
+          themeId: THEME_ID,
+          createdBy: "user-a",
+          expectedSourceGeneration: reviewed.sourceGeneration,
+          starterDigest: reviewed.review.digest,
+        }),
+      ).resolves.toMatchObject({
+        status: "applied",
+        filesSaved: false,
+        sourceGeneration: 7,
+        versionRecorded: true,
+      });
+
+      // No second batch; the author's module and draft are as they left them.
+      expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+      expect(
+        workspace.files
+          .get(THEME_ID)!
+          .find((file) => file.path === CONTENT_MODULE)!.content,
+      ).toBe(AUTHORS_MODULE);
+      expect(storedHomeDocument()).toEqual(AUTHORS_HOME);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+    });
+
+    it("refuses the failed apply sent again, writing nothing", async () => {
+      seedStartTheme();
+      failFirstRecordWrite();
+      const first = await reviewNow();
+      const send = () =>
+        storefrontDal.applyReviewedStarterUpgrade({
+          storefrontId: STOREFRONT_ID,
+          themeId: THEME_ID,
+          createdBy: "user-a",
+          expectedSourceGeneration: first.sourceGeneration,
+          starterDigest: first.review.digest,
+        });
+      await rejection(send());
+      const afterFailure = storedRawRow();
+
+      // The same request again (a retry, a second click): the batch moved
+      // the generation, so it is stale and nothing is written twice.
+      await expect(send()).resolves.toEqual({
+        status: "stale",
+        sourceGeneration: 6,
+      });
+      expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+      expect(storedRawRow()).toEqual(afterFailure);
+    });
   });
 });
 
