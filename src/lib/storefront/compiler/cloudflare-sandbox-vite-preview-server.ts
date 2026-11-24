@@ -224,6 +224,11 @@ export type PreviewServerSession = Omit<ThemeWorkspaceWriter, "writeFile"> &
     listProcesses?(): Promise<
       ReadonlyArray<{ id?: string; command?: string; status?: string }>
     >;
+    /**
+     * A listed process by id, with its port check; null once the container
+     * no longer has it. Older providers may not expose it.
+     */
+    getProcess?(id: string): Promise<PreviewServerProcess | null>;
     killProcess?(id?: string): Promise<void>;
     unexposePort?(port: number): Promise<void>;
     /**
@@ -2027,6 +2032,41 @@ export class CloudflareSandboxVitePreviewServer {
       }
       const configureLifecycleMs = Date.now() - configureLifecycleStartedAt;
 
+      // The live Sandbox API does not guarantee that background-process
+      // output callbacks are delivered while this Worker request is waiting.
+      // The process object does provide a process-aware port check, which is
+      // also the thing we actually need to know: can this Vite process serve
+      // the page? Keep the output marker only for older providers and tests.
+      // Null when the process has no port check.
+      const waitUntilServing = (
+        server: PreviewServerProcess,
+      ): Promise<"ready" | "exited"> | null =>
+        server.waitForPort
+          ? server
+              .waitForPort(THEME_PREVIEW_SERVER_PORT, {
+                // Readiness is platform-owned and never runs a Theme loader.
+                // A Worker-served preview (Start's, or a framework's own dev
+                // server) answers the address probe itself.
+                path:
+                  input.previewRuntime === "start" || devServer
+                    ? START_PREVIEW_ADDRESS_PROBE_PATH
+                    : THEME_PREVIEW_SERVER_BASE_PATH,
+              })
+              .then(() => "ready" as const)
+              .catch((error: unknown) => {
+                addLog(
+                  error instanceof Error
+                    ? error.message
+                    : "Preview server port check failed.",
+                );
+                return "exited" as const;
+              })
+          : null;
+      const notReadyMessage = (outcome: "exited" | "timeout") =>
+        outcome === "timeout"
+          ? `PREVIEW_SERVER_TIMEOUT: Vite did not report itself ready within ${limits.readyTimeoutMs}ms.`
+          : "PREVIEW_SERVER_EXITED: Vite exited before it was ready to serve.";
+
       // Asking twice for the exact same workspace must not start a second
       // server. A changed full plan is different: Vite can still hold the old
       // transformed route graph until its polling watcher notices the writes.
@@ -2040,12 +2080,55 @@ export class CloudflareSandboxVitePreviewServer {
           runningProcessId: alreadyServing.id ?? null,
           processId: alreadyServing.id ?? null,
         };
+        // Listed is not serving: another start's server may still be
+        // booting (two-tab race, 2026-11-24, where the frame got "Container
+        // is not listening"). Wait for the launch path's own port check,
+        // within the same limit. A session that cannot hand the process
+        // back (older providers) is answered at once, as before.
+        const reuseWaitStartedAt = Date.now();
+        let reusedWaited = false;
+        const listed =
+          alreadyServing.id && session.getProcess
+            ? await session.getProcess(alreadyServing.id).catch(
+                (error: unknown) => {
+                  addLog(
+                    error instanceof Error
+                      ? error.message
+                      : "Preview server process lookup failed.",
+                  );
+                  return null;
+                },
+              )
+            : undefined;
+        const portCheck = listed ? waitUntilServing(listed) : null;
+        if (listed === null || portCheck) {
+          reusedWaited = true;
+          const reusedOutcome = portCheck
+            ? await withReadyTimeout(portCheck, limits.readyTimeoutMs)
+            : ("exited" as const);
+          if (reusedOutcome !== "ready") {
+            const closed = await failClosed(`vite-${reusedOutcome}`);
+            if (closed === "another-owner") {
+              return { ok: false, ...NOT_CURRENT_START.superseded, logs };
+            }
+            // Not this start's process: it is never killed here.
+            return {
+              ok: false,
+              stage: "preview-server-start",
+              errorMessage: notReadyMessage(reusedOutcome),
+              logs,
+            };
+          }
+        }
+        const reusedReadyMs = reusedWaited
+          ? Date.now() - reuseWaitStartedAt
+          : 0;
         const totalMs = Date.now() - requestStartedAt;
         return {
           ok: true,
           url: previewUrl,
           processId: alreadyServing.id,
-          readyMs: 0,
+          readyMs: reusedReadyMs,
           timings: {
             totalMs,
             sandboxHandleMs,
@@ -2064,7 +2147,7 @@ export class CloudflareSandboxVitePreviewServer {
             exposePortMs,
             configureLifecycleMs,
             processLookupMs,
-            viteReadyMs: 0,
+            viteReadyMs: reusedReadyMs,
             reusedProcess: true,
           },
           hoistedContentFields: prepared.hoistedContentFields,
@@ -2232,33 +2315,10 @@ export class CloudflareSandboxVitePreviewServer {
         },
       );
 
-      // The live Sandbox API does not guarantee that background-process
-      // output callbacks are delivered while this Worker request is waiting.
-      // The process object does provide a process-aware port check, which is
-      // also the thing we actually need to know: can this Vite process serve
-      // the page? Keep the output marker only for older providers and tests.
+      // The port check (`waitUntilServing`), or for older providers the
+      // output marker.
       observation.vite.processId = process.id ?? null;
-      const portReady = process.waitForPort
-        ? process
-            .waitForPort(THEME_PREVIEW_SERVER_PORT, {
-              // Readiness is platform-owned and never runs a Theme loader.
-              // A Worker-served preview (Start's, or a framework's own dev
-              // server) answers the address probe itself.
-              path:
-                input.previewRuntime === "start" || devServer
-                  ? START_PREVIEW_ADDRESS_PROBE_PATH
-                  : THEME_PREVIEW_SERVER_BASE_PATH,
-            })
-            .then(() => "ready" as const)
-            .catch((error) => {
-              addLog(
-                error instanceof Error
-                  ? error.message
-                  : "Preview server port check failed.",
-              );
-              return "exited" as const;
-            })
-        : null;
+      const portReady = waitUntilServing(process);
       const outcome = await withReadyTimeout(
         portReady ? Promise.race([portReady, logOrExit]) : logOrExit,
         limits.readyTimeoutMs,
@@ -2277,10 +2337,7 @@ export class CloudflareSandboxVitePreviewServer {
         return {
           ok: false,
           stage: "preview-server-start",
-          errorMessage:
-            outcome === "timeout"
-              ? `PREVIEW_SERVER_TIMEOUT: Vite did not report itself ready within ${limits.readyTimeoutMs}ms.`
-              : "PREVIEW_SERVER_EXITED: Vite exited before it was ready to serve.",
+          errorMessage: notReadyMessage(outcome),
           logs,
         };
       }
