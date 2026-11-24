@@ -130,6 +130,33 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
+/**
+ * Which Starter paths count as needing the full Start preview. Null keeps the
+ * real detection (no Starter file below 32 needs it); a list stands in for a
+ * Starter whose content module does, so the restore and the other Starter
+ * writes are held to `start` through the real handlers and storage.
+ */
+const startPreview = vi.hoisted(() => ({
+  requiredPaths: null as null | readonly string[],
+}));
+vi.mock("@/lib/storefront/starter-upgrade-start-preview", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/lib/storefront/starter-upgrade-start-preview")
+    >();
+  return {
+    ...actual,
+    starterPlanFilesRequiringStartPreview: (
+      files: ReadonlyArray<{ path: string; content: string }>,
+    ) =>
+      startPreview.requiredPaths === null
+        ? actual.starterPlanFilesRequiringStartPreview(files)
+        : files
+            .map((file) => file.path)
+            .filter((path) => startPreview.requiredPaths!.includes(path))
+            .sort(),
+  };
+});
 
 let sqlite: Database.Database;
 
@@ -159,6 +186,7 @@ beforeEach(() => {
       source_index_version integer,
       source_index_status text,
       source_index text,
+      preview_runtime text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -412,5 +440,170 @@ describe("the author's content module on the server", () => {
       error: "SOURCE_GENERATION_CONFLICT",
     });
     expect(await contentModule()).toBeUndefined();
+  });
+});
+
+describe("Starter writes that need the full Start preview", () => {
+  // Option B, the switch-then-write order. The restore command, the empty
+  // Theme's Starter init and the Starter bootstrap put the Starter's own
+  // files into the Theme; when any of them needs the full Start preview the
+  // write commits only while the Theme records `start`, in the same batch as
+  // its source generation. NULL (the deployment's default) and client are
+  // refused with nothing left behind; the runtime is never switched for the
+  // author. The content module stands in for the Start-only Starter file.
+  const setRuntime = (runtime: string | null) =>
+    sqlite
+      .prepare("UPDATE storefront_themes SET preview_runtime = ? WHERE id = ?")
+      .run(runtime, THEME);
+  const stored = () => ({
+    files: sqlite
+      .prepare(
+        "SELECT path, content, version FROM storefront_theme_files WHERE deleted_at IS NULL ORDER BY path",
+      )
+      .all(),
+    revisions: sqlite
+      .prepare("SELECT id FROM storefront_theme_revisions ORDER BY id")
+      .all(),
+    theme: sqlite
+      .prepare(
+        "SELECT source_generation, preview_runtime, updated_at FROM storefront_themes WHERE id = ?",
+      )
+      .get(THEME),
+  });
+
+  beforeEach(() => {
+    startPreview.requiredPaths = [THEME_CONTENT_MODULE_PATH];
+  });
+  afterEach(() => {
+    startPreview.requiredPaths = null;
+  });
+
+  it.each([null, "client"])(
+    "refuses the restore on a Theme that records %s and leaves nothing of it",
+    async (runtime) => {
+      seedStarterWorkspace();
+      await deleteContentModule();
+      setRuntime(runtime);
+      const before = stored();
+
+      const restored = await restore(await generation());
+
+      expect(restored).toMatchObject({
+        success: false,
+        error: "STARTER_START_PREVIEW_REQUIRED",
+      });
+      expect(await contentModule()).toBeUndefined();
+      expect(stored()).toEqual(before);
+    },
+  );
+
+  it("restores the Starter module on a Theme that records start", async () => {
+    seedStarterWorkspace();
+    await deleteContentModule();
+    setRuntime("start");
+
+    const restored = await restore(await generation());
+
+    expect(restored.success, restored.message).toBe(true);
+    expect((await contentModule())?.content).toBe(
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+    expect(stored().theme).toMatchObject({ preview_runtime: "start" });
+  });
+
+  it("takes the author's own module on a client Theme: only the Starter's bytes are held to start", async () => {
+    seedStarterWorkspace();
+    await deleteContentModule();
+    setRuntime("client");
+    const authored = `${STARTER_THEME_CONTENT_MODULE_SOURCE}\n// mine\n`;
+
+    const created = await call((await handlers()).saveStorefrontThemeFile, {
+      storefrontId: STORE,
+      themeId: THEME,
+      path: THEME_CONTENT_MODULE_PATH,
+      content: authored,
+      mimeType: "text/typescript",
+      expectMissing: true,
+      expectedSourceGeneration: await generation(),
+    });
+
+    expect(created.success, created.message).toBe(true);
+    expect((await contentModule())?.content).toBe(authored);
+  });
+
+  it.each([null, "client"])(
+    "initialises no Starter file into an empty Theme that records %s",
+    async (runtime) => {
+      setRuntime(runtime);
+      const before = stored();
+
+      const initialised = await call(
+        (await handlers()).initStorefrontStarterTheme,
+        { storefrontId: STORE, themeId: THEME },
+      );
+
+      expect(initialised).toMatchObject({
+        success: false,
+        error: "STARTER_START_PREVIEW_REQUIRED",
+      });
+      expect(stored()).toEqual(before);
+    },
+  );
+
+  it.each([null, "client"])(
+    "bootstraps no Starter file into a Theme that records %s",
+    async (runtime) => {
+      setRuntime(runtime);
+      const before = stored();
+
+      const bootstrapped = await call(
+        (await handlers()).applyStarterThemeWorkspace,
+        {
+          storefrontId: STORE,
+          themeId: THEME,
+          expectedSourceGeneration: await generation(),
+        },
+      );
+
+      expect(bootstrapped).toMatchObject({
+        success: false,
+        error: "STARTER_START_PREVIEW_REQUIRED",
+      });
+      expect(stored()).toEqual(before);
+    },
+  );
+
+  it("initialises an empty Theme that records start", async () => {
+    setRuntime("start");
+
+    const initialised = await call(
+      (await handlers()).initStorefrontStarterTheme,
+      { storefrontId: STORE, themeId: THEME },
+    );
+
+    expect(initialised.success, initialised.message).toBe(true);
+    expect((await contentModule())?.content).toBe(
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+    expect(stored().theme).toMatchObject({ preview_runtime: "start" });
+  });
+
+  it("bootstraps a Theme that records start", async () => {
+    setRuntime("start");
+
+    const bootstrapped = await call(
+      (await handlers()).applyStarterThemeWorkspace,
+      {
+        storefrontId: STORE,
+        themeId: THEME,
+        expectedSourceGeneration: await generation(),
+      },
+    );
+
+    expect(bootstrapped.success, bootstrapped.message).toBe(true);
+    expect((await contentModule())?.content).toBe(
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+    expect(stored().theme).toMatchObject({ preview_runtime: "start" });
   });
 });
