@@ -62,6 +62,15 @@ import {
   type WorkspaceChange,
   type WorkspaceManifest,
 } from "./preview-server-observation";
+import type { PreviewStartAttemptStatus } from "./preview-start-attempt-guard";
+import {
+  classifyPreviewStartInterruption,
+  type ThrownStartError,
+} from "./preview-start-retry";
+import type {
+  PreviewStartRetrySignal,
+  PreviewStartRetryStep,
+} from "../editor/preview-start-recovery";
 
 /**
  * Runs a Theme's Live Preview as a real Vite dev server inside a sandbox
@@ -222,6 +231,21 @@ export type PreviewServerSession = Omit<ThemeWorkspaceWriter, "writeFile"> &
     ): Promise<ReadonlyArray<{ url: string; port: number; status: string }>>;
     setSleepAfter?(value: string | number): Promise<void>;
     /**
+     * The preview Durable Object's current-start record (`PreviewSandbox`,
+     * `preview-start-attempt-guard.ts`). A start claims it, a retry asks it
+     * before it is sent, every success asks it before it is answered, and
+     * a stop ends it. A session without them is never retried.
+     */
+    claimPreviewStart?(input: {
+      attemptId: string;
+      deadlineAt: number;
+    }): Promise<void>;
+    checkPreviewStart?(input: {
+      attemptId: string;
+      next?: string;
+    }): Promise<PreviewStartAttemptStatus>;
+    endPreviewStarts?(): Promise<void>;
+    /**
      * Runs a command to completion. Every write to the workspace — a sync's,
      * and a start's — is applied through it, under the container's lock.
      */
@@ -330,6 +354,13 @@ export type StartPreviewServerResult =
        * page's own acknowledgement.
        */
       serving?: PreviewServing | null;
+      /**
+       * Present only when this answer is the automatic retry's: the first
+       * attempt was interrupted (`preview-start-retry.ts`). Server-side
+       * only — `errorMessage` is container output and never reaches the
+       * browser; the server function answers the browser-safe part.
+       */
+      recoveredFrom?: PreviewStartRecoveredFrom;
     }>
   | Readonly<{
       ok: false;
@@ -337,7 +368,45 @@ export type StartPreviewServerResult =
       stage: string;
       errorMessage: string;
       logs: readonly string[];
+      /** The attempt this one retried, when the failure is the retry's. */
+      retryOf?: string;
     }>;
+
+/** The interrupted first attempt a retried start recovered from. */
+export type PreviewStartRecoveredFrom = Readonly<{
+  attemptId: string;
+  stage: string;
+  reason: "sandbox-interrupted";
+  /** Required: which allow-listed interruption this was. */
+  signal: PreviewStartRetrySignal;
+  step: PreviewStartRetryStep;
+  attempts: 2;
+  errorMessage: string;
+}>;
+
+/** Refusals of a start that is no longer the current one (auto-retry v2, §3). */
+const NOT_CURRENT_START: Readonly<
+  Record<
+    Exclude<PreviewStartAttemptStatus, "current" | "expired"> | "unconfirmed",
+    { stage: string; errorMessage: string }
+  >
+> = {
+  stopped: {
+    stage: "preview-start-stopped",
+    errorMessage:
+      "PREVIEW_START_STOPPED: The preview was stopped while this start was running; its result is not used.",
+  },
+  superseded: {
+    stage: "preview-start-superseded",
+    errorMessage:
+      "PREVIEW_START_SUPERSEDED: A newer start of this preview replaced this one; its result is not used.",
+  },
+  unconfirmed: {
+    stage: "preview-start-unconfirmed",
+    errorMessage:
+      "PREVIEW_START_UNCONFIRMED: Could not confirm this start is still the preview's current one; its result is not used.",
+  },
+};
 
 /**
  * What a start has put in its staging directory, for the container to apply:
@@ -388,7 +457,20 @@ type StartObservation = {
   address?: { reused: boolean; digest: string | null };
   /** Why the start left the workspace marked untrusted instead of succeeding. */
   failedClosed?: string;
+  /** The start step running now, when it is one a retry may follow. */
+  step?: PreviewStartRetryStep;
+  /** What the start threw, and in which step, when it threw. */
+  thrown?: ThrownStartError;
 };
+
+/** One start request, across its attempts. */
+type StartRequestState = Readonly<{
+  inflight: Readonly<{ concurrentAtEntry: number }>;
+  requestStartedAt: number;
+  deadlineAt: number;
+  /** The session its Durable Object is asked through; null: unguarded. */
+  guard: PreviewServerSession | null;
+}>;
 
 function shortMarker(marker: string | null): string | null {
   if (marker === null) return null;
@@ -451,7 +533,31 @@ export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
    * acceptance job only; never set in production.
    */
   requestTrace?: boolean;
+  /**
+   * The server-side deadline of one start request, shared by its first
+   * attempt and its retry (auto-retry v2, §2): each attempt waits for Vite
+   * at most what is left of it, and a success that comes back after it is
+   * not answered as ready. The length is to be set from the container
+   * diagnostics; until then it is the editor's own wait for a start
+   * (`PREVIEW_SERVER_TIMEOUT_MS`, 180 s), past which no one is listening.
+   */
+  startDeadlineMs?: number;
+  /** The pause before the retry; counted inside `retryWindowMs`. */
+  retryPauseMs?: number;
+  /** How long after the request began a retry may still be sent. */
+  retryWindowMs?: number;
+  /** The clock the deadline and the window are read on. Tests only. */
+  now?: () => number;
+  /** How the pause is waited out. Tests only. */
+  pause?: (ms: number) => Promise<void>;
 }>;
+
+/** See `startDeadlineMs`. */
+const PREVIEW_START_DEADLINE_MS = 180_000;
+/** One retry, after this pause (the replacement container was up 0.5 s later). */
+const PREVIEW_START_RETRY_PAUSE_MS = 500;
+/** Including the pause: a retry is sent only within this of the request. */
+const PREVIEW_START_RETRY_WINDOW_MS = 30_000;
 
 /** Request record lines per log line: each line stays some 15 KB. */
 const REQUEST_TRACE_RECORDS_PER_LINE = 100;
@@ -476,6 +582,11 @@ export class CloudflareSandboxVitePreviewServer {
   private readonly sleepAfter: string | number;
   private readonly maxLogLines: number;
   private readonly requestTrace: boolean;
+  private readonly startDeadlineMs: number;
+  private readonly retryPauseMs: number;
+  private readonly retryWindowMs: number;
+  private readonly now: () => number;
+  private readonly pause: (ms: number) => Promise<void>;
 
   constructor(options: CloudflareSandboxVitePreviewServerOptions = {}) {
     this.sandboxBinding = options.sandboxBinding;
@@ -488,6 +599,13 @@ export class CloudflareSandboxVitePreviewServer {
     this.sleepAfter = options.sleepAfter ?? "10m";
     this.maxLogLines = options.maxLogLines ?? 200;
     this.requestTrace = options.requestTrace === true;
+    this.startDeadlineMs = options.startDeadlineMs ?? PREVIEW_START_DEADLINE_MS;
+    this.retryPauseMs = options.retryPauseMs ?? PREVIEW_START_RETRY_PAUSE_MS;
+    this.retryWindowMs = options.retryWindowMs ?? PREVIEW_START_RETRY_WINDOW_MS;
+    this.now = options.now ?? (() => Date.now());
+    this.pause =
+      options.pause ??
+      ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   private async acquire(previewId: string): Promise<PreviewServerSession> {
@@ -503,32 +621,264 @@ export class CloudflareSandboxVitePreviewServer {
     );
   }
 
+  /**
+   * Starts the preview, retrying the whole start at most once after the one
+   * allow-listed sandbox interruption (auto-retry v2;
+   * `preview-start-retry.ts`). Both attempts share one server-side deadline
+   * and the one start slot this request entered, and the preview's Durable
+   * Object decides whether each is still the current start: a stopped,
+   * superseded or expired start is not sent again, and its late success is
+   * not answered as ready.
+   */
   async start(
     input: StartPreviewServerInput,
   ): Promise<StartPreviewServerResult> {
-    const observation: StartObservation = { attemptId: newPreviewAttemptId() };
     const inflight = enterPreviewStart(input.previewId);
+    const requestStartedAt = this.now();
+    const deadlineAt = requestStartedAt + this.startDeadlineMs;
+    const firstAttemptId = newPreviewAttemptId();
+    try {
+      // Claimed before any container step: from here on a newer start or a
+      // stop is visible to this one.
+      const guard = await this.claimStart(
+        input.previewId,
+        firstAttemptId,
+        deadlineAt,
+      );
+      const request = { inflight, requestStartedAt, deadlineAt, guard };
+      const first = await this.startAttempt(input, request, {
+        attemptId: firstAttemptId,
+        mayRetry: true,
+      });
+      if (!first.retry) return first.result;
+
+      // The pause counts inside the window; both are read again after it.
+      await this.pause(this.retryPauseMs);
+      const retryAttemptId = newPreviewAttemptId();
+      const refusal = await this.refuseRetry(request, {
+        attemptId: firstAttemptId,
+        next: retryAttemptId,
+      });
+      if (refusal) {
+        logPreviewServerEvent("start-retry", {
+          retryOf: firstAttemptId,
+          previewId: input.previewId,
+          outcome: "cancelled",
+          reason: refusal.reason,
+        });
+        // Stopped or superseded: say so. Out of time: the first failure
+        // stands, as if no retry existed.
+        return refusal.answer
+          ? { ...refusal.answer, logs: first.result.logs }
+          : first.result;
+      }
+      logPreviewServerEvent("start-retry", {
+        retryOf: firstAttemptId,
+        attemptId: retryAttemptId,
+        previewId: input.previewId,
+        outcome: "sent",
+        signal: first.retry.signal,
+        step: first.retry.step,
+      });
+      const second = await this.startAttempt(input, request, {
+        attemptId: retryAttemptId,
+        mayRetry: false,
+        retryOf: firstAttemptId,
+      });
+      if (!second.result.ok) {
+        return { ...second.result, retryOf: firstAttemptId };
+      }
+      return {
+        ...second.result,
+        recoveredFrom: {
+          attemptId: firstAttemptId,
+          stage: first.retry.stage,
+          reason: "sandbox-interrupted",
+          signal: first.retry.signal,
+          step: first.retry.step,
+          attempts: 2,
+          errorMessage: first.retry.errorMessage,
+        },
+      };
+    } finally {
+      inflight.leave();
+    }
+  }
+
+  /**
+   * Claims the preview for this start in its Durable Object, and returns
+   * the session to ask it again through. Null when it cannot be claimed: the
+   * start then runs as before, unguarded, and is never retried.
+   */
+  private async claimStart(
+    previewId: string,
+    attemptId: string,
+    deadlineAt: number,
+  ): Promise<PreviewServerSession | null> {
+    try {
+      const session = await this.acquire(previewId);
+      if (
+        typeof session.claimPreviewStart !== "function" ||
+        typeof session.checkPreviewStart !== "function"
+      ) {
+        return null;
+      }
+      await session.claimPreviewStart({ attemptId, deadlineAt });
+      return session;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Why the retry must not be sent, read after the pause: the request's
+   * deadline or its retry window has passed, or its Durable Object no longer
+   * names the first attempt as current. When none holds, the Durable Object
+   * has already handed "current" to `next`.
+   */
+  private async refuseRetry(
+    request: StartRequestState,
+    attempt: { attemptId: string; next: string },
+  ): Promise<{
+    reason: string;
+    answer: StartPreviewServerResult | null;
+  } | null> {
+    const now = this.now();
+    if (now >= request.deadlineAt) return { reason: "deadline", answer: null };
+    if (now - request.requestStartedAt > this.retryWindowMs) {
+      return { reason: "retry-window", answer: null };
+    }
+    let status: PreviewStartAttemptStatus;
+    try {
+      status = await request.guard!.checkPreviewStart!(attempt);
+    } catch {
+      return { reason: "unconfirmed", answer: null };
+    }
+    if (status === "current") return null;
+    if (status === "expired") return { reason: "deadline", answer: null };
+    return {
+      reason: status,
+      answer: {
+        ok: false,
+        attemptId: attempt.attemptId,
+        ...NOT_CURRENT_START[status],
+        logs: [],
+      },
+    };
+  }
+
+  /**
+   * Why a successful attempt must not be answered as ready: the request's
+   * deadline has passed, or the preview's Durable Object no longer names it
+   * as the current start (or cannot say). Null to answer it.
+   */
+  private async refuseLateSuccess(
+    request: StartRequestState,
+    attemptId: string,
+  ): Promise<{ stage: string; errorMessage: string } | null> {
+    if (this.now() >= request.deadlineAt) {
+      return this.deadlineRefusal();
+    }
+    if (!request.guard) return null;
+    let status: PreviewStartAttemptStatus;
+    try {
+      status = await request.guard.checkPreviewStart!({ attemptId });
+    } catch {
+      return NOT_CURRENT_START.unconfirmed;
+    }
+    if (status === "current") return null;
+    if (status === "expired") return this.deadlineRefusal();
+    return NOT_CURRENT_START[status];
+  }
+
+  private deadlineRefusal(): { stage: string; errorMessage: string } {
+    return {
+      stage: "preview-start-deadline",
+      errorMessage: `PREVIEW_START_DEADLINE: This start did not finish within its ${this.startDeadlineMs}ms deadline; its result is not used.`,
+    };
+  }
+
+  /**
+   * One attempt of a start, with its own attempt id and its own
+   * `[preview-observe] start` line. Says whether it may be retried: only
+   * the first attempt, only when guarded, only for the allow-listed
+   * interruption thrown by one of the start's own steps, and only while the
+   * request is inside its deadline and its retry window.
+   */
+  private async startAttempt(
+    input: StartPreviewServerInput,
+    request: StartRequestState,
+    attempt: { attemptId: string; mayRetry: boolean; retryOf?: string },
+  ): Promise<{
+    result: StartPreviewServerResult;
+    retry: {
+      signal: PreviewStartRetrySignal;
+      step: PreviewStartRetryStep;
+      stage: string;
+      errorMessage: string;
+    } | null;
+  }> {
+    const observation: StartObservation = { attemptId: attempt.attemptId };
     const startedAt = new Date().toISOString();
     let result: StartPreviewServerResult | null = null;
+    let retry: {
+      signal: PreviewStartRetrySignal;
+      step: PreviewStartRetryStep;
+      stage: string;
+      errorMessage: string;
+    } | null = null;
     let requestTraceStatus: unknown;
     let requestTraceRecord: unknown;
     try {
-      result = await this.startObserved(input, observation);
-      if (this.requestTrace && result.ok) {
-        requestTraceStatus = await this.readRequestTraceStatus(input.previewId);
-        requestTraceRecord = await this.readRequestTraceRecord(
-          input.previewId,
-          observation.attemptId,
-        );
+      const remainingMs = request.deadlineAt - this.now();
+      if (remainingMs <= 0) {
+        result = { ok: false, ...this.deadlineRefusal(), logs: [] };
+        return { result: { ...result, attemptId: attempt.attemptId }, retry };
       }
-      return { ...result, attemptId: observation.attemptId };
+      // Never a full ready timeout for a retry: what is left of the
+      // request's deadline, at most.
+      result = await this.startObserved(input, observation, {
+        readyTimeoutMs: Math.min(this.readyTimeoutMs, remainingMs),
+      });
+      if (result.ok) {
+        if (this.requestTrace) {
+          requestTraceStatus = await this.readRequestTraceStatus(
+            input.previewId,
+          );
+          requestTraceRecord = await this.readRequestTraceRecord(
+            input.previewId,
+            observation.attemptId,
+          );
+        }
+        const refused = await this.refuseLateSuccess(
+          request,
+          attempt.attemptId,
+        );
+        if (refused) result = { ok: false, ...refused, logs: result.logs };
+      } else if (attempt.mayRetry && request.guard && observation.thrown) {
+        const signal = classifyPreviewStartInterruption(observation.thrown);
+        const now = this.now();
+        if (
+          signal &&
+          observation.thrown.step &&
+          now < request.deadlineAt &&
+          now - request.requestStartedAt <= this.retryWindowMs
+        ) {
+          retry = {
+            signal,
+            step: observation.thrown.step,
+            stage: result.stage,
+            errorMessage: result.errorMessage,
+          };
+        }
+      }
+      return { result: { ...result, attemptId: attempt.attemptId }, retry };
     } finally {
-      inflight.leave();
       logPreviewServerEvent("start", {
         attemptId: observation.attemptId,
         previewId: input.previewId,
         startedAt,
-        concurrentAtEntry: inflight.concurrentAtEntry,
+        concurrentAtEntry: request.inflight.concurrentAtEntry,
         outcome: result === null ? "threw" : result.ok ? "ready" : "failed",
         ...(result && !result.ok
           ? { stage: result.stage, error: result.errorMessage.slice(0, 200) }
@@ -537,6 +887,9 @@ export class CloudflareSandboxVitePreviewServer {
         vite: observation.vite ?? null,
         address: observation.address ?? null,
         failedClosed: observation.failedClosed ?? null,
+        ...(request.guard ? {} : { guarded: false }),
+        ...(retry ? { retry: "scheduled" } : {}),
+        ...(attempt.retryOf ? { retryOf: attempt.retryOf, attempt: 2 } : {}),
         ...(requestTraceStatus !== undefined ? { requestTraceStatus } : {}),
         ...(requestTraceRecord !== undefined ? { requestTraceRecord } : {}),
         ...(result?.ok ? { timings: result.timings } : {}),
@@ -756,6 +1109,7 @@ export class CloudflareSandboxVitePreviewServer {
   private async startObserved(
     input: StartPreviewServerInput,
     observation: StartObservation,
+    limits: Readonly<{ readyTimeoutMs: number }>,
   ): Promise<StartPreviewServerResult> {
     const requestStartedAt = Date.now();
     const logs: string[] = [];
@@ -1059,6 +1413,9 @@ export class CloudflareSandboxVitePreviewServer {
         // sync takes, together with the version check (below).
         const workspaceMaterializeStartedAt = Date.now();
         if (workspaceUpdate !== "none") {
+          // One of the start's own steps: an interruption here may be
+          // retried (preview-start-retry.ts).
+          observation.step = "stage";
           stagedStart = await this.stageStart(
             session,
             measuredWriter,
@@ -1067,6 +1424,7 @@ export class CloudflareSandboxVitePreviewServer {
             new Set(change.paths),
             input.loadBinary,
           );
+          observation.step = undefined;
         }
         workspaceMaterializeMs = Date.now() - workspaceMaterializeStartedAt;
         startCommit = {
@@ -1089,6 +1447,7 @@ export class CloudflareSandboxVitePreviewServer {
       // and the marker. A start read before a newer save is refused whole
       // and leaves the workspace as it was, whichever of the two arrived
       // first. Equal versions pass: the later write wins, as for a sync.
+      observation.step = "fence";
       const applied = await runFencedWriteInSandbox(
         session as unknown as FenceSandbox,
         {
@@ -1121,6 +1480,7 @@ export class CloudflareSandboxVitePreviewServer {
         await this.discardStaging(session!, stagedStart.staging);
         throw error;
       });
+      observation.step = undefined;
       if (applied.staleGeneration) {
         observation.workspace.refused = applied.refused.length;
         return {
@@ -1406,7 +1766,7 @@ export class CloudflareSandboxVitePreviewServer {
         : null;
       const outcome = await withReadyTimeout(
         portReady ? Promise.race([portReady, logOrExit]) : logOrExit,
-        this.readyTimeoutMs,
+        limits.readyTimeoutMs,
       );
       if (outcome !== "ready") {
         // This start's own process, by the id it was given: never one that
@@ -1418,7 +1778,7 @@ export class CloudflareSandboxVitePreviewServer {
           stage: "preview-server-start",
           errorMessage:
             outcome === "timeout"
-              ? `PREVIEW_SERVER_TIMEOUT: Vite did not report itself ready within ${this.readyTimeoutMs}ms.`
+              ? `PREVIEW_SERVER_TIMEOUT: Vite did not report itself ready within ${limits.readyTimeoutMs}ms.`
               : "PREVIEW_SERVER_EXITED: Vite exited before it was ready to serve.",
           logs,
         };
@@ -1457,6 +1817,13 @@ export class CloudflareSandboxVitePreviewServer {
         serving,
       };
     } catch (error) {
+      // Kept with the step it came from: only the start's own steps may be
+      // retried, and only by `start`, which reads it.
+      observation.thrown = {
+        message: error instanceof Error ? error.message : String(error),
+        step: observation.step ?? null,
+      };
+      observation.step = undefined;
       if (session) {
         observation.failedClosed = "start-error";
         logPreviewServerEvent("fail-closed", {
@@ -1579,6 +1946,9 @@ export class CloudflareSandboxVitePreviewServer {
   async stop(previewId: string, processId?: string): Promise<void> {
     logPreviewServerEvent("stop", { previewId, processId: processId ?? null });
     const session = await this.acquire(previewId);
+    // First, so a start still running (or pausing before its retry) learns
+    // it was stopped and does not bring the container back.
+    await session.endPreviewStarts?.().catch(() => {});
     await session.unexposePort?.(THEME_PREVIEW_SERVER_PORT).catch(() => {});
     await session.killProcess?.(processId).catch(() => {});
     await session.destroy();
