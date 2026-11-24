@@ -23,6 +23,7 @@ import {
   describe,
   expect,
   it,
+  onTestFinished,
   vi,
 } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
@@ -11183,9 +11184,61 @@ function Home() {
          */
         it("input of the section still pending when Undo is pressed is saved first, as its own entry; that Undo then refuses", async () => {
           const notice = notices();
-          const { receive } = await storedFieldEdit();
-          // Typed, and Undo pressed inside the 300 ms debounce.
-          await typeThenUndo("New", "Newer");
+          // A controlled clock instead of real 1200 ms sleeps: only setTimeout
+          // and clearTimeout are faked (frames, React and the mock keep
+          // running) and the clock follows real time so `waitFor` works.
+          // `quiet` first waits for the signals that the write path is idle
+          // (the expected write was sent and its answer taken), then runs the
+          // same 1200 ms window `settle` slept through on the fake clock, so
+          // a write still due inside that window is sent by this run and
+          // fails the count assertion that follows.
+          vi.useFakeTimers({
+            toFake: ["setTimeout", "clearTimeout"],
+            shouldAdvanceTime: true,
+          });
+          onTestFinished(() => {
+            vi.useRealTimers();
+          });
+          const quiet = async (writes: number) => {
+            await waitFor(() => expect(sent()).toHaveLength(writes), {
+              timeout: 10_000,
+            });
+            await act(async () => {
+              await Promise.allSettled(
+                updateSectionProps.mock.results.map((r) => r.value),
+              );
+              await vi.advanceTimersByTimeAsync(1_200);
+            });
+          };
+          const press = async (name: "Undo" | "Redo", writes: number) => {
+            await waitFor(() =>
+              expect(
+                screen.getByRole("button", { name }).hasAttribute("disabled"),
+              ).toBe(false),
+            );
+            fireEvent.click(screen.getByRole("button", { name }));
+            await quiet(writes);
+          };
+
+          stored = { ...STORED };
+          const { receive } = await openSection({ ...STORED });
+          // `heading` Hello -> New: one write, one entry.
+          await type("Hello", "New");
+          await quiet(1);
+          await reread(receive);
+          expect(sent()).toHaveLength(1);
+          expect(stored).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+
+          // Typed, and Undo pressed inside the 300 ms debounce, in the same
+          // task (awaiting between them can let the input leave first).
+          const field = (await screen.findAllByDisplayValue("New"))[0]!;
+          const undoButton = screen.getByRole("button", { name: "Undo" });
+          expect(undoButton.hasAttribute("disabled")).toBe(false);
+          fireEvent.input(field, { target: { value: "Newer" } });
+          fireEvent.blur(field);
+          fireEvent.click(undoButton);
+          await quiet(2);
 
           expect(sent(), "the input only, no undo after it").toHaveLength(2);
           expect(sent()[1]!.props).toEqual({ heading: "Newer" });
@@ -11199,12 +11252,12 @@ function Home() {
             expect.stringMatching(/^Could not undo/),
           );
           expect(unconfirmedCount()).toBeNull();
-          await settle();
+          await quiet(2);
           expect(sent(), "nothing sent after it").toHaveLength(2);
 
           // The input's entry is on top: its undo puts back "New".
           await reread(receive);
-          await undo();
+          await press("Undo", 3);
           expect(sent()).toHaveLength(3);
           expect(sent()[2]).toMatchObject({
             props: { heading: "New" },
@@ -11216,7 +11269,7 @@ function Home() {
 
           // Then the older entry, under it: "Hello".
           await reread(receive);
-          await undo();
+          await press("Undo", 4);
           expect(sent()).toHaveLength(4);
           expect(sent()[3]!.props).toEqual({ heading: "Hello" });
           expect(stored).toEqual({ heading: "Hello" });
@@ -11225,13 +11278,13 @@ function Home() {
 
           // Redo in the same order: the older entry, then the input.
           await reread(receive);
-          await redo();
+          await press("Redo", 5);
           expect(sent()).toHaveLength(5);
           expect(sent()[4]!.props).toEqual({ heading: "New" });
           expect(depth()).toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: true });
           await reread(receive);
-          await redo();
+          await press("Redo", 6);
           expect(sent()).toHaveLength(6);
           expect(sent()[5]!.props).toEqual({ heading: "Newer" });
           expect(stored).toEqual({ heading: "Newer" });
