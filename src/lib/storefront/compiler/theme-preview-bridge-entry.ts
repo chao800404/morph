@@ -42,7 +42,6 @@ export function themePreviewBridgeEntrySource(): string {
 } from "./preview/preview-protocol";
 import {
   astroBasisAckVerdict,
-  previewBoundaryComments,
   previewBoundaryNonce,
   collectPreviewEditableNodes,
   createSelectionFieldRefusalLog,
@@ -2198,7 +2197,7 @@ if (channel) {
         token: message.presentationToken,
         documentNavigation,
         nonce: previewBoundaryNonce(),
-        comments: previewBoundaryComments(document),
+        root: document,
         servedContent: servedContentReport(),
       });
       if (verdict.applied) {

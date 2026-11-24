@@ -349,15 +349,7 @@ export function previewSourceBoundaryOf(
 ): PreviewBoundaryReport | null {
   const mode = previewSourceSelection();
   if (!mode) return null;
-  const read = (node: Node) => {
-    if (node.nodeType !== 8) return null;
-    const match = PREVIEW_BOUNDARY_MARKER.exec((node as Comment).data);
-    if (!match || match[2] !== mode.nonce) return null;
-    return {
-      close: match[1] === "/",
-      id: `${match[2]}:${match[3]}:${match[4]}:${match[5]}:${match[6]}`,
-    };
-  };
+  const read = boundaryMarkerReader(mode.nonce);
   // A level passed on the way up that holds a marker without its partner had
   // a range split by the browser (a block inside `<p>`, a row moved into a
   // tbody): the enclosing candidate then holds content of a range it cannot
@@ -383,9 +375,26 @@ export function previewSourceBoundaryOf(
   return { marker: null, selectable: false, reason: "outside" };
 }
 
+type BoundaryMarkerReader = (
+  node: Node,
+) => { close: boolean; id: string } | null;
+
+/** Reads a `morph:s2` comment of `nonce`; any other node is not a marker. */
+function boundaryMarkerReader(nonce: string): BoundaryMarkerReader {
+  return (node: Node) => {
+    if (node.nodeType !== 8) return null;
+    const match = PREVIEW_BOUNDARY_MARKER.exec((node as Comment).data);
+    if (!match || match[2] !== nonce) return null;
+    return {
+      close: match[1] === "/",
+      id: `${match[2]}:${match[3]}:${match[4]}:${match[5]}:${match[6]}`,
+    };
+  };
+}
+
 function levelIsBalanced(
   parent: Node,
-  read: (node: Node) => { close: boolean; id: string } | null,
+  read: BoundaryMarkerReader,
 ): boolean {
   const open: string[] = [];
   for (let child = parent.firstChild; child; child = child.nextSibling) {
@@ -400,7 +409,7 @@ function levelIsBalanced(
 function judgeBoundary(
   open: Node,
   id: string,
-  read: (node: Node) => { close: boolean; id: string } | null,
+  read: BoundaryMarkerReader,
 ): PreviewBoundaryReport {
   const refuse = (reason: string) => ({ marker: id, selectable: false, reason });
   const stack: string[] = [];
@@ -423,7 +432,9 @@ function judgeBoundary(
   }
   if (!closed) return refuse("unpaired");
   let opens = 0;
-  const walker = document.createTreeWalker(document, NodeFilter.SHOW_COMMENT);
+  // The document holding the range: the frame's own, in the bridge.
+  const owner = open.ownerDocument ?? document;
+  const walker = owner.createTreeWalker(owner, NodeFilter.SHOW_COMMENT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const marker = read(node);
     if (marker && !marker.close && marker.id === id) opens++;
@@ -443,57 +454,66 @@ export type AstroBasisAckCause =
   | "no-boundary"
   | "duplicate-boundary"
   | "unpaired-boundary"
-  | "split-boundary";
+  | "split-boundary"
+  | "crossing-boundary"
+  | "empty-boundary";
 
 export type AstroBasisAckVerdict =
   | Readonly<{ applied: true }>
   | Readonly<{ applied: false; cause: AstroBasisAckCause }>;
 
-/** One comment of the document, in document order, and the node holding it. */
-export type PreviewBoundaryComment = Readonly<{ text: string; parent: unknown }>;
-
 /**
- * Whether the document holds the boundary `identity` exactly once (option B):
- * one opening and one closing `morph:s2` comment of that id, with this
- * preview's `nonce`, the opening first, both under the same parent. Markers
- * of another nonce are not counted; an identity of another nonce is refused.
- * The identity was confirmed against Core's binding view when it was
- * selected; this only says it is still on the page, once.
+ * Whether the document holds the boundary `identity` exactly once (option B),
+ * by the rule a click is selected by (`judgeBoundary`): one opening and one
+ * closing `morph:s2` comment of that id with this preview's `nonce`, under
+ * the same parent, the opening first, nested cleanly with every other
+ * boundary (none crossing it) and enclosing an element. Markers of another
+ * nonce are not counted; an identity of another nonce is refused. The
+ * identity was confirmed against Core's binding view when it was selected;
+ * this only says it is still on the page, once, as a click would see it.
  */
 export function astroBasisBoundaryVerdict(
   identity: string,
   nonce: string | null,
-  comments: readonly PreviewBoundaryComment[],
+  root: Document,
 ): AstroBasisAckVerdict {
   if (!nonce || identity.split(":")[0] !== nonce) {
     return { applied: false, cause: "wrong-nonce" };
   }
-  const opens: Array<{ index: number; parent: unknown }> = [];
-  const closes: Array<{ index: number; parent: unknown }> = [];
-  comments.forEach((comment, index) => {
-    const match = PREVIEW_BOUNDARY_MARKER.exec(comment.text);
-    if (!match || match[2] !== nonce) return;
-    const id = `${match[2]}:${match[3]}:${match[4]}:${match[5]}:${match[6]}`;
-    if (id !== identity) return;
-    (match[1] === "/" ? closes : opens).push({ index, parent: comment.parent });
-  });
+  const read = boundaryMarkerReader(nonce);
+  const opens: Node[] = [];
+  const closes: Node[] = [];
+  const walker = root.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const marker = read(node);
+    if (marker?.id === identity) (marker.close ? closes : opens).push(node);
+  }
   if (opens.length === 0 && closes.length === 0) {
     return { applied: false, cause: "no-boundary" };
   }
   if (opens.length > 1 || closes.length > 1) {
     return { applied: false, cause: "duplicate-boundary" };
   }
-  if (
-    opens.length !== 1 ||
-    closes.length !== 1 ||
-    opens[0]!.index > closes[0]!.index
-  ) {
+  if (opens.length !== 1 || closes.length !== 1) {
     return { applied: false, cause: "unpaired-boundary" };
   }
-  if (opens[0]!.parent !== closes[0]!.parent) {
+  if (opens[0]!.parentNode !== closes[0]!.parentNode) {
     return { applied: false, cause: "split-boundary" };
   }
-  return { applied: true };
+  // The selection rule itself, from the opening comment: order, crossing,
+  // the document-wide count and emptiness.
+  const judged = judgeBoundary(opens[0]!, identity, read);
+  if (judged.selectable) return { applied: true };
+  switch (judged.reason) {
+    case "crossing":
+      return { applied: false, cause: "crossing-boundary" };
+    case "empty":
+      return { applied: false, cause: "empty-boundary" };
+    case "duplicate":
+      return { applied: false, cause: "duplicate-boundary" };
+    default:
+      return { applied: false, cause: "unpaired-boundary" };
+  }
 }
 
 /**
@@ -508,7 +528,8 @@ export function astroBasisAckVerdict(args: {
   token: SectionPresentationToken;
   documentNavigation: boolean;
   nonce: string | null;
-  comments: readonly PreviewBoundaryComment[];
+  /** The frame's document, read as a click reads it. */
+  root: Document;
   servedContent: PreviewServedContent | null;
 }): AstroBasisAckVerdict {
   const basis = args.token.basis;
@@ -525,24 +546,12 @@ export function astroBasisAckVerdict(args: {
   ) {
     return { applied: false, cause: "other-snapshot" };
   }
-  return astroBasisBoundaryVerdict(basis.identity, args.nonce, args.comments);
+  return astroBasisBoundaryVerdict(basis.identity, args.nonce, args.root);
 }
 
 /** This preview's boundary nonce, or null outside a source-selection preview. */
 export function previewBoundaryNonce(): string | null {
   return previewSourceSelection()?.nonce ?? null;
-}
-
-/** Every comment of `root`, in document order, with its parent node. */
-export function previewBoundaryComments(
-  root: Document,
-): PreviewBoundaryComment[] {
-  const comments: PreviewBoundaryComment[] = [];
-  const walker = root.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    comments.push({ text: (node as Comment).data, parent: node.parentNode });
-  }
-  return comments;
 }
 
 const SOURCE_DIGEST = /^[0-9a-f]{64}$/;
