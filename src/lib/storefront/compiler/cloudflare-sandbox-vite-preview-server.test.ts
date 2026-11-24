@@ -999,7 +999,8 @@ describe("asking twice for the same preview", () => {
     expect(second.timings.workspaceReused).toBe(true);
     expect(second.timings.workspaceMaterializeMs).toBe(0);
     expect(second.timings.writeCalls).toBe(0);
-    expect(second.timings.readCalls).toBe(1);
+    // The marker, and the fence ledger that vouches for it (user, 11-24).
+    expect(second.timings.readCalls).toBe(2);
     expect(workspaceWrites(harness)).toEqual([]);
     expect(harness.commands).toHaveLength(1);
   });
@@ -2006,6 +2007,11 @@ describe("a start read before a save that created a file", () => {
       fileVersions: { [HERO]: 1 },
       sourceGeneration: 4,
     });
+    // What the first start committed, which the ledger vouches for (user,
+    // 2026-11-24); a start that fails before its fence changes none of it.
+    const firstCommit = harness.written.get(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    );
     const writeFile = harness.session.writeFile.bind(harness.session);
     (
       harness.session as { writeFile: PreviewServerSession["writeFile"] }
@@ -2027,6 +2033,7 @@ describe("a start read before a save that created a file", () => {
       files: { [HERO]: 1 },
       readAt: { [HERO]: 4 },
       generation: 4,
+      committed: firstCommit,
     });
   });
 });
@@ -3008,9 +3015,19 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
           },
         });
         const real = withRealStartGuard(s.harness, s.time.now);
-        /** Everything the container holds or was asked to do, so far. */
+        /**
+         * Everything the container holds or was asked to do, so far, apart
+         * from A's own staging: since the workspace-ownership decision
+         * (user, 2026-11-24) a superseded attempt clears its own /tmp
+         * staging, and only that, so that one removal is left out here and
+         * checked on its own below.
+         */
         const container = () => ({
-          written: new Map(s.harness.written),
+          written: new Map(
+            [...s.harness.written].filter(
+              ([file]) => !file.startsWith(PREVIEW_START_STAGING_PREFIX),
+            ),
+          ),
           writes: s.harness.writePaths.length,
           deletes: s.harness.deletedPaths.length,
           mkdirs: s.mkdirCalls,
@@ -3030,11 +3047,19 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
         };
 
         const exec = s.harness.session.exec.bind(s.harness.session);
+        const ownStagingRemovals: string[] = [];
         override(
           s.harness,
           "exec",
           async (...args: Parameters<PreviewServerSession["exec"]>) => {
-            execs += 1;
+            if (
+              claimed &&
+              String(args[0]).startsWith(`rm -rf ${PREVIEW_START_STAGING_PREFIX}`)
+            ) {
+              ownStagingRemovals.push(String(args[0]));
+            } else {
+              execs += 1;
+            }
             return exec(...args);
           },
         );
@@ -3090,8 +3115,15 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
         expect(aStarts).toHaveLength(2);
         expect(a.retryOf).toBe(aStarts[0]!.attemptId);
 
-        // Nothing at all reached the container from A after B's claim.
+        // Nothing at all reached the container from A after B's claim, but
+        // the removal of its own staging.
         expect(container()).toEqual(afterB);
+        expect(ownStagingRemovals).toHaveLength(point === "startProcess" ? 0 : 1);
+        expect(
+          [...s.harness.written.keys()].filter((file) =>
+            file.startsWith(PREVIEW_START_STAGING_PREFIX),
+          ),
+        ).toEqual([]);
         // B's Theme files are laid out exactly as a clean start of B's.
         for (const [file, bytes] of cleanB.sources) {
           expect(s.harness.written.get(file)).toBe(bytes);
@@ -3116,9 +3148,12 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
      * after B's ready answer: the snapshot taken there is "everything after
      * B's claim" for /workspace and for processes.
      *
-     * Red on purpose (user, 11-24): the first attempt is not checked per
-     * step, so A still runs its fence and its dev server after B. The fix
-     * belongs inside the fence's own commit (see the handoff note), not here.
+     * Committed red (user, 11-24); green since the workspace-ownership
+     * decision (user, 2026-11-24): B's claim is registered in the fence
+     * ledger, so A's fence is refused under the lock and writes nothing,
+     * and A's dev server launch is refused by the serve gate. `commands`
+     * counts dev servers launched; a launch the gate refused is in
+     * `gated`.
      */
     it.each([
       ["between two of its staging writes", "staging"],
@@ -3241,6 +3276,8 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
             .filter((file) => file.startsWith("/workspace/")),
         ).toEqual([]);
         expect(s.harness.commands.length).toBe(afterB!.commands);
+        // A reached its launch only in the last case, and the gate refused it.
+        expect(s.harness.gated).toHaveLength(point === "startProcess" ? 1 : 0);
         // What B serves is as B left it: workspace, marker, manifest,
         // processes, address, lifecycle.
         expect(container()).toEqual(afterB);
@@ -3424,7 +3461,10 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
    * alone only when another start owns the workspace (superseded) or the
    * preview was stopped. A retry that ran out of time, or that cannot reach
    * the Durable Object, still owns it: dirty is the safe direction, so the
-   * next start rebuilds instead of trusting what this one left.
+   * next start rebuilds instead of trusting what this one left. Since the
+   * workspace-ownership decision (user, 2026-11-24) "still owns it" is the
+   * fence ledger's answer, not the refusal's kind: these retries are the
+   * ledger's registered owner, so their marker goes through.
    */
   describe("the fail-closed marker, and a Durable Object that cannot be reached", () => {
     const marker = (harness: Harness) =>
@@ -3536,37 +3576,48 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
       expect(s.harness.commands).toHaveLength(0);
     });
 
-    it("a claim that throws leaves the start unguarded: logged guarded:false, never retried", async () => {
-      const s = setup({ failures: 1 });
-      override(s.harness, "claimPreviewStart", async () => {
-        throw new Error("Durable Object unreachable");
-      });
-      const { result, starts, retries } = await records(() => s.start());
+    /**
+     * Workspace ownership (user, 2026-11-24): a claim that cannot be made
+     * leaves the start without a number to register, so its ownership can
+     * never be proven and it writes nothing shared. It is refused before
+     * any container step, logged guarded:false, and never retried. (Before
+     * that decision it ran unguarded and answered ready.)
+     */
+    it.each([
+      ["throws", "throws"],
+      ["returns no number", "no-seq"],
+    ] as const)(
+      "a claim that %s answers preview-start-unconfirmed and touches no container: logged guarded:false, never retried",
+      async (_label, how) => {
+        const s = setup({ failures: 1 });
+        let execs = 0;
+        const exec = s.harness.session.exec.bind(s.harness.session);
+        override(s.harness, "exec", async (command: string) => {
+          execs += 1;
+          return exec(command);
+        });
+        override(s.harness, "claimPreviewStart", async () => {
+          if (how === "throws") throw new Error("Durable Object unreachable");
+          return undefined;
+        });
+        const { result, starts, retries } = await records(() => s.start());
 
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.stage).toBe("preview-server-start");
-      expect(result.errorMessage).toBe(INTERRUPTED_MKDIR);
-      expect(starts).toHaveLength(1);
-      expect(starts[0]!.guarded).toBe(false);
-      expect(starts[0]!.retry).toBeUndefined();
-      expect(retries).toEqual([]);
-      expect(s.pauses).toEqual([]);
-      expect(s.guarded!.guard.checks).toEqual([]);
-    });
-
-    it("a claim that throws does not stop a healthy start: it answers ready, unguarded", async () => {
-      const s = setup();
-      override(s.harness, "claimPreviewStart", async () => {
-        throw new Error("Durable Object unreachable");
-      });
-      const { result, starts } = await records(() => s.start());
-
-      expect(result.ok).toBe(true);
-      expect(starts).toHaveLength(1);
-      expect(starts[0]!.guarded).toBe(false);
-      expect(s.guarded!.guard.checks).toEqual([]);
-    });
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.stage).toBe("preview-start-unconfirmed");
+        expect(starts).toHaveLength(1);
+        expect(starts[0]!.guarded).toBe(false);
+        expect(starts[0]!.retry).toBeUndefined();
+        expect(retries).toEqual([]);
+        expect(s.pauses).toEqual([]);
+        expect(s.guarded!.guard.checks).toEqual([]);
+        // Nothing reached the container.
+        expect(s.mkdirCalls).toBe(0);
+        expect(execs).toBe(0);
+        expect(s.harness.writePaths).toEqual([]);
+        expect(s.harness.commands).toEqual([]);
+      },
+    );
 
     it("a first attempt whose success cannot be confirmed answers preview-start-unconfirmed, never ready", async () => {
       const s = setup();
