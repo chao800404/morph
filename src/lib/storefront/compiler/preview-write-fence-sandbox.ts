@@ -603,23 +603,34 @@ export function applyPreviewContentRequest(
   return { outcome: "written", ticket: incoming.ticket, instance };
 }
 
+export type FenceAppliers = Readonly<{
+  applyFencedRequest: typeof applyFencedRequest;
+  applyPreviewContentRequest: typeof applyPreviewContentRequest;
+}>;
+
 /**
  * Every request the fence script takes, dispatched as the script does,
  * under its one lock. A stamp that carries a claim is made only while that
  * claim owns the workspace, judged in the same locked step.
+ *
+ * Runs in the container as its own source, so it names nothing outside its
+ * parameters: a bundler may rename the module's functions, while the
+ * script defines them under these names. The script always passes
+ * `appliers`; the default is for callers in this process (tests).
  */
 export function applyPreviewFenceRequest(
   io: FenceIo & { renameInto(from: string, to: string): void },
   ledgerPath: string,
   request: FencedWriteRequest | PreviewContentRequest,
   planners: FencePlanners,
+  appliers: FenceAppliers = { applyFencedRequest, applyPreviewContentRequest },
 ): FencedWriteResult | PreviewContentResult {
   if (request.op === "content" || request.op === "read") {
-    return applyPreviewContentRequest(io, request);
+    return appliers.applyPreviewContentRequest(io, request);
   }
   if (request.op === "stamp") {
     if (request.claim) {
-      const standing = applyFencedRequest(
+      const standing = appliers.applyFencedRequest(
         io,
         ledgerPath,
         { op: "serve", claim: request.claim },
@@ -629,9 +640,9 @@ export function applyPreviewFenceRequest(
         return { outcome: "not-owner", ticket: 0, instance: null };
       }
     }
-    return applyPreviewContentRequest(io, request);
+    return appliers.applyPreviewContentRequest(io, request);
   }
-  return applyFencedRequest(io, ledgerPath, request, planners);
+  return appliers.applyFencedRequest(io, ledgerPath, request, planners);
 }
 
 /**
@@ -703,7 +714,13 @@ const io = {
 
 let result;
 try {
-  result = applyPreviewFenceRequest(io, LEDGER, request, { planFencedWrite, planFencedStart });
+  result = applyPreviewFenceRequest(
+    io,
+    LEDGER,
+    request,
+    { planFencedWrite, planFencedStart },
+    { applyFencedRequest, applyPreviewContentRequest },
+  );
 } finally {
   fs.rmdirSync(LOCK);
   try { fs.unlinkSync(requestPath); } catch {}
