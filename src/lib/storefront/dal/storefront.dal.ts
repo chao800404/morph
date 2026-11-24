@@ -54,10 +54,13 @@ import {
   type ThemePreviewRuntime,
 } from "../theme-preview-runtime";
 import {
+  isPreviewRuntimeStartRequired,
   starterPlanFilesRequiringStartPreview,
   starterStartPreviewRequirement,
+  STARTER_UPGRADE_START_PREVIEW_REQUIRED_MESSAGE,
   type StarterStartPreviewRequirement,
 } from "../starter-upgrade-start-preview";
+import { starterThemeWorkspaceFiles } from "../starter-theme-files";
 import { UNRECORDED_THEME_FRAMEWORK } from "../theme-framework/theme-framework.types";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
@@ -1050,11 +1053,31 @@ export const storefrontDal = {
     // another framework, even an empty one. Nothing to do, not an error: the
     // editor opens either way and ignores this result.
     if (starterUpgradeUnavailableReason(stored.framework)) return false;
-    const workspace = await ensureStarterThemeWorkspace(
-      data.storefrontId,
-      data.themeId,
-      data.createdBy,
-    );
+    // The Starter write rule, as for an applied upgrade: a Theme that does not
+    // record start is not given Starter files only the full Start preview can
+    // render, nor that Starter's version, and its runtime is left as it is.
+    // Asked here so nothing is written; the init's own batch asks again
+    // (`initStarterTheme`), so a switch landing after this read is refused
+    // there with nothing written either.
+    if (
+      !starterStartPreviewRequirement(
+        starterPlanFilesRequiringStartPreview(starterThemeWorkspaceFiles()),
+        stored.previewRuntime,
+      ).satisfied
+    ) {
+      return false;
+    }
+    let workspace: { filesSaved: boolean };
+    try {
+      workspace = await ensureStarterThemeWorkspace(
+        data.storefrontId,
+        data.themeId,
+        data.createdBy,
+      );
+    } catch (error) {
+      if (isPreviewRuntimeStartRequired(error)) return false;
+      throw error;
+    }
     if (!workspace.filesSaved) return false;
     assertStarterUpgradeRecorded(
       await ensureStarterHomeDocument(db, data.themeId, {
@@ -1307,6 +1330,29 @@ export const storefrontDal = {
       return { status: "stale", sourceGeneration };
     }
 
+    // The Starter write rule, held at the write itself. The runtime read
+    // above came before the workspace was read and the plans were made, so
+    // it is read again here, and the batch then requires `start` beside its
+    // source generation: a switch back to client that lands at any point
+    // before the commit leaves no file, revision, Document or version.
+    const startOnlyPaths = starterPlanFilesRequiringStartPreview(writes);
+    if (startOnlyPaths.length > 0) {
+      const atWrite = await readStoredStarterVersion(
+        db,
+        data.storefrontId,
+        data.themeId,
+      );
+      if (!atWrite.found)
+        throw new Error("Theme not found or does not belong to storefront");
+      if (atWrite.previewRuntime !== "start") {
+        return {
+          status: "start-preview-required",
+          paths: startOnlyPaths,
+          reason: STARTER_UPGRADE_START_PREVIEW_REQUIRED_MESSAGE,
+        };
+      }
+    }
+
     let savedGeneration = sourceGeneration;
     const filesSaved = writes.length > 0 || deletions.length > 0;
     if (filesSaved) {
@@ -1333,10 +1379,19 @@ export const storefrontDal = {
               .filter(Boolean)
               .join("; "),
             createdBy: data.createdBy,
+            requirePreviewRuntime:
+              startOnlyPaths.length > 0 ? "start" : undefined,
           },
         );
         savedGeneration = saved.sourceGeneration ?? sourceGeneration + 1;
       } catch (error) {
+        if (isPreviewRuntimeStartRequired(error)) {
+          return {
+            status: "start-preview-required",
+            paths: startOnlyPaths,
+            reason: STARTER_UPGRADE_START_PREVIEW_REQUIRED_MESSAGE,
+          };
+        }
         if (
           error instanceof Error &&
           (error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH") ||

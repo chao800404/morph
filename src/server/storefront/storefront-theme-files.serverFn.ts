@@ -24,7 +24,15 @@ import {
   sourceIndexForLegacyManifestRevision,
   type ThemeManifestMigrationPlan,
 } from "@/lib/storefront/theme-manifest-migration";
-import { createStarterThemeWorkspaceBootstrapPlan } from "@/lib/storefront/starter-theme-files";
+import {
+  createStarterThemeWorkspaceBootstrapPlan,
+  starterThemeWorkspaceFiles,
+} from "@/lib/storefront/starter-theme-files";
+import {
+  isPreviewRuntimeStartRequired,
+  starterPlanFilesRequiringStartPreview,
+  STARTER_START_PREVIEW_REQUIRED_MESSAGE,
+} from "@/lib/storefront/starter-upgrade-start-preview";
 import {
   planNewThemePage,
   planThemePageDeletion,
@@ -623,6 +631,41 @@ export const applyThemeManifestMigrationServerFn = createServerFn({
     }
   });
 
+/**
+ * The answer to a Starter write the source store refused because the Theme
+ * does not record `start` (`PREVIEW_RUNTIME_START_REQUIRED`): nothing was
+ * written and the runtime was not changed.
+ */
+function starterStartPreviewRequired() {
+  return fail(STARTER_START_PREVIEW_REQUIRED_MESSAGE, {
+    error: "STARTER_START_PREVIEW_REQUIRED",
+  });
+}
+
+/**
+ * Whether a create puts the current Starter's own file back, byte for byte,
+ * and that file needs the full Start preview: the editor's "Restore Starter
+ * Content Module" command, or anything else that sends the same create. Such
+ * a write is held to the Starter write rule. An author's own file, whatever
+ * it imports, is not a Starter write and is not held to it.
+ */
+function createRestoresStartOnlyStarterFile(write: {
+  path: string;
+  content: string;
+  expectMissing?: boolean;
+}): boolean {
+  if (!write.expectMissing) return false;
+  const restored = starterThemeWorkspaceFiles().some(
+    (file) => file.path === write.path && file.content === write.content,
+  );
+  return (
+    restored &&
+    starterPlanFilesRequiringStartPreview([
+      { path: write.path, content: write.content },
+    ]).length > 0
+  );
+}
+
 export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
     parseInput(initStarterThemeFilesInputSchema, data),
@@ -652,6 +695,9 @@ export const initStorefrontStarterTheme = createServerFn({ method: "POST" })
         sourceGeneration: sourceGeneration ?? 1,
       });
     } catch (error) {
+      if (isPreviewRuntimeStartRequired(error)) {
+        return starterStartPreviewRequired();
+      }
       return failure(
         "Init starter theme error",
         error,
@@ -753,6 +799,11 @@ export const applyStarterThemeWorkspace = createServerFn({ method: "POST" })
           createRevision: true,
           revisionMessage: "Bootstrap TanStack Start theme workspace",
           createdBy: context.user?.id,
+          // The Starter write rule: these are the Starter's own files.
+          requirePreviewRuntime:
+            starterPlanFilesRequiringStartPreview(plan.files).length > 0
+              ? "start"
+              : undefined,
         },
       );
       const nextFiles = await themeSourceStore.listFiles(
@@ -765,6 +816,9 @@ export const applyStarterThemeWorkspace = createServerFn({ method: "POST" })
         changed: true,
       });
     } catch (error) {
+      if (isPreviewRuntimeStartRequired(error)) {
+        return starterStartPreviewRequired();
+      }
       if (
         error instanceof Error &&
         error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
@@ -1002,10 +1056,18 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,
+          // The restore command puts a Starter file back: held to `start`
+          // in the save's own batch when that file needs it.
+          requirePreviewRuntime: createRestoresStartOnlyStarterFile(data)
+            ? "start"
+            : undefined,
         },
       );
       return ok("Theme file saved", saved);
     } catch (error) {
+      if (isPreviewRuntimeStartRequired(error)) {
+        return starterStartPreviewRequired();
+      }
       if (
         error instanceof Error &&
         error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")

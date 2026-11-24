@@ -17,6 +17,10 @@ import {
   type StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { starterThemeWorkspaceFiles } from "@/lib/storefront/starter-theme-files";
+import {
+  PREVIEW_RUNTIME_START_REQUIRED,
+  starterPlanFilesRequiringStartPreview,
+} from "../starter-upgrade-start-preview";
 import { deriveThemeSourceIndex } from "../theme-source-index";
 import { isThemePublicPath } from "../theme-public-files";
 import { paginationOf, type Pagination } from "@/lib/db/server-result";
@@ -100,6 +104,54 @@ export function prepareThemeOwnershipGuard(
     ) THEN 1 ELSE json('') END AS ok
   `,
   ).bind(themeId, storefrontId);
+}
+
+/**
+ * Raises inside a batch unless the Theme records `previewRuntime`. Placed in
+ * the same batch as the source-generation guard, so a Starter write whose
+ * files need the full Start preview commits only while the Theme still
+ * records `start` (`PREVIEW_RUNTIME_START_REQUIRED`): a switch back to client
+ * that lands first leaves nothing of the write.
+ */
+export function prepareThemePreviewRuntimeGuard(
+  storefrontId: string,
+  themeId: string,
+  previewRuntime: "start",
+) {
+  return env.DATABASE.prepare(
+    `
+    SELECT CASE WHEN EXISTS (
+      SELECT 1 FROM storefront_themes
+      WHERE id = ?1
+        AND storefront_id = ?2
+        AND preview_runtime = ?3
+        AND deleted_at IS NULL
+    ) THEN 1 ELSE json('') END AS ok
+  `,
+  ).bind(themeId, storefrontId, previewRuntime);
+}
+
+/** The preview runtime column as stored, to name a refused write. */
+async function readStoredPreviewRuntime(
+  storefrontId: string,
+  themeId: string,
+): Promise<string | null> {
+  const row = await env.DATABASE.prepare(
+    `SELECT preview_runtime AS previewRuntime FROM storefront_themes
+     WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL LIMIT 1`,
+  )
+    .bind(themeId, storefrontId)
+    .first<{ previewRuntime: string | null }>();
+  return row?.previewRuntime ?? null;
+}
+
+/** The paths that need it, when the writer named them; the caller knows. */
+function previewRuntimeStartRequiredError(paths: readonly string[] | null) {
+  return new Error(
+    `${PREVIEW_RUNTIME_START_REQUIRED}: ${
+      paths ? `${paths.join(", ")} need` : "this write needs"
+    } the full Start preview, and the Theme does not record start.`,
+  );
 }
 
 /**
@@ -527,6 +579,9 @@ export const storefrontThemeFileDal = {
       scope: "workspace",
       sourceGeneration: 2,
     });
+    // The Starter write rule (`PREVIEW_RUNTIME_START_REQUIRED`), asked here so
+    // that no caller initialises a Theme without it.
+    const startOnlyPaths = starterPlanFilesRequiringStartPreview(starterFiles);
 
     const statements = [
       prepareThemeOwnershipGuard(storefrontId, themeId),
@@ -538,6 +593,9 @@ export const storefrontThemeFileDal = {
         ) THEN 1 ELSE json('') END AS ok
       `,
       ).bind(storefrontId, themeId),
+      ...(startOnlyPaths.length > 0
+        ? [prepareThemePreviewRuntimeGuard(storefrontId, themeId, "start")]
+        : []),
     ];
 
     for (const f of starterFiles) {
@@ -595,6 +653,13 @@ export const storefrontThemeFileDal = {
         const existing = await this.listFiles(storefrontId, themeId);
         if (existing.length > 0) {
           return existing;
+        }
+        if (
+          startOnlyPaths.length > 0 &&
+          (await this.verifyOwnership(storefrontId, themeId)) &&
+          (await readStoredPreviewRuntime(storefrontId, themeId)) !== "start"
+        ) {
+          throw previewRuntimeStartRequiredError(startOnlyPaths);
         }
         throw new Error(
           "CONFLICT_OWNERSHIP_MISMATCH: Theme does not exist or was deleted.",
@@ -1032,6 +1097,7 @@ export const storefrontThemeFileDal = {
       createdBy?: string;
       sourceManifest?: ThemeSourceRevisionManifest;
       sourceIndex?: ThemeSourceIndex;
+      requirePreviewRuntime?: "start";
     },
   ): Promise<StorefrontThemeFileDTO & { sourceGeneration?: number }> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
@@ -1060,6 +1126,7 @@ export const storefrontThemeFileDal = {
         createdBy: options.createdBy,
         sourceManifest: options.sourceManifest,
         sourceIndex: options.sourceIndex,
+        requirePreviewRuntime: options.requirePreviewRuntime,
       },
     );
     const first = saved[0];
@@ -1097,6 +1164,8 @@ export const storefrontThemeFileDal = {
       createdBy?: string;
       sourceManifest?: ThemeSourceRevisionManifest;
       sourceIndex?: ThemeSourceIndex;
+      /** See `prepareThemePreviewRuntimeGuard`. */
+      requirePreviewRuntime?: "start";
     },
   ): Promise<StorefrontThemeFileDTO[] & { sourceGeneration?: number }> {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
@@ -1187,6 +1256,18 @@ export const storefrontThemeFileDal = {
     const mutationStatements = [];
     const routeMutationStatements = [];
     let routeMoveSequence = 0;
+
+    // Beside the generation guard, in the same batch: no file, revision or
+    // generation of this write commits unless the Theme records the runtime.
+    if (options.requirePreviewRuntime) {
+      preconditionStatements.push(
+        prepareThemePreviewRuntimeGuard(
+          storefrontId,
+          themeId,
+          options.requirePreviewRuntime,
+        ),
+      );
+    }
 
     for (const move of routePathMoves) {
       const previous = move.fromTarget;
@@ -1494,6 +1575,16 @@ export const storefrontThemeFileDal = {
           throw new Error(
             `CONFLICT_SOURCE_GENERATION_MISMATCH: Server source generation is ${currentGen}, but expected ${options.expectedSourceGeneration}.`,
           );
+        }
+        // The generation stood, so the runtime is the condition to name when
+        // it no longer holds; a file precondition otherwise.
+        if (
+          currentGen !== null &&
+          options.requirePreviewRuntime &&
+          (await readStoredPreviewRuntime(storefrontId, themeId)) !==
+            options.requirePreviewRuntime
+        ) {
+          throw previewRuntimeStartRequiredError(null);
         }
         throw new Error(
           `CONFLICT_VERSION_MISMATCH: batch precondition failed. ${message}`,

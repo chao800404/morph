@@ -112,3 +112,26 @@ export function starterStartPreviewRequirement(
     reason: satisfied ? null : STARTER_UPGRADE_START_PREVIEW_REQUIRED_MESSAGE,
   };
 }
+
+/**
+ * The one write rule every Starter write shares (option B): empty-workspace
+ * init, the reviewed upgrade, the restore command and the bootstrap. When
+ * the files a write puts into the Theme include any that
+ * `starterPlanFilesRequiringStartPreview` names, the write's own D1 batch
+ * also requires the Theme to record `start`, beside its source generation
+ * (`requirePreviewRuntime`). A Theme that records anything else, NULL
+ * included, is refused with this code and nothing of the write remains. The
+ * runtime is never switched for the author.
+ */
+export const PREVIEW_RUNTIME_START_REQUIRED = "PREVIEW_RUNTIME_START_REQUIRED";
+
+/** Whether `error` is that refusal, raised by the write itself. */
+export function isPreviewRuntimeStartRequired(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith(`${PREVIEW_RUNTIME_START_REQUIRED}:`)
+  );
+}
+
+export const STARTER_START_PREVIEW_REQUIRED_MESSAGE =
+  "These Starter files read their content on the server, which only the full Start preview can show. Switch this Theme's preview to Start first; until then nothing is written.";
