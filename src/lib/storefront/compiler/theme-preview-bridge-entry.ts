@@ -37,8 +37,13 @@ export function themePreviewBridgeEntrySource(): string {
   type PreviewCapability,
   PREVIEW_SERVED_INSTANCE_TIMING,
   previewServedInstanceFromEntries,
+  PREVIEW_SERVED_CONTENT_TIMING,
+  previewServedContentFromEntries,
 } from "./preview/preview-protocol";
 import {
+  astroBasisAckVerdict,
+  previewBoundaryComments,
+  previewBoundaryNonce,
   collectPreviewEditableNodes,
   createSelectionFieldRefusalLog,
   PREVIEW_SOURCE_SECTION_PREFIX,
@@ -535,6 +540,14 @@ function drawOverlays() {
  * exactly what it was.
  */
 const documentNavigation = window.__morphPreviewNavigation === "document";
+/**
+ * What a ready names (option B): a page that navigates as documents also
+ * answers basis tokens (\`confirm-section-basis\`). Every other page names
+ * exactly BRIDGE_CAPABILITIES, as before.
+ */
+const READY_CAPABILITIES: readonly PreviewCapability[] = documentNavigation
+  ? [...BRIDGE_CAPABILITIES, "astro-basis-ack-v1"]
+  : BRIDGE_CAPABILITIES;
 /**
  * How the load that made this document came about, read once as it loads
  * and then forgotten, so it describes that load and nothing older:
@@ -1616,6 +1629,31 @@ function servedInstanceReport() {
   }
 }
 
+// Which content snapshot this document was rendered from (option B): the
+// \`morph-content\` stamp of its own navigation response, which the Astro
+// preview's Worker fixes before the page renders. Read, never trusted: the
+// editor accepts a basis ack only when it equals what Core confirmed.
+function servedContentReport() {
+  try {
+    return previewServedContentFromEntries(
+      performance.getEntriesByType("navigation").map((entry) => ({
+        kind: "navigation",
+        content:
+          (entry.serverTiming || []).find(
+            (timing) => timing.name === PREVIEW_SERVED_CONTENT_TIMING,
+          )?.description || null,
+      })),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** The stamp a ready names: only from a page that navigates as documents. */
+function readyServedContent() {
+  return documentNavigation ? servedContentReport() : null;
+}
+
 function reportReady() {
   if (!channel) return;
   // A capability belongs to the ready that carried it: a new document starts
@@ -1623,6 +1661,14 @@ function reportReady() {
   editorSupportsCodeDefault = false;
   editorSupportsAstroIdentity = false;
   const servedInstance = servedInstanceReport();
+  // Guarded, so this function also runs where it is cut out on its own;
+  // there, and on every Start page, a ready is exactly what it was.
+  const capabilities =
+    typeof READY_CAPABILITIES === "undefined"
+      ? BRIDGE_CAPABILITIES
+      : READY_CAPABILITIES;
+  const servedContent =
+    typeof readyServedContent === "function" ? readyServedContent() : null;
   // The capabilities say what this bridge reads: an editor posts a
   // selection field only to a page that says it reads the section it names.
   postPreviewToEditorMessage(
@@ -1630,11 +1676,13 @@ function reportReady() {
       ? {
           type: "morph:storefront-preview-ready",
           servedInstance,
-          capabilities: [...BRIDGE_CAPABILITIES],
+          capabilities: [...capabilities],
+          ...(servedContent ? { servedContent } : {}),
         }
       : {
           type: "morph:storefront-preview-ready",
-          capabilities: [...BRIDGE_CAPABILITIES],
+          capabilities: [...capabilities],
+          ...(servedContent ? { servedContent } : {}),
         },
     channel,
   );
@@ -1645,7 +1693,7 @@ function reportReady() {
         " served=" +
         (servedInstance ? "named" : "unnamed") +
         " capabilities=" +
-        BRIDGE_CAPABILITIES.join("+"),
+        capabilities.join("+"),
     );
   }
   reportStructure();
@@ -2139,6 +2187,30 @@ if (channel) {
       // coalesced refresh an edit uses; the editor holds this back while
       // text is being typed on the page, so it never ends that edit.
       refreshPreviewContent();
+      return;
+    }
+    if (message?.type === "morph:storefront-preview-confirm-section-basis") {
+      // Option B: whether this document shows the basis the token names.
+      // Nothing is applied and nothing refreshed: an Astro page shows saved
+      // content only, in a new document. A page that does not navigate as
+      // documents (Start) is answered not-applied by the verdict itself.
+      const verdict = astroBasisAckVerdict({
+        token: message.presentationToken,
+        documentNavigation,
+        nonce: previewBoundaryNonce(),
+        comments: previewBoundaryComments(document),
+        servedContent: servedContentReport(),
+      });
+      if (verdict.applied) {
+        postPresentationAck(message.presentationToken, "applied");
+      } else {
+        postPresentationAck(
+          message.presentationToken,
+          "not-applied",
+          "section-missing",
+          verdict.cause,
+        );
+      }
       return;
     }
     if (message?.type === "morph:storefront-preview-update-section-props") {
