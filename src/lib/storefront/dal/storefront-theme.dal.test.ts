@@ -8,6 +8,7 @@ import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  PUBLISH_SCOPE_CHANGED,
   storefrontThemeDal,
   prepareTemplateDocumentWrite,
 } from "./storefront-theme.dal";
@@ -64,6 +65,19 @@ import {
   withThemeMorphSdkIdentity,
   withThemeStartBuildIdentity,
 } from "../compiler/theme-morph-sdk";
+import {
+  chainLayoutPreparation,
+  publishScopeAfterPreparation,
+  publishScopeExpectation,
+  publishScopeState,
+} from "@/routes/_editor/-components/editor-publish-scope";
+
+// The editor's publish scope mapping (#436) is imported so the scope it sends
+// is checked against what `publishTemplate` accepts; its server function is
+// never called from these tests.
+vi.mock("@/server/storefront/storefront-publish-check.serverFn", () => ({
+  checkStorefrontPublishScope: vi.fn(),
+}));
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -3131,6 +3145,204 @@ export default function SiteHeader() { return <header />; }`;
     }).toEqual(before);
   });
 
+  describe("the publish scope the confirmation shows is the one sealed", () => {
+    const PAGE_REVISION = "11111111-1111-4111-8111-111111111111";
+    const SOURCE_REVISION = "22222222-2222-4222-8222-222222222222";
+    const BUILD = "33333333-3333-4333-8333-333333333333";
+    const LAYOUT_REVISION = "44444444-4444-4444-8444-444444444441";
+    const NEWER_LAYOUT_REVISION = "44444444-4444-4444-8444-444444444442";
+    const scopeIds = {
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+    };
+    const tableCount = (table: string) =>
+      (
+        sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+          count: number;
+        }
+      ).count;
+    const layoutRow = () =>
+      sqlite
+        .prepare(
+          "SELECT draft_revision_id AS draft, published_revision_id AS published FROM storefront_theme_templates WHERE id = 'layout-a'",
+        )
+        .get();
+
+    function seedPage() {
+      sqlite.exec(`
+        INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+        VALUES
+          ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+           '${PAGE_REVISION}', 'now', 'now');
+        INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES
+          ('${PAGE_REVISION}', 'template-a', 1, '{"version":1,"sections":[]}', 'now');
+        INSERT INTO storefront_theme_revisions
+          (id, storefront_id, theme_id, revision_number, source_generation, message, source, snapshot, created_at, updated_at)
+        VALUES
+          ('${SOURCE_REVISION}', 'storefront-a', 'theme-a', 1, 1,
+           'Frozen checkpoint', 'publish', '[]', 'now', 'now');
+      `);
+    }
+    /** A layout whose draft is `revisionId` and was never published. */
+    function seedLayoutDraft(revisionId: string, version = 1) {
+      sqlite.exec(`
+        INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES
+          ('${revisionId}', 'layout-a', ${version}, '{"version":1,"sections":[]}', 'now');
+      `);
+      const existing = sqlite
+        .prepare(
+          "SELECT id FROM storefront_theme_templates WHERE id = 'layout-a'",
+        )
+        .get();
+      if (existing) {
+        sqlite.exec(
+          `UPDATE storefront_theme_templates SET draft_revision_id = '${revisionId}', draft_generation = draft_generation + 1 WHERE id = 'layout-a'`,
+        );
+      } else {
+        sqlite.exec(`
+          INSERT INTO storefront_theme_templates
+            (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+          VALUES
+            ('layout-a', 'theme-a', 'layout', 'Layout', '{"version":1,"sections":[]}',
+             '${revisionId}', 'now', 'now');
+        `);
+      }
+    }
+    const publish = (expectedSharedLayoutRevisionId: string | null) =>
+      storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
+        verifySourceRevision: acceptRevision,
+        ...scopeIds,
+        sourceRevisionId: SOURCE_REVISION,
+        themeBuildId: BUILD,
+        expectedDraftRevisionId: PAGE_REVISION,
+        expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 1,
+        expectedSharedLayoutRevisionId,
+      });
+
+    it("no layout pending: reads this page only, and publishes leaving no layout behind", async () => {
+      seedPage();
+      await expect(
+        storefrontThemeDal.findPublishScope(scopeIds),
+      ).resolves.toEqual({ sharedLayout: null, layout: null });
+      await expect(publish(null)).resolves.toMatchObject({
+        releaseCreated: true,
+      });
+    });
+
+    it("a layout never published and with no draft yet: reads as going live with the page", async () => {
+      seedPage();
+      sqlite.exec(`
+        INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+        VALUES
+          ('layout-a', 'theme-a', 'layout', 'Layout', '{"version":1,"sections":[]}',
+           NULL, 'now', 'now');
+      `);
+      // The editor's publish writes its first draft and the publish seals it.
+      await expect(
+        storefrontThemeDal.findPublishScope(scopeIds),
+      ).resolves.toEqual({
+        sharedLayout: null,
+        layout: {
+          templateId: "layout-a",
+          draftRevisionId: null,
+          firstPublish: true,
+        },
+      });
+    });
+
+    it("refuses to answer for a template another storefront owns", async () => {
+      seedPage();
+      seedLayoutDraft(LAYOUT_REVISION);
+      await expect(
+        storefrontThemeDal.findPublishScope({
+          ...scopeIds,
+          storefrontId: "other-store",
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it("a layout pending: names its draft, and the confirmed publish seals it", async () => {
+      seedPage();
+      seedLayoutDraft(LAYOUT_REVISION);
+      const scope = await storefrontThemeDal.findPublishScope(scopeIds);
+      expect(scope).toEqual({
+        sharedLayout: { templateId: "layout-a", revisionId: LAYOUT_REVISION },
+        layout: {
+          templateId: "layout-a",
+          draftRevisionId: LAYOUT_REVISION,
+          firstPublish: false,
+        },
+      });
+      await expect(
+        publish(scope!.sharedLayout!.revisionId),
+      ).resolves.toMatchObject({ releaseCreated: true });
+      expect(layoutRow()).toEqual({
+        draft: LAYOUT_REVISION,
+        published: LAYOUT_REVISION,
+      });
+      // Sealed, so the next confirmation is this page only again.
+      await expect(
+        storefrontThemeDal.findPublishScope(scopeIds),
+      ).resolves.toEqual({
+        sharedLayout: null,
+        layout: {
+          templateId: "layout-a",
+          draftRevisionId: LAYOUT_REVISION,
+          firstPublish: false,
+        },
+      });
+    });
+
+    it.each([
+      {
+        name: "a layout became pending after the confirmation showed this page only",
+        arrange: () => seedLayoutDraft(LAYOUT_REVISION),
+        shown: null,
+      },
+      {
+        name: "the pending layout changed after the confirmation named it",
+        arrange: () => {
+          seedLayoutDraft(LAYOUT_REVISION);
+          seedLayoutDraft(NEWER_LAYOUT_REVISION, 2);
+        },
+        shown: LAYOUT_REVISION,
+      },
+    ])(
+      "scope changed before confirm ($name): refused, nothing written",
+      async ({ arrange, shown }) => {
+        seedPage();
+        arrange();
+        const before = {
+          releases: tableCount("storefront_releases"),
+          publications: tableCount("storefront_content_publications"),
+          layout: layoutRow(),
+        };
+        await expect(publish(shown)).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+        expect({
+          releases: tableCount("storefront_releases"),
+          publications: tableCount("storefront_content_publications"),
+          layout: layoutRow(),
+        }).toEqual(before);
+        expect(
+          sqlite
+            .prepare(
+              "SELECT active_release_id AS id FROM storefronts WHERE id = 'storefront-a'",
+            )
+            .get(),
+        ).toEqual({ id: null });
+      },
+    );
+  });
+
   it("reports what the Theme Worker already runs, read before this publish activates anything", async () => {
     // The decision to skip a redeploy depends on the release that was active
     // *before* this publish. Reading it afterwards would always find the new
@@ -4313,6 +4525,60 @@ describe("preparing an untouched template for its first publish", () => {
         .prepare("SELECT created_by FROM storefront_theme_template_revisions")
         .get(),
     ).toEqual({ created_by: "user-1" });
+  });
+  it("a first publish with an untouched layout: the confirmed scope holds for the layout draft the publish's own preparation writes", async () => {
+    seedUntouched();
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, created_at, updated_at)
+      VALUES ('layout-initial', 'theme-a', 'layout', 'Layout',
+        '{"version":1,"sections":[{"id":"header","type":"header","enabled":true,"props":{"storeName":"Shop"}}]}', 'now', 'now');
+    `);
+    // What the confirmation reads before the editor prepares anything (the
+    // M1 lifecycle E2E's first publish): the layout goes live too.
+    const scope = await storefrontThemeDal.findPublishScope({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-initial",
+    });
+    expect(scope).toEqual({
+      sharedLayout: null,
+      layout: {
+        templateId: "layout-initial",
+        draftRevisionId: null,
+        firstPublish: true,
+      },
+    });
+    // The editor's publish then prepares the page and the layout.
+    const page = await prepare();
+    const layout = await prepare({ templateId: "layout-initial" });
+    const publishWith = (expectedSharedLayoutRevisionId: string | null) =>
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-initial",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: page!.draftRevisionId,
+        expectedDraftGeneration: page!.draftGeneration,
+        expectedReleaseGeneration: 1,
+        expectedSharedLayoutRevisionId,
+        readSourceRevisionFiles: workspaceRevisionFiles,
+        verifySourceRevision: acceptRevision,
+      });
+    // Sent as read, the preparation's draft is a layout nobody confirmed.
+    await expect(publishWith(null)).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+    // Sent for the draft that preparation left, it seals that draft.
+    await expect(publishWith(layout!.draftRevisionId)).resolves.toMatchObject({
+      releaseCreated: true,
+    });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT published_revision_id AS published FROM storefront_theme_templates WHERE id = 'layout-initial'",
+        )
+        .get(),
+    ).toEqual({ published: layout!.draftRevisionId });
   });
   it("refuses a stale source generation without creating a revision", async () => {
     seedUntouched();
@@ -6488,9 +6754,16 @@ describe("publishing one page after a rollback", () => {
    */
   const publish = async (
     templateId: string,
-    { deployed = true }: { deployed?: boolean } = {},
+    {
+      deployed = true,
+      expectedSharedLayoutRevisionId,
+    }: {
+      deployed?: boolean;
+      /** The scope a confirmation established; omitted, none is checked. */
+      expectedSharedLayoutRevisionId?: string | null;
+    } = {},
   ) => {
-    const result = await publishOnly(templateId);
+    const result = await publishOnly(templateId, expectedSharedLayoutRevisionId);
     if (!result?.releaseId || !result.releaseCreated) return result;
     if (deployed) {
       await storefrontReleaseDal.recordDeployedThemeBuild({
@@ -6515,7 +6788,10 @@ describe("publishing one page after a rollback", () => {
     return result;
   };
 
-  const publishOnly = (templateId: string) => {
+  const publishOnly = (
+    templateId: string,
+    expectedSharedLayoutRevisionId?: string | null,
+  ) => {
     const row = templateRow(templateId);
     const { releaseGeneration } = sqlite
       .prepare(
@@ -6533,6 +6809,7 @@ describe("publishing one page after a rollback", () => {
       expectedDraftRevisionId: row.draftRevisionId,
       expectedDraftGeneration: row.draftGeneration,
       expectedReleaseGeneration: releaseGeneration,
+      expectedSharedLayoutRevisionId,
     });
   };
 
@@ -6948,6 +7225,72 @@ describe("publishing one page after a rollback", () => {
     await publish("tpl-home");
     expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L2");
     expect(await editorDiff("tpl-home")).toEqual({ changed: false });
+  });
+
+  /**
+   * The Publish confirmation's answer (`findPublishScope`) against what the
+   * publish then seals for the shared layout, across the release states the
+   * carry (`resolveCarriedRevisions`) treats differently.
+   */
+  describe("the publish confirmation's layout scope", () => {
+    const scopeOf = async (templateId: string) =>
+      (
+        await storefrontThemeDal.findPublishScope({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId,
+        })
+      )?.sharedLayout?.revisionId ?? null;
+
+    it("reads this page only after a rollback with no layout edit, and the layout stays at the restored release", async () => {
+      let shown: string | null | undefined;
+      await rollBackThenPublishHome(async () => {
+        // The row still names L2 as published while release 1 serves L1;
+        // nothing pending, and the carry keeps L1, so "this page only" holds.
+        shown = await scopeOf("tpl-home");
+        expect(shown).toBeNull();
+      });
+      // The editor's own layout signal agrees: with home published, nothing
+      // (layout included) reads as pending on it.
+      expect(await editorDiff("tpl-home")).toEqual({ changed: false });
+      expect(await scopeOf("tpl-home")).toBeNull();
+      saveDraft("tpl-about", "B3");
+      await publish("tpl-about", { expectedSharedLayoutRevisionId: shown });
+      expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L1");
+    });
+
+    it("names a layout edited after a rollback, and the confirmed publish ships exactly that draft", async () => {
+      await rollBackThenPublishHome(() => saveDraft("tpl-shell", "L3"));
+      // The home publish above sealed L3 already; edit again and confirm.
+      saveDraft("tpl-shell", "L4");
+      saveDraft("tpl-about", "B3");
+      const shown = await scopeOf("tpl-about");
+      expect(shown).toBe("rev-L4");
+      await publish("tpl-about", { expectedSharedLayoutRevisionId: shown });
+      expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L4");
+      expect(await scopeOf("tpl-about")).toBeNull();
+    });
+
+    it("names the layout again after a publish whose deploy failed, since it never went live", async () => {
+      await publish("tpl-home");
+      saveDraft("tpl-shell", "L2");
+      saveDraft("tpl-about", "B2");
+      const shown = await scopeOf("tpl-about");
+      expect(shown).toBe("rev-L2");
+      await publish("tpl-about", {
+        deployed: false,
+        expectedSharedLayoutRevisionId: shown,
+      });
+
+      expect(await scopeOf("tpl-home")).toBe("rev-L2");
+      // The publish names it too: a "this page only" confirmation is refused.
+      await expect(
+        publishOnly("tpl-home", null),
+      ).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+      await publish("tpl-home", { expectedSharedLayoutRevisionId: "rev-L2" });
+      expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L2");
+      expect(await scopeOf("tpl-home")).toBeNull();
+    });
   });
 
   it("does not let a release whose deploy failed be activated", async () => {
@@ -7462,5 +7805,546 @@ export default function Hero() { return <section />; }`,
     expect(titleOf(prepared?.document)).toBe("L1");
     expect(templateRow("tpl-shell")).toEqual(before);
     expect(revisionCount()).toBe(countBefore);
+  });
+
+  /**
+   * #436 acceptance: the scope the editor sends after its own layout
+   * preparation, against what `publishTemplate` then accepts and seals.
+   *
+   * Each case runs the editor's sequence on the real DAL: the confirmation
+   * read (`findPublishScope`), the preparation of the page and the layout
+   * (`prepareInitialTemplateDraft`, as `prepareContentDraftForBuild` with
+   * `alwaysPrepare` calls it), the build seal, and the publish. The scope sent
+   * is computed by the editor's own functions (`publishScopeState`,
+   * `publishScopeExpectation`, `chainLayoutPreparation`,
+   * `publishScopeAfterPreparation`), so a change to that mapping that the
+   * server would refuse, or that would seal another layout, fails here.
+   */
+  describe("#436: the confirmed scope across the publish's own layout preparation", () => {
+    const confirm = async (templateId: string) => {
+      const scope = await storefrontThemeDal.findPublishScope({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId,
+      });
+      expect(scope, "the confirmation reads a scope").not.toBeNull();
+      return scope!;
+    };
+    /** What `confirmPublish` hands `handlePublish` for that answer. */
+    const confirmedExpectation = (
+      scope: Awaited<ReturnType<typeof confirm>>,
+    ) =>
+      publishScopeExpectation(
+        publishScopeState({
+          isPending: false,
+          isError: false,
+          data: { success: true, data: scope },
+        }),
+      )!;
+    const layoutRevisionCount = () =>
+      (
+        sqlite
+          .prepare(
+            "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions WHERE template_id = 'tpl-shell'",
+          )
+          .get() as { n: number }
+      ).n;
+
+    /**
+     * The editor's pre-publish preparation (page, then layout) and the build
+     * seal, as `rollBackThenBuildPublishHome` runs them. Returns the layout
+     * draft the preparation started from and the one it left.
+     */
+    const prepareAndSeal = async (templateId: string) => {
+      let preparation: ReturnType<typeof chainLayoutPreparation> | null = null;
+      for (const id of [templateId, "tpl-shell"]) {
+        const row = templateRow(id);
+        const prepared = await storefrontThemeDal.prepareInitialTemplateDraft({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: id,
+          expectedDraftGeneration: row.draftGeneration,
+          expectedSourceGeneration: 1,
+          // As the shell sends it: no draft yet is the layout's first one.
+          expectedDraftRevisionId:
+            (row.draftRevisionId as string | null) ?? undefined,
+          createdBy: "user-a",
+        });
+        expect(prepared, `${id} is prepared`).not.toBeNull();
+        if (id === "tpl-shell") {
+          preparation = chainLayoutPreparation(
+            preparation,
+            row.draftRevisionId,
+            prepared!.draftRevisionId,
+          );
+        }
+      }
+      const page = templateRow(templateId);
+      const { releaseGeneration } = sqlite
+        .prepare(
+          "SELECT release_generation AS releaseGeneration FROM storefront_themes WHERE id = 'theme-a'",
+        )
+        .get() as { releaseGeneration: number };
+      const sealed = await storefrontContentPublicationDal.sealForThemeBuild({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        sourceRevisionId: SOURCE,
+        templateId,
+        expectedDraftRevisionId: page.draftRevisionId,
+        expectedDraftGeneration: page.draftGeneration,
+        expectedSourceGeneration: 1,
+        expectedReleaseGeneration: releaseGeneration,
+      });
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_builds SET content_publication_id = ?, content_dependency = 'independent' WHERE id = ?",
+        )
+        .run(sealed.id, BUILD);
+      return { preparation: preparation!, sealedPins: pins(sealed.id) };
+    };
+    const servedLayoutTitle = async () =>
+      titleOf(
+        await storefrontContentPublicationDal.getPublishedTemplateDocument({
+          publicationId: active().publicationId,
+          templateType: "layout",
+        }),
+      );
+    /** Everything a publish writes, to prove a refused one wrote none of it. */
+    const publishWrites = () => ({
+      counts: Object.fromEntries(
+        [
+          "storefront_releases",
+          "storefront_content_publications",
+          "storefront_content_publication_items",
+          "storefront_theme_template_revisions",
+        ].map((table) => [
+          table,
+          (
+            sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
+              n: number;
+            }
+          ).n,
+        ]),
+      ),
+      templates: sqlite
+        .prepare(
+          "SELECT id, document, draft_revision_id, published_revision_id, draft_generation FROM storefront_theme_templates ORDER BY id",
+        )
+        .all(),
+      activeRelease: sqlite
+        .prepare(
+          "SELECT active_release_id AS id FROM storefronts WHERE id = 'storefront-a'",
+        )
+        .get(),
+      releaseGeneration: sqlite
+        .prepare(
+          "SELECT release_generation AS g FROM storefront_themes WHERE id = 'theme-a'",
+        )
+        .get(),
+    });
+
+    // Scenario 1, and scenario 5's server half (the E2E is
+    // b1-route-publish-rollback-acceptance.spec.ts R-c).
+    it.each([
+      {
+        name: "after a publish",
+        arrange: async () => {
+          await publish("tpl-about");
+        },
+        draft: "rev-L1",
+      },
+      {
+        name: "after a rollback, its row naming the rolled-away revision",
+        arrange: async () => {
+          await publish("tpl-about");
+          const release1 = active();
+          saveDraft("tpl-about", "B2");
+          saveDraft("tpl-shell", "L2");
+          await publish("tpl-about");
+          await rollBackTo(release1.releaseId);
+        },
+        draft: "rev-L2",
+      },
+    ])(
+      "scenario 1: an untouched layout the preparation wrote nothing for ($name): this page only (null) is sent and sealed, and L1 stays live",
+      async ({ arrange, draft }) => {
+        await arrange();
+        saveDraft("tpl-home", "A1");
+        const scope = await confirm("tpl-home");
+        expect(scope).toEqual({
+          sharedLayout: null,
+          layout: {
+            templateId: "tpl-shell",
+            draftRevisionId: draft,
+            firstPublish: false,
+          },
+        });
+        const revisionsBefore = layoutRevisionCount();
+        const { preparation, sealedPins } = await prepareAndSeal("tpl-home");
+        // Nothing written for the layout: it left the draft it started from.
+        expect(preparation).toEqual({
+          fromRevisionId: draft,
+          revisionId: draft,
+        });
+        expect(layoutRevisionCount()).toBe(revisionsBefore);
+        const sent = publishScopeAfterPreparation(
+          confirmedExpectation(scope),
+          preparation,
+        );
+        expect(sent.expectedSharedLayoutRevisionId).toBeNull();
+        // What the editor sent before e137115 (the layout's own revision) is
+        // a layout nobody confirmed and is refused.
+        await expect(publishOnly("tpl-home", draft)).rejects.toThrow(
+          PUBLISH_SCOPE_CHANGED,
+        );
+        await expect(
+          publish("tpl-home", {
+            expectedSharedLayoutRevisionId: sent.expectedSharedLayoutRevisionId,
+          }),
+        ).resolves.toMatchObject({ releaseCreated: true });
+        expect(sealedPins["tpl-shell"]).toBe("rev-L1");
+        expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L1");
+        expect(await servedLayoutTitle()).toBe("L1");
+      },
+    );
+
+    it("scenario 2: a pending layout the preparation wrote no new revision for: the confirmed non-null revision is sent and sealed", async () => {
+      await publish("tpl-about");
+      saveDraft("tpl-shell", "L3");
+      saveDraft("tpl-home", "A1");
+      const scope = await confirm("tpl-home");
+      expect(scope.sharedLayout).toEqual({
+        templateId: "tpl-shell",
+        revisionId: "rev-L3",
+      });
+      const revisionsBefore = layoutRevisionCount();
+      const { preparation, sealedPins } = await prepareAndSeal("tpl-home");
+      // rev-L3 is pinned by no publication: prepared in place.
+      expect(preparation).toEqual({
+        fromRevisionId: "rev-L3",
+        revisionId: "rev-L3",
+      });
+      expect(layoutRevisionCount()).toBe(revisionsBefore);
+      const sent = publishScopeAfterPreparation(
+        confirmedExpectation(scope),
+        preparation,
+      );
+      expect(sent.expectedSharedLayoutRevisionId).toBe("rev-L3");
+      // "This page only" would leave out a layout that does go live.
+      await expect(publishOnly("tpl-home", null)).rejects.toThrow(
+        PUBLISH_SCOPE_CHANGED,
+      );
+      await expect(
+        publish("tpl-home", {
+          expectedSharedLayoutRevisionId: sent.expectedSharedLayoutRevisionId,
+        }),
+      ).resolves.toMatchObject({ releaseCreated: true });
+      expect(sealedPins["tpl-shell"]).toBe("rev-L3");
+      expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L3");
+      expect(templateRow("tpl-shell").publishedRevisionId).toBe("rev-L3");
+      expect(await servedLayoutTitle()).toBe("L3");
+    });
+
+    it("scenario 4: a preparation that branches the confirmed draft into a new revision: the scope is restated for that branch, which is sealed", async () => {
+      await publish("tpl-about");
+      saveDraft("tpl-shell", "L3");
+      saveDraft("tpl-home", "A1");
+      // A Build Preview seals rev-L3 into the build's publication, which pins
+      // it, so the next preparation branches it instead of writing in place.
+      await prepareAndSeal("tpl-home");
+      const scope = await confirm("tpl-home");
+      expect(scope.sharedLayout?.revisionId).toBe("rev-L3");
+      const revisionsBefore = layoutRevisionCount();
+      const { preparation, sealedPins } = await prepareAndSeal("tpl-home");
+      expect(preparation.fromRevisionId).toBe("rev-L3");
+      expect(preparation.revisionId).not.toBe("rev-L3");
+      expect(layoutRevisionCount()).toBe(revisionsBefore + 1);
+      expect(revisionTitle(preparation.revisionId)).toBe("L3");
+      const sent = publishScopeAfterPreparation(
+        confirmedExpectation(scope),
+        preparation,
+      );
+      expect(sent).toEqual({
+        expectedSharedLayoutRevisionId: preparation.revisionId,
+        layoutDraftRevisionId: preparation.revisionId,
+      });
+      // The scope as read no longer names what the publish would seal.
+      await expect(publishOnly("tpl-home", "rev-L3")).rejects.toThrow(
+        PUBLISH_SCOPE_CHANGED,
+      );
+      await expect(
+        publish("tpl-home", {
+          expectedSharedLayoutRevisionId: sent.expectedSharedLayoutRevisionId,
+        }),
+      ).resolves.toMatchObject({ releaseCreated: true });
+      expect(sealedPins["tpl-shell"]).toBe(preparation.revisionId);
+      expect(pins(active().publicationId)["tpl-shell"]).toBe(
+        preparation.revisionId,
+      );
+      expect(await servedLayoutTitle()).toBe("L3");
+    });
+
+    it("scenario 3: a first publish whose preparation writes the layout's first revision: the confirmation is restated for that revision, which is sealed", async () => {
+      // A layout never published and with no draft yet: the confirmation
+      // says it goes live, and the publish writes its first draft.
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_templates SET draft_revision_id = NULL WHERE id = 'tpl-shell'",
+        )
+        .run();
+      const scope = await confirm("tpl-home");
+      expect(scope).toEqual({
+        sharedLayout: null,
+        layout: {
+          templateId: "tpl-shell",
+          draftRevisionId: null,
+          firstPublish: true,
+        },
+      });
+      expect(confirmedExpectation(scope)).toEqual({
+        expectedSharedLayoutRevisionId: null,
+        layoutDraftRevisionId: null,
+      });
+      const revisionsBefore = layoutRevisionCount();
+      const { preparation, sealedPins } = await prepareAndSeal("tpl-home");
+      expect(preparation.fromRevisionId).toBeNull();
+      expect(layoutRevisionCount()).toBe(revisionsBefore + 1);
+      expect(templateRow("tpl-shell").draftRevisionId).toBe(
+        preparation.revisionId,
+      );
+      expect(revisionTitle(preparation.revisionId)).toBe("L1");
+      const sent = publishScopeAfterPreparation(
+        confirmedExpectation(scope),
+        preparation,
+      );
+      expect(sent).toEqual({
+        expectedSharedLayoutRevisionId: preparation.revisionId,
+        layoutDraftRevisionId: preparation.revisionId,
+      });
+      // Sent as read, the first draft is a layout nobody named.
+      await expect(publishOnly("tpl-home", null)).rejects.toThrow(
+        PUBLISH_SCOPE_CHANGED,
+      );
+      await expect(
+        publish("tpl-home", {
+          expectedSharedLayoutRevisionId: sent.expectedSharedLayoutRevisionId,
+        }),
+      ).resolves.toMatchObject({ releaseCreated: true });
+      expect(sealedPins["tpl-shell"]).toBe(preparation.revisionId);
+      expect(pins(active().publicationId)["tpl-shell"]).toBe(
+        preparation.revisionId,
+      );
+      expect(templateRow("tpl-shell").publishedRevisionId).toBe(
+        preparation.revisionId,
+      );
+      expect(await servedLayoutTitle()).toBe("L1");
+    });
+
+    // Scenario 5 as the merchant runs it: the Build Preview comes between
+    // the rollback and the publish (the E2E's R-c), and the publish either
+    // reuses that build or builds again.
+    it.each([
+      { name: "the publish reuses the Build Preview's build", builds: false },
+      { name: "the publish builds again", builds: true },
+    ])(
+      "scenario 5: rollback, Build Preview, then a page publish ($name): the rolled-away layout does not return",
+      async ({ builds }) => {
+        await publish("tpl-about");
+        const release1 = active();
+        saveDraft("tpl-about", "B2");
+        saveDraft("tpl-shell", "L2");
+        await publish("tpl-about");
+        expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L2");
+        await rollBackTo(release1.releaseId);
+        expect(active().releaseId).toBe(release1.releaseId);
+        const untouched = {
+          draftRevisionId: "rev-L2",
+          publishedRevisionId: "rev-L2",
+        };
+        expect(templateRow("tpl-shell")).toMatchObject(untouched);
+        saveDraft("tpl-home", "A1");
+
+        // The toolbar Build Preview on the page.
+        const layoutRevisions = layoutRevisionCount();
+        const buildPreview = await prepareAndSeal("tpl-home");
+        expect(buildPreview.preparation).toEqual({
+          fromRevisionId: "rev-L2",
+          revisionId: "rev-L2",
+        });
+        expect(buildPreview.sealedPins["tpl-shell"]).toBe("rev-L1");
+        expect(layoutRevisionCount()).toBe(layoutRevisions);
+        expect(templateRow("tpl-shell")).toMatchObject(untouched);
+
+        // Publish opens: the layout is not part of it.
+        const scope = await confirm("tpl-home");
+        expect(scope).toEqual({
+          sharedLayout: null,
+          layout: {
+            templateId: "tpl-shell",
+            draftRevisionId: "rev-L2",
+            firstPublish: false,
+          },
+        });
+        let preparation: ReturnType<typeof chainLayoutPreparation> | null =
+          null;
+        if (builds) {
+          const again = await prepareAndSeal("tpl-home");
+          expect(again.sealedPins["tpl-shell"]).toBe("rev-L1");
+          preparation = again.preparation;
+        }
+        const sent = publishScopeAfterPreparation(
+          confirmedExpectation(scope),
+          preparation,
+        );
+        expect(sent.expectedSharedLayoutRevisionId).toBeNull();
+        // The rolled-away revision is a layout nobody confirmed.
+        await expect(publishOnly("tpl-home", "rev-L2")).rejects.toThrow(
+          PUBLISH_SCOPE_CHANGED,
+        );
+        await expect(
+          publish("tpl-home", {
+            expectedSharedLayoutRevisionId: sent.expectedSharedLayoutRevisionId,
+          }),
+        ).resolves.toMatchObject({ releaseCreated: true });
+        expect(active().releaseId).not.toBe(release1.releaseId);
+        expect(pins(active().publicationId)["tpl-shell"]).toBe("rev-L1");
+        expect(pins(active().publicationId)["tpl-about"]).toBe("rev-B1");
+        expect(layoutRevisionCount()).toBe(layoutRevisions);
+        expect(templateRow("tpl-shell")).toMatchObject(untouched);
+        expect(await servedLayoutTitle()).toBe("L1");
+      },
+    );
+
+    it.each([
+      {
+        name: "another draft write moved the layout on",
+        afterConfirm: async () => saveDraft("tpl-shell", "L4"),
+        prepare: false,
+        reconfirmed: "rev-L4",
+      },
+      {
+        name: "another draft write moved the layout on, then this publish prepared it from there",
+        afterConfirm: async () => saveDraft("tpl-shell", "L4"),
+        prepare: true,
+        reconfirmed: "rev-L4",
+      },
+      {
+        name: "another page's publish sealed the layout",
+        afterConfirm: async () => {
+          saveDraft("tpl-about", "B3");
+          await publish("tpl-about");
+        },
+        prepare: false,
+        reconfirmed: null,
+      },
+    ])(
+      "scenario 6: the layout changed by another write after the confirmation ($name): PUBLISH_SCOPE_CHANGED, and nothing written",
+      async ({ afterConfirm, prepare, reconfirmed }) => {
+        await publish("tpl-about");
+        saveDraft("tpl-shell", "L3");
+        saveDraft("tpl-home", "A1");
+        const scope = await confirm("tpl-home");
+        expect(scope.sharedLayout?.revisionId).toBe("rev-L3");
+        await afterConfirm();
+        let sent = confirmedExpectation(scope);
+        if (prepare) {
+          const { preparation } = await prepareAndSeal("tpl-home");
+          // Started from rev-L4, not the draft the author confirmed: the
+          // scope stays as read.
+          expect(preparation.fromRevisionId).toBe("rev-L4");
+          sent = publishScopeAfterPreparation(sent, preparation);
+        }
+        expect(sent.expectedSharedLayoutRevisionId).toBe("rev-L3");
+
+        const before = publishWrites();
+        await expect(
+          publishOnly("tpl-home", sent.expectedSharedLayoutRevisionId),
+        ).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+        // No release, publication, pin or revision; no template row, live
+        // pointer or release generation moved.
+        expect(publishWrites()).toEqual(before);
+
+        // Confirmed again, the publish goes through with the layout as it is.
+        const again = await confirm("tpl-home");
+        const reconfirmedScope = again.sharedLayout?.revisionId ?? null;
+        expect(reconfirmedScope).toBe(reconfirmed);
+        await expect(
+          publish("tpl-home", {
+            expectedSharedLayoutRevisionId: reconfirmedScope,
+          }),
+        ).resolves.toMatchObject({ releaseCreated: true });
+        expect(pins(active().publicationId)["tpl-shell"]).toBe(
+          reconfirmed ?? "rev-L3",
+        );
+      },
+    );
+
+    // The case the cases above cannot reach: the other write came from
+    // another session, so this editor still holds the layout draft it
+    // confirmed and prepares from it (the shell's `currentDraftId`). The
+    // restatement trusts that base; were the preparation accepted, the
+    // revision it left (L4's content) would be sent as the confirmed scope
+    // and go live unseen. The preparation's own draft CAS is what stops it.
+    it("scenario 6: another session moved the layout on, and this editor prepares from the draft it confirmed: the preparation is refused, and so is the publish, with nothing written", async () => {
+      await publish("tpl-about");
+      saveDraft("tpl-shell", "L3");
+      saveDraft("tpl-home", "A1");
+      const scope = await confirm("tpl-home");
+      expect(scope.sharedLayout?.revisionId).toBe("rev-L3");
+      const held = templateRow("tpl-shell");
+      saveDraft("tpl-shell", "L4");
+
+      // The release list and the live pointer, named on their own: a
+      // TEMPLATE_DRAFT_GENERATION_MISMATCH answer is acceptable here only
+      // because no release was created or activated (2026-11-24 decision).
+      const releaseIds = () =>
+        (
+          sqlite
+            .prepare("SELECT id FROM storefront_releases ORDER BY id")
+            .all() as { id: string }[]
+        ).map((row) => row.id);
+      const releasesBefore = releaseIds();
+      const liveBefore = active();
+      expect(releasesBefore, "the setup published one release").toContain(
+        liveBefore.releaseId,
+      );
+      const before = publishWrites();
+      await expect(
+        storefrontThemeDal.prepareInitialTemplateDraft({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "tpl-shell",
+          expectedDraftGeneration: held.draftGeneration,
+          expectedSourceGeneration: 1,
+          expectedDraftRevisionId: held.draftRevisionId,
+          createdBy: "user-a",
+        }),
+      ).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
+      expect(publishWrites()).toEqual(before);
+      expect(releaseIds(), "the refused preparation created no release").toEqual(
+        releasesBefore,
+      );
+      expect(active(), "the refused preparation activated nothing").toEqual(
+        liveBefore,
+      );
+
+      await expect(
+        publishOnly(
+          "tpl-home",
+          confirmedExpectation(scope).expectedSharedLayoutRevisionId,
+        ),
+      ).rejects.toThrow(PUBLISH_SCOPE_CHANGED);
+      expect(publishWrites()).toEqual(before);
+      expect(releaseIds(), "the refused publish created no release").toEqual(
+        releasesBefore,
+      );
+      expect(active(), "the refused publish activated nothing").toEqual(
+        liveBefore,
+      );
+      expect(templateRow("tpl-shell")).toMatchObject({
+        draftRevisionId: "rev-L4",
+        publishedRevisionId: "rev-L1",
+      });
+    });
   });
 });

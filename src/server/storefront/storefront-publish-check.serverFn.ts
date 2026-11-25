@@ -3,6 +3,7 @@ import { z } from "zod";
 import { fail, ok, parseInput } from "@/lib/db/server-result";
 import { idSchema } from "@/lib/validations/commerce";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
+import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import {
   findLegacyMediaReferences,
   legacyMediaPlaces,
@@ -45,6 +46,36 @@ export const checkStorefrontPublishMedia = createServerFn({ method: "POST" })
     } catch (error) {
       console.error("Check storefront publish error:", error);
       return fail("Could not check this release's images.", {
+        error: "CHECK_FAILED",
+      });
+    }
+  });
+
+/**
+ * What publishing this page would put live besides the page itself: the
+ * shared layout's pending draft, or nothing.
+ *
+ * Read from `findPublishScope`, which shares its selection with
+ * `publishTemplate`, so the confirmation cannot describe a different scope
+ * from the one sealed. The revision it names is sent back with the publish,
+ * which is refused if the layout has moved on in between.
+ */
+export const checkStorefrontPublishScope = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(checkStorefrontPublishInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    try {
+      const scope = await storefrontThemeDal.findPublishScope(input.data);
+      if (!scope) {
+        return fail("Theme template not found", { error: "NOT_FOUND" });
+      }
+      return ok("Publish scope read", scope);
+    } catch (error) {
+      console.error("Check storefront publish scope error:", error);
+      return fail("Could not check what this publish includes.", {
         error: "CHECK_FAILED",
       });
     }

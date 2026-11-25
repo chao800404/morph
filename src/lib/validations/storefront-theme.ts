@@ -91,6 +91,11 @@ export const publishStorefrontThemeTemplateInputSchema =
     expectedDraftRevisionId: z.string().uuid(),
     expectedDraftGeneration: z.number().int().min(1),
     expectedReleaseGeneration: z.number().int().min(1),
+    /**
+     * The shared layout draft the confirmation said this publish also seals,
+     * or null for "this page only". A different pending layout is refused.
+     */
+    expectedSharedLayoutRevisionId: z.string().uuid().nullable().optional(),
     /** What changed, for recognising this release in the history later. */
     note: z.string().trim().max(MAX_RELEASE_NOTE_LENGTH).optional(),
   });

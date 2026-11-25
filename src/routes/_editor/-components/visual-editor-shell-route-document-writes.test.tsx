@@ -113,6 +113,7 @@ const prepareInitialDraft = vi.hoisted(() => vi.fn());
 const promoteText = vi.hoisted(() => vi.fn());
 const createPreviewBuild = vi.hoisted(() => vi.fn());
 const checkPublishMedia = vi.hoisted(() => vi.fn());
+const checkPublishScope = vi.hoisted(() => vi.fn());
 /** What the last promotion asked through the assistant panel came to. */
 const promoteOutcome = vi.hoisted((): { settled?: unknown } => ({}));
 
@@ -154,6 +155,7 @@ vi.mock(
   async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
     checkStorefrontPublishMedia: checkPublishMedia,
+    checkStorefrontPublishScope: checkPublishScope,
   }),
 );
 /**
@@ -899,6 +901,13 @@ beforeEach(() => {
     success: true,
     message: "ok",
     data: { brokenImages: [] },
+  }));
+  // The confirmation asks what goes live besides the page; this page only.
+  checkPublishScope.mockReset();
+  checkPublishScope.mockImplementation(async () => ({
+    success: true,
+    message: "ok",
+    data: { sharedLayout: null, layout: null },
   }));
   vi.spyOn(toast, "error").mockImplementation(() => "");
   vi.spyOn(toast, "success").mockImplementation(() => "");

@@ -9,6 +9,7 @@ import {
   type Browser,
   type Locator,
   type Page,
+  type Request,
 } from "@playwright/test";
 import { unstable_startWorker } from "wrangler";
 import { themeSourceGeneration } from "./native-compat";
@@ -19,6 +20,7 @@ import {
   writeRunD1,
 } from "../scripts/verify-published-artifact.mjs";
 import { buildPreviewOutboundService } from "../src/lib/storefront/service/build-preview/local-build-preview-worker";
+import { decodeServerFnRequestData } from "../src/lib/test-utils/server-fn-answer";
 import {
   EDITOR_PATH,
   clickExposedElement,
@@ -483,6 +485,60 @@ export async function serverFnPaths(page: Page) {
   return {
     build: new URL(build, page.url()).pathname,
     publish: new URL(publishUrl, page.url()).pathname,
+  };
+}
+
+/** The scope a publish request carried, as the browser sent it. */
+export type SentPublishScope = {
+  templateId: unknown;
+  /**
+   * The shared layout revision the confirmation let this publish seal, or
+   * null for "this page only". `undefined` is a request that left the field
+   * out, which the server does not check at all: never a valid scope here.
+   */
+  expectedSharedLayoutRevisionId: unknown;
+  /** Whether the field was in the request at all. */
+  statesLayoutScope: boolean;
+};
+
+/**
+ * Records every publish request the page sends from now on, as the browser
+ * sent it (#436: the scope sent, not the one the test meant to send).
+ * Observes only: nothing is routed, held, delayed or changed. Bodies are
+ * decoded when `sent()` is called, so a body that cannot be decoded fails
+ * the test there rather than inside a page event handler.
+ */
+export async function observePublishRequests(page: Page) {
+  const { publish } = await serverFnPaths(page);
+  const bodies: string[] = [];
+  const listener = (request: Request) => {
+    if (request.method() !== "POST") return;
+    if (new URL(request.url()).pathname !== publish) return;
+    bodies.push(request.postData() ?? "");
+  };
+  page.on("request", listener);
+  return {
+    sent: (): SentPublishScope[] =>
+      bodies.map((body) => {
+        const data = decodeServerFnRequestData(body);
+        expect(
+          typeof data === "object" && data !== null,
+          "a publish request sends an object",
+        ).toBe(true);
+        const fields = data as Record<string, unknown>;
+        return {
+          templateId: fields.templateId,
+          expectedSharedLayoutRevisionId: fields.expectedSharedLayoutRevisionId,
+          statesLayoutScope:
+            Object.prototype.hasOwnProperty.call(
+              fields,
+              "expectedSharedLayoutRevisionId",
+            ) && fields.expectedSharedLayoutRevisionId !== undefined,
+        };
+      }),
+    stop: () => {
+      page.off("request", listener);
+    },
   };
 }
 
