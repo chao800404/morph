@@ -42,6 +42,7 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/check-e2e-start.mjs",
   // Decides whether the Vitest shards together ran the whole suite.
   "scripts/check-vitest-shards.mjs",
+  "scripts/check-vitest-shards.test.mjs",
   "scripts/ci-required-checks.mjs",
   "scripts/ci-rules.mjs",
   "scripts/ci-workflow.mjs",
@@ -60,6 +61,8 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/verify-published-artifact.mjs",
   // Which preview runtime the runner expects a run to have used.
   "src/lib/storefront/theme-preview-runtime-default.mjs",
+  // Which files `pnpm test` collects, per project; the shards split this set.
+  "vitest.config.ts",
 ]);
 
 /**
