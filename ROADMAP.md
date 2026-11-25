@@ -373,6 +373,30 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     - 若要讓瀏覽器直接讀取，要另外設計 CORS 與可公開的憑證。
     - 驗收：用一個從未發布過 Theme 的商店，以真實的外部網站驗收。
 - **M6 其他框架。** 在 `.morph/` wrapper 接線，每個框架完成一個最小正式案例。在 M1、M2 完成後才開始。
+- **R 渲染模式交付線（TanStack Start；2026-11-25 規劃，原則已接受，各步實作另行核准）。** 目標：商家可逐頁選擇 SSR、SSG、ISR 或 CSR，正式網站照選定模式運作，發布、重新載入、回滾後公開端一律讀到生效 release 的內容。產品契約與實作關卡見 [`docs/storefront-render-policy.md`](docs/storefront-render-policy.md)「Confirmed product contract」與「Implementation gates」，本條只排交付順序。
+  - **現況（以 `c5fc256` 為準，只記有證據的事）：**
+
+    | 渲染方式 | 現況 |
+    |---|---|
+    | SSR | 【已驗收（本機）】完整 Start 預覽與本機容器的公開店面跑過首頁、站內切頁、發布讀回與回滾（M1）。Cloudflare 實際環境未驗。 |
+    | 選擇性 SSR（路由 `ssr: false`／`'data-only'`） | 【有實測】初次回應與瀏覽器接手後的行為已驗。尚未接到頁面設定與發布。 |
+    | SSG | 【部分】原生建置能用封存的 CMS 內容產出指定頁面的 HTML（本機）。Theme 自帶建置設定的建置路徑在正式環境關閉（`MORPH_NATIVE_START_BUILD`，發布驗收通過前不開），所以商家把頁面設成 SSG 後的正式發布仍被擋。 |
+    | ISR | 【未打通】有設定與驗證規則，正式發布與定期更新未接。 |
+    | CSR／全站 SPA | 【未驗收】個別路由的 `ssr: false` 有證據；全站 SPA 是另一條發布流程，未驗收。 |
+
+  - **交付順序：**
+    1. Starter v32 完成（見 M1 後的順序）。新 Theme 預設完整 Start，逐頁設定建立在這之上；v32 的 Sandbox 發布驗收也證明封存快照的 SSG 建置在真實容器上走得通。
+    2. 固定網址的 SSG 正式發布：以一個非首頁（如 `/about`）跑「發布 A → 修改並發布 B → 回滾 A」，每一步直接核對公開站送出的 HTML。缺頁或讀不到內容時建置失敗，不沿用範例的 `failOnError: false`。
+    3. 逐頁 CSR：把已實測的選擇性 SSR 接到頁面設定、發布與模式切換。
+    4. Cloudflare staging 驗收：SSR 與 SSG 一起驗冷啟動、Sleep→Wake、發布讀回與回滾。需另外核准，token 由使用者發放。
+    5. ISR：最後做。背景更新、更新失敗，以及發布或回滾後的快取隔離；背景更新不得把回滾前的頁面放回線上。
+    6. 之後再排：動態路由 SSG（如每個商品網址）與全站 SPA 發布。
+  - **開源參考：** TanStack 官方範例（Cloudflare 的 TanStack Start 範例、static prerendering、selective SSR、SPA mode）可原樣固定為驗收素材，MIT 授權，保留授權聲明。ISR 參考 OpenNext Cloudflare 的 R2 增量快取與 Durable Object 更新佇列的設計（MIT），不直接複製：它綁 Next.js 的快取語意，Morph 的快取與更新工作必須綁在商店、網址與 release 上。
+  - **時程：** 只估開發工作量，SSR 雲端驗收加固定網址 SSG 約 1～2 週，逐頁四種模式含發布與回滾驗證約 3～5 週，加上動態路由 SSG 與全站 SPA 約 4～7 週。實際日曆時間預期更長：每個 PR 要完整驗證與 CI，容器驗收一次只能跑一組，staging 要另外核准。
+  - **畫布中的 Theme cookie（2026-11-25 決定）：** 編輯器的預覽是跨站 iframe，Theme 以 `SameSite=Lax`／`Strict` 設定的 cookie 在畫布中不會保留，省略 SameSite 時依瀏覽器與隱私設定而定（原生相容 spec 以測試記錄；新分頁開啟的預覽與正式網站一致）。保留編輯器與預覽跨站的設計，不改成同站。
+    1. 提示加「在新分頁開啟預覽」：排在 Starter v32 與固定網址 SSG 之後。沿用現有的新分頁授權流程；代理看到 Theme 的 `Set-Cookie` 明寫 `Lax` 或 `Strict` 時提示畫布限制，省略 SameSite 時改用「可能無法在畫布中保留」；只傳提示需要的狀態，不把 cookie 值送進編輯器或日誌。驗收：新分頁能設定 cookie、後續請求讀得回，並與公開站的回應對照。
+    2. 跨商家預覽的 cookie 隔離是正式開放前的必要條件：現在選定正式預覽網域；若沿用共用父網域，把專用的預覽父網域加入 Public Suffix List 的 PRIVATE 區段（各瀏覽器更新時間不同，要預留時間）。正式開放前以兩個商家的測試預覽驗證：任何一方都無法把 Theme cookie 寫到另一方會收到的範圍，原有的預覽授權仍可用。
+    3. 平台在預覽中改寫 Theme 的 `Set-Cookie`（`SameSite=None; Secure; Partitioned`）：只作為有明確需求的 Theme 的選用功能。先在真實 HTTPS 預覽測 Chrome、Firefox、Safari，再單獨確認本機 HTTP，驗證設定、更新與刪除；`Partitioned` 依頂層網站分區，同一個編輯器嵌入兩個 Theme 時，跨商家隔離仍由預覽網域提供。
 
 **里程碑進度（2026-11-09，更新至 2026-11-25）。** 只記已合併或已有證據的事；未跑到的驗收不寫成通過。
 
@@ -392,6 +416,7 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     3. Starter v32（新 Theme 預設完整 Start、Starter 經 SDK 讀內容）：先維持 v31；PR1（v31 固定素材與共用建 Theme 函式）→ PR2（client 路線核對 v31）→ PR3（升版與完整 Start v32 路線、Sandbox 發布驗收）。
     4. Starter v33（圖片定位缺口）。
     5. 雲端 staging 驗收（含 Sleep→Wake）：另外核准。
+    6. 渲染模式交付線（見 1.5「R 渲染模式交付線」）：固定網址 SSG → 逐頁 CSR → staging → ISR。
 - **M1（11-21 以前的紀錄）：部分完成，正式案例尚未驗收。**
   - 已合併：預覽模式提示（#262）、每個 Theme 的預覽模式（#271）、託管 SDK 入口與每次請求的內容來源（#267）、預覽內切頁跟隨（#270），以及 1.2「目前進度」列出的編輯正確性與可靠性修正（#280、#282、#286、#289、#290、#291、#292、#295、#297 等）。
   - 10-27～10-31 另外合併：預覽存取 P1（#310，只有儲存與驗證）；Starter 升級審閱與相容修正（#318、#319、#321、#325、#326、#332）；舊 bridge 驗證（#327）；容器 lifecycle 驗收與傳輸緩解（#302、#305、#334、#336）；結構編輯安全（#309、#312、#315、#316、#335）；Design 元素操作守衛的首次送出（#338，決定 E）。
