@@ -129,8 +129,18 @@ export function authCookieOptions(baseURL: string) {
     cookiePrefix: AUTH_COOKIE_PREFIX,
     useSecureCookies: false,
     defaultCookieAttributes: { secure: true },
+    // Every Better Auth cookie this configuration reads on a request is a
+    // `__Host-` cookie, so no sibling host can supply one. `session_data` is
+    // read and decoded by `getSession` (better-auth 1.6.23,
+    // api/routes/session.mjs) before it looks at whether the cookie cache is
+    // on, and a value that fails to decode is a 500 there; `account_data` is
+    // read the same way when the account cookie is stored. Both stay unused
+    // here (the cache is off), but a cookie under a name a sibling host could
+    // set must never reach that decoder.
     cookies: {
       session_token: hostCookie("session_token"),
+      session_data: hostCookie("session_data"),
+      account_data: hostCookie("account_data"),
       dont_remember: hostCookie("dont_remember"),
       // The admin plugin keeps the impersonating admin's own session token
       // here; it is a session credential like the other two.

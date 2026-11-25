@@ -20,7 +20,9 @@ describe("the session cookies over HTTPS", () => {
   });
 
   it("are __Host- cookies: Secure, HttpOnly, Path=/, no Domain", () => {
-    for (const cookie of [cookies.sessionToken, cookies.dontRememberToken]) {
+    // All four Better Auth reads on a request, session_data included: it is
+    // decoded before the cookie-cache setting is consulted.
+    for (const cookie of Object.values(cookies)) {
       expect(cookie.name.startsWith("__Host-")).toBe(true);
       expect(cookie.name.startsWith("__Host-__Secure-")).toBe(false);
       expect(cookie.attributes.secure).toBe(true);
@@ -30,6 +32,12 @@ describe("the session cookies over HTTPS", () => {
     }
     expect(cookies.sessionToken.name).toBe(
       `__Host-${AUTH_COOKIE_PREFIX}.session_token`,
+    );
+    expect(cookies.sessionData.name).toBe(
+      `__Host-${AUTH_COOKIE_PREFIX}.session_data`,
+    );
+    expect(cookies.accountData.name).toBe(
+      `__Host-${AUTH_COOKIE_PREFIX}.account_data`,
     );
   });
 
