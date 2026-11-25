@@ -16,8 +16,151 @@ import { dirname, join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { unstable_startWorker } from "wrangler";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import { StorefrontProductionService } from "@/lib/storefront/service/storefront-production.service";
+import { ServiceBindingThemeRuntime } from "@/lib/storefront/service/theme-runtimes";
+import type { PublishedDocument } from "@/lib/storefront/service/storefront-content-runtime";
 import { NATIVE_WRANGLER_CONFIG_PATH } from "./tanstack-start-native-build";
 import { themeFramework } from ".";
+
+/**
+ * Two releases' published content. Release A's author replaced the hero
+ * heading and hid the newsletter section and the footer; release B differs
+ * in each, so a page shows which release it read.
+ */
+const RELEASE_CONTENT: Record<
+  string,
+  { index: PublishedDocument; layout: PublishedDocument }
+> = {
+  pub_A: {
+    index: {
+      sections: [
+        { id: "starter-hero", props: { heading: "release-a-heading" } },
+        { id: "starter-newsletter", enabled: false, props: {} },
+      ],
+    },
+    layout: { sections: [{ id: "starter-footer", enabled: false, props: {} }] },
+  },
+  pub_B: {
+    index: {
+      sections: [{ id: "starter-hero", props: { heading: "release-b-heading" } }],
+    },
+    layout: {
+      sections: [{ id: "starter-footer", props: { storeName: "release-b-store" } }],
+    },
+  },
+};
+
+/**
+ * Morph Core's public entry on loopback, as a shopper reaches it: host ->
+ * active release -> the released Theme Worker over the production
+ * service-binding transport, and /_morph/content answered by Core from the
+ * release a render context names. The active release moves from A to B as
+ * soon as a page request has resolved it, the way a publish can land
+ * mid-render, so a page that shows A read the release its request pinned.
+ */
+async function publicEntry(
+  binding: { fetch(request: Request): Promise<Response> },
+) {
+  let active: "A" | "B" = "A";
+  const contentReads: string[] = [];
+  const service = new StorefrontProductionService({
+    runtime: new ServiceBindingThemeRuntime(() => binding),
+    renderContextSecret: "native-start-build-render-context-secret",
+    resolverDeps: {
+      domainDal: {
+        findByHostname: async (hostname: string) => ({
+          id: "dom_1",
+          storefrontId: "sf_1",
+          hostname,
+          status: "active",
+        }),
+      },
+      storefrontDalRef: {
+        findActive: async () => ({ id: "sf_1", status: "published" }),
+      },
+      releaseDal: {
+        getActive: async () => {
+          const release = active;
+          active = "B";
+          return {
+            id: `rel_${release}`,
+            themeId: "th_1",
+            sourceRevisionId: "rev_1",
+            themeBuildId: "bld_1",
+            contentPublicationId: `pub_${release}`,
+          };
+        },
+      },
+      buildDal: {
+        getBuildById: async () => ({
+          id: "bld_1",
+          storefrontId: "sf_1",
+          themeId: "th_1",
+          status: "succeeded",
+          artifactPrefix: "themes/th_1/builds/bld_1",
+          manifestJson: {
+            artifactEntry: "runtime/server/index.js",
+            files: [],
+            runtime: {
+              kind: "cloudflare-worker",
+              workerEntry: "runtime/server/index.js",
+              clientAssetsDirectory: "runtime/client",
+            },
+          },
+        }),
+      },
+    } as never,
+    contentPorts: {
+      getPublishedDocument: async ({ publicationId, templateType }) => {
+        contentReads.push(`${publicationId}:${templateType}`);
+        const release = RELEASE_CONTENT[publicationId];
+        if (!release) return null;
+        return templateType === "layout"
+          ? release.layout
+          : templateType === "index"
+            ? release.index
+            : null;
+      },
+    },
+  });
+  const server: Server = createServer((req, res) => {
+    const { port } = server.address() as AddressInfo;
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (typeof value === "string") headers.set(name, value);
+    }
+    void service
+      .handleRequest(
+        new Request(`http://127.0.0.1:${port}${req.url ?? "/"}`, {
+          method: req.method,
+          headers,
+        }),
+      )
+      .then(async (response) => {
+        res.statusCode = response.status;
+        response.headers.forEach((value, name) => {
+          // The body below is already decoded and re-framed.
+          if (!/^(content-encoding|content-length|transfer-encoding)$/i.test(name))
+            res.setHeader(name, value);
+        });
+        res.end(Buffer.from(await response.arrayBuffer()));
+      })
+      .catch((error: unknown) => {
+        res.statusCode = 599;
+        res.end(String(error));
+      });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    reset: () => {
+      active = "A";
+    },
+    contentReads,
+    close: () => server.close(),
+  };
+}
 
 /**
  * A TanStack Start project built with its own configuration, end to end:
@@ -227,11 +370,59 @@ describe("a TanStack Start project built with its own configuration", () => {
     expect(workerSource).not.toMatch(/data-morph-(node|section|loc)/);
   });
 
-  it("serves the starter's pages from the built Worker", async () => {
+  it("serves the starter's pages through Core's public entry, with the content of the release each request resolved", async () => {
+    const core = await publicEntry({
+      // Wrangler's fetch has its own Request/Response types; the values are
+      // the same Fetch objects.
+      fetch: (forwarded) =>
+        worker!.fetch(forwarded.url, {
+          method: forwarded.method,
+          headers: Object.fromEntries(forwarded.headers),
+          redirect: "manual",
+        }) as unknown as Promise<Response>,
+    });
+    try {
+      for (const path of ["/", "/account", "/order-transfer"]) {
+        core.reset();
+        const response = await fetch(core.origin + path, { redirect: "manual" });
+        const html = await response.text();
+        expect(response.status, `${path}: ${html.slice(0, 1000)}`).toBe(200);
+        expect(response.headers.get("content-type"), path).toContain(
+          "text/html",
+        );
+        // Release A's layout: its author hid the footer.
+        expect(html, path).not.toContain("<footer");
+        expect(html, path).not.toContain("© Online Store");
+        expect(html, path).not.toContain("release-b-store");
+        if (path === "/") {
+          expect(html).toContain("release-a-heading");
+          expect(html).not.toContain("release-b-heading");
+          expect(html).not.toContain("Objects for everyday rituals.");
+          expect(html).not.toContain("Join our newsletter");
+        }
+      }
+      // Every read was answered from release A, though B went live after
+      // each page request resolved.
+      expect(core.contentReads.length).toBeGreaterThan(0);
+      expect(core.contentReads.every((read) => read.startsWith("pub_A:"))).toBe(
+        true,
+      );
+    } finally {
+      core.close();
+    }
+  });
+
+  it("refuses a page request that reaches the Worker with no content source, rendering no defaults", async () => {
+    // The Worker called directly, as nothing but Core should: no
+    // x-morph-content-origin. The read fails; nothing is shown as published.
     for (const path of ["/", "/account", "/order-transfer"]) {
       const response = await request(path);
-      expect(response.status, path).toBe(200);
-      expect(response.headers.get("content-type"), path).toContain("text/html");
+      const html = await response.text();
+      expect(response.status, path).toBeGreaterThanOrEqual(500);
+      expect(html, path).not.toContain("Objects for everyday rituals.");
+      expect(html, path).not.toContain("<footer");
+      expect(html, path).not.toContain("© Online Store");
+      expect(html, path).toContain("No content source.");
     }
   });
 
