@@ -11,7 +11,7 @@ import { EditorStyleInspector } from "./editor-style-inspector";
 /**
  * The object position control's own refusals, at the boundary every Document
  * write from the Inspector crosses (`onPropsChange`). The shell-level cases,
- * with the real preview pass, are in `visual-editor-shell-round-trip.test.tsx`.
+ * with the real preview pass, are in `visual-editor-shell-round-trip.position-and-first-edit.test.tsx`.
  */
 const PATH = "src/components/Gallery.tsx";
 

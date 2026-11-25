@@ -35,7 +35,7 @@ import {
  * selection stays. The harness plays the route above the shell by handing it
  * the document a refetch would bring.
  *
- * Same harness as `visual-editor-shell-round-trip.test.tsx`: the preview is
+ * Same harness as `visual-editor-shell-round-trip.harness.tsx`: the preview is
  * observed through `postEditorToPreviewMessage`, and messages from it are real
  * `message` events on `window`.
  */

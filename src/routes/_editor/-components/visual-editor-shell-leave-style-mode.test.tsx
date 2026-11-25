@@ -57,7 +57,7 @@ const getThemeEditor = vi.hoisted(() => vi.fn());
 /**
  * The real Inspector panel, with one button that reaches
  * `onUpdateThemeFileStyle` — the path its Radix style controls take, which
- * jsdom cannot drive (as in `visual-editor-shell-round-trip.test.tsx`).
+ * jsdom cannot drive (as in `visual-editor-shell-round-trip.harness.tsx`).
  */
 vi.mock("./editor-assistant-panel", async (importOriginal) => {
   const actual =
