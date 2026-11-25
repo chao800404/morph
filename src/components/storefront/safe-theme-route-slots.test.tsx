@@ -172,3 +172,65 @@ describe("one component rendered twice, one instance hidden", () => {
     expect(html.match(/<h1/g)?.length ?? 0).toBe(1);
   });
 });
+
+/**
+ * A legacy route: no `content()` import, so call sites carry no slot id and
+ * each Document section is matched to a call site by component path, in
+ * order. The hidden section must take its own call site with it, and only
+ * that one.
+ */
+const legacyFiles = [
+  files[0],
+  {
+    path: "src/routes/index.tsx",
+    content: `import { createFileRoute } from "@tanstack/react-router";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: HomeRoute });
+export function HomeRoute() {
+  return (
+    <main>
+      <Hero />
+      <Hero />
+    </main>
+  );
+}`,
+  },
+  files[2],
+];
+
+function renderLegacy(firstEnabled: boolean, secondEnabled: boolean) {
+  const result = renderSafeThemeRoute({
+    files: legacyFiles,
+    pathname: "/",
+    document: {
+      version: 1,
+      sections: [
+        heroSection("hero-first", "First stored heading", firstEnabled),
+        heroSection("hero-second", "Second stored heading", secondEnabled),
+      ],
+    } as never,
+  });
+  expect(result.success, result.success ? "" : result.diagnostics.join()).toBe(
+    true,
+  );
+  if (!result.success) return "";
+  return renderToStaticMarkup(result.node as never);
+}
+
+describe("legacy route without slots, one of two instances hidden", () => {
+  it("keeps the second instance when the first is hidden", () => {
+    const html = renderLegacy(false, true);
+    expect(html).not.toContain("First stored heading");
+    expect(html).toContain("Second stored heading");
+    expect(html).not.toContain("Component default");
+    expect(html.match(/<h1/g)?.length ?? 0).toBe(1);
+  });
+
+  it("keeps the first instance when the second is hidden", () => {
+    const html = renderLegacy(true, false);
+    expect(html).toContain("First stored heading");
+    expect(html).not.toContain("Second stored heading");
+    expect(html).not.toContain("Component default");
+    expect(html.match(/<h1/g)?.length ?? 0).toBe(1);
+  });
+});
