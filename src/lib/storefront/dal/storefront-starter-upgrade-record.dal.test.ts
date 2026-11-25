@@ -1163,7 +1163,11 @@ describe("metadata the record cannot be written into", () => {
 
   it("throws after the file save when the metadata turns malformed before the upgrade's metadata read", async () => {
     // Fails closed: the files are saved, no metadata is written, and the
-    // error reaches the caller. It is not a partial outcome.
+    // error reaches the caller. Since the file batch committed, it reaches it
+    // named as an upgrade whose files landed without the record
+    // (StarterUpgradeIncompleteError, record-write-failed), the parse error
+    // as its cause; it used to surface as the bare SyntaxError, which left
+    // the caller unable to tell the files had been written.
     seedTheme({ starterTemplateVersion: LEGACY_VERSION });
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
@@ -1174,7 +1178,17 @@ describe("metadata the record cannot be written into", () => {
       return result;
     });
 
-    await expect(applyReviewed()).rejects.toThrow(SyntaxError);
+    const error = await applyReviewed().then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
+    expect((error as StarterUpgradeIncompleteError).outcome).toMatchObject({
+      status: "partial",
+      reason: "record-write-failed",
+      filesSaved: true,
+    });
+    expect((error as Error).cause).toBeInstanceOf(SyntaxError);
 
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
     expect(storedRawRow().metadata).toBe("{not json");
@@ -2901,14 +2915,18 @@ describe("a Starter upgrade whose files need the full Start preview", () => {
         setPreviewRuntime("client");
       } else {
         // The apply's workspace read comes after its runtime read and before
-        // any write; the switch lands there.
-        const listFiles = vi.mocked(themeSourceStore.listFiles);
-        const read = listFiles.getMockImplementation();
-        if (!read) throw new Error("the source store mock has no listFiles");
-        listFiles.mockImplementationOnce(async (...args) => {
-          setPreviewRuntime("client");
-          return read(...args);
-        });
+        // any write; the switch lands there. The read answers what the
+        // module mock's listFiles answers (the workspace map): the mock's own
+        // implementation is gone once an earlier test's afterEach restored
+        // all mocks, so it is not borrowed here.
+        vi.mocked(themeSourceStore.listFiles).mockImplementationOnce(
+          async (_storefrontId: string, themeId: string) => {
+            setPreviewRuntime("client");
+            return (workspace.files.get(themeId)?.map((file) => ({
+              ...file,
+            })) ?? []) as never;
+          },
+        );
       }
 
       const result = await apply(reviewed.review.digest);
