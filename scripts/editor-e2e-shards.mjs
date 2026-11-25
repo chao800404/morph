@@ -9,6 +9,11 @@ import path from "node:path";
 // runs (10-15) the same plan sums to at most 446 s per shard, so the budget
 // below holds on every run measured so far, which is no guarantee for the next.
 // Environment-gated files remain included (see shard 5).
+// Rebalanced for run 45588760709 (head 722e6ce) and three other green main
+// runs (45597575633, 45585207449, 45574695693): the previous plan's shard 2
+// projected 989 s of test bodies against 447 s for shard 6. Seven whole files
+// moved; the mean per-file seconds of those four runs project 650 / 651 / 657
+// / 647 / 657 / 665 s. A projection from shared runners, not a measured run.
 // New tests/files must still pass check-e2e-shards' full-suite ID comparison.
 // The number of shards is this array's length; the CI matrix, the job names
 // and `pnpm ship`'s required checks are checked against it.
@@ -17,7 +22,6 @@ export const EDITOR_SHARDS = [
     "recovery-editor-writes.spec.ts",
     "preview-error-recovery.spec.ts",
     "native-compat-preview.spec.ts",
-    "public-svg.spec.ts",
     "starter-shell-content.spec.ts",
     "theme-path-refused.spec.ts",
     "preview-old-bridge.spec.ts",
@@ -25,10 +29,10 @@ export const EDITOR_SHARDS = [
     // Shard 1 was the shortest shard job after shard 5 in main run
     // 42387058349 (8m08s; shard 5 7m42s, the others 9m11s to 15m55s).
     "unstored-list-inspector-writes.spec.ts",
+    "content-module-restore.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
-    "leave-before-save.spec.ts",
     "structure-editor-writes.spec.ts",
     "initial-code-publish.spec.ts",
     "object-position.spec.ts",
@@ -39,8 +43,7 @@ export const EDITOR_SHARDS = [
     "preview-document-reload.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "spread-override-binding.spec.ts",
-    // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
-    "binding-acceptance-p.spec.ts",
+    "preview-instance-reattach.spec.ts",
   ],
   [
     "editor-writes-auth.spec.ts",
@@ -49,22 +52,22 @@ export const EDITOR_SHARDS = [
     "text-promotion.spec.ts",
     "code-tree-context-menu.spec.ts",
     "route-capabilities.spec.ts",
+    "leave-before-save.spec.ts",
   ],
   [
     "preview-inline-reload-defer.spec.ts",
     "local-code-sync.spec.ts",
-    "content-module-restore.spec.ts",
     "public-root-url.spec.ts",
     "public-text-code.spec.ts",
     "catalog.spec.ts",
     // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
     "binding-acceptance-c.spec.ts",
+    "public-svg.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
     "editor.spec.ts",
     "accessibility.spec.ts",
-    "responsive.spec.ts",
     "source-asset.spec.ts",
     "row-component-content.spec.ts",
     // Added after the duration measurement above; not in its projection.
@@ -78,6 +81,8 @@ export const EDITOR_SHARDS = [
     // Added after the duration measurement above; not in its projection. Its
     // client-only preview case runs here; the full Start job runs it as well.
     "author-pick-supersedes-follow.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "code-editor-local-monaco.spec.ts",
     // The files below measured zero seconds: every test in them is gated on
     // an environment the shards do not have (the container transport,
     // MORPH_ASTRO_THEMES=1 or the full Start preview), so they skip on every
@@ -133,12 +138,12 @@ export const EDITOR_SHARDS = [
   [
     "session-editor-writes.spec.ts",
     "content-fields-sidecar.spec.ts",
-    "preview-instance-reattach.spec.ts",
     "media-svg.spec.ts",
     "section-visibility-layout.spec.ts",
     "auth-failure.spec.ts",
-    // Added after the duration measurement above; not in its projection.
-    "code-editor-local-monaco.spec.ts",
+    // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
+    "binding-acceptance-p.spec.ts",
+    "responsive.spec.ts",
   ],
 ];
 
