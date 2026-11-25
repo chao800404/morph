@@ -63,9 +63,21 @@ jobs:
       - name: Check migration timestamps
         run: pnpm check:sql-timestamps
 
-  validate-test:
-    name: Validation tests
+  # The Vitest suite (`pnpm test`) in three shard jobs. It was one job of 22 to
+  # 35 minutes, the last lane of every run. Vitest's own `--shard` splits each
+  # `groupOrder` group by a hash of the file path, so every file lands in one
+  # shard and the theme-build and parser-worker phases still run apart from the
+  # unit group inside their shard. `--passWithNoTests` only because the
+  # parser-worker group holds one file and Vitest otherwise refuses to shard a
+  # group smaller than the shard count; `Validation tests` below refuses a
+  # shard that ran nothing (scripts/check-vitest-shards.mjs).
+  validate-test-shard:
+    name: Validation tests shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     # The whole job's budget, not a test's: per-test timeouts, retries and
     # skips live in the Vitest config and are unchanged. The suite alone took
     # 1166.78 s on main (run 41525655307), so 20 minutes left no room for
@@ -105,21 +117,84 @@ jobs:
       # so until now every run was ordered by size, which is how a 142 s file
       # came to start last in its group. This keeps Vitest's own timings file
       # from one successful run to the next. Only the order changes: with no
-      # timings restored, or stale ones, every file still runs.
+      # timings restored, or stale ones, every file still runs. One key per
+      # shard, so the three shards never save over each other; the last
+      # restore key falls back to any earlier timings, which only orders.
       - name: Restore Vitest's file timings
         uses: actions/cache@v4
         with:
           path: node_modules/.vite/vitest
-          key: vitest-file-timings-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: vitest-file-timings-${{ runner.os }}-
+          key: vitest-file-timings-${{ runner.os }}-shard-${{ matrix.shard }}-of-3-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vitest-file-timings-${{ runner.os }}-shard-${{ matrix.shard }}-of-3-
+            vitest-file-timings-${{ runner.os }}-
 
       # The same suite has taken 606 to 1166 s in this job, every phase
       # scaling together, and the log did not say what it ran on.
       - name: Record the runner
         run: node scripts/print-test-runner.mjs
 
+      # The same `pnpm test` (`vitest run`, the same config), narrowed to this
+      # shard. Naming reporters replaces Vitest's defaults, so both defaults
+      # (default, and github-actions under Actions) are named with the JSON
+      # report the acceptance job reads.
       - name: Test
-        run: pnpm test
+        run: pnpm test --shard=${{ matrix.shard }}/3 --passWithNoTests --reporter=default --reporter=github-actions --reporter=json --outputFile.json=test-results/vitest-shard-${{ matrix.shard }}.json
+
+      # One name per attempt: re-running a failed shard keeps the run's earlier
+      # artifacts, and `Validation tests` reads each shard's latest attempt.
+      - name: Upload the shard's Vitest report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: test-results/vitest-shard-${{ matrix.shard }}.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # Keeps the existing check name (`Typecheck, test, build` needs it, and
+  # `pnpm ship` waits for it). It refuses a shard matrix that failed, was
+  # cancelled or was skipped, and then checks that the shards together ran
+  # every file `pnpm test` collects, each exactly once.
+  validate-test:
+    name: Validation tests
+    needs: validate-test-shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require every shard to succeed
+        env:
+          VITEST_SHARD_RESULT: ${{ needs.validate-test-shard.result }}
+        run: test "$VITEST_SHARD_RESULT" = success
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download all shard reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vitest-results-*
+          path: vitest-shard-artifacts
+
+      - name: Check every test file ran in exactly one shard
+        run: |
+          node --test scripts/check-vitest-shards.test.mjs
+          node scripts/check-vitest-shards.mjs vitest-shard-artifacts
 
   validate-build:
     name: Validation build

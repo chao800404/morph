@@ -17,7 +17,13 @@ import {
   CONTAINER_STAGE3_CHECKS,
   VALIDATE_CHECK,
   VALIDATION_CHECKS,
+  VALIDATION_TEST_CHECK,
+  VITEST_SHARD_CHECKS,
 } from "./ci-required-checks.mjs";
+import {
+  VITEST_SHARD_COUNT,
+  vitestReportAttempt,
+} from "./check-vitest-shards.mjs";
 import {
   jobBlock,
   jobCheckNames,
@@ -95,19 +101,32 @@ const STAGE3_JOBS = {
   ],
 };
 
+// The whole `pnpm test` command, narrowed to one shard. Reporters named on the
+// command line replace Vitest's defaults, so both defaults are named again.
+const SHARD_TEST_COMMAND = `pnpm test --shard=\${{ matrix.shard }}/${VITEST_SHARD_COUNT} --passWithNoTests --reporter=default --reporter=github-actions --reporter=json --outputFile.json=test-results/vitest-shard-\${{ matrix.shard }}.json`;
+
 test("validation runs independently with the complete original commands", () => {
+  const runners = [
+    ["validate-typecheck", ["Validation typecheck"]],
+    ["validate-test-shard", VITEST_SHARD_CHECKS],
+    ["validate-build", ["Validation build"]],
+  ];
   const commands = [
     [
       "pnpm typecheck",
       "pnpm check:e2e-assertions",
       "pnpm check:sql-timestamps",
     ],
-    ["pnpm toolchain:astro", "node scripts/print-test-runner.mjs", "pnpm test"],
+    [
+      "pnpm toolchain:astro",
+      "node scripts/print-test-runner.mjs",
+      SHARD_TEST_COMMAND,
+    ],
     ["pnpm build"],
   ];
-  for (const [index, key] of jobs.entries()) {
+  for (const [index, [key, names]] of runners.entries()) {
     const block = withoutComments(jobBlock(workflow, key));
-    assert.deepEqual(jobCheckNames(workflow, key), [VALIDATION_CHECKS[index]]);
+    assert.deepEqual(jobCheckNames(workflow, key), names);
     assert.doesNotMatch(
       block,
       /^ {4}(?:needs|if):/m,
@@ -122,7 +141,108 @@ test("validation runs independently with the complete original commands", () => 
     assert.match(block, /node-version: 22\n/);
     assert.match(block, /cache: pnpm\n/);
   }
-  assert.match(jobBlock(workflow, "validate-test"), /timeout-minutes: 45\n/);
+  // Each shard keeps the budget the single job had; a shard is not given less.
+  assert.match(
+    jobBlock(workflow, "validate-test-shard"),
+    /timeout-minutes: 45\n/,
+  );
+});
+
+test("the Vitest shard matrix runs every planned shard once, without retries or fail-fast", () => {
+  const block = withoutComments(jobBlock(workflow, "validate-test-shard"));
+  const matrix = /^ {8}shard: \[([^\]]*)\]$/m.exec(block);
+  assert.ok(matrix, "the shard job must declare its shard matrix");
+  assert.deepEqual(
+    matrix[1].split(",").map((value) => Number(value.trim())),
+    Array.from({ length: VITEST_SHARD_COUNT }, (_, index) => index + 1),
+  );
+  // One shard's failure must not cancel the others: their results are the
+  // evidence of what else is broken, and a cancelled shard is not a pass.
+  assert.match(block, /^ {6}fail-fast: false$/m);
+  assert.doesNotMatch(block, /retry|retries|continue-on-error|max-attempts/i);
+  // `pnpm test` itself, not a second Vitest command: same script, same config.
+  assert.equal(
+    [...block.matchAll(/^ {8}run: pnpm test\b.*$/gm)].length,
+    1,
+    "exactly one test command per shard",
+  );
+  // Only the shard job runs Vitest with --shard, and only at this count.
+  const elsewhere = withoutComments(
+    workflow.replace(jobBlock(workflow, "validate-test-shard"), ""),
+  );
+  assert.doesNotMatch(elsewhere, /pnpm test --shard|vitest run --shard/);
+  const upload = block.slice(
+    block.indexOf("- name: Upload the shard's Vitest report"),
+  );
+  assert.match(upload, /uses: actions\/upload-artifact@v4\n/);
+  assert.match(
+    upload,
+    /name: vitest-results-\$\{\{ matrix\.shard \}\}-attempt-\$\{\{ github\.run_attempt \}\}\n/,
+  );
+  assert.match(
+    upload,
+    /path: test-results\/vitest-shard-\$\{\{ matrix\.shard \}\}\.json\n/,
+  );
+  assert.match(upload, /if-no-files-found: error\n/);
+  // The names the shard uploads are the names the guard reads.
+  assert.deepEqual(
+    vitestReportAttempt(
+      "vitest-shard-artifacts/vitest-results-2-attempt-1/vitest-shard-2.json",
+    ),
+    { shard: 2, attempt: 1 },
+  );
+});
+
+test("Validation tests waits for every shard, refuses any other result, and checks executed coverage", () => {
+  const block = withoutComments(jobBlock(workflow, "validate-test"));
+  assert.deepEqual(jobCheckNames(workflow, "validate-test"), [
+    VALIDATION_TEST_CHECK,
+  ]);
+  assert.ok(VALIDATION_CHECKS.includes(VALIDATION_TEST_CHECK));
+  assert.match(block, /^ {4}needs: validate-test-shard$/m);
+  assert.match(block, /^ {4}if: always\(\)$/m);
+  assert.doesNotMatch(block, /continue-on-error|retry/i);
+  assert.ok(
+    block.includes(
+      "VITEST_SHARD_RESULT: ${{ needs.validate-test-shard.result }}\n",
+    ),
+  );
+  // The result gate is the first step, so nothing runs on a failed matrix.
+  const first = /^ {6}- name: (.+)$/m.exec(block);
+  assert.equal(first?.[1], "Require every shard to succeed");
+  const gate = /^ {8}run: (test "\$VITEST_SHARD_RESULT" = success)$/m.exec(
+    block,
+  );
+  assert.ok(gate, "the aggregate must execute a result gate");
+  for (const outcome of ["success", "failure", "cancelled", "skipped", ""]) {
+    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", gate[1]], {
+      encoding: "utf8",
+      env: { ...process.env, VITEST_SHARD_RESULT: outcome },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status === 0, outcome === "success", outcome);
+  }
+  const download = block.slice(
+    block.indexOf("- name: Download all shard reports"),
+  );
+  assert.match(download, /uses: actions\/download-artifact@v4\n/);
+  assert.match(download, /pattern: vitest-results-\*\n/);
+  assert.match(download, /path: vitest-shard-artifacts\n/);
+  assert.ok(
+    block.includes(
+      "node --test scripts/check-vitest-shards.test.mjs\n          node scripts/check-vitest-shards.mjs vitest-shard-artifacts\n",
+    ),
+    "the aggregate must test the guard and then run it on the downloaded reports",
+  );
+  assert.ok(
+    block.indexOf("- name: Require every shard to succeed") <
+      block.indexOf("- name: Check every test file ran in exactly one shard"),
+  );
+  // ship waits for the aggregate while the shards are green but it is absent.
+  assert.deepEqual(
+    CHECK_DEPENDENCIES[VALIDATION_TEST_CHECK],
+    VITEST_SHARD_CHECKS,
+  );
 });
 
 test("the existing aggregate waits for all validation jobs and is always evaluated", () => {
@@ -634,7 +754,7 @@ test("every job that installs Chromium first puts the primary Ubuntu archive ahe
 });
 
 test("the test job keeps Vitest's file timings without making them a condition of the run", () => {
-  const block = withoutComments(jobBlock(workflow, "validate-test"));
+  const block = withoutComments(jobBlock(workflow, "validate-test-shard"));
   const step = block.slice(
     block.indexOf("- name: Restore Vitest's file timings"),
     block.indexOf("- name: Record the runner"),
@@ -642,15 +762,16 @@ test("the test job keeps Vitest's file timings without making them a condition o
   assert.match(step, /uses: actions\/cache@v4\n/);
   // Vitest's cache directory for the root config (VitestCache.resolveCacheDir).
   assert.match(step, /path: node_modules\/\.vite\/vitest\n/);
-  // A new key per attempt, so each successful run saves its own timings, and
-  // a prefix to restore the latest one from.
+  // A new key per shard and attempt, so each successful shard saves its own
+  // timings without racing the others, and prefixes to restore from: this
+  // shard's latest first, then any earlier timings (they only order files).
   assert.match(
     step,
-    /key: vitest-file-timings-\$\{\{ runner\.os \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\n/,
+    /key: vitest-file-timings-\$\{\{ runner\.os \}\}-shard-\$\{\{ matrix\.shard \}\}-of-3-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\n/,
   );
   assert.match(
     step,
-    /restore-keys: vitest-file-timings-\$\{\{ runner\.os \}\}-\n/,
+    /restore-keys: \|\n {12}vitest-file-timings-\$\{\{ runner\.os \}\}-shard-\$\{\{ matrix\.shard \}\}-of-3-\n {12}vitest-file-timings-\$\{\{ runner\.os \}\}-\n/,
   );
   // Restored before the run reads it.
   assert.ok(
