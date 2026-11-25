@@ -34,6 +34,7 @@ import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.q
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  HISTORY_NEWER_EDIT_MESSAGE,
   INLINE_TEXT_NOT_SAVED_MESSAGE,
   INLINE_TEXT_REFUSED_MESSAGE,
   PREVIEW_PRESENTATION_SYNCING_MESSAGE,
@@ -11230,13 +11231,21 @@ function Home() {
           expect(stored).toEqual({ heading: "New" });
           expect(depth()).toBe("1");
 
-          // Typed, and Undo pressed inside the 300 ms debounce, in the same
-          // task (awaiting between them can let the input leave first).
+          // Typed (blur stages it; the 300 ms debounce timer is on the
+          // controlled clock, so it cannot leave), the frame acknowledges its
+          // preview (`flushFrames`: the default post mock acknowledges after a
+          // microtask), and Undo is pressed with the input still pending. Undo
+          // then captures a confirmed presentation proof, which the run
+          // needs to get past the "preview is still syncing" gate and reach
+          // the newer-edit guard. Pressed before that acknowledgement, the old
+          // test was refused on the syncing gate, not on the newer edit.
           const field = (await screen.findAllByDisplayValue("New"))[0]!;
           const undoButton = screen.getByRole("button", { name: "Undo" });
           expect(undoButton.hasAttribute("disabled")).toBe(false);
           fireEvent.input(field, { target: { value: "Newer" } });
           fireEvent.blur(field);
+          await flushFrames();
+          expect(sent(), "the input is still pending").toHaveLength(1);
           fireEvent.click(undoButton);
           await quiet(2);
 
@@ -11249,7 +11258,7 @@ function Home() {
           expect(depth(), "both entries kept").toBe("2");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
           expect(errors(notice)).toContainEqual(
-            expect.stringMatching(/^Could not undo/),
+            `Could not undo: ${HISTORY_NEWER_EDIT_MESSAGE}`,
           );
           expect(unconfirmedCount()).toBeNull();
           await quiet(2);
