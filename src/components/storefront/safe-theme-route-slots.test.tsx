@@ -99,3 +99,76 @@ describe("content slots from the published document", () => {
     );
   });
 });
+
+/**
+ * Two instances of one component, each fed by its own slot and guarded by
+ * `isSectionHidden()`, as the Starter routes are. The guard skips the hidden
+ * slot, so its Document entry is never spent; matching by source path alone
+ * would hand that hidden entry to the other instance and drop it too.
+ */
+const duplicateFiles = [
+  files[0],
+  {
+    path: "src/routes/index.tsx",
+    content: `import { createFileRoute } from "@tanstack/react-router";
+import { content, isSectionHidden } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: HomeRoute });
+export function HomeRoute() {
+  return (
+    <main>
+      {!isSectionHidden("hero-first") && <Hero {...content("hero-first")} />}
+      {!isSectionHidden("hero-second") && <Hero {...content("hero-second")} />}
+    </main>
+  );
+}`,
+  },
+  files[2],
+];
+
+function heroSection(id: string, heading: string, enabled: boolean) {
+  return {
+    id,
+    type: "hero",
+    componentRef: "src/components/Hero.tsx",
+    enabled,
+    props: { heading },
+  };
+}
+
+function renderDuplicate(firstEnabled: boolean, secondEnabled: boolean) {
+  const result = renderSafeThemeRoute({
+    files: duplicateFiles,
+    pathname: "/",
+    document: {
+      version: 1,
+      sections: [
+        heroSection("hero-first", "First stored heading", firstEnabled),
+        heroSection("hero-second", "Second stored heading", secondEnabled),
+      ],
+    } as never,
+  });
+  expect(result.success, result.success ? "" : result.diagnostics.join()).toBe(
+    true,
+  );
+  if (!result.success) return "";
+  return renderToStaticMarkup(result.node as never);
+}
+
+describe("one component rendered twice, one instance hidden", () => {
+  it("keeps the second instance when the first is hidden", () => {
+    const html = renderDuplicate(false, true);
+    expect(html).not.toContain("First stored heading");
+    expect(html).toContain("Second stored heading");
+    expect(html).not.toContain("Component default");
+    expect(html.match(/<h1/g)?.length ?? 0).toBe(1);
+  });
+
+  it("keeps the first instance when the second is hidden", () => {
+    const html = renderDuplicate(true, false);
+    expect(html).toContain("First stored heading");
+    expect(html).not.toContain("Second stored heading");
+    expect(html).not.toContain("Component default");
+    expect(html.match(/<h1/g)?.length ?? 0).toBe(1);
+  });
+});
