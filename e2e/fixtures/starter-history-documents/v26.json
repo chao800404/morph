@@ -1,0 +1,241 @@
+{
+  "starterVersion": 26,
+  "sourceCommit": "3007c63c10d53fe0593dbd1f2341aa6416a87d8f",
+  "sourceFile": "src/lib/storefront/default-storefront-document.ts",
+  "sourceBlob": "bc39b73b4da30e209d40256cedacfa2861a1d967",
+  "sourceSha256": "b120a8b806740874c279fc30dc4d93c9512ffe0fdda6f678936e226e9faea0d6",
+  "home": {
+    "version": 1,
+    "sections": [
+      {
+        "id": "starter-hero",
+        "type": "hero",
+        "enabled": true,
+        "props": {
+          "eyebrow": "New collection",
+          "heading": "Objects for everyday rituals.",
+          "description": "Quiet essentials, thoughtfully made for the spaces you call home.",
+          "actionLabel": "Explore the collection",
+          "actionHref": "/collections/new",
+          "image": {
+            "src": "/static/storefront/theme-preview-default.png",
+            "alt": "A neutral collection of ceramic objects"
+          }
+        },
+        "componentRef": "hero.default"
+      },
+      {
+        "id": "starter-introduction",
+        "type": "editorial-intro",
+        "componentRef": "editorial-intro.default",
+        "enabled": true,
+        "props": {
+          "label": "Considered living",
+          "heading": "Fewer things. Better chosen.",
+          "body": "We bring together useful objects with lasting character—pieces selected for honest materials, quiet form, and the pleasure of daily use."
+        }
+      },
+      {
+        "id": "starter-categories",
+        "type": "category-showcase",
+        "componentRef": "category-showcase.default",
+        "enabled": true,
+        "props": {
+          "heading": "Shop by ritual",
+          "items": [
+            {
+              "title": "The morning table",
+              "caption": "Cups, carafes, and objects for an unhurried start.",
+              "href": "/collections/morning-table",
+              "image": {
+                "src": "/static/storefront/theme-preview-default.png",
+                "alt": "Ceramic vessels arranged on a morning table"
+              },
+              "imagePosition": "30% center"
+            },
+            {
+              "title": "Quiet corners",
+              "caption": "Sculptural forms that give a room its rhythm.",
+              "href": "/collections/quiet-corners",
+              "image": {
+                "src": "/static/storefront/theme-preview-default.png",
+                "alt": "A sculptural ceramic vase in warm light"
+              },
+              "imagePosition": "72% center"
+            },
+            {
+              "title": "Soft essentials",
+              "caption": "Natural textures made for slower evenings.",
+              "href": "/collections/soft-essentials",
+              "image": {
+                "src": "/static/storefront/theme-preview-default.png",
+                "alt": "Folded natural fabric beside ceramic objects"
+              },
+              "imagePosition": "95% center"
+            }
+          ]
+        }
+      },
+      {
+        "id": "starter-story",
+        "type": "image-with-text",
+        "componentRef": "image-with-text.default",
+        "enabled": true,
+        "props": {
+          "eyebrow": "Our point of view",
+          "heading": "Made to be kept, not replaced.",
+          "body": "We look for objects that age gracefully and makers who understand restraint. The result is a collection that feels personal from the first day and more familiar with every year.",
+          "actionLabel": "Read our story",
+          "actionHref": "/pages/about",
+          "image": {
+            "src": "/static/storefront/theme-preview-default.png",
+            "alt": "Timeless ceramic objects in natural light"
+          },
+          "imagePosition": "center center"
+        }
+      },
+      {
+        "id": "starter-principles",
+        "type": "principles",
+        "componentRef": "principles.default",
+        "enabled": true,
+        "props": {
+          "label": "Why we choose differently",
+          "items": [
+            {
+              "id": "principle-natural-materials",
+              "number": "01",
+              "title": "Natural materials",
+              "body": "Tactile surfaces and honest finishes selected to age with character."
+            },
+            {
+              "id": "principle-thoughtful-sourcing",
+              "number": "02",
+              "title": "Thoughtful sourcing",
+              "body": "Small-batch makers and considered production wherever possible."
+            },
+            {
+              "id": "principle-everyday-usefulness",
+              "number": "03",
+              "title": "Everyday usefulness",
+              "body": "Beautiful forms designed to earn a permanent place in your routine."
+            }
+          ]
+        }
+      },
+      {
+        "id": "starter-newsletter",
+        "type": "newsletter",
+        "componentRef": "newsletter.default",
+        "enabled": true,
+        "props": {
+          "eyebrow": "Notes from the studio",
+          "heading": "A quieter kind of inbox.",
+          "body": "New objects, maker stories, and thoughtful ideas for the home—sent occasionally.",
+          "placeholder": "Email address",
+          "actionLabel": "Subscribe"
+        }
+      }
+    ]
+  },
+  "layout": {
+    "version": 1,
+    "sections": [
+      {
+        "id": "starter-header",
+        "type": "header",
+        "componentRef": "header.default",
+        "enabled": true,
+        "props": {
+          "storeName": "Online Store",
+          "navItems": [
+            {
+              "id": "morph-nav-shop",
+              "label": "Shop",
+              "link": {
+                "href": "/collections/all"
+              }
+            },
+            {
+              "id": "morph-nav-about",
+              "label": "About",
+              "link": {
+                "href": "/pages/about"
+              }
+            },
+            {
+              "id": "morph-nav-journal",
+              "label": "Journal",
+              "link": {
+                "href": "/blogs/journal"
+              }
+            }
+          ],
+          "cartLabel": "Cart (0)",
+          "cartLink": {
+            "href": "/cart"
+          }
+        }
+      },
+      {
+        "id": "starter-footer",
+        "type": "footer",
+        "componentRef": "footer.default",
+        "enabled": true,
+        "props": {
+          "storeName": "Online Store",
+          "copyrightText": "© Online Store",
+          "tagline": "Objects with lasting character for thoughtful, everyday living.",
+          "exploreHeading": "Explore",
+          "exploreItems": [
+            {
+              "id": "morph-explore-shop-all",
+              "label": "Shop all",
+              "link": {
+                "href": "/collections/all"
+              }
+            },
+            {
+              "id": "morph-explore-our-story",
+              "label": "Our story",
+              "link": {
+                "href": "/pages/about"
+              }
+            },
+            {
+              "id": "morph-explore-journal",
+              "label": "Journal",
+              "link": {
+                "href": "/blogs/journal"
+              }
+            }
+          ],
+          "helpHeading": "Help",
+          "helpItems": [
+            {
+              "id": "morph-help-contact",
+              "label": "Contact",
+              "link": {
+                "href": "/pages/contact"
+              }
+            },
+            {
+              "id": "morph-help-shipping",
+              "label": "Shipping",
+              "link": {
+                "href": "/pages/shipping"
+              }
+            },
+            {
+              "id": "morph-help-returns",
+              "label": "Returns",
+              "link": {
+                "href": "/pages/returns"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

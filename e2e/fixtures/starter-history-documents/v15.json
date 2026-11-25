@@ -1,0 +1,142 @@
+{
+  "starterVersion": 15,
+  "sourceCommit": "63900d601f3646d6346e843ec842af43279bca8d",
+  "sourceFile": "src/lib/storefront/default-storefront-document.ts",
+  "sourceBlob": "a2bd25c9e2d6d965a3f7baa4b1785641a7a9bbb3",
+  "sourceSha256": "08b0ada2b79948517346c8f0aeef48122af16a44ae29e4f4ce91b0a533481195",
+  "home": {
+    "version": 1,
+    "sections": [
+      {
+        "id": "starter-hero",
+        "type": "hero",
+        "enabled": true,
+        "props": {
+          "eyebrow": "New collection",
+          "heading": "Objects for everyday rituals.",
+          "description": "Quiet essentials, thoughtfully made for the spaces you call home.",
+          "actionLabel": "Explore the collection",
+          "actionHref": "/collections/new",
+          "image": {
+            "src": "/static/storefront/theme-preview-default.png",
+            "alt": "A neutral collection of ceramic objects"
+          }
+        },
+        "componentRef": "hero.default"
+      },
+      {
+        "id": "starter-introduction",
+        "type": "editorial-intro",
+        "componentRef": "editorial-intro.default",
+        "enabled": true,
+        "props": {
+          "label": "Considered living",
+          "heading": "Fewer things. Better chosen.",
+          "body": "We bring together useful objects with lasting character—pieces selected for honest materials, quiet form, and the pleasure of daily use."
+        }
+      },
+      {
+        "id": "starter-categories",
+        "type": "category-showcase",
+        "componentRef": "category-showcase.default",
+        "enabled": true,
+        "props": {
+          "heading": "Shop by ritual",
+          "items": [
+            {
+              "title": "The morning table",
+              "caption": "Cups, carafes, and objects for an unhurried start.",
+              "href": "/collections/morning-table",
+              "image": {
+                "src": "/static/storefront/theme-preview-default.png",
+                "alt": "Ceramic vessels arranged on a morning table"
+              },
+              "imagePosition": "30% center"
+            },
+            {
+              "title": "Quiet corners",
+              "caption": "Sculptural forms that give a room its rhythm.",
+              "href": "/collections/quiet-corners",
+              "image": {
+                "src": "/static/storefront/theme-preview-default.png",
+                "alt": "A sculptural ceramic vase in warm light"
+              },
+              "imagePosition": "72% center"
+            },
+            {
+              "title": "Soft essentials",
+              "caption": "Natural textures made for slower evenings.",
+              "href": "/collections/soft-essentials",
+              "image": {
+                "src": "/static/storefront/theme-preview-default.png",
+                "alt": "Folded natural fabric beside ceramic objects"
+              },
+              "imagePosition": "95% center"
+            }
+          ]
+        }
+      },
+      {
+        "id": "starter-story",
+        "type": "image-with-text",
+        "componentRef": "image-with-text.default",
+        "enabled": true,
+        "props": {
+          "eyebrow": "Our point of view",
+          "heading": "Made to be kept, not replaced.",
+          "body": "We look for objects that age gracefully and makers who understand restraint. The result is a collection that feels personal from the first day and more familiar with every year.",
+          "actionLabel": "Read our story",
+          "actionHref": "/pages/about",
+          "image": {
+            "src": "/static/storefront/theme-preview-default.png",
+            "alt": "Timeless ceramic objects in natural light"
+          },
+          "imagePosition": "center center"
+        }
+      },
+      {
+        "id": "starter-principles",
+        "type": "principles",
+        "componentRef": "principles.default",
+        "enabled": true,
+        "props": {
+          "label": "Why we choose differently",
+          "items": [
+            {
+              "id": "principle-natural-materials",
+              "number": "01",
+              "title": "Natural materials",
+              "body": "Tactile surfaces and honest finishes selected to age with character."
+            },
+            {
+              "id": "principle-thoughtful-sourcing",
+              "number": "02",
+              "title": "Thoughtful sourcing",
+              "body": "Small-batch makers and considered production wherever possible."
+            },
+            {
+              "id": "principle-everyday-usefulness",
+              "number": "03",
+              "title": "Everyday usefulness",
+              "body": "Beautiful forms designed to earn a permanent place in your routine."
+            }
+          ]
+        }
+      },
+      {
+        "id": "starter-newsletter",
+        "type": "newsletter",
+        "componentRef": "newsletter.default",
+        "enabled": true,
+        "props": {
+          "eyebrow": "Notes from the studio",
+          "heading": "A quieter kind of inbox.",
+          "body": "New objects, maker stories, and thoughtful ideas for the home—sent occasionally.",
+          "placeholder": "Email address",
+          "actionLabel": "Subscribe"
+        }
+      }
+    ]
+  },
+  "layout": null
+}

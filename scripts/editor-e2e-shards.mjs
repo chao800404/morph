@@ -124,6 +124,13 @@ export const EDITOR_SHARDS = [
     // only, so it skips on every shard. Its exact tests are listed in
     // scripts/container-acceptance-targets/navigation-matrix-public.mjs.
     "navigation-matrix-public.spec.ts",
+    // M1 1b (B1, B2): container transport and full Start only, so it skips
+    // on every shard. Its exact tests are listed in
+    // scripts/container-acceptance-targets/starter-upgrade-t1.mjs.
+    "starter-upgrade-t1-acceptance.spec.ts",
+    // M1 1b (B3): full Start only, so it skips on every shard; the full
+    // Start job runs it (editor-e2e-start.mjs).
+    "preview-old-bridge-start.spec.ts",
   ],
   [
     "session-editor-writes.spec.ts",
