@@ -65,6 +65,8 @@ export const START_PREVIEW_EXCLUDED = {
     "The Start content sync check runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the full Start job runs on the local-sidecar transport.",
   "preview-revocation-timeline.spec.ts":
     "The M1 1c revocation timeline runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox), on the pv- host only a container fronts; the full Start job runs on the local-sidecar transport. Its exact titles are in container-acceptance-targets/preview-revocation-timeline.mjs; no CI step runs that check yet.",
+  "preview-start-two-tab-race.spec.ts":
+    "Auto-retry v2's two-tab start race runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox), where the current-start guard and the fence ledger it meets in live; the full Start job runs on the local-sidecar transport. Its exact titles are in container-acceptance-targets/preview-start-two-tab-race.mjs; the editor-e2e-container-preview job runs that check.",
   "public-svg.spec.ts":
     "Reads the variable only inside a test that plants a file in a Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the rest of the file is not Start-gated and runs on the shards.",
 };

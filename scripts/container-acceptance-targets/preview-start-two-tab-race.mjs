@@ -8,9 +8,9 @@
  *
  * `node scripts/check-container-acceptance.mjs <report> <this module>`
  * requires exactly these titles, each once, passed with zero skip and zero
- * retry. No CI step runs that check yet: the run is the lead's, under the
- * E2E machine lock, with MORPH_E2E_TRANSPORT=cloudflare-sandbox,
- * MORPH_E2E_PREVIEW_RUNTIME=start and MORPH_THEME_PREVIEW_RUNTIME=start.
+ * retry. The editor-e2e-container-preview job runs that check after its own
+ * container step (MORPH_E2E_TRANSPORT=cloudflare-sandbox,
+ * MORPH_E2E_PREVIEW_RUNTIME=start, MORPH_THEME_PREVIEW_RUNTIME=start).
  * Wiring does not count as a CI pass; a candidate still needs a fresh
  * successful run. A renamed case changes this list in the same commit.
  */
