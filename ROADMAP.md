@@ -393,7 +393,10 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     6. 之後再排：動態路由 SSG（如每個商品網址）與全站 SPA 發布。
   - **開源參考：** TanStack 官方範例（Cloudflare 的 TanStack Start 範例、static prerendering、selective SSR、SPA mode）可原樣固定為驗收素材，MIT 授權，保留授權聲明。ISR 參考 OpenNext Cloudflare 的 R2 增量快取與 Durable Object 更新佇列的設計（MIT），不直接複製：它綁 Next.js 的快取語意，Morph 的快取與更新工作必須綁在商店、網址與 release 上。
   - **時程：** 只估開發工作量，SSR 雲端驗收加固定網址 SSG 約 1～2 週，逐頁四種模式含發布與回滾驗證約 3～5 週，加上動態路由 SSG 與全站 SPA 約 4～7 週。實際日曆時間預期更長：每個 PR 要完整驗證與 CI，容器驗收一次只能跑一組，staging 要另外核准。
-  - **已知限制（不在本線範圍）：** 編輯器的預覽是跨站 iframe，Theme 自己以預設 SameSite=Lax 設定的 cookie 在畫布中不會保留（原生相容 spec 以測試記錄這個行為；獨立預覽的 HttpOnly cookie 案例通過）。依賴自家 cookie 的 Theme 在畫布中的行為會與正式網站不同，尚無解法。
+  - **畫布中的 Theme cookie（2026-11-25 決定）：** 編輯器的預覽是跨站 iframe，Theme 以 `SameSite=Lax`／`Strict` 設定的 cookie 在畫布中不會保留，省略 SameSite 時依瀏覽器與隱私設定而定（原生相容 spec 以測試記錄；新分頁開啟的預覽與正式網站一致）。保留編輯器與預覽跨站的設計，不改成同站。
+    1. 提示加「在新分頁開啟預覽」：排在 Starter v32 與固定網址 SSG 之後。沿用現有的新分頁授權流程；代理看到 Theme 的 `Set-Cookie` 明寫 `Lax` 或 `Strict` 時提示畫布限制，省略 SameSite 時改用「可能無法在畫布中保留」；只傳提示需要的狀態，不把 cookie 值送進編輯器或日誌。驗收：新分頁能設定 cookie、後續請求讀得回，並與公開站的回應對照。
+    2. 跨商家預覽的 cookie 隔離是正式開放前的必要條件：現在選定正式預覽網域；若沿用共用父網域，把專用的預覽父網域加入 Public Suffix List 的 PRIVATE 區段（各瀏覽器更新時間不同，要預留時間）。正式開放前以兩個商家的測試預覽驗證：任何一方都無法把 Theme cookie 寫到另一方會收到的範圍，原有的預覽授權仍可用。
+    3. 平台在預覽中改寫 Theme 的 `Set-Cookie`（`SameSite=None; Secure; Partitioned`）：只作為有明確需求的 Theme 的選用功能。先在真實 HTTPS 預覽測 Chrome、Firefox、Safari，再單獨確認本機 HTTP，驗證設定、更新與刪除；`Partitioned` 依頂層網站分區，同一個編輯器嵌入兩個 Theme 時，跨商家隔離仍由預覽網域提供。
 
 **里程碑進度（2026-11-09，更新至 2026-11-25）。** 只記已合併或已有證據的事；未跑到的驗收不寫成通過。
 
