@@ -27,19 +27,45 @@ import { expect, test, type Page } from "@playwright/test";
 let server: Server;
 let siblingOrigin = "";
 
+/**
+ * A third origin on the same host, which records what the browser sent it.
+ *
+ * Playwright can report only the provisional request headers for the
+ * attack request (no `Origin`, `Cookie` or `Sec-Fetch-*`), so the browser's
+ * behaviour is observed where it lands instead: the sibling page sends this
+ * server the very request it sends the CMS. Cookies ignore the port, so the
+ * CMS's host-only session cookie for `localhost` reaches this server exactly
+ * as it reaches the CMS, and the request is labelled the same way.
+ */
+let probe: Server;
+let probeOrigin = "";
+const probed: Array<Record<string, string | string[] | undefined>> = [];
+
+const listen = (s: Server) =>
+  new Promise<string>((resolve) =>
+    s.listen(0, "127.0.0.1", () =>
+      resolve(`http://localhost:${(s.address() as AddressInfo).port}`),
+    ),
+  );
+
 test.beforeAll(async () => {
   server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end("<!doctype html><title>Same-site page</title><p>storefront");
   });
-  await new Promise<void>((resolve) =>
-    server.listen(0, "127.0.0.1", () => resolve()),
-  );
-  siblingOrigin = `http://localhost:${(server.address() as AddressInfo).port}`;
+  siblingOrigin = await listen(server);
+  probe = createServer((request, response) => {
+    if (request.method === "POST") probed.push({ ...request.headers });
+    request.resume();
+    response.writeHead(204);
+    response.end();
+  });
+  probeOrigin = await listen(probe);
 });
 
 test.afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
 });
 
 const adminOrigin = () => new URL(test.info().project.use.baseURL!).origin;
@@ -69,30 +95,34 @@ test("a same-site page cannot create an admin API key; the CMS can", async ({
   const sibling = await context.newPage();
   await sibling.goto(siblingOrigin);
   const target = `${adminOrigin()}/api/admin/api-keys`;
-  const sent = sibling.waitForRequest(
-    (request) => request.url() === target && request.method() === "POST",
-  );
   const answered = sibling.waitForResponse(
     (response) =>
       response.url() === target && response.request().method() === "POST",
   );
-  await sibling.evaluate(async (url) => {
-    await fetch(url, {
-      method: "POST",
-      mode: "no-cors",
-      credentials: "include",
-      headers: { "content-type": "text/plain" },
-      body: JSON.stringify({ title: "same-site attack", type: "secret" }),
-    }).catch(() => undefined);
-  }, target);
-  const request = await sent;
-  const headers = await request.allHeaders();
-  // The request is what the threat model says it is: same-site, with the
-  // CMS session cookie attached.
+  const send = (url: string) =>
+    sibling.evaluate(async (to) => {
+      await fetch(to, {
+        method: "POST",
+        mode: "no-cors",
+        credentials: "include",
+        headers: { "content-type": "text/plain" },
+        body: JSON.stringify({ title: "same-site attack", type: "secret" }),
+      }).catch(() => undefined);
+    }, url);
+  await send(target);
+  expect((await answered).status()).toBe(403);
+
+  // The same request to the probe: what the browser attached is what the
+  // threat model says — same-site, from the sibling, with the CMS session
+  // cookie — so the 403 above is the origin check, not a missing cookie.
+  await send(`${probeOrigin}/probe`);
+  await expect.poll(() => probed.length).toBe(1);
+  const headers = probed[0]!;
   expect(headers["sec-fetch-site"]).toBe("same-site");
   expect(headers["origin"]).toBe(siblingOrigin);
-  expect(headers["cookie"] ?? "").toMatch(/better-auth\.session_token=/);
-  expect((await answered).status()).toBe(403);
+  expect(String(headers["cookie"] ?? "")).toMatch(
+    /better-auth\.session_token=/,
+  );
   expect(await apiKeyCount(page)).toBe(before);
 
   // The control: the CMS's own page, the same request but as JSON.
@@ -105,8 +135,7 @@ test("a same-site page cannot create an admin API key; the CMS can", async ({
     });
     return {
       status: response.status,
-      id: ((await response.json()) as { api_key?: { id: string } }).api_key
-        ?.id,
+      id: ((await response.json()) as { api_key?: { id: string } }).api_key?.id,
     };
   });
   expect(created.status).toBe(201);
