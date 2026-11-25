@@ -85,6 +85,13 @@ const STAGE3_JOBS = {
       target: "starter-upgrade-case-e.mjs",
       grep: "E\\. a toolchain pin an earlier Starter wrote",
     },
+    {
+      label: "two-tab start race",
+      id: "preview_start_two_tab_race",
+      window: "preview-start-two-tab-race",
+      spec: "preview-start-two-tab-race.spec.ts",
+      target: "preview-start-two-tab-race.mjs",
+    },
   ],
 };
 

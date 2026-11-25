@@ -116,6 +116,11 @@ export const EDITOR_SHARDS = [
     "publish.spec.ts",
     "source-asset-publish.spec.ts",
     "preview-start-bridge-interruption.spec.ts",
+    // Container transport and the full Start preview only, so it skips on every
+    // shard. Its exact tests are listed in
+    // scripts/container-acceptance-targets/preview-start-two-tab-race.mjs; the
+    // editor-e2e-container-preview job runs that check.
+    "preview-start-two-tab-race.spec.ts",
     "history-back-controlled-repro.spec.ts",
     // Container transport only, so it skips on every shard. Its exact tests
     // are listed in scripts/container-acceptance-targets/.

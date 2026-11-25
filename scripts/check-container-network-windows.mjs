@@ -45,6 +45,7 @@ export const KNOWN_WINDOWS = Object.freeze([
   "preview-socket",
   "start-container-content-sync",
   "starter-upgrade-case-e",
+  "preview-start-two-tab-race",
 ]);
 const KNOWN_MARKERS = Object.freeze(
   KNOWN_WINDOWS.flatMap((name) => [`${name}-start`, `${name}-end`]),
