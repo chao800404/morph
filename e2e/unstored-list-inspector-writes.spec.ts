@@ -12,7 +12,6 @@ import {
 } from "./helpers";
 import {
   countContentWrites,
-  execLocalD1,
   nextContentWrite,
   queryLocalD1,
   unconfirmedNotice,
@@ -25,6 +24,7 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { identifyUnstoredListRows } from "../src/lib/storefront/editor/normalize-row-ids";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * Inspector Add and Remove on a list the Document does not store yet, and
@@ -139,12 +139,12 @@ function drawnDefaults(sectionId: string): Row[] {
 
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'unstored-list-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `unstored-list-${created.themeId}`,
+    previewRuntime: null,
+  });
   return created;
 }
 

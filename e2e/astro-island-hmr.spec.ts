@@ -4,6 +4,7 @@ import { expect, test, type Frame, type Page } from "@playwright/test";
 
 import { EDITOR_PATH } from "./helpers";
 import { editAndSave, nextFileSave, readSource } from "./helpers/editor-writes-paused";
+import { previewRuntimeSql } from "./helpers/recorded-preview-runtime";
 import { THEMES, serverFn, storefrontHarness } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -137,8 +138,8 @@ test.describe("an Astro island edited in Code", () => {
     expect(
       await harness!.writeD1(
         `INSERT INTO storefront_themes
-           (id, storefront_id, name, metadata, framework, created_at, updated_at)
-         VALUES (?1, ?2, ?3, '{"starterTemplateVersion":1}', 'astro', ?4, ?4)`,
+           (id, storefront_id, name, metadata, framework, preview_runtime, created_at, updated_at)
+         VALUES (?1, ?2, ?3, '{"starterTemplateVersion":1}', 'astro', ${previewRuntimeSql(null)}, ?4, ?4)`,
         scope.themeId,
         scope.storefrontId,
         `astro-island-hmr-${scope.themeId}`,

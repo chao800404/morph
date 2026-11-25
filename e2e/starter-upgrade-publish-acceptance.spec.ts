@@ -35,6 +35,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * T1: a Theme created from an old Starter, upgraded the way its author does
@@ -394,12 +395,12 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
       storefrontId: STOREFRONT_ID!,
       themeId: randomUUID(),
     };
-    const now = new Date().toISOString();
-    execLocalD1(`INSERT INTO storefront_themes
-      (id, storefront_id, name, metadata, created_at, updated_at)
-      VALUES (${sqlText(scope.themeId)}, ${sqlText(scope.storefrontId)},
-        ${sqlText(`t1-${label}-${scope.themeId}`)}, '{"starterTemplateVersion":1}',
-        ${sqlText(now)}, ${sqlText(now)});`);
+    insertThrowawayTheme({
+      themeId: scope.themeId,
+      storefrontId: scope.storefrontId,
+      name: `t1-${label}-${scope.themeId}`,
+      previewRuntime: null,
+    });
     // Any page of the app reaches the server functions; not the shared
     // Theme's editor.
     await page.goto("/", { waitUntil: "domcontentloaded" });

@@ -9,7 +9,6 @@ import {
   previewFrame,
   saveEditedSource,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -17,6 +16,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * A component whose content fields are declared in a sibling
@@ -151,12 +151,12 @@ function CrossTabRoute() {
 
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'content-fields-sidecar-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `content-fields-sidecar-${created.themeId}`,
+    previewRuntime: null,
+  });
   return created;
 }
 

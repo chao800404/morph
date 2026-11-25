@@ -14,7 +14,6 @@ import {
   previewFrame,
   previewFrameOf,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { stopPreviewServer } from "./helpers/preview-server-stop";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
@@ -22,6 +21,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * Text typed on the canvas, not yet committed, when another tab's ordinary
@@ -108,12 +108,12 @@ export default function DeferCard({ title = "Defer default title" }: DeferCardPr
 
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'inline-reload-defer-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `inline-reload-defer-${created.themeId}`,
+    previewRuntime: null,
+  });
   return created;
 }
 

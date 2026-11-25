@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { EDITOR_PATH, isServerFunctionCall, openEditor } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { themeScopeFromEditorPath } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * A right-click on a Code file row only opens its menu, wherever the row is.
@@ -41,12 +41,12 @@ test("a right-click on a row at the bottom edge opens the menu and selects nothi
     ...themeScopeFromEditorPath(EDITOR_PATH!),
     themeId: randomUUID(),
   };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-      (id, storefront_id, name, metadata, created_at, updated_at)
-      VALUES ('${scope.themeId}', '${scope.storefrontId}',
-        'context-menu-${scope.themeId}', '{"starterTemplateVersion":1}',
-        '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: scope.themeId,
+    storefrontId: scope.storefrontId,
+    name: `context-menu-${scope.themeId}`,
+    previewRuntime: null,
+  });
   // The ordinary editor read provisions the starter source and documents.
   const homeId = await page.evaluate(async (scope) => {
     const module = "/src/server/storefront/storefront-themes.serverFn.ts";
