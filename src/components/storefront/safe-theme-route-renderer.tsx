@@ -80,7 +80,6 @@ function readComponentSources(
 function createDocumentComponentResolver(args: {
   files: readonly ThemeSourceFile[];
   document: StorefrontPageDocument;
-  layoutSlotIds?: ReadonlySet<string>;
 }): SafeThemeComponentResolver {
   const componentSources = readComponentSources(args.files);
   const remaining = args.document.sections.map((section) => ({
@@ -88,27 +87,38 @@ function createDocumentComponentResolver(args: {
     // A migrated Document stores the source path directly. Legacy Documents
     // still use manifest refs, so resolve those through the source-first
     // compatibility resolver instead of making the manifest mandatory.
+    // A hidden section keeps its source path: it has to be found so that it
+    // can answer `render: false`. Left unmatched, the component it names still
+    // rendered here, from its own prop defaults.
     sourcePath:
-      section.enabled === false && !args.layoutSlotIds?.has(section.id)
-        ? undefined
-        : getComponentFilePath(
-              section.type,
-              [...args.files],
-              section.componentRef ?? undefined,
-            ) ??
-            componentSources.get(
-              section.componentRef ?? `${section.type}.default`,
-            ),
+      getComponentFilePath(
+        section.type,
+        [...args.files],
+        section.componentRef ?? undefined,
+      ) ??
+      componentSources.get(section.componentRef ?? `${section.type}.default`),
     used: false,
   })).filter((candidate) =>
     isValidThemeContentSlotId(candidate.section.id),
   );
 
-  return ({ sourcePath }) => {
+  return ({ sourcePath, sectionId }) => {
     const normalized = normalizeSourcePath(sourcePath);
-    const match = remaining.find(
+    const available = remaining.filter(
       (candidate) => !candidate.used && candidate.sourcePath === normalized,
     );
+    // A call site fed by `content("slot")` names its section, so take that
+    // one. A hidden section is otherwise claimed only by a call site with no
+    // slot of its own: a route guarding with `isSectionHidden()` never renders
+    // the hidden slot, and its unspent entry must not hide the next instance
+    // of the same component.
+    const match =
+      (sectionId
+        ? available.find((candidate) => candidate.section.id === sectionId)
+        : undefined) ??
+      available.find(
+        (candidate) => !sectionId || candidate.section.enabled !== false,
+      );
     if (!match) return null;
     match.used = true;
     const { section } = match;
@@ -183,6 +193,19 @@ function readContentSlots(
     count += 1;
   }
   return slots;
+}
+
+/**
+ * Slot ids the author hid, so a route's own `isSectionHidden()` guard answers
+ * here as it does on the published site.
+ */
+function readHiddenContentSlots(document: StorefrontPageDocument): string[] {
+  return (document.sections ?? [])
+    .filter(
+      (section) =>
+        section.enabled === false && isValidThemeContentSlotId(section.id),
+    )
+    .map((section) => section.id);
 }
 
 function routeMatchesPath(
@@ -297,9 +320,9 @@ export function renderSafeThemeRoute(args: {
   const resolveComponent = createDocumentComponentResolver({
     files: args.files,
     document: routeDocument,
-    layoutSlotIds: shellSlotIds,
   });
   const contentSlots = readContentSlots(routeDocument);
+  const hiddenContentSlots = readHiddenContentSlots(routeDocument);
   const sectionTypeBySlot = readSectionTypesBySlot(routeDocument);
   const componentRefBySlot = readComponentRefsBySlot(routeDocument);
   let parentSourcePath = matched.parentSourcePath ?? null;
@@ -332,6 +355,7 @@ export function renderSafeThemeRoute(args: {
       injectedProps: args.runtimeProps,
       resolveComponent,
       contentSlots,
+      hiddenContentSlots,
       sectionTypeBySlot,
       componentRefBySlot,
     });
@@ -360,6 +384,7 @@ export function renderSafeThemeRoute(args: {
     injectedProps: args.runtimeProps,
     resolveComponent,
     contentSlots,
+    hiddenContentSlots,
     sectionTypeBySlot,
     componentRefBySlot,
   });

@@ -71,7 +71,7 @@ describe("content slots from the published document", () => {
     );
   });
 
-  it("does not supply content for a disabled section", () => {
+  it("removes a disabled section instead of rendering its defaults", () => {
     const result = renderHome([
       {
         id: "starter-hero",
@@ -84,7 +84,8 @@ describe("content slots from the published document", () => {
     if (!result.success) return;
     const html = renderToStaticMarkup(result.node as never);
     expect(html).not.toContain("Should not appear");
-    expect(html).toContain("Component default");
+    expect(html).not.toContain("Component default");
+    expect(html).toContain("<main");
   });
 
   it("ignores a section whose id could not be a slot", () => {

@@ -50,10 +50,7 @@ type RuntimeContext = {
   files: Map<string, ThemeSourceFile>;
   /** Stored values for each content slot the route declares. */
   contentSlots?: ThemeContentSlotValues;
-  /**
-   * Sections the author hid. Empty in the Design preview, which shows a hidden
-   * section so it can be seen and unhidden.
-   */
+  /** Slot ids of the sections the author hid; `isSectionHidden()` reads it. */
   hiddenContentSlots?: readonly string[];
   /** Declared type of each stored section, keyed by its slot id. */
   sectionTypeBySlot?: Readonly<Record<string, string>>;
@@ -86,6 +83,8 @@ export type SafeThemeComponentResolver = (args: {
   sourcePath: string;
   exportName: string;
   props: Record<string, unknown>;
+  /** The slot the call site feeds the component from, when it names one. */
+  sectionId?: string;
 }) => SafeThemeComponentOverride | null;
 
 type ModuleRecord = {
@@ -476,10 +475,10 @@ function evaluateCall(
         `${THEME_SECTION_HIDDEN_HELPER}() requires a literal slot id.`,
       );
     }
-    // The Design preview renders the section it is editing, hidden or not —
-    // an author has to be able to see and unhide it. The published runtime is
-    // what honours the flag; both engines answer the same call so a route
-    // written against it stays renderable here.
+    // Hidden means gone, here as on the published site: the answer comes from
+    // the Document's `enabled: false`, so a route's own guard drops the
+    // section in this preview too. Without a list (a lone component render)
+    // nothing is hidden. Unhiding is the editor's job, not the canvas's.
     return (context.hiddenContentSlots ?? []).includes(slotArgument.value)
       ? true
       : false;
@@ -1681,6 +1680,7 @@ function renderModuleComponent(
     sourcePath,
     exportName,
     props,
+    sectionId: section?.sectionId,
   });
   if (override && !override.render) return null;
   // Injection is applied per component below, once its declared props are
@@ -1859,6 +1859,7 @@ export function renderSafeThemeComponent({
   injectedProps = {},
   resolveComponent,
   contentSlots,
+  hiddenContentSlots,
   sectionTypeBySlot,
   componentRefBySlot,
 }: {
@@ -1872,10 +1873,7 @@ export function renderSafeThemeComponent({
   injectedProps?: Record<string, unknown>;
   resolveComponent?: SafeThemeComponentResolver;
   contentSlots?: ThemeContentSlotValues;
-  /**
-   * Sections the author hid. Empty in the Design preview, which shows a hidden
-   * section so it can be seen and unhidden.
-   */
+  /** Slot ids of the sections the author hid, from the Document. */
   hiddenContentSlots?: readonly string[];
   sectionTypeBySlot?: Readonly<Record<string, string>>;
   componentRefBySlot?: Readonly<Record<string, string>>;
@@ -1902,6 +1900,7 @@ export function renderSafeThemeComponent({
     injectedProps,
     resolveComponent,
     contentSlots,
+    hiddenContentSlots,
     sectionTypeBySlot,
     componentRefBySlot,
     nodeCount: 0,
