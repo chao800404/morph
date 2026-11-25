@@ -1741,9 +1741,15 @@ jobs:
           if-no-files-found: error
 
   # Stage 3 (M1 1d): T1, Themes from Starter v28 and v20 upgraded by review,
-  # built, published and rolled back in the container. Alone in its job:
-  # the longest target (local exclusive run 11.9 min, fe5caf1, one sample;
-  # each test allows itself 30 min). Same pattern as editor-e2e-container.
+  # built, published and rolled back in the container (local exclusive run
+  # 11.9 min, fe5caf1, one sample; on CI 7.2-10.7 min for the whole job;
+  # each test allows itself 30 min). Then Starter 32's Lane B: the shipped
+  # Starter on the full Start runtime, its own home, in-site navigation,
+  # non-home reload, publish read-back of the released artifact, refused
+  # reads and a sealed-pass build failure, in a runner invocation and state
+  # of its own. Lane B is not measured yet: if it takes the job past about
+  # 25 min it moves to a job of its own with this pattern. Same pattern as
+  # editor-e2e-container.
   editor-e2e-container-starter-publish:
     name: Editor E2E container Starter upgrade publish acceptance
     runs-on: ubuntu-24.04
@@ -1940,16 +1946,62 @@ jobs:
           MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
         run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/starter-upgrade-publish-handover.json" e2e/starter-upgrade-publish-acceptance.spec.ts
 
+      - name: Mark Starter 32 full Start container window start
+        run: |
+          printf '{"name":"starter-v32-full-start-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe starter-v32-full-start-start "$RUNNER_TEMP/container-network"
+
+      - name: Run Starter 32 full Start container acceptance
+        id: starter_v32_full_start_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/starter-v32-full-start.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/starter-v32-full-start-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/starter-v32-full-start-acceptance.spec.ts
+
+      - name: Mark Starter 32 full Start container window end
+        if: always()
+        run: |
+          printf '{"name":"starter-v32-full-start-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe starter-v32-full-start-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve Starter 32 full Start acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/starter-v32-full-start"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/starter-v32-full-start/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/starter-v32-full-start/starter-v32-full-start.json" ]; then
+            echo "::warning::Starter 32 full Start acceptance report was not produced."
+          fi
+
+      - name: Require exact Starter 32 full Start target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/starter-v32-full-start/starter-v32-full-start.json" scripts/container-acceptance-targets/starter-v32-full-start.mjs
+
+      - name: Require Starter 32 full Start runner handover
+        id: starter_v32_full_start_handover
+        if: always() && steps.starter_v32_full_start_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/starter-v32-full-start-handover.json" e2e/starter-v32-full-start-acceptance.spec.ts
+
       - name: Record Stage 3 runner identities and handover results
         if: always()
         env:
           STARTER_UPGRADE_PUBLISH_HANDOVER_OUTCOME: ${{ steps.starter_upgrade_publish_handover.outcome }}
+          STARTER_V32_FULL_START_HANDOVER_OUTCOME: ${{ steps.starter_v32_full_start_handover.outcome }}
         run: |
-          node --input-type=module - "$RUNNER_TEMP/stage3/starter-upgrade-publish-handover.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/stage3/starter-upgrade-publish-handover.json" "$RUNNER_TEMP/stage3/starter-v32-full-start-handover.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const paths = process.argv.slice(2);
           const entries = [
             ["starter-upgrade-publish", paths[0], process.env.STARTER_UPGRADE_PUBLISH_HANDOVER_OUTCOME],
+            ["starter-v32-full-start", paths[1], process.env.STARTER_V32_FULL_START_HANDOVER_OUTCOME],
           ];
           for (const [name, filename, outcome] of entries) {
             try {
@@ -2018,7 +2070,7 @@ jobs:
 
       - name: Require each container window's veths to have come and gone inside it
         if: always()
-        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" starter-upgrade-publish
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" starter-upgrade-publish starter-v32-full-start
 
       - name: Keep Stage 3 records with the results
         if: always()

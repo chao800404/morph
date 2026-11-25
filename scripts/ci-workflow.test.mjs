@@ -67,6 +67,13 @@ const STAGE3_JOBS = {
       spec: "starter-upgrade-publish-acceptance.spec.ts",
       target: "starter-upgrade-publish.mjs",
     },
+    {
+      label: "Starter 32 full Start",
+      id: "starter_v32_full_start",
+      window: "starter-v32-full-start",
+      spec: "starter-v32-full-start-acceptance.spec.ts",
+      target: "starter-v32-full-start.mjs",
+    },
   ],
   "editor-e2e-container-preview": [
     {

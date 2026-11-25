@@ -130,6 +130,12 @@ export const EDITOR_SHARDS = [
     // Container transport only, so it skips on every shard. Its exact tests
     // are listed in scripts/container-acceptance-targets/.
     "starter-upgrade-publish-acceptance.spec.ts",
+    // Lane B, the shipped Starter 32 on the full Start runtime: container
+    // transport and the full Start preview only, so it skips on every shard.
+    // Its exact tests are listed in
+    // scripts/container-acceptance-targets/starter-v32-full-start.mjs; the
+    // editor-e2e-container-starter-publish job runs that check.
+    "starter-v32-full-start-acceptance.spec.ts",
     // The navigation matrix's public storefront cells: container transport
     // only, so it skips on every shard. Its exact tests are listed in
     // scripts/container-acceptance-targets/navigation-matrix-public.mjs.

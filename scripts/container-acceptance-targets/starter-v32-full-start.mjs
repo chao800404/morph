@@ -13,9 +13,14 @@
  * with zero skip and zero retry.
  *
  * `node scripts/check-container-acceptance.mjs <report> <this module>`
- * requires exactly these titles. No CI step runs this check yet: which
- * container job hosts it is decided from measured time. Wiring does not count
- * as a CI pass. A renamed case changes this list in the same commit.
+ * requires exactly these titles. The editor-e2e-container-starter-publish job
+ * runs that check after its own container step (MORPH_E2E_TRANSPORT=
+ * cloudflare-sandbox, MORPH_E2E_PREVIEW_RUNTIME=start,
+ * MORPH_THEME_PREVIEW_RUNTIME=start), after the Starter upgrade publish
+ * target; if its measured time takes that job past about 25 min it moves to
+ * a job of its own. Wiring does not count as a CI pass; a candidate still
+ * needs a fresh successful run. A renamed case changes this list in the same
+ * commit.
  */
 export const TARGET = Object.freeze({
   file: "starter-v32-full-start-acceptance.spec.ts",

@@ -7,6 +7,7 @@
     "preview-access-container.spec.ts": 0,
     "preview-socket-acceptance.spec.ts": 0,
     "preview-start-two-tab-race.spec.ts": 0,
+    "starter-v32-full-start-acceptance.spec.ts": 0,
     "astro-publish-acceptance.spec.ts": 0,
     "auth-failure.spec.ts": 1.5,
     "authored-content.spec.ts": 0,
