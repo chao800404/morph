@@ -20,6 +20,8 @@ import {
   themePreviewContentModuleSource,
   type ThemePreviewContentSnapshot,
 } from "@/lib/storefront/compiler/theme-preview-content";
+import * as morphSdkCore from "../../../packages/morph-sdk/src/index";
+import { createMorphReader } from "../../../packages/morph-sdk/src/client";
 import { prepareSourcesForLivePreview } from "@/lib/storefront/source-language/tsx-source-language";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import {
@@ -127,18 +129,102 @@ function createInProcessServerFn() {
       `live-preview-render: createServerFn().${step}() is not modelled by this harness`,
     );
   };
-  return {
+  const builder = (validate?: (data: unknown) => unknown) => ({
     middleware: unsupported("middleware"),
     validator: unsupported("validator"),
-    inputValidator: unsupported("inputValidator"),
+    // A function validator, run on the input before the handler as Start does.
+    // A schema object (with `.parse`) or an async validator is not modelled.
+    inputValidator: (check: unknown) => {
+      if (typeof check !== "function") {
+        return unsupported("inputValidator(<non-function>)")();
+      }
+      return builder((data) => {
+        const checked = (check as (data: unknown) => unknown)(data);
+        if (checked instanceof Promise) {
+          throw new Error(
+            "live-preview-render: an async inputValidator is not modelled by this harness",
+          );
+        }
+        return checked;
+      });
+    },
     handler:
       (handle: (context: { data: unknown; context: object }) => unknown) =>
       async (options?: { data?: unknown }) =>
-        handle({ data: options?.data, context: {} }),
-  };
+        handle({
+          data: validate ? validate(options?.data) : options?.data,
+          context: {},
+        }),
+  });
+  return builder();
 }
 
+/**
+ * `@morph/sdk/start` as this harness resolves it.
+ *
+ * The build resolves that name to the platform's own copy of the SDK
+ * (`.morph/sdk/start`), whose reads take their source from the request's
+ * `x-morph-content-origin` header. This harness has no request, so it hands
+ * over the same reader (`createMorphReader`, the core every entry shares) in
+ * the hosted entry's mode (relative media paths), pointed at the origin the
+ * preview answers through the harness's own `fetch`. The reading, validation
+ * and errors are the SDK's; only the source of the origin differs.
+ */
+const PREVIEW_SDK_ORIGIN = "http://preview.invalid";
+
+const previewReader = createMorphReader(
+  { baseUrl: PREVIEW_SDK_ORIGIN },
+  { mediaUrls: "relative" },
+);
+
+/**
+ * Runs `read` the way a server handler does: with no browser around it.
+ *
+ * The SDK refuses a read from a page (`inBrowser()` looks for `window` and
+ * `document`) because the real handler never runs in one, but these tests run
+ * under jsdom, which defines both. The check is made synchronously when the
+ * read starts, so the globals are hidden only for that synchronous step and
+ * restored before anything else can run.
+ */
+function asServerRead<T>(read: () => T): T {
+  const scope = globalThis as Record<string, unknown>;
+  const hidden = ["window", "document"].map((name) => ({
+    name,
+    descriptor: Object.getOwnPropertyDescriptor(scope, name),
+  }));
+  for (const { name, descriptor } of hidden) {
+    if (descriptor?.configurable) {
+      Object.defineProperty(scope, name, {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  try {
+    return read();
+  } finally {
+    for (const { name, descriptor } of hidden) {
+      if (descriptor?.configurable) {
+        Object.defineProperty(scope, name, descriptor);
+      }
+    }
+  }
+}
+
+const morphForPreview: typeof previewReader = {
+  pages: {
+    ...previewReader.pages,
+    get: (path) => asServerRead(() => previewReader.pages.get(path)),
+  },
+  products: {
+    list: (params) => asServerRead(() => previewReader.products.list(params)),
+    get: (handle) => asServerRead(() => previewReader.products.get(handle)),
+  },
+};
+
 const START_PACKAGES = {
+  "@morph/sdk/start": { ...morphSdkCore, morph: morphForPreview },
   "@tanstack/react-start": {
     createIsomorphicFn: createClientIsomorphicFn,
     createServerFn: createInProcessServerFn,
