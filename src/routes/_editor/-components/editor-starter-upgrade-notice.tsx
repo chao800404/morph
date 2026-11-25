@@ -259,6 +259,11 @@ export function EditorStarterUpgradeNotice({
     pages: false,
   });
   const [message, setMessage] = useState<string | null>(null);
+  /**
+   * An apply saved the files but not the version: the notice says so in
+   * place of "Nothing changes until you apply it", which is no longer true.
+   */
+  const [unfinished, setUnfinished] = useState(false);
 
   const reviewMutation = useMutation({
     mutationFn: async () => {
@@ -310,12 +315,30 @@ export function EditorStarterUpgradeNotice({
             : {}),
         },
       });
+      // The files were saved and the version was not recorded: not a plain
+      // failure, since the Theme's files did change.
+      if (
+        !result.success &&
+        result.error === "STARTER_UPGRADE_RECORD_INCOMPLETE"
+      ) {
+        return { kind: "record-incomplete" as const, message: result.message };
+      }
       if (!result.success) throw new Error(result.message);
-      return result.data;
+      return { kind: "applied" as const, applied: result.data };
     },
-    onSuccess: async (applied) => {
+    onSuccess: async (outcome) => {
       setOpen(false);
       setReview(null);
+      if (outcome.kind === "record-incomplete") {
+        // The reviewed plan is stale now (its files are in), so it is closed
+        // rather than offered again; the next review shows what is left.
+        setUnfinished(true);
+        setMessage(outcome.message);
+        await onApplied();
+        return;
+      }
+      const { applied } = outcome;
+      setUnfinished(false);
       setMessage(
         applied.starter && !applied.versionRecorded
           ? "Applied what could be applied. This Theme still does not record which Starter it came from, so the files Morph could not place stay as they are and this notice stays. The preview is reloading; publish when you are ready."
@@ -418,7 +441,8 @@ export function EditorStarterUpgradeNotice({
         >
           <ArrowUpCircle className="size-4 shrink-0 text-sky-600" />
           <span className="min-w-0 flex-1">
-            {noticeLine(status)} Nothing changes until you apply it.
+            {noticeLine(status)}
+            {unfinished ? null : " Nothing changes until you apply it."}
             {message ? ` ${message}` : null}
           </span>
           <Button

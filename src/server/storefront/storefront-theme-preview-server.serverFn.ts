@@ -708,7 +708,11 @@ const setThemePreviewRuntimeInputSchema = themePreviewServerInputSchema.extend({
  * back to the deployment's (R-0, R1; the author's choice, D1 (b)). A Theme
  * of another framework (Astro) is refused `start`. Written only while the
  * Theme still records what the author saw; otherwise refused as
- * `PREVIEW_RUNTIME_CONFLICT` with what it does record. Takes effect on the
+ * `PREVIEW_RUNTIME_CONFLICT` with what it does record. Leaving start is
+ * refused as `PREVIEW_RUNTIME_START_REQUIRED` (with the paths) while the
+ * Theme holds files only the full Start preview can run, and answered as
+ * `PREVIEW_RUNTIME_SOURCE_CHANGED` (with the generation) when the files
+ * changed under that check. Takes effect on the
  * preview's next start, which the editor asks for once this answers;
  * nothing here touches a running preview.
  */
@@ -740,6 +744,25 @@ export const setThemePreviewRuntime = createServerFn({ method: "POST" })
           // What the Theme records now, so the editor shows it rather than
           // sending its stale choice again.
           previewRuntime: result.previewRuntime,
+        };
+      }
+      if (!result.ok && result.error === "PREVIEW_RUNTIME_START_REQUIRED") {
+        return {
+          ...fail(
+            `This Theme holds files that only the full Start preview can run (${result.paths.join(", ")}), so it stays on Start. Nothing was switched.`,
+            { error: result.error },
+          ),
+          // Which files hold it there, for the editor to name.
+          paths: result.paths,
+        };
+      }
+      if (!result.ok && result.error === "PREVIEW_RUNTIME_SOURCE_CHANGED") {
+        return {
+          ...fail(
+            "The Theme's files changed while its preview runtime was being switched. Nothing was switched; try again.",
+            { error: result.error },
+          ),
+          sourceGeneration: result.sourceGeneration,
         };
       }
       if (!result.ok) {

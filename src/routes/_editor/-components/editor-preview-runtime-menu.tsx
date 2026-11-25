@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Server } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,7 +25,7 @@ import {
 import { setThemePreviewRuntime } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 
-const RUNTIME_LABELS: Record<ThemePreviewRuntime, string> = {
+export const PREVIEW_RUNTIME_LABELS: Record<ThemePreviewRuntime, string> = {
   client: "Client-only",
   start: "Full Start",
 };
@@ -44,27 +45,58 @@ type RuntimeWrite = Readonly<{
   effectiveBefore: ThemePreviewRuntime;
 }>;
 
-type RuntimeWriteOutcome = Readonly<{
-  kind: "saved" | "conflict";
-  /** What the Theme records now, as the server read it back. */
-  previewRuntime: ThemePreviewRuntime | null;
-}>;
+type RuntimeWriteOutcome =
+  | Readonly<{
+      kind: "saved" | "conflict";
+      /** What the Theme records now, as the server read it back. */
+      previewRuntime: ThemePreviewRuntime | null;
+    }>
+  /** Refused by the Theme's files (option B); nothing was switched. */
+  | Readonly<{ kind: "refused"; message: string }>;
+
+function joinPaths(paths: readonly string[]): string {
+  if (paths.length <= 1) return paths.join("");
+  return `${paths.slice(0, -1).join(", ")} and ${paths[paths.length - 1]}`;
+}
 
 /**
- * The Live Preview runtime of this Theme (R-0, R1): which one it is
- * previewed with, whether the Theme records it or inherits the deployment's,
- * and a choice of recording either one or inheriting again.
+ * The editor's wording for the two refusals a switch off Start can get from
+ * the Theme's files, or null for any other answer. Built from the code and
+ * what the answer carries, not from the server's text.
+ */
+export function previewRuntimeRefusalMessage(result: {
+  error?: string;
+  paths?: unknown;
+}): string | null {
+  if (result.error === "PREVIEW_RUNTIME_START_REQUIRED") {
+    const paths = Array.isArray(result.paths)
+      ? result.paths.filter((path): path is string => typeof path === "string")
+      : [];
+    return paths.length > 0
+      ? `This Theme stays on Full Start: ${joinPaths(paths)} ${paths.length === 1 ? "needs" : "need"} the full Start preview to run. Nothing was switched.`
+      : "This Theme stays on Full Start: some of its files need the full Start preview to run. Nothing was switched.";
+  }
+  if (result.error === "PREVIEW_RUNTIME_SOURCE_CHANGED") {
+    return "The Theme's code changed while the runtime was being switched, so nothing was switched. Your code was kept as saved. Check it, then switch the runtime again.";
+  }
+  return null;
+}
+
+/**
+ * The Live Preview runtime write, shared by the runtime menu and the empty
+ * Theme's next step (`editor-starter-init-next-step.tsx`), so there is one
+ * way to switch.
  *
  * Each choice is a compare-and-set on what the editor last saw the Theme
  * record. Once saved, the preview is restarted through the editor's own
  * restart (`onRuntimeChanged`) if the runtime it is served with changed.
  * Refused because someone else changed it meanwhile, the editor shows what
- * the Theme records now and restarts nothing; the author may choose again.
- * Not shown for a framework other than TanStack Start, which has only its
- * own preview. Hiding it is not the guard: the server refuses `start` for
- * such a Theme.
+ * the Theme records now and restarts nothing. Refused by the Theme's files,
+ * the editor says why in its own words (`previewRuntimeRefusalMessage`) and
+ * keeps that as `refusal` until the next saved choice. Never sent again on
+ * the author's behalf.
  */
-export function EditorPreviewRuntimeMenu({
+export function usePreviewRuntimeSwitch({
   context,
   onRuntimeChanged,
 }: {
@@ -75,13 +107,11 @@ export function EditorPreviewRuntimeMenu({
   const storefrontId = context.storefront.id;
   const themeId = context.theme.id;
   const recorded = context.theme.previewRuntime;
-  const deploymentRuntime = deploymentThemePreviewRuntime(
-    context.previewRuntimeDefault,
-  );
   const resolved = resolveThemePreviewRuntime({
     recorded,
     deploymentEnvValue: context.previewRuntimeDefault,
   });
+  const [refusal, setRefusal] = useState<string | null>(null);
 
   const showRecorded = (previewRuntime: ThemePreviewRuntime | null) => {
     // The editor context says what the Theme records; patched in place
@@ -131,9 +161,18 @@ export function EditorPreviewRuntimeMenu({
             : null,
         };
       }
+      const refused = previewRuntimeRefusalMessage(result);
+      if (refused !== null) return { kind: "refused", message: refused };
       throw new Error(result.message);
     },
     onSuccess: (outcome, write) => {
+      if (outcome.kind === "refused") {
+        // The Theme records what it did before; nothing to show or restart.
+        setRefusal(outcome.message);
+        toast.error(outcome.message);
+        return;
+      }
+      setRefusal(null);
       showRecorded(outcome.previewRuntime);
       if (outcome.kind === "conflict") {
         // Never sent again on the author's behalf: what they chose was a
@@ -149,17 +188,71 @@ export function EditorPreviewRuntimeMenu({
       }).runtime;
       if (after === write.effectiveBefore) {
         toast.success(
-          `Live Preview runtime saved. It still uses ${RUNTIME_LABELS[after]}.`,
+          `Live Preview runtime saved. It still uses ${PREVIEW_RUNTIME_LABELS[after]}.`,
         );
         return;
       }
       toast.success(
-        `Live Preview now uses the ${RUNTIME_LABELS[after]} runtime. Restarting the preview.`,
+        `Live Preview now uses the ${PREVIEW_RUNTIME_LABELS[after]} runtime. Restarting the preview.`,
       );
       onRuntimeChanged();
     },
     onError: (error: Error) => toast.error(error.message),
   });
+
+  return {
+    recorded,
+    resolved,
+    refusal,
+    isPending: mutation.isPending,
+    /**
+     * Records `next` (null: inherit the deployment's) against what the
+     * editor shows the Theme recording. `onSaved` runs only when it was
+     * saved, with what the Theme records now.
+     */
+    switchTo: (
+      next: ThemePreviewRuntime | null,
+      options?: {
+        onSaved?: (previewRuntime: ThemePreviewRuntime | null) => void;
+      },
+    ) =>
+      mutation.mutate(
+        {
+          previewRuntime: next,
+          expectedPreviewRuntime: recorded,
+          effectiveBefore: resolved.runtime,
+        },
+        {
+          onSuccess: (outcome) => {
+            if (outcome.kind === "saved") {
+              options?.onSaved?.(outcome.previewRuntime);
+            }
+          },
+        },
+      ),
+  };
+}
+
+/**
+ * The Live Preview runtime of this Theme (R-0, R1): which one it is
+ * previewed with, whether the Theme records it or inherits the deployment's,
+ * and a choice of recording either one or inheriting again
+ * (`usePreviewRuntimeSwitch`). Not shown for a framework other than TanStack
+ * Start, which has only its own preview. Hiding it is not the guard: the
+ * server refuses `start` for such a Theme.
+ */
+export function EditorPreviewRuntimeMenu({
+  context,
+  onRuntimeChanged,
+}: {
+  context: StorefrontThemeEditorDTO;
+  onRuntimeChanged: () => void;
+}) {
+  const runtimeSwitch = usePreviewRuntimeSwitch({ context, onRuntimeChanged });
+  const { recorded, resolved, refusal, isPending } = runtimeSwitch;
+  const deploymentRuntime = deploymentThemePreviewRuntime(
+    context.previewRuntimeDefault,
+  );
 
   if (!themeFrameworkAllowsPreviewRuntime(context.theme.framework, "start")) {
     return null;
@@ -172,9 +265,9 @@ export function EditorPreviewRuntimeMenu({
           variant="ghost"
           size="icon"
           className="size-7 shrink-0"
-          aria-label={`Live Preview runtime: ${RUNTIME_LABELS[resolved.runtime]}`}
+          aria-label={`Live Preview runtime: ${PREVIEW_RUNTIME_LABELS[resolved.runtime]}`}
           title="Choose the Live Preview runtime"
-          disabled={mutation.isPending}
+          disabled={isPending}
         >
           <Server />
         </Button>
@@ -193,9 +286,17 @@ export function EditorPreviewRuntimeMenu({
           data-testid="preview-runtime-source"
         >
           {resolved.source === "theme"
-            ? `${RUNTIME_LABELS[resolved.runtime]}, recorded for this Theme.`
-            : `${RUNTIME_LABELS[resolved.runtime]}, the deployment default. Not recorded for this Theme.`}
+            ? `${PREVIEW_RUNTIME_LABELS[resolved.runtime]}, recorded for this Theme.`
+            : `${PREVIEW_RUNTIME_LABELS[resolved.runtime]}, the deployment default. Not recorded for this Theme.`}
         </p>
+        {refusal ? (
+          <p
+            className="px-1.5 pb-1 text-[11px] leading-snug text-destructive"
+            data-testid="preview-runtime-refusal"
+          >
+            {refusal}
+          </p>
+        ) : null}
         <DropdownMenuSeparator className="my-0.5" />
         <DropdownMenuRadioGroup
           value={recorded ?? INHERIT}
@@ -207,33 +308,29 @@ export function EditorPreviewRuntimeMenu({
                   ? value
                   : undefined;
             if (next === undefined || next === recorded) return;
-            mutation.mutate({
-              previewRuntime: next,
-              expectedPreviewRuntime: recorded,
-              effectiveBefore: resolved.runtime,
-            });
+            runtimeSwitch.switchTo(next);
           }}
         >
           <DropdownMenuRadioItem
             value={INHERIT}
             className={radioItemClassName}
-            disabled={mutation.isPending}
+            disabled={isPending}
           >
-            {`Deployment default (${RUNTIME_LABELS[deploymentRuntime]})`}
+            {`Deployment default (${PREVIEW_RUNTIME_LABELS[deploymentRuntime]})`}
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem
             value="client"
             className={radioItemClassName}
-            disabled={mutation.isPending}
+            disabled={isPending}
           >
-            {RUNTIME_LABELS.client}
+            {PREVIEW_RUNTIME_LABELS.client}
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem
             value="start"
             className={radioItemClassName}
-            disabled={mutation.isPending}
+            disabled={isPending}
           >
-            {RUNTIME_LABELS.start}
+            {PREVIEW_RUNTIME_LABELS.start}
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>

@@ -123,9 +123,24 @@ export const designElementOperationSchema = z.union([
   z.object({ kind: z.literal("undo"), edit: designElementEditSchema }),
 ]);
 
+/**
+ * What a single-file save says it is. `restore-starter-file` declares the
+ * editor's restore command: the server resolves the current Starter's file
+ * for `path` itself and writes that, never `content`, as a create only
+ * (`saveStorefrontThemeFile`).
+ */
+const SAVE_THEME_FILE_OPERATIONS = [
+  "save",
+  "code-default",
+  "design-element",
+  "design-structure",
+  "restore-starter-file",
+] as const;
+type SaveThemeFileOperation = (typeof SAVE_THEME_FILE_OPERATIONS)[number];
+
 function requireDesignElementOperationPairing(
   value: {
-    operation?: "save" | "code-default" | "design-element" | "design-structure";
+    operation?: SaveThemeFileOperation;
     designElement?: unknown;
     expectMissing?: boolean;
     expectedFileId?: string;
@@ -159,7 +174,7 @@ function requireDesignElementOperationPairing(
 export function requireCodeDefaultOperationPairing(
   value: {
     path?: string;
-    operation?: "save" | "code-default" | "design-element" | "design-structure";
+    operation?: SaveThemeFileOperation;
     codeDefault?: {
       componentPath?: string;
     };
@@ -223,9 +238,7 @@ export const saveThemeFileInputSchema = z
     writeAttemptId: z.string().uuid().optional(),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
-    operation: z
-      .enum(["save", "code-default", "design-element", "design-structure"])
-      .optional(),
+    operation: z.enum(SAVE_THEME_FILE_OPERATIONS).optional(),
     codeDefault: codeDefaultWriteProofSchema.optional(),
     designElement: designElementOperationSchema.optional(),
   })

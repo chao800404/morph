@@ -56,6 +56,30 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
+/**
+ * Which Starter paths count as needing the full Start preview. Null keeps the
+ * real detection (no Starter file below 32 needs it); a list stands in for a
+ * Starter whose files do, so the init's condition runs on real SQLite.
+ */
+const startPreview = vi.hoisted(() => ({
+  requiredPaths: null as null | readonly string[],
+}));
+vi.mock("../starter-upgrade-start-preview", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../starter-upgrade-start-preview")>();
+  return {
+    ...actual,
+    starterPlanFilesRequiringStartPreview: (
+      files: ReadonlyArray<{ path: string; content: string }>,
+    ) =>
+      startPreview.requiredPaths === null
+        ? actual.starterPlanFilesRequiringStartPreview(files)
+        : files
+            .map((file) => file.path)
+            .filter((path) => startPreview.requiredPaths!.includes(path))
+            .sort(),
+  };
+});
 
 let sqlite: Database.Database;
 
@@ -86,6 +110,7 @@ beforeEach(() => {
       source_index_status text,
       source_index text,
       framework text,
+      preview_runtime text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -2047,5 +2072,177 @@ describe("route Documents of an Astro Theme follow its pages (D7)", () => {
     await expect(
       storefrontThemeFileDal.getSourceGeneration("storefront-a", "theme-a"),
     ).resolves.toBe(2);
+  });
+});
+
+describe("a Starter write whose files need the full Start preview", () => {
+  // Option B, the switch-then-apply order: every write that puts Starter
+  // files needing the full Start preview into a Theme (empty-workspace init,
+  // the reviewed upgrade, the editor's restore) commits only while the Theme
+  // records `start`, checked in the same D1 batch as its source generation.
+  // On any other value (NULL, the deployment's default, is not the author's
+  // confirmation) nothing of the write remains: no file, revision or
+  // generation.
+  const CONTENT = "src/morph/content.ts";
+  const START_ONLY = `import { createServerFn } from "@tanstack/react-start";
+export const readPage = createServerFn({ method: "GET" }).handler(async () => null);
+`;
+
+  const setRuntime = (runtime: string | null) =>
+    sqlite
+      .prepare(
+        "UPDATE storefront_themes SET preview_runtime = ? WHERE id = 'theme-a'",
+      )
+      .run(runtime);
+  const stored = () => ({
+    files: sqlite
+      .prepare(
+        "SELECT path, content, version, deleted_at FROM storefront_theme_files ORDER BY path",
+      )
+      .all(),
+    revisions: sqlite
+      .prepare("SELECT id, source_generation FROM storefront_theme_revisions")
+      .all(),
+    theme: sqlite
+      .prepare(
+        "SELECT source_generation, source_index, preview_runtime, updated_at FROM storefront_themes WHERE id = 'theme-a'",
+      )
+      .get(),
+  });
+  const writeStartOnly = (expectedSourceGeneration = 1) =>
+    storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [{ path: CONTENT, content: START_ONLY, expectMissing: true }],
+      {
+        expectedSourceGeneration,
+        createRevision: true,
+        requirePreviewRuntime: "start",
+      },
+    );
+
+  afterEach(() => {
+    startPreview.requiredPaths = null;
+  });
+
+  it.each([null, "client"])(
+    "commits nothing of a batch on a Theme that records %s",
+    async (runtime) => {
+      setRuntime(runtime);
+      const before = stored();
+
+      await expect(writeStartOnly()).rejects.toThrow(
+        "PREVIEW_RUNTIME_START_REQUIRED",
+      );
+
+      expect(stored()).toEqual(before);
+    },
+  );
+
+  it("commits the batch, its revision and the next generation on a Theme that records start", async () => {
+    setRuntime("start");
+
+    const saved = await writeStartOnly();
+
+    expect(saved.sourceGeneration).toBe(2);
+    expect(stored().files).toEqual([
+      { path: CONTENT, content: START_ONLY, version: 1, deleted_at: null },
+    ]);
+    expect(stored().revisions).toEqual([
+      expect.objectContaining({ source_generation: 2 }),
+    ]);
+  });
+
+  it("still answers a stale source generation as that conflict on a Theme that records start", async () => {
+    setRuntime("start");
+    const before = stored();
+
+    await expect(writeStartOnly(7)).rejects.toThrow(
+      "CONFLICT_SOURCE_GENERATION_MISMATCH",
+    );
+
+    expect(stored()).toEqual(before);
+  });
+
+  it("does not ask the runtime of a write that does not require it", async () => {
+    setRuntime("client");
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        "storefront-a",
+        "theme-a",
+        [{ path: CONTENT, content: START_ONLY, expectMissing: true }],
+        { expectedSourceGeneration: 1 },
+      ),
+    ).resolves.toMatchObject({ sourceGeneration: 2 });
+  });
+
+  it("carries the condition through a single-file save", async () => {
+    setRuntime("client");
+    const before = stored();
+
+    await expect(
+      storefrontThemeFileDal.saveFile(
+        "storefront-a",
+        "theme-a",
+        CONTENT,
+        START_ONLY,
+        "text/typescript",
+        {
+          expectedSourceGeneration: 1,
+          expectMissing: true,
+          requirePreviewRuntime: "start",
+        },
+      ),
+    ).rejects.toThrow("PREVIEW_RUNTIME_START_REQUIRED");
+
+    expect(stored()).toEqual(before);
+  });
+
+  it.each([null, "client"])(
+    "initialises no Starter file into an empty Theme that records %s when the Starter needs Start",
+    async (runtime) => {
+      startPreview.requiredPaths = [CONTENT];
+      setRuntime(runtime);
+      const before = stored();
+
+      await expect(
+        storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a"),
+      ).rejects.toThrow("PREVIEW_RUNTIME_START_REQUIRED");
+
+      expect(stored()).toEqual(before);
+    },
+  );
+
+  it("initialises an empty Theme that records start when the Starter needs Start", async () => {
+    startPreview.requiredPaths = [CONTENT];
+    setRuntime("start");
+
+    const files = await storefrontThemeFileDal.initStarterTheme(
+      "storefront-a",
+      "theme-a",
+    );
+
+    expect(files.map((file) => file.path)).toEqual(
+      starterThemeWorkspaceFiles()
+        .map((file) => file.path)
+        .sort(),
+    );
+    expect(stored().theme).toMatchObject({
+      source_generation: 2,
+      preview_runtime: "start",
+    });
+  });
+
+  it("initialises an empty Theme on the client runtime as before when no Starter file needs Start", async () => {
+    setRuntime("client");
+
+    const files = await storefrontThemeFileDal.initStarterTheme(
+      "storefront-a",
+      "theme-a",
+    );
+
+    expect(files.length).toBe(starterThemeWorkspaceFiles().length);
+    expect(stored().theme).toMatchObject({ preview_runtime: "client" });
   });
 });

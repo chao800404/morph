@@ -2651,7 +2651,16 @@ const EditorCodeWorkspaceContent = forwardRef<
       content,
       mimeType,
       companions = [],
-    }: NewThemeFile & { companions?: readonly NewThemeFile[] }) => {
+      operation,
+    }: NewThemeFile & {
+      companions?: readonly NewThemeFile[];
+      /**
+       * The restore command declares itself, so the server resolves the
+       * Starter file for the path and holds it to the Starter write rule
+       * instead of inferring a restore from the bytes.
+       */
+      operation?: "restore-starter-file";
+    }) => {
       // `expectMissing` is the create precondition: the write is refused if the
       // path already exists, so creating can never overwrite existing work.
       if (companions.length > 0) {
@@ -2698,6 +2707,7 @@ const EditorCodeWorkspaceContent = forwardRef<
             expectedSourceGeneration: useThemeWorkspaceStore
               .getState()
               .getAcceptedSourceGeneration(workspaceScope),
+            ...(operation ? { operation } : {}),
           },
         }),
       );
@@ -3752,6 +3762,9 @@ const EditorCodeWorkspaceContent = forwardRef<
             path: THEME_CONTENT_MODULE_PATH,
             content: STARTER_THEME_CONTENT_MODULE_SOURCE,
             mimeType: "text/typescript",
+            // The server writes the Starter file it resolves for the path,
+            // under the Starter write rule; these bytes are not what counts.
+            operation: "restore-starter-file",
           });
         },
       },

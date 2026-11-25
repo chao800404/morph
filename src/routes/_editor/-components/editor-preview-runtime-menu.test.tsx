@@ -240,6 +240,101 @@ describe("EditorPreviewRuntimeMenu", () => {
     expect(cachedRecord()).toBeNull();
   });
 
+  describe("a switch off Start that the Theme's files refuse", () => {
+    // The server's two option-B answers get the editor's own wording, built
+    // from the codes and the paths the answer carries, in place of the
+    // generic error toast; the menu keeps it until the next choice.
+    it("names the files that need the full Start preview, and switches nothing", async () => {
+      setThemePreviewRuntime.mockResolvedValue({
+        success: false,
+        message: "server text",
+        error: "PREVIEW_RUNTIME_START_REQUIRED",
+        paths: ["src/morph/content.ts", "src/routes/index.tsx"],
+      });
+      const { cachedRecord, onRuntimeChanged } = renderMenu(
+        editorContext({ previewRuntime: "start" }),
+      );
+      openMenu();
+      choose("Client-only");
+
+      const expected =
+        "This Theme stays on Full Start: src/morph/content.ts and src/routes/index.tsx need the full Start preview to run. Nothing was switched.";
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith(expected));
+      expect(toastError).toHaveBeenCalledTimes(1);
+      expect(onRuntimeChanged).not.toHaveBeenCalled();
+      expect(cachedRecord()).toBe("start");
+
+      openMenu();
+      expect(screen.getByTestId("preview-runtime-refusal").textContent).toBe(
+        expected,
+      );
+    });
+
+    it("names a single file in the singular", async () => {
+      setThemePreviewRuntime.mockResolvedValue({
+        success: false,
+        message: "server text",
+        error: "PREVIEW_RUNTIME_START_REQUIRED",
+        paths: ["src/morph/content.ts"],
+      });
+      renderMenu(editorContext({ previewRuntime: "start" }));
+      openMenu();
+      choose("Client-only");
+
+      await waitFor(() =>
+        expect(toastError).toHaveBeenCalledWith(
+          "This Theme stays on Full Start: src/morph/content.ts needs the full Start preview to run. Nothing was switched.",
+        ),
+      );
+    });
+
+    it("says the author's code was kept when the files changed under the switch, and asks to check and switch again", async () => {
+      setThemePreviewRuntime.mockResolvedValue({
+        success: false,
+        message: "server text",
+        error: "PREVIEW_RUNTIME_SOURCE_CHANGED",
+        sourceGeneration: 9,
+      });
+      const { cachedRecord, onRuntimeChanged } = renderMenu(
+        editorContext({ previewRuntime: "start" }),
+      );
+      openMenu();
+      choose("Client-only");
+
+      const expected =
+        "The Theme's code changed while the runtime was being switched, so nothing was switched. Your code was kept as saved. Check it, then switch the runtime again.";
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith(expected));
+      expect(onRuntimeChanged).not.toHaveBeenCalled();
+      expect(cachedRecord()).toBe("start");
+
+      openMenu();
+      expect(screen.getByTestId("preview-runtime-refusal").textContent).toBe(
+        expected,
+      );
+    });
+
+    it("clears the refusal once a later choice is saved", async () => {
+      setThemePreviewRuntime.mockResolvedValueOnce({
+        success: false,
+        message: "server text",
+        error: "PREVIEW_RUNTIME_SOURCE_CHANGED",
+        sourceGeneration: 9,
+      });
+      renderMenu(editorContext({ previewRuntime: "start" }));
+      openMenu();
+      choose("Client-only");
+      await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+
+      setThemePreviewRuntime.mockResolvedValueOnce(saved("client"));
+      openMenu();
+      choose("Client-only");
+      await waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1));
+
+      openMenu();
+      expect(screen.queryByTestId("preview-runtime-refusal")).toBeNull();
+    });
+  });
+
   it("sends nothing for what the Theme already records", () => {
     const { onRuntimeChanged } = renderMenu(
       editorContext({ previewRuntime: "start" }),

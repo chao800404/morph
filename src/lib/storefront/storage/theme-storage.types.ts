@@ -35,6 +35,12 @@ export type SaveThemeSourceFileOptions = {
   /** Internal R2 manifest prepared before an OCC-protected atomic batch. */
   sourceManifest?: ThemeSourceRevisionManifest;
   sourceIndex?: ThemeSourceIndex;
+  /**
+   * Commit only while the Theme records this preview runtime, checked in the
+   * same batch as the source generation. Set by the Starter writes whose
+   * files need the full Start preview (`PREVIEW_RUNTIME_START_REQUIRED`).
+   */
+  requirePreviewRuntime?: "start";
 };
 
 export type SaveThemeSourceFilesBatchItem = {
@@ -78,6 +84,12 @@ export type SaveThemeSourceFilesBatchOptions = {
   /** Internal R2 manifest prepared before an OCC-protected atomic batch. */
   sourceManifest?: ThemeSourceRevisionManifest;
   sourceIndex?: ThemeSourceIndex;
+  /**
+   * Commit only while the Theme records this preview runtime, checked in the
+   * same batch as the source generation. Set by the Starter writes whose
+   * files need the full Start preview (`PREVIEW_RUNTIME_START_REQUIRED`).
+   */
+  requirePreviewRuntime?: "start";
 };
 
 export type CreateThemeRevisionOptions = {

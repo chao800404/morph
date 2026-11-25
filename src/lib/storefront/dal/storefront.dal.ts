@@ -48,7 +48,19 @@ import {
 import { storeCatalogDal } from "./store-catalog.dal";
 import { storeContextDal } from "./store-context.dal";
 import { themeSourceStore } from "../storage/theme-storage.server";
-import { defaultPreviewRuntimeForNewTheme } from "../theme-preview-runtime";
+import {
+  defaultPreviewRuntimeForNewTheme,
+  recordedThemePreviewRuntime,
+  type ThemePreviewRuntime,
+} from "../theme-preview-runtime";
+import {
+  isPreviewRuntimeStartRequired,
+  starterPlanFilesRequiringStartPreview,
+  starterStartPreviewRequirement,
+  STARTER_UPGRADE_START_PREVIEW_REQUIRED_MESSAGE,
+  type StarterStartPreviewRequirement,
+} from "../starter-upgrade-start-preview";
+import { starterThemeWorkspaceFiles } from "../starter-theme-files";
 import { UNRECORDED_THEME_FRAMEWORK } from "../theme-framework/theme-framework.types";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
@@ -595,7 +607,12 @@ export type StarterUpgradePartialOutcome = {
     | "non-object-metadata"
     | "malformed-metadata"
     /** A content migration write kept losing to concurrent edits. */
-    | "content-migration-conflict";
+    | "content-migration-conflict"
+    /**
+     * The step after the applied file batch (home rule, content migration,
+     * record write) threw; the raw error is the thrown error's `cause`.
+     */
+    | "record-write-failed";
   filesSaved: boolean;
   attempts: number;
 };
@@ -607,11 +624,15 @@ export type StarterUpgradePartialOutcome = {
  */
 export class StarterUpgradeIncompleteError extends Error {
   readonly outcome: StarterUpgradePartialOutcome;
-  constructor(outcome: StarterUpgradePartialOutcome) {
+  constructor(
+    outcome: StarterUpgradePartialOutcome,
+    options?: { cause?: unknown },
+  ) {
     super(
       outcome.filesSaved
         ? `Starter Theme upgrade only partly completed: the files were upgraded, but the upgrade record was not saved (${outcome.reason}).`
         : `Starter Theme upgrade record was not saved (${outcome.reason}).`,
+      options,
     );
     this.name = "StarterUpgradeIncompleteError";
     this.outcome = outcome;
@@ -856,11 +877,18 @@ async function readStoredStarterVersion(
   db: StorefrontDb,
   storefrontId: string,
   themeId: string,
-): Promise<{ found: boolean; version: unknown; framework: string | null }> {
+): Promise<{
+  found: boolean;
+  version: unknown;
+  framework: string | null;
+  /** The runtime the Theme records, or null when it records none. */
+  previewRuntime: ThemePreviewRuntime | null;
+}> {
   const [theme] = await db
     .select({
       metadata: storefrontThemes.metadata,
       framework: storefrontThemes.framework,
+      previewRuntime: storefrontThemes.previewRuntime,
     })
     .from(storefrontThemes)
     .where(
@@ -875,7 +903,22 @@ async function readStoredStarterVersion(
     found: Boolean(theme),
     version: theme?.metadata?.starterTemplateVersion,
     framework: theme?.framework ?? null,
+    previewRuntime: recordedThemePreviewRuntime(theme?.previewRuntime),
   };
+}
+
+/**
+ * Whether this Theme may take the Start-only files of these planned writes
+ * (`starter-upgrade-start-preview.ts`).
+ */
+function starterPlanStartPreview(
+  files: ReadonlyArray<Readonly<{ path: string; content: string }>>,
+  previewRuntime: ThemePreviewRuntime | null,
+): StarterStartPreviewRequirement {
+  return starterStartPreviewRequirement(
+    starterPlanFilesRequiringStartPreview(files),
+    previewRuntime,
+  );
 }
 
 /** The stored Starter version, when it is one; `null` reads as pending. */
@@ -931,6 +974,12 @@ export type StarterUpgradeReviewResult = {
   currentVersion: number;
   review: StarterUpgradeReview;
   /**
+   * Whether the reviewed Starter files (its new pages included) need the full
+   * Start preview, and whether this Theme records it. When not satisfied, the
+   * apply refuses the Starter part and records no version.
+   */
+  startPreview: StarterStartPreviewRequirement;
+  /**
    * Content the Starter part moves when applied: Documents still in a shape
    * an older Starter wrote, and what is left as it is, with why.
    */
@@ -958,6 +1007,16 @@ export type StarterUpgradeApplyResult =
   | { status: "not-applicable" }
   /** The Theme's framework is not Start; nothing was read or written. */
   | { status: "framework-unavailable"; reason: string }
+  /**
+   * The Starter part writes files that preview only on the full Start
+   * runtime, and the Theme does not record `start`; nothing was written and
+   * no version was recorded.
+   */
+  | {
+      status: "start-preview-required";
+      paths: readonly string[];
+      reason: string;
+    }
   /** The workspace or the plan changed since the author reviewed it. */
   | { status: "stale"; sourceGeneration: number | null };
 
@@ -1003,11 +1062,31 @@ export const storefrontDal = {
     // another framework, even an empty one. Nothing to do, not an error: the
     // editor opens either way and ignores this result.
     if (starterUpgradeUnavailableReason(stored.framework)) return false;
-    const workspace = await ensureStarterThemeWorkspace(
-      data.storefrontId,
-      data.themeId,
-      data.createdBy,
-    );
+    // The Starter write rule, as for an applied upgrade: a Theme that does not
+    // record start is not given Starter files only the full Start preview can
+    // render, nor that Starter's version, and its runtime is left as it is.
+    // Asked here so nothing is written; the init's own batch asks again
+    // (`initStarterTheme`), so a switch landing after this read is refused
+    // there with nothing written either.
+    if (
+      !starterStartPreviewRequirement(
+        starterPlanFilesRequiringStartPreview(starterThemeWorkspaceFiles()),
+        stored.previewRuntime,
+      ).satisfied
+    ) {
+      return false;
+    }
+    let workspace: { filesSaved: boolean };
+    try {
+      workspace = await ensureStarterThemeWorkspace(
+        data.storefrontId,
+        data.themeId,
+        data.createdBy,
+      );
+    } catch (error) {
+      if (isPreviewRuntimeStartRequired(error)) return false;
+      throw error;
+    }
     if (!workspace.filesSaved) return false;
     assertStarterUpgradeRecorded(
       await ensureStarterHomeDocument(db, data.themeId, {
@@ -1056,6 +1135,7 @@ export const storefrontDal = {
           // Nothing of the Starter is offered either, its new pages included.
           optional: null,
         },
+        startPreview: starterStartPreviewRequirement([], stored.previewRuntime),
         contentMigration: EMPTY_CONTENT_MIGRATION,
         catalog: reviewThemeCatalog([], {
           hasProducts: false,
@@ -1094,6 +1174,10 @@ export const storefrontDal = {
       storedVersion: typeof stored.version === "number" ? stored.version : null,
       currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
       review,
+      startPreview: starterPlanStartPreview(
+        [...review.plan.files, ...(review.optional?.plan.files ?? [])],
+        stored.previewRuntime,
+      ),
       contentMigration,
       catalog: reviewThemeCatalog(files, {
         hasProducts,
@@ -1207,6 +1291,23 @@ export const storefrontDal = {
     if (starterPlan === undefined) {
       return { status: "stale", sourceGeneration };
     }
+    // Asked again of the files about to be written, whatever the review
+    // showed: a Theme previewed on the client runtime is never given a page
+    // only the full Start preview can render, and its version is not moved
+    // past it. Upgrading never records the runtime itself.
+    if (starterPlan) {
+      const startPreview = starterPlanStartPreview(
+        starterPlan.plan.files,
+        stored.previewRuntime,
+      );
+      if (!startPreview.satisfied) {
+        return {
+          status: "start-preview-required",
+          paths: startPreview.paths,
+          reason: startPreview.reason ?? "",
+        };
+      }
+    }
     const catalog =
       data.catalogDigest === undefined
         ? null
@@ -1238,6 +1339,29 @@ export const storefrontDal = {
       return { status: "stale", sourceGeneration };
     }
 
+    // The Starter write rule, held at the write itself. The runtime read
+    // above came before the workspace was read and the plans were made, so
+    // it is read again here, and the batch then requires `start` beside its
+    // source generation: a switch back to client that lands at any point
+    // before the commit leaves no file, revision, Document or version.
+    const startOnlyPaths = starterPlanFilesRequiringStartPreview(writes);
+    if (startOnlyPaths.length > 0) {
+      const atWrite = await readStoredStarterVersion(
+        db,
+        data.storefrontId,
+        data.themeId,
+      );
+      if (!atWrite.found)
+        throw new Error("Theme not found or does not belong to storefront");
+      if (atWrite.previewRuntime !== "start") {
+        return {
+          status: "start-preview-required",
+          paths: startOnlyPaths,
+          reason: STARTER_UPGRADE_START_PREVIEW_REQUIRED_MESSAGE,
+        };
+      }
+    }
+
     let savedGeneration = sourceGeneration;
     const filesSaved = writes.length > 0 || deletions.length > 0;
     if (filesSaved) {
@@ -1264,10 +1388,19 @@ export const storefrontDal = {
               .filter(Boolean)
               .join("; "),
             createdBy: data.createdBy,
+            requirePreviewRuntime:
+              startOnlyPaths.length > 0 ? "start" : undefined,
           },
         );
         savedGeneration = saved.sourceGeneration ?? sourceGeneration + 1;
       } catch (error) {
+        if (isPreviewRuntimeStartRequired(error)) {
+          return {
+            status: "start-preview-required",
+            paths: startOnlyPaths,
+            reason: STARTER_UPGRADE_START_PREVIEW_REQUIRED_MESSAGE,
+          };
+        }
         if (
           error instanceof Error &&
           (error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH") ||
@@ -1291,14 +1424,39 @@ export const storefrontDal = {
       starterPlan !== null &&
       !starterPlan.kept.some((item) => item.reason === "origin-unknown");
     if (versionRecorded) {
-      assertStarterUpgradeRecorded(
-        await ensureStarterHomeDocument(db, data.themeId, {
+      // The record cannot join the file batch: the batch is the source
+      // store's, and the record is the storefront row's own revision CAS
+      // (with re-reads and retries), written only after the content
+      // migration that the recorded version names. So a failure here leaves
+      // the files saved and the version where it was. It is named as such,
+      // never as a plain failure, and the next review re-plans from the
+      // stored files: nothing already written is planned again, nothing the
+      // author changed since is overwritten, and applying it records the
+      // version (storefront-starter-upgrade-record.dal.test.ts).
+      let recorded: StarterUpgradeRecordOutcome;
+      try {
+        recorded = await ensureStarterHomeDocument(db, data.themeId, {
           filesSaved,
           storefrontId: data.storefrontId,
           record: true,
           createdBy: data.createdBy,
-        }),
-      );
+        });
+      } catch (error) {
+        if (!filesSaved) throw error;
+        throw new StarterUpgradeIncompleteError(
+          reportIncompleteStarterUpgrade(
+            { storefrontId: data.storefrontId, themeId: data.themeId },
+            {
+              status: "partial",
+              reason: "record-write-failed",
+              filesSaved,
+              attempts: 1,
+            },
+          ),
+          { cause: error },
+        );
+      }
+      assertStarterUpgradeRecorded(recorded);
     }
     return {
       status: "applied",

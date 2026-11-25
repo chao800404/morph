@@ -310,6 +310,49 @@ describe("setThemePreviewRuntime", () => {
       error: "PREVIEW_RUNTIME_UNSUPPORTED",
     });
   });
+
+  // Option B: leaving start is refused while the Theme holds a module only
+  // the full Start preview can run, and a switch whose check was overtaken by
+  // a source change says so. Expected, read from the code (not run): RED
+  // today (no paths, no generation, and the Astro message for both).
+  it("answers a switch away from start refused for a Start-only module with its own code and the paths", async () => {
+    dal.setPreviewRuntime.mockResolvedValue({
+      ok: false,
+      error: "PREVIEW_RUNTIME_START_REQUIRED",
+      paths: ["src/morph/content.ts"],
+    });
+    const result = await call(setThemePreviewRuntime, {
+      ...input,
+      previewRuntime: "client",
+      expectedPreviewRuntime: "start",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      error: "PREVIEW_RUNTIME_START_REQUIRED",
+      paths: ["src/morph/content.ts"],
+    });
+    expect(result.message).toContain("src/morph/content.ts");
+    expect(result.message).not.toContain("Only a TanStack Start Theme");
+  });
+
+  it("answers a switch overtaken by a source change as that conflict, with the generation now", async () => {
+    dal.setPreviewRuntime.mockResolvedValue({
+      ok: false,
+      error: "PREVIEW_RUNTIME_SOURCE_CHANGED",
+      sourceGeneration: 9,
+    });
+    const result = await call(setThemePreviewRuntime, {
+      ...input,
+      previewRuntime: "client",
+      expectedPreviewRuntime: "start",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      error: "PREVIEW_RUNTIME_SOURCE_CHANGED",
+      sourceGeneration: 9,
+    });
+    expect(result.message).not.toContain("Only a TanStack Start Theme");
+  });
 });
 
 describe("the runtime startThemePreviewServer starts the preview with", () => {

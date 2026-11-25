@@ -378,6 +378,39 @@ describe("EditorStarterUpgradeNotice", () => {
     expect(onApplied).not.toHaveBeenCalled();
   });
 
+  it("when the files landed but the version was not recorded: says so, reloads, and offers the review again", async () => {
+    const message =
+      "The Starter files were applied, but this Theme's Starter version was not recorded, so the upgrade is not finished. Review the upgrade again to finish it.";
+    fns.apply.mockResolvedValue({
+      success: false,
+      error: "STARTER_UPGRADE_RECORD_INCOMPLETE",
+      message,
+    });
+    const { onApplied } = renderNotice();
+    await openReview();
+    fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+
+    // The files changed: the editor reloads them and the preview.
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+    // The stale review is closed, never applied again from here.
+    expect(
+      screen.queryByRole("dialog", { name: "Review the Starter upgrade" }),
+    ).toBeNull();
+    const notice = screen.getByRole("status");
+    expect(notice.textContent).toContain(message);
+    // Not "Nothing changes until you apply it": something did.
+    expect(notice.textContent).not.toContain("Nothing changes until you apply it");
+    expect(fns.apply).toHaveBeenCalledTimes(1);
+
+    // The next step is the review, which shows what is left.
+    fns.review.mockResolvedValue({
+      success: true,
+      data: reviewOf({ sourceGeneration: 8, starter: { ...STARTER_PART, changes: [] } }),
+    });
+    const dialog = await openReview();
+    expect(dialog.textContent).toContain("No file needs changing. Applying records Starter");
+  });
+
   describe("the Starter's new pages", () => {
     const PAGES_DIGEST = "c".repeat(64);
     const HEADER = "src/components/Header.tsx";
