@@ -42,6 +42,16 @@ export function recordedPreviewRuntimeSql(): string {
   return RECORDED_PREVIEW_RUNTIME ? `'${RECORDED_PREVIEW_RUNTIME}'` : "NULL";
 }
 
+/**
+ * The value an `INSERT INTO storefront_themes` writes for a Theme that names
+ * its preview runtime itself: `'start'` records the full Start preview, null
+ * records nothing (`NULL`, the Theme is previewed as the Worker says). Unlike
+ * `recordedPreviewRuntimeSql` it does not read the run's record mode.
+ */
+export function previewRuntimeSql(runtime: "start" | null): string {
+  return runtime === "start" ? "'start'" : "NULL";
+}
+
 /** One SELECT against the runner-owned database, its rows. */
 function d1(sql: string): Array<Record<string, unknown>> {
   if (!process.env.MORPH_E2E_STATE_DIR) {

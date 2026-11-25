@@ -1,9 +1,9 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { EDITOR_PATH, previewFrame } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, publishShowingRelease, serverFn } from "./native-acceptance";
 import { themeScopeFromEditorPath, themeSourceGeneration, type ThemeScope } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * A Header the layout Document marks hidden stays hidden on every load.
@@ -57,12 +57,12 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     ...themeScopeFromEditorPath(EDITOR_PATH!),
     themeId: randomUUID(),
   };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'section-visibility-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `section-visibility-${created.themeId}`,
+    previewRuntime: null,
+  });
   return created;
 }
 

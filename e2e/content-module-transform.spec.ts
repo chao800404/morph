@@ -7,7 +7,6 @@ import {
   openContentTab,
   previewFrame,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -16,6 +15,7 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../src/lib/storefront/starter-theme-v3-files";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * An author's `content()` that changes a value on its way to the component.
@@ -131,12 +131,12 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     ...themeScopeFromEditorPath(EDITOR_PATH!),
     themeId: randomUUID(),
   };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'content-transform-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `content-transform-${created.themeId}`,
+    previewRuntime: null,
+  });
   return created;
 }
 

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { EDITOR_PATH, isServerFunctionCall } from "./helpers";
 import { execLocalD1 } from "./helpers/editor-writes-paused";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * The platform's build files (`__entry.tsx`, the Start preview's Worker and
@@ -146,12 +147,16 @@ test("a stale platform file can be deleted through the real API", async ({
   const themeId = randomUUID();
   const fileId = randomUUID();
   const now = new Date().toISOString();
+  insertThrowawayTheme({
+    themeId,
+    storefrontId,
+    name: `stale-platform-${themeId}`,
+    metadata: "{}",
+    previewRuntime: null,
+    now,
+  });
   execLocalD1(
-    `INSERT INTO storefront_themes
-      (id, storefront_id, name, metadata, created_at, updated_at)
-      VALUES ('${themeId}', '${storefrontId}', 'stale-platform-${themeId}',
-        '{}', '${now}', '${now}');
-     INSERT INTO storefront_theme_files
+    `INSERT INTO storefront_theme_files
       (id, storefront_id, theme_id, path, content, mime_type, is_entry,
         version, created_at, updated_at)
       VALUES ('${fileId}', '${storefrontId}', '${themeId}', '__entry.tsx',

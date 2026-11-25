@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { EDITOR_PATH, openEditor, previewFrame } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 test.skip(
   !EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR,
@@ -27,12 +27,12 @@ for (const sourceOnly of [false, true]) {
     // our own new Theme row in the runner-owned database; the ordinary editor
     // read provisions its starter source and documents through the existing
     // upgrade path. Never reset revisions authored by preceding tests.
-    const now = new Date().toISOString();
-    execLocalD1(`INSERT INTO storefront_themes
-      (id, storefront_id, name, metadata, created_at, updated_at)
-      VALUES ('${scope.themeId}', '${scope.storefrontId}',
-        'initial-publish-${scope.themeId}', '{"starterTemplateVersion":1}',
-        '${now}', '${now}');`);
+    insertThrowawayTheme({
+      themeId: scope.themeId,
+      storefrontId: scope.storefrontId,
+      name: `initial-publish-${scope.themeId}`,
+      previewRuntime: null,
+    });
     const readContext = () =>
       page.evaluate(async (scope) => {
         const module = "/src/server/storefront/storefront-themes.serverFn.ts";

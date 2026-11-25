@@ -13,7 +13,7 @@ import {
   openContentTab,
   previewFrame,
 } from "./helpers";
-import { execLocalD1, isServerFn } from "./helpers/editor-writes-paused";
+import { isServerFn } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -21,6 +21,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { insertThrowawayTheme, specPreviewRuntime } from "./helpers/throwaway-theme";
 
 /**
  * Typing into the Inspector after the preview moved to another page by
@@ -112,12 +113,12 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     ...themeScopeFromEditorPath(EDITOR_PATH!),
     themeId: randomUUID(),
   };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'selection-field-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `selection-field-${created.themeId}`,
+    previewRuntime: specPreviewRuntime(),
+  });
   return created;
 }
 

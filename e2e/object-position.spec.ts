@@ -15,7 +15,6 @@ import {
   previewFrame,
   settleSelection,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { STARTER_THEME_V3_NEW_FILES } from "../src/lib/storefront/starter-theme-v3-files";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
@@ -24,6 +23,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * The Inspector's object position on the Starter's own components, in a real
@@ -104,12 +104,12 @@ const ROWS = [
 
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'object-position-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `object-position-${created.themeId}`,
+    previewRuntime: null,
+  });
   return created;
 }
 

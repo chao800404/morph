@@ -8,13 +8,13 @@ import {
   openContentTab,
   previewFrame,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   themeScopeFromEditorPath,
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * The preview page reloads itself, in the same iframe, while text is being
@@ -91,12 +91,12 @@ export default function ReloadCard({ title = "Reload default title" }: ReloadCar
 
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'document-reload-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`);
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `document-reload-${created.themeId}`,
+    previewRuntime: null,
+  });
   return created;
 }
 
