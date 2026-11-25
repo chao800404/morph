@@ -16,12 +16,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   CLIENT_LANE_STARTER_FIXTURE,
+  CLIENT_LANE_STARTER_VERSION as GUARD_STARTER_VERSION,
   clientLaneThemeRefusal,
   contentSha256,
   fixtureFileDigests,
 } from "../../../scripts/e2e-client-lane-guard.mjs";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "@/lib/storefront/default-storefront-document";
 import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
 import {
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
+} from "@/lib/storefront/starter-theme-v3-files";
+import {
+  CLIENT_LANE_STARTER_VERSION,
   readClientLaneTheme,
   seedVerifiedClientLaneTheme,
   type ClientLaneQuery,
@@ -164,6 +171,52 @@ describe("seeding a client-lane Theme", () => {
     expect(evidence.files).toEqual([]);
     expect(clientLaneThemeRefusal(evidence, expected)).toMatch(
       /lacks files of Starter 31/,
+    );
+  });
+
+  it("stays on Starter 31 while the current Starter is 32", () => {
+    // The bump to 32 moves neither the lane's version nor its fixture.
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(32);
+    expect(CLIENT_LANE_STARTER_VERSION).toBe(31);
+    expect(GUARD_STARTER_VERSION).toBe(31);
+    expect(fixture.starterVersion).toBe(31);
+    expect(
+      fixture.files.find((entry) => entry.path === "src/morph/content.ts")
+        ?.content,
+    ).toBe(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE);
+  });
+
+  it("refuses Starter 32's own content module before writing anything, and the guard names it", async () => {
+    // The fixture with the shipped (Starter 32) module in place of 31's: the
+    // seed's init refuses it on a Theme that records no runtime, and a Theme
+    // holding it is not the lane's.
+    const files = fixture.files.map((entry) =>
+      entry.path === "src/morph/content.ts"
+        ? { ...entry, content: STARTER_THEME_CONTENT_MODULE_SOURCE }
+        : entry,
+    );
+    const { themeId, run } = seed(files);
+    await expect(run).rejects.toThrow(
+      /^PREVIEW_RUNTIME_START_REQUIRED: src\/morph\/content\.ts need/,
+    );
+    const evidence = await readClientLaneTheme(
+      query,
+      { storefrontId, themeId },
+      contentSha256,
+    );
+    expect(evidence.files).toEqual([]);
+
+    const holdingV32 = {
+      ...evidence,
+      starterTemplateVersion: 31,
+      files: expected.map((entry) =>
+        entry.path === "src/morph/content.ts"
+          ? { ...entry, sha256: contentSha256(STARTER_THEME_CONTENT_MODULE_SOURCE) }
+          : entry,
+      ),
+    };
+    expect(clientLaneThemeRefusal(holdingV32, expected)).toMatch(
+      /src\/morph\/content\.ts: sha256 "[0-9a-f]{64}", not "[0-9a-f]{64}"/,
     );
   });
 
