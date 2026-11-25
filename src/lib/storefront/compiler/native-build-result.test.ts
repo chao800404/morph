@@ -182,4 +182,74 @@ export const Route = createFileRoute("/landing")({ component: () => null });
     if (result.success) return;
     expect(result.diagnosticsJson?.stage).toBe("prerender-content");
   });
+
+  /** A pass whose build exited non-zero with this output, and maybe a record. */
+  const exitedNonZero = (
+    message: string,
+    record?: Uint8Array,
+  ): ThemeBuildRunnerResult =>
+    nativeBuildResult({
+      input,
+      outputs: new Map(
+        record ? [[NATIVE_PRERENDER_REFUSED_READS_PATH, record]] : [],
+      ),
+      routeRegistry,
+      limits: { maxOutputFiles: 100, maxOutputSizeBytes: 1_000_000 },
+      mimeType: () => "text/plain",
+      isText: () => true,
+      logs: [],
+      addLog: () => {},
+      startTime: Date.now(),
+      buildFailure: { stage: "compiler", message },
+    });
+  const COMPILE_ERROR =
+    'NATIVE_BUILD_FAILED: ✘ [ERROR] Expected ";" but found "}" src/routes/landing.tsx:3:1';
+
+  it("contrast: a compile error with no refused read keeps its own stage and message and gets no sealed pass", async () => {
+    const pass = vi.fn(async () => exitedNonZero(COMPILE_ERROR));
+
+    const result = await runNativeBuildPasses({
+      input,
+      routeRegistry,
+      addLog: () => {},
+      pass,
+    });
+
+    // Stopped at the first pass: the sealed content never entered a build.
+    expect(pass).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.diagnosticsJson?.stage).toBe("compiler");
+    expect(result.errorMessage).toBe(COMPILE_ERROR);
+    expect(result.errorMessage).not.toContain(
+      "NATIVE_PRERENDER_CONTENT_UNAVAILABLE",
+    );
+  });
+
+  it("contrast: a compile error after a refused first-pass read is retried sealed, and the sealed pass's own compile error is what the build reports", async () => {
+    // The first pass both refused a read and failed to compile: it is read
+    // as the content case. The sealed pass, which refuses nothing, fails on
+    // the compile error alone, and that is the result's stage and message.
+    const pass = vi.fn(async (content: NativePrerenderContent) =>
+      content.refusedAll
+        ? exitedNonZero(
+            COMPILE_ERROR,
+            refusedRecord("NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT: stand-in"),
+          )
+        : exitedNonZero(COMPILE_ERROR),
+    );
+
+    const result = await runNativeBuildPasses({
+      input,
+      routeRegistry,
+      addLog: () => {},
+      pass,
+    });
+
+    expect(pass).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.diagnosticsJson?.stage).toBe("compiler");
+    expect(result.errorMessage).toBe(COMPILE_ERROR);
+  });
 });
