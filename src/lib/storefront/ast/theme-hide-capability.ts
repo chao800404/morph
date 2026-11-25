@@ -15,6 +15,7 @@ import {
 } from "./theme-source-ast";
 import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../starter-theme-v3-files";
 import {
@@ -142,6 +143,7 @@ export function hideRefusalMessage(reason: HideRefusalReason): string {
 /** Every Starter content module whose `morph.pages.get` returns `_hidden`. */
 const STARTER_PAGE_MODULE_SOURCES: readonly string[] = [
   STARTER_THEME_CONTENT_MODULE_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
 ];
 

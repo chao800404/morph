@@ -3,6 +3,7 @@ import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "./starter-theme-v3-files";
 import { starterThemeWorkspaceFiles } from "./starter-theme-files";
@@ -16,8 +17,12 @@ type Morph = {
 };
 
 /**
- * Executes the real starter module, as the navigation test does, choosing the
- * branch Start would: the server build keeps `.server`, the browser `.client`.
+ * Executes Starter 31's module, which fetches its own content (kept verbatim:
+ * Themes recorded at 30 and 31 run it, and so does a Theme that edited it and
+ * kept it through the upgrade to 32; 32's module reads through the hosted SDK
+ * and is executed in starter-v32-content-read-failure.test.ts), as the
+ * navigation test does, choosing the branch Start would: the server build
+ * keeps `.server`, the browser `.client`.
  */
 function loadMorph(args: {
   branch: "server" | "client";
@@ -27,7 +32,7 @@ function loadMorph(args: {
   dev?: boolean;
 }): { morph: Morph; MorphContentError: new (message: string) => Error } {
   const compiled = ts
-    .transpileModule(STARTER_THEME_CONTENT_MODULE_SOURCE, {
+    .transpileModule(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE, {
       compilerOptions: {
         module: ts.ModuleKind.CommonJS,
         target: ts.ScriptTarget.ES2022,

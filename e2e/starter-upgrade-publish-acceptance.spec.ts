@@ -138,11 +138,14 @@ const CONTENT = "src/morph/content.ts";
  * match `starter-history-upgrade.test.ts`); a new Starter version changes
  * them, and this check makes that a decision rather than a drift.
  */
-const UPGRADE_TARGET_STARTER = 31;
+const UPGRADE_TARGET_STARTER = 32;
 /**
  * The files versions 29 (the layout) and 30 (the content module) changed.
  * Version 31 (#433) changed no file: it re-offers the content migration to
- * Themes recorded at 30, so these lists are unchanged.
+ * Themes recorded at 30. Version 32 changes the content module again (its
+ * reads go through the hosted SDK), a path these lists already name, so they
+ * are unchanged; that module needs the full Start preview, so the upgrade is
+ * applied only on a Theme that records `start`.
  */
 const V28_REVIEW = [LAYOUT, CONTENT];
 const MANIFEST = "morph.theme.json";
