@@ -22,6 +22,8 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { insertThrowawayTheme, specPreviewRuntime } from "./helpers/throwaway-theme";
+import { clientLaneTheme } from "./helpers/client-lane-theme";
+import type { ClientLaneSlot } from "../scripts/e2e-client-lane-guard.mjs";
 
 /**
  * Typing into the Inspector after the preview moved to another page by
@@ -108,7 +110,17 @@ export default function FieldCard({ title = "Card default" }: FieldCardProps) {
   },
 ];
 
-async function createThrowawayTheme(): Promise<ThemeScope> {
+/**
+ * A Theme no other test has touched. On the client lane, the lane's
+ * dedicated Starter 31 Theme for `slot`, seeded before the suite; elsewhere a
+ * throwaway Theme recording the spec's runtime, provisioned from the current
+ * Starter when the editor first reads it.
+ */
+async function createThrowawayTheme(slot: ClientLaneSlot): Promise<ThemeScope> {
+  const dedicated = clientLaneTheme(slot);
+  if (dedicated) {
+    return { storefrontId: dedicated.storefrontId, themeId: dedicated.themeId };
+  }
   const created = {
     ...themeScopeFromEditorPath(EDITOR_PATH!),
     themeId: randomUUID(),
@@ -171,7 +183,7 @@ test.describe("typing after the preview moved to another page by itself", () => 
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    scope = await createThrowawayTheme();
+    scope = await createThrowawayTheme("selection-field/typing");
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...scope,
     })) as {
@@ -290,7 +302,7 @@ test.describe("the editor adopting a route document it just created", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    own = await createThrowawayTheme();
+    own = await createThrowawayTheme("selection-field/adopting");
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...own,
     })) as {
@@ -588,7 +600,7 @@ function AsideRoute() {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    own = await createThrowawayTheme();
+    own = await createThrowawayTheme("selection-field/adopted-after-move");
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...own,
     })) as {
@@ -1119,7 +1131,7 @@ function StaticRoute() {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    own = await createThrowawayTheme();
+    own = await createThrowawayTheme("selection-field/return-paths");
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...own,
     })) as {
@@ -1369,8 +1381,16 @@ test.describe("keyboard append across the page taking up its route document", ()
     };
   };
 
-  async function freshTheme(page: Page) {
-    const theme = await createThrowawayTheme();
+  // One Theme per test, chosen by the test itself rather than by how many
+  // this worker has taken: after a failure Playwright starts a new worker, and
+  // a count would hand the next test the Theme the failed one already edited.
+  const KEYBOARD_APPEND_SLOTS: Record<"inflight" | "landed", ClientLaneSlot> = {
+    inflight: "selection-field/keyboard-append-1",
+    landed: "selection-field/keyboard-append-2",
+  };
+
+  async function freshTheme(page: Page, label: "inflight" | "landed") {
+    const theme = await createThrowawayTheme(KEYBOARD_APPEND_SLOTS[label]);
     created.push(theme);
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...theme,
@@ -1480,7 +1500,11 @@ test.describe("keyboard append across the page taking up its route document", ()
       : null;
   }
 
-  async function run(page: Page, hold: boolean, label: string) {
+  async function run(
+    page: Page,
+    hold: boolean,
+    label: "inflight" | "landed",
+  ) {
     test.setTimeout(300_000);
     const notes: Array<Record<string, unknown>> = [];
     const note = async (step: string, extra: Record<string, unknown> = {}) => {
@@ -1509,7 +1533,7 @@ test.describe("keyboard append across the page taking up its route document", ()
 
     // Fixed after the run: serverFn needs a page on the app origin first.
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    const { theme, homeTemplateId } = await freshTheme(page);
+    const { theme, homeTemplateId } = await freshTheme(page, label);
     let releaseHeld: (() => void) | null = null;
     try {
       await page.goto(

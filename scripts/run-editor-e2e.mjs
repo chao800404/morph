@@ -42,7 +42,23 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { verifyPublishedArtifact } from "./verify-published-artifact.mjs";
+import {
+  queryLifecycleD1,
+  verifyPublishedArtifact,
+} from "./verify-published-artifact.mjs";
+import {
+  CLIENT_LANE_STARTER_VERSION,
+  CLIENT_LANE_THEMES_FILE,
+  CLIENT_LANE_THEMES_VAR,
+  CLIENT_LANE_USES_FILE,
+  CLIENT_LANE_USES_VAR,
+  CLIENT_LANE_VERDICT_SUFFIX,
+  clientLaneVerdict,
+  isClientLaneRun,
+  parseClientLaneThemes,
+  readFixtureFileDigests,
+  requiredClientLaneRefusal,
+} from "./e2e-client-lane-guard.mjs";
 import { appendFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1642,6 +1658,60 @@ function openSidecarSwap({ swap, report, secrets, oldSidecar }) {
   };
 }
 
+/**
+ * After the suite on the client lane: reads each seeded Theme's stored
+ * runtime again, keeps the verdict beside the report whatever it says (with
+ * the evidence itself, so the acceptance job checks it again instead of
+ * trusting `ok`), and refuses the run unless it passes.
+ *
+ * @param {ReturnType<typeof readFixtureFileDigests>} expected
+ * @param {string | undefined} workerValue
+ * @param {string} report
+ */
+async function verifyClientLane(expected, workerValue, report) {
+  const themesFile = path.join(stateDir, CLIENT_LANE_THEMES_FILE);
+  const usesFile = path.join(stateDir, CLIENT_LANE_USES_FILE);
+  const themesText = existsSync(themesFile)
+    ? await readFile(themesFile, "utf8")
+    : undefined;
+  const usesText = existsSync(usesFile)
+    ? await readFile(usesFile, "utf8")
+    : undefined;
+  const parsed = parseClientLaneThemes(themesText);
+  const afterSuite = ("themes" in parsed ? parsed.themes : [])
+    .map((entry) => entry?.themeId)
+    .filter((themeId) => typeof themeId === "string")
+    .map((themeId) => {
+      const rows = queryLifecycleD1(
+        stateDir,
+        "SELECT preview_runtime FROM storefront_themes WHERE id = ?1",
+        themeId,
+      );
+      return {
+        themeId,
+        rows: rows.length,
+        previewRuntime: rows[0]?.preview_runtime ?? null,
+      };
+    });
+  const verdict = clientLaneVerdict({
+    themesText,
+    usesText,
+    afterSuite,
+    workerValue,
+    expected,
+  });
+  await writeFile(
+    `${report}${CLIENT_LANE_VERDICT_SUFFIX}`,
+    `${JSON.stringify(verdict, null, 2)}\n`,
+    "utf8",
+  );
+  if (!verdict.ok) throw new Error(verdict.refusal ?? "CLIENT_LANE_UNVERIFIED");
+  const used = (usesText ?? "").split("\n").filter((line) => line.trim()).length;
+  log(
+    `client lane verified: ${afterSuite.length} dedicated Starter ${CLIENT_LANE_STARTER_VERSION} Themes seeded before the suite, all still recording no runtime and served the client-only preview; ${used} use(s) by specs`,
+  );
+}
+
 async function main() {
   const passed = process.argv.slice(2);
   const extra = passed[0] === "--" ? passed.slice(1) : passed;
@@ -1726,8 +1796,26 @@ async function main() {
   const recordRuntime = readRecordedPreviewRuntime(process.env);
   const runtimeRefusal =
     previewRuntimeRefusal(workerRuntime, specRuntime, recordRuntime) ??
-    (recordRuntime ? recordModeSelectionRefusal(extra) : null);
+    (recordRuntime ? recordModeSelectionRefusal(extra) : null) ??
+    requiredClientLaneRefusal(
+      process.env,
+      specRuntime,
+      recordRuntime,
+      USES_SIDECAR,
+    );
   if (runtimeRefusal) throw new Error(runtimeRefusal);
+  // The client lane (the six editor shards): its migrated specs open
+  // dedicated Starter 31 Themes, seeded by auth.setup before any editor opens
+  // (scripts/e2e-client-lane-guard.mjs). Read before anything starts, so a
+  // checkout without the fixture is refused rather than run unchecked.
+  const clientLane = isClientLaneRun(specRuntime, recordRuntime, USES_SIDECAR)
+    ? { expected: readFixtureFileDigests() }
+    : null;
+  if (clientLane) {
+    log(
+      `client lane: dedicated Starter ${CLIENT_LANE_STARTER_VERSION} Themes are seeded before the suite and must still record no runtime after it`,
+    );
+  }
   if (recordRuntime) {
     process.env[WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR] = workerRuntime.value ?? "";
     log(
@@ -1962,6 +2050,12 @@ async function main() {
   try {
     await runWhileServing("playwright", "npx", suite, {
       ...(sidecarSwap ? sidecarSwap.suiteEnv : {}),
+      ...(clientLane
+        ? {
+            [CLIENT_LANE_THEMES_VAR]: path.join(stateDir, CLIENT_LANE_THEMES_FILE),
+            [CLIENT_LANE_USES_VAR]: path.join(stateDir, CLIENT_LANE_USES_FILE),
+          }
+        : {}),
       // Asserted as a precondition, so a run that silently fell back to the
       // container transport fails instead of passing for the wrong reason.
       E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,
@@ -1998,6 +2092,8 @@ async function main() {
   }
 
   sidecarSwap?.verify();
+
+  if (clientLane) await verifyClientLane(clientLane.expected, workerRuntime.value, report);
 
   await verifyPublishedRelease();
 

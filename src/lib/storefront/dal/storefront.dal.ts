@@ -382,8 +382,14 @@ async function migrateStarterContent(
  * just initialised from the current Starter, or an upgrade its author
  * reviewed and applied. Anywhere else the stored version stays as it is, so
  * an unknown version is never written over as the latest.
+ *
+ * `targetVersion` is the Starter version recorded, the current one unless
+ * given. Only the client E2E lane gives one: it initialises a Theme from the
+ * pinned Starter 31 workspace (`initStarterTheme` with `files`) and records
+ * 31 for it. Exported for that seeding (`src/lib/test-utils/`); the product
+ * reaches it only through this file's own entry points.
  */
-async function ensureStarterHomeDocument(
+export async function ensureStarterHomeDocument(
   db: StorefrontDb,
   themeId: string,
   options: {
@@ -392,8 +398,11 @@ async function ensureStarterHomeDocument(
     record: boolean;
     /** Who the content migration's template revisions are recorded under. */
     createdBy?: string;
+    targetVersion?: number;
   },
 ): Promise<StarterUpgradeRecordOutcome> {
+  const targetVersion =
+    options.targetVersion ?? STOREFRONT_STARTER_TEMPLATE_VERSION;
   const [theme] = await db
     .select({
       metadata: storefrontThemes.metadata,
@@ -493,10 +502,7 @@ async function ensureStarterHomeDocument(
   if (!options.record) return { status: "skipped", reason: "not-confirmed" };
 
   if (
-    isStarterVersionAtLeast(
-      metadata.starterTemplateVersion,
-      STOREFRONT_STARTER_TEMPLATE_VERSION,
-    )
+    isStarterVersionAtLeast(metadata.starterTemplateVersion, targetVersion)
   ) {
     return {
       status: "already-current",
@@ -563,7 +569,7 @@ async function ensureStarterHomeDocument(
   }
   return writeStarterUpgradeRecord(ids, {
     readRevision,
-    targetVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
+    targetVersion,
     filesSaved: options.filesSaved,
     now,
   });

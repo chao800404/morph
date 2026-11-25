@@ -33,6 +33,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
   chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readdir,
@@ -52,6 +53,8 @@ import {
   editorShardArguments,
 } from "./editor-e2e-shards.mjs";
 
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+
 // Follows the plan's count, so a change of count cannot leave these tests
 // exercising a flag the runner now refuses.
 const FIRST_SHARD = `--shard=1/${EDITOR_SHARD_COUNT}`;
@@ -63,8 +66,9 @@ const ISOLATED_RUNNER = fileURLToPath(
 
 const FAKE_NPX = `#!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
 
 const [tool, ...rest] = process.argv.slice(2);
 if (process.env.FAKE_PID_DIR && (tool === "vite" || tool === "playwright")) {
@@ -139,6 +143,45 @@ if (tool === "vite") {
     .listen(port);
 } else if (tool === "playwright") {
   if (process.env.FAKE_ARGS_FILE) writeFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(rest));
+  // The client lane's evidence, as auth.setup's seed and the specs leave it:
+  // every slot's dedicated Theme on the fixture, and the run's D1 holding
+  // each Theme row. FAKE_CLIENT_LANE=none leaves nothing; =start has the
+  // Themes record "start" by the end of the suite.
+  if (process.env.MORPH_E2E_CLIENT_LANE_THEMES && process.env.FAKE_CLIENT_LANE !== "none") {
+    const root = process.env.FAKE_REPO_ROOT;
+    const guard = await import(root + "/scripts/e2e-client-lane-guard.mjs");
+    const Database = createRequire(root + "/package.json")("better-sqlite3");
+    const expected = guard.readFixtureFileDigests();
+    const storefrontId = "00000000-0000-4000-8000-000000000002";
+    const id = (n) => "00000000-0000-4000-8000-" + n.toString(16).padStart(12, "0");
+    const themes = guard.CLIENT_LANE_THEME_SLOTS.map((slot, i) => {
+      const entry = { slot, storefrontId, themeId: id(0x100 + i), indexTemplateId: id(0x200 + i) };
+      return {
+        ...entry,
+        editorPath: guard.clientLaneEditorPath(entry),
+        seeded: {
+          storefrontId, themeId: entry.themeId, rows: 1, rowStorefrontId: storefrontId,
+          previewRuntime: null, framework: null, deletedAt: null, starterTemplateVersion: 31,
+          files: expected,
+          templates: [
+            { id: entry.indexTemplateId, type: "index", routePath: null },
+            { id: id(0x300 + i), type: "layout", routePath: null },
+            { id: id(0x400 + i), type: "product", routePath: null },
+          ],
+        },
+      };
+    });
+    writeFileSync(process.env.MORPH_E2E_CLIENT_LANE_THEMES, JSON.stringify({ version: 1, starterVersion: 31, themes }));
+    appendFileSync(process.env.MORPH_E2E_CLIENT_LANE_USES, JSON.stringify({ slot: "editor", themeId: themes[0].themeId, test: "fake" }) + "\\n");
+    const d1 = process.env.MORPH_E2E_STATE_DIR + "/v3/d1/miniflare-D1DatabaseObject";
+    mkdirSync(d1, { recursive: true });
+    const db = new Database(d1 + "/fake.sqlite");
+    db.exec("CREATE TABLE IF NOT EXISTS storefront_themes (id TEXT PRIMARY KEY, preview_runtime TEXT)");
+    for (const theme of themes) {
+      db.prepare("INSERT INTO storefront_themes VALUES (?, ?)").run(theme.themeId, process.env.FAKE_CLIENT_LANE === "start" ? "start" : null);
+    }
+    db.close();
+  }
   if (process.env.FAKE_ENV_FILE) {
     writeFileSync(process.env.FAKE_ENV_FILE, JSON.stringify({
       workerDefault: process.env.MORPH_E2E_WORKER_PREVIEW_RUNTIME ?? null,
@@ -390,6 +433,10 @@ before(async () => {
     path.join(scratch, ".env.e2e"),
     "E2E_EMAIL=runner-test@morph.invalid\nE2E_PASSWORD=unused\nE2E_EDITOR_PATH=/unused\n",
   );
+  // The client lane's guard reads the Starter 31 fixture from the checkout.
+  const fixture = "src/lib/storefront/__fixtures__/starter-workspace/v31.json";
+  await mkdir(path.dirname(path.join(scratch, fixture)), { recursive: true });
+  await copyFile(path.join(REPO_ROOT, fixture), path.join(scratch, fixture));
 });
 
 after(async () => {
@@ -436,6 +483,7 @@ async function runRunner(
         // is read as a pid.
         MORPH_E2E_LOCK_FILE: `${pidDir}.lock`,
         FAKE_PID_DIR: pidDir,
+        FAKE_REPO_ROOT: REPO_ROOT,
         ...extraEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1589,6 +1637,102 @@ describe("the e2e runner's sidecar swap", () => {
         path.join(oldRoot(), ".morph-previews"),
       );
       await assertRootsRemoved(result.sidecars);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+});
+
+describe("the client lane", () => {
+  before(async () => {
+    await writeFile(
+      path.join(scratch, ".dev.vars.local_preview_e2e"),
+      "MORPH_LOCAL_THEME_PREVIEW_ORIGIN=http://127.0.0.1:5199\nMORPH_LOCAL_THEME_PREVIEW_TOKEN=runner-test-token-unused\n",
+    );
+  });
+
+  it("refuses a run required to be the client lane that is not, before starting services", async () => {
+    const start = await runRunner({
+      MORPH_E2E_TRANSPORT: "local-sidecar",
+      MORPH_E2E_REQUIRE_CLIENT_LANE: "1",
+      MORPH_E2E_PREVIEW_RUNTIME: "start",
+      MORPH_E2E_RECORD_PREVIEW_RUNTIME: "start",
+    }, undefined, ["e2e/native-compat-preview.spec.ts"]);
+    assert.equal(start.code, 1);
+    assert.match(start.stderr, /CLIENT_LANE_REQUIRED/);
+    assert.ok(!start.stdout.includes("applying migrations"));
+    assert.deepEqual(start.leftBehind, []);
+
+    const container = await runRunner({ MORPH_E2E_REQUIRE_CLIENT_LANE: "1" });
+    assert.equal(container.code, 1);
+    assert.match(container.stderr, /CLIENT_LANE_REQUIRED: .*container transport/);
+    assert.ok(!container.stdout.includes("applying migrations"));
+    assert.deepEqual(container.leftBehind, []);
+  });
+
+  it(
+    "hands the suite the Themes and uses files and keeps a passing verdict beside the report",
+    { timeout: 90_000 },
+    async () => {
+      const report = path.join(scratch, "client-lane-pass", "shard.json");
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        MORPH_E2E_REQUIRE_CLIENT_LANE: "1",
+        MORPH_E2E_REPORT_PATH: report,
+      });
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      assert.match(result.stdout, /\[e2e\] client lane verified: 7 dedicated Starter 31 Themes/);
+      const verdict = JSON.parse(await readFile(`${report}.client-lane.json`, "utf8"));
+      assert.equal(verdict.ok, true);
+      assert.equal(verdict.lane, "client");
+      assert.equal(verdict.afterSuite.length, 7);
+      assert.match(verdict.uses, /"slot":"editor"/);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "refuses a run that seeded no Themes, keeping the failing verdict",
+    { timeout: 90_000 },
+    async () => {
+      const report = path.join(scratch, "client-lane-none", "shard.json");
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        MORPH_E2E_REPORT_PATH: report,
+        FAKE_CLIENT_LANE: "none",
+      });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /CLIENT_LANE_UNVERIFIED: .*left no client-lane-themes\.json/);
+      const verdict = JSON.parse(await readFile(`${report}.client-lane.json`, "utf8"));
+      assert.equal(verdict.ok, false);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "refuses a run whose dedicated Themes record a runtime by the end of the suite",
+    { timeout: 90_000 },
+    async () => {
+      const report = path.join(scratch, "client-lane-start", "shard.json");
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        MORPH_E2E_REPORT_PATH: report,
+        FAKE_CLIENT_LANE: "start",
+      });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /slot editor: after the suite Theme .* records "start"/);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "off the client lane hands the suite no Themes and keeps no verdict",
+    { timeout: 90_000 },
+    async () => {
+      const report = path.join(scratch, "client-lane-off", "shard.json");
+      const result = await runRunner({ MORPH_E2E_REPORT_PATH: report });
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      assert.doesNotMatch(result.stdout, /client lane/);
+      assert.equal(existsSync(`${report}.client-lane.json`), false);
       assert.deepEqual(result.leftBehind, []);
     },
   );

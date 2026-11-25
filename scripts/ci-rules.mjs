@@ -49,6 +49,9 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/ci-workflow.test.mjs",
   "scripts/container-acceptance-targets/",
   "scripts/container-run-handover.mjs",
+  // Whether a client shard really ran dedicated Starter 31 client Themes.
+  "scripts/e2e-client-lane-guard.mjs",
+  "scripts/e2e-client-lane-guard.test.mjs",
   "scripts/e2e-preview-runtime-guard.mjs",
   "scripts/editor-e2e-shards.mjs",
   "scripts/editor-e2e-start.mjs",
@@ -59,6 +62,8 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/run-editor-e2e.test.mjs",
   "scripts/run-start-preview-shard.mjs",
   "scripts/verify-published-artifact.mjs",
+  // The Starter 31 bytes the client lane's guard compares each Theme against.
+  "src/lib/storefront/__fixtures__/starter-workspace/v31.json",
   // Which preview runtime the runner expects a run to have used.
   "src/lib/storefront/theme-preview-runtime-default.mjs",
   // Which files `pnpm test` collects, per project; the shards split this set.
