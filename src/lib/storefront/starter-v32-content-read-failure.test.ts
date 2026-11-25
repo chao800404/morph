@@ -1,11 +1,14 @@
 // @vitest-environment node
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
-import { STARTER_V32_CANDIDATE_CONTENT_MODULE_SOURCE } from "./starter-v32-candidate-content-module";
-import { STARTER_THEME_ROOT_ROUTE_SOURCE } from "./starter-theme-v3-files";
+import {
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
+  STARTER_THEME_ROOT_ROUTE_SOURCE,
+} from "./starter-theme-v3-files";
 
 /**
- * The Starter 32 candidate's read-failure trap (2026-11-24).
+ * Starter 32's content module and the read-failure trap (2026-11-24). It was
+ * a candidate on that date; it is the shipped `STARTER_THEME_CONTENT_MODULE_SOURCE`.
  *
  * Two states must stay apart, in the module and here:
  *
@@ -33,7 +36,7 @@ type MorphContent = { slots: Record<string, Record<string, unknown>>; hiddenSlot
 type ContentErrorClass = new (code: string) => Error & { code: string };
 
 function candidate(side: Side, pagesGet: (path: string) => Promise<unknown>) {
-  const compiled = ts.transpileModule(STARTER_V32_CANDIDATE_CONTENT_MODULE_SOURCE, {
+  const compiled = ts.transpileModule(STARTER_THEME_CONTENT_MODULE_SOURCE, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2022,
@@ -88,6 +91,20 @@ describe("the Starter 32 candidate tells a failed read from an empty page", () =
     const { load } = candidate(side, get);
     await expect(load("/no-document")).resolves.toEqual({ slots: {}, hiddenSlots: [] });
     expect(get).toHaveBeenCalledWith("/no-document");
+  });
+
+  it.each(SIDES)("%s: a route other than the home reads its own page, by its own path", async (side) => {
+    const get = vi.fn(async (path: string) =>
+      path === "/about"
+        ? { "about-hero": { heading: "About us" }, _hidden: ["about-newsletter"] }
+        : { "starter-hero": { heading: "Home" }, _hidden: [] },
+    );
+    const { load } = candidate(side, get);
+    await expect(load("/about")).resolves.toEqual({
+      slots: { "about-hero": { heading: "About us" } },
+      hiddenSlots: ["about-newsletter"],
+    });
+    expect(get.mock.calls).toEqual([["/about"]]);
   });
 
   it.each(SIDES)("%s: a page read that succeeds keeps its values and its hidden list", async (side) => {

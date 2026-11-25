@@ -233,10 +233,11 @@ describe("the Live Preview runtime a Starter Theme records", () => {
   const preparedSql = () =>
     mocks.prepare.mock.calls.map((call) => String(call[0]));
 
-  it(`records none for a Theme created from Starter ${STOREFRONT_STARTER_TEMPLATE_VERSION}`, async () => {
-    // 31 today, which records none as 30 did; the first Starter that records
-    // `start` is 32 (storefront.dal.v32-preview-runtime.test.ts).
-    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(31);
+  it(`records start for a Theme created from Starter ${STOREFRONT_STARTER_TEMPLATE_VERSION}`, async () => {
+    // 32 today, the first Starter that records `start`: its content module
+    // reads through the hosted SDK on the server (31 and earlier recorded
+    // none; storefront.dal.v32-preview-runtime.test.ts).
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(32);
     const db = createNewStorefrontDb();
     mocks.getDb.mockResolvedValue(db);
     mocks.listFiles.mockResolvedValue([]);
@@ -244,7 +245,7 @@ describe("the Live Preview runtime a Starter Theme records", () => {
     await storefrontDal.ensureDefault("sales-channel-new");
 
     expect(insertedThemeRows(db)).toEqual([
-      expect.objectContaining({ name: "Default", previewRuntime: null }),
+      expect.objectContaining({ name: "Default", previewRuntime: "start" }),
     ]);
   });
 

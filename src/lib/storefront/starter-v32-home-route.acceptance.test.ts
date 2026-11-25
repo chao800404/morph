@@ -5,19 +5,24 @@ import {
   deriveThemeRouteSections,
   themeRouteStructureLock,
 } from "./compiler/theme-route-sections";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "./default-storefront-document";
 import { starterThemeWorkspaceFiles } from "./starter-theme-files";
+import {
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
+} from "./starter-theme-v3-files";
 import { sourceRequiresStartPreview } from "./starter-upgrade-start-preview";
-import { STARTER_V32_CANDIDATE_CONTENT_MODULE_SOURCE } from "./starter-v32-candidate-content-module";
 
 /**
- * The acceptance gate for Starter 32, narrow A step 1 (2026-11-24).
+ * The acceptance gate for Starter 32, narrow A (user decision 2026-11-24).
  *
- * User decision: stay on Starter 31 until the home keeps every Design
- * capability it has today. Step 1 swaps ONLY the read source: the content
+ * Stay on Starter 31's structure and swap ONLY the read source: the content
  * module's reads go through one `createServerFn` that calls the hosted SDK
  * (`morph.pages.get` from `@morph/sdk/start`). The home route keeps Starter
  * 31's per-section shape, `{!isSectionHidden("slot") && <El
  * {...content("slot")} />}`, byte for byte, and so do the root and the layout.
+ * Design keeps binding, structure editing (the route has no loader, so no
+ * structure lock) and Hide.
  *
  * The earlier candidate (the home read through its own loader, `{...page[slot]}`)
  * lost binding, structure editing and Hide; see the handoff
@@ -28,8 +33,8 @@ import { STARTER_V32_CANDIDATE_CONTENT_MODULE_SOURCE } from "./starter-v32-candi
  * for a `content()` site asks only that `isSectionHidden` is a function the
  * module declares (theme-hide-capability.ts, A6).
  *
- * The candidate module is not shipped (nothing in the product reads it); the
- * gate runs it on the real adopted workspace.
+ * The shipped Starter is compared with itself carrying Starter 31's content
+ * module, the one file 32 changes.
  */
 
 const HOME = "src/routes/index.tsx";
@@ -46,24 +51,59 @@ const HOME_SLOTS = [
   "starter-newsletter",
 ] as const;
 
-function v31Workspace() {
+/**
+ * A route that is not the home page and reads a Page Document of its own,
+ * written the way the Starter's home is. The Starter ships none (its other
+ * routes, `/account` and `/order-transfer`, read no page sections), so the
+ * gate adds one to the same workspace, as an author would.
+ */
+const PAGE = "src/routes/about.tsx";
+const PAGE_SLOTS = ["about-hero", "about-newsletter"] as const;
+const PAGE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+import { content, isSectionHidden } from "../morph/content";
+import Hero from "../components/Hero";
+import Newsletter from "../components/Newsletter";
+
+export const Route = createFileRoute("/about")({
+  component: AboutRoute,
+});
+
+function AboutRoute() {
+  return (
+    <main>
+      {!isSectionHidden("about-hero") && <Hero {...content("about-hero")} />}
+      {!isSectionHidden("about-newsletter") && (
+        <Newsletter {...content("about-newsletter")} />
+      )}
+    </main>
+  );
+}
+`;
+
+type WorkspaceFile = { path: string; content: string };
+
+function v32Workspace(): WorkspaceFile[] {
   return starterThemeWorkspaceFiles().map((file) => ({
     path: file.path,
     content: file.content,
   }));
 }
 
-function v32Workspace() {
-  return v31Workspace().map((file) => ({
+function v31Workspace(): WorkspaceFile[] {
+  return v32Workspace().map((file) => ({
     path: file.path,
     content:
       file.path === CONTENT
-        ? STARTER_V32_CANDIDATE_CONTENT_MODULE_SOURCE
+        ? LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE
         : file.content,
   }));
 }
 
-function fileOf(files: ReturnType<typeof v32Workspace>, path: string): string {
+function withPage(files: WorkspaceFile[]): WorkspaceFile[] {
+  return [...files, { path: PAGE, content: PAGE_SOURCE }];
+}
+
+function fileOf(files: WorkspaceFile[], path: string): string {
   const file = files.find((candidate) => candidate.path === path);
   if (!file) throw new Error(`${path} is not in the workspace`);
   return file.content;
@@ -73,7 +113,17 @@ function countOf(source: string, pattern: RegExp): number {
   return source.match(pattern)?.length ?? 0;
 }
 
-describe("the Starter 32 candidate (narrow A step 1: the read source only)", () => {
+describe("Starter 32 (narrow A: the read source only)", () => {
+  it("is the current Starter, and ships the content module that reads through the hosted SDK", () => {
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(32);
+    expect(fileOf(v32Workspace(), CONTENT)).toBe(
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+    expect(STARTER_THEME_CONTENT_MODULE_SOURCE).not.toBe(
+      LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+    );
+  });
+
   it("changes only the content module of the Starter 31 workspace", () => {
     const before = v31Workspace();
     const after = v32Workspace();
@@ -88,12 +138,20 @@ describe("the Starter 32 candidate (narrow A step 1: the read source only)", () 
 
   it("needs the full Start preview, through the content module alone", () => {
     expect(
-      sourceRequiresStartPreview(CONTENT, STARTER_V32_CANDIDATE_CONTENT_MODULE_SOURCE),
+      sourceRequiresStartPreview(CONTENT, STARTER_THEME_CONTENT_MODULE_SOURCE),
     ).toBe(true);
+    // Starter 31's module needed none: a Theme still on it may run on client.
+    expect(
+      sourceRequiresStartPreview(
+        CONTENT,
+        LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+      ),
+    ).toBe(false);
     const files = v32Workspace();
     // The routes stay Starter 31's, which the client runtime can render.
-    for (const path of [HOME, ROOT, LAYOUT]) {
-      expect(sourceRequiresStartPreview(path, fileOf(files, path)), path).toBe(
+    for (const file of files) {
+      if (file.path === CONTENT) continue;
+      expect(sourceRequiresStartPreview(file.path, file.content), file.path).toBe(
         false,
       );
     }
@@ -116,11 +174,15 @@ describe("the Starter 32 candidate (narrow A step 1: the read source only)", () 
       expect(file.content, file.path).not.toContain("@morph/sdk");
     }
     // The root is the one caller of the module's load, once per navigation
-    // (its beforeLoad), and the module defines nothing else that reads.
+    // (its beforeLoad, with the location's own pathname), and the module
+    // defines nothing else that reads.
     const loaders = files.filter((file) =>
       file.content.includes("loadContentSlots("),
     );
     expect(loaders.map((file) => file.path)).toEqual([ROOT]);
+    expect(fileOf(files, ROOT)).toContain(
+      "loadContentSlots(location.pathname)",
+    );
     expect(countOf(fileOf(files, ROOT), /loadContentSlots\(/g)).toBe(1);
     expect(countOf(module, /readPage\(\{ data: /g)).toBe(3);
     // The home reads its sections from that one load, through content() and
@@ -174,5 +236,38 @@ describe("the Starter 32 candidate (narrow A step 1: the read source only)", () 
     expect(hide).toMatchObject({ kind: "supported" });
     // The Starter's own guard, through the module's isSectionHidden, as on 31.
     expect(hide).toEqual(classifyHideCapability({ files: v31Workspace(), ...args }));
+  });
+
+  describe("a route other than the home that reads its own Page Document", () => {
+    it("binds every section, as on Starter 31", () => {
+      const derived = deriveThemeRouteSections(withPage(v32Workspace()), PAGE);
+      expect(derived.diagnostics).toEqual([]);
+      expect(derived.sections.map((section) => section.slotId).sort()).toEqual(
+        [...PAGE_SLOTS].sort(),
+      );
+      expect(derived).toEqual(
+        deriveThemeRouteSections(withPage(v31Workspace()), PAGE),
+      );
+    });
+
+    it("keeps its structure editable", () => {
+      expect(themeRouteStructureLock(withPage(v32Workspace()), PAGE)).toBeNull();
+    });
+
+    it.each(PAGE_SLOTS)("keeps %s hideable", (slot) => {
+      const args = { callSitePath: PAGE, slot, scope: "route" as const };
+      const hide = classifyHideCapability({
+        files: withPage(v32Workspace()),
+        ...args,
+      });
+      expect(hide).toMatchObject({ kind: "supported" });
+      expect(hide).toEqual(
+        classifyHideCapability({ files: withPage(v31Workspace()), ...args }),
+      );
+    });
+
+    it("needs nothing more than the home: the route itself runs on client", () => {
+      expect(sourceRequiresStartPreview(PAGE, PAGE_SOURCE)).toBe(false);
+    });
   });
 });

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import {
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
+} from "@/lib/storefront/starter-theme-v3-files";
+import {
   classifyHideCapability,
   type HideCapability,
   type HideCapabilityScope,
@@ -461,6 +465,21 @@ describe("classifyHideCapability: reverse checks (one variable each)", () => {
       kind: "unsupported",
       reason: "content-module-unconfirmed",
     });
+    expect(classify(files, "h2")).toMatchObject({ kind: "supported" });
+  });
+
+  it("A6: an untouched Starter 31 module, which an edited Theme keeps after 32, still confirms a loader hide", () => {
+    const files = theme(H2).map((file) =>
+      file.path === "src/morph/content.ts"
+        ? { ...file, content: LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE }
+        : file,
+    );
+    expect(
+      files.find((file) => file.path === "src/morph/content.ts")?.content,
+    ).toBe(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE);
+    expect(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE).not.toBe(
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
     expect(classify(files, "h2")).toMatchObject({ kind: "supported" });
   });
 
