@@ -23,6 +23,7 @@ import {
   RECORDED_PREVIEW_RUNTIME,
   verifyRecordedThemePreviewRuntime,
 } from "./helpers/recorded-preview-runtime";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 import {
   DOMAINS,
   THEMES,
@@ -668,14 +669,16 @@ test.describe("Starter 32 on the full Start runtime", () => {
       themeId: randomUUID(),
     };
     scope = created;
-    // A fresh Theme, recorded as Starter 1 with no files and no runtime, as
-    // the other single-use Themes are.
-    const now = new Date().toISOString();
-    execLocalD1(`INSERT INTO storefront_themes
-      (id, storefront_id, name, metadata, created_at, updated_at)
-      VALUES (${sqlText(created.themeId)}, ${sqlText(created.storefrontId)},
-        ${sqlText(`v32-start-${created.themeId}`)}, '{"starterTemplateVersion":1}',
-        ${sqlText(now)}, ${sqlText(now)});`);
+    // A fresh Theme, recorded as Starter 1 with no files and no runtime,
+    // through the shared throwaway-Theme helper as the other single-use
+    // Themes are. No runtime on purpose: the editor's own compare-and-set
+    // records start below.
+    insertThrowawayTheme({
+      storefrontId: created.storefrontId,
+      themeId: created.themeId,
+      name: `v32-start-${created.themeId}`,
+      previewRuntime: null,
+    });
     await page.goto("/", { waitUntil: "domcontentloaded" });
 
     // Full Start first, through the editor's compare-and-set: from Starter
