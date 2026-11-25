@@ -382,6 +382,39 @@ describe("the session cookie", () => {
     expect(lastInvalid?.user.id).toBe(accounts.admin.id);
   });
 
+  // Better Auth decodes `session_data` before it checks whether the cookie
+  // cache is on, and a value that fails to decode is a 500. Under the names a
+  // sibling host can set (bare, or `__Secure-` with a site-wide Domain) it is
+  // not the configured name, so it is never read.
+  it("ignores a garbage session_data under the names a sibling host can set", async () => {
+    const { createAuth } = await import("@/auth");
+    const auth = createAuth(state.env as never, `${ADMIN_ORIGIN}/`);
+    for (const garbage of [
+      "better-auth.session_data=%%%not-base64%%%",
+      "__Secure-better-auth.session_data=%%%not-base64%%%",
+      "better-auth.session_data.0=%%%not-base64%%%",
+      "better-auth.account_data=%%%not-base64%%%",
+    ]) {
+      const session = await auth.api.getSession({
+        headers: new Headers({ cookie: `${adminSessionCookie}; ${garbage}` }),
+      });
+      expect(session?.user.id, garbage).toBe(accounts.admin.id);
+
+      // And through the HTTP handler, as the browser reaches it.
+      const response = await auth.handler(
+        new Request(`${ADMIN_ORIGIN}/api/auth/get-session`, {
+          headers: { cookie: `${garbage}; ${adminSessionCookie}` },
+        }),
+      );
+      expect(response.status, garbage).toBe(200);
+      expect(
+        ((await response.json()) as { user?: { id: string } } | null)?.user
+          ?.id,
+        garbage,
+      ).toBe(accounts.admin.id);
+    }
+  });
+
   it("with an invalid copy first, resolves to no session (fails safe)", async () => {
     const { createAuth } = await import("@/auth");
     const auth = createAuth(state.env as never, `${ADMIN_ORIGIN}/`);
@@ -441,6 +474,161 @@ describe("sign-in on a storefront host", () => {
     expect(
       sessionCookieOf(await signInOnCms(accounts.editor.email)),
     ).toBeTruthy();
+  });
+});
+
+describe("customer writes on the production storefront host", () => {
+  // The storefront host never reaches Start: StorefrontProductionService
+  // dispatches customer writes itself. This wires it as src/server.ts does
+  // for `customers/me` (the real handleStoreCustomerRequest on the real D1),
+  // with only the host resolution stubbed to an active storefront.
+  let customerCookie = "";
+
+  async function storefrontService() {
+    const [{ StorefrontProductionService }, { handleStoreCustomerRequest }] =
+      await Promise.all([
+        import("@/lib/storefront/service/storefront-production.service"),
+        import("@/lib/storefront/service/store-customer-request"),
+      ]);
+    const transferHandler = vi.fn(async () => new Response("transfer"));
+    const service = new StorefrontProductionService({
+      runtime: { kind: "local-direct", handle: vi.fn() } as never,
+      resolverDeps: {
+        domainDal: {
+          findByHostname: async () => ({
+            id: "dom_1",
+            storefrontId: "sf_1",
+            hostname: STOREFRONT_HOST,
+            status: "active",
+          }),
+        },
+        storefrontDalRef: {
+          findActive: async () => ({ id: "sf_1", status: "published" }),
+        },
+        releaseDal: {
+          getActive: async () => ({
+            id: "rel_1",
+            themeId: "th_1",
+            sourceRevisionId: "rev_1",
+            themeBuildId: "bld_1",
+            contentPublicationId: "pub_1",
+          }),
+        },
+        buildDal: {
+          getBuildById: async () => ({
+            id: "bld_1",
+            storefrontId: "sf_1",
+            themeId: "th_1",
+            status: "succeeded",
+            artifactPrefix: "themes/th_1/builds/bld_1",
+            manifestJson: { artifactEntry: "preview/index.html" },
+          }),
+        },
+      } as never,
+      storefrontCustomerApiHandler: async (method, path, request) =>
+        path.startsWith("customers/me")
+          ? handleStoreCustomerRequest(method, path, request, {
+              salesChannelId: "sales-channel-test",
+            })
+          : transferHandler(),
+    });
+    return { service, transferHandler };
+  }
+
+  const patchProfile = (firstName: string, headers: Record<string, string>) =>
+    new Request(`${STOREFRONT_ORIGIN}/api/store/customers/me`, {
+      method: "PATCH",
+      headers: {
+        cookie: customerCookie,
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify({ firstName }),
+    });
+
+  const customerRows = async (firstName: string) =>
+    (await d1
+      .prepare("SELECT COUNT(*) AS n FROM customers WHERE first_name = ?")
+      .bind(firstName)
+      .first<{ n: number }>())!.n;
+
+  beforeAll(async () => {
+    // A verified customer, signed in on the storefront host.
+    await d1
+      .prepare("UPDATE users SET email_verified = 1 WHERE id = ?")
+      .bind(accounts.customer.id)
+      .run();
+    const { createStorefrontAuth } = await import("@/auth");
+    const url = `${STOREFRONT_ORIGIN}/api/auth/sign-in/email`;
+    const response = await createStorefrontAuth(
+      state.env as never,
+      url,
+      STOREFRONT_HOST,
+    ).handler(
+      new Request(url, {
+        method: "POST",
+        headers: { origin: STOREFRONT_ORIGIN, "content-type": "application/json" },
+        body: JSON.stringify({
+          email: accounts.customer.email,
+          password: PASSWORD,
+        }),
+      }),
+    );
+    customerCookie = sessionCookieOf(response.headers);
+  });
+
+  it("refuses a same-site sibling origin, and the customer is unchanged", async () => {
+    const { service } = await storefrontService();
+    const before = await count("customers");
+    const response = await service.handleRequest(
+      patchProfile("Tossed", {
+        "sec-fetch-site": "same-site",
+        origin: ADMIN_ORIGIN,
+      }),
+    );
+    expect(response.status).toBe(403);
+    expect(await count("customers")).toBe(before);
+    expect(await customerRows("Tossed")).toBe(0);
+  });
+
+  it("refuses a request with neither header", async () => {
+    const { service } = await storefrontService();
+    const before = await count("customers");
+    const response = await service.handleRequest(patchProfile("Bare", {}));
+    expect(response.status).toBe(403);
+    expect(await count("customers")).toBe(before);
+    expect(await customerRows("Bare")).toBe(0);
+  });
+
+  it("refuses an order transfer request from a sibling origin", async () => {
+    const { service, transferHandler } = await storefrontService();
+    const response = await service.handleRequest(
+      new Request(
+        `${STOREFRONT_ORIGIN}/api/store/orders/ord_1/transfer/request`,
+        {
+          method: "POST",
+          headers: {
+            cookie: customerCookie,
+            "sec-fetch-site": "same-site",
+            origin: ADMIN_ORIGIN,
+          },
+        },
+      ),
+    );
+    expect(response.status).toBe(403);
+    expect(transferHandler).not.toHaveBeenCalled();
+  });
+
+  it("control: the storefront's own origin updates the customer", async () => {
+    const { service } = await storefrontService();
+    const response = await service.handleRequest(
+      patchProfile("Mine", {
+        "sec-fetch-site": "same-origin",
+        origin: STOREFRONT_ORIGIN,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await customerRows("Mine")).toBe(1);
   });
 });
 
