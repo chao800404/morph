@@ -35,7 +35,13 @@ export const START_PREVIEW_SHARDS = [
   ["code-controlled-field.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts", "starter-upgrade.spec.ts"],
   // selection-field-frame-navigated: accepted on full Start by the user's
   // decision; added to what was then the shortest shard.
-  ["binding-acceptance-p.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts"],
+  // content-module-restore: from Starter 32 the restore command writes a
+  // module that needs the full Start preview, so its successful restore runs
+  // here (on the client lane the same restore is refused by design and the
+  // lane checks that). Added after the projection above, to its shortest
+  // shard (652 s); about 51 s on the editor shards (durations file), not
+  // measured under Start.
+  ["binding-acceptance-p.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "content-module-restore.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
@@ -105,5 +111,14 @@ export const START_PREVIEW_EXPECTED_SKIPS = [
     file: "starter-upgrade.spec.ts",
     title:
       "E. a toolchain pin an earlier Starter wrote: refused by the build, built once the reviewed upgrade is applied",
+  },
+  // Not a client-only gap either: the client lane's own case. Its Themes are
+  // the pinned Starter 31 workspace recording no runtime, where the restore
+  // of the current Starter's module is refused; here the restore succeeds,
+  // which the case before it checks.
+  {
+    file: "content-module-restore.spec.ts",
+    title:
+      "on a client-lane Theme the restore is refused, saying why, and nothing is written",
   },
 ];

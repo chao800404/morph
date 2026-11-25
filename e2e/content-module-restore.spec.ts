@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../src/lib/storefront/starter-theme-v3-files";
 import { EDITOR_PATH, isServerFunctionCall, openEditor, previewFrame } from "./helpers";
 import { themeScopeFromEditorPath, writeThemeFiles, type ThemeScope } from "./native-compat";
-import { insertThrowawayTheme } from "./helpers/throwaway-theme";
+import { insertThrowawayTheme, specPreviewRuntime } from "./helpers/throwaway-theme";
+import { laneStarterContentModule, onClientLane } from "./helpers/client-lane-theme";
 
 /**
  * `src/morph/content.ts` is the author's file. These run the real editor,
@@ -21,6 +22,16 @@ import { insertThrowawayTheme } from "./helpers/throwaway-theme";
  * Each test inserts its own Theme row in the runner's throwaway database, the
  * way initial-code-publish.spec.ts does, so deleting the module can never
  * leave the suite's shared Theme broken for the specs after it.
+ *
+ * Where each case runs. The restore command writes the current Starter's
+ * module, which from Starter 32 needs the full Start preview. So the
+ * successful restore runs in the full Start job (MORPH_E2E_PREVIEW_RUNTIME=start,
+ * scripts/editor-e2e-start.mjs),
+ * on a Theme that records start; on the client lane, whose Themes are the
+ * pinned Starter 31 workspace recording no runtime, the same restore is
+ * refused with nothing written, and that is what the lane checks. The other
+ * cases apply nothing of the current Starter and run on both, each on the
+ * module its Theme holds.
  */
 
 test.skip(
@@ -46,7 +57,10 @@ async function createOwnTheme(page: Page): Promise<{ scope: ThemeScope; editorPa
     themeId: scope.themeId,
     storefrontId: scope.storefrontId,
     name: `content-module-${scope.themeId}`,
-    previewRuntime: null,
+    // Start in the full Start job: from Starter 32 the editor provisions the
+    // Starter only into a Theme that records it. Seeded on Starter 31 on the
+    // client lane.
+    previewRuntime: specPreviewRuntime(),
   });
   const context = await page.evaluate(async (scope) => {
     const module = "/src/server/storefront/storefront-themes.serverFn.ts";
@@ -103,8 +117,14 @@ async function openCommandPalette(page: Page) {
   await expect(restoreCommand(page)).toBeVisible();
 }
 
+/**
+ * The Starter module the Theme holds: on the client lane the pinned
+ * Starter 31 fixture's, elsewhere the current Starter's.
+ */
+const STARTER_MODULE = laneStarterContentModule(STARTER_THEME_CONTENT_MODULE_SOURCE);
+
 /** The author's own module: `content` made by a factory Design cannot confirm. */
-const FACTORY_MODULE = STARTER_THEME_CONTENT_MODULE_SOURCE.replace(
+const FACTORY_MODULE = STARTER_MODULE.replace(
   "export function content(slotId: string): Record<string, unknown> {",
   "function readSlot(slotId: string): Record<string, unknown> {",
 ).concat(
@@ -115,6 +135,10 @@ test.describe("the author's content module", () => {
   test("deleted in Code mode, it is restored by the command, saved, and the Live Preview renders", async ({
     page,
   }) => {
+    test.skip(
+      onClientLane(),
+      "Restores the current Starter's module, which needs the full Start preview; the client lane checks the refusal instead. Runs in the full Start job.",
+    );
     test.setTimeout(240_000);
     await openEditor(page);
     const { scope, editorPath } = await createOwnTheme(page);
@@ -182,13 +206,58 @@ test.describe("the author's content module", () => {
     await expect(page.getByText(/Remote source changes detected/i)).toHaveCount(0);
   });
 
+  test("on a client-lane Theme the restore is refused, saying why, and nothing is written", async ({
+    page,
+  }) => {
+    test.skip(
+      !onClientLane(),
+      "The client lane's Themes record no runtime; elsewhere the restore succeeds (the case above).",
+    );
+    test.setTimeout(240_000);
+    await openEditor(page);
+    const { scope, editorPath } = await createOwnTheme(page);
+    await openEditor(page, editorPath);
+    await openCodeMode(page);
+
+    // Deleted the way an author would, as in the case above.
+    const tree = page.getByRole("tree", { name: "Theme files" });
+    const row = tree.getByText("content.ts", { exact: true });
+    await row.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await row.click({ button: "right" });
+    await page.getByRole("menuitem", { name: /Delete File/i }).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect
+      .poll(async () => byPath(await listFiles(page, scope)).has(CONTENT_MODULE), {
+        timeout: 20_000,
+      })
+      .toBe(false);
+    const beforeRestore = await listFiles(page, scope);
+
+    const answered = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        isServerFunctionCall(response.url(), "saveStorefrontThemeFile"),
+      { timeout: 30_000 },
+    );
+    await openCommandPalette(page);
+    await expect(restoreCommand(page)).not.toHaveAttribute("aria-disabled", "true");
+    await restoreCommand(page).click();
+    // A refused save still answers 200; the refusal is in the body.
+    const body = await (await answered).text();
+    expect(body).toContain("STARTER_START_PREVIEW_REQUIRED");
+
+    const afterRestore = await listFiles(page, scope);
+    expect(byPath(afterRestore).has(CONTENT_MODULE)).toBe(false);
+    expect(afterRestore).toEqual(beforeRestore);
+  });
+
   test("while the module exists the command is disabled and the author's module stays", async ({
     page,
   }) => {
     test.setTimeout(180_000);
     await openEditor(page);
     const { scope, editorPath } = await createOwnTheme(page);
-    const authored = `${STARTER_THEME_CONTENT_MODULE_SOURCE}\n// the author's own change\n`;
+    const authored = `${STARTER_MODULE}\n// the author's own change\n`;
     expect(
       await writeThemeFiles(page, scope, [{ path: CONTENT_MODULE, content: authored }]),
     ).toMatchObject({ success: true });

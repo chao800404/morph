@@ -32,6 +32,11 @@ import {
 } from "../src/lib/storefront/starter-theme-v3-files";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "../src/lib/storefront/compiler/theme-preview-dev-server";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
+import {
+  laneStarterContentModule,
+  laneStarterVersion,
+  onClientLane,
+} from "./helpers/client-lane-theme";
 
 /**
  * The Starter upgrade on the workspace the editor provisions, the way an
@@ -65,7 +70,24 @@ import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/defau
  *
  * The workspace is shared with the specs that run after this one, so the
  * state it changes is put back afterwards.
+ *
+ * Where each case runs. The full Start job runs all of them but E (which
+ * needs containers) on the current Starter's workspace. The client lane's
+ * shared Theme is the pinned Starter 31 workspace
+ * (scripts/e2e-client-lane-guard.mjs), and from Starter 32 the current
+ * Starter's content module needs the full Start preview, so an upgrade that
+ * applies the current Starter is refused on it by design: D, B, Q and R skip
+ * there and run in the full Start job (scripts/editor-e2e-start.mjs). A, C
+ * and P apply nothing of the current Starter and run on both, the client
+ * lane against Starter 31's module and version.
  */
+
+/** Why D, B, Q and R skip on the client lane. */
+const CURRENT_STARTER_UPGRADE_ON_START =
+  "Applies the current Starter, whose content module needs the full Start preview; a client-lane Theme is refused it by design. Runs in the full Start job.";
+/** The content module and Starter version the shared Theme holds on this lane. */
+const LANE_CONTENT_MODULE = laneStarterContentModule(STARTER_THEME_CONTENT_MODULE_SOURCE);
+const LANE_STARTER = laneStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
 const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
 const CONTAINERS = TRANSPORT === "cloudflare-sandbox";
@@ -509,7 +531,7 @@ test.describe("Starter upgrade, reviewed by the author", () => {
     const page = await signedInPage(browser);
     await openEditor(page);
     original = await workspace(page);
-    expect(original[CONTENT_MODULE]).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    expect(original[CONTENT_MODULE]).toBe(LANE_CONTENT_MODULE);
     // A binary file, as any Theme with an uploaded image has. An upgrade that
     // records its revision without a manifest is refused for such a workspace,
     // and then the editor cannot open; CI found it when an earlier spec on the
@@ -526,8 +548,9 @@ test.describe("Starter upgrade, reviewed by the author", () => {
 
   test.afterAll(async ({ browser }) => {
     const page = await signedInPage(browser);
-    // Back on the current version, as the specs after this one expect.
-    setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
+    // Back on the lane's version, as the specs after this one (and, on the
+    // client lane, its guard) expect.
+    setStarterVersion(LANE_STARTER);
     await openEditor(page);
     const removed = await removeThemeFiles(page, scope!, [
       PROBE_ROUTE,
@@ -559,6 +582,7 @@ test.describe("Starter upgrade, reviewed by the author", () => {
   test("D. the workspace marked older: opening writes nothing; applying the empty review records the version", async ({
     page,
   }) => {
+    test.skip(onClientLane(), CURRENT_STARTER_UPGRADE_ON_START);
     await openEditor(page);
     const before = await workspace(page);
     setStarterVersion(OLDER);
@@ -589,6 +613,7 @@ test.describe("Starter upgrade, reviewed by the author", () => {
   test("B. the untouched pre-pages module on an older Starter: reviewed, then only content.ts is replaced, once", async ({
     page,
   }) => {
+    test.skip(onClientLane(), CURRENT_STARTER_UPGRADE_ON_START);
     await openEditor(page);
     await save(page, [
       {
@@ -741,6 +766,7 @@ test.describe("Starter upgrade, reviewed by the author", () => {
   test("Q. a Theme of unknown origin, upgraded in part: still pending, and the next review offers only what is left", async ({
     page,
   }) => {
+    test.skip(onClientLane(), CURRENT_STARTER_UPGRADE_ON_START);
     // Its own setup and clean-up: the content-fields/link group removed, the
     // content module an older Starter's, and no version recorded.
     const GROUP = ["src/morph/content-fields.ts", "src/morph/link.tsx"];
@@ -837,13 +863,14 @@ test.describe("Starter upgrade, reviewed by the author", () => {
         ...GROUP.map((path) => ({ path, content: original[path]! })),
         { path: CONTENT_MODULE, content: original[CONTENT_MODULE]! },
       ]);
-      setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
+      setStarterVersion(LANE_STARTER);
     }
   });
 
   test("R. a Theme created without the Starter's new pages: offered unselected; the Header waits for them", async ({
     page,
   }) => {
+    test.skip(onClientLane(), CURRENT_STARTER_UPGRADE_ON_START);
     // Its own setup and clean-up: the Header 97e9474 wrote (no /account
     // link), both pages removed, and the version that commit recorded.
     const PAGES = ["src/routes/account.tsx", "src/routes/order-transfer.tsx"];
@@ -956,7 +983,7 @@ test.describe("Starter upgrade, reviewed by the author", () => {
         .filter((path) => now[path] !== original[path])
         .map((path) => ({ path, content: original[path]! }));
       if (restore.length > 0) await save(page, restore);
-      setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
+      setStarterVersion(LANE_STARTER);
     }
   });
 });
