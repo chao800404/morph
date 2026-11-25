@@ -17,6 +17,8 @@ import {
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import type { D1Database } from "@cloudflare/workers-types";
 import { betterAuth } from "better-auth/minimal";
+import { APIError } from "better-auth/api";
+import { eq } from "drizzle-orm";
 import { admin, anonymous, emailOTP } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { drizzle } from "drizzle-orm/d1";
@@ -63,22 +65,24 @@ export interface CloudflareBindings {
  * Build one auth configuration for both the Cloudflare runtime and the schema CLI.
  * D1 is the source of truth for users, accounts, sessions, and verifications.
  */
-function createAuth(
+/**
+ * The origin Better Auth runs under — and so the CMS's own origin, which
+ * `/api/admin/*` and the other cookie-authenticated routes require a write to
+ * come from (`src/server/same-origin-write.ts`).
+ *
+ * Unchanged in production: the chain below is what it always was, and
+ * `resolvePublicOrigin` returns it untouched there. Outside production the
+ * request wins, because `PUBLIC_URL` is a fixed string and a dev server on
+ * another port would otherwise check its own sign-in requests against an
+ * origin it is not being served from — better-auth refuses them, and the
+ * browser reports "Failed to fetch" without naming the port. `baseURL` is in
+ * `trustedOrigins` below, so following the request is what admits it.
+ */
+export function resolveAuthBaseURL(
   env?: CloudflareBindings,
   requestUrl?: string | null,
-  additionalTrustedOrigins: readonly string[] = [],
-) {
-  const db = env
-    ? drizzle(env.DATABASE, { schema })
-    : ({} as ReturnType<typeof drizzle>);
-  // Unchanged in production: the chain below is what it always was, and
-  // `resolvePublicOrigin` returns it untouched there. Outside production the
-  // request wins, because `PUBLIC_URL` is a fixed string and a dev server on
-  // another port would otherwise check its own sign-in requests against an
-  // origin it is not being served from — better-auth refuses them, and the
-  // browser reports "Failed to fetch" without naming the port. `baseURL` is in
-  // `trustedOrigins` below, so following the request is what admits it.
-  const baseURL = resolvePublicOrigin({
+): string {
+  return resolvePublicOrigin({
     env: (env ?? {}) as PublicOriginEnv,
     configured:
       env?.PUBLIC_URL ||
@@ -87,6 +91,87 @@ function createAuth(
       DEFAULT_DEV_ORIGIN,
     requestUrl,
   });
+}
+
+/**
+ * Cookie names and attributes for a base URL.
+ *
+ * Over HTTPS the session cookies are `__Host-` cookies: Secure, `Path=/`, and
+ * no `Domain`, which a browser enforces. A `__Secure-` cookie may carry a
+ * `Domain`, so a storefront that shares a site with the CMS (`stg.example`
+ * and `admin-stg.example`) could set one for the whole site and have the CMS
+ * read it ("cookie tossing"); a `__Host-` cookie can only be set by the host
+ * it belongs to.
+ *
+ * Better Auth's `useSecureCookies` prepends `__Secure-` to every name, so it
+ * is turned off and these names are given whole; `defaultCookieAttributes`
+ * keeps every other Better Auth cookie Secure as before (those lose only the
+ * `__Secure-` prefix, which never stopped a `Domain` either).
+ *
+ * Over plain HTTP (a developer's `http://localhost`, the LAN origin, the
+ * end-to-end runs) nothing changes: Better Auth's names without a prefix, as
+ * before. A `__Host-` cookie must be Secure, and a browser refuses a Secure
+ * cookie from a plain-HTTP origin other than localhost.
+ *
+ * "Secure" is decided by Better Auth's own rule (the base URL is `https://`),
+ * so an instance that reads a session and the one that issued it still agree
+ * on the name (`src/server/auth/helpers.ts`).
+ */
+export function authCookieOptions(baseURL: string) {
+  if (!baseURL.startsWith("https://")) {
+    return { cookiePrefix: AUTH_COOKIE_PREFIX };
+  }
+  const hostCookie = (name: string) => ({
+    name: `__Host-${AUTH_COOKIE_PREFIX}.${name}`,
+    attributes: { secure: true, path: "/" },
+  });
+  return {
+    cookiePrefix: AUTH_COOKIE_PREFIX,
+    useSecureCookies: false,
+    defaultCookieAttributes: { secure: true },
+    cookies: {
+      session_token: hostCookie("session_token"),
+      dont_remember: hostCookie("dont_remember"),
+      // The admin plugin keeps the impersonating admin's own session token
+      // here; it is a session credential like the other two.
+      admin_session: hostCookie("admin_session"),
+    },
+  };
+}
+
+/** Roles that make an account CMS staff rather than a customer. */
+const STAFF_ROLES = ["admin", "user"];
+
+function isStaffRole(role: unknown): boolean {
+  return (
+    typeof role === "string" &&
+    role
+      .split(",")
+      .map((value) => value.trim())
+      .some((value) => STAFF_ROLES.includes(value))
+  );
+}
+
+type CreateAuthOptions = {
+  /**
+   * Refuse to create a session for a CMS staff account (role `admin` or
+   * `user`). Set on storefront hosts: staff sign in on the CMS host only, so
+   * a storefront, which may share a site with the CMS, never holds a staff
+   * session. Customers are unaffected.
+   */
+  refuseStaffSessions?: boolean;
+};
+
+function createAuth(
+  env?: CloudflareBindings,
+  requestUrl?: string | null,
+  additionalTrustedOrigins: readonly string[] = [],
+  options: CreateAuthOptions = {},
+) {
+  const db = env
+    ? drizzle(env.DATABASE, { schema })
+    : ({} as ReturnType<typeof drizzle>);
+  const baseURL = resolveAuthBaseURL(env, requestUrl);
 
   return betterAuth({
     database: drizzleAdapter(db, {
@@ -182,9 +267,11 @@ function createAuth(
       },
     },
     advanced: {
-      // Named here so the Live Preview proxy can know the platform's cookies
-      // from the same value; see `isPlatformCredentialCookieName`.
-      cookiePrefix: AUTH_COOKIE_PREFIX,
+      // The prefix is named here so the Live Preview proxy can know the
+      // platform's cookies from the same value; see
+      // `isPlatformCredentialCookieName`. Over HTTPS the session cookies are
+      // `__Host-` cookies; see `authCookieOptions`.
+      ...authCookieOptions(baseURL),
       ipAddress: {
         // Cloudflare overwrites cf-connecting-ip at edge; fallback to x-forwarded-for in dev
         ipAddressHeaders: ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"],
@@ -198,6 +285,28 @@ function createAuth(
     // next preview request, and a socket's lease ends it regardless.
     databaseHooks: {
       session: {
+        ...(options.refuseStaffSessions
+          ? {
+              create: {
+                async before(session: { userId: string }) {
+                  const [found] = await db
+                    .select({ role: schema.users.role })
+                    .from(schema.users)
+                    .where(eq(schema.users.id, session.userId))
+                    .limit(1);
+                  // An account that cannot be read is refused too, rather
+                  // than guessed to be a customer.
+                  if (!found || isStaffRole(found.role)) {
+                    throw new APIError("FORBIDDEN", {
+                      code: "STAFF_SIGN_IN_ON_STOREFRONT",
+                      message:
+                        "Staff accounts sign in on the CMS, not on a storefront",
+                    });
+                  }
+                },
+              },
+            }
+          : {}),
         delete: {
           async after(session) {
             await endPreviewAccess("session.delete", (hooks) =>
@@ -296,7 +405,9 @@ export function createStorefrontAuth(
   if (!trustedOrigin) {
     throw new Error("The request origin does not match the resolved storefront");
   }
-  return createAuth(env, requestUrl, [trustedOrigin]);
+  return createAuth(env, requestUrl, [trustedOrigin], {
+    refuseStaffSessions: true,
+  });
 }
 
 // Exported for Better Auth schema generation and client-side type inference.

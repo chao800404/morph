@@ -1,12 +1,84 @@
 // @vitest-environment node
 import { getCookies } from "better-auth/cookies";
 import { describe, expect, it } from "vitest";
-import { auth } from "@/auth";
+import { auth, authCookieOptions } from "@/auth";
 import {
   AUTH_COOKIE_PREFIX,
+  carriesPlatformCredentialCookie,
   isPlatformCredentialCookieName,
 } from "./platform-cookies";
 import { resetAccessCookieHeader } from "./reset-access-token";
+
+describe("the session cookies over HTTPS", () => {
+  const cookies = getCookies({
+    ...auth.options,
+    baseURL: "https://admin-stg.showtrue.com.tw",
+    advanced: {
+      ...auth.options.advanced,
+      ...authCookieOptions("https://admin-stg.showtrue.com.tw"),
+    },
+  });
+
+  it("are __Host- cookies: Secure, HttpOnly, Path=/, no Domain", () => {
+    for (const cookie of [cookies.sessionToken, cookies.dontRememberToken]) {
+      expect(cookie.name.startsWith("__Host-")).toBe(true);
+      expect(cookie.name.startsWith("__Host-__Secure-")).toBe(false);
+      expect(cookie.attributes.secure).toBe(true);
+      expect(cookie.attributes.httpOnly).toBe(true);
+      expect(cookie.attributes.path).toBe("/");
+      expect(cookie.attributes.domain).toBeUndefined();
+    }
+    expect(cookies.sessionToken.name).toBe(
+      `__Host-${AUTH_COOKIE_PREFIX}.session_token`,
+    );
+  });
+
+  it("keeps every other Better Auth cookie Secure, and a platform name", () => {
+    for (const cookie of Object.values(cookies)) {
+      expect(cookie.attributes.secure).toBe(true);
+      expect(isPlatformCredentialCookieName(cookie.name)).toBe(true);
+    }
+  });
+
+  it("are unchanged over plain HTTP (localhost, the end-to-end runs)", () => {
+    const plain = getCookies({
+      ...auth.options,
+      baseURL: "http://localhost:3000",
+      advanced: {
+        ...auth.options.advanced,
+        ...authCookieOptions("http://localhost:3000"),
+      },
+    });
+    expect(plain.sessionToken.name).toBe(
+      `${AUTH_COOKIE_PREFIX}.session_token`,
+    );
+    expect(plain.sessionToken.attributes.secure).toBe(false);
+  });
+});
+
+describe("carriesPlatformCredentialCookie", () => {
+  it("finds a platform cookie among a Theme's", () => {
+    expect(
+      carriesPlatformCredentialCookie(
+        new Headers({
+          cookie: `cart=1; __Host-${AUTH_COOKIE_PREFIX}.session_token=s`,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      carriesPlatformCredentialCookie(
+        new Headers({ cookie: `${AUTH_COOKIE_PREFIX}.session_token=s` }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is false for a Theme's cookies only, or none", () => {
+    expect(
+      carriesPlatformCredentialCookie(new Headers({ cookie: "cart=1; x=2" })),
+    ).toBe(false);
+    expect(carriesPlatformCredentialCookie(new Headers())).toBe(false);
+  });
+});
 
 describe("the platform's credential cookie names", () => {
   it("is the prefix the auth configuration actually uses", () => {
