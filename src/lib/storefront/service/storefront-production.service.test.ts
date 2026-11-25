@@ -1888,6 +1888,31 @@ describe("Theme Worker responses on the public storefront", () => {
     ]);
   });
 
+  it("drops the CMS's own __Host- session name and a site-wide Domain one", async () => {
+    // A storefront shares a site with the CMS (stg.example and
+    // admin-stg.example): a Theme answering with either would put a session
+    // cookie where the platform reads it.
+    const { service } = serviceAnswering(() => {
+      const headers = new Headers({ "content-type": "text/html" });
+      headers.append(
+        "set-cookie",
+        "__Host-better-auth.session_token=x; Path=/; Secure; HttpOnly",
+      );
+      headers.append(
+        "set-cookie",
+        "__Secure-better-auth.session_token=y; Domain=showtrue.com.tw; Path=/; Secure",
+      );
+      headers.append("set-cookie", "cart=abc; Path=/; SameSite=Lax");
+      return new Response("<p>", { headers });
+    });
+
+    const res = await service.handleRequest(req("/about"));
+
+    expect(res.headers.getSetCookie()).toEqual([
+      "cart=abc; Path=/; SameSite=Lax",
+    ]);
+  });
+
   it("keeps a Theme's own cookie", async () => {
     const { service } = serviceAnswering(
       () =>
