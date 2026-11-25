@@ -1,6 +1,7 @@
 import { expect, test as setup, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { seedClientLaneThemes } from "./helpers/client-lane-theme";
 
 const STORAGE_STATE = "e2e/.auth/user.json";
 
@@ -85,7 +86,10 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
     // the right shape and no use at all.
     const reusable = await reachedStoreSettings(probe);
     await context.close();
-    if (reusable) return;
+    if (reusable) {
+      seedClientLaneThemes();
+      return;
+    }
   }
 
   await page.goto("/sign-in");
@@ -131,4 +135,10 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
 
   fs.mkdirSync(path.dirname(STORAGE_STATE), { recursive: true });
   await page.context().storageState({ path: STORAGE_STATE });
+
+  // The client lane's dedicated Starter 31 Themes, written through the DAL in
+  // Node while nothing else writes: the store now exists, no editor has
+  // opened, and this page is left before the seed starts.
+  await page.goto("about:blank");
+  seedClientLaneThemes();
 });

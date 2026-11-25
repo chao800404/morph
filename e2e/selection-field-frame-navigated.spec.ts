@@ -22,6 +22,8 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { insertThrowawayTheme, specPreviewRuntime } from "./helpers/throwaway-theme";
+import { clientLaneTheme } from "./helpers/client-lane-theme";
+import type { ClientLaneSlot } from "../scripts/e2e-client-lane-guard.mjs";
 
 /**
  * Typing into the Inspector after the preview moved to another page by
@@ -108,7 +110,17 @@ export default function FieldCard({ title = "Card default" }: FieldCardProps) {
   },
 ];
 
-async function createThrowawayTheme(): Promise<ThemeScope> {
+/**
+ * A Theme no other test has touched. On the client lane, the lane's
+ * dedicated Starter 31 Theme for `slot`, seeded before the suite; elsewhere a
+ * throwaway Theme recording the spec's runtime, provisioned from the current
+ * Starter when the editor first reads it.
+ */
+async function createThrowawayTheme(slot: ClientLaneSlot): Promise<ThemeScope> {
+  const dedicated = clientLaneTheme(slot);
+  if (dedicated) {
+    return { storefrontId: dedicated.storefrontId, themeId: dedicated.themeId };
+  }
   const created = {
     ...themeScopeFromEditorPath(EDITOR_PATH!),
     themeId: randomUUID(),
@@ -171,7 +183,7 @@ test.describe("typing after the preview moved to another page by itself", () => 
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    scope = await createThrowawayTheme();
+    scope = await createThrowawayTheme("selection-field/typing");
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...scope,
     })) as {
@@ -290,7 +302,7 @@ test.describe("the editor adopting a route document it just created", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    own = await createThrowawayTheme();
+    own = await createThrowawayTheme("selection-field/adopting");
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...own,
     })) as {
@@ -588,7 +600,7 @@ function AsideRoute() {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    own = await createThrowawayTheme();
+    own = await createThrowawayTheme("selection-field/adopted-after-move");
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...own,
     })) as {
@@ -1119,7 +1131,7 @@ function StaticRoute() {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    own = await createThrowawayTheme();
+    own = await createThrowawayTheme("selection-field/return-paths");
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...own,
     })) as {
@@ -1370,7 +1382,14 @@ test.describe("keyboard append across the page taking up its route document", ()
   };
 
   async function freshTheme(page: Page) {
-    const theme = await createThrowawayTheme();
+    // One Theme per test, so each test takes the next of the block's slots.
+    const slots: ClientLaneSlot[] = [
+      "selection-field/keyboard-append-1",
+      "selection-field/keyboard-append-2",
+    ];
+    const slot = slots[created.length];
+    if (!slot) throw new Error("This block has a Theme slot for two tests only.");
+    const theme = await createThrowawayTheme(slot);
     created.push(theme);
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...theme,

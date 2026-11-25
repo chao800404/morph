@@ -8,11 +8,22 @@ import {
   openStylesTab,
   previewFrame,
 } from "./helpers";
+import { clientLaneTheme } from "./helpers/client-lane-theme";
 
 test.skip(
   !EDITOR_PATH,
   "Set E2E_EDITOR_PATH to the editor route of a theme with content.",
 );
+
+/**
+ * On the client lane, the lane's dedicated Starter 31 Theme; elsewhere the
+ * shared Theme. Used by the tests that open a page, switch to it and save,
+ * and that make a style edit and undo it, so that on the client lane they
+ * exercise a real Starter 31 client Theme whatever the current Starter is.
+ */
+function clientLaneEditorPath(): string {
+  return clientLaneTheme("editor")?.editorPath ?? EDITOR_PATH!;
+}
 
 test.describe("visual editor", () => {
   test("the Code file tree scrolls when its rows exceed the sidebar", async ({
@@ -56,7 +67,7 @@ test.describe("visual editor", () => {
     page,
   }) => {
     test.setTimeout(180_000);
-    await openEditor(page);
+    await openEditor(page, clientLaneEditorPath());
     const routePath = `/e2e-page-${Date.now().toString(36)}`;
     const routeButton = page.getByRole("button", {
       name: routePath,
@@ -407,7 +418,7 @@ test.describe("visual editor", () => {
   test("a style edit reaches the canvas and can be reversed", async ({
     page,
   }) => {
-    await openEditor(page);
+    await openEditor(page, clientLaneEditorPath());
     await enableSelection(page);
 
     // Which element the canvas exposes first differs by engine, and not every
