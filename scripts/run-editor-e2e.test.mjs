@@ -144,41 +144,71 @@ if (tool === "vite") {
 } else if (tool === "playwright") {
   if (process.env.FAKE_ARGS_FILE) writeFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(rest));
   // The client lane's evidence, as auth.setup's seed and the specs leave it:
-  // every slot's dedicated Theme on the fixture, and the run's D1 holding
-  // each Theme row. FAKE_CLIENT_LANE=none leaves nothing; =start has the
-  // Themes record "start" by the end of the suite.
+  // the shared slot (on the ids the runner allocated and gave the suite as
+  // E2E_EDITOR_PATH) and every slot's dedicated Theme on the fixture, the
+  // run's D1 holding each Theme row, and a preview ticket for the shared slot
+  // and the editor slot. FAKE_CLIENT_LANE=none leaves nothing; =start has the
+  // Themes record "start" by the end of the suite; =throwaway also seeds one
+  // throwaway and previews it; =unseeded previews a Theme nothing seeded, as
+  // a raw insert or a direct navigation would.
   if (process.env.MORPH_E2E_CLIENT_LANE_THEMES && process.env.FAKE_CLIENT_LANE !== "none") {
     const root = process.env.FAKE_REPO_ROOT;
     const guard = await import(root + "/scripts/e2e-client-lane-guard.mjs");
     const Database = createRequire(root + "/package.json")("better-sqlite3");
     const expected = guard.readFixtureFileDigests();
-    const storefrontId = "00000000-0000-4000-8000-000000000002";
+    const shared = JSON.parse(process.env.MORPH_E2E_CLIENT_LANE_SHARED);
+    if (process.env.E2E_EDITOR_PATH !== shared.editorPath) {
+      console.error("FAKE: E2E_EDITOR_PATH is not the shared slot's editor path");
+      process.exit(3);
+    }
+    const storefrontId = shared.storefrontId;
     const id = (n) => "00000000-0000-4000-8000-" + n.toString(16).padStart(12, "0");
-    const themes = guard.CLIENT_LANE_THEME_SLOTS.map((slot, i) => {
-      const entry = { slot, storefrontId, themeId: id(0x100 + i), indexTemplateId: id(0x200 + i) };
-      return {
-        ...entry,
-        editorPath: guard.clientLaneEditorPath(entry),
-        seeded: {
-          storefrontId, themeId: entry.themeId, rows: 1, rowStorefrontId: storefrontId,
-          previewRuntime: null, framework: null, deletedAt: null, starterTemplateVersion: 31,
-          files: expected,
-          templates: [
-            { id: entry.indexTemplateId, type: "index", routePath: null },
-            { id: id(0x300 + i), type: "layout", routePath: null },
-            { id: id(0x400 + i), type: "product", routePath: null },
-          ],
-        },
-      };
+    const seededAs = (entry, i) => ({
+      storefrontId, themeId: entry.themeId, rows: 1, rowStorefrontId: storefrontId,
+      previewRuntime: null, framework: null, deletedAt: null, starterTemplateVersion: 31,
+      files: expected,
+      templates: [
+        { id: entry.indexTemplateId, type: "index", routePath: null },
+        { id: id(0x300 + i), type: "layout", routePath: null },
+        { id: id(0x400 + i), type: "product", routePath: null },
+      ],
     });
+    const themes = [
+      ...guard.CLIENT_LANE_THEME_SLOTS.map((slot, i) => ({
+        slot, storefrontId, themeId: id(0x100 + i), indexTemplateId: id(0x200 + i), i,
+      })),
+      { slot: guard.CLIENT_LANE_SHARED_SLOT, storefrontId, themeId: shared.themeId, indexTemplateId: shared.indexTemplateId, i: 0x50 },
+    ].map(({ i, ...entry }) => ({ ...entry, editorPath: guard.clientLaneEditorPath(entry), seeded: seededAs(entry, i) }));
     writeFileSync(process.env.MORPH_E2E_CLIENT_LANE_THEMES, JSON.stringify({ version: 1, starterVersion: 31, themes }));
     appendFileSync(process.env.MORPH_E2E_CLIENT_LANE_USES, JSON.stringify({ slot: "editor", themeId: themes[0].themeId, test: "fake" }) + "\\n");
+    const throwaway = { storefrontId, themeId: id(0x600), indexTemplateId: id(0x700) };
+    if (process.env.FAKE_CLIENT_LANE === "throwaway") {
+      appendFileSync(
+        process.env.MORPH_E2E_CLIENT_LANE_SEEDS,
+        guard.clientLaneSeedLine({ ...throwaway, name: "fake throwaway", test: "fake", seeded: seededAs(throwaway, 0x60) }),
+      );
+    }
     const d1 = process.env.MORPH_E2E_STATE_DIR + "/v3/d1/miniflare-D1DatabaseObject";
     mkdirSync(d1, { recursive: true });
     const db = new Database(d1 + "/fake.sqlite");
-    db.exec("CREATE TABLE IF NOT EXISTS storefront_themes (id TEXT PRIMARY KEY, preview_runtime TEXT)");
-    for (const theme of themes) {
-      db.prepare("INSERT INTO storefront_themes VALUES (?, ?)").run(theme.themeId, process.env.FAKE_CLIENT_LANE === "start" ? "start" : null);
+    db.exec(
+      "CREATE TABLE IF NOT EXISTS storefront_themes (id TEXT PRIMARY KEY, storefront_id TEXT, preview_runtime TEXT, deleted_at TEXT, metadata TEXT);" +
+        "CREATE TABLE IF NOT EXISTS storefront_theme_preview_content_tickets (preview_id TEXT PRIMARY KEY, storefront_id TEXT, theme_id TEXT)",
+    );
+    const rows = [...themes, ...(process.env.FAKE_CLIENT_LANE === "throwaway" ? [throwaway] : [])];
+    for (const theme of rows) {
+      db.prepare("INSERT INTO storefront_themes VALUES (?, ?, ?, NULL, ?)").run(
+        theme.themeId,
+        storefrontId,
+        process.env.FAKE_CLIENT_LANE === "start" ? "start" : null,
+        JSON.stringify({ starterTemplateVersion: 31 }),
+      );
+    }
+    const tickets = [shared.themeId, themes[0].themeId];
+    if (process.env.FAKE_CLIENT_LANE === "throwaway") tickets.push(throwaway.themeId);
+    if (process.env.FAKE_CLIENT_LANE === "unseeded") tickets.push(id(0x999));
+    for (const [n, themeId] of tickets.entries()) {
+      db.prepare("INSERT INTO storefront_theme_preview_content_tickets VALUES (?, ?, ?)").run("preview-" + n, storefrontId, themeId);
     }
     db.close();
   }
@@ -431,7 +461,10 @@ before(async () => {
   );
   await writeFile(
     path.join(scratch, ".env.e2e"),
-    "E2E_EMAIL=runner-test@morph.invalid\nE2E_PASSWORD=unused\nE2E_EDITOR_PATH=/unused\n",
+    // An editor path on the storefront's default Theme, as CI writes it: the
+    // client lane takes its storefront and replaces the Theme with its shared
+    // slot.
+    "E2E_EMAIL=runner-test@morph.invalid\nE2E_PASSWORD=unused\nE2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004\n",
   );
   // The client lane's guard reads the Starter 31 fixture from the checkout.
   const fixture = "src/lib/storefront/__fixtures__/starter-workspace/v31.json";
@@ -1680,12 +1713,59 @@ describe("the client lane", () => {
         MORPH_E2E_REPORT_PATH: report,
       });
       assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
-      assert.match(result.stdout, /\[e2e\] client lane verified: 7 dedicated Starter 31 Themes/);
+      assert.match(
+        result.stdout,
+        /\[e2e\] client lane verified: 8 Starter 31 Themes seeded \(slots, the shared slot and throwaways\).*; 2 Theme\(s\) previewed, every one of them seeded/,
+      );
       const verdict = JSON.parse(await readFile(`${report}.client-lane.json`, "utf8"));
       assert.equal(verdict.ok, true);
       assert.equal(verdict.lane, "client");
-      assert.equal(verdict.afterSuite.length, 7);
+      assert.equal(verdict.afterSuite.length, 8);
+      assert.equal(verdict.previewed.length, 2);
       assert.match(verdict.uses, /"slot":"editor"/);
+      // The suite got the shared slot, not the storefront's default Theme.
+      const shared = JSON.parse(verdict.shared);
+      assert.equal(shared.storefrontId, "00000000-0000-4000-8000-000000000002");
+      assert.notEqual(shared.themeId, "00000000-0000-4000-8000-000000000003");
+      assert.equal(shared.editorPath, `/store/${shared.storefrontId}/themes/${shared.themeId}/editor?templateId=${shared.indexTemplateId}`);
+      assert.match(result.stdout, new RegExp(`E2E_EDITOR_PATH ${shared.editorPath.replace(/[?]/g, "\\?")}`));
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "registers a throwaway the specs seeded and reads it back after the suite",
+    { timeout: 90_000 },
+    async () => {
+      const report = path.join(scratch, "client-lane-throwaway", "shard.json");
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        MORPH_E2E_REPORT_PATH: report,
+        FAKE_CLIENT_LANE: "throwaway",
+      });
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      const verdict = JSON.parse(await readFile(`${report}.client-lane.json`, "utf8"));
+      assert.equal(verdict.ok, true);
+      assert.equal(verdict.afterSuite.length, 9);
+      assert.match(verdict.seeds, /"name":"fake throwaway"/);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "refuses a run that previewed a Theme the lane never seeded",
+    { timeout: 90_000 },
+    async () => {
+      const report = path.join(scratch, "client-lane-unseeded", "shard.json");
+      const result = await runRunner({
+        MORPH_E2E_TRANSPORT: "local-sidecar",
+        MORPH_E2E_REPORT_PATH: report,
+        FAKE_CLIENT_LANE: "unseeded",
+      });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /CLIENT_LANE_UNVERIFIED: .*the run previewed Theme "00000000-0000-4000-8000-000000000999" .*which the lane never seeded/);
+      const verdict = JSON.parse(await readFile(`${report}.client-lane.json`, "utf8"));
+      assert.equal(verdict.ok, false);
       assert.deepEqual(result.leftBehind, []);
     },
   );

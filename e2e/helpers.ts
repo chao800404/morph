@@ -23,6 +23,11 @@ import {
  *
  * Storefront and theme ids belong to whoever is running this, so they come from
  * the environment rather than being pinned to one developer's database.
+ *
+ * On the client lane the runner replaces the `.env.e2e` value before
+ * Playwright loads any spec: the storefront stays, the Theme is the lane's
+ * shared slot, a pinned Starter 31 Theme auth.setup seeds, not the
+ * storefront's own default Theme (scripts/e2e-client-lane-guard.mjs).
  */
 export const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
 
