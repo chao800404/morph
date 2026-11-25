@@ -38,6 +38,14 @@ import {
 
 type StorefrontThemeRevisionRow = typeof storefrontThemeRevisions.$inferSelect;
 
+/** One file `initStarterTheme` writes into an empty workspace. */
+export type StarterThemeInitFile = Readonly<{
+  path: string;
+  content: string;
+  mimeType: string;
+  isEntry?: boolean;
+}>;
+
 function mapRevisionRowToDTO(
   row: StorefrontThemeRevisionRow,
 ): StorefrontThemeRevisionDTO {
@@ -561,11 +569,17 @@ export const storefrontThemeFileDal = {
 
   /**
    * Explicitly initialize starter theme workspace files.
+   *
+   * `options.files` replaces the current Starter's files with a given set
+   * (the client E2E lane's pinned Starter 31 workspace); every guard below
+   * runs on that set exactly as on the current Starter's. Without it the
+   * current Starter is written.
    */
   async initStarterTheme(
     storefrontId: string,
     themeId: string,
     createdBy?: string,
+    options?: { files?: readonly StarterThemeInitFile[] },
   ): Promise<StorefrontThemeFileDTO[]> {
     const isOwner = await this.verifyOwnership(storefrontId, themeId);
     if (!isOwner)
@@ -573,7 +587,8 @@ export const storefrontThemeFileDal = {
 
     const now = new Date().toISOString();
     const revisionId = crypto.randomUUID();
-    const starterFiles = starterThemeWorkspaceFiles();
+    const starterFiles: readonly StarterThemeInitFile[] =
+      options?.files ?? starterThemeWorkspaceFiles();
     const sourceIndex = deriveThemeSourceIndex({
       files: starterFiles,
       scope: "workspace",
