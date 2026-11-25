@@ -116,7 +116,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ),
 }));
 // The real panel, with the promotion the Inspector offers for fixed text
-// reachable by one button (as in `visual-editor-shell-round-trip.test.tsx`).
+// reachable by one button (as in `visual-editor-shell-round-trip.harness.tsx`).
 vi.mock("./editor-assistant-panel", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("./editor-assistant-panel")>();
