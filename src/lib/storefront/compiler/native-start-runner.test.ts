@@ -252,6 +252,82 @@ describe("a native Start build in the build runner", () => {
   );
 
   it(
+    "prerenders the Starter's own home with the author's values and without the sections the author hid",
+    { timeout: 240_000 },
+    async () => {
+      // The shipped Starter, unchanged: its root reads "/" through
+      // @morph/sdk/start, and from 32 a refused read is a 500, not defaults.
+      const input = nativeInput("native-runner-starter-home", ["/"], "none");
+      const result = await run({
+        ...input,
+        contentSnapshot: {
+          publicationId: "pub",
+          storefrontId: "store",
+          themeId: "theme",
+          documents: [
+            {
+              item: {
+                id: "home",
+                publicationId: "pub",
+                itemType: "template",
+                contentId: "home",
+                revisionId: "home-rev",
+                metadata: { templateType: "index" },
+              },
+              document: {
+                version: 1,
+                sections: [
+                  {
+                    id: "starter-hero",
+                    type: "hero",
+                    enabled: true,
+                    props: { heading: "starter-author-heading" },
+                  },
+                  {
+                    id: "starter-newsletter",
+                    type: "newsletter",
+                    enabled: false,
+                    props: {},
+                  },
+                ],
+              },
+            },
+            {
+              item: {
+                id: "shell",
+                publicationId: "pub",
+                itemType: "template",
+                contentId: "layout",
+                revisionId: "layout-rev",
+                metadata: { templateType: "layout" },
+              },
+              document: {
+                version: 1,
+                sections: [
+                  {
+                    id: "starter-footer",
+                    type: "footer",
+                    enabled: false,
+                    props: {},
+                  },
+                ],
+              },
+            },
+          ],
+        } as never,
+      });
+      const html = page(result, "");
+      expect(html).toContain("starter-author-heading");
+      expect(html).not.toContain("Objects for everyday rituals.");
+      // Hidden by the author: neither the section nor its defaults.
+      expect(html).not.toContain("Join our newsletter");
+      expect(html).not.toContain("<footer");
+      expect(html).not.toContain("© Online Store");
+      expect(result.success && result.contentDependency).toBe("dependent");
+    },
+  );
+
+  it(
     "builds a prerendered page that reads no content, with nothing sealed",
     { timeout: 240_000 },
     async () => {
