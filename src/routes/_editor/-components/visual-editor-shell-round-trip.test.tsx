@@ -23,6 +23,7 @@ import {
   describe,
   expect,
   it,
+  onTestFinished,
   vi,
 } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
@@ -33,6 +34,7 @@ import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.q
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  HISTORY_NEWER_EDIT_MESSAGE,
   INLINE_TEXT_NOT_SAVED_MESSAGE,
   INLINE_TEXT_REFUSED_MESSAGE,
   PREVIEW_PRESENTATION_SYNCING_MESSAGE,
@@ -11183,9 +11185,69 @@ function Home() {
          */
         it("input of the section still pending when Undo is pressed is saved first, as its own entry; that Undo then refuses", async () => {
           const notice = notices();
-          const { receive } = await storedFieldEdit();
-          // Typed, and Undo pressed inside the 300 ms debounce.
-          await typeThenUndo("New", "Newer");
+          // A controlled clock instead of real 1200 ms sleeps: only setTimeout
+          // and clearTimeout are faked (frames, React and the mock keep
+          // running) and the clock follows real time so `waitFor` works.
+          // `quiet` first waits for the signals that the write path is idle
+          // (the expected write was sent and its answer taken), then runs the
+          // same 1200 ms window `settle` slept through on the fake clock, so
+          // a write still due inside that window is sent by this run and
+          // fails the count assertion that follows.
+          vi.useFakeTimers({
+            toFake: ["setTimeout", "clearTimeout"],
+            shouldAdvanceTime: true,
+          });
+          onTestFinished(() => {
+            vi.useRealTimers();
+          });
+          const quiet = async (writes: number) => {
+            await waitFor(() => expect(sent()).toHaveLength(writes), {
+              timeout: 10_000,
+            });
+            await act(async () => {
+              await Promise.allSettled(
+                updateSectionProps.mock.results.map((r) => r.value),
+              );
+              await vi.advanceTimersByTimeAsync(1_200);
+            });
+          };
+          const press = async (name: "Undo" | "Redo", writes: number) => {
+            await waitFor(() =>
+              expect(
+                screen.getByRole("button", { name }).hasAttribute("disabled"),
+              ).toBe(false),
+            );
+            fireEvent.click(screen.getByRole("button", { name }));
+            await quiet(writes);
+          };
+
+          stored = { ...STORED };
+          const { receive } = await openSection({ ...STORED });
+          // `heading` Hello -> New: one write, one entry.
+          await type("Hello", "New");
+          await quiet(1);
+          await reread(receive);
+          expect(sent()).toHaveLength(1);
+          expect(stored).toEqual({ heading: "New" });
+          expect(depth()).toBe("1");
+
+          // Typed (blur stages it; the 300 ms debounce timer is on the
+          // controlled clock, so it cannot leave), the frame acknowledges its
+          // preview (`flushFrames`: the default post mock acknowledges after a
+          // microtask), and Undo is pressed with the input still pending. Undo
+          // then captures a confirmed presentation proof, which the run
+          // needs to get past the "preview is still syncing" gate and reach
+          // the newer-edit guard. Pressed before that acknowledgement, the old
+          // test was refused on the syncing gate, not on the newer edit.
+          const field = (await screen.findAllByDisplayValue("New"))[0]!;
+          const undoButton = screen.getByRole("button", { name: "Undo" });
+          expect(undoButton.hasAttribute("disabled")).toBe(false);
+          fireEvent.input(field, { target: { value: "Newer" } });
+          fireEvent.blur(field);
+          await flushFrames();
+          expect(sent(), "the input is still pending").toHaveLength(1);
+          fireEvent.click(undoButton);
+          await quiet(2);
 
           expect(sent(), "the input only, no undo after it").toHaveLength(2);
           expect(sent()[1]!.props).toEqual({ heading: "Newer" });
@@ -11196,15 +11258,15 @@ function Home() {
           expect(depth(), "both entries kept").toBe("2");
           expect(historyButtons()).toEqual({ undo: true, redo: false });
           expect(errors(notice)).toContainEqual(
-            expect.stringMatching(/^Could not undo/),
+            `Could not undo: ${HISTORY_NEWER_EDIT_MESSAGE}`,
           );
           expect(unconfirmedCount()).toBeNull();
-          await settle();
+          await quiet(2);
           expect(sent(), "nothing sent after it").toHaveLength(2);
 
           // The input's entry is on top: its undo puts back "New".
           await reread(receive);
-          await undo();
+          await press("Undo", 3);
           expect(sent()).toHaveLength(3);
           expect(sent()[2]).toMatchObject({
             props: { heading: "New" },
@@ -11216,7 +11278,7 @@ function Home() {
 
           // Then the older entry, under it: "Hello".
           await reread(receive);
-          await undo();
+          await press("Undo", 4);
           expect(sent()).toHaveLength(4);
           expect(sent()[3]!.props).toEqual({ heading: "Hello" });
           expect(stored).toEqual({ heading: "Hello" });
@@ -11225,13 +11287,13 @@ function Home() {
 
           // Redo in the same order: the older entry, then the input.
           await reread(receive);
-          await redo();
+          await press("Redo", 5);
           expect(sent()).toHaveLength(5);
           expect(sent()[4]!.props).toEqual({ heading: "New" });
           expect(depth()).toBe("1");
           expect(historyButtons()).toEqual({ undo: true, redo: true });
           await reread(receive);
-          await redo();
+          await press("Redo", 6);
           expect(sent()).toHaveLength(6);
           expect(sent()[5]!.props).toEqual({ heading: "Newer" });
           expect(stored).toEqual({ heading: "Newer" });
@@ -11274,6 +11336,72 @@ function Home() {
           expect(stored).toEqual({ ...STORED });
           expect(depth()).toBe("0");
           expect(historyButtons()).toEqual({ undo: false, redo: true });
+        });
+
+        /**
+         * The same rule on the reset path, with the preview's presentation
+         * acknowledged before Undo is pressed (as the test above does for a
+         * plain content undo): the undo of a first Add runs through
+         * `handleResetContentFields` with a history attempt, which first
+         * sends the section's pending input (`flushTemplatePendingProps`),
+         * and then checks the attempt's entry is still on top
+         * (`history.isOnTop`). The input recorded its own entry above it, so
+         * the reset is not sent and the newer-edit message is shown. The old
+         * test above presses Undo before the acknowledgement and asserts
+         * only /^Could not undo/, so it does not tell these guards apart
+         * from the "preview is still syncing" refusal.
+         */
+        it("input pending when the undo of a first Add is pressed, preview acknowledged: sent first as its own entry; the reset then refuses with the newer-edit message", async () => {
+          const notice = notices();
+          vi.useFakeTimers({
+            toFake: ["setTimeout", "clearTimeout"],
+            shouldAdvanceTime: true,
+          });
+          onTestFinished(() => {
+            vi.useRealTimers();
+          });
+          const quiet = async (writes: number) => {
+            await waitFor(() => expect(sent()).toHaveLength(writes), {
+              timeout: 10_000,
+            });
+            await act(async () => {
+              await Promise.allSettled(
+                updateSectionProps.mock.results.map((r) => r.value),
+              );
+              await vi.advanceTimersByTimeAsync(1_200);
+            });
+          };
+
+          const { receive } = await resetOnlyWrite();
+          expect(sent()).toHaveLength(1);
+          expect(sent()[0]).not.toHaveProperty("resetProps");
+          expect(depth()).toBe("1");
+
+          const field = (await screen.findAllByDisplayValue("Hello"))[0]!;
+          const undoButton = screen.getByRole("button", { name: "Undo" });
+          expect(undoButton.hasAttribute("disabled")).toBe(false);
+          fireEvent.input(field, { target: { value: "Hi" } });
+          fireEvent.blur(field);
+          await flushFrames();
+          expect(sent(), "the input is still pending").toHaveLength(1);
+          fireEvent.click(undoButton);
+          await quiet(2);
+
+          expect(sent(), "the input only, no reset after it").toHaveLength(2);
+          expect(sent()[1]!.props).toEqual({ heading: "Hi" });
+          expect(sent()[1]).not.toHaveProperty("resetProps");
+          expect(sent()[1]).toMatchObject({ expectedSourceGeneration: 1 });
+          expect(stored.heading).toBe("Hi");
+          expect(stored, "the Add is not undone").toHaveProperty("items");
+          expect(depth(), "both entries kept").toBe("2");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice)).toContainEqual(
+            `Could not undo: ${HISTORY_NEWER_EDIT_MESSAGE}`,
+          );
+          expect(unconfirmedCount()).toBeNull();
+          await quiet(2);
+          expect(sent(), "nothing sent after it").toHaveLength(2);
+          void receive;
         });
       });
 
