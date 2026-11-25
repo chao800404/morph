@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { expect, test, type Frame, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Frame,
+  type Page,
+} from "@playwright/test";
 
 import { queryLifecycleD1 } from "../scripts/verify-published-artifact.mjs";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
@@ -22,6 +28,7 @@ import {
   THEMES,
   latestRelease,
   openEditor,
+  openPublish,
   publishShowingRelease,
   serverFn,
   signedInPage,
@@ -89,7 +96,18 @@ import {
  *      with it this case). The released artifact's prerendered home HTML must
  *      carry the author's values and neither the hidden newsletter nor the
  *      hidden footer (markers or default text); then the public site's SSR,
- *      content answer, in-site navigation and a later draft staying out.
+ *      content answer, in-site navigation and a later draft staying out;
+ *   5. refused reads: the preview's `/_serverFn` read without preview access
+ *      (no session, and a session without this preview's grant), and the
+ *      public site's reads naming a content origin, a render context or a
+ *      release it may not see;
+ *   6. a sealed-pass read that still cannot read content fails the build: a
+ *      test-only static route (`src/routes/e2e-v32-unsealed.tsx`, ssg) whose
+ *      loader reads a path no static route of the build has, so the sealed
+ *      pass refuses it (NATIVE_PRERENDER_PATH_NOT_SEALED). The publish build
+ *      fails with NATIVE_PRERENDER_CONTENT_UNAVAILABLE naming that path, no
+ *      release is made or activated, and the public site keeps serving case
+ *      4's release. Last: it leaves a failed build behind.
  *
  * Containers only, run on its own: publishing builds in the Sandbox
  * container, and it moves the storefront's active release to this Theme's.
@@ -150,6 +168,31 @@ const FOOTER = "starter-footer";
 const FOOTER_DEFAULT = "© Online Store";
 /** THEME_PREVIEW_START_CONTENT_ORIGIN's host: never written into a page. */
 const PREVIEW_CONTENT_HOST = "morph-preview-content.invalid";
+/** What the preview gateway tells a request it refuses (preview-access-request.ts). */
+const PREVIEW_REFUSAL = "Preview access required";
+/** What Core's content endpoint answers a render context it cannot verify. */
+const RENDER_CONTEXT_REFUSAL = "RENDER_CONTEXT_INVALID";
+
+/** Case 6: a static route whose loader reads a path no static route has. */
+const UNSEALED_PATH = "/e2e-v32-unsealed";
+const NEVER_SEALED_PATH = "/e2e-v32-never-sealed";
+/** nativeRefusedReadsMessage (theme-prerender-content.ts). */
+const SEALED_PASS_REFUSAL = "NATIVE_PRERENDER_CONTENT_UNAVAILABLE";
+const UNSEALED_ROUTE = {
+  path: "src/routes/e2e-v32-unsealed.tsx",
+  content: `import { createFileRoute } from "@tanstack/react-router";
+import { morph } from "../morph/content";
+
+export const Route = createFileRoute("${UNSEALED_PATH}")({
+  loader: () => morph.pages.get("${NEVER_SEALED_PATH}"),
+  component: V32Unsealed,
+});
+
+function V32Unsealed() {
+  return <main data-v32-unsealed="">v32 unsealed route</main>;
+}
+`,
+} as const;
 
 const RUN = randomUUID().slice(0, 8);
 const HERO_MARKER = `v32-hero-${RUN}`;
@@ -471,6 +514,19 @@ async function previewDocument(page: Page): Promise<Frame> {
   return found!;
 }
 
+/** What a browser context gets for `url`, as a top-level navigation. */
+async function visit(context: BrowserContext, url: string) {
+  const page = await context.newPage();
+  try {
+    const response = await page.goto(url, { waitUntil: "commit" });
+    expect(response, `a response for ${url}`).not.toBeNull();
+    expect(response!.url(), "answered by the URL itself").toBe(url);
+    return { status: response!.status(), body: await response!.text() };
+  } finally {
+    await page.close();
+  }
+}
+
 test.describe("Starter 32 on the full Start runtime", () => {
   test.describe.configure({ mode: "serial", timeout: 30 * 60_000 });
   test.use({ actionTimeout: 60_000 });
@@ -492,6 +548,11 @@ test.describe("Starter 32 on the full Start runtime", () => {
 
   /** An anonymous visitor on the public site (case 4). */
   let visitor: Page | null = null;
+  /** The in-site `/_serverFn` reads of the test route, in the preview (case 2) and on the public site (case 4). */
+  let previewPageRead: ServerFnCall | null = null;
+  let publicPageRead: ServerFnCall | null = null;
+  /** Case 4's release, which case 6's failed build must leave serving. */
+  let servingRelease = "";
 
   const queryD1 = (sql: string, ...params: unknown[]) =>
     queryLifecycleD1(STATE_DIR!, sql, ...params);
@@ -826,6 +887,7 @@ test.describe("Starter 32 on the full Start runtime", () => {
     expect(read.body, "and the layout's").toContain(FOOTER);
     expect(read.body, "not the hidden section's value").not.toContain(HIDDEN_MARKER);
     expect(read.body, "not the hidden Footer's value").not.toContain(FOOTER_MARKER);
+    previewPageRead = read;
 
     // Back to / with the route's own <Link>: another /_serverFn read, and the
     // Starter's home as its Document says, not as the components' defaults.
@@ -932,6 +994,7 @@ test.describe("Starter 32 on the full Start runtime", () => {
       release,
       publicOrigin(),
     );
+    servingRelease = release;
 
     // The released artifact itself: the prerendered home, as the build wrote it.
     const prerendered = readFileSync(
@@ -989,6 +1052,7 @@ test.describe("Starter 32 on the full Start runtime", () => {
     expect(visitorReads.contentReads, "no /_morph/content read from the browser").toEqual(
       [],
     );
+    publicPageRead = read;
 
     // A draft written after the publish stays out of the public site, on
     // both read paths.
@@ -1010,5 +1074,160 @@ test.describe("Starter 32 on the full Start runtime", () => {
     expect(again.status).toBe(200);
     expect(again.body).toContain(SHOWN_MARKER);
     expect(again.body).not.toContain(DRAFT_MARKER);
+  });
+
+  test("a read without preview access, or naming a release it may not see, is refused and says why", async ({
+    browser,
+  }) => {
+    const previewRead = previewPageRead!;
+    const publicRead = publicPageRead!;
+    const draftValues = [SHOWN_MARKER, DRAFT_MARKER, HIDDEN_MARKER];
+
+    // Control: the preview tab, holding its grant, gets the read.
+    const granted = await fetchIn(tab!, previewRead.url, replayHeaders(previewRead));
+    expect(granted.status, "the granted tab's read").toBe(200);
+    expect(granted.body).toContain(SHOWN_SLOT);
+
+    // The same /_serverFn read in a browser with no session, and in one
+    // signed in without this preview's grant: refused by the preview
+    // gateway, saying so, with no draft byte.
+    const stranger = await browser.newContext();
+    try {
+      const refused = await visit(stranger, previewRead.url);
+      expect(refused.status, "no session").toBe(401);
+      expect(refused.body).toContain(PREVIEW_REFUSAL);
+      for (const value of draftValues) expect(refused.body).not.toContain(value);
+    } finally {
+      await stranger.close();
+    }
+    const signedIn = await signedInPage(browser);
+    try {
+      const refused = await visit(signedIn.context(), previewRead.url);
+      expect(refused.status, "a session is not a preview grant").toBe(401);
+      expect(refused.body).toContain(PREVIEW_REFUSAL);
+      for (const value of draftValues) expect(refused.body).not.toContain(value);
+    } finally {
+      await signedIn.context().close();
+    }
+
+    // The public site: a /_serverFn read that names the preview's content
+    // address and a render context of its own reads the active release, not
+    // anything it named (Core drops inbound x-morph-* headers).
+    const forged = await fetchIn(visitor!, publicRead.url, {
+      ...replayHeaders(publicRead),
+      "x-morph-content-origin": `http://${PREVIEW_CONTENT_HOST}`,
+      "x-morph-render-context": "v1.forged.forged",
+    });
+    expect(forged.status).toBe(200);
+    expect(forged.body).toContain(SHOWN_MARKER);
+    expect(forged.body).not.toContain(DRAFT_MARKER);
+    expect(forged.body).not.toContain(HIDDEN_MARKER);
+
+    // A content read naming a release Core did not resolve for this request
+    // is refused, by name, rather than read as the active release.
+    const pinned = await fetchIn(
+      visitor!,
+      `/_morph/content?path=${encodeURIComponent(PAGE_PATH)}`,
+      { "x-morph-render-context": "v1.forged.forged" },
+    );
+    expect(pinned.status).toBe(409);
+    expect(pinned.body).toContain(RENDER_CONTEXT_REFUSAL);
+    for (const value of draftValues) expect(pinned.body).not.toContain(value);
+  });
+
+  // The read-failure trap, at build time. Starter 32 rejects a refused read
+  // instead of rendering defaults, so a native build's content-less first
+  // pass stops and its sealed pass decides. Here the sealed pass cannot read
+  // either: the route's loader names a path no static route of this build
+  // has. That must be a failed build, never static HTML from defaults, and
+  // the site must stay on the release it was serving.
+  test("a sealed-pass read that still cannot read content fails the publish build and leaves the serving release live", async () => {
+    const page = shared!;
+    const before = await harness!.publishedState();
+    expect(before.active, "case 4's release is serving").toBe(servingRelease);
+
+    const written = await writeThemeFiles(page, scope!, [UNSEALED_ROUTE]);
+    expect(written.success, JSON.stringify(written)).toBe(true);
+    expect((await workspace(page))[UNSEALED_ROUTE.path]).toBe(UNSEALED_ROUTE.content);
+    const ensured = (await serverFn(page, THEMES, "ensureStorefrontThemeRouteTemplate", {
+      ...scope!,
+      routePath: UNSEALED_PATH,
+    })) as { success: boolean; message?: string; data?: { id: string } };
+    expect(ensured.success, ensured.message).toBe(true);
+    const unsealedTemplateId = ensured.data!.id;
+    const draft = await template(page, unsealedTemplateId);
+    const policy = (await serverFn(page, THEMES, "updateStorefrontThemeRenderPolicy", {
+      ...scope!,
+      templateId: unsealedTemplateId,
+      expectedDraftGeneration: draft.draftGeneration,
+      expectedSourceGeneration: await themeSourceGeneration(page, scope!),
+      setting: { scope: "page", policy: { mode: "ssg" } },
+    })) as { success: boolean; message?: string; error?: string };
+    expect(policy.success, `${UNSEALED_PATH} ssg: ${policy.error ?? policy.message}`).toBe(
+      true,
+    );
+    expect(
+      (await template(page, unsealedTemplateId)).document.renderPolicy?.mode,
+    ).toBe("ssg");
+
+    const builds = () =>
+      queryD1(
+        "SELECT id, status, error_message FROM storefront_theme_builds WHERE theme_id = ?1 ORDER BY created_at DESC",
+        scope!.themeId,
+      ) as { id: string; status: string; error_message: string | null }[];
+    const buildsBefore = new Set(builds().map((row) => row.id));
+
+    await openEditor(
+      page,
+      `/store/${scope!.storefrontId}/themes/${scope!.themeId}/editor?templateId=${unsealedTemplateId}&routePath=${UNSEALED_PATH}`,
+    );
+    await openPublish(page);
+    let finished: { id: string; status: string; error_message: string | null } | undefined;
+    await expect
+      .poll(
+        () => {
+          finished = builds().find(
+            (row) =>
+              !buildsBefore.has(row.id) &&
+              // StorefrontThemeBuildStatus: queued and building are not done.
+              row.status !== "queued" &&
+              row.status !== "building",
+          );
+          return finished?.status ?? null;
+        },
+        { timeout: 9 * 60_000, message: "the publish build finished" },
+      )
+      .not.toBeNull();
+    test.info().annotations.push({
+      type: "observed",
+      description: JSON.stringify(finished),
+    });
+    expect(finished!.status, "the publish build failed").toBe("failed");
+    expect(finished!.error_message ?? "", "it says why, by name").toContain(
+      SEALED_PASS_REFUSAL,
+    );
+    expect(finished!.error_message ?? "", "and names the unreadable path").toContain(
+      NEVER_SEALED_PATH,
+    );
+    await expect(
+      page.locator("[data-editor-save-status]"),
+      "the editor does not report a publish",
+    ).not.toHaveAttribute("aria-label", "Published", { timeout: 60_000 });
+
+    // No release was made or activated: the site stays on case 4's.
+    const after = await harness!.publishedState();
+    expect(after.active, "the serving release is unchanged").toBe(servingRelease);
+    expect(after.releases, "no release was made").toBe(before.releases);
+    const storefront = storefrontFetcher(publicOrigin());
+    const home = await storefront("/");
+    expect(home.status).toBe(200);
+    expectHomeHtml(home.body, "public / (after the failed build)");
+    const other = await storefront(PAGE_PATH);
+    expect(other.status).toBe(200);
+    expectPageHtml(other.body, SHOWN_MARKER, `public ${PAGE_PATH} (after the failed build)`);
+    const unsealed = await storefront(UNSEALED_PATH);
+    expect(unsealed.body, "the failed build's route is not served").not.toContain(
+      "data-v32-unsealed",
+    );
   });
 });

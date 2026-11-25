@@ -6,8 +6,11 @@
  * load and reload of a non-home page, and the Sandbox publish read back: the
  * released artifact's prerendered home (built through its sealed pass) and
  * the public site carry the author's values, with the hidden newsletter and
- * the hidden footer absent. All four must run, once each, and pass with zero
- * skip and zero retry.
+ * the hidden footer absent; refused reads (no preview grant, forged content
+ * origin or render context); and a sealed-pass read that still cannot read
+ * content failing the publish build (NATIVE_PRERENDER_CONTENT_UNAVAILABLE)
+ * with the serving release left live. All six must run, once each, and pass
+ * with zero skip and zero retry.
  *
  * `node scripts/check-container-acceptance.mjs <report> <this module>`
  * requires exactly these titles. No CI step runs this check yet: which
@@ -21,5 +24,7 @@ export const TARGET = Object.freeze({
     "Starter 32 on the full Start runtime › in-site navigation to a non-home page and back reads each Document through /_serverFn",
     "Starter 32 on the full Start runtime › direct load and reload of the non-home page render its Document on the server",
     "Starter 32 on the full Start runtime › publish, then read back: the released home carries the author's values, the hidden newsletter and footer absent",
+    "Starter 32 on the full Start runtime › a read without preview access, or naming a release it may not see, is refused and says why",
+    "Starter 32 on the full Start runtime › a sealed-pass read that still cannot read content fails the publish build and leaves the serving release live",
   ]),
 });
