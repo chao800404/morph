@@ -398,11 +398,16 @@ test.describe("Starter upgrade from history, built, published and rolled back", 
       storefrontId: STOREFRONT_ID!,
       themeId: randomUUID(),
     };
+    // Recorded as the full Start preview: from Starter 32 the editor's read
+    // provisions the Starter only into a Theme that records start, and the
+    // upgrade to 32 writes the Start-only content module, which is applied
+    // only on such a Theme. This spec runs only in the full Start container
+    // job.
     insertThrowawayTheme({
       themeId: scope.themeId,
       storefrontId: scope.storefrontId,
       name: `t1-${label}-${scope.themeId}`,
-      previewRuntime: null,
+      previewRuntime: "start",
     });
     // Any page of the app reaches the server functions; not the shared
     // Theme's editor.
