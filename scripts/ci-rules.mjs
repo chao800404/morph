@@ -51,6 +51,7 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/container-run-handover.mjs",
   // Whether a client shard really ran dedicated Starter 31 client Themes.
   "scripts/e2e-client-lane-guard.mjs",
+  "scripts/e2e-client-lane-guard.test.mjs",
   "scripts/e2e-preview-runtime-guard.mjs",
   "scripts/editor-e2e-shards.mjs",
   "scripts/editor-e2e-start.mjs",
