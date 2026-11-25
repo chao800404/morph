@@ -20,9 +20,16 @@
  *   `!isSectionHidden("slot")` call sites from the trusted content module
  *   (`START_B1_PROFILE`), and both are still functions declared in this file
  *   (`confirmThemeContentModuleFunctionExport`);
- * - failure handling: a server render degrades to defaults, as 31's server
- *   branch did; a browser navigation throws, as 31's client branch did;
- *   `morph.pages.get` throws `MorphContentError` with the same codes.
+ * - `morph.pages.get` throws `MorphContentError` with the same codes.
+ *
+ * One behaviour changes on purpose (2026-11-24, the read-failure trap): a
+ * failed or refused read no longer degrades to empty content on the server,
+ * as 31's server branch did. Empty content has no hidden sections, so that
+ * fallback rendered every section the author hid with its defaults. Both
+ * branches now reject with `MorphContentError` (the module's own words, never
+ * the upstream message), and Starter 31's root, unchanged, turns that into
+ * the router's error state; a read that succeeds with no content is still
+ * empty content. See `starter-v32-content-read-failure.test.ts`.
  *
  * Because it imports `createServerFn` and `@morph/sdk/start`, this module
  * needs the full Start preview (`sourceRequiresStartPreview`).
@@ -86,8 +93,15 @@ const readPage = createServerFn({ method: "GET" })
   })
   .handler(({ data }) => hostedMorph.pages.get(data));
 
-/** The page as the root hands it down: slot values, and the hidden list apart. */
+/**
+ * The page as the root hands it down: slot values, and the hidden list apart.
+ * A page without a usable hidden list is not a page with nothing hidden.
+ */
 function toContent(page: MorphPage): MorphContent {
+  if (!page || typeof page !== "object" || !Array.isArray(page._hidden)
+    || !page._hidden.every((slot: unknown) => typeof slot === "string")) {
+    throw new MorphContentError("invalid_response");
+  }
   const slots: MorphContentSlots = {};
   for (const [slotId, values] of Object.entries(page)) {
     if (slotId !== "_hidden") slots[slotId] = values;
@@ -95,25 +109,31 @@ function toContent(page: MorphPage): MorphContent {
   return { slots, hiddenSlots: [...page._hidden] };
 }
 
-/** Every degradation path returns this, so callers never see a partial shape. */
-const EMPTY_CONTENT: MorphContent = { slots: {}, hiddenSlots: [] };
-
 /**
  * Loads the published content for one route.
  *
- * A server render degrades to defaults: content must never be able to take
- * the storefront down. In-site navigation does not: an error there must not
- * silently replace authored values and visibility with defaults.
+ * Two answers are kept apart. A read that succeeds with no content is empty
+ * content: nothing stored, nothing hidden, and the components' defaults are
+ * right. A read that fails or is refused says nothing about the page, not
+ * even which sections the author hid, so it is never answered with empty
+ * content: on the server as in the browser it rejects with MorphContentError,
+ * the root's beforeLoad rejects with it, and the router shows its error state
+ * (a server render answers 500) instead of the layout and the sections. A
+ * hidden section must not come back with its defaults because a read failed.
  */
 export const loadContentSlots = createIsomorphicFn()
-  .client(async (pathname: string): Promise<MorphContent> =>
-    toContent(await readPage({ data: pathname })),
-  )
+  .client(async (pathname: string): Promise<MorphContent> => {
+    try {
+      return toContent(await readPage({ data: pathname }));
+    } catch (error) {
+      throw contentError(error);
+    }
+  })
   .server(async (pathname: string): Promise<MorphContent> => {
     try {
       return toContent(await readPage({ data: pathname }));
-    } catch {
-      return EMPTY_CONTENT;
+    } catch (error) {
+      throw contentError(error);
     }
   });
 
