@@ -23,10 +23,6 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import {
-  recordedPreviewRuntimeSql,
-  verifyRecordedThemePreviewRuntime,
-} from "./helpers/recorded-preview-runtime";
-import {
   B1_HOME_LAYOUT_CASES,
   B1_INTEGRATION_CASES,
   NEW_SECTION_CASES,
@@ -46,6 +42,8 @@ import {
   type StoredDocument,
   type StoredSections,
 } from "../src/lib/test-utils/binding-acceptance-cases";
+import { insertThrowawayTheme, recordedOrSpecPreviewRuntime } from "./helpers/throwaway-theme";
+import { verifyRecordedThemePreviewRuntime } from "./helpers/recorded-preview-runtime";
 
 /**
  * Binding acceptance suite, editor E2E layer (ROADMAP 1.2 "綁定驗收規範",
@@ -225,14 +223,18 @@ async function signedInPage(browser: Browser) {
 
 async function createThrowawayTheme(): Promise<ThemeScope> {
   const created = { ...shared!, themeId: randomUUID() };
-  const now = new Date().toISOString();
-  await d1(
-    `INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
-    VALUES ('${created.themeId}', '${uuid(created.storefrontId)}',
-      'binding-acceptance-${created.themeId}', '{"starterTemplateVersion":1}',
-      ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
-  );
+  // Through the shared helper: on the client lane it is seeded on the pinned
+  // Starter 31 workspace; elsewhere the row records the run's record mode or
+  // the runtime the specs expect (start in the full Start job, where from
+  // Starter 32 the editor provisions the Starter only into such a Theme).
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: uuid(created.storefrontId),
+    name: `binding-acceptance-${created.themeId}`,
+    previewRuntime: recordedOrSpecPreviewRuntime(),
+  });
+  // Record mode (never in CI): read back and resolved like every recorded
+  // Theme before its preview is read. Does nothing otherwise.
   verifyRecordedThemePreviewRuntime(created);
   return created;
 }

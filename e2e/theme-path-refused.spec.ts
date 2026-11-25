@@ -153,6 +153,8 @@ test("a stale platform file can be deleted through the real API", async ({
     name: `stale-platform-${themeId}`,
     metadata: "{}",
     previewRuntime: null,
+    // A bare row with one stale file, never previewed: not the Starter.
+    rowOnly: true,
     now,
   });
   execLocalD1(

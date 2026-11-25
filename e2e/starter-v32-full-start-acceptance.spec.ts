@@ -678,6 +678,8 @@ test.describe("Starter 32 on the full Start runtime", () => {
       themeId: created.themeId,
       name: `v32-start-${created.themeId}`,
       previewRuntime: null,
+      // An empty row, for the editor to provision Starter 32 into.
+      rowOnly: true,
     });
     await page.goto("/", { waitUntil: "domcontentloaded" });
 
