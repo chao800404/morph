@@ -1381,15 +1381,16 @@ test.describe("keyboard append across the page taking up its route document", ()
     };
   };
 
-  async function freshTheme(page: Page) {
-    // One Theme per test, so each test takes the next of the block's slots.
-    const slots: ClientLaneSlot[] = [
-      "selection-field/keyboard-append-1",
-      "selection-field/keyboard-append-2",
-    ];
-    const slot = slots[created.length];
-    if (!slot) throw new Error("This block has a Theme slot for two tests only.");
-    const theme = await createThrowawayTheme(slot);
+  // One Theme per test, chosen by the test itself rather than by how many
+  // this worker has taken: after a failure Playwright starts a new worker, and
+  // a count would hand the next test the Theme the failed one already edited.
+  const KEYBOARD_APPEND_SLOTS: Record<"inflight" | "landed", ClientLaneSlot> = {
+    inflight: "selection-field/keyboard-append-1",
+    landed: "selection-field/keyboard-append-2",
+  };
+
+  async function freshTheme(page: Page, label: "inflight" | "landed") {
+    const theme = await createThrowawayTheme(KEYBOARD_APPEND_SLOTS[label]);
     created.push(theme);
     const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
       ...theme,
@@ -1499,7 +1500,11 @@ test.describe("keyboard append across the page taking up its route document", ()
       : null;
   }
 
-  async function run(page: Page, hold: boolean, label: string) {
+  async function run(
+    page: Page,
+    hold: boolean,
+    label: "inflight" | "landed",
+  ) {
     test.setTimeout(300_000);
     const notes: Array<Record<string, unknown>> = [];
     const note = async (step: string, extra: Record<string, unknown> = {}) => {
@@ -1528,7 +1533,7 @@ test.describe("keyboard append across the page taking up its route document", ()
 
     // Fixed after the run: serverFn needs a page on the app origin first.
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    const { theme, homeTemplateId } = await freshTheme(page);
+    const { theme, homeTemplateId } = await freshTheme(page, label);
     let releaseHeld: (() => void) | null = null;
     try {
       await page.goto(
