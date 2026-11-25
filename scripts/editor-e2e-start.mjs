@@ -21,15 +21,21 @@
 /** The job's name, as GitHub reports the check. */
 export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 
-/** Whole-file shards (3 full Start jobs). */
+/**
+ * Whole-file shards (3 full Start jobs). Allocated longest-first from the
+ * per-file test seconds of four green main runs (45588760709, 45597575633,
+ * 45585207449, 45574695693), which projects 665 / 664 / 652 s of test bodies
+ * where the previous plan projected 703 / 395 / 883 s. Projections from shared
+ * runners; each shard job adds roughly two to four minutes of fixed setup.
+ */
 export const START_PREVIEW_SHARDS = [
-  ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "code-controlled-field.spec.ts"],
-  ["spread-override-binding.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts"],
-  // navigation-matrix: shard 3 was the shortest Start shard job of main run
-  // 41267736430 (10m53s, against 19m44s and 17m45s); the spec's Start preview
-  // cells took ~2.6 min locally. selection-field-frame-navigated: accepted
-  // on full Start by the user's decision; added to this, the shortest shard.
-  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts", "navigation-matrix.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts"],
+  // navigation-matrix: its Start preview cells took ~2.6 min locally (the
+  // spec was added to the then-shortest shard).
+  ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "spread-override-binding.spec.ts", "navigation-matrix.spec.ts"],
+  ["code-controlled-field.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts", "starter-upgrade.spec.ts"],
+  // selection-field-frame-navigated: accepted on full Start by the user's
+  // decision; added to what was then the shortest shard.
+  ["binding-acceptance-p.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
