@@ -493,9 +493,18 @@ jobs:
       # environment deliberately omits `containers` and `durable_objects`, so
       # the preview is served by the loopback sidecar. The run asserts that as
       # a precondition rather than trusting it.
+      #
+      # These shards are the client lane: the runner refuses the run unless
+      # it is one (MORPH_E2E_REQUIRE_CLIENT_LANE). Setup seeds dedicated
+      # Starter 31 Themes recording no runtime before any editor opens, the
+      # migrated specs open them, and after the suite the runner refuses the
+      # run unless every one still records no runtime and is served the
+      # client-only preview (scripts/e2e-client-lane-guard.mjs). Its verdict
+      # is kept next to the report for the acceptance job.
       - name: Editor end-to-end
         env:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
+          MORPH_E2E_REQUIRE_CLIENT_LANE: "1"
           MORPH_E2E_REPORT_PATH: test-results/shard-${{ matrix.shard }}.json
         run: pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/6
 
@@ -553,6 +562,12 @@ jobs:
         run: |
           node --test scripts/check-e2e-shards.test.mjs
           node scripts/check-e2e-shards.mjs shard-artifacts
+
+      # Every shard's latest attempt must have kept a client lane verdict whose
+      # evidence passes again here against this checkout's Starter 31 fixture,
+      # and every dedicated Theme slot must have been taken by some shard.
+      - name: Check every shard ran the client lane on Starter 31
+        run: node scripts/e2e-client-lane-guard.mjs client-lane-verdicts shard-artifacts
 
   # The specs gated on the full TanStack Start preview, which skip on every
   # shard above because the shards run the default client-only preview. Same

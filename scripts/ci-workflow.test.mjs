@@ -1084,3 +1084,22 @@ test("the interface record lives outside test-results/, which Playwright empties
     assert.doesNotMatch(script, /^dir=test-results/m, name);
   }
 });
+
+test("the six client shards must be the client lane, and the acceptance job checks every shard's client lane verdict", () => {
+  const shards = withoutComments(jobBlock(workflow, "editor-e2e-local-preview"));
+  const run = /- name: Editor end-to-end\n {8}env:\n((?: {10}.*\n)+) {8}run: (.*)\n/.exec(shards);
+  assert.ok(run, "the shard job runs the editor end-to-end step");
+  assert.match(run[1], /^ {10}MORPH_E2E_REQUIRE_CLIENT_LANE: "1"$/m);
+  assert.doesNotMatch(run[1], /MORPH_E2E_PREVIEW_RUNTIME|MORPH_E2E_RECORD_PREVIEW_RUNTIME|MORPH_E2E_TRANSPORT/);
+  assert.match(run[1], /^ {10}MORPH_E2E_REPORT_PATH: test-results\/shard-\$\{\{ matrix\.shard \}\}\.json$/m);
+  assert.equal(run[2], "pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/6");
+  assert.doesNotMatch(shards, /MORPH_E2E_PREVIEW_RUNTIME/);
+
+  const acceptance = withoutComments(jobBlock(workflow, "editor-e2e-acceptance"));
+  const download = acceptance.indexOf("pattern: editor-e2e-results-*\n");
+  const check = acceptance.indexOf(
+    "- name: Check every shard ran the client lane on Starter 31\n        run: node scripts/e2e-client-lane-guard.mjs client-lane-verdicts shard-artifacts\n",
+  );
+  assert.ok(download >= 0, "the acceptance job downloads every shard's results");
+  assert.ok(check > download, "the acceptance job checks the client lane verdicts after downloading them");
+});
