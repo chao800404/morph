@@ -56,13 +56,18 @@ const HOME_SLOTS = [
  * written the way the Starter's home is. The Starter ships none (its other
  * routes, `/account` and `/order-transfer`, read no page sections), so the
  * gate adds one to the same workspace, as an author would.
+ *
+ * It imports the Starter workspace's shared section components
+ * (`src/components/sections/*`). The workspace has no `src/components/Hero.tsx`
+ * (that path is the flat base file set's), and an import that resolves to no
+ * file gives Design no component to bind or hide.
  */
 const PAGE = "src/routes/about.tsx";
 const PAGE_SLOTS = ["about-hero", "about-newsletter"] as const;
 const PAGE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
 import { content, isSectionHidden } from "../morph/content";
-import Hero from "../components/Hero";
-import Newsletter from "../components/Newsletter";
+import Hero from "../components/sections/Hero";
+import Newsletter from "../components/sections/Newsletter";
 
 export const Route = createFileRoute("/about")({
   component: AboutRoute,
