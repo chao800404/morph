@@ -186,6 +186,10 @@ for (const name of fs.readdirSync("/proc")) {
   const raw = read("/proc/" + name + "/cmdline");
   if (!raw) continue;
   const cmd = raw.split("\\0").join(" ").trim();
+  // Leave this probe out: its own command line (and the shell / docker exec
+  // wrapper some transports put around it) carries this script's text, which
+  // names the patterns matched below.
+  if (cmd.includes("TWOTAB")) continue;
   const stat = read("/proc/" + name + "/stat");
   const startTicks = stat ? stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null : null;
   rows.push({ pid: Number(name), startTicks, cmd });
@@ -198,7 +202,7 @@ console.log("TWOTAB " + JSON.stringify({
   contentHasA: content.includes(a),
   contentHasB: content.includes(b),
   devServers: rows.filter((r) => !shell(r.cmd) && r.cmd.includes("node_modules/.bin/vite") && r.cmd.includes("--port " + port)),
-  gateShells: rows.filter((r) => shell(r.cmd) && r.cmd.includes("morph-preview-fence-")),
+  gateShells: rows.filter((r) => shell(r.cmd) && r.cmd.includes("/tmp/morph-preview-fence-")),
 }));
 `;
 
