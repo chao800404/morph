@@ -15,7 +15,23 @@ const sdk = vi.hoisted(() => ({
 }));
 const access = vi.hoisted(() => ({ reverify: vi.fn() }));
 vi.mock("@cloudflare/sandbox", () => {
+  /** The Durable Object's storage, as much of it as these tests reach. */
+  const memoryStorage = () => {
+    const values = new Map<string, unknown>();
+    return {
+      async get(key: string) {
+        return structuredClone(values.get(key));
+      },
+      async put(key: string, value: unknown) {
+        values.set(key, structuredClone(value));
+      },
+    };
+  };
   class Sandbox {
+    ctx: { storage: ReturnType<typeof memoryStorage> };
+    constructor(ctx?: { storage: ReturnType<typeof memoryStorage> }) {
+      this.ctx = ctx ?? { storage: memoryStorage() };
+    }
     static get outbound(): unknown {
       return registry.get(this.name);
     }
@@ -430,5 +446,166 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
       );
       expect(new Set(ids).size).toBe(2);
     });
+  });
+});
+
+/**
+ * Which preview start is the current one (preview auto-retry v2, §3): the
+ * Durable Object every start of this preview talks to keeps it, so a start
+ * that was stopped, superseded by a newer request, or ran out of its
+ * deadline is refused on the server, whatever the editor still holds.
+ */
+describe("the Live Preview DO names the current preview start", () => {
+  type StartGuard = {
+    claimPreviewStart(input: {
+      attemptId: string;
+      deadlineAt: number;
+    }): Promise<{ seq: number }>;
+    checkPreviewStart(input: {
+      attemptId: string;
+      next?: string;
+    }): Promise<string>;
+    endPreviewStarts(): Promise<void>;
+  };
+  const objectOver = (ctx?: unknown) =>
+    new (
+      PreviewSandbox as unknown as new (ctx?: unknown) => InstanceType<
+        typeof PreviewSandbox
+      >
+    )(ctx) as unknown as StartGuard & { ctx: unknown };
+  const NOW = 1_000_000;
+  const DEADLINE = NOW + 180_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("answers current for the request it last claimed, and superseded for an older one", async () => {
+    const object = objectOver();
+    await object.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    expect(await object.checkPreviewStart({ attemptId: "a" })).toBe("current");
+    await object.claimPreviewStart({ attemptId: "b", deadlineAt: DEADLINE });
+    expect(await object.checkPreviewStart({ attemptId: "a" })).toBe(
+      "superseded",
+    );
+    expect(await object.checkPreviewStart({ attemptId: "b" })).toBe("current");
+  });
+
+  it("answers superseded for a start it never claimed", async () => {
+    expect(await objectOver().checkPreviewStart({ attemptId: "a" })).toBe(
+      "superseded",
+    );
+  });
+
+  it("hands current over to the retry only from the current start, under the same deadline", async () => {
+    const object = objectOver();
+    await object.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    expect(
+      await object.checkPreviewStart({ attemptId: "a", next: "a2" }),
+    ).toBe("current");
+    expect(await object.checkPreviewStart({ attemptId: "a" })).toBe(
+      "superseded",
+    );
+    expect(await object.checkPreviewStart({ attemptId: "a2" })).toBe("current");
+    // An older start cannot take it back by asking to hand it on.
+    expect(
+      await object.checkPreviewStart({ attemptId: "a", next: "a3" }),
+    ).toBe("superseded");
+    expect(await object.checkPreviewStart({ attemptId: "a2" })).toBe("current");
+    // The retry inherited the deadline; it did not get a new one.
+    vi.setSystemTime(DEADLINE);
+    expect(await object.checkPreviewStart({ attemptId: "a2" })).toBe("expired");
+  });
+
+  it("answers stopped after a stop, until a new start claims it", async () => {
+    const object = objectOver();
+    await object.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    await object.endPreviewStarts();
+    expect(await object.checkPreviewStart({ attemptId: "a" })).toBe("stopped");
+    expect(
+      await object.checkPreviewStart({ attemptId: "a", next: "a2" }),
+    ).toBe("stopped");
+    expect(await object.checkPreviewStart({ attemptId: "a2" })).toBe("stopped");
+    await object.claimPreviewStart({ attemptId: "b", deadlineAt: DEADLINE });
+    expect(await object.checkPreviewStart({ attemptId: "b" })).toBe("current");
+    expect(await object.checkPreviewStart({ attemptId: "a" })).toBe(
+      "superseded",
+    );
+  });
+
+  it("answers expired once the start's deadline has passed, and hands nothing over then", async () => {
+    const object = objectOver();
+    await object.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    vi.setSystemTime(DEADLINE - 1);
+    expect(await object.checkPreviewStart({ attemptId: "a" })).toBe("current");
+    vi.setSystemTime(DEADLINE);
+    expect(
+      await object.checkPreviewStart({ attemptId: "a", next: "a2" }),
+    ).toBe("expired");
+    expect(await object.checkPreviewStart({ attemptId: "a2" })).toBe(
+      "superseded",
+    );
+  });
+
+  it("keeps the record in its storage, so the object answers the same after it is evicted", async () => {
+    const first = objectOver();
+    await first.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    const again = objectOver(first.ctx);
+    expect(await again.checkPreviewStart({ attemptId: "a" })).toBe("current");
+    await again.endPreviewStarts();
+    expect(await objectOver(first.ctx).checkPreviewStart({ attemptId: "a" })).toBe(
+      "stopped",
+    );
+  });
+
+  /**
+   * Workspace ownership (user, 2026-11-24): the container's fence ledger
+   * records the owner claim by this number, and refuses a lower one. So
+   * every claim is numbered higher than any earlier one, the retry of the
+   * same request keeps its number, and a stop raises it past every start
+   * begun before the stop.
+   */
+  it("numbers each claim higher than the one before", async () => {
+    const object = objectOver();
+    const a = await object.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    const b = await object.claimPreviewStart({ attemptId: "b", deadlineAt: DEADLINE });
+    expect(Number.isSafeInteger(a.seq)).toBe(true);
+    expect(b.seq).toBeGreaterThan(a.seq);
+  });
+
+  it("keeps the number across the retry's hand-over, and a stop raises it past every earlier claim", async () => {
+    const object = objectOver();
+    const a = await object.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    expect(
+      await object.checkPreviewStart({ attemptId: "a", next: "a2" }),
+    ).toBe("current");
+    // The hand-over issued no number: the next claim is the very next one.
+    const b = await object.claimPreviewStart({ attemptId: "b", deadlineAt: DEADLINE });
+    expect(b.seq).toBe(a.seq + 1);
+    await object.endPreviewStarts();
+    // The stop took a number of its own.
+    const c = await object.claimPreviewStart({ attemptId: "c", deadlineAt: DEADLINE });
+    expect(c.seq).toBe(b.seq + 2);
+  });
+
+  it("keeps numbering from its storage after it is evicted", async () => {
+    const first = objectOver();
+    const a = await first.claimPreviewStart({ attemptId: "a", deadlineAt: DEADLINE });
+    const again = objectOver(first.ctx);
+    const b = await again.claimPreviewStart({ attemptId: "b", deadlineAt: DEADLINE });
+    expect(b.seq).toBe(a.seq + 1);
+  });
+
+  it("reads a record it cannot parse as no current start", async () => {
+    const object = objectOver();
+    const storage = (object.ctx as { storage: { put(k: string, v: unknown): Promise<void> } }).storage;
+    await storage.put("morph:preview-start", { attemptId: 7, deadlineAt: "soon" });
+    expect(await object.checkPreviewStart({ attemptId: "7" })).toBe(
+      "superseded",
+    );
   });
 });

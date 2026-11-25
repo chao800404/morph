@@ -54,7 +54,10 @@ import { previewContentRefresh } from "@/lib/storefront/service/preview-content-
 import { themePreviewRuntimeReport } from "@/lib/storefront/compiler/theme-client-only-preview-limits";
 import { storefrontPreviewContentTicketDal } from "@/lib/storefront/dal/storefront-preview-content-ticket.dal";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
-import { recordPreviewStartFailure } from "./preview-start-failure-record";
+import {
+  recordPreviewStartFailure,
+  recordPreviewStartRecovery,
+} from "./preview-start-failure-record";
 import {
   previewAccessOriginFor,
   sdkOriginForFramed,
@@ -262,6 +265,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
         errorMessage: started.errorMessage,
         logs: started.logs,
         attemptId: started.attemptId,
+        ...(started.retryOf ? { retryOf: started.retryOf } : {}),
         storefrontId,
         themeId,
         previewId,
@@ -271,6 +275,20 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
         { error: started.stage },
       );
     }
+    // A start that recovered on its automatic retry (auto-retry v2, §4):
+    // the interrupted first attempt is logged with its message, and the
+    // answer names it without one. The editor ignores it; M1 acceptance
+    // reads it and does not count the start as passed.
+    const recoveredFrom = started.recoveredFrom
+      ? recordPreviewStartRecovery({
+          recoveredFrom: started.recoveredFrom,
+          attemptId: started.attemptId,
+          logs: started.logs,
+          storefrontId,
+          themeId,
+          previewId,
+        })
+      : null;
 
     // Checked again on this side of the boundary. The URL comes back from the
     // container runtime or the sidecar, and the editor is about to frame it.
@@ -332,6 +350,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       kind: selection.kind,
       readyMs: started.readyMs,
       timings: started.timings,
+      ...(recoveredFrom ? { recoveredFrom } : {}),
       hoistedContentFields: started.hoistedContentFields,
       workspaceFingerprint,
       servingBridge,

@@ -10,6 +10,11 @@ import { expect, test, type Page, type Request } from "@playwright/test";
 import { queryLifecycleD1 } from "../../scripts/verify-published-artifact.mjs";
 import { PREVIEW_BRIDGE_SOURCE_HASH } from "../../src/lib/storefront/compiler/preview-bridge-sources.generated";
 import { MORPH_SDK_SOURCE_HASH } from "../../src/lib/storefront/compiler/morph-sdk-sources.generated";
+import {
+  previewStartAcceptanceLabel,
+  readPreviewStartRecovery,
+  type PreviewStartRecovery,
+} from "../../src/lib/storefront/editor/preview-start-recovery";
 import { decodeServerFnResult, isServerFunctionCall } from "../helpers";
 import { serverFn } from "../native-acceptance";
 
@@ -34,6 +39,10 @@ import { serverFn } from "../native-acceptance";
  * `expectFullStartObserved` requires at least one such answer and every one
  * of them to be the container transport and full Start. Neither the record
  * nor the Worker's default alone counts as the runtime having been used.
+ *
+ * A start that recovered on its automatic retry (`recoveredFrom`, preview
+ * auto-retry v2) is kept with both attempts' evidence and never passes:
+ * the product recovered, and the run still saw a container interrupted.
  */
 
 const PREVIEW_SERVER = "/src/server/storefront/storefront-theme-preview-server.serverFn.ts";
@@ -136,6 +145,15 @@ export type PreviewStart = {
   kind: string | null;
   previewRuntime: string | null;
   workspaceFingerprint: string | null;
+  /**
+   * The answer said it recovered from an interrupted first attempt. Absent
+   * on a row recorded before the field existed, which reads as false.
+   */
+  recovered?: boolean;
+  /** What it recovered from, or null when that could not be read. */
+  recoveredFrom?: PreviewStartRecovery | null;
+  /** Why a recovered answer's recoveredFrom could not be read. */
+  recoveryProblem?: string | null;
 };
 
 const git = (...args: string[]) => {
@@ -356,6 +374,9 @@ export function m1Evidence(options: {
     kind: null,
     previewRuntime: null,
     workspaceFingerprint: null,
+    recovered: false,
+    recoveredFrom: null,
+    recoveryProblem: null,
   });
 
   /**
@@ -407,12 +428,16 @@ export function m1Evidence(options: {
           return;
         }
         const data = (decoded!.data ?? null) as Record<string, unknown> | null;
+        const recovery = readPreviewStartRecovery(data);
         settleStart(entry, {
           success: decoded!.success as boolean,
           undecodable: null,
           kind: str(data?.kind),
           previewRuntime: str(data?.previewRuntime),
           workspaceFingerprint: str(data?.workspaceFingerprint),
+          recovered: recovery.recovered,
+          recoveredFrom: recovery.recovered ? recovery.recoveredFrom : null,
+          recoveryProblem: recovery.recovered ? recovery.problem : null,
         });
       })();
     });
@@ -466,20 +491,17 @@ export function m1Evidence(options: {
 
   /**
    * Q10: at least one preview start was answered in this spec, and every
-   * answer it received (failed ones included) was decodable, successful and
-   * named the container transport and full Start. Starts still in flight
-   * are settled first, so a late one is not missed.
+   * answer it received (failed ones included) was decodable, successful,
+   * named the container transport and full Start, and did not recover from
+   * an interrupted first attempt. Starts still in flight are settled first,
+   * so a late one is not missed.
    */
   const expectFullStartObserved = async () => {
     await settlePreviewStarts();
     expect(starts.length, "a preview start was observed in this spec").toBeGreaterThan(0);
     expect(
-      starts.map((start) =>
-        start.success === null
-          ? `undecodable (${start.undecodable}) in ${start.test}`
-          : `${start.success ? "ok" : "failed"}/${start.kind}/${start.previewRuntime}`,
-      ),
-      "every preview start answer was decodable, succeeded, and came from the container transport under full Start",
+      starts.map((start) => previewStartAcceptanceLabel(start)),
+      "every preview start answer was decodable, succeeded, came from the container transport under full Start, and was not a recovered retry",
     ).toEqual(starts.map(() => "ok/cloudflare-sandbox/start"));
   };
 
@@ -571,7 +593,10 @@ export function m1Evidence(options: {
       previewMode: str(theme?.previewRuntime),
       transport: process.env.E2E_EXPECT_PREVIEW_TRANSPORT ?? null,
       runtime: process.env.MORPH_E2E_PREVIEW_RUNTIME ?? null,
-      observedPreviewStarts: starts.map((start) => `${start.kind}/${start.previewRuntime}/${start.success}`),
+      observedPreviewStarts: starts.map(
+        (start) =>
+          `${start.kind}/${start.previewRuntime}/${start.success}${start.recovered ? `/recovered:${start.recoveredFrom?.traceId ?? "unreadable"}` : ""}`,
+      ),
       abortedPreviewStarts: abortedStarts.length,
       node: process.version,
       pnpm: /pnpm\/(\S+)/.exec(process.env.npm_config_user_agent ?? "")?.[1] ?? null,

@@ -23,6 +23,21 @@ import {
  * The lock lives in the container, so it orders requests from any Worker
  * instance; a queue in one process could not.
  *
+ * The ledger also decides who owns the workspace (user, 2026-11-24): "a
+ * newer request takes over" takes effect here, under the same lock. Each
+ * guarded start registers its claim (`PreviewStartClaim`: the preview
+ * Durable Object's increasing `seq`, the attempt's ordinal within its
+ * request, its attemptId) as the ledger's `owner`; a lower claim is refused
+ * and writes nothing. The same owner record decides whether a start may lay
+ * out and commit files (`op: "start"`), whether anyone may write the shared
+ * dirty marker (`op: "mark"`), and whether a dev server may be launched
+ * (`op: "serve"`, the gate the dev server is started through). Beside it the
+ * ledger keeps `committed`: the marker the last start committed, dropped by
+ * any later write, so the next start reuses a workspace only when the ledger
+ * vouches for the very marker it finds (`fenceLedgerVouchesFor`). A ledger
+ * that cannot be read proves no ownership: nothing claimed against it is
+ * written.
+ *
  * The ledger, the lock and the staging directories live in `/tmp`: outside
  * `/workspace`, so none is watched by Vite nor mistaken for an unplanned
  * Theme file. A container that restarts loses them along with its
@@ -35,7 +50,52 @@ const PREVIEW_FENCE_SCRIPT_PREFIX = "/tmp/morph-preview-fence-";
 /** Where a start stages its files before asking for them to be applied. */
 export const PREVIEW_START_STAGING_PREFIX = "/tmp/morph-preview-start-";
 
+/**
+ * One start attempt's claim on the workspace (user, 2026-11-24): `seq` from
+ * the preview's Durable Object (`claimPreviewStart`), `attempt` 1 for a
+ * request's first attempt and 2 for its retry (same `seq`), and the
+ * attempt's own id. Claims compare by `seq`, then `attempt`.
+ */
+export type PreviewStartClaim = Readonly<{
+  seq: number;
+  attempt: number;
+  attemptId: string;
+}>;
+
+/**
+ * What the ledger says of a claim: it is the registered owner; another
+ * claim is registered (a higher one, or one that cannot be told apart from
+ * it); or nothing can be proven (the ledger is unreadable, or names no
+ * owner where one is needed).
+ */
+export type PreviewClaimStanding = "owner" | "superseded" | "unknown";
+
 export type FencedWriteRequest =
+  | Readonly<{
+      /** Registers `claim` as the owner unless a higher one is registered. */
+      op: "claim";
+      claim: PreviewStartClaim;
+    }>
+  | Readonly<{
+      /**
+       * Writes the shared marker (a failed start's dirty marker) only if
+       * `claim` is the registered owner, and drops what the ledger vouched
+       * for. Otherwise writes nothing.
+       */
+      op: "mark";
+      claim: PreviewStartClaim;
+      marker: Readonly<{ path: string; content: string }>;
+    }>
+  | Readonly<{
+      /**
+       * Writes nothing: whether `claim` is the registered owner. The script
+       * exits 75 when it is not, so a dev server started behind it as
+       * `node <script> <request> && exec <server>` never runs
+       * (`gatedServeCommand`).
+       */
+      op: "serve";
+      claim: PreviewStartClaim;
+    }>
   | Readonly<{
       op: "write";
       /** Directory the paths are relative to. */
@@ -92,6 +152,22 @@ export type FencedWriteRequest =
        * (docs/astro-theme-plan.md 6.5, 6.6).
        */
       content?: Readonly<{ path: string; instancePath: string }>;
+      /**
+       * This attempt's claim. Registered as the owner in the same locked
+       * step that lays out the files, unless a higher claim is registered,
+       * in which case nothing is written. A start without one (a provider
+       * with no Durable Object guard) is refused once any claim is.
+       */
+      claim?: PreviewStartClaim;
+      /**
+       * The workspace's toolchain link (`path` relative to `root`, a
+       * symlink to `target`), made in the same locked step once the start
+       * is applied, and only then: a start refused for its claim or as
+       * stale never removes or replaces the owner's link. Left as it is
+       * when it already points at `target`, so a running dev server never
+       * sees node_modules missing.
+       */
+      link?: Readonly<{ path: string; target: string }>;
     }>;
 
 /**
@@ -119,6 +195,8 @@ export type PreviewContentRequest =
       path: string;
       instancePath: string;
       instance: string;
+      /** Stamped only while this claim owns the workspace (`op: "serve"`). */
+      claim?: PreviewStartClaim;
     }>
   /** What the file holds and which server is stamped; writes nothing. */
   | Readonly<{
@@ -135,7 +213,9 @@ export type PreviewContentResult = Readonly<{
     | "conflict"
     | "no-server"
     | "stamped"
-    | "read";
+    | "read"
+    /** A stamp whose claim no longer owns the workspace: nothing written. */
+    | "not-owner";
   /** The ticket the file holds after the request. */
   ticket: number;
   /** The running instance, or null when no server has been stamped. */
@@ -154,6 +234,10 @@ export type FencedWriteResult = Readonly<{
    * newer source generation than the one it was read at.
    */
   staleGeneration?: Readonly<{ generation: number; laidOut: number }>;
+  /** For a request that carried a claim: what the ledger says of it. */
+  ownership?: PreviewClaimStanding;
+  /** For `op: "mark"`: whether the marker was written. */
+  marked?: boolean;
 }>;
 
 /** The container's disk, as `applyFencedRequest` uses it. */
@@ -168,6 +252,12 @@ export type FenceIo = {
   removeTree(dirPath: string): void;
   /** `relative` under `root`, or throws when it would leave it. */
   within(root: string, relative: string): string;
+  /**
+   * Makes `linkPath` a symlink to `target`, creating its parent; nothing
+   * when it already is one. Throws when something else is in the way that
+   * cannot be unlinked (a directory), as `rm -f` then `ln -s` did.
+   */
+  replaceLink(target: string, linkPath: string): void;
 };
 
 export type FencePlanners = Readonly<{
@@ -194,6 +284,23 @@ export function applyFencedRequest(
     readAt: Record<string, number>;
     generation: number;
   } = { files: {}, readAt: {}, generation: 0 };
+  // Workspace ownership (user, 2026-11-24): the registered owner claim, and
+  // the marker the last start committed while nothing has written since.
+  type Claim = { seq: number; attempt: number; attemptId: string };
+  const isClaim = (value: unknown): value is Claim => {
+    const claim = value as Claim | null;
+    return Boolean(
+      claim &&
+        typeof claim === "object" &&
+        Number.isSafeInteger(claim.seq) &&
+        Number.isSafeInteger(claim.attempt) &&
+        typeof claim.attemptId === "string",
+    );
+  };
+  let owner: Claim | null = null;
+  let committedMarker: string | null = null;
+  // Unreadable proves no ownership: a claim judged against it writes nothing.
+  let ownershipReadable = true;
   const stored = io.readText(ledgerPath);
   if (stored !== null) {
     try {
@@ -213,12 +320,82 @@ export function applyFencedRequest(
               : {},
           generation: parsed.generation,
         };
+        if (parsed.owner !== undefined) {
+          if (isClaim(parsed.owner)) owner = parsed.owner;
+          else ownershipReadable = false;
+        }
+        if (typeof parsed.committed === "string") {
+          committedMarker = parsed.committed;
+        }
       } else if (parsed && typeof parsed === "object") {
         ledger = { files: parsed, readAt: {}, generation: 0 };
+      } else {
+        ownershipReadable = false;
       }
     } catch {
-      // Unreadable: as if nothing had been written.
+      // Unreadable: as if no version had been written, and no owner proven.
+      ownershipReadable = false;
     }
+  }
+  const compareClaims = (a: Claim, b: Claim) =>
+    a.seq !== b.seq ? a.seq - b.seq : a.attempt - b.attempt;
+  const isOwner = (claim: Claim) =>
+    owner !== null &&
+    owner.seq === claim.seq &&
+    owner.attempt === claim.attempt &&
+    owner.attemptId === claim.attemptId;
+  /** Whether `claim` is the registered owner, as `mark` and `serve` need. */
+  const standing = (claim: Claim): "owner" | "superseded" | "unknown" =>
+    !ownershipReadable || owner === null
+      ? "unknown"
+      : isOwner(claim)
+        ? "owner"
+        : "superseded";
+  /** Whether `claim` may register: no owner yet, itself, or a lower one. */
+  const mayRegister = (claim: Claim): "owner" | "superseded" | "unknown" =>
+    !ownershipReadable
+      ? "unknown"
+      : owner === null || isOwner(claim) || compareClaims(claim, owner) > 0
+        ? "owner"
+        : "superseded";
+  const ledgerText = (versions: {
+    files: Record<string, number>;
+    readAt: Record<string, number>;
+    generation: number;
+  }) =>
+    JSON.stringify({
+      files: versions.files,
+      readAt: versions.readAt,
+      generation: versions.generation,
+      ...(owner ? { owner } : {}),
+      ...(committedMarker !== null ? { committed: committedMarker } : {}),
+    });
+
+  if (request.op === "claim") {
+    const ownership = mayRegister(request.claim);
+    if (ownership === "owner") {
+      owner = { ...request.claim };
+      io.writeText(ledgerPath, ledgerText(ledger));
+    }
+    return { refused: [], changed: [], unchanged: [], ownership };
+  }
+  if (request.op === "serve") {
+    return {
+      refused: [],
+      changed: [],
+      unchanged: [],
+      ownership: standing(request.claim),
+    };
+  }
+  if (request.op === "mark") {
+    const ownership = standing(request.claim);
+    if (ownership !== "owner") {
+      return { refused: [], changed: [], unchanged: [], ownership, marked: false };
+    }
+    io.writeText(request.marker.path, request.marker.content);
+    committedMarker = null;
+    io.writeText(ledgerPath, ledgerText(ledger));
+    return { refused: [], changed: [], unchanged: [], ownership, marked: true };
   }
 
   if (request.op === "write") {
@@ -239,9 +416,11 @@ export function applyFencedRequest(
       for (const file of plan.writes) {
         io.writeText(io.within(request.root, file.path), file.content);
       }
+      // A written file is not what the last start committed.
+      if (plan.writes.length > 0) committedMarker = null;
       // Last, and only for a write that went through: a refused or failed
       // one raises nothing.
-      io.writeText(ledgerPath, JSON.stringify(plan.ledger));
+      io.writeText(ledgerPath, ledgerText(plan.ledger));
     }
     return {
       refused: plan.refused,
@@ -251,6 +430,24 @@ export function applyFencedRequest(
   }
 
   try {
+    // Ownership first: a start whose claim is outranked, or that cannot be
+    // judged, writes nothing at all: not a file, not the marker, not the
+    // ledger. Its own staging is still removed (below).
+    if (request.claim) {
+      const ownership = mayRegister(request.claim);
+      if (ownership !== "owner") {
+        return { refused: [], changed: [], unchanged: [], committed: false, ownership };
+      }
+      owner = { ...request.claim };
+    } else if (owner !== null) {
+      return {
+        refused: [],
+        changed: [],
+        unchanged: [],
+        committed: false,
+        ownership: "superseded",
+      };
+    }
     const plan = planners.planFencedStart(ledger, {
       versions: request.versions,
       generation:
@@ -280,8 +477,18 @@ export function applyFencedRequest(
       (markerNow === null ? null : markerNow.trim()) ===
       request.marker.expected;
 
+    // The toolchain link, by the owner only (user, 2026-11-24): not a
+    // Theme file, so neither the marker nor the manifest covers it.
+    if (request.link) {
+      io.replaceLink(
+        request.link.target,
+        io.within(request.root, request.link.path),
+      );
+    }
+
     if (request.prune.length > 0 || request.files.length > 0) {
       io.writeText(request.marker.path, request.marker.dirty);
+      committedMarker = null;
     }
     for (const relative of request.prune) {
       io.removeFile(io.within(request.root, relative));
@@ -328,7 +535,11 @@ export function applyFencedRequest(
         }
       }
     }
-    io.writeText(ledgerPath, JSON.stringify(plan.ledger));
+    // Vouches for the commit below before it is made: a failure between
+    // the two leaves a dirty marker the ledger does not name, which proves
+    // nothing, so the next start lays out again.
+    if (request.commit && markerStands) committedMarker = request.commit.marker;
+    io.writeText(ledgerPath, ledgerText(plan.ledger));
 
     let committed = false;
     if (request.commit && markerStands) {
@@ -345,6 +556,7 @@ export function applyFencedRequest(
       changed: [...request.files],
       unchanged: [],
       committed,
+      ...(request.claim ? { ownership: "owner" as const } : {}),
     };
   } finally {
     if (request.staging) io.removeTree(request.staging);
@@ -415,6 +627,48 @@ export function applyPreviewContentRequest(
   return { outcome: "written", ticket: incoming.ticket, instance };
 }
 
+export type FenceAppliers = Readonly<{
+  applyFencedRequest: typeof applyFencedRequest;
+  applyPreviewContentRequest: typeof applyPreviewContentRequest;
+}>;
+
+/**
+ * Every request the fence script takes, dispatched as the script does,
+ * under its one lock. A stamp that carries a claim is made only while that
+ * claim owns the workspace, judged in the same locked step.
+ *
+ * Runs in the container as its own source, so it names nothing outside its
+ * parameters: a bundler may rename the module's functions, while the
+ * script defines them under these names. The script always passes
+ * `appliers`; the default is for callers in this process (tests).
+ */
+export function applyPreviewFenceRequest(
+  io: FenceIo & { renameInto(from: string, to: string): void },
+  ledgerPath: string,
+  request: FencedWriteRequest | PreviewContentRequest,
+  planners: FencePlanners,
+  appliers: FenceAppliers = { applyFencedRequest, applyPreviewContentRequest },
+): FencedWriteResult | PreviewContentResult {
+  if (request.op === "content" || request.op === "read") {
+    return appliers.applyPreviewContentRequest(io, request);
+  }
+  if (request.op === "stamp") {
+    if (request.claim) {
+      const standing = appliers.applyFencedRequest(
+        io,
+        ledgerPath,
+        { op: "serve", claim: request.claim },
+        planners,
+      );
+      if (standing.ownership !== "owner") {
+        return { outcome: "not-owner", ticket: 0, instance: null };
+      }
+    }
+    return appliers.applyPreviewContentRequest(io, request);
+  }
+  return appliers.applyFencedRequest(io, ledgerPath, request, planners);
+}
+
 /**
  * The script the container runs. Self-contained; Node's stdlib only. The
  * ledger and lock paths are fixed in production and only moved by tests.
@@ -432,6 +686,7 @@ const planFencedWrite = ${planFencedWrite.toString()};
 const planFencedStart = ${planFencedStart.toString()};
 const applyFencedRequest = ${applyFencedRequest.toString()};
 const applyPreviewContentRequest = ${applyPreviewContentRequest.toString()};
+const applyPreviewFenceRequest = ${applyPreviewFenceRequest.toString()};
 const LEDGER = ${JSON.stringify(paths.ledger)};
 const LOCK = ${JSON.stringify(paths.lock)};
 const requestPath = process.argv[2];
@@ -453,7 +708,15 @@ for (;;) {
 
 const io = {
   readText(file) { try { return fs.readFileSync(file, "utf8"); } catch { return null; } },
-  writeText(file, content) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content); },
+  writeText(file, content) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (file !== LEDGER) { fs.writeFileSync(file, content); return; }
+    // The ledger by one rename: a write cut short never leaves it unreadable,
+    // and an unreadable ledger proves no ownership.
+    const next = file + "." + process.pid + ".next";
+    fs.writeFileSync(next, content);
+    fs.renameSync(next, file);
+  },
   moveFile(from, to) {
     fs.mkdirSync(path.dirname(to), { recursive: true });
     try { fs.renameSync(from, to); } catch (error) {
@@ -471,20 +734,36 @@ const io = {
   },
   // One rename on the same disk: a reader sees the old file or the new one.
   renameInto(from, to) { fs.renameSync(from, to); },
+  replaceLink(target, link) {
+    let current = null;
+    try { current = fs.readlinkSync(link); } catch {}
+    if (current === target) return;
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    try { fs.unlinkSync(link); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    fs.symlinkSync(target, link);
+  },
 };
 
 let result;
 try {
-  result =
-    request.op === "content" || request.op === "stamp" || request.op === "read"
-      ? applyPreviewContentRequest(io, request)
-      : applyFencedRequest(io, LEDGER, request, { planFencedWrite, planFencedStart });
+  result = applyPreviewFenceRequest(
+    io,
+    LEDGER,
+    request,
+    { planFencedWrite, planFencedStart },
+    { applyFencedRequest, applyPreviewContentRequest },
+  );
 } finally {
   fs.rmdirSync(LOCK);
   try { fs.unlinkSync(requestPath); } catch {}
   try { fs.unlinkSync(__filename); } catch {}
 }
 process.stdout.write(JSON.stringify(result));
+// The serve gate: a dev server chained after it with && runs only for the owner.
+if (request.op === "serve" && result.ownership !== "owner") {
+  process.stderr.write("PREVIEW_SERVE_NOT_OWNER");
+  process.exitCode = 75;
+}
 `;
 }
 
@@ -554,5 +833,67 @@ export async function runFencedWriteInSandbox(
     ...(parsed.staleGeneration
       ? { staleGeneration: { ...parsed.staleGeneration } }
       : {}),
+    ...(parsed.ownership ? { ownership: parsed.ownership } : {}),
+    ...(typeof parsed.marked === "boolean" ? { marked: parsed.marked } : {}),
   };
+}
+
+/**
+ * Writes the serve gate for `claim` (its own script and request, in /tmp)
+ * and returns the command that runs it. Chained before a dev server by
+ * `gatedServeCommand`, the ownership check and the launch are one step in
+ * the container: the server is exec'd by the same shell only if the
+ * ledger, read under the lock, still names this claim as the owner.
+ */
+export async function writePreviewServeGate(
+  sandbox: FenceSandbox,
+  claim: PreviewStartClaim,
+): Promise<string> {
+  const id = crypto.randomUUID();
+  const scriptPath = `${PREVIEW_FENCE_SCRIPT_PREFIX}${id}.cjs`;
+  const requestPath = `${PREVIEW_FENCE_SCRIPT_PREFIX}${id}.json`;
+  await sandbox.writeFile(scriptPath, fencedWriteScriptSource());
+  await sandbox.writeFile(
+    requestPath,
+    JSON.stringify({ op: "serve", claim } satisfies FencedWriteRequest),
+  );
+  return `node ${scriptPath} ${requestPath}`;
+}
+
+/**
+ * `command` started behind `gate`: one shell, which runs the gate and, only
+ * if it passed, replaces itself with the dev server (`exec`), so the
+ * process the sandbox reports is the dev server itself.
+ */
+export function gatedServeCommand(gate: string, command: string): string {
+  if (gate.includes("'") || command.includes("'")) {
+    throw new Error(
+      "PREVIEW_SERVE_GATE_QUOTE: a gated command cannot hold a single quote.",
+    );
+  }
+  return `sh -c '${gate} && exec ${command}'`;
+}
+
+/**
+ * Whether the fence ledger's text vouches for `marker` as the commit the
+ * last start made, with nothing written since. The next start reuses the
+ * workspace, or diffs it against its manifest, only then (user,
+ * 2026-11-24); otherwise it lays the workspace out again.
+ */
+export function fenceLedgerVouchesFor(
+  ledgerText: string | null,
+  marker: string | null,
+): boolean {
+  if (ledgerText === null || marker === null) return false;
+  try {
+    const parsed = JSON.parse(ledgerText) as { committed?: unknown } | null;
+    return (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      typeof parsed.committed === "string" &&
+      parsed.committed === marker
+    );
+  } catch {
+    return false;
+  }
 }

@@ -16,6 +16,12 @@ import {
   withoutPreviewSocketHeaders,
 } from "@/lib/storefront/service/preview-access/preview-socket-relay";
 import { refusePreviewEgress } from "@/lib/storefront/service/preview-egress-policy";
+import {
+  checkPreviewStartAttempt,
+  claimPreviewStartAttempt,
+  endPreviewStartAttempts,
+  type PreviewStartAttemptStatus,
+} from "@/lib/storefront/compiler/preview-start-attempt-guard";
 
 /**
  * The Durable Object class Live Preview containers run under.
@@ -39,6 +45,10 @@ import { refusePreviewEgress } from "@/lib/storefront/service/preview-egress-pol
  * class relays that socket to the browser under the grant's lease, keeps
  * which grants it relays, and closes them on a pushed revocation. An upgrade
  * without a grant (the dev-only SDK passthrough) is the SDK's, unchanged.
+ *
+ * It also names the current preview start (auto-retry v2, §3), in its
+ * storage: `claimPreviewStart`, `checkPreviewStart`, `endPreviewStarts`.
+ * These touch no container.
  */
 export class PreviewSandbox extends Sandbox {
   enableInternet = false;
@@ -143,6 +153,37 @@ export class PreviewSandbox extends Sandbox {
     }
     this.pruneRevoked(now);
     return closed;
+  }
+
+  /**
+   * A start request for this preview claims it (auto-retry v2, §3): from
+   * now on it is the current start, and every earlier one is superseded.
+   * Returns the claim's number, which the start registers as the
+   * workspace's owner in the container's fence ledger (user, 2026-11-24).
+   * See `preview-start-attempt-guard.ts`.
+   */
+  async claimPreviewStart(input: {
+    attemptId: string;
+    deadlineAt: number;
+  }): Promise<{ seq: number }> {
+    return claimPreviewStartAttempt(this.ctx.storage, input);
+  }
+
+  /**
+   * Whether a start is still the current one; asked before a retry is sent
+   * (with `next`, the retry's own attempt, which then becomes current) and
+   * before any success is answered.
+   */
+  async checkPreviewStart(input: {
+    attemptId: string;
+    next?: string;
+  }): Promise<PreviewStartAttemptStatus> {
+    return checkPreviewStartAttempt(this.ctx.storage, input, Date.now());
+  }
+
+  /** The preview was stopped: no start in flight may bring it back. */
+  async endPreviewStarts(): Promise<void> {
+    await endPreviewStartAttempts(this.ctx.storage);
   }
 
   private pruneRevoked(now = Date.now()) {
