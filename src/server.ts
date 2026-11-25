@@ -463,11 +463,15 @@ export default {
     if (response.status === 500) {
       const { recoverServerFnResponse } =
         await import("@/server/server-fn-recovery");
-      return recoverServerFnResponse(request, response, {
+      response = await recoverServerFnResponse(request, response, {
         dev: import.meta.env.DEV,
       });
     }
-    return response;
+    // The CMS's own pages may be framed only by the CMS; see
+    // cms-frame-protection.ts. A storefront host never reaches this point.
+    const { withCmsFrameProtection } =
+      await import("@/server/cms-frame-protection");
+    return withCmsFrameProtection(response);
   },
   async queue(batch: WorkerQueueBatch): Promise<void> {
     if (batch.queue === "morph-inventory-exports") {
