@@ -37,10 +37,8 @@ const privateJson = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: {
-      "access-control-allow-headers":
-        "content-type, x-publishable-api-key, x-storefront-host",
-      "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
-      "access-control-allow-origin": "*",
+      // No CORS: these answer for the customer the session cookie names, so
+      // they are not opened to other origins (only the public catalog is).
       "cache-control": "private, no-store",
       "content-type": "application/json; charset=utf-8",
       vary: "x-publishable-api-key, x-storefront-host",
