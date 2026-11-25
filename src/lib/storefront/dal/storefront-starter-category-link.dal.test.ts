@@ -506,9 +506,14 @@ beforeEach(() => {
     );
     INSERT INTO storefronts (id, sales_channel_id, name, status, active_theme_id, created_at, updated_at)
     VALUES ('${STOREFRONT_ID}', 'channel-a', 'Store A', 'published', '${THEME_ID}', 'now', 'now');
-    INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, release_generation, created_at, updated_at)
-    VALUES ('${THEME_ID}', '${STOREFRONT_ID}', 'Default', 'published', 1, 1, 'now', 'now');
+    INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, release_generation, preview_runtime, created_at, updated_at)
+    VALUES ('${THEME_ID}', '${STOREFRONT_ID}', 'Default', 'published', 1, 1, 'start', 'now', 'now');
   `);
+  // The Theme records `start`, as an author who switched to the full Start
+  // preview has: from Starter 32 the upgrade writes the Start-only content
+  // module, which a Theme on any other runtime is refused
+  // (storefront-starter-upgrade-record.dal.test.ts pins that rule). These
+  // cases are about the Document migration, not the runtime.
   vi.mocked(getDb).mockResolvedValue(
     drizzle(sqlite, { schema: storefrontSchema }) as never,
   );

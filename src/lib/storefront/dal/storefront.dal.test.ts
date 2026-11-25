@@ -117,10 +117,21 @@ function createExistingStorefrontDb(options?: { layoutTemplate?: boolean }) {
   return db;
 }
 
-function createLegacyStarterDb(starterTemplateVersion = 2) {
+function createLegacyStarterDb(
+  starterTemplateVersion = 2,
+  options: { startOnlyWrite?: boolean } = {},
+) {
+  // The Theme records `start`, as an author who switched to the full Start
+  // preview has: from Starter 32 every upgrade these tests apply writes the
+  // Start-only content module, which a Theme on any other runtime is refused
+  // (storefront-starter-upgrade-record.dal.test.ts pins that rule). An apply
+  // that writes such a file reads the Theme once more right before its batch
+  // (`startOnlyWrite`).
+  const theme = { metadata: { starterTemplateVersion }, previewRuntime: "start" };
   const results = [
-    [{ metadata: { starterTemplateVersion } }],
-    [{ metadata: { starterTemplateVersion } }],
+    [theme],
+    ...(options.startOnlyWrite ? [[theme]] : []),
+    [theme],
     [{ id: "home-template", document: createDefaultStorefrontHomeDocument() }],
     [{ id: "product-template" }],
     [{ id: "layout-template" }],
@@ -250,7 +261,7 @@ describe("the Live Preview runtime a Starter Theme records", () => {
   });
 
   it("never records one while upgrading an existing Theme's Starter", async () => {
-    const db = createLegacyStarterDb(27);
+    const db = createLegacyStarterDb(27, { startOnlyWrite: true });
     mocks.getDb.mockResolvedValue(db);
     const files = starterThemeWorkspaceFiles().map((file, index) => ({
       id: `file-${index}`,
@@ -425,7 +436,9 @@ describe("storefrontDal starter workspace provisioning", () => {
   });
 
   it("atomically upgrades the Starter route workspace and removes its obsolete page, once its author applies it", async () => {
-    mocks.getDb.mockResolvedValue(createLegacyStarterDb());
+    mocks.getDb.mockResolvedValue(
+      createLegacyStarterDb(2, { startOnlyWrite: true }),
+    );
     const files = [
       {
         id: "index-file",
@@ -513,7 +526,9 @@ describe("storefrontDal starter workspace provisioning", () => {
     });
 
     it("writes exactly the untouched content module when its author applies the upgrade", async () => {
-      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      mocks.getDb.mockResolvedValue(
+        createLegacyStarterDb(27, { startOnlyWrite: true }),
+      );
       const files = workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE);
       mocks.listFiles.mockResolvedValue(files);
 
@@ -538,7 +553,9 @@ describe("storefrontDal starter workspace provisioning", () => {
       // that for a workspace holding a binary file, which failed the editor
       // load for every Theme with an uploaded image. The source store builds
       // the manifest.
-      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      mocks.getDb.mockResolvedValue(
+        createLegacyStarterDb(27, { startOnlyWrite: true }),
+      );
       const files = workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE);
       mocks.listFiles.mockResolvedValue(files);
 
@@ -586,7 +603,7 @@ describe("storefrontDal starter workspace provisioning", () => {
     });
 
     it("keeps the Theme on 27 when the write is refused, and says the review is stale", async () => {
-      const db = createLegacyStarterDb(27);
+      const db = createLegacyStarterDb(27, { startOnlyWrite: true });
       mocks.getDb.mockResolvedValue(db);
       const files = workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE);
       mocks.listFiles.mockResolvedValue(files);

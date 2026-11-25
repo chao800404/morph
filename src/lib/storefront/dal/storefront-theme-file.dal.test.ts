@@ -58,8 +58,9 @@ vi.mock("cloudflare:workers", () => ({
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
 /**
  * Which Starter paths count as needing the full Start preview. Null keeps the
- * real detection (no Starter file below 32 needs it); a list stands in for a
- * Starter whose files do, so the init's condition runs on real SQLite.
+ * real detection (from Starter 32 it finds `src/morph/content.ts`); a list
+ * stands in for a Starter whose files do or, empty, for one whose files do
+ * not, so the init's condition runs on real SQLite either way.
  */
 const startPreview = vi.hoisted(() => ({
   requiredPaths: null as null | readonly string[],
@@ -200,6 +201,15 @@ afterEach(() => {
   sqlite.close();
   vi.clearAllMocks();
 });
+
+/** theme-a records the full Start preview, as an author who switched has. */
+function recordStart() {
+  sqlite
+    .prepare(
+      "UPDATE storefront_themes SET preview_runtime = 'start' WHERE id = 'theme-a'",
+    )
+    .run();
+}
 
 describe("storefront theme file DAL", () => {
   it("persists a write-attempt receipt and clears it on a later ordinary save", async () => {
@@ -1528,6 +1538,9 @@ describe("storefront theme file DAL", () => {
   });
 
   it("initializes starter theme idempotently without duplicating files or revisions", async () => {
+    // The current Starter needs the full Start preview, which the Theme
+    // records (the runtime rule has its own describe below).
+    recordStart();
     const files1 = await storefrontThemeFileDal.initStarterTheme(
       "storefront-a",
       "theme-a",
@@ -1552,6 +1565,7 @@ describe("storefront theme file DAL", () => {
   });
 
   it("rolls back to revision with expectedSourceGeneration OCC guard", async () => {
+    recordStart();
     await storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a");
     const gen = await storefrontThemeFileDal.getSourceGeneration(
       "storefront-a",
@@ -2235,6 +2249,9 @@ export const readPage = createServerFn({ method: "GET" }).handler(async () => nu
   });
 
   it("initialises an empty Theme on the client runtime as before when no Starter file needs Start", async () => {
+    // From Starter 32 the real detection finds the content module, so the
+    // Starter without a Start-only file is the empty stand-in list.
+    startPreview.requiredPaths = [];
     setRuntime("client");
 
     const files = await storefrontThemeFileDal.initStarterTheme(
@@ -2245,4 +2262,20 @@ export const readPage = createServerFn({ method: "GET" }).handler(async () => nu
     expect(files.length).toBe(starterThemeWorkspaceFiles().length);
     expect(stored().theme).toMatchObject({ preview_runtime: "client" });
   });
+
+  it.each([null, "client"])(
+    "on the real detection, initialises nothing of the current Starter into an empty Theme that records %s",
+    async (runtime) => {
+      // No stand-in: the shipped Starter's content module reads through
+      // @morph/sdk/start, so the init itself is held to start.
+      setRuntime(runtime);
+      const before = stored();
+
+      await expect(
+        storefrontThemeFileDal.initStarterTheme("storefront-a", "theme-a"),
+      ).rejects.toThrow("PREVIEW_RUNTIME_START_REQUIRED");
+
+      expect(stored()).toEqual(before);
+    },
+  );
 });
