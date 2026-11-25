@@ -11337,6 +11337,72 @@ function Home() {
           expect(depth()).toBe("0");
           expect(historyButtons()).toEqual({ undo: false, redo: true });
         });
+
+        /**
+         * The same rule on the reset path, with the preview's presentation
+         * acknowledged before Undo is pressed (as the test above does for a
+         * plain content undo): the undo of a first Add runs through
+         * `handleResetContentFields` with a history attempt, which first
+         * sends the section's pending input (`flushTemplatePendingProps`),
+         * and then checks the attempt's entry is still on top
+         * (`history.isOnTop`). The input recorded its own entry above it, so
+         * the reset is not sent and the newer-edit message is shown. The old
+         * test above presses Undo before the acknowledgement and asserts
+         * only /^Could not undo/, so it does not tell these guards apart
+         * from the "preview is still syncing" refusal.
+         */
+        it("input pending when the undo of a first Add is pressed, preview acknowledged: sent first as its own entry; the reset then refuses with the newer-edit message", async () => {
+          const notice = notices();
+          vi.useFakeTimers({
+            toFake: ["setTimeout", "clearTimeout"],
+            shouldAdvanceTime: true,
+          });
+          onTestFinished(() => {
+            vi.useRealTimers();
+          });
+          const quiet = async (writes: number) => {
+            await waitFor(() => expect(sent()).toHaveLength(writes), {
+              timeout: 10_000,
+            });
+            await act(async () => {
+              await Promise.allSettled(
+                updateSectionProps.mock.results.map((r) => r.value),
+              );
+              await vi.advanceTimersByTimeAsync(1_200);
+            });
+          };
+
+          const { receive } = await resetOnlyWrite();
+          expect(sent()).toHaveLength(1);
+          expect(sent()[0]).not.toHaveProperty("resetProps");
+          expect(depth()).toBe("1");
+
+          const field = (await screen.findAllByDisplayValue("Hello"))[0]!;
+          const undoButton = screen.getByRole("button", { name: "Undo" });
+          expect(undoButton.hasAttribute("disabled")).toBe(false);
+          fireEvent.input(field, { target: { value: "Hi" } });
+          fireEvent.blur(field);
+          await flushFrames();
+          expect(sent(), "the input is still pending").toHaveLength(1);
+          fireEvent.click(undoButton);
+          await quiet(2);
+
+          expect(sent(), "the input only, no reset after it").toHaveLength(2);
+          expect(sent()[1]!.props).toEqual({ heading: "Hi" });
+          expect(sent()[1]).not.toHaveProperty("resetProps");
+          expect(sent()[1]).toMatchObject({ expectedSourceGeneration: 1 });
+          expect(stored.heading).toBe("Hi");
+          expect(stored, "the Add is not undone").toHaveProperty("items");
+          expect(depth(), "both entries kept").toBe("2");
+          expect(historyButtons()).toEqual({ undo: true, redo: false });
+          expect(errors(notice)).toContainEqual(
+            `Could not undo: ${HISTORY_NEWER_EDIT_MESSAGE}`,
+          );
+          expect(unconfirmedCount()).toBeNull();
+          await quiet(2);
+          expect(sent(), "nothing sent after it").toHaveLength(2);
+          void receive;
+        });
       });
 
       /** A write as sent, by the fields an undo is decided by. */
