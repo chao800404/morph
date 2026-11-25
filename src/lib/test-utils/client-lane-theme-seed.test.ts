@@ -17,11 +17,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   CLIENT_LANE_STARTER_FIXTURE,
   CLIENT_LANE_STARTER_VERSION as GUARD_STARTER_VERSION,
+  allocateSharedClientLaneTheme,
+  clientLaneEditorPath,
   clientLaneThemeRefusal,
   contentSha256,
   fixtureFileDigests,
 } from "../../../scripts/e2e-client-lane-guard.mjs";
-import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "@/lib/storefront/default-storefront-document";
+import {
+  STOREFRONT_STARTER_TEMPLATE_VERSION,
+  createDefaultStorefrontHomeDocument,
+} from "@/lib/storefront/default-storefront-document";
 import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
 import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
@@ -71,17 +76,22 @@ afterAll(async () => {
   await harness?.dispose();
 });
 
-function seed(files: readonly StarterWorkspaceFile[]) {
-  const themeId = randomUUID();
+function seed(
+  files: readonly StarterWorkspaceFile[],
+  options: { themeId?: string; indexTemplateId?: string; resume?: boolean; name?: string } = {},
+) {
+  const themeId = options.themeId ?? randomUUID();
   return {
     themeId,
     run: seedVerifiedClientLaneTheme(
       {
         storefrontId,
         themeId,
-        name: `client-lane-${themeId}`,
+        name: options.name ?? `client-lane-${themeId}`,
         createdBy: "client-lane-seed-user",
         files,
+        indexTemplateId: options.indexTemplateId,
+        resume: options.resume,
       },
       {
         query,
@@ -230,5 +240,93 @@ describe("seeding a client-lane Theme", () => {
     await expect(run).rejects.toThrow(
       /src\/morph\/content\.ts: sha256 "[0-9a-f]{64}", not "[0-9a-f]{64}"/,
     );
+  });
+});
+
+describe("the shared slot and throwaways", () => {
+  it("seeds the shared slot on the index template id the runner put in E2E_EDITOR_PATH", async () => {
+    const allocated = allocateSharedClientLaneTheme(
+      `/store/${storefrontId}/themes/00000000-0000-4000-8000-000000000003/editor`,
+      randomUUID,
+    );
+    const { run } = seed(fixture.files, {
+      themeId: allocated.themeId,
+      indexTemplateId: allocated.indexTemplateId,
+    });
+    const { seeded, indexTemplateId } = await run;
+    expect(indexTemplateId).toBe(allocated.indexTemplateId);
+    expect(clientLaneThemeRefusal(seeded, expected)).toBeNull();
+    expect(
+      clientLaneEditorPath({
+        storefrontId,
+        themeId: allocated.themeId,
+        indexTemplateId,
+      }),
+    ).toBe(allocated.editorPath);
+    // The template holds the default home Document, as the DAL's own one does.
+    const home = await harness.d1
+      .prepare("SELECT name, document FROM storefront_theme_templates WHERE id = ?1")
+      .bind(allocated.indexTemplateId)
+      .first<{ name: string; document: string }>();
+    expect(home?.name).toBe("Default");
+    expect(JSON.parse(home!.document)).toEqual(createDefaultStorefrontHomeDocument());
+  });
+
+  it("refuses the same id a second time unless it resumes this seed's own attempt", async () => {
+    const themeId = randomUUID();
+    const name = `client-lane-resume-${themeId}`;
+    await seed(fixture.files, { themeId, name }).run;
+    // Not a resume: the row is there, so the insert is refused.
+    await expect(seed(fixture.files, { themeId, name }).run).rejects.toThrow();
+    // A resume of a completed attempt changes nothing and passes again.
+    const files = async () =>
+      (
+        await harness.d1
+          .prepare("SELECT path, version FROM storefront_theme_files WHERE theme_id = ?1 ORDER BY path")
+          .bind(themeId)
+          .all()
+      ).results;
+    const before = await files();
+    const again = await seed(fixture.files, { themeId, name, resume: true }).run;
+    expect(clientLaneThemeRefusal(again.seeded, expected)).toBeNull();
+    expect(await files()).toEqual(before);
+  });
+
+  it("resumes an attempt that stopped after the row, and the read-back decides", async () => {
+    const themeId = randomUUID();
+    const name = `client-lane-partial-${themeId}`;
+    // What a first attempt that met a busy database after its insert leaves.
+    const now = new Date().toISOString();
+    await harness.d1
+      .prepare(
+        "INSERT INTO storefront_themes (id, storefront_id, name, status, metadata, created_at, updated_at) VALUES (?1, ?2, ?3, 'draft', '{}', ?4, ?4)",
+      )
+      .bind(themeId, storefrontId, name, now)
+      .run();
+    const { seeded } = await seed(fixture.files, { themeId, name, resume: true }).run;
+    expect(clientLaneThemeRefusal(seeded, expected)).toBeNull();
+  });
+
+  it("does not take up a row that is not this seed's, even when resuming", async () => {
+    const themeId = randomUUID();
+    const now = new Date().toISOString();
+    await harness.d1
+      .prepare(
+        "INSERT INTO storefront_themes (id, storefront_id, name, status, metadata, preview_runtime, created_at, updated_at) VALUES (?1, ?2, ?3, 'draft', '{}', 'start', ?4, ?4)",
+      )
+      .bind(themeId, storefrontId, `someone-else-${themeId}`, now)
+      .run();
+    await expect(
+      seed(fixture.files, { themeId, name: `client-lane-${themeId}`, resume: true }).run,
+    ).rejects.toThrow(/already exists and is not an earlier attempt of this seed/);
+  });
+
+  it("refuses an index template id the Theme does not hold", async () => {
+    const themeId = randomUUID();
+    const name = `client-lane-index-${themeId}`;
+    await seed(fixture.files, { themeId, name }).run;
+    await expect(
+      seed(fixture.files, { themeId, name, resume: true, indexTemplateId: randomUUID() }).run,
+    ).rejects.toThrow(/has index template .*, not /);
   });
 });
