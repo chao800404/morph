@@ -6,6 +6,7 @@ import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
   createNativePrerenderContent,
+  nativeRefusedReadsMessage,
   type NativePrerenderContent,
 } from "./theme-prerender-content";
 import type { ThemeRouteRegistry } from "./theme-route-registry";
@@ -57,32 +58,6 @@ export async function runNativeBuildPasses(options: {
     ),
   );
   return second.success ? { ...second, contentDependency: "dependent" } : second;
-}
-
-/** Which paths' content reads were refused, and why, from the prerender's record. */
-function refusedReadsMessage(record: Uint8Array | string): string {
-  const reasons = new Map<string, string>();
-  const text =
-    typeof record === "string" ? record : new TextDecoder().decode(record);
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const read = JSON.parse(line) as { path?: unknown; reason?: unknown };
-      if (typeof read.path === "string" && !reasons.has(read.path)) {
-        reasons.set(
-          read.path,
-          typeof read.reason === "string" ? read.reason : "unknown",
-        );
-      }
-    } catch {
-      // A torn line still means a read was refused; the others say which.
-    }
-  }
-  const detail = [...reasons]
-    .slice(0, 10)
-    .map(([path, reason]) => `${path} (${reason})`)
-    .join(", ");
-  return `NATIVE_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed${detail ? `: ${detail}` : ""}. Build from the editor so the content is sealed with the build, or stop prerendering pages that read content.`;
 }
 
 const FAILURE_HEAD_CHARS = 6_000;
@@ -174,7 +149,7 @@ export function nativeBuildResult(options: {
     // reports it as built. The read is the evidence, not the HTML.
     const refused = options.outputs.get(NATIVE_PRERENDER_REFUSED_READS_PATH);
     if (refused !== undefined) {
-      return fail("prerender-content", refusedReadsMessage(refused));
+      return fail("prerender-content", nativeRefusedReadsMessage(refused));
     }
   }
 

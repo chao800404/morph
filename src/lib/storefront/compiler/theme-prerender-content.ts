@@ -25,6 +25,32 @@ export type ThemePrerenderContent = Readonly<
 export const NATIVE_PRERENDER_REFUSED_READS_PATH =
   ".morph/prerender-refused-reads.ndjson";
 
+/** Which paths' content reads were refused, and why, from the prerender's record. */
+export function nativeRefusedReadsMessage(record: Uint8Array | string): string {
+  const reasons = new Map<string, string>();
+  const text =
+    typeof record === "string" ? record : new TextDecoder().decode(record);
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const read = JSON.parse(line) as { path?: unknown; reason?: unknown };
+      if (typeof read.path === "string" && !reasons.has(read.path)) {
+        reasons.set(
+          read.path,
+          typeof read.reason === "string" ? read.reason : "unknown",
+        );
+      }
+    } catch {
+      // A torn line still means a read was refused; the others say which.
+    }
+  }
+  const detail = [...reasons]
+    .slice(0, 10)
+    .map(([path, reason]) => `${path} (${reason})`)
+    .join(", ");
+  return `NATIVE_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed${detail ? `: ${detail}` : ""}. Build from the editor so the content is sealed with the build, or stop prerendering pages that read content.`;
+}
+
 /**
  * What a native build's prerender may read from Morph's content endpoint.
  *
