@@ -16,7 +16,7 @@ import type { StarterWorkspaceFile } from "./starter-workspace-d1";
  * 1. the Theme row, inserted as `storefrontDal.ensureDefault` inserts one
  *    (Drizzle, `metadata` `{}`), but recording no runtime and no framework
  *    (TanStack Start), whatever the current Starter would record;
- * 2. `storefrontThemeFileDal.initStarterTheme` with the given files, so its
+ * 2. `storefrontThemeFileDal.initStarterTheme()` with the given files, so its
  *    ownership, empty-workspace and Start-runtime guards and its source
  *    generation run on them;
  * 3. `ensureStarterHomeDocument` with `targetVersion` 31: the index, product
