@@ -223,7 +223,13 @@ const morphForPreview: typeof previewReader = {
   },
 };
 
-const START_PACKAGES = {
+/**
+ * The Start packages this harness hands a Theme: `@morph/sdk/start` (the
+ * reader above), the in-process `createServerFn` and the client branch of
+ * `createIsomorphicFn`. Exported so a test that renders a route through its own
+ * router reads content the same way, inside `withLivePreviewContent`.
+ */
+export const LIVE_PREVIEW_START_PACKAGES = {
   "@morph/sdk/start": { ...morphSdkCore, morph: morphForPreview },
   "@tanstack/react-start": {
     createIsomorphicFn: createClientIsomorphicFn,
@@ -301,7 +307,10 @@ function prepare(
       content: file.content,
     })),
     {
-      packages: { "@tanstack/react-router": reactRouter, ...START_PACKAGES },
+      packages: {
+        "@tanstack/react-router": reactRouter,
+        ...LIVE_PREVIEW_START_PACKAGES,
+      },
       compile: compileWithTypeScript,
     },
   );
@@ -317,7 +326,11 @@ export type LivePreviewRequestHandler = (
   url: URL,
 ) => Response | Promise<Response> | undefined;
 
-async function withPreviewContent<T>(
+/**
+ * Runs `render` with the page's content served from `documents`, the way the
+ * preview answers `/_morph/content`; what `LIVE_PREVIEW_START_PACKAGES` reads.
+ */
+export async function withLivePreviewContent<T>(
   documents: LivePreviewDocuments,
   respond: LivePreviewRequestHandler | undefined,
   render: () => Promise<T>,
@@ -386,7 +399,7 @@ export async function renderLivePreviewRoute(args: {
     args.hideGuards,
   );
 
-  const html = await withPreviewContent(
+  const html = await withLivePreviewContent(
     args.documents ?? {},
     args.respond,
     async () => {
