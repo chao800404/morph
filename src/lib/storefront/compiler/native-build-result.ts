@@ -37,7 +37,9 @@ export async function runNativeBuildPasses(options: {
   input: ThemeBuildRunnerInput;
   routeRegistry: ThemeRouteRegistry | null;
   addLog(level: "info" | "warn" | "error", message: string): void;
-  pass(prerenderContent: NativePrerenderContent): Promise<ThemeBuildRunnerResult>;
+  pass(
+    prerenderContent: NativePrerenderContent,
+  ): Promise<ThemeBuildRunnerResult>;
 }): Promise<ThemeBuildRunnerResult> {
   const first = await options.pass(NATIVE_PRERENDER_WITHOUT_SNAPSHOT);
   if (first.success) return { ...first, contentDependency: "independent" };
@@ -57,7 +59,9 @@ export async function runNativeBuildPasses(options: {
       options.routeRegistry,
     ),
   );
-  return second.success ? { ...second, contentDependency: "dependent" } : second;
+  return second.success
+    ? { ...second, contentDependency: "dependent" }
+    : second;
 }
 
 const FAILURE_HEAD_CHARS = 6_000;
@@ -132,8 +136,15 @@ export function nativeBuildResult(options: {
 
   if (options.buildFailure) {
     const cause = native.failedBuildCause?.(options.outputs, nonce);
+    // The records decide the stage — a refused read is what the passes act
+    // on — but the build's own output stays in the message: a build can both
+    // refuse a read and fail to compile, and the compile error must not be
+    // dropped for the record.
     return cause
-      ? fail(cause.stage, cause.message)
+      ? fail(
+          cause.stage,
+          `${cause.message}\nThe build's own output: ${options.buildFailure.message}`,
+        )
       : fail(options.buildFailure.stage, options.buildFailure.message);
   }
 

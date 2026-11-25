@@ -26,7 +26,8 @@ describe("a failed native build's message", () => {
     // Response Start threw on, dumped at length.
     const cause =
       "PRERENDER_SERVER_ERROR: GET /landing/: Error: listen EADDRINUSE";
-    const consequence = "Error: Failed to fetch /landing: Internal Server Error";
+    const consequence =
+      "Error: Failed to fetch /landing: Internal Server Error";
     const output = `${cause}\n${"x".repeat(20_000)}\n${consequence}`;
 
     const message = nativeBuildFailureMessage(output);
@@ -251,5 +252,37 @@ export const Route = createFileRoute("/landing")({ component: () => null });
     if (result.success) return;
     expect(result.diagnosticsJson?.stage).toBe("compiler");
     expect(result.errorMessage).toBe(COMPILE_ERROR);
+  });
+
+  it("a sealed pass that leaves a refused read and also fails to compile reports the refusal's stage with both the refusal and the compile error", async () => {
+    // Both passes refuse a read and fail to compile. The record decides the
+    // stage; the compile error, the build's own output, is not dropped.
+    const pass = vi.fn(async (content: NativePrerenderContent) =>
+      exitedNonZero(
+        COMPILE_ERROR,
+        refusedRecord(
+          content.refusedAll ?? "NATIVE_PRERENDER_PATH_NOT_SEALED: stand-in",
+        ),
+      ),
+    );
+
+    const result = await runNativeBuildPasses({
+      input,
+      routeRegistry,
+      addLog: () => {},
+      pass,
+    });
+
+    expect(pass).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.diagnosticsJson?.stage).toBe("prerender-content");
+    expect(result.errorMessage).toContain(
+      "NATIVE_PRERENDER_CONTENT_UNAVAILABLE",
+    );
+    expect(result.errorMessage).toContain(
+      "/landing (NATIVE_PRERENDER_PATH_NOT_SEALED",
+    );
+    expect(result.errorMessage).toContain(COMPILE_ERROR);
   });
 });
