@@ -13,9 +13,13 @@ import { DURATIONS_FILE, budgetWarnings } from "./rebalance-e2e-shards.mjs";
 import { EXPECTED_CI_CHECKS } from "./ci-required-checks.mjs";
 import {
   jobBlock,
+  jobKeys,
   withoutComments,
   workflowCheckNames,
 } from "./ci-workflow.mjs";
+
+/** The Vitest shard matrix (check-vitest-shards.mjs), not an editor one. */
+const VITEST_SHARD_JOB = "validate-test-shard";
 
 const WORKFLOW_FILE = fileURLToPath(
   new URL("../.github/workflows/ci.yml", import.meta.url),
@@ -93,8 +97,13 @@ export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
     jobBlock(workflow, "editor-e2e-acceptance"),
   );
   const matrixPattern = /^\s+shard:\s*\[([^\]]*)\]/gm;
+  // The Vitest shard job has its own matrix and `--shard=N/3` flag, pinned by
+  // ci-workflow.test.mjs; the matrix and flag scans below read the rest.
+  const editorWorkflow = jobKeys(workflow).includes(VITEST_SHARD_JOB)
+    ? workflow.replace(jobBlock(workflow, VITEST_SHARD_JOB), "")
+    : workflow;
   const otherMatrices =
-    [...workflow.matchAll(matrixPattern)].length -
+    [...editorWorkflow.matchAll(matrixPattern)].length -
     [...jobBlock(workflow, "editor-e2e-full-start").matchAll(matrixPattern)]
       .length;
   assert.equal(
@@ -125,7 +134,7 @@ export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
   );
   const stale = [
     ...workflow.matchAll(/Editor E2E shard [^\n/]*\/(\d+)/g),
-    ...workflow.matchAll(/--shard=[^\n/]*\/(\d+)/g),
+    ...editorWorkflow.matchAll(/--shard=[^\n/]*\/(\d+)/g),
   ]
     .filter((match) => Number(match[1]) !== count)
     .map((match) => match[0]);

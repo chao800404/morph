@@ -40,6 +40,8 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/check-container-run-handover.test.mjs",
   "scripts/check-e2e-shards.mjs",
   "scripts/check-e2e-start.mjs",
+  // Decides whether the Vitest shards together ran the whole suite.
+  "scripts/check-vitest-shards.mjs",
   "scripts/ci-required-checks.mjs",
   "scripts/ci-rules.mjs",
   "scripts/ci-workflow.mjs",

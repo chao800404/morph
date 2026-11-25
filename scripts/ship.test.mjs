@@ -41,6 +41,8 @@ import {
   EXPECTED_CI_CHECKS,
   START_PREVIEW_SHARD_CHECKS,
   VALIDATION_CHECKS,
+  VALIDATION_TEST_CHECK,
+  VITEST_SHARD_CHECKS,
 } from "./ci-required-checks.mjs";
 
 const guard = (conclusion, status = "COMPLETED") => ({
@@ -75,6 +77,7 @@ const baseGreen = () => [
   guard("SUCCESS"),
   other("SUCCESS"),
   ...VALIDATION_CHECKS.map(success),
+  ...VITEST_SHARD_CHECKS.map(success),
   success(FULL_START),
   ...START_PREVIEW_SHARD_CHECKS.map(success),
   success(CONTAINER_ACCEPTANCE_CHECK),
@@ -91,6 +94,9 @@ describe("the expected set of checks", () => {
       "Architecture guards",
       "Typecheck, test, build",
       ...VALIDATION_CHECKS,
+      "Validation tests shard 1/3",
+      "Validation tests shard 2/3",
+      "Validation tests shard 3/3",
       FULL_START,
       ...START_PREVIEW_SHARD_CHECKS,
       ...shardChecks().map((check) => check.name),
@@ -138,10 +144,48 @@ describe("the expected set of checks", () => {
     }
   });
 
+  it("waits for Validation tests after every Vitest shard succeeded", () => {
+    const { verdict: v, missing } = decide(
+      without(allGreen(), VALIDATION_TEST_CHECK),
+    );
+    assert.equal(v, "wait");
+    assert.deepEqual(missing, [VALIDATION_TEST_CHECK]);
+    // A shard missing too: nothing will create the aggregate, so refuse.
+    assert.equal(
+      verdict(
+        without(
+          without(allGreen(), VALIDATION_TEST_CHECK),
+          VITEST_SHARD_CHECKS[0],
+        ),
+      ),
+      "refuse",
+    );
+  });
+
+  it("refuses a missing or non-success Vitest shard even if Validation tests is green", () => {
+    for (const name of VITEST_SHARD_CHECKS) {
+      const missing = decide(without(allGreen(), name));
+      assert.equal(missing.verdict, "refuse", name);
+      assert.deepEqual(missing.missing, [name]);
+      for (const conclusion of ["FAILURE", "CANCELLED", "TIMED_OUT", "SKIPPED"])
+        assert.equal(
+          verdict(replaced(allGreen(), name, { conclusion })),
+          "refuse",
+          `${name}: ${conclusion}`,
+        );
+    }
+  });
+
   it("requires every validation child even when the aggregate reports success", () => {
     for (const name of VALIDATION_CHECKS) {
       const missing = decide(without(allGreen(), name));
-      assert.equal(missing.verdict, "refuse", name);
+      // Validation tests is itself an aggregate: absent while its shards are
+      // green it is waited for (above), never merged without.
+      assert.equal(
+        missing.verdict,
+        name === VALIDATION_TEST_CHECK ? "wait" : "refuse",
+        name,
+      );
       assert.deepEqual(missing.missing, [name]);
       for (const conclusion of [
         "FAILURE",

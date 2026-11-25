@@ -10,6 +10,7 @@
  * Adding, renaming or removing a CI job means changing this list in the same
  * pull request; the name contract fails otherwise.
  */
+import { VITEST_SHARD_CHECKS } from "./check-vitest-shards.mjs";
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
 import {
   START_PREVIEW_JOB_NAME,
@@ -29,6 +30,13 @@ export const VALIDATION_CHECKS = [
   "Validation tests",
   "Validation build",
 ];
+
+/**
+ * `Validation tests` is the aggregate of these (`needs:` the shard matrix);
+ * each shard reports its own check too, and ship waits for every one.
+ */
+export const VALIDATION_TEST_CHECK = "Validation tests";
+export { VITEST_SHARD_CHECKS };
 
 /** The aggregate job that says every shard ran (`needs:` the shard matrix). */
 export const E2E_ACCEPTANCE_CHECK =
@@ -68,6 +76,7 @@ export const EXPECTED_CI_CHECKS = [
   REQUIRED_CHECK,
   VALIDATE_CHECK,
   ...VALIDATION_CHECKS,
+  ...VITEST_SHARD_CHECKS,
   START_PREVIEW_JOB_NAME,
   ...START_PREVIEW_SHARD_CHECKS,
   ...EDITOR_SHARD_CHECKS,
@@ -86,6 +95,7 @@ export const EXPECTED_CI_CHECKS = [
  */
 export const CHECK_DEPENDENCIES = {
   [VALIDATE_CHECK]: VALIDATION_CHECKS,
+  [VALIDATION_TEST_CHECK]: VITEST_SHARD_CHECKS,
   [E2E_ACCEPTANCE_CHECK]: EDITOR_SHARD_CHECKS,
   [START_PREVIEW_JOB_NAME]: START_PREVIEW_SHARD_CHECKS,
 };
