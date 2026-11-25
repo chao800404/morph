@@ -48,7 +48,14 @@ async function upload(page: Page) {
         expectedSourceGeneration: String(expectedSourceGeneration),
         expectMissing: "1",
       })}`,
-      { headers: { "content-type": "application/octet-stream" }, data: PNG },
+      {
+        headers: {
+          "content-type": "application/octet-stream",
+          // A write must name the CMS origin; see same-origin-write.ts.
+          origin: new URL(page.url()).origin,
+        },
+        data: PNG,
+      },
     );
   let response = await send(0);
   if (response.status() === 409) {

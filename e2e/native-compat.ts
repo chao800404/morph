@@ -147,7 +147,11 @@ export async function uploadThemeBinary(
     expectMissing: "1",
   });
   return page.request.post(`/api/storefront/theme-binary-file?${query}`, {
-    headers: { "content-type": "application/octet-stream" },
+    headers: {
+      "content-type": "application/octet-stream",
+      // A write must name the CMS origin; see same-origin-write.ts.
+      origin: new URL(page.url()).origin,
+    },
     data: bytes,
   });
 }
