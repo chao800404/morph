@@ -735,14 +735,31 @@ describe("production deployments and registered static pages", () => {
       },
     ],
   };
-  const registeredPorts = ports({
-    getBuild: async () => ({
-      id: "bld_1",
-      storefrontId: "sf_1",
-      status: "succeeded",
-      artifactPrefix: "themes/th_1/builds/bld_1",
-      manifestJson: withPage,
-    }),
+  const portsFor = (
+    build: { contentDependency?: string | null; contentPublicationId?: string | null },
+    release: { contentPublicationId?: string | null } = { contentPublicationId: "pub_1" },
+  ) =>
+    ports({
+      getRelease: async () => ({
+        id: "rel_1",
+        storefrontId: "sf_1",
+        themeId: "th_1",
+        themeBuildId: "bld_1",
+        ...release,
+      }),
+      getBuild: async () => ({
+        id: "bld_1",
+        storefrontId: "sf_1",
+        status: "succeeded",
+        artifactPrefix: "themes/th_1/builds/bld_1",
+        manifestJson: withPage,
+        ...build,
+      }),
+    });
+  // The HTML was built from the release's own sealed content.
+  const registeredPorts = portsFor({
+    contentDependency: "dependent",
+    contentPublicationId: "pub_1",
   });
   const deployedAssets = (deployer: ReturnType<typeof okDeployer>) =>
     (
@@ -777,5 +794,75 @@ describe("production deployments and registered static pages", () => {
     });
     expect(result.success).toBe(true);
     expect(deployedAssets(deployer)).toEqual(["runtime/client/assets/app.js"]);
+  });
+
+  describe.each([
+    [
+      "built from another publication",
+      { contentDependency: "dependent", contentPublicationId: "pub_other" },
+      undefined,
+    ],
+    [
+      "not proven to carry content",
+      { contentDependency: "independent", contentPublicationId: "pub_1" },
+      undefined,
+    ],
+    [
+      "with an unknown content dependency",
+      { contentDependency: null, contentPublicationId: "pub_1" },
+      undefined,
+    ],
+    [
+      "with no content binding",
+      { contentDependency: "dependent", contentPublicationId: null },
+      { contentPublicationId: null },
+    ],
+  ])("static HTML %s", (_, build, release) => {
+    it("is refused on the publish path, before any deployment", async () => {
+      const deployer = okDeployer();
+      const bound = portsFor(build, release);
+      const result = await deployReleaseArtifact({
+        releaseId: "rel_1",
+        deployer,
+        r2Bucket: r2(),
+        ports: { getRelease: bound.getRelease, getBuild: bound.getBuild },
+      });
+      expect(result).toMatchObject({
+        success: false,
+        reason: "BUILD_NOT_DEPLOYABLE",
+        message: expect.stringMatching(/^STATIC_PAGES_CONTENT_MISMATCH/),
+      });
+      expect(deployer.deploy).not.toHaveBeenCalled();
+    });
+
+    it("is refused on the rollback path, before the activation is claimed", async () => {
+      const deployer = okDeployer();
+      const activateRelease = vi.fn(async () => ({}));
+      const result = await activateReleaseWithDeployment({
+        releaseId: "rel_1",
+        expectedActiveReleaseId: "rel_0",
+        deployer,
+        r2Bucket: r2(),
+        ports: { ...portsFor(build, release), activateRelease },
+      });
+      expect(result).toMatchObject({
+        success: false,
+        reason: "BUILD_NOT_DEPLOYABLE",
+        message: expect.stringMatching(/^STATIC_PAGES_CONTENT_MISMATCH/),
+      });
+      expect(activateRelease).not.toHaveBeenCalled();
+      expect(deployer.deploy).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not ask a build without static pages for a content binding", async () => {
+    const deployer = okDeployer();
+    const result = await deployReleaseArtifact({
+      releaseId: "rel_1",
+      deployer,
+      r2Bucket: r2(),
+      ports: { getRelease: ports().getRelease, getBuild: ports().getBuild },
+    });
+    expect(result.success).toBe(true);
   });
 });

@@ -1,11 +1,7 @@
 // @vitest-environment node
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { getPlatformProxy } from "wrangler";
 
+import { openMigratedD1 } from "@/lib/test-utils/real-d1";
 import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildInput,
@@ -28,9 +24,6 @@ import type { ThemeWorkerDeploymentPlan } from "./theme-worker-deployment-plan";
  * refuses SSG.
  */
 
-const state = vi.hoisted(() => ({ env: {} as Record<string, unknown> }));
-vi.mock("cloudflare:workers", () => ({ env: state.env }));
-
 const HOST = "ssg-release.example.com";
 const NOW = "2026-11-26T00:00:00.000Z";
 const WORKER_CONFIG = {
@@ -41,8 +34,7 @@ const WORKER_CONFIG = {
   assets: { directory: "../client" },
 };
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>> | null = null;
-let dir = "";
+let harness: Awaited<ReturnType<typeof openMigratedD1>> | null = null;
 let d1: D1Database;
 let bucket: R2Bucket;
 
@@ -180,8 +172,8 @@ async function seedBuild(args: {
   await run(
     `INSERT INTO storefront_theme_builds
        (id, storefront_id, theme_id, source_revision_id, status, input_hash, compiler_id, compiler_version,
-        artifact_prefix, manifest_json, content_publication_id, framework, created_at, updated_at)
-     VALUES (?, 'sf_ssg', 'th_ssg', 'rev_ssg', 'succeeded', ?, ?, ?, ?, ?, ?, 'tanstack-start', ?, ?)`,
+        artifact_prefix, manifest_json, content_publication_id, content_dependency, framework, created_at, updated_at)
+     VALUES (?, 'sf_ssg', 'th_ssg', 'rev_ssg', 'succeeded', ?, ?, ?, ?, ?, ?, ?, 'tanstack-start', ?, ?)`,
     args.buildId,
     buildInput.inputHash,
     buildInput.compilerId,
@@ -189,6 +181,8 @@ async function seedBuild(args: {
     stored.artifactPrefix,
     JSON.stringify(stored.manifest),
     args.publicationId,
+    // What the sealed build pass records for HTML made from content.
+    args.renderPolicy.mode === "ssg" ? "dependent" : "independent",
     NOW,
     NOW,
   );
@@ -209,40 +203,9 @@ async function seedRelease(releaseId: string, buildId: string, publicationId: st
 }
 
 beforeAll(async () => {
-  dir = mkdtempSync(join(tmpdir(), "ssg-release-selection-"));
-  writeFileSync(
-    join(dir, "wrangler.json"),
-    JSON.stringify({
-      name: "ssg-release-selection-test",
-      compatibility_date: "2025-09-02",
-      d1_databases: [
-        {
-          binding: "DATABASE",
-          database_name: "ssg-release-selection",
-          database_id: "00000000-0000-0000-0000-000000000000",
-        },
-      ],
-      r2_buckets: [{ binding: "R2_BUCKET", bucket_name: "ssg-release-selection" }],
-    }),
-  );
-  proxy = await getPlatformProxy({
-    configPath: join(dir, "wrangler.json"),
-    persist: { path: join(dir, "state") },
-  });
-  d1 = (proxy.env as { DATABASE: D1Database }).DATABASE;
-  bucket = (proxy.env as { R2_BUCKET: R2Bucket }).R2_BUCKET;
-  const migrations = join(process.cwd(), "drizzle");
-  for (const file of readdirSync(migrations)
-    .filter((f) => f.endsWith(".sql"))
-    .sort()) {
-    for (const statement of readFileSync(join(migrations, file), "utf8").split(
-      "--> statement-breakpoint",
-    )) {
-      if (statement.trim()) await d1.prepare(statement.trim()).run();
-    }
-  }
-  state.env.DATABASE = d1;
-  state.env.R2_BUCKET = bucket;
+  harness = await openMigratedD1("ssg-release-selection", { r2: true });
+  d1 = harness.d1;
+  bucket = harness.r2!;
 
   await run(
     `INSERT INTO sales_channels (id, name, created_at, updated_at) VALUES ('sc_ssg', 'Online', ?, ?)`,
@@ -277,11 +240,15 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  await proxy?.dispose();
-  if (dir) rmSync(dir, { recursive: true, force: true });
+  await harness?.dispose();
 });
 
-describe("the public URL serves the active release's static HTML", () => {
+// Sequential on purpose: each case is the next step of one publish history
+// (A, then B, then rollback to A, ...) on the same database, and reads the
+// state the previous case left. They must never run concurrently or alone
+// out of order; `describe.sequential` keeps that explicit even if the file
+// is ever configured to run its tests concurrently.
+describe.sequential("the public URL serves the active release's static HTML", () => {
   const HTML_A = "<!doctype html><h1>Home, release A</h1>";
   const HTML_B = "<!doctype html><h1>Home, release B</h1>";
   const deployed: Array<{ releaseId: string; plan: ThemeWorkerDeploymentPlan }> = [];

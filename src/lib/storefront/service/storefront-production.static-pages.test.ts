@@ -16,6 +16,7 @@ const HOME_HTML = "<!doctype html><h1>Home, release one</h1>";
 const ABOUT_HTML = "<!doctype html><h1>About, release one</h1>";
 const LANDING_HTML = "<!doctype html><h1>Landing, never registered</h1>";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const size = (text: string) => new TextEncoder().encode(text).byteLength;
 
 function manifest(
   staticPages: unknown = [
@@ -30,20 +31,28 @@ function manifest(
   return {
     artifactEntry: "runtime/server/index.js",
     files: [
-      { path: "runtime/client/index.html", sha256: sha(HOME_HTML), contentType: "text/html" },
+      {
+        path: "runtime/client/index.html",
+        sha256: sha(HOME_HTML),
+        sizeBytes: size(HOME_HTML),
+        contentType: "text/html",
+      },
       {
         path: "runtime/client/about/index.html",
         sha256: sha(ABOUT_HTML),
+        sizeBytes: size(ABOUT_HTML),
         contentType: "text/html",
       },
       {
         path: "runtime/client/landing/index.html",
         sha256: sha(LANDING_HTML),
+        sizeBytes: size(LANDING_HTML),
         contentType: "text/html",
       },
       {
         path: "runtime/client/assets/app.js",
         sha256: "f".repeat(64),
+        sizeBytes: size("export {};"),
         contentType: "application/javascript; charset=utf-8",
       },
     ],
@@ -103,6 +112,7 @@ function r2(objects: Record<string, string> = {
       if (body === undefined) return null;
       return {
         body: null,
+        size: size(body),
         httpEtag: '"r2-etag"',
         httpMetadata: {},
         arrayBuffer: async () => new TextEncoder().encode(body).buffer,
@@ -213,6 +223,22 @@ describe("registered static pages on the production storefront", () => {
     expect(theme.handle).not.toHaveBeenCalled();
   });
 
+  it("fails a registered page whose stored object is not the size the build recorded", async () => {
+    const theme = runtime();
+    const { service: core } = service({
+      theme,
+      bucket: r2({
+        [`${PREFIX}/runtime/client/about/index.html`]: `${ABOUT_HTML}<!-- appended -->`,
+      }),
+    });
+    const response = await core.handleRequest(req("/about"));
+    expect(response.status).toBe(503);
+    expect(await response.text()).toMatch(/^SSG_ARTIFACT_UNAVAILABLE/);
+    expect(theme.handle).not.toHaveBeenCalled();
+  });
+
+  // Intended: a release whose registration cannot be read cannot say which
+  // pages are static, so every GET and HEAD of it fails, JS and CSS included.
   it("fails every page of a release whose registration is malformed, never falling back to SSR", async () => {
     const theme = runtime();
     const { service: core } = service({
@@ -225,7 +251,7 @@ describe("registered static pages on the production storefront", () => {
         },
       ]),
     });
-    for (const path of ["/about", "/account"]) {
+    for (const path of ["/about", "/account", "/assets/app.js"]) {
       const response = await core.handleRequest(req(path));
       expect(response.status).toBe(503);
       expect(await response.text()).toMatch(/^SSG_ARTIFACT_UNAVAILABLE/);
@@ -276,11 +302,11 @@ describe("the generic asset entry and prerendered HTML", () => {
     expect(bucket.get).not.toHaveBeenCalled();
   });
 
-  it("does not serve a registered page's index.html outside the release dispatch", async () => {
-    // A release without registrations: the same file is just a build output,
-    // and the generic entry must not turn it into a public page.
-    const { service: core, bucket } = service({ manifestJson: manifest(null) });
-    await core.handleRequest(req("/about/index.html"));
+  it("hands an unregistered page's index.html to the Theme Worker in a release that registers others", async () => {
+    const { service: core, theme, bucket } = service();
+    const response = await core.handleRequest(req("/landing/index.html"));
+    expect(await response.text()).toBe("rendered by the Theme Worker");
+    expect(theme.handle).toHaveBeenCalledTimes(1);
     expect(bucket.get).not.toHaveBeenCalled();
   });
 });
