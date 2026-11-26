@@ -38,6 +38,17 @@ describe("resolveThemeContentSlot", () => {
     expect(resolveThemeContentSlot(slots, "hero")).toEqual({ heading: "Hi" });
   });
 
+  it("reads only a slot the object owns, never one it inherits", () => {
+    // PR-1 review item 6: a hidden slot is absent from `slots`; an inherited
+    // value must not stand in for it.
+    const inherited = Object.create({ hero: { heading: "INHERITED" } });
+    expect(resolveThemeContentSlot(inherited, "hero")).toEqual({});
+    expect(resolveThemeContentSlot({}, "constructor")).toEqual({});
+    expect(
+      resolveThemeContentSlot({ constructor: { heading: "Own" } }, "constructor"),
+    ).toEqual({ heading: "Own" });
+  });
+
   it("returns empty for a slot with no authored content yet", () => {
     // A route may declare a slot before anything is written for it; the
     // component's own prop defaults are the correct result.
