@@ -16,6 +16,7 @@ import { themeSourceGeneration } from "./native-compat";
 
 import {
   queryRunD1,
+  readRunR2,
   verifyPublishedArtifact,
   writeRunD1,
 } from "../scripts/verify-published-artifact.mjs";
@@ -604,6 +605,15 @@ export function storefrontHarness(options: {
         buildContent: string | null;
         dependency: "dependent" | "independent" | null;
       };
+    },
+
+    /**
+     * A build's objects in this run's R2, by its artifact prefix: every key
+     * under it, and the bytes of `paths` (null when absent). What a build
+     * wrote whether or not a release points at it.
+     */
+    async buildObjects(prefix: string, paths: readonly string[] = []) {
+      return readRunR2({ persistTo: stateDir, workDir: tempDir() }, prefix, paths);
     },
 
     /** Puts a row into a state the product no longer produces. */

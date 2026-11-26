@@ -27,6 +27,12 @@ export declare function writeRunD1(
   ...params: unknown[]
 ): Promise<number>;
 
+export declare function readRunR2(
+  options: { persistTo: string; workDir: string },
+  prefix: string,
+  paths?: readonly string[],
+): Promise<{ keys: string[]; objects: Record<string, Uint8Array | null> }>;
+
 export declare function verifyPublishedArtifact(options: {
   handoffPath: string;
   persistTo: string;

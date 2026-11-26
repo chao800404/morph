@@ -303,6 +303,46 @@ export async function writeRunD1({ persistTo, workDir }, sql, ...params) {
   }
 }
 
+/**
+ * Reads one build's objects from this run's local R2, through the same
+ * binding the verifier below reads a released artifact with: every key under
+ * `prefix`, and the bytes of each of `paths` under it (null when absent).
+ * For a spec that has to state what a build wrote, or did not write, without
+ * a release pointing at it. Read-only.
+ */
+export async function readRunR2({ persistTo, workDir }, prefix, paths = []) {
+  const { getPlatformProxy } = await import("wrangler");
+  await mkdir(workDir, { recursive: true });
+  const configPath = path.join(workDir, "r2-reader.wrangler.json");
+  await writeFile(configPath, JSON.stringify(verifierConfig({ d1: false })));
+  const platform = await getPlatformProxy({
+    configPath,
+    persist: { path: path.join(persistTo, "v3") },
+    remoteBindings: false,
+  });
+  try {
+    const bucket = platform.env.R2_BUCKET;
+    const keys = [];
+    let cursor;
+    do {
+      const listed = await bucket.list({ prefix: `${prefix}/`, cursor });
+      for (const object of listed.objects) keys.push(object.key);
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+    const objects = {};
+    for (const relative of paths) {
+      const object = await bucket.get(`${prefix}/${relative}`);
+      objects[relative] = object
+        ? new Uint8Array(await object.arrayBuffer())
+        : null;
+    }
+    return { keys, objects };
+  } finally {
+    await platform.dispose();
+    await rm(configPath, { force: true });
+  }
+}
+
 export async function verifyPublishedArtifact({ handoffPath, persistTo, outDir }) {
   const handoff = JSON.parse(await readFile(handoffPath, "utf8"));
   if (handoff.schemaVersion !== HANDOFF_SCHEMA_VERSION) {
