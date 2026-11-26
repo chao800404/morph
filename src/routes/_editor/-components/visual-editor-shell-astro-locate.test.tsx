@@ -2330,22 +2330,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         document
           .querySelector("[data-editor-unconfirmed-saves]")
           ?.getAttribute("data-editor-unconfirmed-saves") ?? null;
-      // Codex review, unanswered resend: the resend of a write that got no
-      // answer carries no identity, and Core refuses it as
-      // preview-identity-legacy before writing. That answers the resend
-      // only; the first write may still have landed, so it stays held as
-      // unanswered and a later read-back that shows it is taken as landed.
-      it("a resend Core refuses for carrying no identity keeps the unanswered write, so its late success is still recognised", async () => {
-        updateSectionProps
-          .mockRejectedValueOnce(new Error("offline"))
-          .mockResolvedValueOnce({
-            success: false,
-            error: "SECTION_SOURCE_UNCONFIRMABLE",
-            message:
-              "SECTION_SOURCE_UNCONFIRMABLE: preview-identity-legacy: the write carries no v2 instance identity; reload the preview",
-          });
-        await upAndAcked();
-
+      const LEGACY_REFUSAL = {
+        success: false,
+        error: "SECTION_SOURCE_UNCONFIRMABLE",
+        message:
+          "SECTION_SOURCE_UNCONFIRMABLE: preview-identity-legacy: the write carries no v2 instance identity; reload the preview",
+      };
+      /** Typed, sent, and its answer lost: held as unanswered. */
+      const lostWrite = async () => {
         fireEvent.change(await heroTitleField(), {
           target: { value: "Lost answer" },
         });
@@ -2354,30 +2346,82 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
           expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy(),
         );
         expect(unconfirmedCount()).not.toBeNull();
+      };
 
-        // The read-back shows nothing landed: sent again, refused for its
-        // missing identity.
+      // Re-review N1: the resend of an unanswered Astro write is exactly the
+      // write first sent, identity and Core's digest included, so Core
+      // answers it as any write (landed, or refused by its CAS), never as an
+      // identity-free legacy write.
+      it("the resend of an unanswered Astro write carries the identity and digest it was first sent with", async () => {
+        updateSectionProps
+          .mockRejectedValueOnce(new Error("offline"))
+          .mockResolvedValueOnce(answered(5, "Lost answer"));
+        await upAndAcked();
+        await lostWrite();
+
+        // The read-back shows nothing landed: sent once more, as first sent.
         fireEvent.click(screen.getByRole("button", { name: "Try again" }));
         await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
-        await flush();
-        expect(unconfirmedCount()).not.toBeNull();
-
-        // The first write did land after all: the next read-back shows it.
-        getThemeEditor.mockResolvedValue({
-          success: true,
-          message: "ok",
-          data: contextWithHero(5, {
-            title: "Lost answer",
-            subtitle: "Stored subtitle",
-          }),
+        expect(sentData(1)).toEqual(sentData(0));
+        expect(sentData(1)).toMatchObject({
+          identity: MARKER,
+          componentDigest: DIGEST,
+          expectedDraftGeneration: 4,
         });
-        await waitFor(() =>
-          expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy(),
-        );
+        await waitFor(() => expect(unconfirmedCount()).toBeNull());
+      });
+
+      // Re-review N1, the backstop: should Core still refuse a resend as
+      // preview-identity-legacy, that answers the resend only. It is read
+      // back once (as a resend refused out of date is): landed is taken as
+      // landed; not landed ends the unanswered hold, so no later press sends
+      // it again and other writes are not held behind it.
+      it("a resend refused as legacy whose write did not land is settled once: a second press sends nothing more", async () => {
+        updateSectionProps
+          .mockRejectedValueOnce(new Error("offline"))
+          .mockResolvedValueOnce(LEGACY_REFUSAL);
+        await upAndAcked();
+        await lostWrite();
+
         fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(unconfirmedCount()).toBeNull());
+
+        // A second press, if offered, sends nothing again.
+        const again = screen.queryByRole("button", { name: "Try again" });
+        if (again) fireEvent.click(again);
+        await pastDebounce();
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(2);
+        expect(unconfirmedCount()).toBeNull();
+      });
+
+      it("a resend refused as legacy whose write did land is taken as landed by that one read-back", async () => {
+        const landed = contextWithHero(5, {
+          title: "Lost answer",
+          subtitle: "Stored subtitle",
+        });
+        updateSectionProps
+          .mockRejectedValueOnce(new Error("offline"))
+          .mockImplementationOnce(async () => {
+            // The first write had landed after all; the read after this
+            // refusal shows it.
+            getThemeEditor.mockResolvedValue({
+              success: true,
+              message: "ok",
+              data: landed,
+            });
+            return LEGACY_REFUSAL;
+          });
+        await upAndAcked();
+        await lostWrite();
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
         await waitFor(() => expect(unconfirmedCount()).toBeNull());
         await pastDebounce();
         expect(updateSectionProps).toHaveBeenCalledTimes(2);
+        expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
       });
 
       /**
