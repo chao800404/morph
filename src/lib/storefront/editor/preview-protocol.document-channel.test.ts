@@ -31,6 +31,29 @@ describe("documentPreviewRuntimeChannel", () => {
     expect(documentPreviewRuntimeChannel()).toEqual(first);
   });
 
+  it("starts listening for the editor's offer when the page has no channel, once", async () => {
+    const add = vi.spyOn(window, "addEventListener");
+    const { documentPreviewRuntimeChannel } = await import("./preview-protocol");
+    expect(documentPreviewRuntimeChannel()).toBeNull();
+    expect(documentPreviewRuntimeChannel()).toBeNull();
+    expect(add.mock.calls.filter(([type]) => type === "message")).toHaveLength(1);
+    expect(add.mock.calls.filter(([type]) => type === "pageshow")).toHaveLength(1);
+    add.mockRestore();
+  });
+
+  it("listens for no offer when the page was loaded with its channel", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      `/?editorOrigin=${encodeURIComponent("http://localhost:3000")}&previewSession=${SESSION}`,
+    );
+    const add = vi.spyOn(window, "addEventListener");
+    const { documentPreviewRuntimeChannel } = await import("./preview-protocol");
+    expect(documentPreviewRuntimeChannel()).not.toBeNull();
+    expect(add.mock.calls.filter(([type]) => type === "message")).toHaveLength(0);
+    add.mockRestore();
+  });
+
   it("has none for a page opened without an editor", async () => {
     const { documentPreviewRuntimeChannel } = await import("./preview-protocol");
     expect(documentPreviewRuntimeChannel()).toBeNull();
