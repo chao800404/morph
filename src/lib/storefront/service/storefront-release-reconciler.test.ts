@@ -37,6 +37,7 @@ function ports(overrides: Partial<ReleaseReconcilerPorts> = {}): ReleaseReconcil
       storefrontId: "sf_1",
       themeId: "th_1",
       themeBuildId: "bld_1",
+      contentPublicationId: "pub_1",
     }),
     getBuild: async () => ({
       id: "bld_1",
@@ -456,6 +457,7 @@ describe("concurrent activation (REL-01)", () => {
             storefrontId: "sf_1",
             themeId: "th_1",
             themeBuildId: "bld_1",
+            contentPublicationId: "pub_1",
           }),
           // The CAS the reconciler already had: it only guards this write.
           activateRelease: async (args) => {
@@ -737,7 +739,7 @@ describe("production deployments and registered static pages", () => {
   };
   const portsFor = (
     build: { contentDependency?: string | null; contentPublicationId?: string | null },
-    release: { contentPublicationId?: string | null } = { contentPublicationId: "pub_1" },
+    release: { contentPublicationId: string | null } = { contentPublicationId: "pub_1" },
   ) =>
     ports({
       getRelease: async () => ({

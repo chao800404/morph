@@ -1,5 +1,6 @@
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
 import type { CanonicalThemeBuildManifest } from "../compiler/theme-build-artifact-store.types";
+import { readRegisteredStaticPages } from "../compiler/theme-static-page-reader";
 import {
   planThemeWorkerDeployment,
   type ThemeWorkerDeploymentPlanFailureReason,
@@ -97,6 +98,12 @@ export type ReleaseReconcilerPorts = Readonly<{
     storefrontId: string;
     themeId: string;
     themeBuildId: string;
+    /**
+     * The release's content publication. Required so every caller states
+     * it: a build that registers static pages is only deployed for the
+     * content its HTML was built from (`staticPagesContentMismatch`).
+     */
+    contentPublicationId: string | null;
   } | null>;
   getBuild(buildId: string): Promise<{
     id: string;
@@ -104,6 +111,8 @@ export type ReleaseReconcilerPorts = Readonly<{
     status: string;
     artifactPrefix: string | null;
     manifestJson: unknown;
+    contentPublicationId?: string | null;
+    contentDependency?: string | null;
   } | null>;
   activateRelease(args: {
     storefrontId: string;
@@ -132,6 +141,44 @@ export type ReleaseReconcilerPorts = Readonly<{
     themeBuildId: string;
   }): Promise<unknown>;
 }>;
+
+/**
+ * Why a build's registered static HTML may not go live with this release,
+ * or null when it may (or the build registers none).
+ *
+ * The HTML was rendered from one sealed content publication. Core serves it
+ * for whichever release names the build, so the release must name that same
+ * publication, and the build must have proved its HTML carries content
+ * (`dependent`; `independent` or unknown proves nothing about these bytes).
+ * Publish already holds this through PUBLISH_BUILD_CONTENT_MISMATCH; this is
+ * the same rule at the one deploy core publish and rollback share.
+ *
+ * A registration that cannot be read is left to the deployment plan, which
+ * refuses it as INVALID_STATIC_PAGES.
+ */
+export function staticPagesContentMismatch(
+  build: Readonly<{
+    manifestJson: unknown;
+    contentPublicationId?: string | null;
+    contentDependency?: string | null;
+  }>,
+  release: Readonly<{ contentPublicationId: string | null }>,
+): string | null {
+  const registered = readRegisteredStaticPages(
+    build.manifestJson as CanonicalThemeBuildManifest,
+  );
+  if (!registered.ok || registered.pages.length === 0) return null;
+  if (build.contentDependency !== "dependent") {
+    return "STATIC_PAGES_CONTENT_MISMATCH: The build's static pages were not proven to be built from sealed content.";
+  }
+  if (
+    !build.contentPublicationId ||
+    build.contentPublicationId !== release.contentPublicationId
+  ) {
+    return "STATIC_PAGES_CONTENT_MISMATCH: The build's static pages were built from other content than this release publishes.";
+  }
+  return null;
+}
 
 export async function readGeneratedWorkerConfig(
   r2Bucket: R2BucketLike | undefined,
@@ -211,6 +258,16 @@ export async function deployReleaseArtifact(args: {
       success: false,
       reason: "BUILD_NOT_DEPLOYABLE",
       message: `Release "${args.releaseId}" references a build outside its storefront.`,
+    };
+  }
+
+  // Before anything is read, claimed or deployed.
+  const contentMismatch = staticPagesContentMismatch(build, release);
+  if (contentMismatch) {
+    return {
+      success: false,
+      reason: "BUILD_NOT_DEPLOYABLE",
+      message: contentMismatch,
     };
   }
 
@@ -366,6 +423,16 @@ async function activateReleaseWithDeploymentUnsynchronised(args: {
       success: false,
       reason: "BUILD_NOT_DEPLOYABLE",
       message: `Release "${args.releaseId}" references a build outside its storefront.`,
+    };
+  }
+
+  // Before anything is read, claimed or deployed.
+  const contentMismatch = staticPagesContentMismatch(build, release);
+  if (contentMismatch) {
+    return {
+      success: false,
+      reason: "BUILD_NOT_DEPLOYABLE",
+      message: contentMismatch,
     };
   }
 

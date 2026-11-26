@@ -301,6 +301,7 @@ describe.sequential("the public URL serves the active release's static HTML", ()
                 storefrontId: "sf_ssg",
                 themeId: release.themeId,
                 themeBuildId: release.themeBuildId,
+                contentPublicationId: release.contentPublicationId ?? null,
               }
             : null;
         },

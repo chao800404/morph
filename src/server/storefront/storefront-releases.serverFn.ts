@@ -114,6 +114,7 @@ export const activateStorefrontRelease = createServerFn({ method: "POST" })
                   storefrontId: data.storefrontId,
                   themeId: release.themeId,
                   themeBuildId: release.themeBuildId,
+                  contentPublicationId: release.contentPublicationId ?? null,
                 }
               : null;
           },

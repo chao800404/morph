@@ -606,6 +606,9 @@ export class StorefrontProductionService {
     resolved: ResolvedStorefrontHost,
   ): Promise<Response | null> {
     const registered = readRegisteredStaticPages(resolved.manifest);
+    // Intended: a release whose registration cannot be read cannot say which
+    // paths are static, so every GET and HEAD of that release answers 503,
+    // its JS and CSS included, until another release is active.
     if (!registered.ok) {
       console.error(STATIC_PAGE_FAILURE_LOG_LABEL, {
         storefrontId: resolved.storefrontId,
@@ -627,6 +630,7 @@ export class StorefrontProductionService {
       r2Bucket: this.options.r2Bucket,
       policy: PRODUCTION_ARTIFACT_POLICY,
       etagScope: `ssg:${resolved.releaseId}`,
+      verifySize: true,
     });
     if (!served.success) {
       console.error(STATIC_PAGE_FAILURE_LOG_LABEL, {
