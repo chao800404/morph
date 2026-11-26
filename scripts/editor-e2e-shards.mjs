@@ -154,6 +154,10 @@ export const EDITOR_SHARDS = [
     // only, so it skips on every shard. Its exact tests are listed in
     // scripts/container-acceptance-targets/navigation-matrix-public.mjs.
     "navigation-matrix-public.spec.ts",
+    // M3 stage 1, the hidden CMS Page section refused at publish and shown
+    // again: container transport only, so it skips on every shard. No CI
+    // step runs it yet; it is run locally on the container transport.
+    "publish-hidden-page-section.spec.ts",
   ],
   [
     "session-editor-writes.spec.ts",
