@@ -6,6 +6,9 @@ import { starterThemeWorkspaceFiles } from "../starter-theme-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
+import { prepareSourcesForBuild } from "../source-language/tsx-source-language";
+import { planThemeSandboxWorkspace } from "./theme-sandbox-workspace";
+import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 
 /**
  * M3 Hide approach E, step 1: a real platform Start build of a Theme with
@@ -18,6 +21,12 @@ import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
  * none of its component's defaults, in the prerendered HTML (the router's
  * serialized state included) or in the server bundle. The reverse build,
  * with the same section shown, proves the assertions can see it.
+ *
+ * LocalViteThemeBuildRunner is a test runner: it builds the files it is
+ * given and does not prepare them. The managed build prepares them in its
+ * workspace plan (planThemeSandboxWorkspace in "build" mode, through
+ * prepareSourcesForBuild). So the build below is fed the output of that same
+ * function, and the first case proves the managed plan writes the gate.
  */
 
 const PROMO = `export const contentFields = {
@@ -31,18 +40,39 @@ export default function Promo({ heading = "PROMO-DEFAULT" }: { heading?: string 
 const HERO_DEFAULT = "Objects for everyday rituals.";
 const FOOTER_DEFAULT = "© Online Store";
 
+function authoredFiles() {
+  return [
+    ...starterThemeWorkspaceFiles().map((file) =>
+      file.path === "src/routes/index.tsx"
+        ? {
+            ...file,
+            content: `import Promo from "../components/Promo";\n${file.content}`.replace(
+              "<main>",
+              `<main>\n      <Promo {...content("promo")} />`,
+            ),
+          }
+        : file,
+    ),
+    { path: "src/components/Promo.tsx", content: PROMO, mimeType: "text/typescript" },
+  ];
+}
+
+const PROMO_GATE = `<__MorphSectionGate slot={"promo"} render={() => (<Promo {...content("promo")} />)} />`;
+
 function input(hiddenPromo: boolean): ThemeBuildRunnerInput {
-  const files = starterThemeWorkspaceFiles().map((file) =>
-    file.path === "src/routes/index.tsx"
-      ? {
-          ...file,
-          content: `import Promo from "../components/Promo";\n${file.content}`.replace(
-            "<main>",
-            `<main>\n      <Promo {...content("promo")} />`,
-          ),
-        }
-      : file,
+  const authored = authoredFiles();
+  // The managed build's own preparation (see the note above).
+  const prepared = prepareSourcesForBuild(
+    authored.map((file) => ({ path: file.path, content: String(file.content) })),
   );
+  expect(prepared.hideGuarded["src/routes/index.tsx"]).toContain("promo");
+  const preparedByPath = new Map(
+    prepared.files.map((file) => [file.path, file.content]),
+  );
+  const files = authored.map((file) => ({
+    ...file,
+    content: preparedByPath.get(file.path) ?? file.content,
+  }));
   return {
     buildId: `hide-gate-${hiddenPromo ? "hidden" : "shown"}`,
     storefrontId: "store",
@@ -54,10 +84,7 @@ function input(hiddenPromo: boolean): ThemeBuildRunnerInput {
     compilerId: "tailwind-v4-build",
     compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
     toolchainId: START_TOOLCHAIN.id,
-    files: [
-      ...files,
-      { path: "src/components/Promo.tsx", content: PROMO, mimeType: "text/typescript" },
-    ] as ThemeBuildRunnerInput["files"],
+    files: files as ThemeBuildRunnerInput["files"],
     contentSnapshot: {
       publicationId: "pub",
       storefrontId: "store",
@@ -149,6 +176,29 @@ async function build(hiddenPromo: boolean) {
 }
 
 describe("a hidden section in a real platform Start build, prerendered", () => {
+  it("the managed build's workspace plan mounts the plain section through the gate", () => {
+    const plan = planThemeSandboxWorkspace({
+      files: authoredFiles().map((file) => ({
+        path: file.path,
+        content: String(file.content),
+      })),
+      entry: "src/routes/index.tsx",
+      buildId: "hide-gate-plan",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "build",
+      toolchainRoot: process.cwd(),
+    });
+    if (!plan.ok) throw new Error(plan.errorMessage);
+    const home = plan.workspaceFiles.find((file) =>
+      file.path.endsWith("/src/routes/index.tsx"),
+    );
+    const gate = plan.workspaceFiles.find((file) =>
+      file.path.endsWith("/.morph/section-gate.ts"),
+    );
+    expect(String(home?.content)).toContain(PROMO_GATE);
+    expect(String(gate?.content)).toContain("MorphSectionGate");
+  });
+
   it(
     "leaves no markup, value or default of a hidden section, plain JSX or the Starter's",
     { timeout: 480_000 },

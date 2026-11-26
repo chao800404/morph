@@ -175,14 +175,33 @@ export const check = isSectionHidden;
       {
         path: "src/components/Teaser.tsx",
         content: `import { isSectionHidden } from "../morph/content";
-import Hero from "./Hero";
 export default function Teaser() {
-  return <div>{!isSectionHidden("hero") && <Hero />}{isSectionHidden("other") && <p />}</div>;
+  return <div>{!isSectionHidden("hero") && <p>teaser</p>}{isSectionHidden("other") && <p />}</div>;
 }
 `,
       },
     ]);
     expect(classify(files)).toMatchObject(SUPPORTED);
+  });
+
+  it("but a second mount of the section's component without its content is refused", () => {
+    // Since approach E step 1: the Starter guard around a bare <Hero /> still
+    // renders Hero's defaults while shown, outside any gate.
+    const files = theme(contentRoute(), [
+      {
+        path: "src/components/Teaser.tsx",
+        content: `import { isSectionHidden } from "../morph/content";
+import Hero from "./Hero";
+export default function Teaser() {
+  return <div>{!isSectionHidden("hero") && <Hero />}</div>;
+}
+`,
+      },
+    ]);
+    expect(classify(files)).toMatchObject({
+      kind: "unsupported",
+      reason: "unguarded-mount",
+    });
   });
 });
 
