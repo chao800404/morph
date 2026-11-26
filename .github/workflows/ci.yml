@@ -64,8 +64,12 @@ jobs:
         run: pnpm check:sql-timestamps
 
   # The Vitest suite (`pnpm test`) in three shard jobs. It was one job of 22 to
-  # 35 minutes, the last lane of every run. Vitest's own `--shard` splits each
-  # `groupOrder` group by a hash of the file path, so every file lands in one
+  # 35 minutes, the last lane of every run. `--shard` picks each shard's files
+  # with scripts/vitest-shard-sequencer.mjs (set in vitest.config.ts): files are
+  # assigned from the measured per-file durations in
+  # scripts/vitest-shard-durations.json, longest first, because Vitest's own
+  # split by a hash of the path put five of the six slowest files in one shard
+  # (816 to 998 s against 334 to 581 s). Every file still lands in exactly one
   # shard and the theme-build and parser-worker phases still run apart from the
   # unit group inside their shard. `--passWithNoTests` only because the
   # parser-worker group holds one file and Vitest otherwise refuses to shard a
@@ -193,7 +197,7 @@ jobs:
 
       - name: Check every test file ran in exactly one shard
         run: |
-          node --test scripts/check-vitest-shards.test.mjs
+          node --test scripts/check-vitest-shards.test.mjs scripts/vitest-shard-sequencer.test.mjs
           node scripts/check-vitest-shards.mjs vitest-shard-artifacts
 
   validate-build:
