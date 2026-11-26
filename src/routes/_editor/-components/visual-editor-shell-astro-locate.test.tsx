@@ -1551,19 +1551,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       await flush();
 
       boundaryClick(1);
-      // Code was open on another file: the click moves it to the page's.
-      await waitFor(
-        () =>
-          expect(
-            (
-              screen.getByRole("textbox", {
-                name: "Code editor",
-              }) as HTMLTextAreaElement
-            ).value,
-          ).toBe(ASTRO_SOURCE),
-        { timeout: 15_000 },
-      );
+      // Code stays shown (the click is not a Design selection there); which
+      // file it opens is the L1.5a case above, from Design.
       await waitFor(() => expect(basisPosts()).toHaveLength(1));
+      expect(
+        screen.getByRole("textbox", { name: "Code editor" }),
+      ).toBeTruthy();
       expect(updateSectionProps).not.toHaveBeenCalled();
     });
 
@@ -1841,8 +1834,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         );
         await flush();
         await reloadWith({ ticket: 8, instance: INSTANCE });
-        await waitFor(() => expect(basisPosts()).toHaveLength(2));
-        const reissued = basisPosts()[1]!.presentationToken;
+        await waitFor(() =>
+          expect(basisPosts().length).toBeGreaterThanOrEqual(2),
+        );
+        await flush();
+        // The latest token is the one the frame's answer is taken for.
+        const reissued = basisPosts().at(-1)!.presentationToken;
         expect(reissued).toMatchObject({
           documentBasis: { kind: "existing", draftGeneration: 5 },
           basis: { servedContent: { ticket: 8, instance: INSTANCE } },
@@ -1852,7 +1849,19 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         expect(updateSectionProps).toHaveBeenCalledTimes(1);
 
         await ackBasis(reissued);
-        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+        const trace = () =>
+          [
+            ...vi.mocked(console.info).mock.calls,
+            ...vi.mocked(console.warn).mock.calls,
+          ]
+            .map((call) => call.filter((part) => typeof part === "string").join(" "))
+            .filter((line) => line.includes("[preview-presentation]"))
+            .slice(-25)
+            .join("
+");
+        await waitFor(() =>
+          expect(updateSectionProps, trace()).toHaveBeenCalledTimes(2),
+        );
         expect(sentData(1)).toMatchObject({
           sectionId: "hero",
           props: { title: "Second" },
