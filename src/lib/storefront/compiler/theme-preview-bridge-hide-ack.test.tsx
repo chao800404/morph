@@ -45,6 +45,10 @@ afterEach(() => {
   cleanup();
   document.body.innerHTML = "";
   routeContext.current = undefined;
+  // What the gates reported belongs to one document.
+  const holder = window as unknown as Record<string, unknown>;
+  delete holder.__morphSectionGateCommits;
+  delete holder.__morphSectionGateSlots;
 });
 
 /** The gate as the workspace carries it, with a stand-in router context. */
@@ -81,10 +85,14 @@ describe("a Hide is acknowledged only once the section is gone", () => {
     expect(end).toBeGreaterThan(start);
   });
 
-  it("does not acknowledge a Hide from the section's absence alone", () => {
-    // Since the review of f1bcc7a (P2-7): a gate must have committed it hidden.
+  // Review of b4e81b2, N1: a section with no gate of Morph's in this document
+  // (a Theme refused for Hide, a Starter 31 Theme, a section the author
+  // guards) is hidden by being absent, as before the gate. Requiring a gate
+  // there left the editor waiting ("Preview syncing") on a section already
+  // hidden when it opened.
+  it("acknowledges a Hide by absence when no gate for the section is in the document", () => {
     page(`<main><div data-storefront-section-id="other"></div></main>`);
-    expect(committed("hero", false)).toBe(false);
+    expect(committed("hero", false)).toBe(true);
   });
 
   it("does not take a section under a hidden attribute for a hidden one", () => {
@@ -134,23 +142,32 @@ describe("a Hide is acknowledged only by a committed render that hid it", () => 
   });
 
   it("does not acknowledge a Hide while the route shows its error state", () => {
-    routeContext.current = visibility(["hero"]);
+    // The page rendered the section through its gate; then the hide arrives
+    // and the route fails instead of rendering it.
+    routeContext.current = visibility([]);
+    let fail = false;
     const Broken = () => {
-      throw new Error("the route failed");
+      if (fail) throw new Error("the route failed");
+      return null;
     };
+    const Page = () => (
+      <Boundary>
+        <main>
+          <Broken />
+          <gate.MorphSectionGate
+            slot="hero"
+            render={() => <div data-storefront-section-id="hero">HERO</div>}
+          />
+        </main>
+      </Boundary>
+    );
+    const view = render(<Page />);
+    expect(committed("hero", true)).toBe(true);
+    routeContext.current = visibility(["hero"]);
+    fail = true;
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      render(
-        <Boundary>
-          <main>
-            <Broken />
-            <gate.MorphSectionGate
-              slot="hero"
-              render={() => <div data-storefront-section-id="hero">HERO</div>}
-            />
-          </main>
-        </Boundary>,
-      );
+      view.rerender(<Page />);
     } finally {
       errors.mockRestore();
     }
@@ -179,3 +196,32 @@ describe("a Hide is acknowledged only by a committed render that hid it", () => 
     expect(committed("hero", false)).toBe(false);
   });
 });
+
+describe("a gated section the page does not mount (review of b4e81b2, N1)", () => {
+  it("acknowledges a Hide when the gate sits in a branch the page did not take", () => {
+    routeContext.current = visibility(["hero"]);
+    const showPromo = false;
+    render(
+      <main>
+        {showPromo && (
+          <gate.MorphSectionGate
+            slot="hero"
+            render={() => <div data-storefront-section-id="hero">HERO</div>}
+          />
+        )}
+      </main>,
+    );
+    expect(committed("hero", false)).toBe(true);
+  });
+
+  it("still holds a Hide while a gate for it shows it", () => {
+    routeContext.current = visibility([]);
+    render(
+      <main>
+        <gate.MorphSectionGate slot="hero" render={() => <p>no section marker</p>} />
+      </main>,
+    );
+    expect(committed("hero", false)).toBe(false);
+  });
+});
+
