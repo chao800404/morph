@@ -16,6 +16,10 @@ import {
   answerToolchainCommand,
 } from "./sandbox-toolchain.test-support";
 import { themeToolchainForFramework } from "../theme-framework/theme-toolchains";
+import {
+  PLATFORM_PRERENDER_CONTENT_UNAVAILABLE,
+  PLATFORM_PRERENDER_PATH_NOT_SEALED,
+} from "./theme-prerender-content";
 
 describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
   it("rejects CMS-selected packages that are not in the pinned sandbox toolchain", () => {
@@ -472,6 +476,169 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
       expect(result.diagnosticsJson?.errors).toBeDefined();
     }
     expect(mock.session.destroy).toHaveBeenCalled();
+  });
+
+  describe("a platform Start build whose prerender read unsealed content", () => {
+    const refusedRecordPath =
+      "/workspace/.morph/prerender-refused-reads.ndjson";
+    const startOutput =
+      "Error: Failed to fetch /landing: Internal Server Error";
+    const ssgInput = () =>
+      createInput(
+        [
+          {
+            path: "morph.theme.json",
+            content: JSON.stringify({
+              entry: "src/routes/index.tsx",
+              router: { framework: "tanstack-start" },
+            }),
+          },
+          {
+            path: "src/router.tsx",
+            content:
+              "export function getRouter() { return createRouter({ routeTree }); }",
+          },
+          {
+            path: "src/routes/__root.tsx",
+            content: "export const Route = createRootRoute({});",
+          },
+          {
+            path: "src/routes/index.tsx",
+            content: 'export const Route = createFileRoute("/")({});',
+          },
+          {
+            path: "src/routes/landing.tsx",
+            content: 'export const Route = createFileRoute("/landing")({});',
+          },
+        ],
+        {
+          entry: "src/routes/index.tsx",
+          contentSnapshot: {
+            publicationId: "pub",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            documents: [
+              {
+                item: {
+                  id: "item",
+                  publicationId: "pub",
+                  itemType: "template",
+                  contentId: "page",
+                  revisionId: "revision",
+                  metadata: { routePath: "/landing" },
+                },
+                document: {
+                  version: 1,
+                  sections: [],
+                  renderPolicy: { mode: "ssg" },
+                },
+              },
+            ],
+          },
+        },
+      );
+    const failingStartSandbox = (record: string | undefined) =>
+      createMockSandbox({
+        exec: vi.fn(async (command: string) => {
+          if (command.startsWith("stat -c %s ")) {
+            return command.endsWith(refusedRecordPath) && record !== undefined
+              ? {
+                  exitCode: 0,
+                  success: true,
+                  stdout: `${new TextEncoder().encode(record).byteLength}\n`,
+                  stderr: "",
+                }
+              : {
+                  exitCode: 1,
+                  success: false,
+                  stdout: "",
+                  stderr: "stat: cannot statx: No such file or directory",
+                };
+          }
+          if (command.includes("vite build")) {
+            return {
+              exitCode: 1,
+              success: false,
+              stdout: "",
+              stderr: startOutput,
+            };
+          }
+          return { exitCode: 0, success: true, stdout: "", stderr: "" };
+        }),
+        readFile: vi.fn(async (filePath: string) => {
+          if (filePath === refusedRecordPath && record !== undefined) {
+            return { content: record };
+          }
+          throw new Error(`unexpected read of ${filePath}`);
+        }) as any,
+      });
+
+    it("names the refused path in the build's error and diagnostics, keeping the build's output and stage", async () => {
+      const record =
+        JSON.stringify({
+          path: "/elsewhere",
+          reason: PLATFORM_PRERENDER_PATH_NOT_SEALED,
+        }) + "\n";
+      const mock = failingStartSandbox(record);
+      const runner = new CloudflareSandboxViteThemeBuildRunner({
+        sandboxProvider: { getSandbox: vi.fn(async () => mock.session) },
+      });
+
+      const result = await runner.run(ssgInput());
+
+      // The generated config's content endpoint is the one that records.
+      expect(
+        String(mock.writtenFiles.get("/workspace/vite.config.ts")),
+      ).toContain(PLATFORM_PRERENDER_PATH_NOT_SEALED);
+      // A record the Theme's files carried is gone before the build runs.
+      expect(mock.session.exec).toHaveBeenCalledWith(
+        `rm -f ${refusedRecordPath}`,
+        expect.anything(),
+      );
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.errorMessage).toMatch(
+        /^PLATFORM_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: \/elsewhere \(PLATFORM_PRERENDER_PATH_NOT_SEALED: /,
+      );
+      expect(result.errorMessage).toContain(startOutput);
+      expect(result.diagnosticsJson).toEqual({
+        stage: "sandbox-start-compiler",
+        errors: [
+          {
+            severity: "error",
+            message: result.errorMessage,
+            code: PLATFORM_PRERENDER_CONTENT_UNAVAILABLE,
+          },
+        ],
+        refusedReads: [
+          { path: "/elsewhere", reason: PLATFORM_PRERENDER_PATH_NOT_SEALED },
+        ],
+      });
+      expect(
+        result.logs?.some(
+          (log) => log.level === "error" && log.message.includes("/elsewhere"),
+        ),
+      ).toBe(true);
+      expect(mock.session.destroy).toHaveBeenCalled();
+    });
+
+    it("keeps the build's own error when no content read was refused", async () => {
+      const mock = failingStartSandbox(undefined);
+      const runner = new CloudflareSandboxViteThemeBuildRunner({
+        sandboxProvider: { getSandbox: vi.fn(async () => mock.session) },
+      });
+
+      const result = await runner.run(ssgInput());
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.errorMessage).toBe(startOutput);
+      expect(result.diagnosticsJson).toEqual({
+        stage: "sandbox-start-compiler",
+        errors: [{ severity: "error", message: startOutput }],
+      });
+      expect(mock.session.readFile).not.toHaveBeenCalled();
+    });
   });
 
   const startupFailure = () =>

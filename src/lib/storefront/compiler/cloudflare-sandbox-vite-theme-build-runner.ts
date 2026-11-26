@@ -4,6 +4,7 @@ import type { Sandbox } from "@cloudflare/sandbox";
 import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   createThemePrerenderContent,
+  platformPrerenderFailure,
   type NativePrerenderContent,
 } from "./theme-prerender-content";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
@@ -660,6 +661,15 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
           "info",
           "Executing platform-owned TanStack Start Cloudflare build inside Sandbox...",
         );
+        const refusedReadsRecord = `${workspaceRoot}/${NATIVE_PRERENDER_REFUSED_READS_PATH}`;
+        if (prerenderContent) {
+          // Only this build's content endpoint writes it, never the Theme's
+          // files: a record is read below as this prerender's.
+          await sandbox.exec(`rm -f ${refusedReadsRecord}`, {
+            timeout: 10_000,
+            timeoutMs: 10_000,
+          });
+        }
         const startExecResult = await sandbox.exec(
           `${toolchain.root}/node_modules/.bin/vite build --config ${workspaceRoot}/vite.config.ts`,
           {
@@ -680,12 +690,33 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
             startExecResult.stderr ||
             startExecResult.stdout ||
             "TanStack Start build exited with non-zero status code";
+          // A prerendered page that read content this build has not sealed
+          // fails only as "Failed to fetch <page>". The content endpoint
+          // records the path it refused (theme-prerender-content.ts); name it.
+          // Only a build that prerendered has that endpoint, so only its
+          // record is read.
+          const refused = prerenderContent
+            ? platformPrerenderFailure(
+                errorMsg,
+                await readFailedBuildRecord(sandboxSession, refusedReadsRecord),
+              )
+            : undefined;
+          if (refused) addLog("error", refused.message);
           return {
             success: false,
-            errorMessage: errorMsg,
+            errorMessage: refused?.message ?? errorMsg,
             diagnosticsJson: {
               stage: "sandbox-start-compiler",
-              errors: [{ severity: "error", message: errorMsg }],
+              errors: [
+                refused
+                  ? {
+                      severity: "error",
+                      message: refused.message,
+                      code: refused.code,
+                    }
+                  : { severity: "error", message: errorMsg },
+              ],
+              ...(refused ? { refusedReads: refused.refusedReads } : {}),
             },
             logs,
             durationMs: Date.now() - startTime,
@@ -1186,27 +1217,11 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       // in its records: read that one record (bounded), not the workspace.
       const records = new Map<string, Uint8Array>();
       if (native.failedBuildCause) {
-        const refusedPath = `${root}/${NATIVE_PRERENDER_REFUSED_READS_PATH}`;
-        const sized = await sandbox.exec(`stat -c %s ${refusedPath}`, {
-          timeout: 10_000,
-          timeoutMs: 10_000,
-        });
-        const size = Number.parseInt((sized.stdout ?? "").trim(), 10);
-        if (
-          (sized.success ?? sized.exitCode === 0) &&
-          Number.isInteger(size) &&
-          size <= MAX_FAILED_BUILD_RECORD_BYTES
-        ) {
-          const read = await sandbox.readFile(refusedPath, { encoding: "none" });
-          const raw =
-            read && typeof read === "object" && "content" in read
-              ? read.content
-              : read;
-          records.set(
-            NATIVE_PRERENDER_REFUSED_READS_PATH,
-            await fileContentToUint8Array(raw),
-          );
-        }
+        const record = await readFailedBuildRecord(
+          sandbox,
+          `${root}/${NATIVE_PRERENDER_REFUSED_READS_PATH}`,
+        );
+        if (record) records.set(NATIVE_PRERENDER_REFUSED_READS_PATH, record);
       }
       return nativeBuildResult({
         input,
@@ -1294,6 +1309,33 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
 /** A failed build's refused-read record larger than this is not read. */
 const MAX_FAILED_BUILD_RECORD_BYTES = 1024 * 1024;
+
+/**
+ * A failed build's record at `fullPath`, or `undefined` when there is none
+ * or it is larger than `MAX_FAILED_BUILD_RECORD_BYTES`: its size is checked
+ * before its body is read.
+ */
+async function readFailedBuildRecord(
+  sandbox: CloudflareSandboxSession,
+  fullPath: string,
+): Promise<Uint8Array | undefined> {
+  const sized = await sandbox.exec(`stat -c %s ${fullPath}`, {
+    timeout: 10_000,
+    timeoutMs: 10_000,
+  });
+  const size = Number.parseInt((sized.stdout ?? "").trim(), 10);
+  if (
+    !(sized.success ?? sized.exitCode === 0) ||
+    !Number.isInteger(size) ||
+    size > MAX_FAILED_BUILD_RECORD_BYTES
+  ) {
+    return undefined;
+  }
+  const read = await sandbox.readFile(fullPath, { encoding: "none" });
+  const raw =
+    read && typeof read === "object" && "content" in read ? read.content : read;
+  return fileContentToUint8Array(raw);
+}
 
 /** A build pass's nonce, from the Worker's own random source. */
 function passNonce(): string {
