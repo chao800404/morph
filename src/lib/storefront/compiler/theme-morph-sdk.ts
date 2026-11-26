@@ -1,5 +1,10 @@
 import { THEME_HIDE_GUARD_VERSION } from "../ast/theme-hide-guard-version";
 import {
+  THEME_SECTION_GATE_MODULE,
+  THEME_SECTION_GATE_PATH,
+  themeSectionGateFile,
+} from "./theme-section-gate";
+import {
   GENERATED_MORPH_SDK_SOURCES,
   MORPH_SDK_SOURCE_HASH,
 } from "./morph-sdk-sources.generated";
@@ -31,6 +36,10 @@ export const THEME_MORPH_SDK_MODULES: Readonly<Record<string, string>> = {
   "@morph/sdk": `${THEME_MORPH_SDK_ROOT}/src/index.ts`,
   "@morph/sdk/start": `${THEME_MORPH_SDK_ROOT}/start/index.ts`,
   "@morph/sdk/astro": `${THEME_MORPH_SDK_ROOT}/astro/index.ts`,
+  // The platform's section gate, which Morph's compiled hide guard mounts
+  // (theme-section-gate.ts). Not part of the SDK package: covered by the
+  // guard version in the build identity, not the SDK hash.
+  [THEME_SECTION_GATE_MODULE]: THEME_SECTION_GATE_PATH,
 };
 
 /**
@@ -152,7 +161,7 @@ export function themeMorphSdkFiles(): ReadonlyArray<{
   path: string;
   content: string;
 }> {
-  return GENERATED_MORPH_SDK_SOURCES;
+  return [...GENERATED_MORPH_SDK_SOURCES, themeSectionGateFile()];
 }
 
 /**

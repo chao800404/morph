@@ -100,7 +100,11 @@ function theme(
     ...livePreviewPlatformFiles(),
     { path: "src/components/Hero.tsx", content: HERO },
     { path: "src/components/Card.tsx", content: CARD },
-    { path: "src/components/Promo.tsx", content: PROMO },
+    // The proof is whole-Theme: Promo reads `h10` wherever it sits, so it is
+    // in the Theme only when the route renders it.
+    ...(route.includes(`"../components/Promo"`)
+      ? [{ path: "src/components/Promo.tsx", content: PROMO }]
+      : []),
     { path: ROUTE, content: route },
     ...extra,
   ]) {
@@ -305,9 +309,13 @@ describe("classifyHideCapability: refused before hiding", () => {
         `import { morph } from "@morph/sdk/start";`,
       ),
     );
+    // The direct SDK import in the call-site module is itself a read Morph
+    // does not follow (PR-1 review item 3), so it is refused before the
+    // missing call site is.
     expect(classify(files, "h8")).toMatchObject({
       kind: "unsupported",
-      reason: "no-call-site",
+      reason: "untraced-use",
+      at: { file: ROUTE, line: expect.any(Number) },
     });
   });
 
@@ -454,33 +462,76 @@ describe("classifyHideCapability: reverse checks (one variable each)", () => {
     expect(classify(files, "h1")).toMatchObject({ kind: "supported" });
   });
 
-  it("A6: any edit to the content module refuses a loader hide (byte match only)", () => {
+  // Re-review 2 (F/I): the content module is confirmed as code, not bytes. A
+  // comment changes nothing a guard relies on; any change to the code does.
+  it("A6: any code edit to the content module refuses a loader hide; a comment does not", () => {
     const files = theme(H2);
-    const edited = files.map((file) =>
-      file.path === "src/morph/content.ts"
-        ? { ...file, content: `${file.content}\n// edited\n` }
-        : file,
-    );
-    expect(classify(edited, "h2")).toMatchObject({
+    const withContent = (content: (current: string) => string) =>
+      files.map((file) =>
+        file.path === "src/morph/content.ts"
+          ? { ...file, content: content(file.content) }
+          : file,
+      );
+    expect(
+      classify(withContent((current) => `${current}\nexport const edited = 1;\n`), "h2"),
+    ).toMatchObject({
       kind: "unsupported",
       reason: "content-module-unconfirmed",
     });
+    expect(
+      classify(withContent((current) => `${current}\n// edited\n`), "h2"),
+    ).toMatchObject({ kind: "supported" });
     expect(classify(files, "h2")).toMatchObject({ kind: "supported" });
   });
 
-  it("A6: an untouched Starter 31 module, which an edited Theme keeps after 32, still confirms a loader hide", () => {
-    const files = theme(H2).map((file) =>
-      file.path === "src/morph/content.ts"
-        ? { ...file, content: LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE }
-        : file,
-    );
-    expect(
-      files.find((file) => file.path === "src/morph/content.ts")?.content,
-    ).toBe(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE);
+  // Approach E step 1 (decision 2026-11-26, option A): Starter 31's read
+  // answers a failed request with empty content on the server, so a hidden
+  // section could come back with its defaults. Only Starter 32's fail-closed
+  // module is admitted; an older one asks for the upgrade, for both kinds of
+  // call site.
+  it("A6: an untouched Starter 31 module asks for the upgrade, for a loader and a content() hide", () => {
+    const v31 = (route: string) =>
+      theme(route).map((file) =>
+        file.path === "src/morph/content.ts"
+          ? { ...file, content: LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE }
+          : file,
+      );
     expect(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE).not.toBe(
       STARTER_THEME_CONTENT_MODULE_SOURCE,
     );
-    expect(classify(files, "h2")).toMatchObject({ kind: "supported" });
+    for (const [route, slot] of [
+      [H2, "h2"],
+      [H1, "h1"],
+    ] as const) {
+      expect(classify(v31(route), slot), slot).toMatchObject({
+        kind: "unsupported",
+        reason: "starter-upgrade-required",
+        at: { file: "src/morph/content.ts" },
+      });
+      expect(classify(theme(route), slot), slot).toMatchObject({
+        kind: "supported",
+      });
+    }
+  });
+
+  it("a content() hide needs the Starter's root route, the gate's source of visibility", () => {
+    const files = theme(H1).map((file) =>
+      file.path === "src/routes/__root.tsx"
+        ? {
+            ...file,
+            content: file.content.replace(
+              "morphContent: await loadContentSlots(location.pathname),",
+              "morphContent: { ...(await loadContentSlots(location.pathname)) },",
+            ),
+          }
+        : file,
+    );
+    expect(files).not.toEqual(theme(H1));
+    expect(classify(files, "h1")).toMatchObject({
+      kind: "unsupported",
+      reason: "root-route-unconfirmed",
+      at: { file: "src/routes/__root.tsx" },
+    });
   });
 
   it("handing the whole page to a function refuses the hide; the same route without it is supported", () => {

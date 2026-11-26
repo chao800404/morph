@@ -43,6 +43,15 @@ export type FencedFile = Readonly<{
   content: string;
   /** The saved version this content is, or was edited from. */
   fence: number;
+  /**
+   * Rewritten only because another file changed: a module whose compiled
+   * output depends on the rest of the Theme (Morph's hide guard), sent with
+   * its unchanged saved version. That version cannot order it, so it is
+   * ordered by the generation its sync read: held when that is strictly
+   * older than what is laid out or than the path's last write, written
+   * otherwise, and never refused (see `planFencedWrite`).
+   */
+  derived?: boolean;
 }>;
 
 /** The version last written to each path. */
@@ -73,6 +82,12 @@ export type FenceLedgerRecord = {
 export type FencedWritePlan = Readonly<{
   /** Paths the ledger has already seen a newer version of; nothing written. */
   refused: string[];
+  /**
+   * Derived files not written: the path was already written from the same or
+   * a newer generation, or this write names none. Neither written nor
+   * recorded, and no reason to refuse the rest.
+   */
+  held: string[];
   /** Files whose content differs from what is there, to be written. */
   writes: FencedFile[];
   unchanged: string[];
@@ -103,9 +118,31 @@ export function planFencedWrite(
     return recorded > version;
   };
 
-  const refused: string[] = [];
+  // A derived file is ordered by generation alone; one that cannot be is
+  // held. Held only when its snapshot is strictly older than what is laid
+  // out (a newer start may have removed the file) or than the one its path
+  // was last written from (a newer sync has compiled it already, from its
+  // own newer snapshot, so the path converges without this write). An equal
+  // generation is written: the Design flow syncs an edit before saving it,
+  // reading at the very generation the route was laid out at, and no second
+  // sync follows the save.
+  const holds = (path: string) => {
+    if (typeof generation !== "number") return true;
+    if (generation < ledger.generation) return true;
+    const recordedAt = readAt[path];
+    return typeof recordedAt === "number" && generation < recordedAt;
+  };
+  const held: string[] = [];
+  const ordered: FencedFile[] = [];
   for (const file of files) {
-    if (refuses(file.path, file.fence)) refused.push(file.path);
+    if (file.derived === true && holds(file.path)) held.push(file.path);
+    else ordered.push(file);
+  }
+  const refused: string[] = [];
+  for (const file of ordered) {
+    if (file.derived !== true && refuses(file.path, file.fence)) {
+      refused.push(file.path);
+    }
   }
   const next = {
     files: { ...ledger.files },
@@ -114,12 +151,12 @@ export function planFencedWrite(
   };
   // All or nothing, as the check before it is.
   if (refused.length > 0) {
-    return { refused, writes: [], unchanged: [], ledger: next };
+    return { refused, held: [], writes: [], unchanged: [], ledger: next };
   }
 
   const writes: FencedFile[] = [];
   const unchanged: string[] = [];
-  for (const file of files) {
+  for (const file of ordered) {
     if (current[file.path] === file.content) unchanged.push(file.path);
     else writes.push(file);
     // Not refused, so this version is the one to order the path by now.
@@ -133,7 +170,7 @@ export function planFencedWrite(
   if (typeof generation === "number" && generation > next.generation) {
     next.generation = generation;
   }
-  return { refused: [], writes, unchanged, ledger: next };
+  return { refused: [], held, writes, unchanged, ledger: next };
 }
 
 export type FencedStartPlan = Readonly<{

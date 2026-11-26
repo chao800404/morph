@@ -104,7 +104,7 @@ export const LOCAL_PREVIEW_SIDECAR_MAX_BODY_BYTES = 64 * 1024 * 1024;
 export type LocalPreviewSidecarApplyFilesRequest = Readonly<{
   previewId: string;
   /** Each with the version it is, or was edited from; see `preview-write-fence`. */
-  files: readonly { path: string; content: string; fence: number }[];
+  files: readonly { path: string; content: string; fence: number; derived?: boolean }[];
   /** The source generation the sync was checked at, read with the saved files. */
   generation?: number | null;
 }>;

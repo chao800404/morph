@@ -332,3 +332,44 @@ describe("saving a file that stays in the Theme's source only", () => {
     expect(isPreviewSyncSkippedPath("src/routes/index.tsx")).toBe(false);
   });
 });
+
+// Review P1-3: a module the passes rewrite although the tab did not send it
+// (its hide guard changed) is written under the same fence and generation as
+// the rest of the sync, as the version the snapshot read.
+describe("a module rewritten because of another's edit", () => {
+  it("is written with the version the same snapshot read it at", async () => {
+    const ROUTE = "src/routes/index.tsx";
+    const writes: Array<{ path: string; fence: number }> = [];
+    const result = await syncPreviewFiles({
+      files: [{ path: HERO, content: "hero v4", baseVersion: 4 }],
+      readSaved: async () => ({
+        files: new Map([[HERO, { version: 4, content: "hero v4" }]]),
+        generation: 12,
+        sourceFiles: [
+          { path: HERO, content: "hero v4", version: 4 },
+          { path: ROUTE, content: "route v7", version: 7 },
+        ],
+      }),
+      prepare: (files, sourceFiles) => [
+        ...files,
+        { path: ROUTE, content: `${sourceFiles.find((file) => file.path === ROUTE)!.content} gated` },
+      ],
+      isGenerated: () => false,
+      write: async (files, generation) => {
+        expect(generation).toBe(12);
+        writes.push(
+          ...files.map(({ path, fence, derived }) =>
+            derived ? { path, fence, derived } : { path, fence },
+          ),
+        );
+        return { changed: files.map((file) => file.path), unchanged: [] };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(writes).toEqual([
+      { path: HERO, fence: 4 },
+      { path: ROUTE, fence: 7, derived: true },
+    ]);
+  });
+});
+
