@@ -29,6 +29,11 @@ export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
  * 45585207449, 45574695693), which projects 665 / 664 / 652 s of test bodies
  * where the previous plan projected 703 / 395 / 883 s. Projections from shared
  * runners; each shard job adds roughly two to four minutes of fixed setup.
+ * Rebalanced after binding-acceptance-c and -p were each split in two (CI
+ * shard balance; the halves stay beside their former file): the same four
+ * runs' means (45752063562, 45742039495, 45700554199, 45695370096, full Start
+ * jobs) project 658 / 679 / 679 s where the previous plan projected 658 / 656 /
+ * 703 s. Projections, not a measured run.
  */
 export const START_PREVIEW_SHARDS = [
   // navigation-matrix: its Start preview cells took ~2.6 min locally (the
@@ -39,7 +44,7 @@ export const START_PREVIEW_SHARDS = [
   // Start then upgraded), Start only (LANE_EXCLUSIVE_SPECS in
   // editor-e2e-shards.mjs). Split from starter-upgrade.spec.ts on this shard;
   // not measured on its own.
-  ["code-controlled-field.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts", "starter-upgrade.spec.ts", "starter-upgrade-start.spec.ts"],
+  ["code-controlled-field.spec.ts", "binding-acceptance-c.spec.ts", "binding-acceptance-c-rest.spec.ts", "preview-start-bridge-interruption.spec.ts", "starter-upgrade.spec.ts", "starter-upgrade-start.spec.ts", "history-back-controlled-repro.spec.ts"],
   // selection-field-frame-navigated: accepted on full Start by the user's
   // decision; added to what was then the shortest shard.
   // content-module-restore: added after the projection above, to its
@@ -49,7 +54,7 @@ export const START_PREVIEW_SHARDS = [
   // content-module-restore-start, Start only (LANE_EXCLUSIVE_SPECS in
   // editor-e2e-shards.mjs); the client lane checks the refusal in a file of
   // its own.
-  ["binding-acceptance-p.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "content-module-restore.spec.ts", "content-module-restore-start.spec.ts"],
+  ["binding-acceptance-p.spec.ts", "binding-acceptance-p-rest.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "content-module-restore.spec.ts", "content-module-restore-start.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 

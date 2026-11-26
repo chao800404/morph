@@ -175,6 +175,45 @@ The client-only plan lists both acceptance files in shard 6, so the executed
 test set is unchanged. Their split durations were not measured before the
 split; the next rebalance should use that run's reports.
 
+## Splitting the heaviest files (2026-11-26)
+
+The heaviest spec files set the floor of shard balancing, so three were split
+into smaller files; the tests themselves are unchanged (same titles, bodies,
+timeouts and describe names; a `--list` comparison before and after is
+identical apart from file paths):
+
+- `editor-writes-auth.spec.ts` (353 s mean over four green main runs) is now
+  `editor-writes-auth.spec.ts` (3 tests, 130 s),
+  `editor-writes-auth-other-account.spec.ts` (3 tests, 117 s) and
+  `editor-writes-auth-late-response.spec.ts` (the two renewal variants, 106 s).
+  Its one `test.describe` could not be split along describe blocks, but its
+  tests are independent (each restores the hero itself, no serial or shared
+  state), so they were split by test with the describe title kept. The shared
+  `expectClosedToAnotherAccount` lives in
+  `e2e/helpers/editor-writes-account-change.ts`.
+- `binding-acceptance-p.spec.ts` (296 s) keeps p1-p4a (152 s);
+  `binding-acceptance-p-rest.spec.ts` has the remaining P cases and the home
+  and layout cases (145 s).
+- `binding-acceptance-c.spec.ts` (262 s) keeps the first four C cases (153 s);
+  `binding-acceptance-c-rest.spec.ts` has the rest (110 s). Each file selects
+  its cases with `.slice(...)` of the same list, so no case can be dropped.
+  Every case owns its routes and Documents in the shared fixture, so cases are
+  independent. The fixture is cached per run state directory, so a half placed
+  in a shard that does not already build it would build the fixture once more,
+  a cost the per-test durations do not include; the plans keep the halves
+  beside their former file for that reason.
+
+Both plans name the new files, and `RECORD_MODE_SPECS` in
+`scripts/e2e-preview-runtime-guard.mjs` lists the binding halves. The plans
+were rebalanced from four green main runs' per-file means (45752063562,
+45742039495, 45700554199, 45695370096; `editor-e2e-durations.json` now holds
+those means). Projected, not measured, test seconds per shard: editor
+674 / 686 / 686 / 616 / 676 / 664 (the previous plan: 658 / 609 / 686 / 616 /
+769 / 664 on the same means); full Start 658 / 679 / 679 (previously 658 / 656 /
+703). With measured durations the advisory budget warning now names every
+editor shard, since the 480 s budget is below what the suite needs; it is a
+warning, not a failure.
+
 Typecheck, Vitest, and Build are split into parallel validation jobs by #293.
 Wall-clock savings and runner-minute costs must be measured on the new CI;
 more runners are not a guarantee of a proportional speedup.

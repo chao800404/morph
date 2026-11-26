@@ -11,10 +11,12 @@ test.skip(
   "Needs the runner-owned throwaway store.",
 );
 
+// Split from one spec file for CI shard balance: the first four cases here, the
+// rest in binding-acceptance-c-rest.spec.ts.
 for (const testCase of [
   ...B1_INTEGRATION_CASES.filter((entry) => entry.id.startsWith("c")),
   ...NEW_SECTION_CASES,
-]) {
+].slice(0, 4)) {
   test.describe(`binding acceptance (${RUNTIME}) ${testCase.id}: ${testCase.verifies}`, () => {
     test.beforeAll(async ({ browser }) => {
       test.setTimeout(600_000);
