@@ -1456,22 +1456,24 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     // the old document; it is matched again, exactly, in Core's view read
     // for the new one.
     it("after a reload the selection is re-derived from Core's new view, and its basis asked again", async () => {
-      readRouteBindings
-        .mockResolvedValueOnce(bindingView())
-        // The view read for the new document binds the same instance to
-        // another slot: the selection follows Core, not the old frame.
-        .mockResolvedValue(
-          bindingView({
-            instances: [
-              heroInstance({
-                section: "hero-2",
-                claims: [{ slot: "hero-2", field: "title" }],
-              }),
-            ],
-          }),
-        );
+      // Review finding 10: the second view is set only once the click was
+      // answered, so the case does not depend on how many reads the first
+      // settle makes.
+      readRouteBindings.mockResolvedValue(bindingView());
       const token = await selectHero();
       expect(token).toMatchObject({ sectionId: "hero" });
+      // The view read for the new document binds the same instance to
+      // another slot: the selection follows Core, not the old frame.
+      readRouteBindings.mockResolvedValue(
+        bindingView({
+          instances: [
+            heroInstance({
+              section: "hero-2",
+              claims: [{ slot: "hero-2", field: "title" }],
+            }),
+          ],
+        }),
+      );
       fromPreview({
         type: "morph:storefront-preview-section-presentation-ack",
         operationId: token.operationId,
@@ -1501,19 +1503,18 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     });
 
     it("after a reload whose view no longer has the instance, the selection clears with the hint", async () => {
-      readRouteBindings
-        .mockResolvedValueOnce(bindingView())
-        // The source edit that caused the reload moved the instance.
-        .mockResolvedValue(
-          bindingView({
-            instances: [
-              heroInstance({
-                identity: { rule: 2, src: SRC, start: 31, end: 61 },
-              }),
-            ],
-          }),
-        );
+      readRouteBindings.mockResolvedValue(bindingView());
       const token = await selectHero();
+      // The source edit that caused the reload moved the instance.
+      readRouteBindings.mockResolvedValue(
+        bindingView({
+          instances: [
+            heroInstance({
+              identity: { rule: 2, src: SRC, start: 31, end: 61 },
+            }),
+          ],
+        }),
+      );
       fromPreview({
         type: "morph:storefront-preview-section-presentation-ack",
         operationId: token.operationId,
@@ -1546,10 +1547,9 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     // view was read for the old document, so it must never be taken as the
     // new document's: the re-derive fails closed as for no view.
     it("after a reload whose view re-read fails, the selection clears and no basis is asked of the new document", async () => {
-      readRouteBindings
-        .mockResolvedValueOnce(bindingView())
-        .mockRejectedValue(new Error("binding view read failed"));
+      readRouteBindings.mockResolvedValue(bindingView());
       const token = await selectHero();
+      readRouteBindings.mockRejectedValue(new Error("binding view read failed"));
       fromPreview({
         type: "morph:storefront-preview-section-presentation-ack",
         operationId: token.operationId,
@@ -1581,10 +1581,9 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     // a view either, so a new click is not matched against it. It is
     // confirmed again only by a view read that succeeds.
     it("a click after a failed view re-read is not matched against the earlier view", async () => {
-      readRouteBindings
-        .mockResolvedValueOnce(bindingView())
-        .mockRejectedValue(new Error("binding view read failed"));
+      readRouteBindings.mockResolvedValue(bindingView());
       const token = await selectHero();
+      readRouteBindings.mockRejectedValue(new Error("binding view read failed"));
       fromPreview({
         type: "morph:storefront-preview-section-presentation-ack",
         operationId: token.operationId,
@@ -1751,10 +1750,9 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         ],
         shouldAdvanceTime: true,
       });
-      readRouteBindings
-        .mockResolvedValueOnce(bindingView())
-        .mockImplementation(() => new Promise(() => {}));
+      readRouteBindings.mockResolvedValue(bindingView());
       await selectHero();
+      readRouteBindings.mockImplementation(() => new Promise(() => {}));
 
       await reloadWith({ ticket: 7, instance: INSTANCE });
       await waitFor(() =>
@@ -1781,15 +1779,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
     it("while Core's view is read again for the new document, the section says it is checking", async () => {
       let answerView: (value: unknown) => void = () => {};
-      readRouteBindings
-        .mockResolvedValueOnce(bindingView())
-        .mockImplementation(
-          () =>
-            new Promise((resolve) => {
-              answerView = resolve;
-            }),
-        );
+      readRouteBindings.mockResolvedValue(bindingView());
       await selectHero();
+      readRouteBindings.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answerView = resolve;
+          }),
+      );
 
       await reloadWith({ ticket: 7, instance: INSTANCE });
       await waitFor(() =>
@@ -1891,15 +1888,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
       it("Checking… after a reload is said in the bar while Code is shown", async () => {
         let answerView: (value: unknown) => void = () => {};
-        readRouteBindings
-          .mockResolvedValueOnce(bindingView())
-          .mockImplementation(
-            () =>
-              new Promise((resolve) => {
-                answerView = resolve;
-              }),
-          );
+        readRouteBindings.mockResolvedValue(bindingView());
         await selectHero();
+        readRouteBindings.mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              answerView = resolve;
+            }),
+        );
         const bar = statusBar()!;
 
         await reloadWith({ ticket: 7, instance: INSTANCE });
