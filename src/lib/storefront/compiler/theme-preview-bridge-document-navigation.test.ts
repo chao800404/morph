@@ -23,6 +23,8 @@ function bridgeRouting(page: {
   router?: { navigate: (options: unknown) => unknown; state?: unknown };
   /** What the document before this one recorded on its way out. */
   recorded?: string;
+  /** The page the document before this one said it left. */
+  left?: string;
   storageThrows?: boolean;
   selectionEnabled?: boolean;
 }) {
@@ -39,6 +41,7 @@ function bridgeRouting(page: {
   const channel = { previewSession: "s1" };
   const key = "morph:preview-document-navigation:s1";
   if (page.recorded !== undefined) stored.set(key, page.recorded);
+  if (page.left !== undefined) stored.set(`${key}:left`, page.left);
   const sessionStorage = {
     getItem: (name: string) => {
       if (page.storageThrows) throw new Error("denied");
@@ -333,6 +336,52 @@ describe("a page that navigates as documents (Astro)", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("loads the page the editor picked when that is the first request after Back, and swallows only the resync", () => {
+    vi.stubGlobal("performance", {
+      getEntriesByType: () => [{ type: "back_forward" }],
+    });
+    try {
+      // The author left /contact for /about by Back; the editor still names /contact.
+      const resync = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+        left: "/contact",
+      });
+      resync.applyEditorRoute(setRoute("/contact", 11));
+      expect(resync.assigned).toEqual([]);
+      expect(resync.posted[0]).toMatchObject({
+        type: "morph:storefront-preview-route-applied",
+        routePath: "/about",
+      });
+      // An explicit pick of another page, settled before the document was ready.
+      const pick = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+        left: "/contact",
+      });
+      pick.applyEditorRoute(setRoute("/pricing", 12));
+      expect(pick.assigned).toEqual([`${ORIGIN}/pricing${QUERY}`]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("says the page it leaves, once, for the next document, and keeps one already said", () => {
+    const page = bridgeRouting({ pathname: "/about", navigation: "document" });
+    page.fire("pagehide");
+    expect(page.stored.get(`${page.key}:left`)).toBe("/about");
+    const again = bridgeRouting({
+      pathname: "/other",
+      navigation: "document",
+      left: "/first",
+    });
+    // The record is read and taken at load; a restored document leaving again
+    // finds none of its own to overwrite.
+    expect(again.stored.has(`${again.key}:left`)).toBe(false);
+    again.fire("pagehide");
+    expect(again.stored.get(`${again.key}:left`)).toBe("/other");
   });
 
   it("does not take a plain load or a reload for a move of the frame's own", () => {

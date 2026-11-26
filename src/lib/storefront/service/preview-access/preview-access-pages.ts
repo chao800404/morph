@@ -234,9 +234,12 @@ export async function previewAccessBegin(
       `.then((r)=>r.json().then((a)=>{if(r.ok&&a&&a.ok===true){` +
       // The grant just redeemed is activated by this request, before the page
       // leaves: pages may be served under an older grant the browser also
-      // holds, and this one's window would run out unused. Best effort.
-      `const go=()=>{if(s.tab)window.opener=null;location.replace(s.returnPath);};` +
-      `fetch(s.activate,{method:"POST",credentials:"same-origin",cache:"no-store",` +
+      // holds, and this one's window would run out unused. Best effort, and
+      // bounded: a request that never answers must not strand the sign-in.
+      `let left=false;const ac=new AbortController();` +
+      `const go=()=>{if(left)return;left=true;clearTimeout(t);if(s.tab)window.opener=null;location.replace(s.returnPath);};` +
+      `const t=setTimeout(()=>{ac.abort();go();},3000);` +
+      `fetch(s.activate,{method:"POST",credentials:"same-origin",cache:"no-store",signal:ac.signal,` +
       `headers:{"content-type":"application/json"},body:JSON.stringify({flowId:s.flowId})}).then(go,go);` +
       `}else failed(a&&typeof a.reason==="string"?a.reason:"REDEEM_FAILED");}))` +
       `.catch(()=>failed("REDEEM_UNAVAILABLE"));});` +

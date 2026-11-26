@@ -586,16 +586,23 @@ const documentNavigation = window.__morphPreviewNavigation === "document";
  */
 const DOCUMENT_NAVIGATION_KEY =
   "morph:preview-document-navigation:" + (channel?.previewSession ?? "");
+const DOCUMENT_NAVIGATION_LEFT_KEY = DOCUMENT_NAVIGATION_KEY + ":left";
 let arrivedBy = null;
 /** Set once this document sends the frame somewhere itself. */
 let leavingForEditor = false;
 /** When the author last clicked a link or sent a form here. */
 let frameNavigationIntentAt = 0;
 if (documentNavigation) {
+  let leftBefore;
   try {
     const recorded = sessionStorage.getItem(DOCUMENT_NAVIGATION_KEY);
     sessionStorage.removeItem(DOCUMENT_NAVIGATION_KEY);
-    if (recorded === "frame") arrivedBy = { kind: "frame" };
+    // The page the frame showed before this one, said by that document as it
+    // left: the page the editor's resync will still name.
+    const left = sessionStorage.getItem(DOCUMENT_NAVIGATION_LEFT_KEY);
+    sessionStorage.removeItem(DOCUMENT_NAVIGATION_LEFT_KEY);
+    if (typeof left === "string" && left.startsWith("/")) leftBefore = left;
+    if (recorded === "frame") arrivedBy = { kind: "frame", left: leftBefore };
     else if (typeof recorded === "string" && recorded.startsWith("editor:")) {
       arrivedBy = { kind: "editor", target: recorded.slice("editor:".length) };
     }
@@ -609,7 +616,7 @@ if (documentNavigation) {
     try {
       const navigation = performance.getEntriesByType("navigation")[0];
       if (navigation && navigation.type === "back_forward") {
-        arrivedBy = { kind: "frame" };
+        arrivedBy = { kind: "frame", left: leftBefore };
       }
     } catch {
       // No navigation timing: nothing is known of how this document arrived.
@@ -639,7 +646,15 @@ if (documentNavigation) {
   // Said by the document that leaves, for the one that comes: only right
   // after the author's own click, never when the editor replaced the frame.
   window.addEventListener("pagehide", () => {
-    if (leavingForEditor || Date.now() - frameNavigationIntentAt > 10000) return;
+    if (leavingForEditor) return;
+    // The page left, for the next document: kept when one is already there (a
+    // document restored from the cache leaves again by reloading itself).
+    try {
+      if (sessionStorage.getItem(DOCUMENT_NAVIGATION_LEFT_KEY) === null) {
+        sessionStorage.setItem(DOCUMENT_NAVIGATION_LEFT_KEY, location.pathname);
+      }
+    } catch {}
+    if (Date.now() - frameNavigationIntentAt > 10000) return;
     try {
       sessionStorage.setItem(DOCUMENT_NAVIGATION_KEY, "frame");
     } catch {}
@@ -719,7 +734,13 @@ function applyDocumentRoute(message) {
   }
   if (
     arrival !== null &&
-    (arrival.kind === "frame" || sameDocumentPath(arrival.target, target))
+    // A frame arrival swallows the editor's resync only: the request that
+    // names the page the author just left. An explicit pick of any other page
+    // is the editor's own move and is loaded. Without a page recorded as left
+    // every first request is taken as the resync.
+    ((arrival.kind === "frame" &&
+      (arrival.left === undefined || sameDocumentPath(arrival.left, target))) ||
+      (arrival.kind === "editor" && sameDocumentPath(arrival.target, target)))
   ) {
     // Answered first, then reported: the report after the answer is the one
     // the editor follows.

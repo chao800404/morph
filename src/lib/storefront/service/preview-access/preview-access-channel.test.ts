@@ -686,6 +686,10 @@ describe("activating the grant a flow just redeemed", () => {
         isAppOrigin: (origin: string) => origin === EDITOR,
       } as unknown as PreviewAccessRequestDeps,
     );
-    expect(await response?.text()).toContain("/__morph/preview-auth/activate");
+    const text = (await response?.text()) ?? "";
+    expect(text).toContain("/__morph/preview-auth/activate");
+    // Bounded: a request that never answers must not strand the sign-in.
+    expect(text).toContain("AbortController");
+    expect(text).toContain("setTimeout");
   });
 });

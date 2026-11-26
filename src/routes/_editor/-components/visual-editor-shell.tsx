@@ -5618,6 +5618,8 @@ export function VisualEditorShell({
     flow: LivePreviewAccessFlow;
     /** The frame's code was issued, bound to this editor and session. */
     issued: boolean;
+    /** The flow failed or its access ended: a late answer is for nobody. */
+    cancelled: boolean;
   } | null>(null);
   // The offers made to the frame's documents (preview-channel-bootstrap.ts);
   // a replaced frame, or a new session, leaves none alive.
@@ -5637,6 +5639,7 @@ export function VisualEditorShell({
       key: previewKey,
       flow: startLivePreviewAccessFlow(Date.now()),
       issued: false,
+      cancelled: false,
     };
   }
   const framedPreviewSrc =
@@ -6018,6 +6021,7 @@ export function VisualEditorShell({
       if (isLivePreviewAccessFailure(entry.flow, event, expected)) {
         entry.flow.ended = true;
         entry.issued = false;
+        entry.cancelled = true;
         previewChannelOffersRef.current.clear();
         failed();
         return;
@@ -6025,6 +6029,7 @@ export function VisualEditorShell({
       if (isLivePreviewAccessEnded(event, expected)) {
         entry.flow.ended = true;
         entry.issued = false;
+        entry.cancelled = true;
         previewChannelOffersRef.current.clear();
         dispatchPreviewLifecycle({
           type: "server-failed",
@@ -6053,8 +6058,9 @@ export function VisualEditorShell({
         )
         .then(
         (result) => {
-          // A newer frame has its own flow; this answer is for nobody.
-          if (previewAccessFlowRef.current !== entry) return;
+          // A newer frame has its own flow; this answer is for nobody. Nor is
+          // it for a flow that failed or whose access ended meanwhile.
+          if (previewAccessFlowRef.current !== entry || entry.cancelled) return;
           if (!result.success) {
             failed();
             return;

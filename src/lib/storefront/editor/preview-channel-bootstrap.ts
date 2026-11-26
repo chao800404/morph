@@ -319,18 +319,22 @@ export function installPreviewChannelBootstrap(
         if (!response.ok) return;
         const answer = (await response.json()) as { ok?: unknown } | null;
         if (!answer || answer.ok !== true) return;
+        const next = new URL(win.location.href);
+        // A key the Theme's own address does not use: its parameter reaches
+        // the replacement request untouched, and only ours is removed.
+        let key: string = PREVIEW_CHANNEL_BOOTSTRAP_PARAM;
+        for (let suffix = 1; next.searchParams.has(key); suffix++) {
+          if (suffix > 9) return;
+          key = `${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}${suffix}`;
+        }
         // The document that loads takes the nonce only against this record.
         win.sessionStorage!.setItem(
           HANDOFF_KEY + offer.previewSession,
-          offer.bootstrapNonce,
+          JSON.stringify({ key, nonce: offer.bootstrapNonce }),
         );
-        const next = new URL(win.location.href);
         next.searchParams.set("editorOrigin", editorOrigin);
         next.searchParams.set("previewSession", offer.previewSession);
-        next.searchParams.set(
-          PREVIEW_CHANNEL_BOOTSTRAP_PARAM,
-          offer.bootstrapNonce,
-        );
+        next.searchParams.set(key, offer.bootstrapNonce);
         win.location.replace(next.href);
       } catch {
         // No verification, no channel: the document stays as it is.
@@ -346,27 +350,39 @@ export function installPreviewChannelBootstrap(
 export function takeBootstrapNonce(win: PreviewChannelWindow): string | null {
   if (nonceTaken.has(win)) return null;
   nonceTaken.add(win);
+  if (!inProtectedFrame(win)) return null;
   let url: URL;
-  let value: string | null;
+  let session: string | null;
   try {
     url = new URL(win.location.href);
-    value = url.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM);
+    session = url.searchParams.get("previewSession");
   } catch {
     return null;
   }
-  // Only a nonce a receiver handed to this very load is ours: any other value
-  // of that name, on a preview that was not bootstrapped, is the Theme's own,
-  // and its address and history stay as they are.
-  if (value === null || !NONCE.test(value) || !inProtectedFrame(win)) {
-    return null;
-  }
-  const session = url.searchParams.get("previewSession");
   if (!session || !SESSION.test(session)) return null;
+  // Only a nonce a receiver handed to this very load is ours: the record names
+  // the key it used and the nonce. Any other parameter, whatever its name or
+  // value, is the Theme's own, and its address and history stay as they are.
+  let value: string;
+  let key: string;
   try {
     const storage = win.sessionStorage;
-    if (!storage || storage.getItem(HANDOFF_KEY + session) !== value) {
+    const raw = storage?.getItem(HANDOFF_KEY + session);
+    if (!storage || !raw) return null;
+    const handoff = JSON.parse(raw) as { key?: unknown; nonce?: unknown };
+    if (
+      typeof handoff.key !== "string" ||
+      !new RegExp(`^${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}[0-9]?$`).test(
+        handoff.key,
+      ) ||
+      typeof handoff.nonce !== "string" ||
+      !NONCE.test(handoff.nonce) ||
+      url.searchParams.get(handoff.key) !== handoff.nonce
+    ) {
       return null;
     }
+    key = handoff.key;
+    value = handoff.nonce;
     storage.removeItem(HANDOFF_KEY + session);
     // Confirmed: the handoff reached its document.
     storage.removeItem(ATTEMPTS_KEY + session);
@@ -374,7 +390,7 @@ export function takeBootstrapNonce(win: PreviewChannelWindow): string | null {
     return null;
   }
   try {
-    url.searchParams.delete(PREVIEW_CHANNEL_BOOTSTRAP_PARAM);
+    url.searchParams.delete(key);
     win.history.replaceState(win.history.state ?? null, "", url.href);
   } catch {
     // The nonce is still this document's to say once.

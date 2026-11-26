@@ -26,6 +26,10 @@ const EDITOR = "https://editor.example.test";
 const FLOW = "a".repeat(32);
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const NONCE = "b".repeat(32);
+const RECORD = JSON.stringify({
+  key: "morphBootstrap",
+  nonce: "b".repeat(32),
+});
 /** What a receiver records for the document it is about to load, and the count of handoffs. */
 const HANDOFF = `morph:preview-channel-bootstrap-handoff:${SESSION}`;
 const ATTEMPTS = `morph:preview-channel-bootstrap-attempts:${SESSION}`;
@@ -149,7 +153,46 @@ describe("a queryless document's receiver", () => {
     expect(next.searchParams.get("previewSession")).toBe(SESSION);
     expect(next.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM)).toBe(NONCE);
     // The document that loads takes the nonce only against this record.
-    expect(frame.stored.get(HANDOFF)).toBe(NONCE);
+    expect(frame.stored.get(HANDOFF)).toBe(RECORD);
+  });
+
+  it("uses a key the Theme's own address does not, and leaves the Theme's parameter be", async () => {
+    const frame = frameWindow({
+      href: `https://pv-x.preview.test/shop?${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=theme-value`,
+    });
+    installPreviewChannelBootstrap({
+      window: frame.win,
+      fetch: ok() as never,
+    });
+    frame.fire("message", {
+      source: frame.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
+    await settle();
+    const next = new URL(frame.replace.mock.calls[0]![0] as string);
+    expect(next.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM)).toBe(
+      "theme-value",
+    );
+    expect(next.searchParams.get(`${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}1`)).toBe(
+      NONCE,
+    );
+    // The document that loads takes only ours out of its address.
+    const arrival = frameWindow({ href: next.href });
+    for (const [key, value] of frame.stored) arrival.stored.set(key, value);
+    expect(takeBootstrapNonce(arrival.win)).toBe(NONCE);
+    const cleaned = new URL(
+      String(
+        (arrival.win.history.replaceState as ReturnType<typeof vi.fn>).mock
+          .calls[0]![2],
+      ),
+    );
+    expect(cleaned.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM)).toBe(
+      "theme-value",
+    );
+    expect(
+      cleaned.searchParams.has(`${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}1`),
+    ).toBe(false);
   });
 
   it("keeps the query a link already carried", async () => {
@@ -342,7 +385,7 @@ describe("the bootstrap nonce a reloaded document carries", () => {
     const frame = frameWindow({
       href: `https://pv-x.preview.test/b?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
     });
-    frame.stored.set(HANDOFF, NONCE);
+    frame.stored.set(HANDOFF, RECORD);
     frame.stored.set(ATTEMPTS, JSON.stringify([Date.now()]));
     expect(takeBootstrapNonce(frame.win)).toBe(NONCE);
     // The handoff reached its document: it is confirmed, and no longer counts.
@@ -381,11 +424,13 @@ describe("the bootstrap nonce a reloaded document carries", () => {
     });
     // No record, or one for another nonce: not a bootstrap.
     expect(takeBootstrapNonce(own.win)).toBeNull();
-    own.stored.set(HANDOFF, "c".repeat(32));
     const other = frameWindow({
       href: own.win.location.href,
     });
-    other.stored.set(HANDOFF, "c".repeat(32));
+    other.stored.set(
+      HANDOFF,
+      JSON.stringify({ key: "morphBootstrap", nonce: "c".repeat(32) }),
+    );
     expect(takeBootstrapNonce(other.win)).toBeNull();
     expect(own.win.history.replaceState).not.toHaveBeenCalled();
     expect(other.win.history.replaceState).not.toHaveBeenCalled();
@@ -400,7 +445,7 @@ describe("the bootstrap nonce a reloaded document carries", () => {
         ...options,
         href: `https://pv-x.preview.test/b?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
       });
-      frame.stored.set(HANDOFF, NONCE);
+      frame.stored.set(HANDOFF, RECORD);
       expect(takeBootstrapNonce(frame.win)).toBeNull();
       expect(frame.win.history.replaceState).not.toHaveBeenCalled();
     }
@@ -412,7 +457,7 @@ describe("the bootstrap nonce a reloaded document carries", () => {
       href: `https://pv-x.preview.test//double/slash?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
       historyState: state,
     });
-    frame.stored.set(HANDOFF, NONCE);
+    frame.stored.set(HANDOFF, RECORD);
     expect(takeBootstrapNonce(frame.win)).toBe(NONCE);
     const call = (frame.win.history.replaceState as ReturnType<typeof vi.fn>)
       .mock.calls[0]!;
@@ -424,7 +469,7 @@ describe("the bootstrap nonce a reloaded document carries", () => {
     const frame = frameWindow({
       href: `https://pv-x.preview.test/b?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
     });
-    frame.stored.set(HANDOFF, NONCE);
+    frame.stored.set(HANDOFF, RECORD);
     (
       frame.win.history.replaceState as ReturnType<typeof vi.fn>
     ).mockImplementation(() => {
