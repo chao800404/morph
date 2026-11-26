@@ -1452,6 +1452,32 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(sectionStatus()).toBeNull();
     });
 
+    // Owner decision D2 (2026-11-26), M2 PR 3: in Design, a click on a
+    // section Core confirmed selects it and opens the Inspector, as on
+    // TanStack Start. It no longer jumps to Code; "open in Code" is an
+    // explicit action. Nothing is written by the click itself.
+    it("D2: a confirmed click in Design selects the section and opens its declared field in the Inspector, not Code", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+
+      expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+      openInspectorContent();
+      const field = await within(inspectorPanel()).findByRole(
+        "textbox",
+        { name: /title/i },
+        { timeout: 15_000 },
+      );
+      expect(field).toBeTruthy();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
     // Lead decision Q3: after a frame reload the selection is not kept from
     // the old document; it is matched again, exactly, in Core's view read
     // for the new one.
