@@ -17,6 +17,8 @@ import type {
 import {
   createThemePreviewContentSnapshot,
   THEME_PREVIEW_CONTENT_PATH,
+  THEME_PREVIEW_CONTENT_UNREADABLE_BODY,
+  THEME_PREVIEW_CONTENT_UNREADABLE_STATUS,
   themePreviewContentModuleSource,
   type ThemePreviewContentSnapshot,
 } from "@/lib/storefront/compiler/theme-preview-content";
@@ -353,10 +355,12 @@ export async function withLivePreviewContent<T>(
       if (answer) return answer;
       throw new Error(`live-preview-render: unexpected request to ${url.href}`);
     }
+    // Refused as the preview refuses a path its snapshot holds no entry for.
+    const content = resolve(url.searchParams.get("path") ?? "/");
     return new Response(
-      JSON.stringify(resolve(url.searchParams.get("path") ?? "/")),
+      JSON.stringify(content ?? THEME_PREVIEW_CONTENT_UNREADABLE_BODY),
       {
-        status: 200,
+        status: content ? 200 : THEME_PREVIEW_CONTENT_UNREADABLE_STATUS,
         headers: { "content-type": "application/json" },
       },
     );

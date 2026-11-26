@@ -28,6 +28,7 @@ import { calculateThemeSourceSha256 } from "../storage/cloudflare-r2-theme-sourc
 
 import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 
 /**
  * PROTOTYPE: the Start Live Preview on the local transport (the one CI runs),
@@ -105,6 +106,7 @@ beforeAll(async () => {
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
     previewRuntime: "start",
+    previewContent: previewContentAsCoreWrites(),
   });
   if (!first.ok) throw new Error(`${first.stage}: ${first.errorMessage}`);
   expect((await fetch(first.url)).status).toBe(200);
@@ -132,7 +134,7 @@ beforeAll(async () => {
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
     previewRuntime: "start",
-    previewContent: {
+    previewContent: previewContentAsCoreWrites({
       templates: {
         index: {
           slots: {
@@ -145,8 +147,7 @@ beforeAll(async () => {
           hiddenSlots: ["sdk-hidden"],
         },
       },
-      pages: {},
-    },
+    }),
     loadBinary: async (ref) => {
       const file = NATIVE_COMPAT_PUBLIC_FILES.find(
         (file) =>

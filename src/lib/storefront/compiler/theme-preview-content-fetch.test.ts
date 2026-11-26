@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import { themePreviewContentModuleSource } from "./theme-preview-content";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 
 /**
  * The client-only Live Preview answers the page's own `/_morph/content`
@@ -62,15 +63,14 @@ function previewFrame(snapshot: unknown) {
   return { fetch: window.fetch, network };
 }
 
-const SNAPSHOT = {
+const SNAPSHOT = previewContentAsCoreWrites({
   templates: {
     index: {
       slots: { hero: { heading: "Draft heading" } },
       hiddenSlots: ["promo"],
     },
   },
-  pages: {},
-};
+});
 
 describe("client-only Live Preview content reads", () => {
   it.each([

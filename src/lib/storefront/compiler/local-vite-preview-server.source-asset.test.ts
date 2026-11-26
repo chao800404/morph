@@ -8,6 +8,7 @@ import { calculateThemeSourceSha256 } from "../storage/cloudflare-r2-theme-sourc
 import { noisyPng } from "../theme-image.test-support";
 import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 
 /**
  * docs/astro-theme-plan.md 5.2.5, PR 2: a binary file kept under src/ in a
@@ -55,6 +56,7 @@ beforeAll(async () => {
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
     previewRuntime: "start",
+    previewContent: previewContentAsCoreWrites(),
     loadBinary: async (ref) => {
       if (ref.digest !== calculateThemeSourceSha256(HERO)) {
         throw new Error("unknown blob");

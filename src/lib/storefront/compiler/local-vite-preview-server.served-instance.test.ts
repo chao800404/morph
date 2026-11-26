@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { planThemeSandboxWorkspace } from "./theme-sandbox-workspace";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 import {
   PREVIEW_SERVED_INSTANCE_TIMING,
   formatPreviewServedInstance,
@@ -86,6 +87,7 @@ async function start(
     entry: "src/pages/index.tsx",
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
+    previewContent: previewContentAsCoreWrites(),
   });
   if (!started.ok) {
     expect.fail(`the preview failed to start: ${started.errorMessage}`);

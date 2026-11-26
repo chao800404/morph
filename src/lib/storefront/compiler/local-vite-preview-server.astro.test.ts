@@ -9,6 +9,7 @@ import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { THEME_PREVIEW_START_CLIENT_PATH } from "./theme-preview-start-runtime";
 import { previewContentDigest } from "./theme-preview-content";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 
 /**
  * docs/astro-theme-plan.md A6: an Astro Live Preview on the local transport,
@@ -65,22 +66,20 @@ const files = astroThemeFiles({
     { path: "src/pages/sdk.astro", content: SDK_PAGE },
   ],
 });
-const previewContent = {
+const previewContent = previewContentAsCoreWrites({
   templates: {
     index: { slots: { hero: { headline: DRAFT } }, hiddenSlots: [] },
   },
-  pages: {},
-};
+});
 
 let server: LocalVitePreviewServer;
 let origin = "";
 
 /** A content snapshot as Core writes one: content, ticket and its hash. */
 async function snapshot(headline: string, contentTicket: number) {
-  const content = {
+  const content = previewContentAsCoreWrites({
     templates: { index: { slots: { hero: { headline } }, hiddenSlots: [] } },
-    pages: {},
-  };
+  });
   return JSON.stringify({
     ...content,
     contentTicket,

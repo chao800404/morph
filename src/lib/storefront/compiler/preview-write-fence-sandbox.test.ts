@@ -8,11 +8,22 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  statSync,
   writeFileSync,
+  openSync,
+  fstatSync,
+  closeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import {
   fencedWriteScriptSource,
   type FencedWriteRequest,
@@ -619,6 +630,52 @@ describe("the container's content requests", () => {
     expect(onDisk()).toMatchObject({ contentTicket: 3, previewInstance: "server-2" });
     expect(onDisk().templates.index.slots.hero.headline).toBe("C");
   });
+
+  // The running server reads this file while a start restamps it. Written in
+  // place, a read between truncate and write sees a partial file, which the
+  // preview now refuses (503); by one rename a reader sees the old file or
+  // the new one, as a content sync already writes it.
+  it.each([
+    ["the snapshot it kept", "C", 3, "A", 2],
+    ["the snapshot it placed", "A", 2, "C", 3],
+  ] as const)(
+    "restamps %s by one rename, never in place",
+    (_label, placedHeadline, placedTicket, stagedHeadline, stagedTicket) => {
+      const relative = ".morph-preview-content.json";
+      writeFileSync(contentFile(), snapshot(placedHeadline, placedTicket));
+      writeFileSync(instanceFile(), "server-2");
+      const staging = path.join(dir, "staging");
+      mkdirSync(staging, { recursive: true });
+      writeFileSync(
+        path.join(staging, relative),
+        snapshot(stagedHeadline, stagedTicket),
+      );
+      // Each file the start could leave in place, by identity: a restamp
+      // written into either of them was written in place. Held open, as a
+      // reader would, so neither number can be reused by a new file.
+      const held = [contentFile(), path.join(staging, relative)].map((file) =>
+        openSync(file, "r"),
+      );
+      const [placedIno, stagedIno] = held.map((fd) => fstatSync(fd).ino);
+      onTestFinished(() => held.forEach((fd) => closeSync(fd)));
+      run({
+        op: "start",
+        root,
+        staging,
+        files: [relative],
+        prune: [],
+        versions: {},
+        marker: { path: path.join(root, ".marker"), dirty: "dirty:s", expected: null },
+        commit: null,
+        content: { path: relative, instancePath: instanceFile() },
+      });
+      const after = statSync(contentFile()).ino;
+      expect(after).not.toBe(placedIno);
+      expect(after).not.toBe(stagedIno);
+      expect(onDisk()).toMatchObject({ contentTicket: 3, previewInstance: "server-2" });
+      expect(existsSync(`${contentFile()}.next`)).toBe(false);
+    },
+  );
 });
 
 /**

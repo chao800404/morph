@@ -31,6 +31,7 @@ import {
   themePreviewStartWorkerSource,
 } from "./theme-preview-start-runtime";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 import { normalizeRevisionSnapshot } from "./theme-build-materializer";
 
 const plan = (
@@ -349,8 +350,9 @@ describe("the Start preview Worker's shared snapshot", () => {
 
   const dataModule = (ticket: number, title: string, instance = "server-a") => ({
     default: {
-      templates: { index: { slots: { hero: { title } }, hiddenSlots: [] } },
-      pages: {},
+      ...previewContentAsCoreWrites({
+        templates: { index: { slots: { hero: { title } }, hiddenSlots: [] } },
+      }),
       contentTicket: ticket,
       previewInstance: instance,
     },

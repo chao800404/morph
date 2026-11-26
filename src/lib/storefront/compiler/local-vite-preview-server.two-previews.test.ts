@@ -8,6 +8,7 @@ import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { previewContentDigest } from "./theme-preview-content";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 
 /**
  * M1 source isolation, G2 (handoff/2026-10-27/m1-item4-source-isolation-
@@ -49,12 +50,12 @@ const RUN = randomUUID().slice(0, 8);
 const A = `A-${RUN}`;
 const B = `B-${RUN}`;
 const B2 = `B2-${RUN}`;
-const content = (marker: string) => ({
-  templates: {
-    index: { slots: { isolation: { marker } }, hiddenSlots: [] },
-  },
-  pages: {},
-});
+const content = (marker: string) =>
+  previewContentAsCoreWrites({
+    templates: {
+      index: { slots: { isolation: { marker } }, hiddenSlots: [] },
+    },
+  });
 
 let server: LocalVitePreviewServer;
 const origins: Record<"a" | "b", string> = { a: "", b: "" };
