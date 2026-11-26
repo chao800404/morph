@@ -108,6 +108,10 @@ export const EDITOR_SHARDS = [
     // listed in scripts/container-acceptance-targets/astro-basis-ack.mjs; no
     // CI step runs that check yet.
     "astro-basis-ack.spec.ts",
+    // M2 PR 3, the first Astro Inspector write: the same file gates, so it
+    // skips on every shard too. Its exact test is listed in
+    // scripts/container-acceptance-targets/astro-inspector-write.mjs.
+    "astro-inspector-write.spec.ts",
     "astro-preview-container.spec.ts",
     "astro-publish-acceptance.spec.ts",
     "authored-content.spec.ts",

@@ -358,10 +358,12 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   // A target module added without a CI step must be listed here, with the
   // change that will wire it. All six deferred by #396 are wired (M1 1d).
   // astro-basis-ack.mjs: Astro container E2E is local only for M2 (owner
-  // decision D4, 2026-11-26); a later CI job wires it.
+  // decision D4, 2026-11-26); a later CI job wires it. The same holds for
+  // astro-inspector-write.mjs (M2 PR 3).
   /** @type {string[]} */
   const deferred = [
     "astro-basis-ack.mjs",
+    "astro-inspector-write.mjs",
     "b1-route-publish-rollback.mjs",
     "preview-revocation-timeline.mjs",
     // M3 stage 1, the newsletter acceptance (#477): run locally on the
