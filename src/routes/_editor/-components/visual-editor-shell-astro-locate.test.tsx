@@ -2042,6 +2042,55 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         );
         expect((await heroTitleField()).value).toBe("Second");
       });
+
+      /** Core proves both declared fields of the hero. */
+      const bothFieldsView = () =>
+        bindingView({
+          instances: [
+            heroInstance({
+              declaredFields: ["title", "subtitle"],
+              claims: [
+                { slot: "hero", field: "title" },
+                { slot: "hero", field: "subtitle" },
+              ],
+            }),
+          ],
+        });
+      const heroSubtitleField = () =>
+        within(inspectorPanel()).getByRole("textbox", {
+          name: "Hero subtitle",
+        }) as HTMLTextAreaElement;
+
+      // Codex review P2 (two tabs): another tab saved the title and this
+      // editor accepted that Document. An input the author has not touched
+      // shows the accepted value before it can be typed into, so nothing is
+      // staged over B's title at the new generation; one being typed keeps
+      // what the author typed.
+      it("an untouched input shows the newer Document the editor accepted; a held one keeps what is typed", async () => {
+        await upAndAcked(WRITE_CONTEXT, HOME, bothFieldsView());
+        openInspectorContent();
+        expect((await heroTitleField()).value).toBe("Stored title");
+
+        // Held here: typed, still on its debounce.
+        fireEvent.change(heroSubtitleField(), { target: { value: "Mine" } });
+        const fromB = contextWithHero(5, {
+          title: "Title from B",
+          subtitle: "Stored subtitle",
+        });
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: fromB,
+        });
+        act(() => showEditorContext(fromB));
+        await flush();
+
+        expect((await heroTitleField()).value).toBe("Title from B");
+        expect(heroSubtitleField().value).toBe("Mine");
+        // The page still shows generation 4: nothing goes yet.
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+      });
     });
 
     // Lead decision Q3: after a frame reload the selection is not kept from
