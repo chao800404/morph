@@ -453,7 +453,10 @@ import {
   stepAstroDesignFocus,
   type AstroDesignFocus,
   type AstroDesignFocusEvent,
+  type ConfirmedAstroDesignSelection,
 } from "@/lib/storefront/editor/astro-design-focus";
+import { astroInspectorFields } from "@/lib/storefront/editor/astro-inspector-write";
+import type { EditorAstroContent } from "./editor-astro-content-fields";
 import {
   acceptAstroBasisAck,
   astroBasisConfirmKey,
@@ -3485,8 +3488,38 @@ export function VisualEditorShell({
   );
   /** Issues and posts a basis token for a confirmed Astro selection. */
   const issueAstroBasisPresentationRef = useRef<
-    (sectionId: string, identity: string) => void
+    (selection: ConfirmedAstroDesignSelection) => void
   >(() => {});
+  /**
+   * M2 PR 3: the confirmed selection each basis token was issued for, by its
+   * operation id, in the frame round it was issued in. A write proven by a
+   * token sends that selection's identity and Core's digest
+   * (`astroWriteIdentityForProof`), never the frame's. Only this round's
+   * entries are kept: a proof of an earlier round is never current.
+   */
+  const astroBasisIssuedRef = useRef(
+    new Map<
+      string,
+      {
+        selection: ConfirmedAstroDesignSelection;
+        previewKey: string;
+        readyRound: number;
+      }
+    >(),
+  );
+  /**
+   * M2 PR 3: the Astro sections Core confirmed on each page, by route path.
+   * Their values are this page's document's (`templateIdForSection`); a page
+   * has no other section structure on Astro.
+   */
+  const astroSectionsOnPageRef = useRef(new Map<string, Set<string>>());
+  /** Where the confirmed selection's click was located; "Open in Code" (D2). */
+  const astroCodeTargetRef = useRef<{
+    identity: string;
+    filePath: string;
+    line?: number;
+    column?: number;
+  } | null>(null);
   /**
    * On Core's answer to a ready-time confirm: the selected section's basis
    * hint is evaluated again, by issuing its token once more.
@@ -7070,10 +7103,7 @@ export function VisualEditorShell({
               result.status === "confirmed" &&
               astroDesignFocusRef.current?.selection === result
             ) {
-              issueAstroBasisPresentationRef.current(
-                result.sectionId,
-                result.identity,
-              );
+              issueAstroBasisPresentationRef.current(result);
             }
           },
         };
@@ -7262,8 +7292,16 @@ export function VisualEditorShell({
    */
   const templateIdForSection = useCallback(
     (sectionId: string): string | null =>
-      sectionModel.bindings.get(sectionId)?.templateId ?? null,
-    [sectionModel],
+      sectionModel.bindings.get(sectionId)?.templateId ??
+      // M2 PR 3: an Astro page has no Start section structure; a section
+      // Core confirmed on it stores its values in the page's own document.
+      (sectionsUnavailableForFramework &&
+      astroSectionsOnPageRef.current
+        .get(currentSearchRoutePathRef.current ?? "/")
+        ?.has(sectionId)
+        ? pageTemplateId
+        : null),
+    [pageTemplateId, sectionModel, sectionsUnavailableForFramework],
   );
   /**
    * The key one section's content is kept under in a document. A section has
@@ -14184,13 +14222,7 @@ export function VisualEditorShell({
           } as EditorSelectionDescriptor,
           themeFiles: effectiveThemeFilesRef.current,
         });
-        if (target) {
-          handleJumpToCodeRef.current(
-            target.filePath,
-            target.line,
-            target.column,
-          );
-        } else {
+        if (!target) {
           toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
             id: "source-location-stale",
           });
@@ -14198,11 +14230,8 @@ export function VisualEditorShell({
           dispatchAstroDesignFocus({ kind: "deselected" });
           return;
         }
-        // M2 PR-F: what Core's binding view says of the clicked instance,
-        // shown beside the locate (plan v2 §6.2, display 1). Still no Design
-        // selection and nothing written: Astro content writes wait for an
-        // Astro presentation acknowledgement (#399), which the bridge does
-        // not give yet. A click on no section says nothing new.
+        // M2 PR-F: what Core's binding view says of the clicked instance
+        // (plan v2 §6.2, display 1). A click on no section says nothing new.
         const astroSelection = resolveAstroDesignSelection({
           request: astroDesignSelectionRequest(
             message,
@@ -14224,22 +14253,73 @@ export function VisualEditorShell({
             id: "astro-design-status",
           });
         }
+        // Owner decision D2 (M2 PR 3): in Design, a click Core confirmed on
+        // a frame that takes the basis path selects the section and opens
+        // its declared fields in the Inspector, as on TanStack Start; "Open
+        // in Code" is then the selection's explicit action. Every other
+        // click still locates (L1.5a): a refused one, any click in Code, and
+        // a click on a frame whose basis can never be acknowledged, whose
+        // input could never be sent.
+        const frameRecord = previewFrameRecordRef.current;
+        const selectsInDesign =
+          astroSelection.status === "confirmed" &&
+          editorModeRef.current === "design" &&
+          frameRecord !== null &&
+          frameRecord.previewKey === previewKey &&
+          frameRecord.readyRound === previewReadyRoundRef.current &&
+          isAstroBasisFrame(
+            frameRecord.capabilities,
+            previewContentRefreshRef.current,
+          );
+        if (!selectsInDesign) {
+          handleJumpToCodeRef.current(
+            target.filePath,
+            target.line,
+            target.column,
+          );
+        }
         // Option B: a confirmed instance asks this document to acknowledge
-        // it as the basis a write would be made on. Still nothing written;
-        // the Astro Inspector input path is later work. The selection is
-        // kept (Q2/Q3) so its basis status can be said on the section and
-        // matched again after a reload; any other click selects nothing.
+        // it as the basis a write would be made on; the click itself writes
+        // nothing. The selection is kept (Q2/Q3) so its basis status can be
+        // said on the section and matched again after a reload; any other
+        // click selects nothing.
         if (astroSelection.status !== "confirmed") {
           dispatchAstroDesignFocus({ kind: "deselected" });
         } else {
+          // The source generation Core's view confirmed the instance at,
+          // which `resolveAstroDesignSelection` matched to the workspace's:
+          // what the section's input is staged and sent at.
+          const view = astroBindingViewRef.current;
+          const routePath = currentSearchRoutePathRef.current ?? "/";
+          if (view) {
+            const baselineKey = fieldSelectionKey(
+              astroSelection.sectionId,
+              "",
+              routePath,
+            );
+            selectionSourceBaselinesRef.current.set(
+              baselineKey,
+              captureSelectionSourceBaseline(
+                baselineKey,
+                view.sourceGeneration,
+              ),
+            );
+          }
+          const onPage =
+            astroSectionsOnPageRef.current.get(routePath) ?? new Set<string>();
+          onPage.add(astroSelection.sectionId);
+          astroSectionsOnPageRef.current.set(routePath, onPage);
+          astroCodeTargetRef.current = {
+            identity: astroSelection.identity,
+            filePath: target.filePath,
+            line: target.line,
+            column: target.column,
+          };
           dispatchAstroDesignFocus({
             kind: "selected",
             selection: astroSelection,
           });
-          issueAstroBasisPresentationRef.current(
-            astroSelection.sectionId,
-            astroSelection.identity,
-          );
+          issueAstroBasisPresentationRef.current(astroSelection);
         }
         return;
       }
@@ -15979,7 +16059,8 @@ export function VisualEditorShell({
   // never as an overlay. The token is registered as the section's latest,
   // like an overlay token, so the ordinary ack intake and readiness apply;
   // `acceptAstroBasisAck` is checked on top of them. Nothing is written.
-  issueAstroBasisPresentationRef.current = (sectionId, identity) => {
+  issueAstroBasisPresentationRef.current = (selection) => {
+    const { sectionId, identity } = selection;
     const frame = previewFrameRecordRef.current;
     if (
       !frame ||
@@ -16023,6 +16104,20 @@ export function VisualEditorShell({
     }
     presentationRevisionRef.current = presentationRevision;
     const token = issued.token;
+    const issuedFor = astroBasisIssuedRef.current;
+    for (const [operationId, entry] of issuedFor) {
+      if (
+        entry.previewKey !== frame.previewKey ||
+        entry.readyRound !== frame.readyRound
+      ) {
+        issuedFor.delete(operationId);
+      }
+    }
+    issuedFor.set(token.operationId, {
+      selection,
+      previewKey: frame.previewKey,
+      readyRound: frame.readyRound,
+    });
     const sectionKey = sectionPresentationKey(templateId, sectionId);
     for (const [operationId, pending] of pendingSectionPresentationRef.current) {
       if (pending.sectionKey === sectionKey) {
@@ -16069,10 +16164,7 @@ export function VisualEditorShell({
     if (documentNavigationRef.current && !frameShowsEditorPageRef.current()) {
       return;
     }
-    issueAstroBasisPresentationRef.current(
-      focus.selection.sectionId,
-      focus.selection.identity,
-    );
+    issueAstroBasisPresentationRef.current(focus.selection);
   };
   const syncPreviewSectionProps = useCallback(
     (
@@ -17929,6 +18021,62 @@ export function VisualEditorShell({
     },
     [sendCommittedHeldDraft],
   );
+  /**
+   * Owner decision D2 (M2 PR 3): the Content tab of an Astro section Core
+   * confirmed. Its fields are those `.fields.ts` declares and Core proves
+   * for the call site (`astroInspectorFields`); an input goes through the
+   * same content write path as a Start Inspector edit
+   * (`handleSectionPropsChange`), so the #399 gate holds it until the
+   * section's basis is acknowledged and sends it with Core's identity.
+   */
+  const astroInspectorContent = useMemo<EditorAstroContent | null>(() => {
+    const selection = astroDesignFocus?.selection;
+    if (!sectionsUnavailableForFramework || !selection) return null;
+    const componentPath = selection.componentRef.split("#")[0] || null;
+    const { capability } = resolveSectionContentDeclaration(
+      effectiveThemeFiles,
+      {
+        componentRef: selection.componentRef,
+        componentPath,
+        sectionComponentPath: componentPath,
+      },
+    );
+    const sectionId = selection.sectionId;
+    return {
+      sectionId,
+      resetKey: `${pageTemplateId ?? ""}:${sectionId}:${selection.identity}`,
+      fields: astroInspectorFields(selection, capability?.fields ?? null),
+      values: () => ({
+        ...acceptedSectionProps(sectionId),
+        ...heldContentForSection(sectionId),
+      }),
+      onChange: (fieldKey, value) =>
+        handleSectionPropsChange(
+          sectionId,
+          { [fieldKey]: value },
+          { inputFieldPath: fieldKey },
+        ),
+      onBlur: () => handleSectionContentBlur(sectionId),
+      onOpenInCode: () => {
+        const target = astroCodeTargetRef.current;
+        if (target && target.identity === selection.identity) {
+          handleJumpToCode(target.filePath, target.line, target.column);
+          return;
+        }
+        handleJumpToCode(componentPath ?? undefined, 1, 1);
+      },
+    };
+  }, [
+    acceptedSectionProps,
+    astroDesignFocus,
+    effectiveThemeFiles,
+    handleJumpToCode,
+    handleSectionContentBlur,
+    handleSectionPropsChange,
+    heldContentForSection,
+    pageTemplateId,
+    sectionsUnavailableForFramework,
+  ]);
   /**
    * A commit held back when the author left the field goes on once the
    * page's presentation is acknowledged again: taken first, so a repeated
@@ -22294,6 +22442,7 @@ export function VisualEditorShell({
           }
           inspectorDocumentKey={inspectorDocumentKey}
           astroDesignNotice={astroDesignNotice}
+          astroContent={astroInspectorContent}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}
