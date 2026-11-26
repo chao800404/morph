@@ -181,11 +181,11 @@ describe("a Starter upgrade that needs the full Start Live Preview", () => {
     renderNotice();
     const dialog = await openReview();
     const notice = within(dialog).getByRole("alert");
-    expect(notice).toHaveTextContent(
+    expect(notice.textContent).toContain(
       "This upgrade needs the full Start Live Preview.",
     );
-    expect(notice).toHaveTextContent(CONTENT);
-    expect(notice).toHaveTextContent(START_MESSAGE);
+    expect(notice.textContent).toContain(CONTENT);
+    expect(notice.textContent).toContain(START_MESSAGE);
     expect(applyButton().disabled).toBe(true);
     fireEvent.click(applyButton());
     expect(fns.apply).not.toHaveBeenCalled();
@@ -236,7 +236,7 @@ describe("a Starter upgrade that needs the full Start Live Preview", () => {
     const dialog = await openReview();
     fireEvent.click(switchButton(dialog));
     await waitFor(() =>
-      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      expect(within(dialog).getByRole("alert").textContent).toContain(
         "The Live Preview runtime was changed elsewhere, so nothing was switched.",
       ),
     );
@@ -251,7 +251,7 @@ describe("a Starter upgrade that needs the full Start Live Preview", () => {
     const dialog = await openReview();
     fireEvent.click(switchButton(dialog));
     await waitFor(() =>
-      expect(within(dialog).getByRole("alert")).toHaveTextContent("network down"),
+      expect(within(dialog).getByRole("alert").textContent).toContain("network down"),
     );
     expect(applyButton().disabled).toBe(true);
     expect(fns.apply).not.toHaveBeenCalled();
@@ -319,7 +319,7 @@ describe("a Starter upgrade that needs the full Start Live Preview", () => {
     expect(applyButton().disabled).toBe(false);
     fireEvent.click(applyButton());
     await waitFor(() =>
-      expect(within(dialog).getByRole("alert")).toHaveTextContent(START_MESSAGE),
+      expect(within(dialog).getByRole("alert").textContent).toContain(START_MESSAGE),
     );
     expect(screen.getByRole("dialog", { name: "Review the Starter upgrade" })).toBe(
       dialog,
