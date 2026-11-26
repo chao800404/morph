@@ -235,10 +235,24 @@ async function main() {
     const d1 = (proxy.env as { DATABASE: D1Database }).DATABASE;
     // The application's getDb() and raw env.DATABASE both read this.
     (env as unknown as { DATABASE: D1Database }).DATABASE = d1;
-    const reached = await d1
-      .prepare("SELECT count(*) AS n FROM storefronts WHERE id = ?1")
-      .bind(storefrontId)
-      .first<{ n: number }>();
+    // The Worker may hold the write lock here too (seen on the throwaway
+    // path), so this probe gets the same busy retry as the seed itself.
+    let reached: { n: number } | null = null;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        reached = await d1
+          .prepare("SELECT count(*) AS n FROM storefronts WHERE id = ?1")
+          .bind(storefrontId)
+          .first<{ n: number }>();
+        break;
+      } catch (error) {
+        if (!isBusy(error) || attempt >= BUSY_ATTEMPTS) throw error;
+        console.error(
+          `[client-lane-seed] probe: database busy, attempt ${attempt} of ${BUSY_ATTEMPTS}`,
+        );
+        await sleep(500 * attempt);
+      }
+    }
     if (reached?.n !== 1) {
       throw new Error(
         `CLIENT_LANE_SEED: the D1 binding over ${stateDir} does not hold storefront ${storefrontId}; it is not the run's database.`,
