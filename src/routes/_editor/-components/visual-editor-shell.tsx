@@ -137,6 +137,7 @@ import {
   rebaseContentProps,
 } from "@/lib/storefront/editor/content-rebase";
 import {
+  PUBLISH_HIDDEN_SECTION_UNSUPPORTED,
   PUBLISH_HIDE_REBUILD_REQUIRED,
   SECTION_HIDE_UNSUPPORTED,
   SELECTION_SOURCE_CONFLICT,
@@ -293,6 +294,16 @@ import {
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
+import { showStorefrontSectionAgain } from "@/server/storefront/storefront-section-show-again.serverFn";
+import { getStorefrontPage } from "@/server/storefront/storefront-pages.serverFn";
+import type {
+  PublishHiddenSectionDetail,
+  PublishHiddenSectionsDetails,
+} from "@/lib/storefront/publish-hidden-sections-details";
+import {
+  EditorPublishHiddenSections,
+  type ShowAgainAnswer,
+} from "./editor-publish-hidden-sections";
 import {
   publishStorefrontThemeTemplate,
   prepareInitialStorefrontThemeTemplateDraft,
@@ -2056,6 +2067,14 @@ export function VisualEditorShell({
   const layoutPreparationRef = useRef<LayoutPreparation | null>(null);
   /** Set once `handlePublish` exists; see the rebuild-required refusal. */
   const rebuildAndPublishRef = useRef<() => Promise<void>>(async () => {});
+  /**
+   * A publish refused for hidden sections, with which document and section
+   * each one is (M3 stage 1): listed with "Show again" until closed.
+   */
+  const [hiddenSectionsRefusal, setHiddenSectionsRefusal] = useState<{
+    message: string;
+    details: PublishHiddenSectionsDetails;
+  } | null>(null);
   const publishMutation = useMutation({
     mutationFn: (variables: {
       templateId: string;
@@ -2102,6 +2121,16 @@ export function VisualEditorShell({
               label: "Rebuild and publish",
               onClick: () => void rebuildAndPublishRef.current(),
             },
+          });
+        } else if (
+          result.error === PUBLISH_HIDDEN_SECTION_UNSUPPORTED &&
+          result.details?.kind === "publish-hidden-sections"
+        ) {
+          // Each section with its way back; nothing is shown or published
+          // until the author chooses.
+          setHiddenSectionsRefusal({
+            message: result.message,
+            details: result.details,
           });
         } else {
           toast.error(result.message);
@@ -3041,6 +3070,92 @@ export function VisualEditorShell({
       ownDraftSteps,
       queryClient,
       templateQueueAliases,
+    ],
+  );
+
+  /**
+   * "Show again" for one section a publish refused (M3 stage 1). Sent at the
+   * draft version or generation read for that document, and never retried:
+   * on a conflict the draft is reloaded and the author decides. Never
+   * publishes.
+   *
+   * - A CMS Page: its draft version is read now, from the server.
+   * - A template or the layout: through that document's write queue, at the
+   *   generation the editor holds for it, as every other draft write.
+   */
+  const showSectionAgain = useCallback(
+    async (problem: PublishHiddenSectionDetail): Promise<ShowAgainAnswer> => {
+      const scope = {
+        storefrontId: context.storefront.id,
+        themeId: context.theme.id,
+      };
+      if (problem.itemType === "page") {
+        const read = await getStorefrontPage({
+          data: { id: problem.contentId },
+        });
+        if (!read.success) return read;
+        return sendEditorWrite(scope, "theme", () =>
+          showStorefrontSectionAgain({
+            data: {
+              kind: "page",
+              pageId: problem.contentId,
+              sectionId: problem.sectionId,
+              expectedDraftVersion: read.data.version,
+            },
+          }),
+        ) as Promise<ShowAgainAnswer>;
+      }
+      const answer = (await enqueueTemplateMutation(
+        problem.contentId,
+        (generation, templateId) =>
+          showStorefrontSectionAgain({
+            data: {
+              kind: "template",
+              ...scope,
+              templateId,
+              sectionId: problem.sectionId,
+              expectedDraftGeneration: generation,
+            },
+          }),
+      )) as ShowAgainAnswer;
+      if (!answer.success && answer.error === TEMPLATE_DRAFT_CONFLICT) {
+        // Reloaded: the generation the server holds now is what the
+        // author's next Show again (or edit) is sent at.
+        const fresh = await queryClient.fetchQuery({
+          ...storefrontThemeQueries.detail(scope.storefrontId, scope.themeId),
+          staleTime: 0,
+        });
+        if (fresh.success) {
+          const template = fresh.data.templates.find(
+            (each) => each.id === problem.contentId,
+          );
+          if (typeof template?.draftGeneration === "number") {
+            templateDraftGenerationRef.current.set(
+              problem.contentId,
+              template.draftGeneration,
+            );
+          }
+          acceptReadTemplates(fresh.data.templates);
+        }
+        return answer;
+      }
+      if (answer.success) {
+        // The editor shows the section again from the draft as stored.
+        await queryClient.invalidateQueries({
+          queryKey: storefrontThemeQueries.detail(
+            scope.storefrontId,
+            scope.themeId,
+          ).queryKey,
+        });
+      }
+      return answer;
+    },
+    [
+      acceptReadTemplates,
+      context.storefront.id,
+      context.theme.id,
+      enqueueTemplateMutation,
+      queryClient,
     ],
   );
 
@@ -20601,6 +20716,14 @@ export function VisualEditorShell({
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+          <EditorPublishHiddenSections
+            refusal={hiddenSectionsRefusal}
+            activeTemplateId={activeTemplate?.id ?? null}
+            onOpenChange={(open) => {
+              if (!open) setHiddenSectionsRefusal(null);
+            }}
+            showAgain={showSectionAgain}
+          />
           <EditorStarterUpgradeNotice
             status={context.starterUpgrade}
             reviewRequest={starterReviewRequest}
