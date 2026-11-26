@@ -91,8 +91,25 @@ function gateCommits(): Set<MorphSectionGateCommit> | null {
 
 const useCommitEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
+/**
+ * Every slot a gate has committed in this document, kept after the gate
+ * unmounts: a section whose gate the page has rendered is acknowledged hidden
+ * only by a gate committing it hidden, while one with no gate here at all (a
+ * Theme Morph cannot hide, or a gate in a branch never taken) is hidden by
+ * being absent, as before the gate.
+ */
+function gateSlots(): Set<string> | null {
+  if (typeof window === "undefined") return null;
+  const holder = window as unknown as { __morphSectionGateSlots?: Set<string> };
+  if (!(holder.__morphSectionGateSlots instanceof Set)) {
+    holder.__morphSectionGateSlots = new Set();
+  }
+  return holder.__morphSectionGateSlots;
+}
+
 function useReportCommit(slot: string, hidden: boolean): void {
   useCommitEffect(() => {
+    gateSlots()?.add(slot);
     const commits = gateCommits();
     if (!commits) return undefined;
     const entry = { slot, hidden };

@@ -230,14 +230,24 @@ function isSectionPresentationCommitted(sectionId, enabled) {
       else shownGates += 1;
     });
   }
+  // Whether a gate for this section has committed in this document at all,
+  // kept after it unmounts.
+  const slots =
+    typeof window === "undefined" ? undefined : window.__morphSectionGateSlots;
+  const gated =
+    hiddenGates + shownGates > 0 ||
+    Boolean(slots && typeof slots.has === "function" && slots.has(sectionId));
   // Hidden means not rendered: Morph's compiled guard omits the section. An
   // element kept under a hidden or data-morph-section-hidden attribute still
   // rendered, with its values or its defaults, and the published site would
-  // show it, so it never acknowledges a Hide. Nor does the section's absence
-  // alone: the route may be showing its error state, or a Suspense fallback
-  // may stand in for it. Only a gate that committed the section hidden, and
-  // none still showing it, says the Hide was applied.
+  // show it, so it never acknowledges a Hide. For a section whose gate this
+  // document has rendered, absence alone does not either: the route may be
+  // showing its error state, or a Suspense fallback may stand in for it, so
+  // a gate must have committed it hidden, and none still show it. A section
+  // with no gate here (a Theme Morph cannot hide, a gate in a branch never
+  // taken) is hidden by being absent, as before the gate.
   if (enabled === false) {
+    if (!gated) return matches.length === 0;
     return matches.length === 0 && hiddenGates > 0 && shownGates === 0;
   }
   if (matches.length !== 1 || hiddenGates > 0) return false;

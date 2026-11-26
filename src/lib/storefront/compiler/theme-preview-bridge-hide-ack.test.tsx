@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import * as React from "react";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -176,12 +176,16 @@ describe("a Hide is acknowledged only by a committed render that hid it", () => 
   });
 
   it("does not acknowledge a Hide while a Suspense fallback stands in for the route", () => {
-    routeContext.current = visibility(["hero"]);
+    // The page rendered the section through its gate; then the hide arrives
+    // and the route suspends instead of rendering it.
+    routeContext.current = visibility([]);
+    let suspend = false;
     const never = new Promise<never>(() => {});
     const Suspends = () => {
-      throw never;
+      if (suspend) throw never;
+      return null;
     };
-    render(
+    const Page = () => (
       <React.Suspense fallback={<p>Loading</p>}>
         <main>
           <Suspends />
@@ -190,8 +194,13 @@ describe("a Hide is acknowledged only by a committed render that hid it", () => 
             render={() => <div data-storefront-section-id="hero">HERO</div>}
           />
         </main>
-      </React.Suspense>,
+      </React.Suspense>
     );
+    const view = render(<Page />);
+    expect(committed("hero", true)).toBe(true);
+    routeContext.current = visibility(["hero"]);
+    suspend = true;
+    act(() => view.rerender(<Page />));
     expect(document.body.textContent).toContain("Loading");
     expect(committed("hero", false)).toBe(false);
   });
