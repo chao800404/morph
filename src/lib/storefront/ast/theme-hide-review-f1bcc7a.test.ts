@@ -7,6 +7,14 @@ import {
   type HideRefusalReason,
 } from "./theme-hide-capability";
 import type { B1SourceFile } from "./theme-content-provenance";
+import { applyHideGuards } from "./theme-hide-guard";
+import { parseThemeSourceAst } from "./theme-source-ast";
+
+const parseRoute = (content: string) => {
+  const parsed = parseThemeSourceAst({ path: ROUTE, content });
+  if (!parsed.ok) throw new Error("the guarded route does not parse");
+  return parsed.ast;
+};
 
 /**
  * M3 Hide approach E: the review of f1bcc7a
@@ -276,5 +284,63 @@ describe("P2-6: the root pin counts what the compiler reads in comments and dire
       "root-route-unconfirmed",
       "src/routes/__root.tsx",
     );
+  });
+});
+
+describe("P2-5: the gate is written only where wrapping keeps what the JSX meant", () => {
+  const routeWith = (component: string) =>
+    `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+${component}
+`;
+  const guardedRoute = (files: B1SourceFile[]) =>
+    applyHideGuards(files).files.find((file) => file.path === ROUTE)!.content;
+
+  it("refuses an await inside the section's JSX, which the gate's callback cannot hold", () => {
+    const files = theme(
+      routeWith(`async function Home() {
+  return <Hero {...content("hero")} title={await Promise.resolve("t")} />;
+}`),
+    );
+    expectRefused(classify(files), "unsupported-shape", ROUTE);
+    expect(() => parseRoute(guardedRoute(files))).not.toThrow();
+  });
+
+  it("refuses a yield inside the section's JSX", () => {
+    const files = theme(
+      routeWith(`function* rows() {
+  return <Hero {...content("hero")} title={yield "t"} />;
+}
+function Home() {
+  return <main>{rows().next().value}</main>;
+}`),
+    );
+    expectRefused(classify(files), "unsupported-shape", ROUTE);
+  });
+
+  it("lifts a list item's key to the gate", () => {
+    const files = theme(
+      routeWith(`const rows = [{ id: "a" }];
+function Home() {
+  return <main>{rows.map((row) => <Hero key={row.id} {...content("hero")} />)}</main>;
+}`),
+    );
+    expect(classify(files)).toMatchObject({ kind: "supported" });
+    expect(guardedRoute(files)).toContain(
+      `<__MorphSectionGate key={row.id} slot={"hero"} render={() => (<Hero key={row.id} {...content("hero")} />)} />`,
+    );
+  });
+
+  it("refuses a key Morph cannot repeat on the gate", () => {
+    const files = theme(
+      routeWith(`let next = 0;
+const rows = [{ id: "a" }];
+function Home() {
+  return <main>{rows.map(() => <Hero key={next++} {...content("hero")} />)}</main>;
+}`),
+    );
+    expectRefused(classify(files), "unsupported-shape", ROUTE);
   });
 });
