@@ -861,6 +861,10 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
       const stale = content("stale");
       const synced = await seedAndSync(writer, stale);
       expect(synced.sentTicket).toBeGreaterThan(stamp.ticket);
+      // From the reload on: the kept selection is re-derived on the new
+      // document and its basis asked for again, so the refusal can be logged
+      // before the click as well as on it.
+      const linesBeforeStale = observed.lines.length;
       await frame.evaluate(() => {
         setTimeout(() => location.reload(), 0);
       });
@@ -891,16 +895,18 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
       expect(await navigationStamps(frame)).toEqual([
         `${synced.sentTicket}.${synced.instance}`,
       ]);
-      const linesBeforeStale = observed.lines.length;
       await frame.locator("[data-basis-hero] h1").click();
       await expect(hint.first()).toBeVisible({ timeout: 30_000 });
+      // Refused for this document, the stale snapshot's.
+      const staleDoc = `doc=${staleReady.previewDocument.slice(0, 8)}`;
       expect(
         observed.lines
           .slice(linesBeforeStale)
           .some(
             (line) =>
               line.includes("basis not issued") &&
-              line.includes("reason=other-ticket"),
+              line.includes("reason=other-ticket") &&
+              line.includes(staleDoc),
           ),
         observed.lines.join("\n"),
       ).toBe(true);
