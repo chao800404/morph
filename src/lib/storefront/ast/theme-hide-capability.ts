@@ -276,10 +276,19 @@ const COMPILER_COMMENT = /[@#]\s*(jsx\w*|__PURE__|__NO_SIDE_EFFECTS__|vite-ignor
 function codeKey(path: string, content: string): string | null {
   const parsed = parseThemeSourceAst({ path, content });
   if (!parsed.ok) return null;
-  const comments = ((parsed.ast as { comments?: Array<{ value?: string }> }).comments ?? [])
-    .map((comment) => String(comment.value ?? ""))
-    .filter((value) => COMPILER_COMMENT.test(value))
-    .map((value) => value.replace(/\s+/g, " ").trim());
+  // Each with where it stands in the code: the index of the first
+  // statement after it, so moving a pragma counts and reformatting does not.
+  const body = (parsed.ast.program.body ?? []) as Array<{ start?: number | null }>;
+  const comments = (
+    (parsed.ast as { comments?: Array<{ value?: string; end?: number | null }> })
+      .comments ?? []
+  )
+    .filter((comment) => COMPILER_COMMENT.test(String(comment.value ?? "")))
+    .map((comment) => {
+      const end = comment.end ?? 0;
+      const before = body.findIndex((statement) => (statement.start ?? 0) >= end);
+      return `${before}:${String(comment.value ?? "").replace(/\s+/g, " ").trim()}`;
+    });
   return JSON.stringify({
     program: JSON.parse(
       JSON.stringify(parsed.ast.program, (key, value) =>

@@ -29,9 +29,11 @@ import {
  * showing the section.
  *
  * Every supported site gets the gate, the Starter's own
- * `!isSectionHidden("x") && <El/>` included: there the gate goes around the
- * element, inside the author's check, so the Starter's `content()` is no
- * longer called conditionally in the route's render.
+ * `!isSectionHidden("x") && <El/>` included: there the gate wraps the whole
+ * expression, the author's check with it, so the gate renders (and reports
+ * its commit to the Live Preview) whether or not the section shows, and the
+ * Starter's `content()` is no longer called conditionally in the route's
+ * render.
  *
  * The same plan is used by the Live Preview (inside `injectPreviewBindings`,
  * on the authored offsets, so every `data-morph-loc` it writes still names
