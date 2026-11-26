@@ -1545,6 +1545,9 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         serverData: START_DATA,
         servedContent: { ticket: 7, instance: INSTANCE },
       });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+      );
       await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
       await flush();
       switchToCode();
@@ -1857,6 +1860,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
             .map((call) => call.filter((part) => typeof part === "string").join(" "))
             .filter((line) => line.includes("[preview-presentation]"))
             .slice(-25)
+            .concat(
+              [
+                ...vi.mocked(toast.error).mock.calls,
+                ...vi.mocked(toast.warning).mock.calls,
+              ].map((call) => `toast: ${String(call[0])}`),
+            )
             .join(" | ");
         await waitFor(() =>
           expect(updateSectionProps, trace()).toHaveBeenCalledTimes(2),
