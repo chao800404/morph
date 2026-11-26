@@ -2379,6 +2379,155 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         await pastDebounce();
         expect(updateSectionProps).toHaveBeenCalledTimes(2);
       });
+
+      /**
+       * Container run inspector-write-run-01 on 226d1de: Home as its editor
+       * URL names it (no routePath), so the page's Document lists the hero
+       * as a bound section, and the page-level readiness (#399) expected it
+       * presented as an overlay, at the props revision the frame was last
+       * posted. An Astro frame never gets an overlay token, so the page
+       * stayed "waiting" and the input was held for ever. Lead decision
+       * (option b, with Codex): on an Astro basis frame the page is the
+       * sections with basis tokens, each counted by its own latest token.
+       */
+      const HOME_URL = {
+        template: "index" as const,
+        templateId: "template-1",
+        routePath: undefined,
+      };
+      const BANNER_MARKER = `${NONCE}:2:${SRC}:70:100`;
+      const heroAndBanner = () =>
+        bindingView({
+          instances: [
+            heroInstance(),
+            heroInstance({
+              identity: { rule: 2, src: SRC, start: 70, end: 100 },
+              section: "banner",
+              claims: [{ slot: "banner", field: "title" }],
+            }),
+          ],
+        });
+
+      it("on an Astro frame the page's bound hero needs no overlay: an input held before the ack is sent once the basis is applied", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "Held then sent"));
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: WRITE_CONTEXT,
+        });
+        readRouteBindings.mockResolvedValue(bindingView());
+        modelCurrentBridge();
+        await settled(WRITE_CONTEXT, HOME_URL, BASIS_READY, {
+          serverData: START_DATA,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        });
+        await waitFor(() =>
+          expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(1);
+        const token = basisPosts()[0]!.presentationToken;
+
+        // Typed before the ack: held, and posted to the frame, which moves
+        // the hero's props revision past the token's 0.
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Held then sent" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+
+        await ackBasis(token);
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          sectionId: "hero",
+          props: { title: "Held then sent" },
+          expectedDraftGeneration: 4,
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
+
+      it("on an Astro frame an input waits while another section's newer basis on the page is unacknowledged", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "Waits for banner"));
+        await upAndAcked(WRITE_CONTEXT, HOME_URL, heroAndBanner());
+
+        boundaryClick(2, DIGEST, undefined, BANNER_MARKER);
+        await flush();
+        expect(basisPosts()).toHaveLength(2);
+        const banner = basisPosts()[1]!.presentationToken;
+        expect(banner).toMatchObject({ sectionId: "banner" });
+        // Back on the hero, acknowledged; the banner's basis still is not.
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts()[2]!.presentationToken);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Waits for banner" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+
+        await ackBasis(banner);
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          sectionId: "hero",
+          props: { title: "Waits for banner" },
+          identity: MARKER,
+        });
+      });
+
+      it("on an Astro frame another section's answered write holds the input until the page shows it", async () => {
+        updateSectionProps.mockResolvedValueOnce({
+          success: true,
+          message: "Section updated",
+          data: {
+            draftGeneration: 5,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  enabled: true,
+                  props: { title: "Stored title", subtitle: "Stored subtitle" },
+                },
+                {
+                  id: "banner",
+                  type: "hero",
+                  enabled: true,
+                  props: { title: "Banner title" },
+                },
+              ],
+            },
+          },
+        });
+        await upAndAcked(WRITE_CONTEXT, HOME_URL, heroAndBanner());
+
+        boundaryClick(2, DIGEST, undefined, BANNER_MARKER);
+        await flush();
+        await ackBasis(basisPosts()[1]!.presentationToken);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Banner title" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({ sectionId: "banner" });
+        await flush();
+
+        // The page still shows generation 4; the banner's write made 5.
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts().at(-1)!.presentationToken);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Hero on a stale page" },
+        });
+        await pastDebounce();
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+      });
     });
 
     // Lead decision Q3: after a frame reload the selection is not kept from
