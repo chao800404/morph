@@ -897,19 +897,25 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
       ]);
       await frame.locator("[data-basis-hero] h1").click();
       await expect(hint.first()).toBeVisible({ timeout: 30_000 });
-      // Refused for this document, the stale snapshot's.
+      // Refused for this document, the stale snapshot's. Polled, not read
+      // once: the kept selection's re-derive on this document already said
+      // the hint (and its own other-ticket line), so the hint can be visible
+      // before the click's own refusal is logged.
       const staleDoc = `doc=${staleReady.previewDocument.slice(0, 8)}`;
-      expect(
-        observed.lines
-          .slice(linesBeforeStale)
-          .some(
-            (line) =>
-              line.includes("basis not issued") &&
-              line.includes("reason=other-ticket") &&
-              line.includes(staleDoc),
-          ),
-        observed.lines.join("\n"),
-      ).toBe(true);
+      await expect
+        .poll(
+          () =>
+            observed.lines
+              .slice(linesBeforeStale)
+              .some(
+                (line) =>
+                  line.includes("basis not issued") &&
+                  line.includes("reason=other-ticket") &&
+                  line.includes(staleDoc),
+              ),
+          { timeout: 30_000, message: observed.lines.join("\n") },
+        )
+        .toBe(true);
       frame = await backToDesign(page);
       expect(
         await observed.posts(frame),
