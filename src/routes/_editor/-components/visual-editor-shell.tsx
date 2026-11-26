@@ -6898,10 +6898,17 @@ export function VisualEditorShell({
       Number.isSafeInteger(astroBindingSourceGeneration) &&
       astroBindingSourceGeneration >= 1,
   });
-  /** For the preview message handler, which is not rebuilt for it. */
+  /**
+   * For the preview message handler, which is not rebuilt for it. Only a
+   * read that succeeded is a view: a re-read that failed keeps the last
+   * view as its data (hints review finding 4), and that view was read for
+   * another document, so it is no view until a read succeeds again.
+   */
   const astroBindingViewRef = useRef<AstroRouteBindingsView | null>(null);
   astroBindingViewRef.current =
-    astroBindingRoutePath !== null && astroBindingsQuery.data?.success === true
+    astroBindingRoutePath !== null &&
+    astroBindingsQuery.status === "success" &&
+    astroBindingsQuery.data?.success === true
       ? astroBindingsQuery.data.data
       : null;
   /**
@@ -7007,7 +7014,9 @@ export function VisualEditorShell({
     }, ASTRO_SELECTION_RECHECK_TIMEOUT_MS);
     // The view read for this document: the refetch the ready just started,
     // or the read already in flight (`cancelRefetch: false` joins it and
-    // never starts a second one). A page with no view to read has none.
+    // never starts a second one). A page with no view to read has none. A
+    // read that failed is none either, whatever data it kept from an earlier
+    // read (finding 4): that view is not this document's.
     const viewRead: Promise<AstroRouteBindingsView | null> =
       astroBindingRoutePath === null ||
       !Number.isSafeInteger(astroBindingSourceGeneration) ||
@@ -7016,7 +7025,9 @@ export function VisualEditorShell({
         : astroBindingsQuery
             .refetch({ cancelRefetch: false })
             .then((result) =>
-              result.data?.success === true ? result.data.data : null,
+              result.status === "success" && result.data?.success === true
+                ? result.data.data
+                : null,
             );
     // A basis the ready asked Core to confirm is waited for, so the token is
     // issued on Core's answer rather than refused before it arrives.
