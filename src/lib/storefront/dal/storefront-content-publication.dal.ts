@@ -25,6 +25,9 @@ import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page"
 import { isStorefrontTemplateType } from "../dto/storefront-content-publication.dto";
 import { normalizeDocumentRowIds } from "../editor/normalize-row-ids";
 import { DEPLOYED_THEME_BUILD_METADATA_KEY } from "../service/theme-worker-deployment-state";
+import { collectVisitorMediaKeys } from "../service/published-media-authorization";
+import type { PublishedDocument } from "../service/storefront-content-runtime";
+import { assetReferenceKey } from "../service/storefront-media-delivery";
 
 export type ThemeContentBuildPreconditions = {
   storefrontId: string;
@@ -105,50 +108,19 @@ function parseStoredDocument(document: unknown): unknown {
   }
 }
 
-/** Ids of the sections a document hides (`enabled: false`). */
-function hiddenSectionIds(document: unknown): Set<string> {
-  const ids = new Set<string>();
-  const sections = (document as { sections?: unknown } | null)?.sections;
-  if (!Array.isArray(sections)) return ids;
-  for (const section of sections) {
-    const record = section as { id?: unknown; enabled?: unknown } | null;
-    if (record?.enabled === false && typeof record.id === "string")
-      ids.add(record.id);
-  }
-  return ids;
-}
-
 /**
- * Collects the media references a visitor can be shown: those inside a
- * section that renders.
+ * A stored document in the shape the content runtime reads, or `null`.
  *
- * A hidden section (`enabled: false`) is gone from the published site, and
- * so is everything in it, at any depth. Its values stay in the stored
- * document (Show again and rollback restore them), which is why the walk
- * filters here rather than the document being rewritten. `alsoHidden` is the
- * shared layout's hidden ids: layout and route share one slot namespace and
- * the runtime lets a hidden flag in either win (`resolveStorefrontContent`),
- * and the layout is on every route.
- *
- * Only `sections` is walked. The runtime renders nothing else of a document,
- * so a reference anywhere else is not one a visitor can reach, and is left
- * out rather than assumed to be safe.
+ * `sections` must be absent or a list: the runtime iterates it, and a
+ * malformed snapshot must not turn a media request into a server error.
  */
-function collectRenderedAssetKeys(
-  document: unknown,
-  into: Map<string, Set<string>>,
-  alsoHidden: ReadonlySet<string>,
-): void {
-  const parsed = parseStoredDocument(document) as { sections?: unknown } | null;
-  const sections = parsed?.sections;
-  if (!Array.isArray(sections)) return;
-  for (const section of sections) {
-    const record = section as { id?: unknown; enabled?: unknown } | null;
-    if (!record || typeof record !== "object") continue;
-    if (record.enabled === false) continue;
-    if (typeof record.id === "string" && alsoHidden.has(record.id)) continue;
-    visitAssetKeys(record, into);
-  }
+function asPublishedDocument(document: unknown): PublishedDocument | null {
+  const parsed = parseStoredDocument(document);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
+  const sections = (parsed as { sections?: unknown }).sections;
+  if (sections !== undefined && !Array.isArray(sections)) return null;
+  return parsed as PublishedDocument;
 }
 
 function visitAssetKeys(root: unknown, into: Map<string, Set<string>>): void {
@@ -163,19 +135,13 @@ function visitAssetKeys(root: unknown, into: Map<string, Set<string>>): void {
       return;
     }
 
-    const record = node as Record<string, unknown>;
-    if (record.source === "asset" && typeof record.assetId === "string") {
-      const assetId = record.assetId.trim();
-      const url = typeof record.url === "string" ? record.url : "";
-      const key = url.replace(/^\/+/, "");
-      // Only a CMS delivery path names an object this may serve.
-      if (assetId && key.startsWith("assets/") && !key.includes("..")) {
-        const versions = into.get(assetId) ?? new Set<string>();
-        versions.add(key);
-        into.set(assetId, versions);
-      }
+    const reference = assetReferenceKey(node);
+    if (reference) {
+      const versions = into.get(reference.assetId) ?? new Set<string>();
+      versions.add(reference.storageKey);
+      into.set(reference.assetId, versions);
     }
-    for (const value of Object.values(record)) visit(value);
+    for (const value of Object.values(node)) visit(value);
   };
 
   visit(root);
@@ -1176,9 +1142,10 @@ export const storefrontContentPublicationDal = {
    * The key is both the authorisation and the bytes: a visitor may read exactly
    * what the live release published, at the version it published.
    *
-   * Only media a visitor can be shown counts: a reference inside a hidden
-   * section, or inside a section whose slot the shared layout hides, is left
-   * out (`collectRenderedAssetKeys`). Computed from the publication's stored
+   * Only media the content slots emit counts (`collectVisitorMediaKeys`,
+   * over the runtime's own `buildStorefrontContent`): a hidden section, a
+   * slot the shared layout hides, an overwritten row or an id that cannot
+   * be a slot authorises nothing. Computed from the publication's stored
    * documents on every read and keyed by the publication the live release
    * names, so a rollback authorises by the restored release's own content,
    * and publications sealed before this rule follow it too, with no stored
@@ -1195,12 +1162,16 @@ export const storefrontContentPublicationDal = {
         templateType: "layout",
       }),
     ]);
-    const layoutHidden = hiddenSectionIds(parseStoredDocument(layout));
-    const keys = new Map<string, Set<string>>();
-    for (const document of documents) {
-      collectRenderedAssetKeys(document, keys, layoutHidden);
-    }
-    return keys;
+    const known = new Map<string, Set<string>>();
+    for (const document of documents) collectAssetKeys(document, known);
+    return collectVisitorMediaKeys({
+      layoutDocument: asPublishedDocument(layout),
+      documents: documents.flatMap((document) => {
+        const parsed = asPublishedDocument(document);
+        return parsed ? [parsed] : [];
+      }),
+      known,
+    });
   },
 
   /**
