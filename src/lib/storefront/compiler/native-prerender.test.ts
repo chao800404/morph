@@ -321,7 +321,131 @@ it(
       ),
     });
     expect(result.success).toBe(false);
-    if (!result.success)
+    if (!result.success) {
       expect(result.errorMessage).toContain("Failed to fetch /landing");
+      // No content read was refused: the build's own error, nothing added.
+      expect(result.errorMessage).not.toContain(
+        "PLATFORM_PRERENDER_CONTENT_UNAVAILABLE",
+      );
+    }
+  },
+);
+
+it(
+  "fails the build, naming the path, when a prerendered page reads content this build has not sealed",
+  { timeout: 240_000 },
+  async () => {
+    const input = nativeInput();
+    input.contentSnapshot!.documents[0]!.document.sections = [
+      {
+        id: "sealed-field",
+        type: "hero",
+        enabled: true,
+        props: { title: "sealed-value-not-for-logs" },
+      },
+    ];
+    const result = await new LocalViteThemeBuildRunner({
+      maxDurationMs: 200_000,
+    }).run({
+      ...input,
+      buildId: "native-prerender-unsealed-read",
+      files: input.files.map((file) =>
+        file.path === "src/routes/landing.tsx"
+          ? {
+              ...file,
+              // /landing is the only SSG page; /not-prerendered is no page of
+              // this build's, so its content was never sealed.
+              content: `import { createFileRoute } from '@tanstack/react-router';
+import { createServerFn } from '@tanstack/react-start';
+import { morph } from '@morph/sdk/start';
+
+const readOther = createServerFn().handler(async () => {
+  const page = await morph.pages.get('/not-prerendered');
+  return String(page.hero?.title ?? 'WRONG_DEFAULT');
+});
+
+export const Route = createFileRoute('/landing')({
+  loader: () => readOther(),
+  component: () => <h1>{Route.useLoaderData()}</h1>,
+});
+`,
+            }
+          : file,
+      ),
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.errorMessage).toMatch(
+      /^PLATFORM_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: \/not-prerendered \(PLATFORM_PRERENDER_PATH_NOT_SEALED: /,
+    );
+    // The build's own output is kept after it.
+    expect(result.errorMessage).toContain("/landing");
+    expect(result.errorMessage).not.toContain("sealed-value-not-for-logs");
+    expect(result.diagnosticsJson?.refusedReads).toEqual([
+      {
+        path: "/not-prerendered",
+        reason: expect.stringMatching(/^PLATFORM_PRERENDER_PATH_NOT_SEALED: /),
+      },
+    ]);
+    expect(result.diagnosticsJson?.errors?.[0]?.code).toBe(
+      "PLATFORM_PRERENDER_CONTENT_UNAVAILABLE",
+    );
+  },
+);
+
+it(
+  "fails the build, naming the path and writing no artifact, when a prerendered page catches a refused read and renders defaults",
+  { timeout: 240_000 },
+  async () => {
+    const input = nativeInput();
+    const result = await new LocalViteThemeBuildRunner({
+      maxDurationMs: 200_000,
+    }).run({
+      ...input,
+      buildId: "native-prerender-caught-read",
+      files: input.files.map((file) =>
+        file.path === "src/routes/landing.tsx"
+          ? {
+              ...file,
+              // The read is refused; the Theme catches it, so Start reports
+              // the page as built — with defaults in place of content.
+              content: `import { createFileRoute } from '@tanstack/react-router';
+import { createServerFn } from '@tanstack/react-start';
+import { morph } from '@morph/sdk/start';
+
+const readOther = createServerFn().handler(async () => {
+  try {
+    const page = await morph.pages.get('/not-prerendered');
+    return String(page.hero?.title ?? 'DEFAULT_TITLE');
+  } catch {
+    return 'CAUGHT_DEFAULT';
+  }
+});
+
+export const Route = createFileRoute('/landing')({
+  loader: () => readOther(),
+  component: () => <h1>{Route.useLoaderData()}</h1>,
+});
+`,
+            }
+          : file,
+      ),
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect("artifacts" in result).toBe(false);
+    expect(result.errorMessage).toMatch(
+      /^PLATFORM_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: \/not-prerendered \(PLATFORM_PRERENDER_PATH_NOT_SEALED: /,
+    );
+    expect(result.diagnosticsJson?.stage).toBe("compiler");
+    expect(result.diagnosticsJson?.errors?.[0]?.code).toBe(
+      "PLATFORM_PRERENDER_CONTENT_UNAVAILABLE",
+    );
+    expect(result.diagnosticsJson?.refusedReads).toEqual([
+      {
+        path: "/not-prerendered",
+        reason: expect.stringMatching(/^PLATFORM_PRERENDER_PATH_NOT_SEALED: /),
+      },
+    ]);
   },
 );

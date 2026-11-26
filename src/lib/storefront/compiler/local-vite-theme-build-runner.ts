@@ -63,9 +63,71 @@ import {
 } from "../theme-framework/theme-toolchains";
 import {
   createThemePrerenderContent,
+  MAX_PRERENDER_RECORD_BYTES,
+  NATIVE_PRERENDER_REFUSED_READS_PATH,
+  platformPrerenderFailure,
+  PRERENDER_RECORD_UNREADABLE,
   THEME_PRERENDER_CONTENT_FILE,
   type NativePrerenderContent,
 } from "./theme-prerender-content";
+
+/** A platform build whose prerender read content it has not sealed. */
+class PlatformPrerenderContentError extends Error {
+  readonly code: string;
+  readonly refusedReads: ReadonlyArray<{ path: string; reason: string }>;
+  constructor(
+    failure: NonNullable<ReturnType<typeof platformPrerenderFailure>>,
+  ) {
+    super(failure.message);
+    this.code = failure.code;
+    this.refusedReads = failure.refusedReads;
+  }
+}
+
+/**
+ * Runs the platform prerender build. A read its content endpoint refused
+ * (theme-prerender-content.ts) fails it, named: when the build failed on the
+ * read, and when the Theme caught it and the build exited 0 having
+ * prerendered component defaults. Thrown before the caller collects any
+ * artifact.
+ */
+async function runPlatformPrerenderBuild(
+  workspace: string,
+  build: () => Promise<unknown>,
+): Promise<void> {
+  const recordPath = path.join(workspace, NATIVE_PRERENDER_REFUSED_READS_PATH);
+  // Only this build's endpoint writes it, never the Theme's files.
+  await fs.rm(recordPath, { force: true });
+  // No record: no read was refused. A record that exists but cannot be
+  // read still says one was.
+  const readRecord = async (): Promise<
+    Uint8Array | typeof PRERENDER_RECORD_UNREADABLE | undefined
+  > => {
+    const size = await fs
+      .stat(recordPath)
+      .then((stat) => stat.size)
+      .catch(() => undefined);
+    if (size === undefined) return undefined;
+    if (size > MAX_PRERENDER_RECORD_BYTES) return PRERENDER_RECORD_UNREADABLE;
+    try {
+      return await fs.readFile(recordPath);
+    } catch {
+      return PRERENDER_RECORD_UNREADABLE;
+    }
+  };
+  try {
+    await build();
+  } catch (error) {
+    const refused = platformPrerenderFailure(
+      error instanceof Error ? error.message : String(error),
+      await readRecord(),
+    );
+    if (refused) throw new PlatformPrerenderContentError(refused);
+    throw error;
+  }
+  const refused = platformPrerenderFailure("", await readRecord());
+  if (refused) throw new PlatformPrerenderContentError(refused);
+}
 
 function getMimeType(filePath: string): string {
   const publicTextType = themePublicTextMimeType(filePath);
@@ -733,7 +795,6 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             routeRegistry,
             Boolean(prerenderContent),
           );
-          let prerenderConfig: string | undefined;
           if (prerenderOptions) {
             // Native Start reopens this config in vite.preview(). Use the same
             // platform-owned configuration as Sandbox, never customer config.
@@ -756,8 +817,8 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             );
             if (!config || !("content" in config))
               throw new Error("SSG_CONFIG_MISSING");
-            prerenderConfig = path.join(tempDir, "vite.config.ts");
-            await fs.writeFile(prerenderConfig, config.content);
+            const configPath = path.join(tempDir, "vite.config.ts");
+            await fs.writeFile(configPath, config.content);
             const contentFile = plan.workspaceFiles.find(
               (file) =>
                 file.path === `/workspace/${THEME_PRERENDER_CONTENT_FILE}`,
@@ -777,35 +838,37 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
               ),
               "bin/vite.js",
             );
-            await promisify(execFile)(
-              process.execPath,
-              [
-                "--unhandled-rejections=strict",
-                viteCli,
-                "build",
-                "--app",
-                "--config",
-                prerenderConfig,
-                "--logLevel",
-                "error",
-              ],
-              {
-                cwd: tempDir,
-                env: {
-                  PATH: process.env.PATH,
-                  HOME: tempDir,
-                  NODE_ENV: "production",
-                  WRANGLER_SEND_METRICS: "false",
-                  ...(process.platform === "win32"
-                    ? { SystemRoot: process.env.SystemRoot }
-                    : {}),
+            await runPlatformPrerenderBuild(tempDir, () =>
+              promisify(execFile)(
+                process.execPath,
+                [
+                  "--unhandled-rejections=strict",
+                  viteCli,
+                  "build",
+                  "--app",
+                  "--config",
+                  configPath,
+                  "--logLevel",
+                  "error",
+                ],
+                {
+                  cwd: tempDir,
+                  env: {
+                    PATH: process.env.PATH,
+                    HOME: tempDir,
+                    NODE_ENV: "production",
+                    WRANGLER_SEND_METRICS: "false",
+                    ...(process.platform === "win32"
+                      ? { SystemRoot: process.env.SystemRoot }
+                      : {}),
+                  },
+                  timeout: Math.max(
+                    1,
+                    this.maxDurationMs - (Date.now() - startTime),
+                  ),
+                  maxBuffer: 1024 * 1024,
                 },
-                timeout: Math.max(
-                  1,
-                  this.maxDurationMs - (Date.now() - startTime),
-                ),
-                maxBuffer: 1024 * 1024,
-              },
+              ),
             );
             return;
           }
@@ -1097,6 +1160,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         diagnosticsJson: {
           stage: "compiler",
           errors: [diagnostic],
+          ...(err instanceof PlatformPrerenderContentError
+            ? { refusedReads: err.refusedReads }
+            : {}),
         },
         logs,
         durationMs: Date.now() - startTime,

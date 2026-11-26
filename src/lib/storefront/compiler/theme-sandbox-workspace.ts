@@ -63,6 +63,7 @@ import {
 import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
 import { themePrerenderOptions } from "./theme-prerender";
 import {
+  NATIVE_PRERENDER_REFUSED_READS_PATH,
   THEME_PRERENDER_CONTENT_FILE,
   themePrerenderContentPluginSource,
   type ThemePrerenderContent,
@@ -1034,7 +1035,7 @@ export default defineConfig({
   : "./",
   plugins: isStartRuntimeBuild
 ? [
-    ${prerenderContent ? `${themePrerenderContentPluginSource(hostWorkspaceRoot)},` : ""}
+    ${prerenderContent ? `${themePrerenderContentPluginSource(hostWorkspaceRoot, { refusedReadsPath: NATIVE_PRERENDER_REFUSED_READS_PATH, platform: true })},` : ""}
     // No debugger port for the server Start prerenders through. The plugin
     // picks the first free port from 9229 and Miniflare binds it later; a
     // build or dev server taking it in between fails every prerendered page
