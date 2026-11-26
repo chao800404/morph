@@ -8,7 +8,8 @@ import {
   openStylesTab,
   previewFrame,
 } from "./helpers";
-import { clientLaneTheme } from "./helpers/client-lane-theme";
+import { clientLaneTheme, laneStarterVersion } from "./helpers/client-lane-theme";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
 test.skip(
   !EDITOR_PATH,
@@ -322,6 +323,22 @@ test.describe("visual editor", () => {
       /^Hide section /,
       "",
     );
+    if (laneStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION) === 31) {
+      // M3 Hide step 2: a Starter 31 Theme turns a failed content read into
+      // empty content, so Morph refuses to hide its sections until the Theme
+      // is upgraded. Nothing is hidden, and the frame keeps its height.
+      await hide.click();
+      await expect(
+        page.getByText(/^Morph cannot hide this section yet: this Theme still has an older Starter/).first(),
+      ).toBeVisible({ timeout: 20_000 });
+      await expect(
+        page.getByRole("button", { name: `Hide section ${hidden}` }),
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.getByRole("button", { name: `Show section ${hidden}` }),
+      ).toHaveCount(0);
+      return;
+    }
     await hide.click();
 
     try {

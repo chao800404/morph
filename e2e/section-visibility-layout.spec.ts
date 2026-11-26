@@ -4,6 +4,8 @@ import { EDITOR_PATH, previewFrame } from "./helpers";
 import { THEMES, publishShowingRelease, serverFn } from "./native-acceptance";
 import { themeScopeFromEditorPath, themeSourceGeneration, type ThemeScope } from "./native-compat";
 import { insertThrowawayTheme } from "./helpers/throwaway-theme";
+import { laneStarterVersion } from "./helpers/client-lane-theme";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
 /**
  * A Header the layout Document marks hidden stays hidden on every load.
@@ -129,6 +131,30 @@ async function writeSlot(
   expect(written.success, written.message).toBe(true);
 }
 
+/**
+ * M3 Hide step 2: on a Starter 31 Theme (the client lane's throwaway) a hide
+ * is refused until the Theme is upgraded, since its content read turns a
+ * failure into empty content. The refusal writes nothing.
+ */
+const starter31 = () => laneStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION) === 31;
+async function expectHideRefusedForUpgrade(page: Page, sectionId: string) {
+  const layout = await layoutTemplate(page);
+  const answer = (await serverFn(page, THEMES, "updateStorefrontThemeSectionProps", {
+    ...scope!,
+    templateId: layout.id,
+    sectionId,
+    props: { enabled: false },
+    expectedDraftGeneration: layout.draftGeneration,
+    expectedSourceGeneration: await themeSourceGeneration(page, scope!),
+  })) as { success: boolean; error?: string; errors?: { reason?: string[] } };
+  expect(answer, JSON.stringify(answer)).toMatchObject({
+    success: false,
+    error: "SECTION_HIDE_UNSUPPORTED",
+    errors: { reason: ["starter-upgrade-required"] },
+  });
+  expect(await layoutTemplate(page)).toEqual(layout);
+}
+
 /** Opens the editor on this spec's Theme and waits for the layout to render. */
 async function openEditor(page: Page) {
   await page.goto(editorPath!, { waitUntil: "domcontentloaded" });
@@ -221,6 +247,13 @@ test.describe("a hidden layout section", () => {
       childBoxes: 0,
     });
 
+    if (starter31()) {
+      await expectHideRefusedForUpgrade(page, HEADER);
+      await openEditor(page);
+      await expect(slot(page, HEADER).locator("header")).toBeVisible();
+      await expect(previewFrame(page).getByText(STORE_NAME)).toBeVisible();
+      return;
+    }
     await writeSlot(page, HEADER, { enabled: false });
     expect((await stored(page, HEADER))?.enabled).toBe(false);
 
@@ -244,6 +277,11 @@ test.describe("a hidden layout section", () => {
       "Publishing builds in the Sandbox container; run with MORPH_E2E_TRANSPORT=cloudflare-sandbox.",
     );
     await openEditor(page);
+    if (starter31()) {
+      // Nothing could be hidden on this Theme (see the test above).
+      await expectHideRefusedForUpgrade(page, FOOTER);
+      return;
+    }
     expect((await stored(page, HEADER))?.enabled).toBe(false);
     await writeSlot(page, FOOTER, { enabled: false });
     expect((await stored(page, FOOTER))?.enabled).toBe(false);

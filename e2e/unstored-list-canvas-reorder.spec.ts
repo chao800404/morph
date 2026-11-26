@@ -17,6 +17,8 @@ import {
   themeScopeFromEditorPath,
   writeThemeFiles,
 } from "./native-compat";
+import { laneStarterVersion } from "./helpers/client-lane-theme";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
 /**
  * A canvas drag on a list the Document does not store yet, in the real Live
@@ -329,6 +331,27 @@ test.describe("dragging an entry of a list nothing stores yet", () => {
     const show = page.getByRole("button", {
       name: `Show section ${sectionType}`,
     });
+    if (laneStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION) === 31) {
+      // M3 Hide step 2: a Starter 31 Theme turns a failed content read into
+      // empty content, so Morph refuses to hide its sections until the
+      // Theme is upgraded; the history and the Document stay as they were.
+      const refused = page.waitForResponse(
+        (response) =>
+          isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps"),
+        { timeout: 30_000 },
+      );
+      await hide.click();
+      const answer = await (await refused).text();
+      expect(answer).toContain("SECTION_HIDE_UNSUPPORTED");
+      expect(answer).toContain("starter-upgrade-required");
+      await expect(
+        page.getByText(/^Morph cannot hide this section yet: this Theme still has an older Starter/).first(),
+      ).toBeVisible();
+      await expect(show).toHaveCount(0);
+      expect(storedSection(templateId).enabled, "still shown").toBe(true);
+      expect(storedSection(templateId).draftGeneration).toBe(start.draftGeneration);
+      return;
+    }
     /** One step: its one write, carrying only `enabled`, and D1 after it. */
     const step = async (
       run: () => Promise<void>,
