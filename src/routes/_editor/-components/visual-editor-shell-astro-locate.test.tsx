@@ -268,6 +268,9 @@ const FILES = [
   ),
   file(ROUTE_FILE, SOURCE),
   file(ASTRO_PAGE, ASTRO_SOURCE),
+  // A static page no template type covers: its content is its own Document,
+  // which does not exist until the first write (M2 PR 3, Codex review P2).
+  file("src/pages/about.astro", ASTRO_SOURCE),
   // The Astro section component and its `.fields.ts` declaration (M2 PR 3):
   // the Inspector's field types and labels come from the declaration only.
   file(
@@ -2090,6 +2093,99 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         // The page still shows generation 4: nothing goes yet.
         await pastDebounce();
         expect(updateSectionProps).not.toHaveBeenCalled();
+      });
+
+      // Codex review P2 (static route without its own Document): the
+      // editor borrowed Home's template to load /about, whose content is
+      // /about's own Document, not created yet. The basis is the route's
+      // own (a new document, as Core's snapshot holds none for it), and the
+      // first write goes through the route ensure the Start path uses, onto
+      // the document as this editor created it.
+      it("a static route without its own Document: the basis is the route's own, and the first write creates it through the route ensure", async () => {
+        const ABOUT = {
+          template: "page" as const,
+          templateId: "template-1",
+          routePath: "/about",
+        };
+        ensureRouteTemplate.mockResolvedValue({
+          success: true,
+          message: "Route template ready",
+          data: {
+            id: "template-about",
+            draftGeneration: 1,
+            createdByThisCall: true,
+          },
+        });
+        updateSectionProps.mockResolvedValue({
+          success: true,
+          message: "Section updated",
+          data: {
+            draftGeneration: 2,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  enabled: true,
+                  props: { title: "About title" },
+                },
+              ],
+            },
+          },
+        });
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: context,
+        });
+        readRouteBindings.mockResolvedValue(
+          bindingView({ routePath: "/about", routeFile: "src/pages/about.astro" }),
+        );
+        modelCurrentBridge();
+        await settled(context, ABOUT, BASIS_READY, {
+          serverData: START_DATA,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        });
+        await waitFor(() =>
+          expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(1);
+        const token = basisPosts()[0]!.presentationToken;
+        expect(token).toMatchObject({
+          routePath: "/about",
+          documentBasis: { kind: "new-document" },
+        });
+        expect(token.templateId).not.toBe("template-1");
+        await ackBasis(token);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "About title" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(ensureRouteTemplate).toHaveBeenCalledWith({
+          data: {
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            routePath: "/about",
+          },
+        });
+        expect(sentData(0)).toMatchObject({
+          templateId: "template-about",
+          sectionId: "hero",
+          props: { title: "About title" },
+          expectedDraftGeneration: 1,
+          expectedSourceGeneration: 3,
+          routePath: "/about",
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
       });
     });
 
