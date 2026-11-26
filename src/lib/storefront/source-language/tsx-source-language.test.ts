@@ -105,3 +105,68 @@ function Page() {
     expect(prepared.files[0]!.content).not.toContain("KeptCardProps");
   });
 });
+
+// Review P1-3: whether a section can be hidden is a property of the whole
+// Theme, so an edit to one module can add a guard to another. The route the
+// running preview serves must then be rewritten with its gate, in the same
+// sync, or it keeps rendering the section's defaults once Hide succeeds.
+describe("an incremental sync rewrites the modules whose guard changed", () => {
+  const ROUTE = "src/routes/index.tsx";
+  const TEASER = "src/components/Teaser.tsx";
+  const HERO_SOURCE = `export const contentFields = {
+  title: { type: "text", label: "Title" },
+} as const;
+export default function Hero({ title = "HERO-DEFAULT" }: { title?: string }) {
+  return <section><h1>{title}</h1></section>;
+}
+`;
+  const ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return (
+    <main>
+      <Hero {...content("hero")} />
+    </main>
+  );
+}
+`;
+  const teaser = (body: string) => ({
+    path: TEASER,
+    content: `import { content } from "../morph/content";
+export default function Teaser() { return <p>{${body}}</p>; }
+`,
+  });
+  const saved = (teaserFile: { path: string; content: string }) => [
+    ...livePreviewPlatformFiles(),
+    { path: "src/components/Hero.tsx", content: HERO_SOURCE },
+    { path: ROUTE, content: ROUTE_SOURCE },
+    teaserFile,
+  ];
+
+  it("control: while another module reads the section, the route has no gate", () => {
+    const before = prepareSourcesForLivePreview(
+      saved(teaser(`String(content("hero").title ?? "")`)),
+    );
+    expect(before.files.find((file) => file.path === ROUTE)!.content).not.toContain(
+      "__MorphSectionGate",
+    );
+  });
+
+  it("an edit that drops the other read writes the route again, with its gate", () => {
+    const edited = teaser(`"teaser"`);
+    const prepared = prepareChangedSourcesForLivePreview([edited], saved(edited));
+    expect(prepared.files.map((file) => file.path)).toContain(TEASER);
+    const route = prepared.files.find((file) => file.path === ROUTE);
+    expect(route, "the route is written in the same sync").toBeDefined();
+    expect(route!.content).toContain('<__MorphSectionGate slot={"hero"}');
+    // Exactly what a full layout of the same source writes.
+    expect(route!.content).toBe(
+      prepareSourcesForLivePreview(saved(edited)).files.find(
+        (file) => file.path === ROUTE,
+      )!.content,
+    );
+  });
+});
+
