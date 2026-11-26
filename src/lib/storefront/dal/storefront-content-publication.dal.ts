@@ -92,6 +92,66 @@ function collectAssetKeys(
   document: unknown,
   into: Map<string, Set<string>>,
 ): void {
+  visitAssetKeys(parseStoredDocument(document), into);
+}
+
+/** A stored document as an object, whether the driver parsed it or not. */
+function parseStoredDocument(document: unknown): unknown {
+  if (typeof document !== "string") return document;
+  try {
+    return JSON.parse(document);
+  } catch {
+    return null;
+  }
+}
+
+/** Ids of the sections a document hides (`enabled: false`). */
+function hiddenSectionIds(document: unknown): Set<string> {
+  const ids = new Set<string>();
+  const sections = (document as { sections?: unknown } | null)?.sections;
+  if (!Array.isArray(sections)) return ids;
+  for (const section of sections) {
+    const record = section as { id?: unknown; enabled?: unknown } | null;
+    if (record?.enabled === false && typeof record.id === "string")
+      ids.add(record.id);
+  }
+  return ids;
+}
+
+/**
+ * Collects the media references a visitor can be shown: those inside a
+ * section that renders.
+ *
+ * A hidden section (`enabled: false`) is gone from the published site, and
+ * so is everything in it, at any depth. Its values stay in the stored
+ * document (Show again and rollback restore them), which is why the walk
+ * filters here rather than the document being rewritten. `alsoHidden` is the
+ * shared layout's hidden ids: layout and route share one slot namespace and
+ * the runtime lets a hidden flag in either win (`resolveStorefrontContent`),
+ * and the layout is on every route.
+ *
+ * Only `sections` is walked. The runtime renders nothing else of a document,
+ * so a reference anywhere else is not one a visitor can reach, and is left
+ * out rather than assumed to be safe.
+ */
+function collectRenderedAssetKeys(
+  document: unknown,
+  into: Map<string, Set<string>>,
+  alsoHidden: ReadonlySet<string>,
+): void {
+  const parsed = parseStoredDocument(document) as { sections?: unknown } | null;
+  const sections = parsed?.sections;
+  if (!Array.isArray(sections)) return;
+  for (const section of sections) {
+    const record = section as { id?: unknown; enabled?: unknown } | null;
+    if (!record || typeof record !== "object") continue;
+    if (record.enabled === false) continue;
+    if (typeof record.id === "string" && alsoHidden.has(record.id)) continue;
+    visitAssetKeys(record, into);
+  }
+}
+
+function visitAssetKeys(root: unknown, into: Map<string, Set<string>>): void {
   const seen = new Set<unknown>();
   const visit = (node: unknown): void => {
     if (!node || typeof node !== "object") return;
@@ -118,17 +178,7 @@ function collectAssetKeys(
     for (const value of Object.values(record)) visit(value);
   };
 
-  visit(
-    typeof document === "string"
-      ? (() => {
-          try {
-            return JSON.parse(document);
-          } catch {
-            return null;
-          }
-        })()
-      : document,
-  );
+  visit(root);
 }
 
 type CarriedItemType = "template" | "page";
@@ -1125,13 +1175,30 @@ export const storefrontContentPublicationDal = {
    *
    * The key is both the authorisation and the bytes: a visitor may read exactly
    * what the live release published, at the version it published.
+   *
+   * Only media a visitor can be shown counts: a reference inside a hidden
+   * section, or inside a section whose slot the shared layout hides, is left
+   * out (`collectRenderedAssetKeys`). Computed from the publication's stored
+   * documents on every read and keyed by the publication the live release
+   * names, so a rollback authorises by the restored release's own content,
+   * and publications sealed before this rule follow it too, with no stored
+   * list to migrate. The stored documents are not changed.
    */
   async listPublishedAssetKeys(
     publicationId: string,
   ): Promise<Map<string, Set<string>>> {
+    const [documents, layout] = await Promise.all([
+      this.listPublishedDocuments(publicationId),
+      // The same layout resolution the public runtime renders with.
+      this.getPublishedTemplateDocument({
+        publicationId,
+        templateType: "layout",
+      }),
+    ]);
+    const layoutHidden = hiddenSectionIds(parseStoredDocument(layout));
     const keys = new Map<string, Set<string>>();
-    for (const document of await this.listPublishedDocuments(publicationId)) {
-      collectAssetKeys(document, keys);
+    for (const document of documents) {
+      collectRenderedAssetKeys(document, keys, layoutHidden);
     }
     return keys;
   },
@@ -1143,6 +1210,10 @@ export const storefrontContentPublicationDal = {
    * is immutable: its bytes are what a live storefront serves and what a
    * rollback restores. Removing them does not detach a reference, it breaks a
    * page that is already public, so this is a refusal rather than a warning.
+   *
+   * Hidden sections count here, unlike in `listPublishedAssetKeys`: their
+   * values are kept so Show again and a rollback can bring them back, and
+   * that needs the bytes.
    */
   async findPublishedAssetReferences(
     assetIds: readonly string[],
