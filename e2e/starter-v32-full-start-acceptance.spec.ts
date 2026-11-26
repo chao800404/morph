@@ -12,11 +12,8 @@ import {
 
 import { queryLifecycleD1 } from "../scripts/verify-published-artifact.mjs";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
-import {
-  STARTER_THEME_CONTENT_MODULE_SOURCE,
-  STARTER_THEME_HOME_ROUTE_SOURCE,
-  STARTER_THEME_LAYOUT_SOURCE,
-} from "../src/lib/storefront/starter-theme-v3-files";
+import { starterThemeWorkspaceFiles } from "../src/lib/storefront/starter-theme-files";
+import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../src/lib/storefront/starter-theme-v3-files";
 import { EDITOR_PATH } from "./helpers";
 import { execLocalD1 } from "./helpers/editor-writes-paused";
 import {
@@ -135,12 +132,30 @@ const PREVIEW_SERVER =
   "/src/server/storefront/storefront-theme-preview-server.serverFn.ts";
 const THEME_FILES = "/src/server/storefront/storefront-theme-files.serverFn.ts";
 
-/** The Starter files this spec holds to the shipped sources. */
-const SHIPPED_FILES = {
-  "src/morph/content.ts": STARTER_THEME_CONTENT_MODULE_SOURCE,
-  "src/routes/index.tsx": STARTER_THEME_HOME_ROUTE_SOURCE,
-  "src/layouts/StorefrontLayout.tsx": STARTER_THEME_LAYOUT_SOURCE,
-} as const;
+/**
+ * The Starter files this spec holds to the shipped sources, as a new Theme
+ * gets them: `starterThemeWorkspaceFiles()`, the file set the editor's first
+ * read initialises (`initStarterTheme`). Its home route imports the
+ * page-owned section copies the workspace adopts, so it is not the library
+ * constant byte for byte; the content module is the shipped one unchanged.
+ */
+const WORKSPACE_FILES = new Map(
+  starterThemeWorkspaceFiles().map((file) => [file.path, file.content]),
+);
+const SHIPPED_PATHS = [
+  "src/morph/content.ts",
+  "src/routes/index.tsx",
+  "src/layouts/StorefrontLayout.tsx",
+] as const;
+const SHIPPED_FILES = Object.fromEntries(
+  SHIPPED_PATHS.map((path) => {
+    const content = WORKSPACE_FILES.get(path);
+    if (content === undefined) {
+      throw new Error(`The Starter workspace has no ${path}.`);
+    }
+    return [path, content];
+  }),
+) as Record<(typeof SHIPPED_PATHS)[number], string>;
 const PAGE_PATH = "/e2e-v32-page";
 const HOST = "v32-start.localhost";
 /** Where a native Start build writes the prerendered home (theme-prerender.ts). */
@@ -720,6 +735,11 @@ test.describe("Starter 32 on the full Start runtime", () => {
     for (const [path, source] of Object.entries(SHIPPED_FILES)) {
       expect(original[path], `${path} is the shipped Starter 32 source`).toBe(source);
     }
+    // The workspace's module is the Starter 32 module itself (the SDK read
+    // source), not a copy the adoption rewrote.
+    expect(original["src/morph/content.ts"]).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    // The home still gates every section the Starter way.
+    expect(original["src/routes/index.tsx"]).toContain(`!isSectionHidden("${NEWSLETTER}")`);
     for (const file of TEST_FILES) {
       expect(original[file.path], `${file.path} is not a Starter file`).toBeUndefined();
     }
