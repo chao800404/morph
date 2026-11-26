@@ -32,7 +32,14 @@ export function registerThemeStaticPages(args: {
   const snapshot = buildInput.contentSnapshot;
   if (!snapshot) return [];
 
+  // Static pages are a TanStack Start platform-build capability. Another
+  // framework, or a Start Theme built with its own build config, behaves as
+  // it did before registration existed: its HTML is not registered (so Core
+  // never serves it from the artifact) and its build is not refused here.
   const framework = buildInput.framework ?? "tanstack-start";
+  if (framework !== "tanstack-start" || buildInput.buildMode === "native") {
+    return [];
+  }
   const registry = THEME_FRAMEWORK_ROUTES[framework](buildInput.files);
   if (!registry.valid) {
     if (claimsStaticHtml(snapshot)) {

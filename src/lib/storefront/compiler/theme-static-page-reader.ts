@@ -2,6 +2,10 @@ import type {
   CanonicalThemeBuildManifest,
   CanonicalThemeStaticPage,
 } from "./theme-build-artifact-store.types";
+import {
+  PRERENDER_CLIENT_DIRECTORY,
+  prerenderedHtmlArtifactPath,
+} from "./theme-prerender";
 
 /**
  * Reading a build's registered static pages, kept apart from registering
@@ -50,6 +54,7 @@ export function readRegisteredStaticPages(
   const clientDirectory = manifest?.runtime?.clientAssetsDirectory;
   const pages: CanonicalThemeStaticPage[] = [];
   const seen = new Set<string>();
+  const artifactPaths = new Set<string>();
   for (const entry of value as unknown[]) {
     const page = entry as Partial<CanonicalThemeStaticPage> | null;
     if (
@@ -62,17 +67,27 @@ export function readRegisteredStaticPages(
     ) {
       return { ok: false, message: "A registered static page is malformed." };
     }
+    // A page's HTML is exactly where the prerender writes that page, so a
+    // registration cannot point one URL at another page's (or any other)
+    // file.
     if (
-      !clientDirectory ||
+      clientDirectory !== PRERENDER_CLIENT_DIRECTORY ||
       !isContainedArtifactPath(page.artifactPath) ||
-      !page.artifactPath.startsWith(`${clientDirectory}/`) ||
-      !page.artifactPath.endsWith("index.html")
+      page.artifactPath !==
+        prerenderedHtmlArtifactPath(normalizedPagePath(page.path))
     ) {
       return {
         ok: false,
-        message: `Registered static page "${page.path}" is outside the client assets.`,
+        message: `Registered static page "${page.path}" does not name its own HTML file.`,
       };
     }
+    if (artifactPaths.has(page.artifactPath)) {
+      return {
+        ok: false,
+        message: `"${page.artifactPath}" is registered for more than one page.`,
+      };
+    }
+    artifactPaths.add(page.artifactPath);
     if (files.get(page.artifactPath) !== page.sha256) {
       return {
         ok: false,
