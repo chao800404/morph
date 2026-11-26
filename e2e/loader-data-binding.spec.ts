@@ -2021,3 +2021,178 @@ function GuardedRoute() {
     }
   });
 });
+
+/**
+ * Review of f1bcc7a: an ordinary-JSX section, mounted with no check of its
+ * own (`<PlainPromo {...content("plain-promo")} />`), hidden through
+ * Morph's compiled gate in the full Start preview. The server's streamed
+ * HTML for the route leaves it out (no markup, no stored value, no
+ * default), the page hydrates without a mismatch, and a client navigation
+ * away and back still leaves it out. Shown again, its stored value renders:
+ * the assertions can see it.
+ */
+test.describe("an ordinary JSX section hidden by Morph's gate, server-rendered and hydrated", () => {
+  test.describe.configure({ mode: "serial" });
+
+  const PLAIN_ROUTE = "/plain-guarded";
+  const PLAIN_SLOT = "plain-promo";
+  const PLAIN_STORED = "Plain promo stored heading";
+  const PLAIN_DEFAULT = "Plain promo default heading";
+  const PLAIN_MARK = "Plain route renders";
+  let plainScope: ThemeScope | null = null;
+  let plainEditorPath: string | null = null;
+
+  const PLAIN_FILES = [
+    {
+      path: "src/components/PlainPromo.tsx",
+      content: `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function PlainPromo({ heading = "${PLAIN_DEFAULT}" }: { heading?: string }) {
+  return <section data-plain-promo=""><h2>{heading}</h2></section>;
+}
+`,
+    },
+    {
+      path: "src/routes/plain-guarded.tsx",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import PlainPromo from "../components/PlainPromo";
+
+export const Route = createFileRoute("${PLAIN_ROUTE}")({ component: PlainRoute });
+
+function PlainRoute() {
+  return (
+    <main>
+      <p>${PLAIN_MARK}</p>
+      <PlainPromo {...content("${PLAIN_SLOT}")} />
+    </main>
+  );
+}
+`,
+    },
+  ];
+
+  async function writePlain(page: Page, props: Record<string, unknown>) {
+    const ensured = (await serverFn(page, THEMES, "ensureStorefrontThemeRouteTemplate", {
+      ...plainScope!,
+      routePath: PLAIN_ROUTE,
+    })) as { success: boolean; data?: { id: string; draftGeneration: number } };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    return (await serverFn(page, THEMES, "updateStorefrontThemeSectionProps", {
+      ...plainScope!,
+      templateId: ensured.data!.id,
+      sectionId: PLAIN_SLOT,
+      props,
+      expectedDraftGeneration: ensured.data!.draftGeneration,
+      expectedSourceGeneration: await themeSourceGeneration(page, plainScope!),
+      routePath: PLAIN_ROUTE,
+    })) as { success: boolean };
+  }
+
+  /** Opens the editor on the route; answers with the route's own server HTML. */
+  async function openPlain(page: Page): Promise<string> {
+    const url = new URL(plainEditorPath!, "http://placeholder");
+    url.searchParams.set("routePath", PLAIN_ROUTE);
+    const document = page.waitForResponse(
+      (response) =>
+        response.request().resourceType() === "document" &&
+        new URL(response.url()).pathname === PLAIN_ROUTE,
+      { timeout: 90_000 },
+    );
+    await page.goto(`${url.pathname}${url.search}`, { waitUntil: "domcontentloaded" });
+    const html = await (await document).text();
+    await expect(previewFrame(page).getByText(PLAIN_MARK)).toBeVisible({ timeout: 90_000 });
+    return html;
+  }
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    plainScope = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...plainScope,
+    })) as { success: boolean; data?: { templates: Array<{ id: string; type: string }> } };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const home = result.data!.templates.find((template) => template.type === "index");
+    expect(home).toBeDefined();
+    plainEditorPath = `/store/${plainScope.storefrontId}/themes/${plainScope.themeId}/editor?templateId=${home!.id}`;
+    const saved = await writeThemeFiles(page, plainScope, PLAIN_FILES);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    const stored = await writePlain(page, { heading: PLAIN_STORED });
+    expect(stored.success, JSON.stringify(stored)).toBe(true);
+    await page.context().close();
+  });
+
+  test("hidden: absent from the streamed HTML, hydrated cleanly, still absent after navigating back", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleErrors.push(error.message));
+    const section = previewFrame(page).locator("[data-plain-promo]");
+
+    // Control: shown, its stored value is server-rendered and on screen.
+    const shownHtml = await openPlain(page);
+    expect(shownHtml).toContain(PLAIN_STORED);
+    await expect(section).toHaveCount(1);
+
+    const hidden = await writePlain(page, { enabled: false });
+    expect(hidden.success, JSON.stringify(hidden)).toBe(true);
+    try {
+      const html = await openPlain(page);
+      // The streamed server HTML, router state included.
+      for (const absent of [PLAIN_STORED, PLAIN_DEFAULT, "data-plain-promo"]) {
+        expect(html, absent).not.toContain(absent);
+      }
+      expect(html).toContain(PLAIN_MARK);
+      // Hydrated: the page is interactive, nothing came back, and React
+      // reported no mismatch.
+      await expect(section).toHaveCount(0);
+      await expect(previewFrame(page).getByText(PLAIN_DEFAULT)).toHaveCount(0);
+      const frame = previewFrame(page).locator("html");
+      await expect
+        .poll(() =>
+          frame.evaluate(
+            () =>
+              typeof (window as unknown as { __morphPreviewRouter?: unknown })
+                .__morphPreviewRouter === "object",
+          ),
+        )
+        .toBe(true);
+      // A client navigation away and back re-runs the root's beforeLoad.
+      await frame.evaluate(async () => {
+        const router = (window as unknown as {
+          __morphPreviewRouter: { navigate(options: { to: string }): Promise<void> };
+        }).__morphPreviewRouter;
+        await router.navigate({ to: "/" });
+      });
+      await expect(previewFrame(page).getByText(PLAIN_MARK)).toHaveCount(0, { timeout: 30_000 });
+      await frame.evaluate(async (_root, to) => {
+        const router = (window as unknown as {
+          __morphPreviewRouter: { navigate(options: { to: string }): Promise<void> };
+        }).__morphPreviewRouter;
+        await router.navigate({ to });
+      }, PLAIN_ROUTE);
+      await expect(previewFrame(page).getByText(PLAIN_MARK)).toBeVisible({ timeout: 30_000 });
+      await expect(section).toHaveCount(0);
+      await expect(previewFrame(page).getByText(PLAIN_DEFAULT)).toHaveCount(0);
+      expect(
+        consoleErrors.filter((text) => /hydrat|did not match|mismatch/i.test(text)),
+        consoleErrors.join("\n"),
+      ).toEqual([]);
+    } finally {
+      const shown = await writePlain(page, { enabled: true });
+      expect(shown.success, JSON.stringify(shown)).toBe(true);
+    }
+
+    // Shown again, the stored value is back in the server HTML.
+    const again = await openPlain(page);
+    expect(again).toContain(PLAIN_STORED);
+    await expect(section).toHaveCount(1);
+  });
+});
+
