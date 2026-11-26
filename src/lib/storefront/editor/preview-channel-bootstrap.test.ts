@@ -26,6 +26,9 @@ const EDITOR = "https://editor.example.test";
 const FLOW = "a".repeat(32);
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const NONCE = "b".repeat(32);
+/** What a receiver records for the document it is about to load, and the count of handoffs. */
+const HANDOFF = `morph:preview-channel-bootstrap-handoff:${SESSION}`;
+const ATTEMPTS = `morph:preview-channel-bootstrap-attempts:${SESSION}`;
 
 type Listener = (event: unknown) => void;
 
@@ -144,6 +147,8 @@ describe("a queryless document's receiver", () => {
     expect(next.searchParams.get("editorOrigin")).toBe(EDITOR);
     expect(next.searchParams.get("previewSession")).toBe(SESSION);
     expect(next.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM)).toBe(NONCE);
+    // The document that loads takes the nonce only against this record.
+    expect(frame.stored.get(HANDOFF)).toBe(NONCE);
   });
 
   it("keeps the query a link already carried", async () => {
@@ -336,7 +341,12 @@ describe("the bootstrap nonce a reloaded document carries", () => {
     const frame = frameWindow({
       href: `https://pv-x.preview.test/b?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
     });
+    frame.stored.set(HANDOFF, NONCE);
+    frame.stored.set(ATTEMPTS, JSON.stringify([Date.now()]));
     expect(takeBootstrapNonce(frame.win)).toBe(NONCE);
+    // The handoff reached its document: it is confirmed, and no longer counts.
+    expect(frame.stored.has(HANDOFF)).toBe(false);
+    expect(frame.stored.has(ATTEMPTS)).toBe(false);
     const replaceState = frame.win.history.replaceState as ReturnType<
       typeof vi.fn
     >;
@@ -364,12 +374,44 @@ describe("the bootstrap nonce a reloaded document carries", () => {
     expect(odd.win.history.replaceState).not.toHaveBeenCalled();
   });
 
+  it("leaves a Theme's own parameter of that shape alone when no receiver handed it over", () => {
+    const own = frameWindow({
+      href: `https://pv-x.preview.test/b?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
+    });
+    // No record, or one for another nonce: not a bootstrap.
+    expect(takeBootstrapNonce(own.win)).toBeNull();
+    own.stored.set(HANDOFF, "c".repeat(32));
+    const other = frameWindow({
+      href: own.win.location.href,
+    });
+    other.stored.set(HANDOFF, "c".repeat(32));
+    expect(takeBootstrapNonce(other.win)).toBeNull();
+    expect(own.win.history.replaceState).not.toHaveBeenCalled();
+    expect(other.win.history.replaceState).not.toHaveBeenCalled();
+  });
+
+  it("is not taken outside a protected preview's frame, even with a record", () => {
+    for (const options of [
+      { embedded: false },
+      { hostname: "preview.example.test" },
+    ]) {
+      const frame = frameWindow({
+        ...options,
+        href: `https://pv-x.preview.test/b?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
+      });
+      frame.stored.set(HANDOFF, NONCE);
+      expect(takeBootstrapNonce(frame.win)).toBeNull();
+      expect(frame.win.history.replaceState).not.toHaveBeenCalled();
+    }
+  });
+
   it("keeps the history state the Theme set, and an address that begins with two slashes", () => {
     const state = { scroll: 4 };
     const frame = frameWindow({
       href: `https://pv-x.preview.test//double/slash?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
       historyState: state,
     });
+    frame.stored.set(HANDOFF, NONCE);
     expect(takeBootstrapNonce(frame.win)).toBe(NONCE);
     const call = (frame.win.history.replaceState as ReturnType<typeof vi.fn>)
       .mock.calls[0]!;
@@ -379,8 +421,9 @@ describe("the bootstrap nonce a reloaded document carries", () => {
 
   it("says its nonce even when the address cannot be cleaned", () => {
     const frame = frameWindow({
-      href: `https://pv-x.preview.test/b?${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
+      href: `https://pv-x.preview.test/b?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
     });
+    frame.stored.set(HANDOFF, NONCE);
     (
       frame.win.history.replaceState as ReturnType<typeof vi.fn>
     ).mockImplementation(() => {
@@ -417,6 +460,35 @@ describe("a Theme that sends the channel away", () => {
       1, 1, 1, 0,
     ]);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps following a Theme whose handoffs arrive: a confirmed one no longer counts", async () => {
+    const shared = new Map<string, string>();
+    const fetchImpl = ok();
+    for (let load = 0; load < 6; load++) {
+      const next = frameWindow();
+      next.stored.clear();
+      for (const [key, value] of shared) next.stored.set(key, value);
+      installPreviewChannelBootstrap({
+        window: next.win,
+        fetch: fetchImpl as never,
+      });
+      next.fire("message", {
+        source: next.parent,
+        origin: EDITOR,
+        data: offer({ bootstrapNonce: String(load).repeat(32) }),
+      });
+      await settle();
+      expect(next.replace).toHaveBeenCalledTimes(1);
+      // The document the handoff loaded reaches its own start with the nonce.
+      const loaded = new URL(next.replace.mock.calls[0]![0] as string);
+      const arrival = frameWindow({ href: loaded.href });
+      for (const [key, value] of next.stored) arrival.stored.set(key, value);
+      expect(takeBootstrapNonce(arrival.win)).toBe(String(load).repeat(32));
+      shared.clear();
+      for (const [key, value] of arrival.stored) shared.set(key, value);
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
   });
 
   it("is not followed at all where there is no session storage to count in", async () => {

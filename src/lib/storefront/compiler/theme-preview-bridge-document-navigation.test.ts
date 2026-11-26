@@ -311,6 +311,46 @@ describe("a page that navigates as documents (Astro)", () => {
     expect(page.assigned).toEqual([`${ORIGIN}/contact${QUERY}`]);
   });
 
+  it("stays on a page the browser loaded again for Back or Forward, which no record precedes", () => {
+    vi.stubGlobal("performance", {
+      getEntriesByType: () => [{ type: "back_forward" }],
+    });
+    try {
+      const page = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+      });
+      page.applyEditorRoute(setRoute("/", 11));
+      expect(page.assigned).toEqual([]);
+      expect(page.posted[0]).toEqual({
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: 11,
+        routePath: "/about",
+      });
+      // The editor's own newer request still wins.
+      page.applyEditorRoute(setRoute("/contact", 12));
+      expect(page.assigned).toEqual([`${ORIGIN}/contact${QUERY}`]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not take a plain load or a reload for a move of the frame's own", () => {
+    vi.stubGlobal("performance", {
+      getEntriesByType: () => [{ type: "reload" }],
+    });
+    try {
+      const page = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+      });
+      page.applyEditorRoute(setRoute("/", 11));
+      expect(page.assigned).toEqual([`${ORIGIN}/${QUERY}`]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("the frame the editor loaded, or a reload of it, is sent to the editor's page", () => {
     const page = bridgeRouting({ pathname: "/", navigation: "document" });
 

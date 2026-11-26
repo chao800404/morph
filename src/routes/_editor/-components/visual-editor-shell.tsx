@@ -6017,12 +6017,14 @@ export function VisualEditorShell({
       };
       if (isLivePreviewAccessFailure(entry.flow, event, expected)) {
         entry.flow.ended = true;
+        entry.issued = false;
         previewChannelOffersRef.current.clear();
         failed();
         return;
       }
       if (isLivePreviewAccessEnded(event, expected)) {
         entry.flow.ended = true;
+        entry.issued = false;
         previewChannelOffersRef.current.clear();
         dispatchPreviewLifecycle({
           type: "server-failed",

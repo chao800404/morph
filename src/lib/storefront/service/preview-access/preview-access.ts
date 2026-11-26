@@ -599,6 +599,52 @@ export async function verifyPreviewAccessChannel(input: {
   return { ok: true, grant: verifiedGrant(record) };
 }
 
+/**
+ * Activates the grant a flow's exchange ended in, on the request the redeeming
+ * browser makes right after redeem installed its cookie, before the begin page
+ * leaves. The request selector serves pages under an older activated grant
+ * the browser also holds, so without this the flow's own grant could wait for
+ * its first presentation until its activation window had run out. It is the
+ * guarded activation: the grant must be the flow's own, presented in this
+ * request, hold every check now, and be inside its window; once, and it
+ * extends nothing.
+ */
+export async function activatePreviewAccessFlowGrant(input: {
+  dal: StorefrontPreviewAccessDAL;
+  tokens: readonly string[];
+  previewHost: string;
+  flowId: string;
+  now?: Date;
+}): Promise<
+  Readonly<{ ok: true }> | Readonly<{ ok: false; reason: PreviewAccessRefusal }>
+> {
+  const wellFormed = [...new Set(input.tokens)].filter((token) =>
+    SECRET_PATTERN.test(token),
+  );
+  if (wellFormed.length === 0) return { ok: false, reason: "GRANT_UNKNOWN" };
+  if (!FLOW_ID_PATTERN.test(input.flowId)) {
+    return { ok: false, reason: "CHANNEL_NOT_BOUND" };
+  }
+  const binding = await input.dal.findChannelBinding(input.flowId);
+  if (!binding || binding.previewHost !== input.previewHost) {
+    return { ok: false, reason: "CHANNEL_NOT_BOUND" };
+  }
+  const records = await input.dal.findGrantsByTokenHashes(
+    await Promise.all(wellFormed.map(hashPreviewAccessSecret)),
+  );
+  const record = records.find((entry) => entry.id === binding.resolvedGrantId);
+  if (!record || record.kind !== binding.kind) {
+    return { ok: false, reason: "CHANNEL_NOT_BOUND" };
+  }
+  const clock = () => input.now ?? new Date();
+  const refusal = grantRefusal(record, input.previewHost, clock().getTime());
+  if (refusal) return { ok: false, reason: refusal };
+  if (!(await activate(input.dal, record, clock))) {
+    return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
+  }
+  return { ok: true };
+}
+
 /** Ends one session's grants; says which previews they were for. */
 export function revokePreviewAccessForSession(input: {
   dal: StorefrontPreviewAccessDAL;

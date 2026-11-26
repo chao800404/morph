@@ -156,6 +156,7 @@ export type PreviewChannelWindow = {
   readonly sessionStorage?: {
     getItem(key: string): string | null;
     setItem(key: string, value: string): void;
+    removeItem(key: string): void;
   };
   addEventListener(type: string, listener: (event: any) => void): void;
 };
@@ -176,31 +177,52 @@ export type PreviewChannelBootstrapEnvironment = Readonly<{
   ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 }>;
 
-/** A bootstrap loads the document again; a Theme that redirects the channel away must not loop. */
-const ATTEMPTS_KEY = "morph:preview-channel-bootstrap-attempts";
+/**
+ * A bootstrap loads the document again; a Theme that redirects the channel
+ * away must not loop. Handoffs that fail to confirm are counted per session:
+ * at most three in thirty seconds. A handoff whose document reaches its own
+ * start with the nonce (`takeBootstrapNonce`) is confirmed and no longer counts.
+ */
+const ATTEMPTS_KEY = "morph:preview-channel-bootstrap-attempts:";
+/** The nonce a receiver handed to the document it is about to load, per session. */
+const HANDOFF_KEY = "morph:preview-channel-bootstrap-handoff:";
 const MAX_ATTEMPTS = 3;
 const ATTEMPT_WINDOW_MS = 30_000;
 
 /**
- * Whether this frame may bootstrap once more: at most three loads of its own
- * making in thirty seconds. Without a session storage there is no count, so
- * none is made.
+ * Whether this session may bootstrap once more. Without a session storage
+ * there is no count, and no handoff to confirm, so none is made.
  */
-function bootstrapAllowed(win: PreviewChannelWindow, now: number): boolean {
+function bootstrapAllowed(
+  win: PreviewChannelWindow,
+  session: string,
+  now: number,
+): boolean {
   try {
     const storage = win.sessionStorage;
     if (!storage) return false;
-    const recorded: unknown = JSON.parse(storage.getItem(ATTEMPTS_KEY) ?? "[]");
+    const recorded: unknown = JSON.parse(
+      storage.getItem(ATTEMPTS_KEY + session) ?? "[]",
+    );
     const recent = (Array.isArray(recorded) ? recorded : []).filter(
       (at): at is number =>
         typeof at === "number" && now - at < ATTEMPT_WINDOW_MS,
     );
     if (recent.length >= MAX_ATTEMPTS) return false;
-    storage.setItem(ATTEMPTS_KEY, JSON.stringify([...recent, now]));
+    storage.setItem(ATTEMPTS_KEY + session, JSON.stringify([...recent, now]));
     return true;
   } catch {
     return false;
   }
+}
+
+/** A frame of a protected preview: embedded, on a `pv-` host. */
+function inProtectedFrame(win: PreviewChannelWindow): boolean {
+  return (
+    win.parent !== win &&
+    Boolean(win.parent) &&
+    win.location.hostname.toLowerCase().startsWith("pv-")
+  );
 }
 
 function isExactHttpOrigin(value: unknown): value is string {
@@ -272,7 +294,7 @@ export function installPreviewChannelBootstrap(
     const offer = readOffer(event.data);
     if (!offer) return;
     attempted = true;
-    if (!bootstrapAllowed(win, Date.now())) return;
+    if (!bootstrapAllowed(win, offer.previewSession, Date.now())) return;
     const editorOrigin = event.origin;
     void (async () => {
       try {
@@ -297,6 +319,11 @@ export function installPreviewChannelBootstrap(
         if (!response.ok) return;
         const answer = (await response.json()) as { ok?: unknown } | null;
         if (!answer || answer.ok !== true) return;
+        // The document that loads takes the nonce only against this record.
+        win.sessionStorage!.setItem(
+          HANDOFF_KEY + offer.previewSession,
+          offer.bootstrapNonce,
+        );
         const next = new URL(win.location.href);
         next.searchParams.set("editorOrigin", editorOrigin);
         next.searchParams.set("previewSession", offer.previewSession);
@@ -327,9 +354,25 @@ export function takeBootstrapNonce(win: PreviewChannelWindow): string | null {
   } catch {
     return null;
   }
-  // Only a nonce of the shape a bootstrap makes is ours: any other value of
-  // that name is the Theme's own, and its address and history stay as they are.
-  if (value === null || !NONCE.test(value)) return null;
+  // Only a nonce a receiver handed to this very load is ours: any other value
+  // of that name, on a preview that was not bootstrapped, is the Theme's own,
+  // and its address and history stay as they are.
+  if (value === null || !NONCE.test(value) || !inProtectedFrame(win)) {
+    return null;
+  }
+  const session = url.searchParams.get("previewSession");
+  if (!session || !SESSION.test(session)) return null;
+  try {
+    const storage = win.sessionStorage;
+    if (!storage || storage.getItem(HANDOFF_KEY + session) !== value) {
+      return null;
+    }
+    storage.removeItem(HANDOFF_KEY + session);
+    // Confirmed: the handoff reached its document.
+    storage.removeItem(ATTEMPTS_KEY + session);
+  } catch {
+    return null;
+  }
   try {
     url.searchParams.delete(PREVIEW_CHANNEL_BOOTSTRAP_PARAM);
     win.history.replaceState(win.history.state ?? null, "", url.href);
@@ -350,8 +393,7 @@ export function installPreviewDocumentRestoreGuard(
     if (!event.persisted) return;
     // Only a protected preview's frame: a standalone or open document has
     // no editor behind it to be revalidated against.
-    if (win.parent === win || !win.parent) return;
-    if (!win.location.hostname.toLowerCase().startsWith("pv-")) return;
+    if (!inProtectedFrame(win)) return;
     // The author came back to this page: as a followed link is, it is the
     // frame's own move, not the editor's, so the editor follows it.
     try {

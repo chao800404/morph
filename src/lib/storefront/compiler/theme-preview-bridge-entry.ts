@@ -602,6 +602,19 @@ if (documentNavigation) {
   } catch {
     arrivedBy = null;
   }
+  // Back and Forward are the frame's own moves too: a document the browser
+  // loaded again for them (no cache) has no record from the one before it, and
+  // the editor's first route request still names the page the author left.
+  if (arrivedBy === null) {
+    try {
+      const navigation = performance.getEntriesByType("navigation")[0];
+      if (navigation && navigation.type === "back_forward") {
+        arrivedBy = { kind: "frame" };
+      }
+    } catch {
+      // No navigation timing: nothing is known of how this document arrived.
+    }
+  }
   // Interact mode only: in select mode the click belongs to the editor and
   // no link is followed.
   document.addEventListener(

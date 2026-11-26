@@ -7,6 +7,7 @@ import {
 import {
   createPreviewAccessSecret,
   hashPreviewAccessSecret,
+  activatePreviewAccessFlowGrant,
   redeemPreviewAccessExchange,
   verifyPreviewAccessChannel,
 } from "./preview-access";
@@ -41,6 +42,7 @@ import {
 export const PREVIEW_ACCESS_BEGIN_PATH = "/__morph/preview-auth/begin";
 export const PREVIEW_ACCESS_REDEEM_PATH = "/__morph/preview-auth/redeem";
 export const PREVIEW_ACCESS_CHANNEL_PATH = "/__morph/preview-auth/channel";
+export const PREVIEW_ACCESS_ACTIVATE_PATH = "/__morph/preview-auth/activate";
 export const PREVIEW_ACCESS_BEGIN_MESSAGE = "morph:preview-auth-begin";
 export const PREVIEW_ACCESS_CODE_MESSAGE = "morph:preview-auth-code";
 export const PREVIEW_ACCESS_FAILED_MESSAGE = "morph:preview-auth-failed";
@@ -197,6 +199,7 @@ export async function previewAccessBegin(
     noOpener: PREVIEW_ACCESS_NO_OPENER_TEXT,
     expired: PREVIEW_ACCESS_TAB_FAILED_TEXT,
     redeem: PREVIEW_ACCESS_REDEEM_PATH,
+    activate: PREVIEW_ACCESS_ACTIVATE_PATH,
     begin: PREVIEW_ACCESS_BEGIN_MESSAGE,
     code: PREVIEW_ACCESS_CODE_MESSAGE,
     failed: PREVIEW_ACCESS_FAILED_MESSAGE,
@@ -228,7 +231,14 @@ export async function previewAccessBegin(
       `fetch(s.redeem,{method:"POST",credentials:"same-origin",cache:"no-store",` +
       `headers:{"content-type":"application/x-www-form-urlencoded"},` +
       `body:new URLSearchParams(Object.assign({flow:s.flowId,return:s.returnPath,editorOrigin:s.appOrigin,code:d.code},s.tab?{mode:"tab"}:{})).toString()})` +
-      `.then((r)=>r.json().then((a)=>{if(r.ok&&a&&a.ok===true){if(s.tab)window.opener=null;location.replace(s.returnPath);}else failed(a&&typeof a.reason==="string"?a.reason:"REDEEM_FAILED");}))` +
+      `.then((r)=>r.json().then((a)=>{if(r.ok&&a&&a.ok===true){` +
+      // The grant just redeemed is activated by this request, before the page
+      // leaves: pages may be served under an older grant the browser also
+      // holds, and this one's window would run out unused. Best effort.
+      `const go=()=>{if(s.tab)window.opener=null;location.replace(s.returnPath);};` +
+      `fetch(s.activate,{method:"POST",credentials:"same-origin",cache:"no-store",` +
+      `headers:{"content-type":"application/json"},body:JSON.stringify({flowId:s.flowId})}).then(go,go);` +
+      `}else failed(a&&typeof a.reason==="string"?a.reason:"REDEEM_FAILED");}))` +
       `.catch(()=>failed("REDEEM_UNAVAILABLE"));});` +
       `peer.postMessage({type:s.begin,flowId:s.flowId,binderHash:s.binderHash},s.appOrigin);` +
       `})();`,
@@ -398,6 +408,52 @@ export async function previewAccessChannel(
     ...(deps.now ? { now: deps.now() } : {}),
   });
   return verified.ok
+    ? redeemAnswer(200, { ok: true })
+    : redeemAnswer(403, { ok: false });
+}
+
+/**
+ * POST activate, from begin's own same-origin request right after redeem: the
+ * browser presents the cookies it holds and the flow whose grant it just
+ * received, and that grant is activated (`activatePreviewAccessFlowGrant`).
+ * It answers whether it was, and nothing else.
+ */
+export async function previewAccessActivate(
+  request: Request,
+  deps: PreviewAccessPagesDeps,
+): Promise<Response> {
+  if (request.method !== "POST") return redeemAnswer(405, { ok: false });
+  const url = new URL(request.url);
+  const site = request.headers.get("sec-fetch-site");
+  if (
+    request.headers.get("origin") !== url.origin ||
+    (site !== null && site !== "same-origin")
+  ) {
+    return redeemAnswer(403, { ok: false });
+  }
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return redeemAnswer(400, { ok: false });
+  }
+  const flowId =
+    typeof body === "object" && body !== null
+      ? (body as Record<string, unknown>).flowId
+      : undefined;
+  if (typeof flowId !== "string" || !FLOW_ID.test(flowId)) {
+    return redeemAnswer(400, { ok: false });
+  }
+  const candidates = readPreviewAccessCandidates(request.headers.get("cookie"));
+  if (candidates.kind !== "candidates") return redeemAnswer(403, { ok: false });
+  const activated = await activatePreviewAccessFlowGrant({
+    dal: deps.dal,
+    tokens: candidates.tokens,
+    previewHost: url.hostname.toLowerCase().replace(/\.$/, ""),
+    flowId,
+    ...(deps.now ? { now: deps.now() } : {}),
+  });
+  return activated.ok
     ? redeemAnswer(200, { ok: true })
     : redeemAnswer(403, { ok: false });
 }

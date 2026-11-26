@@ -7,6 +7,7 @@ import { getDb } from "@/db";
 import * as schema from "@/db/schema";
 import { storefrontPreviewAccessDal as dal } from "../../dal/storefront-preview-access.dal";
 import {
+  activatePreviewAccessFlowGrant,
   createPreviewAccessSecret,
   hashPreviewAccessSecret,
   issuePreviewAccessExchange,
@@ -524,5 +525,167 @@ describe("the preview host's channel page", () => {
     );
     expect(response?.status).toBe(403);
     expect(response?.headers.get("set-cookie")).toBeNull();
+  });
+});
+
+describe("activating the grant a flow just redeemed", () => {
+  const ACTIVATE = `https://${HOST}/__morph/preview-auth/activate`;
+  const cookieFor = async (...tokens: string[]) =>
+    (
+      await Promise.all(
+        tokens.map(
+          async (token) =>
+            `${PREVIEW_ACCESS_GRANT_COOKIE_PREFIX}${(await sha256(token)).slice(0, 32)}=${token}`,
+        ),
+      )
+    ).join("; ");
+
+  const activated = (grantId: string) =>
+    (
+      sqlite
+        .prepare(
+          "SELECT activated_at FROM storefront_preview_access_grants WHERE id = ?",
+        )
+        .get(grantId) as { activated_at: string | null }
+    ).activated_at !== null;
+
+  const activateFlow = (
+    input: Partial<Parameters<typeof activatePreviewAccessFlowGrant>[0]> & {
+      tokens: readonly string[];
+      flowId: string;
+    },
+  ) =>
+    activatePreviewAccessFlowGrant({
+      dal,
+      previewHost: HOST,
+      now: later(3000),
+      ...input,
+    });
+
+  it("activates the flow's own grant although the browser also holds an older activated one", async () => {
+    const older = await framedGrant();
+    await activate(older.token);
+    const fresh = await framedGrant();
+    expect(activated(fresh.grant.id)).toBe(false);
+    expect(
+      await activateFlow({
+        flowId: fresh.flowId,
+        tokens: [older.token, fresh.token],
+      }),
+    ).toEqual({ ok: true });
+    expect(activated(fresh.grant.id)).toBe(true);
+  });
+
+  it("activates a tab's grant too: the flow's own, whatever its kind", async () => {
+    const tab = await framedGrant({ kind: "tab" });
+    expect(
+      await activateFlow({ flowId: tab.flowId, tokens: [tab.token] }),
+    ).toEqual({
+      ok: true,
+    });
+  });
+
+  it("refuses a grant that is not this flow's, and activates nothing", async () => {
+    const mine = await framedGrant();
+    const other = await framedGrant();
+    expect(
+      await activateFlow({ flowId: mine.flowId, tokens: [other.token] }),
+    ).toEqual({
+      ok: false,
+      reason: "CHANNEL_NOT_BOUND",
+    });
+    expect(activated(other.grant.id)).toBe(false);
+    expect(activated(mine.grant.id)).toBe(false);
+  });
+
+  it("refuses a flow nobody redeemed, a revoked grant and a grant past its window", async () => {
+    expect(
+      await activateFlow({ flowId: newFlowId(), tokens: ["f".repeat(64)] }),
+    ).toEqual({ ok: false, reason: "CHANNEL_NOT_BOUND" });
+    const late = await framedGrant();
+    expect(
+      await activateFlow({
+        flowId: late.flowId,
+        tokens: [late.token],
+        now: later(1000 + 121_000),
+      }),
+    ).toEqual({ ok: false, reason: "GRANT_NOT_ACTIVATED" });
+    const revoked = await framedGrant();
+    await revokePreviewAccessForSession({
+      dal,
+      sessionId: "session-a",
+      now: later(2500),
+    });
+    expect(
+      await activateFlow({ flowId: revoked.flowId, tokens: [revoked.token] }),
+    ).toEqual({
+      ok: false,
+      reason: "GRANT_REVOKED",
+    });
+  });
+
+  it("is a same-origin POST that answers only whether it did", async () => {
+    const { flowId, token } = await framedGrant();
+    const cookie = await cookieFor(token);
+    const request = (
+      headers: Record<string, string>,
+      body: unknown = { flowId },
+    ) =>
+      new Request(ACTIVATE, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: `https://${HOST}`,
+          "sec-fetch-site": "same-origin",
+          cookie,
+          ...headers,
+        },
+        body: JSON.stringify(body),
+      });
+    const deps = {
+      previewParentHostname: PARENT,
+      dal,
+      forward: vi.fn(async () => new Response("theme")),
+      stripCredentials: (r: Request) => r,
+      isAppOrigin: (origin: string) => origin === EDITOR,
+      now: () => later(3000),
+    } satisfies PreviewAccessRequestDeps;
+
+    const cross = await handlePreviewAccessRequest(
+      request({ origin: EDITOR, "sec-fetch-site": "cross-site" }),
+      deps,
+    );
+    expect(cross?.status).toBe(403);
+    const bad = await handlePreviewAccessRequest(
+      request({}, { flowId: "x" }),
+      deps,
+    );
+    expect(bad?.status).toBe(400);
+    const get = await handlePreviewAccessRequest(
+      new Request(ACTIVATE, { method: "GET", headers: { cookie } }),
+      deps,
+    );
+    expect(get?.status).toBe(405);
+
+    const good = await handlePreviewAccessRequest(request({}), deps);
+    expect(good?.status).toBe(200);
+    expect(await good?.json()).toEqual({ ok: true });
+    expect(deps.forward).not.toHaveBeenCalled();
+  });
+
+  it("is asked by the begin page before it leaves", async () => {
+    const response = await handlePreviewAccessRequest(
+      new Request(
+        `https://${HOST}/__morph/preview-auth/begin?flow=${newFlowId()}&return=${encodeURIComponent("/x")}&editorOrigin=${encodeURIComponent(EDITOR)}`,
+      ),
+      {
+        previewParentHostname: PARENT,
+        dal,
+        forward: vi.fn(),
+        stripCredentials: (r: Request) => r,
+        isAppOrigin: (origin: string) => origin === EDITOR,
+      } as unknown as PreviewAccessRequestDeps,
+    );
+    expect(await response?.text()).toContain("/__morph/preview-auth/activate");
   });
 });
