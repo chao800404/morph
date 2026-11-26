@@ -140,6 +140,12 @@ export type HideGuardSite = Readonly<{
   /** For a `loader` root: the local that holds the whole page. */
   pageLocal: string | null;
   /**
+   * The element's own `key` expression, as written, when it has one: a list
+   * item's gate carries the same key, so the list still tells its items
+   * apart. Only an expression that evaluates the same twice is admitted.
+   */
+  key?: string | null;
+  /**
    * The import the element renders (module and export name), when the
    * proof resolves it. Every other reference to the component it names, by
    * any path, must be a section mount of its own
@@ -1565,6 +1571,32 @@ export function createHideCapabilityAnalyzer(
         );
         continue;
       }
+      // Morph's gate renders the element from a callback of its own: an
+      // await or a yield of the enclosing function cannot move into it.
+      if (element?.suspends) {
+        siteRefusal ??= refuse(
+          slot,
+          "unsupported-shape",
+          at(line),
+          "Its JSX awaits or yields, which Morph's gate cannot wrap.",
+        );
+        continue;
+      }
+      if (element?.key && !element.key.repeatable) {
+        siteRefusal ??= refuse(
+          slot,
+          "unsupported-shape",
+          at(line),
+          "Its key is computed in a way Morph cannot repeat on its gate.",
+        );
+        continue;
+      }
+      const key = element?.key
+        ? (files.find((file) => file.path === path)?.content ?? "").slice(
+            element.key.start,
+            element.key.end,
+          )
+        : null;
       const contentSite =
         instance.sourceRoots.length === 1 &&
         instance.sourceRoots[0] === "content" &&
@@ -1603,6 +1635,7 @@ export function createHideCapabilityAnalyzer(
         position,
         contentImport: contentSite ? uses.contentImport : null,
         pageLocal: loaderSite ? [...pageLocals][0]! : null,
+        key,
         component: instance.componentPath
           ? {
               path: instance.componentPath,

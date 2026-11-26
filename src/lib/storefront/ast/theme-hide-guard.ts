@@ -113,6 +113,11 @@ export function hideGuardImportAnchor(
   return { end: first.end, semicolon: source[first.end - 1] === ";" };
 }
 
+/** A list item's key, repeated on its gate (the classifier admits only a repeatable one). */
+function keyAttribute(site: HideGuardSite): string {
+  return site.key ? ` key={${site.key}}` : "";
+}
+
 function freshName(base: string, usedNames: Set<string>): string {
   let name = base;
   for (let suffix = 0; usedNames.has(name); suffix += 1) {
@@ -146,14 +151,14 @@ export function hideGuardInsertions(
         contentGate = freshName("__MorphSectionGate", usedNames);
         imports.push(`MorphSectionGate as ${contentGate}`);
       }
-      open = `<${contentGate} slot={${JSON.stringify(site.slot)}} render={() => (`;
+      open = `<${contentGate}${keyAttribute(site)} slot={${JSON.stringify(site.slot)}} render={() => (`;
     } else {
       if (!site.pageLocal) continue;
       if (pageGate === null) {
         pageGate = freshName("__MorphPageSectionGate", usedNames);
         imports.push(`MorphPageSectionGate as ${pageGate}`);
       }
-      open = `<${pageGate} slot={${JSON.stringify(site.slot)}} hidden={${site.pageLocal}?._hidden} render={() => (`;
+      open = `<${pageGate}${keyAttribute(site)} slot={${JSON.stringify(site.slot)}} hidden={${site.pageLocal}?._hidden} render={() => (`;
     }
     insertions.push({
       at: site.start,

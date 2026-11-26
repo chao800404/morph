@@ -2550,6 +2550,14 @@ export type B1SlotUseAnalysis = Readonly<{
       end: number;
       position: B1ElementPosition;
       guardSlot: string | null;
+      /** An await or yield of the enclosing function inside the element. */
+      suspends: boolean;
+      /**
+       * The element's `key` expression, when it has one, and whether it can
+       * be evaluated a second time with the same result (a name, a
+       * property path of names, or a literal, on one line).
+       */
+      key: Readonly<{ start: number; end: number; repeatable: boolean }> | null;
     }>
   >;
   diagnostics: readonly string[];
@@ -2980,8 +2988,71 @@ function elementPositions(ctx: ModuleContext): B1SlotUseAnalysis["elements"] {
   const { oracle } = ctx;
   const out = new Map<
     number,
-    { end: number; position: B1ElementPosition; guardSlot: string | null }
+    {
+      end: number;
+      position: B1ElementPosition;
+      guardSlot: string | null;
+      suspends: boolean;
+      key: { start: number; end: number; repeatable: boolean } | null;
+    }
   >();
+  const repeatable = (node: AnyNode): boolean => {
+    const value = unwrapTs(node);
+    if (!value) return false;
+    if (
+      value.type === "Identifier" ||
+      value.type === "StringLiteral" ||
+      value.type === "NumericLiteral" ||
+      value.type === "ThisExpression"
+    ) {
+      return true;
+    }
+    if (value.type === "TemplateLiteral") {
+      return (value.expressions ?? []).every(repeatable);
+    }
+    if (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") {
+      return (
+        repeatable(value.object) &&
+        (!value.computed ||
+          value.property?.type === "StringLiteral" ||
+          value.property?.type === "NumericLiteral")
+      );
+    }
+    return false;
+  };
+  const keyOf = (opening: AnyNode) => {
+    const attributes: AnyNode[] =
+      (opening as { attributes?: AnyNode[] } | null)?.attributes ?? [];
+    const attribute = attributes.find(
+      (candidate: AnyNode) =>
+        candidate.type === "JSXAttribute" &&
+        candidate.name?.type === "JSXIdentifier" &&
+        candidate.name.name === "key",
+    );
+    if (!attribute) return null;
+    const value = (
+      attribute as unknown as {
+        value?: { type?: string; expression?: unknown } | null;
+      }
+    ).value;
+    const expression = (
+      value?.type === "JSXExpressionContainer" ? value.expression : value
+    ) as AnyNode | null | undefined;
+    if (
+      !expression ||
+      typeof expression.start !== "number" ||
+      typeof expression.end !== "number"
+    ) {
+      return { start: 0, end: 0, repeatable: false };
+    }
+    return {
+      start: expression.start as number,
+      end: expression.end as number,
+      repeatable:
+        repeatable(expression) &&
+        expression.loc?.start?.line === expression.loc?.end?.line,
+    };
+  };
   const guardSlotOf = (
     parent: AnyNode | null,
     element: AnyNode,
@@ -3032,7 +3103,13 @@ function elementPositions(ctx: ModuleContext): B1SlotUseAnalysis["elements"] {
               : guardSlot !== null
                 ? "guarded"
                 : "other";
-      out.set(node.start, { end: node.end, position, guardSlot });
+      out.set(node.start, {
+        end: node.end,
+        position,
+        guardSlot,
+        suspends: hasSuspensionOutsideNestedFunction(node),
+        key: keyOf(node.openingElement),
+      });
     }
     for (const [key, value] of Object.entries(node)) {
       if (
