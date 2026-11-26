@@ -74,7 +74,15 @@ export function resolveThemeContentSlot(
   slots: ThemeContentSlotValues | undefined,
   slotId: unknown,
 ): Readonly<Record<string, unknown>> {
-  if (!slots || !isValidThemeContentSlotId(slotId)) return {};
+  // Own properties only: an inherited value (or an Object.prototype member
+  // such as `constructor`) is never a stored slot.
+  if (
+    !slots ||
+    !isValidThemeContentSlotId(slotId) ||
+    !Object.hasOwn(slots, slotId)
+  ) {
+    return {};
+  }
   const values = slots[slotId];
   return values && typeof values === "object" && !Array.isArray(values)
     ? values

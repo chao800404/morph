@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import {
+  PUBLISH_HIDDEN_SECTION_UNSUPPORTED,
   SECTION_SOURCE_UNCONFIRMED,
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
@@ -74,6 +75,7 @@ import {
   assertPublishHiddenSections,
   assertSectionHideSupported,
   findPublishHiddenSectionProblems,
+  partitionPublishHiddenItems,
   sectionHideRefusal,
 } from "../content/section-hide-check";
 import { hideRefusalMessage } from "../ast/theme-hide-capability";
@@ -95,7 +97,16 @@ import {
   collectMediaAssetIds,
   verifyMediaReferences,
 } from "@/lib/storefront/theme-media-verification";
-import { and, asc, eq, isNull, max, notInArray, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNull,
+  max,
+  notInArray,
+  or,
+} from "drizzle-orm";
 import {
   recordedThemePreviewRuntime,
   THEME_PREVIEW_RUNTIMES,
@@ -1209,6 +1220,7 @@ async function readPendingSharedLayout(themeId: string, templateId: string) {
       id: storefrontThemeTemplates.id,
       draftRevisionId: storefrontThemeTemplates.draftRevisionId,
       publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+      draftGeneration: storefrontThemeTemplates.draftGeneration,
       document: storefrontThemeTemplateRevisions.document,
     })
     .from(storefrontThemeTemplates)
@@ -1239,6 +1251,12 @@ async function readPendingSharedLayout(themeId: string, templateId: string) {
          * failed deploy can put it back (`restoreFailedPublish`).
          */
         publishedRevisionId: shell.publishedRevisionId,
+        /**
+         * The draft generation this document was read at. An unpublished
+         * draft is edited in place, so a publish that seals this document
+         * repeats it in its batch (`publishTemplate`).
+         */
+        draftGeneration: shell.draftGeneration,
         document: shell.document,
       }
     : null;
@@ -3114,6 +3132,7 @@ export const storefrontThemeDal = {
       ? {
           id: shell.id,
           revisionId: shell.revisionId,
+          draftGeneration: shell.draftGeneration,
           document: normalizeDocumentRowIds(
             storefrontPageDocumentSchema.parse(
               typeof shell.document === "string"
@@ -3182,7 +3201,7 @@ export const storefrontThemeDal = {
     // publish would report "already published" without ever deploying again,
     // leaving the active pointer naming a build the Worker never got. There is
     // then no way back short of editing the content to force a difference.
-    const unchanged = isPublishAlreadyLive({
+    const alreadyLive = isPublishAlreadyLive({
       templateUnchanged,
       sourceUnchanged,
       activeReleaseSourceRevisionId: activeRelease?.sourceRevisionId,
@@ -3193,26 +3212,68 @@ export const storefrontThemeDal = {
       sourceRevisionId,
       themeBuildId,
     });
+    const resolvePublication = () =>
+      storefrontContentPublicationDal.resolveForTheme({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        templateId: data.templateId,
+        templateRevisionId: data.expectedDraftRevisionId,
+        alsoPublish: pendingShell
+          ? [
+              {
+                templateId: pendingShell.id,
+                revisionId: pendingShell.revisionId,
+              },
+            ]
+          : undefined,
+        createdBy: data.createdBy,
+      });
+    // Nor is it already live while the live release seals other content
+    // than this publish would: a Page published from the Dashboard (or any
+    // other carried revision) goes live only with the next Theme publish,
+    // and answering "already published" here would leave it out for as long
+    // as this page, the layout and the build stay as they are.
+    let carriedPublication: Awaited<ReturnType<typeof resolvePublication>> | null =
+      null;
+    let carriesNewContent = false;
+    if (alreadyLive && activeRelease?.contentPublicationId) {
+      carriedPublication = await resolvePublication();
+      const liveItems = await db
+        .select({
+          itemType: storefrontContentPublicationItems.itemType,
+          contentId: storefrontContentPublicationItems.contentId,
+          revisionId: storefrontContentPublicationItems.revisionId,
+        })
+        .from(storefrontContentPublicationItems)
+        .where(
+          and(
+            eq(
+              storefrontContentPublicationItems.publicationId,
+              activeRelease.contentPublicationId,
+            ),
+            isNull(storefrontContentPublicationItems.deletedAt),
+          ),
+        );
+      const live = new Map(
+        liveItems.map((item) => [
+          `${item.itemType}:${item.contentId}`,
+          item.revisionId,
+        ]),
+      );
+      carriesNewContent =
+        live.size !== carriedPublication.items.length ||
+        carriedPublication.items.some(
+          (item) =>
+            live.get(`${item.itemType}:${item.contentId}`) !== item.revisionId,
+        );
+    }
+    const unchanged = alreadyLive && !carriesNewContent;
     const releaseId = unchanged
       ? (activeRelease?.id ?? null)
       : crypto.randomUUID();
     const contentPublication = unchanged
       ? null
-      : await storefrontContentPublicationDal.resolveForTheme({
-          storefrontId: data.storefrontId,
-          themeId: data.themeId,
-          templateId: data.templateId,
-          templateRevisionId: data.expectedDraftRevisionId,
-          alsoPublish: pendingShell
-            ? [
-                {
-                  templateId: pendingShell.id,
-                  revisionId: pendingShell.revisionId,
-                },
-              ]
-            : undefined,
-          createdBy: data.createdBy,
-        });
+      : (carriedPublication ?? (await resolvePublication()));
 
     // Check the exact set being sealed, not just the selected page and pending
     // layout. Published sibling templates and Page revisions also travel with
@@ -3252,56 +3313,113 @@ export const storefrontThemeDal = {
         }
       }
 
-      // M3 Hide: every hidden section being sealed, judged against this
-      // build's own source revision and the guard the build carries. Start
-      // only; another framework's Hide is a later phase (P5).
-      const hiddenTemplates = publicationDocuments.filter(
-        ({ item, document: sealed }) =>
-          item.itemType === "template" &&
-          sealed.sections.some((section) => section.enabled === false),
+      // M3 Hide: every item being sealed that carries a hidden section is
+      // judged, so none reaches a release unjudged. A CMS Page item, and
+      // every item of a Theme that is not Start (Astro is M3b), are refused
+      // without reading source (`partitionPublishHiddenItems`); a Start
+      // template is judged against this build's own source revision and the
+      // guard the build carries. Thrown before the batch below, so a refusal
+      // writes nothing and the active release stays as it was.
+      //
+      // The guarantee is for newly sealed releases only. Rollback
+      // (`activateRelease`), the release reconciler and a failed publish's
+      // restore re-activate an exact earlier release, artifact and
+      // publication included, and are deliberately not judged here:
+      // blocking them would make incident recovery worse. A release sealed
+      // before this check therefore keeps whatever it sealed.
+      //
+      // A deleted CMS Page is not sealed at all (`resolveForTheme`); its
+      // URL falls back to the generic Page template, whose own hidden
+      // sections are judged here like any template's.
+      const hiddenItems = publicationDocuments.filter(({ document: sealed }) =>
+        sealed.sections.some((section) => section.enabled === false),
       );
-      if (
-        hiddenTemplates.length > 0 &&
-        designWritesUnavailableReason(template.framework) === null
-      ) {
-        const templateRows = new Map(
-          (
-            await db
-              .select({
-                id: storefrontThemeTemplates.id,
-                type: storefrontThemeTemplates.type,
-                routePath: storefrontThemeTemplates.routePath,
-              })
-              .from(storefrontThemeTemplates)
-              .where(eq(storefrontThemeTemplates.themeId, data.themeId))
-          ).map((row) => [row.id, row]),
-        );
-        const revisionFiles =
-          await data.readSourceRevisionFiles(sourceRevisionId);
-        const textFiles = revisionFiles.filter(
-          (file): file is { path: string; content: string } =>
-            typeof file.content === "string",
-        );
-        assertPublishHiddenSections(
-          findPublishHiddenSectionProblems({
+      if (hiddenItems.length > 0) {
+        // A Page's title for the refusal; a deleted Page's retained revision
+        // still travels, so its row is read whatever its state. D1 caps
+        // bound parameters per statement.
+        const hiddenPageIds = hiddenItems
+          .filter(({ item }) => item.itemType === "page")
+          .map(({ item }) => item.contentId);
+        const pageRows = new Map<string, { title: string; handle: string }>();
+        for (let start = 0; start < hiddenPageIds.length; start += 50) {
+          for (const row of await db
+            .select({
+              id: storefrontPages.id,
+              title: storefrontPages.title,
+              handle: storefrontPages.handle,
+            })
+            .from(storefrontPages)
+            .where(
+              and(
+                eq(storefrontPages.storefrontId, data.storefrontId),
+                inArray(
+                  storefrontPages.id,
+                  hiddenPageIds.slice(start, start + 50),
+                ),
+              ),
+            )) {
+            pageRows.set(row.id, row);
+          }
+        }
+        const labelled = hiddenItems.map(({ item, document: sealed }) => {
+          if (item.itemType !== "template") {
+            const page = pageRows.get(item.contentId);
+            const handle = item.metadata?.handle ?? page?.handle ?? null;
+            const title = page?.title ?? handle ?? item.contentId;
+            return {
+              itemType: "page" as const,
+              label: `the Page "${title}"${handle ? ` (/pages/${handle})` : ""}`,
+              templateType: "page",
+              templateRoutePath: null,
+              document: sealed,
+            };
+          }
+          // Judged on the binding the publication item captured, which is
+          // what this release seals and what runtime looks the document up
+          // by: the template row can be renamed in Code mode while the
+          // publish runs, and the CAS below does not cover its route path.
+          // An item with no captured binding is refused, never judged on
+          // the row.
+          const templateType = item.metadata?.templateType;
+          if (templateType === undefined) {
+            throw new Error(
+              `${PUBLISH_HIDDEN_SECTION_UNSUPPORTED}: Morph cannot confirm which page a hidden section belongs to, so it will not publish it. Publish again; if this keeps happening, contact support. The live site is unchanged.`,
+            );
+          }
+          const routePath = item.metadata?.routePath ?? null;
+          return {
+            itemType: "template" as const,
+            label:
+              templateType === "layout"
+                ? "the layout"
+                : `the ${routePath ?? templateType} page`,
+            templateType,
+            templateRoutePath: routePath,
+            document: sealed,
+          };
+        });
+        const { refused, sourceChecked } = partitionPublishHiddenItems({
+          framework: template.framework,
+          items: labelled,
+        });
+        let judged: ReturnType<typeof findPublishHiddenSectionProblems> = {
+          unsupported: [],
+          rebuild: [],
+        };
+        if (sourceChecked.length > 0) {
+          const revisionFiles =
+            await data.readSourceRevisionFiles(sourceRevisionId);
+          const textFiles = revisionFiles.filter(
+            (file): file is { path: string; content: string } =>
+              typeof file.content === "string",
+          );
+          judged = findPublishHiddenSectionProblems({
             files: revisionFiles,
             buildGuardVersion: buildHideGuardVersion(build.compilerVersion),
-            documents: hiddenTemplates.map(({ item, document: sealed }) => {
-              const row = templateRows.get(item.contentId);
-              const templateType =
-                item.metadata?.templateType ?? row?.type ?? "page";
-              return {
-                label:
-                  templateType === "layout"
-                    ? "the layout"
-                    : `the ${row?.routePath ?? templateType} page`,
-                templateType,
-                templateRoutePath: row?.routePath ?? null,
-                document: sealed,
-              };
-            }),
+            documents: sourceChecked,
             // Every route that serves the template, as the write judged it;
-            // a template no route serves renders nothing and is left alone.
+            // a template no route serves is refused (see the check).
             resolveCallSites: ({
               templateType,
               templateRoutePath,
@@ -3314,8 +3432,12 @@ export const storefrontThemeDal = {
                 sectionId,
                 files: textFiles,
               }),
-          }),
-        );
+          });
+        }
+        assertPublishHiddenSections({
+          unsupported: [...refused, ...judged.unsupported],
+          rebuild: judged.rebuild,
+        });
       }
     }
 
@@ -3355,6 +3477,29 @@ export const storefrontThemeDal = {
         sourceRevisionId,
       ),
     ];
+
+    // The pending layout is sealed from the copy read above, while the checks
+    // before this batch (the hide check among them) reread its revision. An
+    // unpublished draft is edited in place, so another editor could change
+    // it between those reads, and this batch would then write back a
+    // document nothing checked. The same precondition `sealForThemeBuild`
+    // puts on the layout: still that draft, at the generation read.
+    if (pendingShell) {
+      statements.push(
+        env.DATABASE.prepare(
+          `SELECT CASE WHEN EXISTS (
+            SELECT 1 FROM storefront_theme_templates
+            WHERE id = ?1 AND theme_id = ?2 AND draft_revision_id = ?3
+              AND draft_generation = ?4 AND deleted_at IS NULL
+          ) THEN 1 ELSE json('') END AS ok`,
+        ).bind(
+          pendingShell.id,
+          data.themeId,
+          pendingShell.revisionId,
+          pendingShell.draftGeneration,
+        ),
+      );
+    }
 
     if (contentPublication) {
       statements.push(
@@ -3512,6 +3657,19 @@ export const storefrontThemeDal = {
         ) {
           throw new Error(
             `${TEMPLATE_DRAFT_CONFLICT}: Template draft was modified concurrently.`,
+          );
+        }
+        const latestShell = pendingShell
+          ? latestContext?.templates.find((t) => t.id === pendingShell.id)
+          : undefined;
+        if (
+          pendingShell &&
+          (!latestShell ||
+            latestShell.draftRevisionId !== pendingShell.revisionId ||
+            latestShell.draftGeneration !== pendingShell.draftGeneration)
+        ) {
+          throw new Error(
+            `${PUBLISH_SCOPE_CHANGED}: The shared layout changed while this publish was running.`,
           );
         }
         throw new Error(

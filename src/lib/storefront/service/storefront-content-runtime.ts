@@ -204,19 +204,31 @@ export async function resolveStorefrontContent(args: {
   // starter copy instead of the author's.
   const hiddenSlots: string[] = [];
   let count = 0;
-  // The shell is read first so a page that declares the same slot id wins:
-  // the more specific document is the one the author was looking at.
+  // The shell is read first so a page that declares the same visible slot id
+  // wins: the more specific document is the one the author was looking at.
+  // Hidden wins over both: layout and page share one slot namespace, so a
+  // slot either document hides stays hidden (PR-1 review item 6). Otherwise
+  // a guard asking `isSectionHidden` would see it visible and render the
+  // other document's values in its place.
   for (const section of [
     ...(layoutDocument?.sections ?? []),
     ...(document?.sections ?? []),
   ]) {
-    if (count >= MAX_THEME_CONTENT_SLOTS) break;
-    if (!isValidThemeContentSlotId(section?.id)) continue;
-    if (section.enabled === false) {
-      if (!hiddenSlots.includes(section.id)) hiddenSlots.push(section.id);
-      delete slots[section.id];
+    // A hidden flag is kept for every id the Document schema accepts, not
+    // only the ids that can carry values: a loader read `page["hero.long"]`
+    // still reaches such a section, and its guard must see it hidden
+    // (re-review 2, C). Nor is it cut off by the slot cap.
+    if (section?.enabled === false) {
+      const id = section.id;
+      if (typeof id === "string" && id.length > 0) {
+        if (!hiddenSlots.includes(id)) hiddenSlots.push(id);
+        delete slots[id];
+      }
       continue;
     }
+    if (count >= MAX_THEME_CONTENT_SLOTS) continue;
+    if (!isValidThemeContentSlotId(section?.id)) continue;
+    if (hiddenSlots.includes(section.id)) continue;
     const props = section.props;
     slots[section.id] =
       props && typeof props === "object" && !Array.isArray(props)
@@ -230,10 +242,11 @@ export async function resolveStorefrontContent(args: {
     count += 1;
   }
 
+  // `slots` never holds a hidden id (deleted above, skipped after), so every
+  // hidden name stands. An own-property check: `in` would also see
+  // Object.prototype members and drop a slot named `constructor`.
   return {
     slots,
-    // A page may re-enable a slot the shell hid, so the name is dropped rather
-    // than left standing beside the values that now exist for it.
-    hiddenSlots: hiddenSlots.filter((slotId) => !(slotId in slots)),
+    hiddenSlots: hiddenSlots.filter((slotId) => !Object.hasOwn(slots, slotId)),
   };
 }

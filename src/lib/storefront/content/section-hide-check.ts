@@ -1,6 +1,7 @@
 import {
   classifyHideCapability,
   createHideCapabilityAnalyzer,
+  hideRefusalMessage,
   type HideCapabilityScope,
   type HideRefusalReason,
 } from "@/lib/storefront/ast/theme-hide-capability";
@@ -112,8 +113,10 @@ export const PAGE_SECTION_HIDE_UNSUPPORTED_MESSAGE =
  *   author is told and asks for it.
  * - A section the Starter's own `!isSectionHidden(...)` guard already hides
  *   needs no Morph guard, so an older build is fine for it.
- * - A hidden section the revision's source does not render at all is not
- *   shown either way and is left alone, as the editor leaves it.
+ * - A hidden section no route is positively found to render (a route that
+ *   does not name it, or no route serving the template) is refused: the
+ *   route lookup reads only the route's own JSX, so an imported module may
+ *   still render it (M3 Hide step 1, until the whole-Theme proof).
  *
  * Release rollback and a failed publish's restore never come here: a
  * historical release keeps its own artifact and content.
@@ -131,6 +134,13 @@ export type PublishHiddenSectionProblem = Readonly<{
   sectionId: string;
   reason: HideRefusalReason | "rebuild-required";
   message: string;
+  /**
+   * Set when the refusal has its own way out: a CMS Page, or a Theme that
+   * is not Start, refused without its source being judged
+   * (`partitionPublishHiddenItems`); or a Start section no route is found
+   * to render, which Design therefore does not list.
+   */
+  refusedAs?: "page" | "framework" | "unlisted";
 }>;
 
 export function findPublishHiddenSectionProblems(args: {
@@ -174,11 +184,27 @@ export function findPublishHiddenSectionProblems(args: {
     // one that cannot hide it decides.
     let refusal: PublishHiddenSectionProblem | null = null;
     let needsGuard = false;
-    for (const callSitePath of args.resolveCallSites({
+    const callSites = args.resolveCallSites({
       templateType: entry.templateType,
       templateRoutePath: entry.templateRoutePath,
       sectionId,
-    })) {
+    });
+    // M3 Hide step 1: only a positive verdict publishes. A route that does
+    // not name the section may still render it through an imported module
+    // (the route lookup reads the route's own JSX only), and a template no
+    // route is found to serve is not proven unrendered either; until the
+    // whole-Theme proof (step 2) can show that nothing reads the slot, both
+    // are refused rather than left alone.
+    if (callSites.length === 0 || callSites.includes("not-rendered")) {
+      refusal = {
+        label: entry.label,
+        sectionId,
+        reason: "no-call-site",
+        message: hideRefusalMessage("no-call-site"),
+        refusedAs: "unlisted",
+      };
+    }
+    for (const callSitePath of refusal ? [] : callSites) {
       if (callSitePath === "not-rendered") continue;
       if (callSitePath !== null && typeof callSitePath === "object") {
         refusal = {
@@ -222,6 +248,80 @@ export function findPublishHiddenSectionProblems(args: {
   return { unsupported, rebuild };
 }
 
+/**
+ * One item of the publication being sealed that carries a hidden section:
+ * a Theme template, or a CMS Page.
+ */
+export type PublishHiddenItem = Readonly<{
+  itemType: "template" | "page";
+  /** How the author knows it: "the index page", `the Page "About" (/pages/about)`. */
+  label: string;
+  document: DocumentVisibility;
+}>;
+
+/** How the publish refusal names a recorded framework. */
+function frameworkDisplayName(framework: string): string {
+  return framework === "astro" ? "Astro" : framework;
+}
+
+/**
+ * Publish side, before any source is read: the hidden sections of the
+ * publication that `findPublishHiddenSectionProblems` cannot judge, refused
+ * here so that no hidden section reaches a release unjudged (M3 Hide step 1).
+ *
+ * - On a Theme whose recorded framework is not Start (D3), every hidden
+ *   section is refused, Pages included: the classifier reads Start source
+ *   only, and nothing proves another framework omits a hidden section
+ *   (Astro is M3b).
+ * - On Start, a CMS Page's hidden section is refused (D4): Pages render
+ *   through a dynamic route Morph cannot follow to a call site, which is why
+ *   the Page write already refuses a new hide.
+ *
+ * Every other item with a hidden section is returned in `sourceChecked`, for
+ * the source check. Items with nothing hidden are neither refused nor
+ * returned, so they never change a publish.
+ */
+export function partitionPublishHiddenItems<T extends PublishHiddenItem>(args: {
+  /** The Theme's recorded framework; NULL is Start (`designWritesUnavailableReason`). */
+  framework: string | null | undefined;
+  items: readonly T[];
+}): { refused: PublishHiddenSectionProblem[]; sourceChecked: T[] } {
+  const refused: PublishHiddenSectionProblem[] = [];
+  const sourceChecked: T[] = [];
+  const framework = args.framework ?? "tanstack-start";
+  const start = framework === "tanstack-start";
+  for (const item of args.items) {
+    const hidden = (item.document?.sections ?? []).filter(
+      (section) => section.enabled === false,
+    );
+    if (hidden.length === 0) continue;
+    if (start && item.itemType === "template") {
+      sourceChecked.push(item);
+      continue;
+    }
+    for (const section of hidden) {
+      refused.push(
+        start
+          ? {
+              label: item.label,
+              sectionId: section.id,
+              reason: "no-call-site",
+              message: PAGE_SECTION_HIDE_UNSUPPORTED_MESSAGE,
+              refusedAs: "page",
+            }
+          : {
+              label: item.label,
+              sectionId: section.id,
+              reason: "framework-not-supported",
+              message: `Morph cannot hide sections on ${frameworkDisplayName(framework)} Themes yet`,
+              refusedAs: "framework",
+            },
+      );
+    }
+  }
+  return { refused, sourceChecked };
+}
+
 /** The refusal `publishTemplate` raises, or nothing when the publish may go. */
 export function assertPublishHiddenSections(
   problems: ReturnType<typeof findPublishHiddenSectionProblems>,
@@ -231,8 +331,42 @@ export function assertPublishHiddenSections(
       .map((item) => `"${item.sectionId}" on ${item.label} (${item.reason})`)
       .join("; ");
   if (problems.unsupported.length > 0) {
+    // Each kind of refusal has its own way out, so each is said on its own.
+    const framework = problems.unsupported.filter(
+      (item) => item.refusedAs === "framework",
+    );
+    const pages = problems.unsupported.filter(
+      (item) => item.refusedAs === "page",
+    );
+    const unlisted = problems.unsupported.filter(
+      (item) => item.refusedAs === "unlisted",
+    );
+    const source = problems.unsupported.filter(
+      (item) => item.refusedAs === undefined,
+    );
+    const sentences: string[] = [];
+    if (framework.length > 0) {
+      sentences.push(
+        `${framework[0]!.message}, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: ${list(framework)}. They cannot be shown again from the editor yet; contact support to show them again.`,
+      );
+    }
+    if (pages.length > 0) {
+      sentences.push(
+        `Morph cannot hide a section of a Page yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: ${list(pages)}. The Page editor cannot show a hidden section: if an earlier version of the Page shows it, restore that version as a draft from the Page's revisions, save the Page with Publish page on, then publish the Theme again; otherwise contact support.`,
+      );
+    }
+    if (unlisted.length > 0) {
+      sentences.push(
+        `Morph cannot find where this Theme's code renders these hidden sections, so it cannot confirm they would be left out of the live site and will not publish them: ${list(unlisted)}. Design does not list a section the page's code does not render directly, so it cannot be shown again there: change the code so the page renders it directly, show it again in Design, then publish, or contact support.`,
+      );
+    }
+    if (source.length > 0) {
+      sentences.push(
+        `Morph cannot confirm that this Theme's code leaves these hidden sections out of the live site, so it will not publish them: ${list(source)}. Show them again in Design, or change the code so Morph can hide them, then publish.`,
+      );
+    }
     throw new Error(
-      `${PUBLISH_HIDDEN_SECTION_UNSUPPORTED}: These hidden sections cannot be hidden by this Theme's code yet, so the live site would still show them or break: ${list(problems.unsupported)}. Show them again in Design, or change the code so Morph can hide them, then publish.`,
+      `${PUBLISH_HIDDEN_SECTION_UNSUPPORTED}: ${sentences.join(" ")} The live site is unchanged.`,
     );
   }
   if (problems.rebuild.length > 0) {

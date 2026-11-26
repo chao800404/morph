@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
+  assertPublishHiddenSections,
   assertSectionHideSupported,
+  partitionPublishHiddenItems,
   sectionHideRefusal,
   sectionsNewlyHidden,
 } from "./section-hide-check";
@@ -161,5 +163,100 @@ describe("a CMS Page write (storefrontPageDal.update)", () => {
     getDb.mockRejectedValue(new Error("reached the write"));
     await expect(update(false, true)).rejects.toThrow("reached the write");
     expect(getDb).toHaveBeenCalled();
+  });
+});
+
+describe("partitionPublishHiddenItems and the publish refusal (M3 Hide step 1)", () => {
+  const item = (
+    itemType: "template" | "page",
+    label: string,
+    hidden: readonly string[],
+  ) => ({
+    itemType,
+    label,
+    document: {
+      sections: ["hero", "promo"].map((id) => ({
+        id,
+        enabled: !hidden.includes(id),
+      })),
+    },
+  });
+  const refusal = (problems: ReturnType<typeof partitionPublishHiddenItems>) => {
+    try {
+      assertPublishHiddenSections({
+        unsupported: problems.refused,
+        rebuild: [],
+      });
+    } catch (error) {
+      return (error as Error).message;
+    }
+    return null;
+  };
+
+  it("sends a Start template to the source check and refuses a Page's hidden section", () => {
+    const template = item("template", "the index page", ["hero"]);
+    const result = partitionPublishHiddenItems({
+      framework: null,
+      items: [
+        template,
+        item("page", 'the Page "About" (/pages/about)', ["promo"]),
+        item("page", 'the Page "FAQ" (/pages/faq)', []),
+      ],
+    });
+    expect(result.sourceChecked).toEqual([template]);
+    expect(refusal(result)).toBe(
+      `PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide a section of a Page yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: "promo" on the Page "About" (/pages/about) (no-call-site). The Page editor cannot show a hidden section: if an earlier version of the Page shows it, restore that version as a draft from the Page's revisions, save the Page with Publish page on, then publish the Theme again; otherwise contact support. The live site is unchanged.`,
+    );
+  });
+
+  it("refuses every hidden section of a Theme that is not Start, Pages included", () => {
+    const result = partitionPublishHiddenItems({
+      framework: "astro",
+      items: [
+        item("template", "the index page", ["hero"]),
+        item("page", 'the Page "About" (/pages/about)', ["promo"]),
+      ],
+    });
+    expect(result.sourceChecked).toEqual([]);
+    expect(refusal(result)).toBe(
+      `PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide sections on Astro Themes yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: "hero" on the index page (framework-not-supported); "promo" on the Page "About" (/pages/about) (framework-not-supported). They cannot be shown again from the editor yet; contact support to show them again. The live site is unchanged.`,
+    );
+  });
+
+  it("refuses nothing and checks nothing when nothing is hidden, on any framework", () => {
+    for (const framework of [null, "tanstack-start", "astro", "other"]) {
+      expect(
+        partitionPublishHiddenItems({
+          framework,
+          items: [
+            item("template", "the index page", []),
+            item("page", 'the Page "About" (/pages/about)', []),
+          ],
+        }),
+      ).toEqual({ refused: [], sourceChecked: [] });
+    }
+  });
+
+  it("says each kind of refusal with its own way out, source refusals as before", () => {
+    const { refused } = partitionPublishHiddenItems({
+      framework: "tanstack-start",
+      items: [item("page", 'the Page "About" (/pages/about)', ["hero"])],
+    });
+    expect(() =>
+      assertPublishHiddenSections({
+        unsupported: [
+          ...refused,
+          {
+            label: "the index page",
+            sectionId: "early",
+            reason: "early-computation",
+            message: "m",
+          },
+        ],
+        rebuild: [],
+      }),
+    ).toThrow(
+      `PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide a section of a Page yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: "hero" on the Page "About" (/pages/about) (no-call-site). The Page editor cannot show a hidden section: if an earlier version of the Page shows it, restore that version as a draft from the Page's revisions, save the Page with Publish page on, then publish the Theme again; otherwise contact support. Morph cannot confirm that this Theme's code leaves these hidden sections out of the live site, so it will not publish them: "early" on the index page (early-computation). Show them again in Design, or change the code so Morph can hide them, then publish. The live site is unchanged.`,
+    );
   });
 });

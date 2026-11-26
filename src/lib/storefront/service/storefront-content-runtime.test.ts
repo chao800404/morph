@@ -309,7 +309,12 @@ describe("resolveStorefrontContent", () => {
       expect(result.slots["starter-header"]).toBeUndefined();
     });
 
-    it("lets a page re-enable a section the shell hid", async () => {
+    // PR-1 review item 6: hidden wins. Layout and page share one slot
+    // namespace, so a visible page section with the hidden layout section's
+    // id used to restore the slot and clear the flag: the layout's guard
+    // then saw it visible and rendered it with the page's values. A slot
+    // either document hides stays hidden, whichever is read first.
+    it("keeps a section the shell hid hidden when a page shows the same id", async () => {
       const result = await resolveStorefrontContent({
         publicationId: "pub_1",
         pathname: "/",
@@ -327,8 +332,42 @@ describe("resolveStorefrontContent", () => {
         ),
       });
 
-      expect(result.hiddenSlots).toEqual([]);
-      expect(result.slots["starter-header"]).toEqual({ storeName: "Back" });
+      expect(result.hiddenSlots).toEqual(["starter-header"]);
+      expect(result.slots["starter-header"]).toBeUndefined();
+    });
+
+    it("keeps a section the page hid hidden when the shell shows the same id", async () => {
+      const result = await resolveStorefrontContent({
+        publicationId: "pub_1",
+        pathname: "/",
+        ports: ports(
+          { sections: [{ id: "starter-header", enabled: false, props: {} }] },
+          {
+            sections: [
+              {
+                id: "starter-header",
+                enabled: true,
+                props: { storeName: "Shell" },
+              },
+            ],
+          },
+        ),
+      });
+
+      expect(result.hiddenSlots).toEqual(["starter-header"]);
+      expect(result.slots["starter-header"]).toBeUndefined();
+    });
+
+    it("keeps the flag on a hidden slot named after an Object.prototype member", async () => {
+      for (const id of ["constructor", "toString", "hasOwnProperty", "valueOf"]) {
+        const result = await resolveStorefrontContent({
+          publicationId: "pub_1",
+          pathname: "/",
+          ports: ports({ sections: [{ id, enabled: false, props: {} }] }),
+        });
+        expect(result.hiddenSlots, id).toEqual([id]);
+        expect(Object.hasOwn(result.slots, id), id).toBe(false);
+      }
     });
   });
 
@@ -375,6 +414,24 @@ describe("hidden sections (RUNTIME-01)", () => {
 
     expect(result.slots).toEqual({ "starter-hero": { heading: "Shown" } });
     expect(result.hiddenSlots).toEqual(["starter-promo"]);
+  });
+
+  // Re-review 2, C: the Document schema accepts ids the slot validator does
+  // not (`hero.long`); a loader read `page["hero.long"]` still reaches the
+  // section, so its hidden flag must survive even though its values never
+  // become a slot.
+  it("keeps the hidden flag of a section whose id is not a valid slot id", async () => {
+    const result = await resolveStorefrontContent({
+      publicationId: "pub_1",
+      pathname: "/",
+      ports: ports([
+        { id: "hero.long", enabled: false, props: { heading: "Hidden" } },
+        { id: "hero.wide", enabled: true, props: { heading: "Shown" } },
+      ]),
+    });
+
+    expect(result.hiddenSlots).toEqual(["hero.long"]);
+    expect(result.slots).toEqual({});
   });
 
   it("reports nothing hidden when every section is enabled", async () => {
