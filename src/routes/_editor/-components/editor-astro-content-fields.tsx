@@ -10,8 +10,8 @@ import { cn } from "@/lib/utils";
  * What the Inspector's Content tab shows for an Astro section Core confirmed
  * (owner decision D2, M2 PR 3). The shell decides everything here: which
  * fields (`astroInspectorFields`: declared in `.fields.ts` and proven by
- * Core for the call site), what the inputs start from, and where an input
- * goes (the shell's one content write path, the #399 gate included).
+ * Core for the call site), what the inputs show, and where an input goes
+ * (the shell's one content write path, the #399 gate included).
  *
  * Content values only. No structure control (add, reorder, bind, rename,
  * hide) is offered for an Astro page, and Core refuses them as well.
@@ -21,9 +21,27 @@ export type EditorAstroContent = Readonly<{
   /** Changes when the selection or its document does; inputs start again. */
   resetKey: string;
   fields: readonly AstroInspectorField[];
-  /** The section's values as the editor holds them now, read at mount. */
+  /** The section's values as the editor holds them now. */
   values: () => Readonly<Record<string, unknown>>;
-  onChange: (fieldKey: string, value: string) => void;
+  /**
+   * What the values are read from now (Codex review P2): the draft
+   * generation of the accepted copy of the section's document, and the
+   * confirmed selection object (a re-derive makes a new one). When either
+   * changes, every input the author is not holding shows the accepted value
+   * again, at this generation.
+   */
+  shown: Readonly<{ generation: number | undefined; selection: object }>;
+  /** The fields this editor holds unsaved or unanswered input for. */
+  heldFields: () => ReadonlySet<string>;
+  /**
+   * An input, with the generation of the copy the field showed when the
+   * author typed into it: what the input is staged as made on.
+   */
+  onChange: (
+    fieldKey: string,
+    value: string,
+    shownGeneration: number | undefined,
+  ) => void;
   onBlur: () => void;
   onOpenInCode: () => void;
 }>;
@@ -57,17 +75,52 @@ export function EditorAstroContentFields({
   );
 }
 
+type ShownInput = Readonly<{
+  value: string;
+  /** The accepted copy's generation this value was read at. */
+  generation: number | undefined;
+}>;
+
+/** Every field as the accepted copy holds it, except those kept from `keep`. */
+function readInputs(
+  content: EditorAstroContent,
+  keep?: Readonly<Record<string, ShownInput>>,
+): Record<string, ShownInput> {
+  const accepted = content.values();
+  const held = keep ? content.heldFields() : new Set<string>();
+  return Object.fromEntries(
+    content.fields.map((field) => {
+      const kept = keep?.[field.key];
+      if (kept && held.has(field.key)) return [field.key, kept];
+      const value = accepted[field.key];
+      return [
+        field.key,
+        {
+          value: typeof value === "string" ? value : "",
+          generation: content.shown.generation,
+        },
+      ];
+    }),
+  );
+}
+
 function AstroContentInputs({ content }: { content: EditorAstroContent }) {
   const baseId = useId();
-  const [values, setValues] = useState<Record<string, string>>(() => {
-    const held = content.values();
-    return Object.fromEntries(
-      content.fields.map((field) => {
-        const value = held[field.key];
-        return [field.key, typeof value === "string" ? value : ""];
-      }),
-    );
-  });
+  const [inputs, setInputs] = useState<Record<string, ShownInput>>(() =>
+    readInputs(content),
+  );
+  // Codex review P2: refreshed from the accepted copy when the editor
+  // accepts a newer Document (another tab's write, read here) or the
+  // selection is confirmed again, so a stale value is never typed over at
+  // the new generation. A field the author holds input for keeps it.
+  const [shown, setShown] = useState(content.shown);
+  if (
+    shown.generation !== content.shown.generation ||
+    shown.selection !== content.shown.selection
+  ) {
+    setShown(content.shown);
+    setInputs((current) => readInputs(content, current));
+  }
   if (content.fields.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
@@ -86,9 +139,15 @@ function AstroContentInputs({ content }: { content: EditorAstroContent }) {
             </p>
           );
         }
+        const input = inputs[field.key];
         const onValue = (value: string) => {
-          setValues((current) => ({ ...current, [field.key]: value }));
-          content.onChange(field.key, value);
+          // Staged as made on the copy this field showed.
+          const generation = input?.generation;
+          setInputs((current) => ({
+            ...current,
+            [field.key]: { value, generation },
+          }));
+          content.onChange(field.key, value, generation);
         };
         return (
           <div key={field.key} className="space-y-1.5">
@@ -98,7 +157,7 @@ function AstroContentInputs({ content }: { content: EditorAstroContent }) {
             {field.input === "textarea" ? (
               <Textarea
                 id={id}
-                value={values[field.key] ?? ""}
+                value={input?.value ?? ""}
                 onChange={(event) => onValue(event.currentTarget.value)}
                 onBlur={content.onBlur}
                 rows={3}
@@ -106,7 +165,7 @@ function AstroContentInputs({ content }: { content: EditorAstroContent }) {
             ) : (
               <Input
                 id={id}
-                value={values[field.key] ?? ""}
+                value={input?.value ?? ""}
                 onChange={(event) => onValue(event.currentTarget.value)}
                 onBlur={content.onBlur}
               />

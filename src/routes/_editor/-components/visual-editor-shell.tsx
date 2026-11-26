@@ -18207,6 +18207,21 @@ export function VisualEditorShell({
    * (`handleSectionPropsChange`), so the #399 gate holds it until the
    * section's basis is acknowledged and sends it with Core's identity.
    */
+  // Codex review P2: the generation of the copy the Astro inputs show, read
+  // on every render as `acceptedSectionProps` reads the copy itself (the
+  // context's when it is as new, else this editor's snapshot).
+  const astroShownDocumentId =
+    sectionsUnavailableForFramework && pageTemplateId
+      ? (routeTemplateIdsRef.current.get(pageTemplateId) ?? pageTemplateId)
+      : null;
+  const astroShownGeneration = astroShownDocumentId
+    ? acceptedPresentationGeneration(
+        contentSnapshotsRef.current.get(astroShownDocumentId),
+        context.templates.find(
+          (template) => template.id === astroShownDocumentId,
+        ),
+      )
+    : undefined;
   const astroInspectorContent = useMemo<EditorAstroContent | null>(() => {
     const selection = astroDesignFocus?.selection;
     if (!sectionsUnavailableForFramework || !selection) return null;
@@ -18228,11 +18243,21 @@ export function VisualEditorShell({
         ...acceptedSectionProps(sectionId),
         ...heldContentForSection(sectionId),
       }),
-      onChange: (fieldKey, value) =>
+      shown: { generation: astroShownGeneration, selection },
+      heldFields: () => new Set(Object.keys(heldContentForSection(sectionId))),
+      // Staged as made on the copy the field showed: an input over a value
+      // older than the copy now held is composed as out of date, never over
+      // the newer Document (`earlierBasis`, `selectCurrentContentFields`).
+      onChange: (fieldKey, value, shownGeneration) =>
         handleSectionPropsChange(
           sectionId,
           { [fieldKey]: value },
-          { inputFieldPath: fieldKey },
+          {
+            inputFieldPath: fieldKey,
+            ...(shownGeneration !== undefined
+              ? { basisDraftGeneration: shownGeneration }
+              : {}),
+          },
         ),
       onBlur: () => handleSectionContentBlur(sectionId),
       onOpenInCode: () => {
@@ -18247,6 +18272,7 @@ export function VisualEditorShell({
   }, [
     acceptedSectionProps,
     astroDesignFocus,
+    astroShownGeneration,
     effectiveThemeFiles,
     handleJumpToCode,
     handleSectionContentBlur,
