@@ -1622,6 +1622,71 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       });
     });
 
+    // Hints review finding 5: the workspace's source generation moves on
+    // after the frame's ready was answered (the store saw the new
+    // generation later than the frame). The kept selection was matched
+    // against the old source's view; it is matched again in the view of the
+    // source the workspace now holds, not kept as it was.
+    describe("when the workspace's source generation moves on without a new ready", () => {
+      const selectedThenNewGeneration = async (
+        viewOfNewSource: ReturnType<typeof bindingView>,
+      ) => {
+        readRouteBindings.mockResolvedValue(bindingView());
+        const token = await selectHero();
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: token.operationId,
+          token,
+          status: "applied",
+        });
+        await flush();
+        expect(acceptedLine(token.operationId)).toBe(true);
+        readRouteBindings.mockResolvedValue(viewOfNewSource);
+        act(() => {
+          useThemeWorkspaceStore.getState().setBaseSourceGeneration(4, scope);
+        });
+        await waitFor(() =>
+          expect(readRouteBindings).toHaveBeenCalledWith(
+            expect.objectContaining({
+              data: expect.objectContaining({ expectedSourceGeneration: 4 }),
+            }),
+          ),
+        );
+        await flush();
+      };
+
+      it("a selection the new source no longer has clears with the hint", async () => {
+        await selectedThenNewGeneration(
+          bindingView({
+            sourceGeneration: 4,
+            instances: [
+              heroInstance({ identity: { rule: 2, src: SRC, start: 31, end: 61 } }),
+            ],
+          }),
+        );
+
+        await waitFor(() =>
+          expect(inspectorNotice()?.textContent ?? "").toContain(
+            "Couldn't restore your selection. Select the section again.",
+          ),
+        );
+        expect(basisPosts()).toHaveLength(1);
+        expect(updateSectionProps).not.toHaveBeenCalled();
+      });
+
+      it("a selection the new source still has is confirmed again and its basis asked again", async () => {
+        await selectedThenNewGeneration(bindingView({ sourceGeneration: 4 }));
+
+        await waitFor(() => expect(basisPosts()).toHaveLength(2));
+        expect(basisPosts()[1]!.presentationToken).toMatchObject({
+          sectionId: "hero",
+          basis: { servedContent: { ticket: 7, instance: INSTANCE } },
+        });
+        expect(unconfirmedHint()).toBe(false);
+        expect(updateSectionProps).not.toHaveBeenCalled();
+      });
+    });
+
     // Review finding 3: the author followed a link in the frame. The new
     // document is another page (the editor's page is unchanged, so the
     // route effect does not deselect), and Core's view of the editor's page
