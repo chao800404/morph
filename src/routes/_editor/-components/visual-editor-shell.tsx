@@ -20628,6 +20628,10 @@ export function VisualEditorShell({
               // through the lifecycle owner, as adding a section does.
               dispatchPreviewLifecycle({ type: "manual-recovery" });
             }}
+            // An upgrade that needs Full Start offers the runtime switch the
+            // menu uses; switching applies nothing.
+            context={context}
+            onPreviewRuntimeChanged={retryLivePreview}
           />
           {/* An empty Theme whose Starter init needs Full Start: the editor
               stays open and offers the switch, then initialises again. */}

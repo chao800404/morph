@@ -208,12 +208,14 @@ export function usePreviewRuntimeSwitch({
     /**
      * Records `next` (null: inherit the deployment's) against what the
      * editor shows the Theme recording. `onSaved` runs only when it was
-     * saved, with what the Theme records now.
+     * saved, with what the Theme records now; `onNotSaved` otherwise, with
+     * why, for a caller that shows it in place.
      */
     switchTo: (
       next: ThemePreviewRuntime | null,
       options?: {
         onSaved?: (previewRuntime: ThemePreviewRuntime | null) => void;
+        onNotSaved?: (message: string) => void;
       },
     ) =>
       mutation.mutate(
@@ -226,8 +228,15 @@ export function usePreviewRuntimeSwitch({
           onSuccess: (outcome) => {
             if (outcome.kind === "saved") {
               options?.onSaved?.(outcome.previewRuntime);
+            } else if (outcome.kind === "refused") {
+              options?.onNotSaved?.(outcome.message);
+            } else {
+              options?.onNotSaved?.(
+                "The Live Preview runtime was changed elsewhere, so nothing was switched. The editor now shows the one the Theme records; switch again if you still want Full Start.",
+              );
             }
           },
+          onError: (error) => options?.onNotSaved?.(error.message),
         },
       ),
   };

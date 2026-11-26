@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { ArrowUpCircle, LoaderCircle } from "lucide-react";
+import { ArrowUpCircle, LoaderCircle, Server } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -11,7 +12,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { StarterUpgradeStatusDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import type {
+  StarterUpgradeStatusDTO,
+  StorefrontThemeEditorDTO,
+} from "@/lib/storefront/dto/storefront-theme.dto";
+import { themeFrameworkAllowsPreviewRuntime } from "@/lib/storefront/theme-preview-runtime";
 import type { ThemeCatalogKeptReason } from "@/lib/storefront/service/theme-catalog-setup";
 import type {
   StarterUpgradeChange,
@@ -27,6 +32,7 @@ import {
   applyStorefrontStarterUpgrade,
   reviewStorefrontStarterUpgrade,
 } from "@/server/storefront/storefront-themes.serverFn";
+import { usePreviewRuntimeSwitch } from "./editor-preview-runtime-menu";
 
 type Part<Reason extends string> = {
   applies: boolean;
@@ -52,7 +58,99 @@ type Review = {
   catalog: Part<ThemeCatalogKeptReason> & { kind: "install" | "update" | null };
   /** Content the Starter part moves when applied. */
   contentMigration?: StarterContentMigrationPreview;
+  /**
+   * The Starter files of either plan (with or without the new pages) that
+   * need the full Start preview, and whether the Theme records `start`
+   * (`starterStartPreviewRequirement`). Applying such a file otherwise is
+   * refused with nothing written.
+   */
+  startPreview?: { paths: readonly string[]; satisfied: boolean; reason: string | null };
 };
+
+/**
+ * Why the selected Starter upgrade cannot be applied yet, and the editor's
+ * own runtime switch (`usePreviewRuntimeSwitch`) to fix it. Switching
+ * applies nothing: the author applies afterwards, on a review read again on
+ * the new runtime (`onSwitched`).
+ */
+function StartPreviewRequirement({
+  paths,
+  reason,
+  problem,
+  context,
+  onRuntimeChanged,
+  onSwitched,
+  onNotSwitched,
+}: {
+  paths: string[];
+  reason: string;
+  problem: string | null;
+  context: StorefrontThemeEditorDTO | undefined;
+  onRuntimeChanged: () => void;
+  onSwitched: () => void;
+  onNotSwitched: (message: string) => void;
+}) {
+  return (
+    <Alert role="alert" data-starter-start-preview="required" className="text-xs">
+      <Server />
+      <AlertTitle>This upgrade needs the full Start Live Preview.</AlertTitle>
+      <AlertDescription className="text-xs">
+        <p>
+          It changes {paths.join(", ")}, which reads content on the server.
+          This Theme&apos;s Live Preview does not run the full Start runtime, so
+          Apply is not available. {reason}
+        </p>
+        {problem ? <p>{problem}</p> : null}
+        {context &&
+        themeFrameworkAllowsPreviewRuntime(context.theme.framework, "start") ? (
+          <StartPreviewSwitchButton
+            context={context}
+            onRuntimeChanged={onRuntimeChanged}
+            onSwitched={onSwitched}
+            onNotSwitched={onNotSwitched}
+          />
+        ) : null}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function StartPreviewSwitchButton({
+  context,
+  onRuntimeChanged,
+  onSwitched,
+  onNotSwitched,
+}: {
+  context: StorefrontThemeEditorDTO;
+  onRuntimeChanged: () => void;
+  onSwitched: () => void;
+  onNotSwitched: (message: string) => void;
+}) {
+  const runtimeSwitch = usePreviewRuntimeSwitch({ context, onRuntimeChanged });
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="mt-1"
+      disabled={runtimeSwitch.isPending}
+      onClick={() =>
+        runtimeSwitch.switchTo("start", {
+          onSaved: (previewRuntime) => {
+            if (previewRuntime === "start") onSwitched();
+            else onNotSwitched("The Theme does not record Full Start yet, so nothing was switched.");
+          },
+          onNotSaved: onNotSwitched,
+        })
+      }
+    >
+      {runtimeSwitch.isPending ? (
+        <LoaderCircle className="size-3.5 animate-spin" />
+      ) : null}
+      Switch Live Preview to Full Start
+    </Button>
+  );
+}
 
 const CONTENT_KEPT: Record<StarterCategoryLinkKeptReason, string> = {
   "link-present": "Kept: it already has a destination in its link.",
@@ -235,6 +333,8 @@ export function EditorStarterUpgradeNotice({
   onApplied,
   reviewRequest = 0,
   className,
+  context,
+  onPreviewRuntimeChanged = () => {},
 }: {
   status: StarterUpgradeStatusDTO | null | undefined;
   storefrontId: string;
@@ -248,6 +348,13 @@ export function EditorStarterUpgradeNotice({
    */
   reviewRequest?: number;
   className?: string;
+  /**
+   * The editor's context, for the Live Preview runtime switch the review
+   * offers when the selected upgrade needs the full Start preview.
+   */
+  context?: StorefrontThemeEditorDTO;
+  /** The editor's preview restart, once the runtime it is served with changed. */
+  onPreviewRuntimeChanged?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [review, setReview] = useState<Review | null>(null);
@@ -264,6 +371,14 @@ export function EditorStarterUpgradeNotice({
    * place of "Nothing changes until you apply it", which is no longer true.
    */
   const [unfinished, setUnfinished] = useState(false);
+  /**
+   * The server refused the apply because the Theme does not record `start`,
+   * though the review said it did (a switch elsewhere): shown in the dialog,
+   * which blocks Apply again until the runtime is switched.
+   */
+  const [lateStartRefusal, setLateStartRefusal] = useState<string | null>(null);
+  /** Why the dialog's runtime switch did not switch, shown in the dialog. */
+  const [switchProblem, setSwitchProblem] = useState<string | null>(null);
 
   const reviewMutation = useMutation({
     mutationFn: async () => {
@@ -284,6 +399,8 @@ export function EditorStarterUpgradeNotice({
       setShownKey(first);
       setChosen({ starter: true, catalog: true, pages: false });
       setMessage(null);
+      setLateStartRefusal(null);
+      setSwitchProblem(null);
       setOpen(true);
     },
     onError: (error) => {
@@ -323,10 +440,22 @@ export function EditorStarterUpgradeNotice({
       ) {
         return { kind: "record-incomplete" as const, message: result.message };
       }
+      // Refused with nothing written: the Theme does not record `start`.
+      // The dialog stays open and says so (and offers the switch).
+      if (
+        !result.success &&
+        result.error === "STARTER_UPGRADE_START_PREVIEW_REQUIRED"
+      ) {
+        return { kind: "start-required" as const, message: result.message };
+      }
       if (!result.success) throw new Error(result.message);
       return { kind: "applied" as const, applied: result.data };
     },
     onSuccess: async (outcome) => {
+      if (outcome.kind === "start-required") {
+        setLateStartRefusal(outcome.message);
+        return;
+      }
       setOpen(false);
       setReview(null);
       if (outcome.kind === "record-incomplete") {
@@ -412,6 +541,23 @@ export function EditorStarterUpgradeNotice({
       ? review.starter.optional
       : review.starter
     : null;
+  // The files the selected Starter plan writes that need the full Start
+  // preview: the review names them for both plans, so they are matched
+  // against this plan's own writes. Blocked while the Theme does not record
+  // `start`, or after the server said so anyway.
+  const startOnlyWrites =
+    applyStarter && starterPart && review?.startPreview
+      ? starterPart.changes
+          .filter(
+            (change) =>
+              change.operation !== "delete" &&
+              review.startPreview!.paths.includes(change.path),
+          )
+          .map((change) => change.path)
+      : [];
+  const startRequired =
+    startOnlyWrites.length > 0 &&
+    (review?.startPreview?.satisfied === false || lateStartRefusal !== null);
 
   const [shownPart, ...shownRest] = shownKey?.split(":") ?? [];
   const shownPath = shownRest.join(":");
@@ -653,6 +799,25 @@ export function EditorStarterUpgradeNotice({
               </div>
             </div>
           ) : null}
+          {startRequired ? (
+            <StartPreviewRequirement
+              paths={startOnlyWrites}
+              reason={
+                lateStartRefusal ??
+                review?.startPreview?.reason ??
+                "Switch this Theme's preview to Start first; until then nothing of this upgrade is applied."
+              }
+              problem={switchProblem}
+              context={context}
+              onRuntimeChanged={onPreviewRuntimeChanged}
+              onSwitched={() => {
+                setSwitchProblem(null);
+                // Read again on the new runtime; applying stays the author's.
+                reviewMutation.mutate();
+              }}
+              onNotSwitched={setSwitchProblem}
+            />
+          ) : null}
           <DialogFooter>
             {unsavedCount > 0 ? (
               <span className="mr-auto text-xs text-muted-foreground">
@@ -666,6 +831,7 @@ export function EditorStarterUpgradeNotice({
               disabled={
                 !review ||
                 (!applyStarter && !applyCatalog) ||
+                startRequired ||
                 unsavedCount > 0 ||
                 applyMutation.isPending
               }
