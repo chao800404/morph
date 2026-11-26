@@ -300,15 +300,41 @@ describe("planFencedWrite: a module rewritten only because another changed", () 
     expect(plan.held).toEqual([ROUTE]);
   });
 
-  it("holds it at the same generation too, which another write already laid out", () => {
+  // Review of 8dcffba, R1: the Design flow syncs its edit before it saves,
+  // so the sync reads the snapshot at the generation the route was last laid
+  // out at; after the save no second sync is sent. Holding an equal
+  // generation left the route compiled without its gate.
+  it("writes it at the same generation: an equal snapshot is not an older one", () => {
     const plan = planFencedWrite(
       gated,
       [{ path: ROUTE, content: "route v7, recompiled", fence: 7, derived: true }],
       { [ROUTE]: "route v7, compiled with the gate" },
       12,
     );
-    expect(plan.writes).toEqual([]);
-    expect(plan.held).toEqual([ROUTE]);
+    expect(plan.held).toEqual([]);
+    expect(plan.writes.map((file) => file.path)).toEqual([ROUTE]);
+  });
+
+  it("the Design edit, synced before it is saved, writes the route with its gate", () => {
+    // Laid out at G = 20; the tab edits Y (no longer reading x) and syncs it
+    // before saving, so the sync reads at G as well.
+    const laidOut = {
+      files: { [ROUTE]: 7, [HERO]: 3 },
+      readAt: { [ROUTE]: 20, [HERO]: 20 },
+      generation: 20,
+    };
+    const plan = planFencedWrite(
+      laidOut,
+      [
+        { path: HERO, content: "Y edited, x no longer read", fence: 3 },
+        { path: ROUTE, content: "route v7 with x's gate", fence: 7, derived: true },
+      ],
+      { [HERO]: "Y reading x", [ROUTE]: "route v7 without a gate" },
+      20,
+    );
+    expect(plan.refused).toEqual([]);
+    expect(plan.held).toEqual([]);
+    expect(plan.writes.map((file) => file.path)).toEqual([HERO, ROUTE]);
   });
 
   it("writes it from a newer generation, and records when it was read", () => {
