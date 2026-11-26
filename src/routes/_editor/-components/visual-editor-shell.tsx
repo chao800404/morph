@@ -3764,12 +3764,20 @@ export function VisualEditorShell({
       }
       const documentId =
         routeTemplateIdsRef.current.get(token.templateId) ?? token.templateId;
+      const sectionKey = sectionPresentationKey(
+        token.templateId,
+        token.sectionId,
+      );
       return astroBasisProofCurrent({
         token,
         servedContent: frame.servedContent ?? null,
         basis: astroContentBasisRef.current,
         acceptedDraftGeneration:
           contentSnapshotsRef.current.get(documentId)?.draftGeneration,
+        // Codex review P1: only while it is still the section's latest
+        // token and the one whose `applied` was taken for it.
+        latest: latestSectionPresentationRef.current.get(sectionKey),
+        acknowledged: acknowledgedSectionPresentationRef.current.get(sectionKey),
       });
     },
     [],
@@ -4108,6 +4116,30 @@ export function VisualEditorShell({
                             ROUTE_DOCUMENT_CREATED_GENERATION,
                         }
                       : undefined,
+                  )
+                ) {
+                  toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+                    id: "preview-presentation-basis",
+                  });
+                  throw draftConflictFailure();
+                }
+                // Codex review P1: an Astro basis proof is checked again
+                // here, where the write leaves, after the queue it waited in
+                // and the snapshot read above. A write answered meanwhile (a
+                // newer accepted copy than the page shows), a newer token or
+                // a dropped ack for the section, another frame, round or
+                // document, or a Core record that moved: the proof no longer
+                // shows the copy this write is composed on, and it is refused
+                // as a proof older than the write's basis is, the draft kept.
+                // A Start proof carries no basis and is not asked again.
+                if (
+                  !replay?.resend &&
+                  presentationGated &&
+                  presentationProof?.token.basis &&
+                  !isSectionPresentationProofCurrent(
+                    presentationProof,
+                    templateId,
+                    entry.sectionId,
                   )
                 ) {
                   toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {

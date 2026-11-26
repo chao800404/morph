@@ -1,6 +1,7 @@
-import type {
-  PreviewServedContent,
-  SectionPresentationToken,
+import {
+  sameSectionPresentationToken,
+  type PreviewServedContent,
+  type SectionPresentationToken,
 } from "./preview-protocol";
 import {
   acceptAstroBasisAck,
@@ -33,16 +34,32 @@ import type { ConfirmedAstroDesignSelection } from "./astro-design-focus";
  *   own write, answered before the page reloads onto it, makes the token
  *   stale: the next input waits for the reloaded page's new ack.
  *
+ * - it is still the section's latest token, and the frame's `applied` taken
+ *   for the section is this very token (Codex review P1): a click again
+ *   issues a newer token and drops the section's acknowledgement, and an
+ *   input staged with the older one is then proven by nothing.
+ *
  * `acceptedDraftGeneration` is the editor's accepted copy of the token's
- * document; undefined when it holds none.
+ * document; undefined when it holds none. `latest` and `acknowledged` are
+ * the section's latest token and the token its `applied` was taken for.
  */
 export function astroBasisProofCurrent(args: {
   token: SectionPresentationToken;
   servedContent: PreviewServedContent | null;
   basis: AstroContentBasis | null;
   acceptedDraftGeneration: number | undefined;
+  latest: SectionPresentationToken | undefined;
+  acknowledged: SectionPresentationToken | undefined;
 }): boolean {
   if (!args.token.basis) return false;
+  if (
+    !args.latest ||
+    !args.acknowledged ||
+    !sameSectionPresentationToken(args.latest, args.token) ||
+    !sameSectionPresentationToken(args.acknowledged, args.token)
+  ) {
+    return false;
+  }
   const ack = acceptAstroBasisAck({
     token: args.token,
     servedContent: args.servedContent,

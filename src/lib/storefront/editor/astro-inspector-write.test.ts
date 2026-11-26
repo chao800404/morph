@@ -70,11 +70,29 @@ describe("astroBasisProofCurrent", () => {
       servedContent: { ticket: 7, instance: INSTANCE },
       basis: coreBasis(),
       acceptedDraftGeneration: 4,
+      latest: basisToken(),
+      acknowledged: basisToken(),
       ...args,
     });
 
   it("is current while the frame and Core still name the token's snapshot and generation", () => {
     expect(current()).toBe(true);
+  });
+
+  // Codex review P1: a click again issues a newer latest token and drops
+  // the section's acknowledgement; the older token is then no proof.
+  it("is not current once the section has a newer latest token, answered or not", () => {
+    const newer = basisToken({
+      presentationRevision: 4,
+      operationId: "section-basis-4",
+    });
+    expect(current({ latest: newer, acknowledged: undefined })).toBe(false);
+    expect(current({ latest: newer, acknowledged: newer })).toBe(false);
+  });
+
+  it("is not current while its applied is not the one taken for the section", () => {
+    expect(current({ acknowledged: undefined })).toBe(false);
+    expect(current({ latest: undefined })).toBe(false);
   });
 
   it("an overlay token (every Start token) is never an Astro proof", () => {
