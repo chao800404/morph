@@ -37,3 +37,15 @@ export function isPlatformCredentialCookieName(name: string): boolean {
     bare.startsWith(`${PREVIEW_ACCESS_COOKIE_STEM}b-`)
   );
 }
+
+/** Whether a request's `Cookie` header holds any platform credential cookie. */
+export function carriesPlatformCredentialCookie(headers: Headers): boolean {
+  const cookie = headers.get("cookie");
+  if (!cookie) return false;
+  return cookie.split(";").some((pair) => {
+    const equals = pair.indexOf("=");
+    return (
+      equals !== -1 && isPlatformCredentialCookieName(pair.slice(0, equals))
+    );
+  });
+}

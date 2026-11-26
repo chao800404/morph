@@ -66,7 +66,14 @@ async function upload(page: Page, path: string, bytes: Buffer) {
         expectedSourceGeneration: String(expectedSourceGeneration),
         expectMissing: "1",
       })}`,
-      { headers: { "content-type": "application/octet-stream" }, data: bytes },
+      {
+        headers: {
+          "content-type": "application/octet-stream",
+          // A write must name the CMS origin; see same-origin-write.ts.
+          origin: new URL(page.url()).origin,
+        },
+        data: bytes,
+      },
     );
   const first = await send(0);
   if (first.status() !== 409) return first;

@@ -144,6 +144,9 @@ export const EDITOR_SHARDS = [
     // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
     "binding-acceptance-p.spec.ts",
     "responsive.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    // Beside auth-failure.spec.ts, the other cross-origin refusal.
+    "admin-same-site-write.spec.ts",
   ],
 ];
 

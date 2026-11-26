@@ -84,7 +84,8 @@ describe("customer order adjustment reads", () => {
     });
     expect(deps.listClaims).toHaveBeenCalledWith("order-1");
     expect(deps.listExchanges).not.toHaveBeenCalled();
-    expect(response?.headers.get("access-control-allow-origin")).toBe("*");
+    // The customer's own data is not opened to other origins.
+    expect(response?.headers.get("access-control-allow-origin")).toBeNull();
     expect(response?.headers.get("cache-control")).toBe("private, no-store");
     expect(await response?.json()).toEqual({
       claims: [

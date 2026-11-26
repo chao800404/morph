@@ -38,13 +38,26 @@ import {
 } from "@/lib/validations/store-cart";
 import { applyStoreCartCreditInputSchema } from "@/lib/validations/store-credit";
 import { applyGiftCardToCartInputSchema } from "@/lib/validations/gift-card";
+import { carriesPlatformCredentialCookie } from "@/lib/auth/platform-cookies";
+import { refuseCrossOriginWrite } from "@/server/same-origin-write";
 import { createFileRoute } from "@tanstack/react-router";
 
-const jsonHeaders = {
+/**
+ * CORS is open (`*`) for the public catalog reads only. A preflight allows
+ * GET and nothing else, so a page on another origin cannot send a JSON write
+ * here, and private responses (carts, payment, the customer's own data) carry
+ * no CORS header at all: they are read by the storefront's own pages, on the
+ * same origin.
+ */
+const corsHeaders = {
   "access-control-allow-headers":
     "content-type, x-publishable-api-key, x-storefront-host",
-  "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
+  "access-control-allow-methods": "GET, OPTIONS",
   "access-control-allow-origin": "*",
+};
+
+const jsonHeaders = {
+  ...corsHeaders,
   "cache-control": "public, max-age=0, s-maxage=30, stale-while-revalidate=60",
   "content-type": "application/json; charset=utf-8",
   vary: "x-publishable-api-key, x-storefront-host",
@@ -56,8 +69,24 @@ const response = (body: unknown, status = 200) =>
 const privateResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { ...jsonHeaders, "cache-control": "private, no-store" },
+    headers: {
+      "cache-control": "private, no-store",
+      "content-type": "application/json; charset=utf-8",
+      vary: "x-publishable-api-key, x-storefront-host",
+    },
   });
+
+/**
+ * A write that carries a platform session cookie must come from this host's
+ * own origin (same-origin-write.ts): the cookie is ambient, so a page on a
+ * sibling host of the same site would otherwise send it with a `text/plain`
+ * POST, which needs no preflight. Writes without one (a cart addressed by its
+ * id) are unchanged.
+ */
+const refuseCredentialedCrossOriginWrite = async (request: Request) =>
+  carriesPlatformCredentialCookie(request.headers)
+    ? refuseCrossOriginWrite(request)
+    : null;
 
 function contextOf(
   request: Request,
@@ -161,7 +190,7 @@ const mutationResponse = async (
 export const Route = createFileRoute("/_backend/api/store/$")({
   server: {
     handlers: {
-      OPTIONS: () => new Response(null, { status: 204, headers: jsonHeaders }),
+      OPTIONS: () => new Response(null, { status: 204, headers: corsHeaders }),
       GET: async ({ request }) => {
         const url = new URL(request.url);
         const path = url.pathname
@@ -346,6 +375,8 @@ export const Route = createFileRoute("/_backend/api/store/$")({
         );
       },
       POST: async ({ request }) => {
+        const refused = await refuseCredentialedCrossOriginWrite(request);
+        if (refused) return refused;
         const path = new URL(request.url).pathname
           .replace(/^\/api\/store\/?/, "")
           .replace(/\/$/, "");
@@ -736,6 +767,8 @@ export const Route = createFileRoute("/_backend/api/store/$")({
         );
       },
       PATCH: async ({ request }) => {
+        const refused = await refuseCredentialedCrossOriginWrite(request);
+        if (refused) return refused;
         const path = new URL(request.url).pathname
           .replace(/^\/api\/store\/?/, "")
           .replace(/\/$/, "");
@@ -799,6 +832,8 @@ export const Route = createFileRoute("/_backend/api/store/$")({
         );
       },
       DELETE: async ({ request }) => {
+        const refused = await refuseCredentialedCrossOriginWrite(request);
+        if (refused) return refused;
         const path = new URL(request.url).pathname
           .replace(/^\/api\/store\/?/, "")
           .replace(/\/$/, "");

@@ -101,7 +101,14 @@ async function upload(
           ? { expectedFileId: replacing.id, expectedVersion: String(replacing.version) }
           : { expectMissing: "1" }),
       })}`,
-      { headers: { "content-type": "application/octet-stream" }, data: Buffer.from(bytes) },
+      {
+        headers: {
+          "content-type": "application/octet-stream",
+          // A write must name the CMS origin; see same-origin-write.ts.
+          origin: new URL(page.url()).origin,
+        },
+        data: Buffer.from(bytes),
+      },
     );
   let response = await send(generation);
   if (response.status() === 409) {

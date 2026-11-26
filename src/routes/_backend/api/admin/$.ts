@@ -44,8 +44,9 @@ import { createProductImportGroupApplier } from "@/lib/product/import/product-im
 import { handleAdminProductImportsRequest } from "@/server/admin-api/product-imports";
 import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
 import { priceListDal } from "@/lib/pricing/dal/price-list.dal";
-import { createAuth } from "@/auth";
+import { createAuth, resolveAuthBaseURL } from "@/auth";
 import { hasAnyRole } from "@/server/middleware/auth.middleware";
+import { refuseUnsafeAdminWrite } from "@/server/admin-api/admin-write-guard";
 import type { AdminApiAccess } from "@/server/admin-api/orders";
 import { handleAdminOrdersRequest } from "@/server/admin-api/orders";
 import { handleAdminOrderEditsRequest } from "@/server/admin-api/order-edits";
@@ -198,6 +199,13 @@ const handle = async ({ request }: { request: Request }) => {
   const path = new URL(request.url).pathname
     .replace(/^\/api\/admin\/?/, "")
     .replace(/\/$/, "");
+  // Before any route reads the body or the session; see admin-write-guard.ts.
+  const refused = await refuseUnsafeAdminWrite(
+    request,
+    path,
+    resolveAuthBaseURL(env, request.url),
+  );
+  if (refused) return refused;
   if (path === "currencies" || path.startsWith("currencies/")) {
     return handleAdminCurrenciesRequest(request, path, {
       authorize,

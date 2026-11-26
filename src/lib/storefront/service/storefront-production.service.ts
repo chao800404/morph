@@ -30,6 +30,30 @@ import type {
   ThemeRuntimeNotConfigured,
 } from "./theme-runtime.types";
 import { isolateSvgResponse, isSvgContentType } from "../theme-svg-isolation";
+import { withoutPlatformCookies } from "./preview-proxy-credentials";
+import { carriesPlatformCredentialCookie } from "@/lib/auth/platform-cookies";
+import { refuseCrossOriginWrite } from "@/server/same-origin-write";
+
+/**
+ * A customer write on a storefront host that carries the platform session
+ * cookie must come from that storefront's own origin (same-origin-write.ts),
+ * as cookie-carrying writes to the Core Store API must. The cookie is
+ * ambient, so a page on another host of the same site would otherwise send it
+ * with a `text/plain` POST, which needs no preflight.
+ *
+ * The allowed origin is the request's own: this host was resolved from the
+ * request by routing as an active storefront domain, so it is the store's,
+ * not a value the sender picks. Writes with no platform cookie are not
+ * checked: they carry no session to ride on (an order transfer's accept and
+ * decline are authorised by their token).
+ */
+async function refuseCredentialedCrossOriginWrite(
+  request: Request,
+): Promise<Response | null> {
+  return carriesPlatformCredentialCookie(request.headers)
+    ? refuseCrossOriginWrite(request)
+    : null;
+}
 
 const DEFAULT_CLIENT_ASSETS_DIRECTORY = "runtime/client";
 const STOREFRONT_AUTH_POST_PATHS = new Set([
@@ -258,6 +282,8 @@ export class StorefrontProductionService {
       ) {
         return errorResponse(405, "Method not allowed.");
       }
+      const refused = await refuseCredentialedCrossOriginWrite(request);
+      if (refused) return refused;
       if (!this.options.storefrontCustomerApiHandler) {
         return errorResponse(503, "Store customer API unavailable.");
       }
@@ -284,6 +310,8 @@ export class StorefrontProductionService {
       if (request.method !== "POST") {
         return errorResponse(405, "Method not allowed.");
       }
+      const refused = await refuseCredentialedCrossOriginWrite(request);
+      if (refused) return refused;
       const action = transferPath[2] as
         | "request"
         | "accept"
@@ -368,8 +396,11 @@ export class StorefrontProductionService {
       );
     }
     // A Theme route may answer with an SVG of its own; it is isolated like
-    // any other the storefront sends.
-    return isolateSvgResponse(runtimeResult.response);
+    // any other the storefront sends. Its Set-Cookie may not carry a platform
+    // credential's name either, as in Live and Build Preview: defence in depth
+    // for server-set cookies. Theme code in the browser can still write
+    // document.cookie or send Clear-Site-Data; this does not cover that.
+    return withoutPlatformCookies(isolateSvgResponse(runtimeResult.response));
   }
 
   /**
