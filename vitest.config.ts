@@ -2,6 +2,7 @@ import viteReact from "@vitejs/plugin-react";
 import os from "node:os";
 import viteTsConfigPaths from "vite-tsconfig-paths";
 import { configDefaults, defineConfig } from "vitest/config";
+import DurationShardSequencer from "./scripts/vitest-shard-sequencer.mjs";
 
 /**
  * Ceiling on how many test files run at once.
@@ -148,6 +149,11 @@ export default defineConfig({
     // Root-level, because Vitest reads it once for the whole run rather than
     // per project.
     maxWorkers: MAX_TEST_WORKERS,
+    // What `--shard=N/M` runs: files assigned from measured durations
+    // (scripts/vitest-shard-durations.json), not Vitest's hash-of-path split,
+    // which put five of the six slowest editor files in one shard. Only used
+    // when `--shard` is given; `sort()` and every project are Vitest's own.
+    sequence: { sequencer: DurationShardSequencer },
     projects: [
       {
         // Inherits the plugins and the `cloudflare:workers` alias above.
