@@ -455,7 +455,11 @@ import {
   type AstroDesignFocusEvent,
   type ConfirmedAstroDesignSelection,
 } from "@/lib/storefront/editor/astro-design-focus";
-import { astroInspectorFields } from "@/lib/storefront/editor/astro-inspector-write";
+import {
+  astroBasisProofCurrent,
+  astroInspectorFields,
+  astroWriteIdentityForProof,
+} from "@/lib/storefront/editor/astro-inspector-write";
 import type { EditorAstroContent } from "./editor-astro-content-fields";
 import {
   acceptAstroBasisAck,
@@ -3740,6 +3744,36 @@ export function VisualEditorShell({
     presentationUnconfirmableRef.current
       ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
       : PREVIEW_PRESENTATION_SYNCING_MESSAGE;
+  /**
+   * M2 PR 3, the presentation proof on an Astro basis frame: only the
+   * section's acknowledged **basis** token, and only while the frame's stamp
+   * and Core's record still name its snapshot and the editor holds no newer
+   * copy of its document (`astroBasisProofCurrent`). An overlay token is
+   * never one there. On any other frame (every Start frame) a basis token is
+   * never a proof, and an overlay token is judged exactly as before.
+   */
+  const astroBasisProofHolds = useCallback(
+    (
+      frame: { capabilities: ReadonlySet<PreviewCapability>; servedContent?: PreviewServedContent | null },
+      token: SectionPresentationToken,
+    ): boolean => {
+      if (
+        !isAstroBasisFrame(frame.capabilities, previewContentRefreshRef.current)
+      ) {
+        return !token.basis;
+      }
+      const documentId =
+        routeTemplateIdsRef.current.get(token.templateId) ?? token.templateId;
+      return astroBasisProofCurrent({
+        token,
+        servedContent: frame.servedContent ?? null,
+        basis: astroContentBasisRef.current,
+        acceptedDraftGeneration:
+          contentSnapshotsRef.current.get(documentId)?.draftGeneration,
+      });
+    },
+    [],
+  );
   const isSectionPresentationProofCurrent = useCallback(
     (
       proof: SectionPresentationProof | undefined,
@@ -3766,10 +3800,11 @@ export function VisualEditorShell({
           `${context.storefront.id}:${context.theme.id}` &&
         proof.token.routePath === (currentSearchRoutePathRef.current ?? "/") &&
         sameTemplate &&
-        (sectionId === undefined || proof.token.sectionId === sectionId),
+        (sectionId === undefined || proof.token.sectionId === sectionId) &&
+        astroBasisProofHolds(frame, proof.token),
       );
     },
-    [context.storefront.id, context.theme.id],
+    [astroBasisProofHolds, context.storefront.id, context.theme.id],
   );
   const captureCurrentSectionPresentationProof = useCallback(
     (
@@ -3804,7 +3839,7 @@ export function VisualEditorShell({
               acknowledged: acknowledgedSectionPresentationRef.current,
             })
           : null);
-      return token
+      return token && astroBasisProofHolds(frame, token)
         ? {
             token,
             previewKey: frame.previewKey,
@@ -3813,7 +3848,7 @@ export function VisualEditorShell({
           }
         : null;
     },
-    [],
+    [astroBasisProofHolds],
   );
 
   const commitSectionPending = useCallback(
@@ -4080,6 +4115,32 @@ export function VisualEditorShell({
                   });
                   throw draftConflictFailure();
                 }
+                // M2 PR 3: a write proven by an Astro basis token is sent
+                // with the identity that token named and Core's digest, as
+                // Core confirmed them for the selection it was issued for
+                // (`astroBasisIssuedRef`), never read from the frame. With
+                // no such selection it is refused before anything is sent,
+                // as a proof that does not show the write's basis is. A
+                // Start proof carries no basis: its write is sent as before.
+                let astroIdentity: Readonly<{
+                  identity: string;
+                  componentDigest: string;
+                }> | null = null;
+                if (!replay?.resend && presentationProof?.token.basis) {
+                  astroIdentity = astroWriteIdentityForProof({
+                    token: presentationProof.token,
+                    issued: astroBasisIssuedRef.current.get(
+                      presentationProof.token.operationId,
+                    )?.selection,
+                    sectionId: entry.sectionId,
+                  });
+                  if (!astroIdentity) {
+                    toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+                      id: "preview-presentation-basis",
+                    });
+                    throw draftConflictFailure();
+                  }
+                }
                 sentDraftGeneration =
                   entry.expectedDraftGeneration ?? generation;
                 reportSent(sentDraftGeneration);
@@ -4095,6 +4156,7 @@ export function VisualEditorShell({
                   // Missing bookkeeping fails validation, never borrows a later
                   // selection's generation when this queue eventually runs.
                   expectedSourceGeneration: entry.expectedSourceGeneration!,
+                  ...(astroIdentity ?? {}),
                   ...(replay?.resend ? { quietConflict: true } : {}),
                 });
               },
