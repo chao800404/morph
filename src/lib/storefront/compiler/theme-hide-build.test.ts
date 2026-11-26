@@ -195,8 +195,10 @@ describe("a hidden section in a real platform Start build, prerendered", () => {
     const gate = plan.workspaceFiles.find((file) =>
       file.path.endsWith("/.morph/section-gate.ts"),
     );
-    expect(String(home?.content)).toContain(PROMO_GATE);
-    expect(String(gate?.content)).toContain("MorphSectionGate");
+    const textOf = (file: (typeof plan.workspaceFiles)[number] | undefined) =>
+      file && "content" in file ? String(file.content) : "";
+    expect(textOf(home)).toContain(PROMO_GATE);
+    expect(textOf(gate)).toContain("MorphSectionGate");
   });
 
   it(
