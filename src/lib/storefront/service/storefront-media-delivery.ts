@@ -59,6 +59,60 @@ export function parsePublishedMediaPath(pathname: string): string | null {
   return /^[0-9a-fA-F-]{36}$/.test(assetId) ? assetId : null;
 }
 
+/**
+ * The asset and version a published media URL names, or `null` when it is
+ * not one.
+ *
+ * Accepts the path alone or a full URL: content may carry a path pasted from
+ * a live storefront. Only the path and its `version` parameter count, read
+ * with `parsePublishedMediaPath` and the same `version` parameter the media
+ * route reads, so the host is ignored. That is safe because a named version
+ * only selects among references the publication already holds
+ * (`collectVisitorMediaKeys`).
+ */
+export function parsePublishedMediaUrl(
+  value: string,
+): { assetId: string; storageKey: string | null } | null {
+  const trimmed = value.trim();
+  if (!trimmed.includes(PUBLISHED_MEDIA_PATH_PREFIX)) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed, "https://storefront.invalid");
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  const assetId = parsePublishedMediaPath(url.pathname);
+  if (!assetId) return null;
+  return { assetId, storageKey: url.searchParams.get("version") || null };
+}
+
+/**
+ * The storage key a stored asset reference was published with, or `null`.
+ *
+ * The key comes from the URL stored in the reference, the one the asset had
+ * when the content was written. Only a CMS delivery path names an object the
+ * storefront may serve.
+ */
+export function assetReferenceKey(
+  value: unknown,
+): { assetId: string; storageKey: string } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.source !== "asset" || typeof record.assetId !== "string")
+    return null;
+  const assetId = record.assetId.trim();
+  const url = typeof record.url === "string" ? record.url : "";
+  const storageKey = url.replace(/^\/+/, "");
+  if (
+    !assetId ||
+    !storageKey.startsWith("assets/") ||
+    storageKey.includes("..")
+  )
+    return null;
+  return { assetId, storageKey };
+}
+
 export type PublishedMediaPorts = Readonly<{
   /**
    * The storage key each asset had *when the release was published*.

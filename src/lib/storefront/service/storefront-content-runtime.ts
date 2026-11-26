@@ -194,6 +194,22 @@ export async function resolveStorefrontContent(args: {
   ports: ContentRuntimePorts;
 }): Promise<StorefrontContentResult> {
   const { document, layoutDocument } = await readPublishedRouteDocuments(args);
+  return buildStorefrontContent(layoutDocument, document);
+}
+
+/**
+ * The content one route renders, from the documents it resolved to: the
+ * shell's (`layoutDocument`) and the route's own (`document`).
+ *
+ * Pure, so every answer about what a visitor is shown comes from this one
+ * function: the content endpoint, and the public media authorisation, which
+ * may serve exactly the media these slots emit
+ * (`collectVisitorMediaKeys`).
+ */
+export function buildStorefrontContent(
+  layoutDocument: PublishedDocument | null,
+  document: PublishedDocument | null,
+): StorefrontContentResult {
   if (!document && !layoutDocument) return { slots: {}, hiddenSlots: [] };
 
   const slots: Record<string, Record<string, unknown>> = {};

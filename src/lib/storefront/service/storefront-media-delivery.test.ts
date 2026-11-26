@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   lookupPublishedMedia,
   parsePublishedMediaPath,
+  parsePublishedMediaUrl,
   publishedMediaPath,
   type PublishedMediaPorts,
 } from "./storefront-media-delivery";
@@ -154,5 +155,39 @@ describe("lookupPublishedMedia", () => {
       }),
     ).toEqual({ status: "not-published" });
     expect(p.listPublishedAssetKeys).not.toHaveBeenCalled();
+  });
+});
+
+describe("parsePublishedMediaUrl", () => {
+  const id = "3f1c9a2e-4b5d-4c6e-8f70-1a2b3c4d5e6f";
+  const key = `assets/${id}.png`;
+
+  it("reads the asset and version from a path or a full URL", () => {
+    expect(parsePublishedMediaUrl(publishedMediaPath(id, key))).toEqual({
+      assetId: id,
+      storageKey: key,
+    });
+    expect(
+      parsePublishedMediaUrl(
+        `https://shop.example.com${publishedMediaPath(id, key)}`,
+      ),
+    ).toEqual({ assetId: id, storageKey: key });
+    expect(parsePublishedMediaUrl(publishedMediaPath(id))).toEqual({
+      assetId: id,
+      storageKey: null,
+    });
+  });
+
+  it("ignores anything the media route would not serve", () => {
+    for (const value of [
+      "",
+      "/assets/x.png",
+      "https://cdn.example.com/hero.png",
+      "/_storefront-media/not-a-uuid",
+      `/_storefront-media/${id}/extra`,
+      `javascript:/_storefront-media/${id}`,
+    ]) {
+      expect(parsePublishedMediaUrl(value)).toBeNull();
+    }
   });
 });

@@ -25,6 +25,9 @@ import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page"
 import { isStorefrontTemplateType } from "../dto/storefront-content-publication.dto";
 import { normalizeDocumentRowIds } from "../editor/normalize-row-ids";
 import { DEPLOYED_THEME_BUILD_METADATA_KEY } from "../service/theme-worker-deployment-state";
+import { collectVisitorMediaKeys } from "../service/published-media-authorization";
+import type { PublishedDocument } from "../service/storefront-content-runtime";
+import { assetReferenceKey } from "../service/storefront-media-delivery";
 
 export type ThemeContentBuildPreconditions = {
   storefrontId: string;
@@ -92,6 +95,35 @@ function collectAssetKeys(
   document: unknown,
   into: Map<string, Set<string>>,
 ): void {
+  visitAssetKeys(parseStoredDocument(document), into);
+}
+
+/** A stored document as an object, whether the driver parsed it or not. */
+function parseStoredDocument(document: unknown): unknown {
+  if (typeof document !== "string") return document;
+  try {
+    return JSON.parse(document);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A stored document in the shape the content runtime reads, or `null`.
+ *
+ * `sections` must be absent or a list: the runtime iterates it, and a
+ * malformed snapshot must not turn a media request into a server error.
+ */
+function asPublishedDocument(document: unknown): PublishedDocument | null {
+  const parsed = parseStoredDocument(document);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
+  const sections = (parsed as { sections?: unknown }).sections;
+  if (sections !== undefined && !Array.isArray(sections)) return null;
+  return parsed as PublishedDocument;
+}
+
+function visitAssetKeys(root: unknown, into: Map<string, Set<string>>): void {
   const seen = new Set<unknown>();
   const visit = (node: unknown): void => {
     if (!node || typeof node !== "object") return;
@@ -103,32 +135,16 @@ function collectAssetKeys(
       return;
     }
 
-    const record = node as Record<string, unknown>;
-    if (record.source === "asset" && typeof record.assetId === "string") {
-      const assetId = record.assetId.trim();
-      const url = typeof record.url === "string" ? record.url : "";
-      const key = url.replace(/^\/+/, "");
-      // Only a CMS delivery path names an object this may serve.
-      if (assetId && key.startsWith("assets/") && !key.includes("..")) {
-        const versions = into.get(assetId) ?? new Set<string>();
-        versions.add(key);
-        into.set(assetId, versions);
-      }
+    const reference = assetReferenceKey(node);
+    if (reference) {
+      const versions = into.get(reference.assetId) ?? new Set<string>();
+      versions.add(reference.storageKey);
+      into.set(reference.assetId, versions);
     }
-    for (const value of Object.values(record)) visit(value);
+    for (const value of Object.values(node)) visit(value);
   };
 
-  visit(
-    typeof document === "string"
-      ? (() => {
-          try {
-            return JSON.parse(document);
-          } catch {
-            return null;
-          }
-        })()
-      : document,
-  );
+  visit(root);
 }
 
 type CarriedItemType = "template" | "page";
@@ -1125,15 +1141,37 @@ export const storefrontContentPublicationDal = {
    *
    * The key is both the authorisation and the bytes: a visitor may read exactly
    * what the live release published, at the version it published.
+   *
+   * Only media the content slots emit counts (`collectVisitorMediaKeys`,
+   * over the runtime's own `buildStorefrontContent`): a hidden section, a
+   * slot the shared layout hides, an overwritten row or an id that cannot
+   * be a slot authorises nothing. Computed from the publication's stored
+   * documents on every read and keyed by the publication the live release
+   * names, so a rollback authorises by the restored release's own content,
+   * and publications sealed before this rule follow it too, with no stored
+   * list to migrate. The stored documents are not changed.
    */
   async listPublishedAssetKeys(
     publicationId: string,
   ): Promise<Map<string, Set<string>>> {
-    const keys = new Map<string, Set<string>>();
-    for (const document of await this.listPublishedDocuments(publicationId)) {
-      collectAssetKeys(document, keys);
-    }
-    return keys;
+    const [documents, layout] = await Promise.all([
+      this.listPublishedDocuments(publicationId),
+      // The same layout resolution the public runtime renders with.
+      this.getPublishedTemplateDocument({
+        publicationId,
+        templateType: "layout",
+      }),
+    ]);
+    const known = new Map<string, Set<string>>();
+    for (const document of documents) collectAssetKeys(document, known);
+    return collectVisitorMediaKeys({
+      layoutDocument: asPublishedDocument(layout),
+      documents: documents.flatMap((document) => {
+        const parsed = asPublishedDocument(document);
+        return parsed ? [parsed] : [];
+      }),
+      known,
+    });
   },
 
   /**
@@ -1143,6 +1181,10 @@ export const storefrontContentPublicationDal = {
    * is immutable: its bytes are what a live storefront serves and what a
    * rollback restores. Removing them does not detach a reference, it breaks a
    * page that is already public, so this is a refusal rather than a warning.
+   *
+   * Hidden sections count here, unlike in `listPublishedAssetKeys`: their
+   * values are kept so Show again and a rollback can bring them back, and
+   * that needs the bytes.
    */
   async findPublishedAssetReferences(
     assetIds: readonly string[],
