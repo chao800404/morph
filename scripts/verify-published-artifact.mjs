@@ -235,13 +235,40 @@ export async function queryRunD1({ persistTo, workDir }, sql, ...params) {
     remoteBindings: false,
   });
   try {
-    const { results } = await platform.env.DATABASE.prepare(sql)
-      .bind(...params)
-      .all();
-    return results;
+    return await readRunD1WithBusyRetry(sql, async () => {
+      const { results } = await platform.env.DATABASE.prepare(sql)
+        .bind(...params)
+        .all();
+      return results;
+    });
   } finally {
     await platform.dispose();
     await rm(configPath, { force: true });
+  }
+}
+
+/**
+ * The run's Worker can hold the D1 write lock when this proxy reads, and
+ * workerd sets no busy timeout on it, so a read is refused as a bare "internal
+ * error" (seen in CI on the B1 publish acceptance). A read is asked again a
+ * few times; anything that is not a plain read is sent once only, so a retry
+ * can never apply a write twice.
+ */
+export async function readRunD1WithBusyRetry(
+  sql,
+  run,
+  { attempts = 5, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {},
+) {
+  const read = /^\s*(select|with)\b/i.test(sql) && !/\b(insert|update|delete|replace)\b/i.test(sql);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      const message = `${error?.message ?? error} ${String(error?.cause ?? "")}`;
+      const busy = /SQLITE_BUSY|SQLITE_LOCKED|database is locked|D1_ERROR.*internal error/i.test(message);
+      if (!read || !busy || attempt >= attempts) throw error;
+      await sleep(500 * attempt);
+    }
   }
 }
 

@@ -62,6 +62,7 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/run-editor-e2e.test.mjs",
   "scripts/run-start-preview-shard.mjs",
   "scripts/verify-published-artifact.mjs",
+  "scripts/verify-published-artifact.test.mjs",
   // Which test files each Vitest shard runs (vitest.config.ts uses it).
   "scripts/vitest-shard-sequencer.mjs",
   "scripts/vitest-shard-sequencer.test.mjs",
