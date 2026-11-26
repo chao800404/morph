@@ -409,9 +409,14 @@ export function planAstroPreviewWorkspace(
     },
     {
       path: THEME_PREVIEW_START_WORKER_PATH,
+      // One content snapshot per request, stamped on the page: what the
+      // editor's basis acknowledgement compares with Core's confirmation
+      // (handoff/2026-11-24/astro-basis-ack-prereq.md, option 1). Start
+      // previews do not set it.
       content: themePreviewStartWorkerSource(
         input.buildId,
         ASTRO_PRERENDER_ENTRY,
+        { pinRequestSnapshot: true },
       ),
     },
     {

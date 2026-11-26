@@ -11,10 +11,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
-import {
-  EDITOR_CAPABILITIES,
-  PREVIEW_CAPABILITIES,
-} from "../src/lib/storefront/editor/preview-protocol";
+import { THEME_PREVIEW_BRIDGE_CAPABILITIES } from "../src/lib/storefront/compiler/theme-preview-bridge-entry";
+import { EDITOR_CAPABILITIES } from "../src/lib/storefront/editor/preview-protocol";
 import {
   EDITOR_PATH,
   clickExposedElement,
@@ -509,7 +507,9 @@ test.describe("the editor on a preview page running an older bridge", () => {
         expect(ready.capabilities, "what the old ready announces").toEqual(
           expected.capabilities,
         );
-        expect(ready.capabilities).not.toEqual([...PREVIEW_CAPABILITIES]);
+        expect(ready.capabilities).not.toEqual([
+          ...THEME_PREVIEW_BRIDGE_CAPABILITIES,
+        ]);
         // The bridge's own posts; the inline diagnostic script in index.html
         // is today's and is not the bridge.
         const bridgePosts = recordedOld.fromFrame.filter(
@@ -613,7 +613,12 @@ test.describe("the editor on a preview page running an older bridge", () => {
         })
         .toBeGreaterThan(0);
       const currentReady = (await readies(page))[0];
-      expect(currentReady.capabilities).toEqual([...PREVIEW_CAPABILITIES]);
+      // What the current bridge names on a Start page: every known token
+      // but `astro-basis-ack-v1`, which only a page that navigates as
+      // documents (Astro) names.
+      expect(currentReady.capabilities).toEqual([
+        ...THEME_PREVIEW_BRIDGE_CAPABILITIES,
+      ]);
       expect(currentReady.previewDocument).toMatch(/^[0-9a-f]{32}$/);
       const frameNow = await previewFrameObject(page);
       await expect

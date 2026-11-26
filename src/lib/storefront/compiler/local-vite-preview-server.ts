@@ -1401,6 +1401,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         ticket,
       };
     }
+    const instance = running.instance;
     const deadline = Date.now() + (options.confirmTimeoutMs ?? 10_000);
     let read = 0;
     for (;;) {
@@ -1412,13 +1413,15 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         // A probe from any other server — one this preview ran before —
         // says nothing about the snapshot this one reads.
         read =
-          probe.headers.get(PREVIEW_INSTANCE_HEADER) === running.instance
+          probe.headers.get(PREVIEW_INSTANCE_HEADER) === instance
             ? Number(probe.headers.get(PREVIEW_CONTENT_TICKET_HEADER) ?? 0)
             : 0;
       } catch {
         // Not answering yet; asked again until the deadline.
       }
-      if (read >= ticket) return { applied: true, ticket: read };
+      // `read` is only ever set from a probe naming `instance`, so that is
+      // the instance that confirmed it.
+      if (read >= ticket) return { applied: true, ticket: read, instance };
       if (Date.now() >= deadline) {
         return {
           applied: false,

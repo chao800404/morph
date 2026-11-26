@@ -44,6 +44,7 @@ const spies = vi.hoisted(() => ({
   getWorkspaceSnapshot: vi.fn(),
   start: vi.fn(),
   writeContent: vi.fn(),
+  confirmContent: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-start", async (importOriginal) => {
@@ -147,6 +148,7 @@ vi.mock("@/lib/storefront/service/theme-preview-server.factory", () => ({
     previewHostname: "127.0.0.1",
     server: { start: spies.start, stop: vi.fn() },
     writeContent: spies.writeContent,
+    confirmContent: spies.confirmContent,
     admitAddress: ({ url }: { url: string }) => ({
       ok: true,
       url,
@@ -155,8 +157,11 @@ vi.mock("@/lib/storefront/service/theme-preview-server.factory", () => ({
   }),
 }));
 
-const { startThemePreviewServer, syncThemePreviewContent } =
-  await import("./storefront-theme-preview-server.serverFn");
+const {
+  startThemePreviewServer,
+  syncThemePreviewContent,
+  confirmThemePreviewContent,
+} = await import("./storefront-theme-preview-server.serverFn");
 
 const STOREFRONT = "11111111-1111-4111-8111-111111111111";
 const THEME = "22222222-2222-4222-8222-222222222222";
@@ -254,5 +259,61 @@ describe.each([
     expect(
       spies.start.mock.calls.length + spies.writeContent.mock.calls.length,
     ).toBe(1);
+  });
+});
+
+/**
+ * Option B (handoff/2026-11-24/astro-basis-ack-review.md, finding 1): on the
+ * local transport the answer names the dev server instance whose Worker
+ * confirmed the ticket, exactly as the transport reported it, so the editor
+ * can compare it with the frame's stamp. Never one the transport did not
+ * name, and never on a refusal.
+ */
+describe("the instance a local preview names when it confirms content", () => {
+  const INSTANCE = "0b1f5a52-3c1e-4f43-9d0e-6c0f2f1f9a11";
+  type Answer = Result & { data?: Record<string, unknown> };
+
+  it("a sync's applied answer carries the instance the transport confirmed with", async () => {
+    spies.writeContent.mockResolvedValue({
+      applied: true,
+      ticket: 1,
+      instance: INSTANCE,
+    });
+    const result = (await call(syncThemePreviewContent, INPUT)) as Answer;
+    expect(result).toMatchObject({ success: true });
+    expect(result.data?.instance).toBe(INSTANCE);
+  });
+
+  it("a confirmation's applied answer carries it too", async () => {
+    spies.confirmContent.mockResolvedValue({
+      applied: true,
+      ticket: 4,
+      instance: INSTANCE,
+    });
+    const result = (await call(confirmThemePreviewContent, {
+      ...INPUT,
+      ticket: 4,
+    })) as Answer;
+    expect(result).toMatchObject({ success: true });
+    expect(result.data).toEqual({ ticket: 4, instance: INSTANCE });
+  });
+
+  it("names none when the transport named none, and none on a refusal", async () => {
+    spies.writeContent.mockResolvedValue({ applied: true, ticket: 1 });
+    const applied = (await call(syncThemePreviewContent, INPUT)) as Answer;
+    expect(applied.data).not.toHaveProperty("instance");
+
+    spies.confirmContent.mockResolvedValue({
+      applied: false,
+      reason: "PREVIEW_CONTENT_NOT_CONFIRMED",
+      ticket: 3,
+    });
+    const refused = (await call(confirmThemePreviewContent, {
+      ...INPUT,
+      ticket: 4,
+    })) as Answer & Record<string, unknown>;
+    expect(refused).toMatchObject({ success: false });
+    expect(refused).not.toHaveProperty("instance");
+    expect(refused.data).toBeNull();
   });
 });

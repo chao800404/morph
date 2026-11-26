@@ -56,7 +56,12 @@ export type SectionPresentationAckRejection =
   | "pending-other-document"
   | "unverified-document"
   | "token-mismatch"
-  | "not-latest";
+  | "not-latest"
+  /**
+   * Astro basis ack (option B): the frame's stamp or Core's confirmation no
+   * longer matches the basis token (`acceptAstroBasisAck`). Checked last.
+   */
+  | "basis-unconfirmed";
 
 /** The first 8 hex of a frame document id; the id itself is not a secret. */
 export function shortPresentationDocumentId(

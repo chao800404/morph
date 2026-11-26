@@ -17,15 +17,19 @@ import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
   answerFramePings,
   frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
 } from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { listStorefrontThemeFiles } from "@/server/storefront/storefront-theme-files.serverFn";
 import {
   applyThemePreviewFiles,
+  confirmThemePreviewContent,
   probeThemePreviewAddress,
   startThemePreviewServer,
   touchThemePreviewServer,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
+import { ASTRO_BASIS_UNCONFIRMED_MESSAGE } from "@/lib/storefront/editor/astro-basis-presentation";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
@@ -60,6 +64,7 @@ const getThemeEditor = vi.hoisted(() => vi.fn());
 const saveThemeFile = vi.hoisted(() => vi.fn());
 const getThemeFile = vi.hoisted(() => vi.fn());
 const getSession = vi.hoisted(() => vi.fn());
+const readRouteBindings = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "@/server/storefront/storefront-themes.serverFn",
@@ -67,6 +72,7 @@ vi.mock(
     ...(await importOriginal<Record<string, unknown>>()),
     updateStorefrontThemeSectionProps: updateSectionProps,
     getStorefrontThemeEditor: getThemeEditor,
+    readThemeRouteBindings: readRouteBindings,
   }),
 );
 vi.mock(
@@ -86,6 +92,9 @@ vi.mock(
     applyThemePreviewFiles: vi.fn(),
     touchThemePreviewServer: vi.fn(),
     probeThemePreviewAddress: vi.fn(),
+    // Called only by the basis-ack cases, which say what they answer.
+    syncThemePreviewContent: vi.fn(),
+    confirmThemePreviewContent: vi.fn(),
   }),
 );
 vi.mock(
@@ -319,7 +328,20 @@ const flush = () =>
   });
 
 /** Renders the route's page, signed in as OWNER, and brings the frame up. */
-async function settled(themeContext: StorefrontThemeEditorDTO = context) {
+async function settled(
+  themeContext: StorefrontThemeEditorDTO = context,
+  page: {
+    template: "index" | "page";
+    templateId: string;
+    routePath: string;
+  } = { template: "page", templateId: TEMPLATE_ID, routePath: ROUTE_PATH },
+  capabilities?: string[],
+  /** Basis-ack cases only: more start data, and the ready's stamp. */
+  extra: {
+    serverData?: Record<string, unknown>;
+    servedContent?: { ticket: number; instance: string };
+  } = {},
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -328,7 +350,10 @@ async function settled(themeContext: StorefrontThemeEditorDTO = context) {
     {
       success: true,
       message: "Live Preview server ready",
-      data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
+      data: {
+        url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+        ...extra.serverData,
+      },
     } as never,
   );
   client.setQueryData(
@@ -341,14 +366,14 @@ async function settled(themeContext: StorefrontThemeEditorDTO = context) {
         context={themeContext}
         search={
           {
-            template: "page",
-            templateId: TEMPLATE_ID,
-            routePath: ROUTE_PATH,
+            template: page.template,
+            templateId: page.templateId,
+            routePath: page.routePath,
             viewport: "desktop",
           } as StorefrontThemeEditorSearch
         }
         onSearchChange={vi.fn()}
-        navigatingRoutePath={ROUTE_PATH}
+        navigatingRoutePath={page.routePath}
         currentUser={OWNER}
       />
     </QueryClientProvider>,
@@ -360,6 +385,8 @@ async function settled(themeContext: StorefrontThemeEditorDTO = context) {
       kind: "known",
       instance: { session: SESSION, serial: 1 },
     },
+    ...(capabilities ? { capabilities } : {}),
+    ...(extra.servedContent ? { servedContent: extra.servedContent } : {}),
   });
   await flush();
   const request = log
@@ -368,14 +395,16 @@ async function settled(themeContext: StorefrontThemeEditorDTO = context) {
   fromPreview({
     type: "morph:storefront-preview-route-applied",
     routeRequestId: request?.routeRequestId,
-    routePath: ROUTE_PATH,
+    routePath: page.routePath,
   });
   fromPreview({
     type: "morph:storefront-preview-structure",
     nodes: [],
-    routePath: ROUTE_PATH,
+    routePath: page.routePath,
   });
   await flush();
+  // For a case that changes what Core answered after the page came up.
+  return client;
 }
 
 const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
@@ -408,6 +437,12 @@ beforeEach(() => {
   getThemeFile.mockReset();
   getThemeFile.mockResolvedValue(stored());
   updateSectionProps.mockReset();
+  readRouteBindings.mockReset();
+  readRouteBindings.mockResolvedValue({
+    success: false,
+    message: "not read in this test",
+    error: "ROUTE_BINDINGS_UNAVAILABLE",
+  });
   saveThemeFile.mockReset();
   saveThemeFile.mockImplementation(
     async (request: { data: { path: string; content: string } }) => ({
@@ -619,5 +654,548 @@ describe("Start-only page and section structure stays off on an Astro Theme", ()
     expect(
       sections.queryByText(SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE),
     ).toBeNull();
+  });
+});
+
+describe("an Astro click is checked against Core's binding view (M2 PR-F)", () => {
+  const NONCE = "0123456789abcdef";
+  const SRC = "a".repeat(64);
+  const DIGEST = "c".repeat(64);
+  const MARKER = `${NONCE}:2:${SRC}:30:60`;
+  const HOME = { template: "index" as const, templateId: "template-1", routePath: "/" };
+  const V2_READY = ["astro-identity-v2", "section-presentation-ack-v1"];
+
+  const bindingView = (overrides: Record<string, unknown> = {}) => ({
+    success: true,
+    message: "Route bindings read",
+    data: {
+      routePath: "/",
+      routeFile: ASTRO_PAGE,
+      sourceGeneration: 3,
+      routeSourceDigest: SRC,
+      boundaryRule: 2,
+      status: { kind: "confirmed" },
+      instances: [
+        {
+          identity: { rule: 2, src: SRC, start: 30, end: 60 },
+          componentDigest: DIGEST,
+          componentPath: "src/components/Hero.astro",
+          componentName: "Hero",
+          section: "hero",
+          componentRef: "src/components/Hero.astro#default",
+          sectionType: "hero",
+          declaredFields: ["title"],
+          claims: [{ slot: "hero", field: "title" }],
+        },
+      ],
+      ...overrides,
+    },
+  });
+
+  /** A located click on the page's <h1> that names a v2 boundary instance. */
+  function boundaryClick(selectionRevision: number, sourceDigest = DIGEST) {
+    fromPreview({
+      type: "morph:storefront-preview-select-section",
+      sectionId: `source:${ASTRO_PAGE}`,
+      componentType: "h1",
+      kind: "heading",
+      sourceFilePath: ASTRO_PAGE,
+      sourceLocation: `${ASTRO_PAGE}:5:3`,
+      sourceVersion: astroPreviewSourceHash(ASTRO_SOURCE),
+      previewBoundary: { marker: MARKER, selectable: true, reason: null },
+      sourceDigest,
+      locatedAt: null,
+      elementKey: null,
+      fieldKey: null,
+      field: null,
+      fieldPath: null,
+      descendantFields: [],
+      tagName: "h1",
+      role: null,
+      inputType: null,
+      styleRevision: 0,
+      className: "",
+      isSection: false,
+      inspectorOverride: null,
+      computedStyle: null,
+      parentComputedStyle: null,
+      sectionComputedStyle: null,
+      documentRect: null,
+      selectionRevision,
+    });
+  }
+
+  const hinted = (pattern: RegExp) =>
+    vi
+      .mocked(toast.info)
+      .mock.calls.some(
+        ([text, options]) =>
+          typeof text === "string" &&
+          pattern.test(text) &&
+          (options as { id?: string } | undefined)?.id ===
+            "astro-design-status",
+      );
+
+  it("reads the view for the page and the workspace's source generation", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME, V2_READY);
+
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    expect(readRouteBindings.mock.calls[0]![0]).toEqual({
+      data: {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        routePath: "/",
+        expectedSourceGeneration: 3,
+      },
+    });
+  });
+
+  it("a click on an instance Core confirmed still only locates, writes nothing, and says nothing more", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME, V2_READY);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    await flush();
+
+    boundaryClick(1);
+    expect(
+      await screen.findByRole(
+        "textbox",
+        { name: "Code editor" },
+        { timeout: 15_000 },
+      ),
+    ).toBeTruthy();
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(hinted(/./)).toBe(false);
+  });
+
+  it("a frame digest other than Core's asks for a preview reload (class A)", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME, V2_READY);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    await flush();
+
+    boundaryClick(1, "e".repeat(64));
+    await flush();
+
+    expect(hinted(/Reload the preview/)).toBe(true);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("a view refused for a missing parser binding says this environment has none", async () => {
+    readRouteBindings.mockResolvedValue(
+      bindingView({
+        status: {
+          kind: "refused",
+          class: "temporarily-unconfirmable",
+          reason: "parser-binding-missing",
+          detail: "the .astro parser could not confirm this file",
+        },
+        instances: [],
+      }),
+    );
+    await settled(context, HOME, V2_READY);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    await flush();
+
+    boundaryClick(1);
+    await flush();
+
+    expect(hinted(/no \.astro analysis service/)).toBe(true);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("a frame older than the v2 identity asks for a reload", async () => {
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+    await flush();
+
+    boundaryClick(1);
+    await flush();
+
+    expect(hinted(/Reload the preview/)).toBe(true);
+  });
+
+  it("a new document re-reads the view", async () => {
+    // Each document names itself, so a reload is a new document's ready.
+    modelCurrentBridge();
+    readRouteBindings.mockResolvedValue(bindingView());
+    await settled(context, HOME, V2_READY);
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(1));
+    await flush();
+
+    reloadFrameDocument();
+    fromPreview({
+      type: "morph:storefront-preview-ready",
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
+      capabilities: V2_READY,
+    });
+    await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(2));
+  });
+
+  it("a TanStack Start Theme never reads a binding view", async () => {
+    const startContext = {
+      ...context,
+      theme: { ...context.theme, framework: null },
+    } as unknown as StorefrontThemeEditorDTO;
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: startContext,
+    });
+    await settled(startContext, HOME, V2_READY);
+    await flush();
+
+    expect(readRouteBindings).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Option B (handoff/2026-11-24/astro-presentation-ack-options.md): on a
+   * frame that names astro-basis-ack-v1 and is refreshed by reload, a
+   * confirmed click asks the document to acknowledge its basis — the
+   * boundary, in the snapshot Core wrote and confirmed — at Core's draft
+   * generation. Nothing is written.
+   */
+  describe("the basis acknowledgement", () => {
+    const INSTANCE = "0b1f5a52-3c1e-4f43-9d0e-6c0f2f1f9a11";
+    const BASIS_READY = [...V2_READY, "astro-basis-ack-v1"];
+    const START_DATA = {
+      contentRefresh: "reload",
+      contentTicket: 7,
+      draftGenerations: { "template-1": 4 },
+    };
+    const basisPosts = () =>
+      log.filter(
+        (message) =>
+          message.type === "morph:storefront-preview-confirm-section-basis",
+      ) as unknown as Array<{
+        type: string;
+        presentationToken: Record<string, unknown> & { operationId: string };
+      }>;
+    const consoleSaid = (pattern: RegExp) =>
+      [
+        ...vi.mocked(console.info).mock.calls,
+        ...vi.mocked(console.warn).mock.calls,
+      ].some((call) => call.some((part) => typeof part === "string" && pattern.test(part)));
+    /** The intake took an `applied` answer for `op` (its trace line). */
+    const acceptedLine = (op: string) =>
+      consoleSaid(new RegExp(` ack accepted op=${op} .*status=applied`));
+    const unconfirmedHint = () =>
+      vi
+        .mocked(toast.info)
+        .mock.calls.some(
+          ([text, options]) =>
+            text === ASTRO_BASIS_UNCONFIRMED_MESSAGE &&
+            (options as { id?: string } | undefined)?.id ===
+              "astro-basis-unconfirmed",
+        );
+
+    beforeEach(() => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.mocked(startThemePreviewServer).mockResolvedValue({
+        success: true,
+        message: "Live Preview server ready",
+        data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`, ...START_DATA },
+      } as never);
+      vi.mocked(confirmThemePreviewContent).mockReset();
+      vi.mocked(confirmThemePreviewContent).mockResolvedValue({
+        success: true,
+        message: "Live Preview content confirmed",
+        data: { ticket: 7, instance: INSTANCE },
+      } as never);
+    });
+
+    it("asks Core once which instance reads the start's snapshot, then posts a basis token for a confirmed click", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledWith({
+          data: { storefrontId: "storefront-1", themeId: "theme-1", ticket: 7 },
+        }),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      boundaryClick(1);
+      await flush();
+
+      const posts = basisPosts();
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.presentationToken).toMatchObject({
+        templateId: "template-1",
+        routePath: "/",
+        sectionId: "hero",
+        documentBasis: { kind: "existing", draftGeneration: 4 },
+        overlayRevision: 0,
+        basis: {
+          kind: "astro-boundary",
+          identity: MARKER,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        },
+      });
+      expect(updateSectionProps).not.toHaveBeenCalled();
+
+      // The frame acknowledges it; the editor takes it. Said positively:
+      // an answer refused by any ordinary guard (unverified document, no
+      // pending token, token mismatch, not latest), or never reaching the
+      // intake, has no accepted line (review finding 5).
+      const op = posts[0]!.presentationToken.operationId;
+      expect(acceptedLine(op)).toBe(false);
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: op,
+        token: posts[0]!.presentationToken,
+        status: "applied",
+      });
+      await flush();
+      expect(acceptedLine(op)).toBe(true);
+      expect(consoleSaid(new RegExp(` ack rejected op=${op} `))).toBe(false);
+      expect(consoleSaid(/basis ack held/)).toBe(false);
+      expect(consoleSaid(/guard=basis-unconfirmed/)).toBe(false);
+      expect(unconfirmedHint()).toBe(false);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("holds the ack when Core's basis moved between the token and its answer", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      const client = await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      boundaryClick(1);
+      await flush();
+      const posts = basisPosts();
+      expect(posts).toHaveLength(1);
+      const op = posts[0]!.presentationToken.operationId;
+
+      // Core answers that it wrote a newer snapshot (ticket 8) for this
+      // editor before the frame's answer arrives: the document the token
+      // names is now older than Core's latest.
+      act(() => {
+        client.setQueryData(
+          themePreviewServerQueries.forTheme("storefront-1", "theme-1")
+            .queryKey,
+          {
+            success: true,
+            message: "Live Preview server ready",
+            data: {
+              url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+              ...START_DATA,
+              contentTicket: 8,
+              draftGenerations: { "template-1": 5 },
+            },
+          } as never,
+        );
+      });
+      await flush();
+
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: op,
+        token: posts[0]!.presentationToken,
+        status: "applied",
+      });
+      await flush();
+
+      expect(
+        consoleSaid(new RegExp(`basis ack held op=${op} reason=other-ticket`)),
+      ).toBe(true);
+      expect(consoleSaid(/guard=basis-unconfirmed/)).toBe(true);
+      expect(acceptedLine(op)).toBe(false);
+      expect(unconfirmedHint()).toBe(true);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("a document naming another snapshot than Core's latest gets no token, and says reload", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        // Rendered before the start's snapshot was read (ticket 6 < 7).
+        servedContent: { ticket: 6, instance: INSTANCE },
+      });
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+      expect(vi.mocked(confirmThemePreviewContent)).not.toHaveBeenCalled();
+
+      boundaryClick(1);
+      await flush();
+
+      expect(basisPosts()).toHaveLength(0);
+      expect(unconfirmedHint()).toBe(true);
+    });
+
+    it("a page whose stamp names another instance than Core confirmed gets no token", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      // Core names another instance than the page's stamp.
+      vi.mocked(confirmThemePreviewContent).mockResolvedValue({
+        success: true,
+        message: "Live Preview content confirmed",
+        data: { ticket: 7, instance: "11111111-2222-3333-4444-555555555555" },
+      } as never);
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      boundaryClick(1);
+      await flush();
+
+      expect(basisPosts()).toHaveLength(0);
+      expect(unconfirmedHint()).toBe(true);
+    });
+
+    /** A new document of the same frame (a reload), stamped `servedContent`. */
+    const reloadWith = async (servedContent: {
+      ticket: number;
+      instance: string;
+    }) => {
+      reloadFrameDocument();
+      fromPreview({
+        type: "morph:storefront-preview-ready",
+        servedInstance: {
+          kind: "known",
+          instance: { session: SESSION, serial: 1 },
+        },
+        capabilities: BASIS_READY,
+        servedContent,
+      });
+      await flush();
+      const request = log
+        .filter(
+          (message) => message.type === "morph:storefront-preview-set-route",
+        )
+        .at(-1);
+      fromPreview({
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: request?.routeRequestId,
+        routePath: "/",
+      });
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/",
+      });
+      await flush();
+    };
+    const RESTARTED = "22222222-3333-4444-5555-666666666666";
+    const confirmedBy = (instance: string) =>
+      ({
+        success: true,
+        message: "Live Preview content confirmed",
+        data: { ticket: 7, instance },
+      }) as never;
+
+    // Review finding 2: the dev server restarted and stamped a new instance
+    // into the same snapshot; the reloaded page names it with Core's ticket.
+    it("a reloaded page naming Core's ticket from a restarted dev server is asked about once more, then gets its token", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      vi.mocked(confirmThemePreviewContent)
+        .mockResolvedValueOnce(confirmedBy(INSTANCE))
+        .mockResolvedValueOnce(confirmedBy(RESTARTED));
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(1));
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: RESTARTED });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(2),
+      );
+      expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenLastCalledWith({
+        data: { storefrontId: "storefront-1", themeId: "theme-1", ticket: 7 },
+      });
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(2));
+      await flush();
+
+      boundaryClick(1);
+      await flush();
+
+      const posts = basisPosts();
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.presentationToken).toMatchObject({
+        basis: { servedContent: { ticket: 7, instance: RESTARTED } },
+      });
+      expect(unconfirmedHint()).toBe(false);
+    });
+
+    it("asks once per ticket and page instance: a page Core still does not confirm is not asked about again", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      // Core keeps naming the instance from before the restart.
+      vi.mocked(confirmThemePreviewContent).mockResolvedValue(
+        confirmedBy(INSTANCE),
+      );
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: RESTARTED });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(2),
+      );
+      await flush();
+      await reloadWith({ ticket: 7, instance: RESTARTED });
+      await flush();
+      expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(2);
+
+      // Still refused: the page's instance is not the one Core named.
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(3));
+      await flush();
+      boundaryClick(1);
+      await flush();
+      expect(basisPosts()).toHaveLength(0);
+      expect(unconfirmedHint()).toBe(true);
+    });
+
+    it("a frame without the basis capability (every Start frame) is never sent one", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      await settled(context, HOME, V2_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      boundaryClick(1);
+      await flush();
+
+      expect(vi.mocked(confirmThemePreviewContent)).not.toHaveBeenCalled();
+      expect(basisPosts()).toHaveLength(0);
+      expect(unconfirmedHint()).toBe(false);
+    });
   });
 });

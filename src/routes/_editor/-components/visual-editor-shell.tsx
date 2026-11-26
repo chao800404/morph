@@ -10,6 +10,12 @@ import {
 } from "@/lib/storefront/editor/selection-source-baseline";
 import { isEditablePublicTextPath } from "@/lib/storefront/editor/public-text-file";
 import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
+import { sectionPropsWriteData } from "@/lib/storefront/editor/section-props-write-data";
+import {
+  astroDesignSelectionRequest,
+  resolveAstroDesignSelection,
+} from "@/lib/storefront/editor/astro-design-selection";
+import type { AstroRouteBindingsView } from "@/lib/storefront/source-language/astro-route-bindings";
 import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
 import { writeThemePublicTextFile } from "../-queries/theme-binary-files";
 import {
@@ -433,12 +439,25 @@ import {
   type PreviewCatalogResponseBody,
   type PreviewEditableNode,
   type PreviewSectionProps,
+  type PreviewServedContent,
   type PreviewServedInstanceReport,
   type SectionPresentationProof,
   type SectionPresentationToken,
   type PreviewSelectionRestoreTarget,
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
+import {
+  acceptAstroBasisAck,
+  ASTRO_BASIS_UNCONFIRMED_MESSAGE,
+  astroBasisConfirmKey,
+  astroBasisInstanceToConfirm,
+  astroBasisTokenFor,
+  astroContentBasisEvents,
+  isAstroBasisFrame,
+  noteAstroContentBasis,
+  type AstroContentBasis,
+  type AstroContentBasisEvent,
+} from "@/lib/storefront/editor/astro-basis-presentation";
 import {
   parsePreviewServing,
   previousPreviewBridgeVersion,
@@ -2620,6 +2639,13 @@ export function VisualEditorShell({
       routePath?: string;
       resetProps?: string[];
       /**
+       * Astro only (M2 PR-F): a confirmed Design selection's v2 id and Core's
+       * component digest (`astroWriteIdentity`), verified again by Core.
+       * Absent on every Start write, which is sent as before.
+       */
+      identity?: string;
+      componentDigest?: string;
+      /**
        * A resend whose out-of-date refusal is read back before the author
        * is told anything (`settleRefused`): that refusal is not reported
        * here, so the author gets one message, after the read-back.
@@ -2639,21 +2665,14 @@ export function VisualEditorShell({
         "theme",
         () =>
           updateStorefrontThemeSectionProps({
-            data: {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-              templateId: variables.templateId ?? activeTemplate.id,
-              sectionId: variables.sectionId,
-              props: variables.props,
-              expectedDraftGeneration: variables.expectedDraftGeneration,
-              expectedSourceGeneration: variables.expectedSourceGeneration,
-              ...(variables.routePath
-                ? { routePath: variables.routePath }
-                : {}),
-              ...(variables.resetProps?.length
-                ? { resetProps: variables.resetProps }
-                : {}),
-            },
+            data: sectionPropsWriteData(
+              {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                activeTemplateId: activeTemplate.id,
+              },
+              variables,
+            ),
           }),
       );
     },
@@ -3430,7 +3449,37 @@ export function VisualEditorShell({
     documentId: string | null;
     /** What this round's ready said served the page; null when it said nothing. */
     servedInstance: PreviewServedInstanceReport | null;
+    /**
+     * The content snapshot this round's document names as rendered from
+     * (`morph-content`, option B); absent or null when it named none, which
+     * is every Start frame.
+     */
+    servedContent?: PreviewServedContent | null;
   } | null>(null);
+  /**
+   * Astro basis ack (option B): what Core said about the latest snapshot it
+   * wrote for this editor (`noteAstroContentBasis`). Narrowing only: compared
+   * with the frame's stamp before a basis token is issued or its ack taken.
+   */
+  const astroContentBasisRef = useRef<AstroContentBasis | null>(null);
+  /**
+   * The (ticket, page instance) pairs Core was already asked about at a
+   * ready (`astroBasisConfirmKey`): each is asked once, never on every ready.
+   */
+  const astroBasisConfirmAskedRef = useRef<Set<string>>(new Set());
+  /** Issues and posts a basis token for a confirmed Astro selection. */
+  const issueAstroBasisPresentationRef = useRef<
+    (sectionId: string, identity: string) => void
+  >(() => {});
+  const noteAstroContentBasisEvent = useCallback(
+    (event: AstroContentBasisEvent) => {
+      astroContentBasisRef.current = noteAstroContentBasis(
+        astroContentBasisRef.current,
+        event,
+      );
+    },
+    [],
+  );
   const [sectionPresentationReady, setSectionPresentationReady] =
     useState(false);
   const sectionPresentationReadyRef = useRef(false);
@@ -6746,6 +6795,64 @@ export function VisualEditorShell({
     pendingThemeRoute,
     search.routePath,
   ]);
+  /**
+   * Core's binding view of the Astro page the editor is on (M2 PR-D/PR-F),
+   * read for the saved source generation the workspace holds: a new
+   * generation is a new key. What Design may offer on the page is decided by
+   * this view's status (`astroDesignPageStatus`), never by the framework's
+   * name; it is a hint only, as every write is verified again by Core.
+   */
+  const astroBindingSourceGeneration = useThemeWorkspaceStore((state) => {
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    return Math.max(
+      state.getAcceptedSourceGeneration(scope),
+      state.getObservedSourceGeneration(scope),
+    );
+  });
+  const astroBindingRoutePath =
+    context.theme.framework === "astro" &&
+    activeThemeRoute?.kind === "route" &&
+    !isThemeEndpointRoute(activeThemeRoute)
+      ? activeThemeRoute.path
+      : null;
+  const astroBindingsQuery = useQuery({
+    ...storefrontThemeQueries.routeBindings(
+      context.storefront.id,
+      context.theme.id,
+      astroBindingRoutePath ?? "/",
+      astroBindingSourceGeneration,
+    ),
+    enabled:
+      astroBindingRoutePath !== null &&
+      Number.isSafeInteger(astroBindingSourceGeneration) &&
+      astroBindingSourceGeneration >= 1,
+  });
+  /** For the preview message handler, which is not rebuilt for it. */
+  const astroBindingViewRef = useRef<AstroRouteBindingsView | null>(null);
+  astroBindingViewRef.current =
+    astroBindingRoutePath !== null && astroBindingsQuery.data?.success === true
+      ? astroBindingsQuery.data.data
+      : null;
+  /**
+   * Re-reads the view once a new document is on screen (plan v2 §5.1: the
+   * reload after an Astro edit re-confirms explicitly). Not on every
+   * keystroke: the key changes only with the source generation.
+   */
+  const refetchAstroBindingsRef = useRef<() => void>(() => {});
+  refetchAstroBindingsRef.current = () => {
+    // The first read is the query's own; only a later document re-reads.
+    if (
+      astroBindingRoutePath === null ||
+      !astroBindingsQuery.isFetched ||
+      astroBindingsQuery.isFetching
+    ) {
+      return;
+    }
+    void astroBindingsQuery.refetch();
+  };
   const routeStructurePending = Boolean(
     (pendingRoutePath !== null &&
       !editorRoutePathsMatch(pendingRoutePath, search.routePath) &&
@@ -7909,10 +8016,30 @@ export function VisualEditorShell({
       storefrontId: context.storefront.id,
       themeId: context.theme.id,
     };
+    // What Core says it wrote and who confirmed it is kept for the Astro
+    // basis ack (option B); the answers themselves go on unchanged.
+    const noteAnswer = <T,>(
+      source: "sync" | "confirm",
+      answer: T,
+      ticket?: number,
+    ): T => {
+      if (previewContentRefresh === "reload") {
+        for (const event of astroContentBasisEvents(source, answer, ticket)) {
+          noteAstroContentBasisEvent(event);
+        }
+      }
+      return answer;
+    };
     const sync = createPreviewContentSync({
-      sync: () => syncThemePreviewContent({ data: scope }),
+      // Promise.resolve: the answer is passed on exactly as it came.
+      sync: () =>
+        Promise.resolve(syncThemePreviewContent({ data: scope })).then(
+          (answer) => noteAnswer("sync", answer),
+        ),
       confirm: (ticket) =>
-        confirmThemePreviewContent({ data: { ...scope, ticket } }),
+        Promise.resolve(
+          confirmThemePreviewContent({ data: { ...scope, ticket } }),
+        ).then((answer) => noteAnswer("confirm", answer, ticket)),
       refresh: () => {
         if (previewContentRefresh === "reload") {
           // The page is rendered on the server; only loading it again shows
@@ -7948,9 +8075,23 @@ export function VisualEditorShell({
   }, [
     context.storefront.id,
     context.theme.id,
+    noteAstroContentBasisEvent,
     postEditorToPreviewMessage,
     previewContentRefresh,
   ]);
+  /** For the preview message handler and posts, which are not rebuilt for it. */
+  const previewContentRefreshRef = useRef(previewContentRefresh);
+  previewContentRefreshRef.current = previewContentRefresh;
+  // A start's own snapshot (Astro, option B): the first basis an Astro page
+  // can be acknowledged on, before any sync. Its instance is asked once the
+  // page names it (`astroBasisInstanceToConfirm`).
+  const previewServerAnswer = previewServer.data;
+  useEffect(() => {
+    if (previewContentRefresh !== "reload") return;
+    for (const event of astroContentBasisEvents("start", previewServerAnswer)) {
+      noteAstroContentBasisEvent(event);
+    }
+  }, [noteAstroContentBasisEvent, previewContentRefresh, previewServerAnswer]);
   const confirmPreviewStyleRevision = useCallback(
     (confirmation: { previewKey: string; styleRevision: number }) => {
       const initialPreviewSync = initialPreviewSyncRef.current;
@@ -13078,6 +13219,34 @@ export function VisualEditorShell({
           });
           return;
         }
+        // Option B: a basis token's `applied` is taken only while the frame's
+        // stamp and Core's confirmation still name the token's snapshot and
+        // generation. A Start token never carries a basis and skips this.
+        if (message.status === "applied" && message.token.basis) {
+          const basisAck = acceptAstroBasisAck({
+            token: message.token,
+            servedContent: record.servedContent ?? null,
+            basis: astroContentBasisRef.current,
+          });
+          if (!basisAck.accept) {
+            pendingSectionPresentationRef.current.delete(message.operationId);
+            presentationTraceRef.current.record({
+              type: "ack-rejected",
+              scope: presentationTraceScope(),
+              token: message.token,
+              status: message.status,
+              guard: "basis-unconfirmed",
+            });
+            presentationTraceRef.current.anomaly(
+              presentationTraceScope(),
+              `basis ack held op=${message.token.operationId} reason=${basisAck.reason}`,
+            );
+            toast.info(ASTRO_BASIS_UNCONFIRMED_MESSAGE, {
+              id: "astro-basis-unconfirmed",
+            });
+            return;
+          }
+        }
         pendingSectionPresentationRef.current.delete(message.operationId);
         const appliedKey = sectionPresentationKey(
           message.token.routePath,
@@ -13302,6 +13471,10 @@ export function VisualEditorShell({
           capabilities: new Set(message.capabilities ?? []),
           documentId,
           servedInstance: message.servedInstance ?? null,
+          // Only a page that navigates as documents names one (option B).
+          ...(message.servedContent
+            ? { servedContent: message.servedContent }
+            : {}),
         };
         frameTraceRef.current.say(
           `ready accepted ${presentationTraceScopeFields(presentationTraceScope())} acknowledges=${(message.capabilities ?? []).includes("section-presentation-ack-v1") ? "yes" : "no"} served=${message.servedInstance ? "named" : "unnamed"}`,
@@ -13314,6 +13487,55 @@ export function VisualEditorShell({
           ),
         });
         setFrameRecordSequence((sequence) => sequence + 1);
+        // An Astro page shows an edit only in a new document (reload, 6.3):
+        // what Core confirms on it is read again for that document.
+        refetchAstroBindingsRef.current();
+        // Option B: a page naming Core's latest snapshot from an instance
+        // Core has not named for it (after a start, or a dev server restart
+        // that kept the ticket) is asked about once per (ticket, page
+        // instance), so its basis can be acknowledged. Writes nothing.
+        const readyServedContent = message.servedContent ?? null;
+        const instanceToConfirm = isAstroBasisFrame(
+          new Set(message.capabilities ?? []),
+          previewContentRefreshRef.current,
+        )
+          ? astroBasisInstanceToConfirm(
+              readyServedContent,
+              astroContentBasisRef.current,
+              astroBasisConfirmAskedRef.current,
+            )
+          : null;
+        if (instanceToConfirm !== null && readyServedContent) {
+          const asked = astroBasisConfirmAskedRef.current;
+          // Only this ticket's asks are kept: an older ticket is never
+          // Core's latest again (`noteAstroContentBasis` only moves forward).
+          for (const key of asked) {
+            if (!key.startsWith(`${instanceToConfirm}:`)) asked.delete(key);
+          }
+          asked.add(astroBasisConfirmKey(readyServedContent));
+          void Promise.resolve()
+            .then(() =>
+              confirmThemePreviewContent({
+                data: {
+                  storefrontId: context.storefront.id,
+                  themeId: context.theme.id,
+                  ticket: instanceToConfirm,
+                },
+              }),
+            )
+            .then((answer) => {
+              for (const event of astroContentBasisEvents(
+                "confirm",
+                answer,
+                instanceToConfirm,
+              )) {
+                noteAstroContentBasisEvent(event);
+              }
+            })
+            .catch(() => {
+              // Unanswered: the basis stays unconfirmed and Design says so.
+            });
+        }
         // Tell this document what the editor can read back, only when this
         // ready carries a document id and the bridge said it reads the token.
         // The id names the round, not a permission: the bridge ignores any
@@ -13648,6 +13870,42 @@ export function VisualEditorShell({
           toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
             id: "source-location-stale",
           });
+          return;
+        }
+        // M2 PR-F: what Core's binding view says of the clicked instance,
+        // shown beside the locate (plan v2 §6.2, display 1). Still no Design
+        // selection and nothing written: Astro content writes wait for an
+        // Astro presentation acknowledgement (#399), which the bridge does
+        // not give yet. A click on no section says nothing new.
+        const astroSelection = resolveAstroDesignSelection({
+          request: astroDesignSelectionRequest(
+            message,
+            previewFrameRecordRef.current?.previewKey === previewKey &&
+              previewFrameRecordRef.current.readyRound ===
+                previewReadyRoundRef.current
+              ? previewFrameRecordRef.current.capabilities
+              : new Set<PreviewCapability>(),
+          ),
+          view: astroBindingViewRef.current,
+          workspaceSourceGeneration: currentContentSourceGeneration(),
+          routePath: currentSearchRoutePathRef.current ?? "/",
+        });
+        if (
+          astroSelection.status === "refused" &&
+          astroSelection.hint.reason !== "outside-section"
+        ) {
+          toast.info(astroSelection.hint.message, {
+            id: "astro-design-status",
+          });
+        }
+        // Option B: a confirmed instance asks this document to acknowledge
+        // it as the basis a write would be made on. Still nothing written;
+        // the Astro Inspector input path is later work.
+        if (astroSelection.status === "confirmed") {
+          issueAstroBasisPresentationRef.current(
+            astroSelection.sectionId,
+            astroSelection.identity,
+          );
         }
         return;
       }
@@ -13820,6 +14078,7 @@ export function VisualEditorShell({
     confirmPreviewStyleRevision,
     context.storefront.id,
     context.theme.id,
+    currentContentSourceGeneration,
     handleSwapThemeFileSiblings,
     handleUpdateThemeFileStyle,
     isSelectionMode,
@@ -15241,7 +15500,15 @@ export function VisualEditorShell({
                 createEpoch: createdTemplateId,
               } as const)
             : null;
+      // Option B: an Astro frame never shows an overlay, so an input posts
+      // no overlay token there and does not un-ready the page; its basis is
+      // acknowledged separately (`issueAstroBasisPresentationRef`). Never
+      // true for a Start frame, which names no `astro-basis-ack-v1`.
+      const astroBasisFrame =
+        frame !== null &&
+        isAstroBasisFrame(frame.capabilities, previewContentRefreshRef.current);
       if (
+        !astroBasisFrame &&
         frame &&
         frame.previewKey === previewKeyRef.current &&
         frame.readyRound === previewReadyRoundRef.current &&
@@ -15285,7 +15552,10 @@ export function VisualEditorShell({
             previewDocumentId: frame.documentId,
           },
         );
-      } else if (frame?.capabilities.has("section-presentation-ack-v1")) {
+      } else if (
+        !astroBasisFrame &&
+        frame?.capabilities.has("section-presentation-ack-v1")
+      ) {
         // A frame that acknowledges is sent this section with nothing to
         // acknowledge: the page cannot be confirmed until a later post
         // carries a token, so why is said.
@@ -15356,6 +15626,79 @@ export function VisualEditorShell({
       templateIdForSection,
     ],
   );
+  // Option B: a confirmed Astro selection is presented as a basis — the
+  // section's boundary, in the document Core's confirmed snapshot rendered —
+  // never as an overlay. The token is registered as the section's latest,
+  // like an overlay token, so the ordinary ack intake and readiness apply;
+  // `acceptAstroBasisAck` is checked on top of them. Nothing is written.
+  issueAstroBasisPresentationRef.current = (sectionId, identity) => {
+    const frame = previewFrameRecordRef.current;
+    if (
+      !frame ||
+      frame.previewKey !== previewKeyRef.current ||
+      frame.readyRound !== previewReadyRoundRef.current ||
+      frame.documentId === null
+    ) {
+      return;
+    }
+    const templateId =
+      routeTemplateIdsRef.current.get(activeTemplate.id) ?? activeTemplate.id;
+    const presentationRevision = presentationRevisionRef.current + 1;
+    const issued = astroBasisTokenFor({
+      capabilities: frame.capabilities,
+      contentRefresh: previewContentRefreshRef.current,
+      servedContent: frame.servedContent ?? null,
+      basis: astroContentBasisRef.current,
+      workspaceKey: `${context.storefront.id}:${context.theme.id}`,
+      templateId,
+      routePath: search.routePath ?? "/",
+      sectionId,
+      identity,
+      presentationRevision,
+    });
+    if (issued.status !== "token") {
+      presentationTraceRef.current.anomaly(
+        presentationTraceScope(),
+        `basis not issued section=${sectionId} reason=${issued.reason}`,
+      );
+      // A frame without the basis path says nothing new: the click hint
+      // already did. Any other refusal is class A, "reload preview".
+      if (issued.reason !== "not-basis-frame") {
+        toast.info(ASTRO_BASIS_UNCONFIRMED_MESSAGE, {
+          id: "astro-basis-unconfirmed",
+        });
+      }
+      return;
+    }
+    presentationRevisionRef.current = presentationRevision;
+    const token = issued.token;
+    const sectionKey = sectionPresentationKey(templateId, sectionId);
+    for (const [operationId, pending] of pendingSectionPresentationRef.current) {
+      if (pending.sectionKey === sectionKey) {
+        pendingSectionPresentationRef.current.delete(operationId);
+      }
+    }
+    latestSectionPresentationRef.current.set(sectionKey, token);
+    acknowledgedSectionPresentationRef.current.delete(sectionKey);
+    pendingSectionPresentationRef.current.set(token.operationId, {
+      token,
+      sectionKey,
+      previewKey: frame.previewKey,
+      readyRound: frame.readyRound,
+      previewDocumentId: frame.documentId,
+    });
+    refreshSectionPresentationReady();
+    presentationTraceRef.current.record({
+      type: "posted",
+      scope: presentationTraceScope(),
+      token,
+      via: "edit",
+    });
+    postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+      type: "morph:storefront-preview-confirm-section-basis",
+      presentationToken: token,
+    });
+  };
   const syncPreviewSectionProps = useCallback(
     (
       sectionId: string,

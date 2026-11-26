@@ -124,6 +124,167 @@ export function previewOutboundRefusal(rawUrl: string): string | null {
 }
 
 /**
+ * The `Server-Timing` description naming the content snapshot a page was
+ * rendered from: `morph-content;desc="<ticket>.<instance>"`, the metric
+ * `PREVIEW_SERVED_CONTENT_TIMING` (preview-protocol.ts; tested equal, as this
+ * runs in the Worker and names no import). Null for a snapshot that names no
+ * usable ticket or instance: nothing is stamped then.
+ *
+ * Narrowing evidence only (handoff/2026-11-24/astro-presentation-ack-options.md,
+ * option B): the page runs author code and can forge it, so the editor accepts
+ * an acknowledgement only when it equals what Core itself confirmed, and Core
+ * never reads it.
+ *
+ * Self-contained: embedded in the generated Worker entry through `toString()`.
+ */
+export function previewServedContentTiming(snapshot: unknown): string | null {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const ticket = (snapshot as { contentTicket?: unknown }).contentTicket;
+  const instance = (snapshot as { previewInstance?: unknown }).previewInstance;
+  if (
+    typeof ticket !== "number" ||
+    !Number.isSafeInteger(ticket) ||
+    ticket < 1
+  ) {
+    return null;
+  }
+  if (typeof instance !== "string" || !/^[A-Za-z0-9-]{8,64}$/.test(instance)) {
+    return null;
+  }
+  return 'morph-content;desc="' + ticket + "." + instance + '"';
+}
+
+/**
+ * Runs one request with ONE content snapshot, read at its entry (option 1 of
+ * handoff/2026-11-24/astro-basis-ack-prereq.md). `load` reads the snapshot;
+ * a read that fails pins `{ ok: false }`, so the request's content reads are
+ * refused rather than served from another read. The pinned value is held in
+ * `storage` for the request's whole async extent, including what renders
+ * while its body streams, and handed to `handler`.
+ *
+ * Self-contained: embedded in the generated Worker entry through `toString()`.
+ */
+export function runWithPinnedSnapshot<T>(
+  storage: {
+    run<R>(store: unknown, callback: () => R): R;
+  },
+  load: () => Promise<unknown>,
+  handler: (pinned: { ok: boolean; snapshot: unknown }) => Promise<T>,
+): Promise<T> {
+  return Promise.resolve()
+    .then(load)
+    .then(
+      (snapshot) => ({ ok: true, snapshot }),
+      () => ({ ok: false, snapshot: null }),
+    )
+    .then((pinned) => storage.run(pinned, () => handler(pinned)));
+}
+
+/**
+ * The snapshot a content read inside a pinned request is answered from, or
+ * why it is refused: no pinned request around it (the read escaped the
+ * request's async context), or its entry read failed. Never a live read.
+ *
+ * Self-contained: embedded in the generated Worker entry through `toString()`.
+ */
+export function pinnedSnapshotForRead(storage: {
+  getStore(): unknown;
+}): { snapshot: unknown } | { refusal: string } {
+  const pinned = storage.getStore() as
+    | { ok?: unknown; snapshot?: unknown }
+    | undefined;
+  if (!pinned || typeof pinned !== "object") {
+    return { refusal: "no-request-snapshot" };
+  }
+  if (pinned.ok !== true) return { refusal: "snapshot-unreadable" };
+  return { snapshot: pinned.snapshot };
+}
+
+/** Options of `themePreviewStartWorkerSource`. Off unless named. */
+export type ThemePreviewWorkerOptions = Readonly<{
+  /**
+   * Astro Live Preview only: pin one content snapshot per request and stamp
+   * it on the page (`runWithPinnedSnapshot`, `previewServedContentTiming`).
+   * A Start preview never sets it; its Worker is unchanged byte for byte.
+   */
+  pinRequestSnapshot?: boolean;
+}>;
+
+/** The page path of a Start preview, exactly as it was before the option. */
+const START_PAGE_BLOCK = `    const headers = new Headers(request.headers);
+    headers.set("x-morph-content-origin", CONTENT_ORIGIN);
+    const response = await startEntry.fetch(new Request(request, { headers }), env, ctx);
+    const type = response.headers.get("content-type") || "";
+    if (!type.toLowerCase().startsWith("text/html")) return response;
+    // First in <head>; a document written without one (Astro adds none)
+    // gets them first in <body>, and one with neither at its end. Once per
+    // response either way.
+    let injected = false;
+    const first = {
+      element(element) {
+        if (injected) return;
+        injected = true;
+        element.prepend(HEAD_SCRIPTS, { html: true });
+      },
+    };
+    return new HTMLRewriter()
+      .on("head", first)
+      .on("body", first)
+      .onDocument({
+        end(end) {
+          if (injected) return;
+          injected = true;
+          end.append(HEAD_SCRIPTS, { html: true });
+        },
+      })
+      .transform(response);
+`;
+
+/**
+ * The page path with a pinned snapshot: the same request, scripts and
+ * rewriting, run inside one pinned snapshot, and the page response stamped
+ * with it beside whatever Server-Timing the response already names.
+ */
+const PINNED_PAGE_BLOCK = `    return runWithPinnedSnapshot(requestSnapshots, loadSnapshot, async (pinned) => {
+      const headers = new Headers(request.headers);
+      headers.set("x-morph-content-origin", CONTENT_ORIGIN);
+      const response = await startEntry.fetch(new Request(request, { headers }), env, ctx);
+      const type = response.headers.get("content-type") || "";
+      if (!type.toLowerCase().startsWith("text/html")) return response;
+      // First in <head>; a document written without one (Astro adds none)
+      // gets them first in <body>, and one with neither at its end. Once per
+      // response either way.
+      let injected = false;
+      const first = {
+        element(element) {
+          if (injected) return;
+          injected = true;
+          element.prepend(HEAD_SCRIPTS, { html: true });
+        },
+      };
+      const rewritten = new HTMLRewriter()
+        .on("head", first)
+        .on("body", first)
+        .onDocument({
+          end(end) {
+            if (injected) return;
+            injected = true;
+            end.append(HEAD_SCRIPTS, { html: true });
+          },
+        })
+        .transform(response);
+      // The snapshot every content read of this request was answered from,
+      // fixed before the page started rendering: a header sent before the
+      // body streams still names what the whole page read.
+      const stamp = pinned.ok ? previewServedContentTiming(pinned.snapshot) : null;
+      if (!stamp) return rewritten;
+      const stamped = new Response(rewritten.body, rewritten);
+      stamped.headers.append("Server-Timing", stamp);
+      return stamped;
+    });
+`;
+
+/**
  * The resolver the content endpoint uses, lifted out of the browser module so
  * the Worker answers a path exactly as the page and the dev server do.
  */
@@ -159,13 +320,98 @@ function contentResolverSource(): string {
  *   no `<head>`, and at the end of one with neither.
  *
  * The Worker is given no bindings: there is nothing in `env` to reach.
+ *
+ * `options.pinRequestSnapshot` (Astro only) answers every content read of a
+ * request from one snapshot read at its entry, and stamps that snapshot on
+ * the page (`ThemePreviewWorkerOptions`). Without it the output is exactly
+ * what it was before the option existed (tested against a frozen copy).
  */
 export function themePreviewStartWorkerSource(
   previewId = "",
   serverEntry = "@tanstack/react-start/server-entry",
+  options: ThemePreviewWorkerOptions = {},
 ): string {
-  return `import startEntry from ${JSON.stringify(serverEntry)};
+  const pin = options.pinRequestSnapshot === true;
+  const pinImports = pin
+    ? 'import { AsyncLocalStorage } from "node:async_hooks";\n'
+    : "";
+  const pinHelpers = pin
+    ? `
+// One snapshot per request (Astro): read once at the request's entry, and
+// every content read made while it runs is answered from it, never from a
+// newer one written mid-render or from another request's.
+// One store for every evaluation of this module: the dev server evaluates it
+// again after a full reload, and the newest evaluation's fetch (the global
+// one) must find a snapshot pinned by a request still running through an
+// earlier evaluation's entry.
+const requestSnapshots = (globalThis[Symbol.for("morph.preview.requestSnapshots")] ??= new AsyncLocalStorage());
+const runWithPinnedSnapshot = ${runWithPinnedSnapshot.toString()};
+const pinnedSnapshotForRead = ${pinnedSnapshotForRead.toString()};
+const previewServedContentTiming = ${previewServedContentTiming.toString()};
 
+// Through readSnapshot, so a request pins the newest snapshot this Worker
+// has read: an import settling with an older module never becomes one, and
+// a page loaded after the probe named a ticket renders at least that one.
+async function loadSnapshot() {
+  await readSnapshot();
+  // Nothing readable kept: none is pinned, and every content read of the
+  // request is refused as an unreadable live read is.
+  return snapshot === null ? null : JSON.parse(JSON.stringify(snapshot));
+}
+`
+    : "";
+  const contentRead = pin
+    ? `    // Refused exactly as an unreadable live read is: no request pinned one
+    // around it, or its entry read found nothing readable.
+    const read = pinnedSnapshotForRead(requestSnapshots);
+    if (read.refusal) {
+      console.warn("[morph-preview] content read refused (" + read.refusal + ")");
+      return new Response(JSON.stringify(${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}), {
+        status: ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS},
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+    // Answered from the pinned snapshot, synchronously: nothing can replace
+    // it between. The Worker's own newest read, the one the probe names, is
+    // put back after, so a request pinned to an older one never lowers it.
+    const live = snapshot;
+    snapshot = read.snapshot;
+    let content = null;
+    try {
+      content = previewContentForPath(url.searchParams.get("path") || "/");
+    } catch {
+      content = null;
+    } finally {
+      snapshot = live;
+    }
+    return new Response(
+      JSON.stringify(content || ${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}),
+      {
+        status: content ? 200 : ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS},
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      },
+    );
+`
+    : `    // A data file that is missing or not JSON fails its import, and a
+    // snapshot without this path's entry resolves to null: either way the
+    // read is refused, never answered with empty content.
+    let content = null;
+    try {
+      await readSnapshot();
+      content = previewContentForPath(url.searchParams.get("path") || "/");
+    } catch {
+      content = null;
+    }
+    return new Response(
+      JSON.stringify(content || ${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}),
+      {
+        status: content ? 200 : ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS},
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      },
+    );
+`;
+  return `import startEntry from ${JSON.stringify(serverEntry)};
+${pinImports}
 const CONTENT_ORIGIN = ${JSON.stringify(THEME_PREVIEW_START_CONTENT_ORIGIN)};
 const CONTENT_PATH = ${JSON.stringify(THEME_PREVIEW_CONTENT_PATH)};
 const previewOutboundRefusal = ${previewOutboundRefusal.toString()};
@@ -173,7 +419,7 @@ const previewOutboundRefusal = ${previewOutboundRefusal.toString()};
 // None until one is read: a path is never answered from a snapshot this
 // Worker has not read (THEME_PREVIEW_CONTENT_UNREADABLE_BODY).
 let snapshot = null;
-${contentResolverSource()}
+${contentResolverSource()}${pinHelpers}
 
 async function readSnapshot() {
   // The data file itself, the one the dev server's content endpoint reads
@@ -225,24 +471,7 @@ globalThis.fetch = async function morphPreviewFetch(input, init) {
     if (url.pathname !== CONTENT_PATH || request.method !== "GET") {
       return new Response("Not Found", { status: 404 });
     }
-    // A data file that is missing or not JSON fails its import, and a
-    // snapshot without this path's entry resolves to null: either way the
-    // read is refused, never answered with empty content.
-    let content = null;
-    try {
-      await readSnapshot();
-      content = previewContentForPath(url.searchParams.get("path") || "/");
-    } catch {
-      content = null;
-    }
-    return new Response(
-      JSON.stringify(content || ${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}),
-      {
-        status: content ? 200 : ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS},
-        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
-      },
-    );
-  }
+${contentRead}  }
   const refusal = previewOutboundRefusal(request.url);
   if (refusal) {
     console.warn("[morph-preview] outbound request refused (" + refusal + "): " + url.protocol + "//" + url.hostname);
@@ -289,34 +518,7 @@ export default {
         },
       });
     }
-    const headers = new Headers(request.headers);
-    headers.set("x-morph-content-origin", CONTENT_ORIGIN);
-    const response = await startEntry.fetch(new Request(request, { headers }), env, ctx);
-    const type = response.headers.get("content-type") || "";
-    if (!type.toLowerCase().startsWith("text/html")) return response;
-    // First in <head>; a document written without one (Astro adds none)
-    // gets them first in <body>, and one with neither at its end. Once per
-    // response either way.
-    let injected = false;
-    const first = {
-      element(element) {
-        if (injected) return;
-        injected = true;
-        element.prepend(HEAD_SCRIPTS, { html: true });
-      },
-    };
-    return new HTMLRewriter()
-      .on("head", first)
-      .on("body", first)
-      .onDocument({
-        end(end) {
-          if (injected) return;
-          injected = true;
-          end.append(HEAD_SCRIPTS, { html: true });
-        },
-      })
-      .transform(response);
-  },
+${pin ? PINNED_PAGE_BLOCK : START_PAGE_BLOCK}  },
 };
 `;
 }

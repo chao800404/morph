@@ -30,7 +30,52 @@ export type SectionPresentationToken = Readonly<{
   overlayRevision: number;
   presentationRevision: number;
   operationId: string;
+  /**
+   * Astro only (option B, handoff/2026-11-24/astro-presentation-ack-options.md):
+   * a basis token, sent after a confirmed reload with
+   * `confirm-section-basis`, never with an overlay. It names the v2 boundary
+   * the frame must hold exactly once, and the content snapshot
+   * (`morph-content` stamp) the frame must have been rendered from;
+   * `overlayRevision` is then 0 and `documentBasis` is Core's draft
+   * generation in that snapshot. Absent on every Start token.
+   */
+  basis?: SectionPresentationBasis;
 }>;
+
+/** The content snapshot a page names as rendered from (`morph-content`). */
+export type PreviewServedContent = Readonly<{
+  ticket: number;
+  instance: string;
+}>;
+
+export type SectionPresentationBasis = Readonly<{
+  kind: "astro-boundary";
+  /** `<nonce>:<rule>:<route sha256>:<start>:<end>`, the v2 boundary id. */
+  identity: string;
+  servedContent: PreviewServedContent;
+}>;
+
+export function sameServedContent(
+  left: PreviewServedContent | null | undefined,
+  right: PreviewServedContent | null | undefined,
+): boolean {
+  if (!left || !right) return false;
+  return left.ticket === right.ticket && left.instance === right.instance;
+}
+
+function sameSectionPresentationBasis(
+  left: SectionPresentationBasis | undefined,
+  right: SectionPresentationBasis | undefined,
+): boolean {
+  if (left === undefined || right === undefined) {
+    return left === undefined && right === undefined;
+  }
+  return (
+    left.kind === right.kind &&
+    left.identity === right.identity &&
+    sameServedContent(left.servedContent, right.servedContent)
+  );
+}
 
 export type SectionPresentationProof = Readonly<{
   token: SectionPresentationToken;
@@ -57,7 +102,8 @@ export function sameSectionPresentationToken(
         left.documentBasis.createEpoch === right.documentBasis.createEpoch) &&
     left.overlayRevision === right.overlayRevision &&
     left.presentationRevision === right.presentationRevision &&
-    left.operationId === right.operationId
+    left.operationId === right.operationId &&
+    sameSectionPresentationBasis(left.basis, right.basis)
   );
 }
 
@@ -374,6 +420,16 @@ export type EditorToPreviewMessage =
       resetKeys?: string[];
     }
   | {
+      /**
+       * Astro only (option B): asks a page that navigates as documents
+       * whether it shows `presentationToken.basis`. Applies nothing and
+       * refreshes nothing; answered with the presentation ack. Sent only to
+       * a frame whose ready named `astro-basis-ack-v1`.
+       */
+      type: "morph:storefront-preview-confirm-section-basis";
+      presentationToken: SectionPresentationToken;
+    }
+  | {
       type: "morph:storefront-preview-update-theme-files";
       files: PreviewThemeFile[];
       styleRevision: number;
@@ -529,6 +585,9 @@ export const PREVIEW_CAPABILITIES = [
   "code-default-selection",
   "astro-identity-v2",
   "section-presentation-ack-v1",
+  // Option B: a page that navigates as documents answers
+  // `confirm-section-basis` and names its `morph-content` stamp in ready.
+  "astro-basis-ack-v1",
 ] as const;
 export type PreviewCapability = (typeof PREVIEW_CAPABILITIES)[number];
 
@@ -595,6 +654,12 @@ export type PreviewToEditorMessage =
        * editor sends it nothing that needs one.
        */
       capabilities?: PreviewCapability[];
+      /**
+       * The content snapshot this document's response named
+       * (`morph-content`), from a page that navigates as documents. Narrowing
+       * evidence for the basis ack only; absent everywhere else.
+       */
+      servedContent?: PreviewServedContent;
     }
   | {
       type: "morph:storefront-preview-section-presentation-ack";
@@ -822,6 +887,62 @@ export type PreviewToEditorMessage =
  * otherwise visible to script.
  */
 export const PREVIEW_SERVED_INSTANCE_TIMING = "morph-instance";
+
+/**
+ * The `Server-Timing` metric an Astro Live Preview's Worker names the content
+ * snapshot a page was rendered from in: `<ticket>.<instance>`, on the page
+ * response only (`previewServedContentTiming`, theme-preview-start-runtime.ts,
+ * which pins that snapshot for the whole request). Narrowing evidence for the
+ * basis ack: the editor accepts an ack only when it equals what Core
+ * confirmed; Core never reads it.
+ */
+export const PREVIEW_SERVED_CONTENT_TIMING = "morph-content";
+
+const SERVED_CONTENT_INSTANCE = /^[A-Za-z0-9-]{8,64}$/;
+
+/** A served content from its stamp text or its JSON form; null if neither. */
+export function parsePreviewServedContent(
+  value: unknown,
+): PreviewServedContent | null {
+  let ticket: unknown;
+  let instance: unknown;
+  if (typeof value === "string") {
+    const match = /^([1-9]\d{0,15})\.([A-Za-z0-9-]{8,64})$/.exec(value);
+    if (!match) return null;
+    ticket = Number(match[1]);
+    instance = match[2];
+  } else if (isRecord(value)) {
+    ticket = value.ticket;
+    instance = value.instance;
+  } else {
+    return null;
+  }
+  if (
+    typeof ticket !== "number" ||
+    !Number.isSafeInteger(ticket) ||
+    ticket < 1 ||
+    typeof instance !== "string" ||
+    !SERVED_CONTENT_INSTANCE.test(instance)
+  ) {
+    return null;
+  }
+  return { ticket, instance };
+}
+
+/**
+ * The content snapshot the document's own response named. Only the
+ * navigation entry counts: the snapshot is the page's, and a module or other
+ * resource names none.
+ */
+export function previewServedContentFromEntries(
+  entries: readonly Readonly<{
+    kind: "navigation" | "script" | "other";
+    content: string | null;
+  }>[],
+): PreviewServedContent | null {
+  const navigation = entries.find((entry) => entry.kind === "navigation");
+  return navigation ? parsePreviewServedContent(navigation.content) : null;
+}
 
 /**
  * One dev server instance of a preview: the transport's session (one per
@@ -1247,7 +1368,7 @@ function parseSectionPresentationToken(
   ) {
     return null;
   }
-  return {
+  const token = {
     workspaceKey: value.workspaceKey,
     templateId: value.templateId,
     routePath: value.routePath,
@@ -1257,6 +1378,32 @@ function parseSectionPresentationToken(
     presentationRevision: Number(value.presentationRevision),
     operationId: value.operationId,
   };
+  // A Start token has no basis key at all, and parses exactly as before.
+  if (value.basis === undefined) return token;
+  const presentationBasis = parseSectionPresentationBasis(value.basis);
+  // A basis token presents a saved snapshot, never an overlay.
+  if (!presentationBasis || token.overlayRevision !== 0) return null;
+  return { ...token, basis: presentationBasis };
+}
+
+const ASTRO_BOUNDARY_IDENTITY =
+  /^[0-9a-f]{16}:\d{1,3}:[0-9a-f]{64}:\d{1,6}:\d{1,6}$/;
+
+function parseSectionPresentationBasis(
+  value: unknown,
+): SectionPresentationBasis | null {
+  if (!isRecord(value) || value.kind !== "astro-boundary") return null;
+  if (
+    typeof value.identity !== "string" ||
+    !ASTRO_BOUNDARY_IDENTITY.test(value.identity)
+  ) {
+    return null;
+  }
+  const servedContent = isRecord(value.servedContent)
+    ? parsePreviewServedContent(value.servedContent)
+    : null;
+  if (!servedContent) return null;
+  return { kind: "astro-boundary", identity: value.identity, servedContent };
 }
 
 function isStyleSnapshot(value: unknown): value is PreviewStyleSnapshot {
@@ -1426,7 +1573,9 @@ export function parseEditorToPreviewMessage(
         if (
           value.presentationToken !== undefined &&
           (!presentationToken ||
-            presentationToken.sectionId !== value.sectionId)
+            presentationToken.sectionId !== value.sectionId ||
+            // A basis token rides `confirm-section-basis` only.
+            presentationToken.basis !== undefined)
         ) {
           return null;
         }
@@ -1441,6 +1590,14 @@ export function parseEditorToPreviewMessage(
             : { resetKeys: value.resetKeys as string[] }),
         };
       }
+    case "morph:storefront-preview-confirm-section-basis": {
+      const presentationToken = parseSectionPresentationToken(
+        value.presentationToken,
+      );
+      return presentationToken?.basis
+        ? { type: value.type, presentationToken }
+        : null;
+    }
     case "morph:storefront-preview-update-theme-files":
       return Array.isArray(value.files) &&
         value.files.length <= 500 &&
@@ -1606,10 +1763,15 @@ export function parsePreviewToEditorMessage(
     case "morph:storefront-preview-ready": {
       const report = parsePreviewServedInstanceReport(value.servedInstance);
       const capabilities = parsePreviewCapabilities(value.capabilities);
+      const servedContent =
+        value.servedContent === undefined
+          ? null
+          : parsePreviewServedContent(value.servedContent);
       return {
         type: value.type,
         ...(report ? { servedInstance: report } : {}),
         ...(capabilities.length > 0 ? { capabilities } : {}),
+        ...(servedContent ? { servedContent } : {}),
       };
     }
     case "morph:storefront-preview-section-presentation-ack": {

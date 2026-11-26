@@ -16,9 +16,14 @@
  *   reload expecting it.
  * - PREVIEW_CONTENT_UNCONFIRMABLE: written to a preview with no Worker that
  *   names the snapshot it reads (the client-only preview).
+ *
+ * `instance` on an applied answer is the dev server whose Worker named the
+ * ticket (the one the probe was matched against), where the transport says
+ * it (the local one). Absent where it does not; never one that did not
+ * confirm it. Narrowing for the editor's Astro basis ack only.
  */
 export type PreviewContentWriteResult =
-  | Readonly<{ applied: true; ticket: number }>
+  | Readonly<{ applied: true; ticket: number; instance?: string }>
   | Readonly<{
       applied: false;
       reason:
