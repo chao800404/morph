@@ -55,6 +55,9 @@ export const CONTAINER_STAGE3_CHECKS = [
   "Editor E2E container socket, content sync and case E acceptance",
 ];
 
+/** The real-image Sandbox prerender smoke: one job, no shards. */
+export const SANDBOX_PRERENDER_SMOKE_CHECK = "Sandbox prerender smoke";
+
 /** @param {number} shard @param {number} [count] */
 export const editorShardCheckName = (shard, count = EDITOR_SHARD_COUNT) =>
   `Editor E2E shard ${shard}/${count}`;
@@ -84,6 +87,7 @@ export const EXPECTED_CI_CHECKS = [
   CONTAINER_ACCEPTANCE_CHECK,
   CONTAINER_PRESENTATION_ACK_CHECK,
   ...CONTAINER_STAGE3_CHECKS,
+  SANDBOX_PRERENDER_SMOKE_CHECK,
 ];
 
 /**

@@ -2717,3 +2717,40 @@ jobs:
           path: test-results/
           retention-days: 7
           if-no-files-found: error
+
+  # The platform Start runtime build in the real Sandbox image, prerendering one
+  # SSG page from a frozen content snapshot. Separate from the container E2E
+  # jobs: it starts no preview, browser or dev server, and runs through
+  # `docker exec` against the image built from Dockerfile.sandbox, so a
+  # regression in the build's own prerender host or content read (the IPv4
+  # ECONNREFUSED class) is located here in minutes. The launcher fails a run in
+  # which a test was skipped or none passed; the image build and the test run
+  # have their own timeouts, inside this job's.
+  sandbox-prerender-smoke:
+    name: Sandbox prerender smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the Sandbox prerender smoke
+        env:
+          MORPH_SANDBOX_SMOKE_BUILD_S: "420"
+          MORPH_SANDBOX_SMOKE_TEST_S: "300"
+        run: pnpm test:sandbox-prerender
