@@ -28,6 +28,7 @@ import {
   confirmThemePreviewContent,
   probeThemePreviewAddress,
   startThemePreviewServer,
+  syncThemePreviewContent,
   touchThemePreviewServer,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import { ASTRO_BASIS_UNCONFIRMED_MESSAGE } from "@/lib/storefront/editor/astro-basis-presentation";
@@ -131,26 +132,39 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 // Code mode, as visual-editor-shell-source-conflict-retry.test.tsx mounts it:
 // Monaco is a textarea; language services and formatting are inert.
+// Keyed by the model path, as Monaco shows another model when the file
+// changes: a jump while Code is already open shows the new file.
+function MockMonaco({
+  defaultValue,
+  onChange,
+}: {
+  defaultValue?: string;
+  onChange?: (value?: string) => void;
+}) {
+  const [value, setValue] = useState(defaultValue ?? "");
+  return (
+    <textarea
+      aria-label="Code editor"
+      value={value}
+      onChange={(event) => {
+        setValue(event.currentTarget.value);
+        onChange?.(event.currentTarget.value);
+      }}
+    />
+  );
+}
 vi.mock("@monaco-editor/react", () => ({
   default: ({
+    path,
     defaultValue,
     onChange,
   }: {
+    path?: string;
     defaultValue?: string;
     onChange?: (value?: string) => void;
-  }) => {
-    const [value, setValue] = useState(defaultValue ?? "");
-    return (
-      <textarea
-        aria-label="Code editor"
-        value={value}
-        onChange={(event) => {
-          setValue(event.currentTarget.value);
-          onChange?.(event.currentTarget.value);
-        }}
-      />
-    );
-  },
+  }) => (
+    <MockMonaco key={path} defaultValue={defaultValue} onChange={onChange} />
+  ),
 }));
 vi.mock("./editor-code-language-support", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./editor-code-language-support")>()),
@@ -985,6 +999,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         message: "Live Preview server ready",
         data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`, ...START_DATA },
       } as never);
+      vi.mocked(syncThemePreviewContent).mockReset();
       vi.mocked(confirmThemePreviewContent).mockReset();
       vi.mocked(confirmThemePreviewContent).mockResolvedValue({
         success: true,
@@ -1793,7 +1808,19 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       it("after a write the next input waits for the reloaded page's new ack; only that ack releases it", async () => {
         updateSectionProps.mockResolvedValueOnce(answered(5, "First"));
         updateSectionProps.mockResolvedValueOnce(answered(6, "Second"));
-        const client = await settledThenAcked();
+        // Core's answer to the sync the first write asks for: it wrote the
+        // snapshot holding it (ticket 8, generation 5), read by INSTANCE.
+        vi.mocked(syncThemePreviewContent).mockResolvedValue({
+          success: true,
+          message: "Live Preview content synced",
+          data: {
+            ticket: 8,
+            sentTicket: 8,
+            draftGenerations: { "template-1": 5 },
+            instance: INSTANCE,
+          },
+        } as never);
+        await settledThenAcked();
 
         const field = await heroTitleField();
         fireEvent.change(field, { target: { value: "First" } });
@@ -1807,28 +1834,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         await pastDebounce();
         expect(updateSectionProps).toHaveBeenCalledTimes(1);
 
-        // Core wrote the first write's snapshot; the page reloads onto it.
-        act(() => {
-          client.setQueryData(
-            themePreviewServerQueries.forTheme("storefront-1", "theme-1")
-              .queryKey,
-            {
-              success: true,
-              message: "Live Preview server ready",
-              data: {
-                url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
-                ...START_DATA,
-                contentTicket: 8,
-                draftGenerations: { "template-1": 5 },
-              },
-            } as never,
-          );
-        });
-        vi.mocked(confirmThemePreviewContent).mockResolvedValue({
-          success: true,
-          message: "Live Preview content confirmed",
-          data: { ticket: 8, instance: INSTANCE },
-        } as never);
+        // Core wrote and confirmed the first write's snapshot (the sync
+        // above); the page reloads onto it.
+        await waitFor(() =>
+          expect(vi.mocked(syncThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await flush();
         await reloadWith({ ticket: 8, instance: INSTANCE });
         await waitFor(() => expect(basisPosts()).toHaveLength(2));
         const reissued = basisPosts()[1]!.presentationToken;
@@ -2323,14 +2334,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         expect(bar!.getAttribute("aria-live")).toBe("polite");
         expect(bar!.textContent).toBe("");
 
+        // D2: the instance is confirmed, so the click selects it in Design
+        // (its basis is what is refused, said in the Inspector); Code is
+        // reached through the selection's "Open in Code".
         boundaryClick(1);
-        expect(
-          await screen.findByRole(
-            "textbox",
-            { name: "Code editor" },
-            { timeout: 15_000 },
-          ),
-        ).toBeTruthy();
+        await flush();
+        expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+        expect(bar!.textContent).toBe("");
+        await openInCode();
 
         expect(statusBar()).toBe(bar);
         expect(bar!.getAttribute("data-astro-design-status-bar")).toBe(
