@@ -1693,6 +1693,12 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                           <Badge variant="neutral" className="ml-auto">
                             {astroSectionNotice.badge}
                           </Badge>
+                          {/* Review finding 9: the full message for
+                              assistive tech and touch, which do not
+                              reliably expose `title`. */}
+                          <span className="sr-only">
+                            {astroSectionNotice.message}
+                          </span>
                         </div>
                       </SidebarMenuItem>
                     </SidebarMenu>
