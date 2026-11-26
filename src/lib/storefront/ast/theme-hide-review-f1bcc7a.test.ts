@@ -183,3 +183,60 @@ export default memo(HeroBody);
     expectRefused(classify(files), "unguarded-mount");
   });
 });
+
+describe("P1-2: the Starter's own check is exempt only when it just omits the section", () => {
+  const guarded = (expression: string) =>
+    theme(route("", `import Hero from "../components/Hero";\nimport Promo from "../components/Promo";`, `      {${expression}}`), [
+      {
+        path: "src/components/Promo.tsx",
+        content: `${FIELDS}export default function Promo({ title = "PROMO-DEFAULT" }: { title?: string }) {
+  return <aside>{title}</aside>;
+}
+`,
+      },
+    ]);
+
+  it("control: the exact check around the section's own mount", () => {
+    expect(
+      classify(guarded(`!isSectionHidden("hero") && <Hero {...content("hero")} />`)),
+    ).toMatchObject({ kind: "supported" });
+  });
+
+  it("refuses fallback markup rendered when the section is hidden", () => {
+    expectRefused(
+      classify(
+        guarded(
+          `(!isSectionHidden("hero") && <Hero {...content("hero")} />) || <p>HERO-FALLBACK</p>`,
+        ),
+      ),
+      "untraced-use",
+      ROUTE,
+    );
+  });
+
+  it("refuses the check of one section around another's mount", () => {
+    const files = theme(
+      route(
+        `      {!isSectionHidden("hero") && <Promo {...content("promo")} />}`,
+        `import Hero from "../components/Hero";\nimport Promo from "../components/Promo";`,
+      ),
+      guarded("null").filter((file) => file.path === "src/components/Promo.tsx"),
+    );
+    expectRefused(classify(files, "hero"), "untraced-use", ROUTE);
+  });
+
+  it("refuses the check's result kept rather than rendered", () => {
+    const files = theme(
+      `import { createFileRoute } from "@tanstack/react-router";
+import { content, isSectionHidden } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  const hero = !isSectionHidden("hero") && <Hero {...content("hero")} />;
+  return <main>{hero || <p>HERO-FALLBACK</p>}</main>;
+}
+`,
+    );
+    expect(classify(files)).toMatchObject({ kind: "unsupported" });
+  });
+});
