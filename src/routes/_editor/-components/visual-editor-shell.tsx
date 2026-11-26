@@ -3517,6 +3517,31 @@ export function VisualEditorShell({
    * has no other section structure on Astro.
    */
   const astroSectionsOnPageRef = useRef(new Map<string, Set<string>>());
+  /**
+   * What a confirmed Astro selection makes of the section, at a Design click
+   * and again at its re-derive (Codex review P2): the source generation of
+   * the Core view that confirmed it is what the section's input is staged
+   * and sent at, and the section is one of the page's own.
+   */
+  const rememberAstroSelectionRef = useRef(
+    (
+      selection: ConfirmedAstroDesignSelection,
+      sourceGeneration: number | null,
+      routePath: string,
+    ) => {
+      if (sourceGeneration !== null) {
+        const baselineKey = fieldSelectionKey(selection.sectionId, "", routePath);
+        selectionSourceBaselinesRef.current.set(
+          baselineKey,
+          captureSelectionSourceBaseline(baselineKey, sourceGeneration),
+        );
+      }
+      const onPage =
+        astroSectionsOnPageRef.current.get(routePath) ?? new Set<string>();
+      onPage.add(selection.sectionId);
+      astroSectionsOnPageRef.current.set(routePath, onPage);
+    },
+  );
   /** Where the confirmed selection's click was located; "Open in Code" (D2). */
   const astroCodeTargetRef = useRef<{
     identity: string;
@@ -7209,6 +7234,18 @@ export function VisualEditorShell({
               result.status === "confirmed" &&
               astroDesignFocusRef.current?.selection === result
             ) {
+              // Codex review P2: confirmed again in the view of the source
+              // the workspace holds now, so the section's input is staged
+              // at that view's source generation, as a click's is. An
+              // unrelated source save keeps identity and digest but moves
+              // the generation; the old baseline would refuse every input.
+              if (view) {
+                rememberAstroSelectionRef.current(
+                  result,
+                  view.sourceGeneration,
+                  currentSearchRoutePathRef.current ?? "/",
+                );
+              }
               issueAstroBasisPresentationRef.current(result);
             }
           },
@@ -14397,24 +14434,11 @@ export function VisualEditorShell({
           // what the section's input is staged and sent at.
           const view = astroBindingViewRef.current;
           const routePath = currentSearchRoutePathRef.current ?? "/";
-          if (view) {
-            const baselineKey = fieldSelectionKey(
-              astroSelection.sectionId,
-              "",
-              routePath,
-            );
-            selectionSourceBaselinesRef.current.set(
-              baselineKey,
-              captureSelectionSourceBaseline(
-                baselineKey,
-                view.sourceGeneration,
-              ),
-            );
-          }
-          const onPage =
-            astroSectionsOnPageRef.current.get(routePath) ?? new Set<string>();
-          onPage.add(astroSelection.sectionId);
-          astroSectionsOnPageRef.current.set(routePath, onPage);
+          rememberAstroSelectionRef.current(
+            astroSelection,
+            view?.sourceGeneration ?? null,
+            routePath,
+          );
           astroCodeTargetRef.current = {
             identity: astroSelection.identity,
             filePath: target.filePath,
