@@ -1051,6 +1051,26 @@ test.describe("Starter 32 on the full Start runtime", () => {
     // An anonymous visitor's in-site navigation on the public site reads
     // through /_serverFn too.
     const context = await browser.newContext();
+    // Negative control for the Live Preview's accessor: a page here that
+    // defines one of the same name, answering a draft marker, is never asked.
+    // The published build sets __MORPH_START_LIVE_PREVIEW__ false, so the
+    // branch that would ask is not in the bundle at all.
+    const FAKE_LIVE_MARKER = `v32-fake-live-${RUN}`;
+    await context.addInitScript(
+      ({ marker, slot }) => {
+        const calls: string[] = [];
+        Object.defineProperty(window, "__morphFakeLiveCalls", { value: calls });
+        Object.defineProperty(window, "__morphLivePreviewContent", {
+          value: Object.freeze({
+            overlay: (pathname: string) => {
+              calls.push(pathname);
+              return { slots: { [slot]: { heading: marker } }, hiddenSlots: [] };
+            },
+          }),
+        });
+      },
+      { marker: FAKE_LIVE_MARKER, slot: SHOWN_SLOT },
+    );
     visitor = await context.newPage();
     const visitorReads = recordReads(visitor, publicOrigin);
     const landed = await visitor.goto(`${publicOrigin()}/`, {
@@ -1077,6 +1097,13 @@ test.describe("Starter 32 on the full Start runtime", () => {
     expect(visitorReads.contentReads, "no /_morph/content read from the browser").toEqual(
       [],
     );
+    expect(
+      await visitor.evaluate(
+        () => (window as unknown as { __morphFakeLiveCalls: string[] }).__morphFakeLiveCalls,
+      ),
+      "the published build never asks a live content accessor",
+    ).toEqual([]);
+    expect(await visitor.locator("body").innerText()).not.toContain(FAKE_LIVE_MARKER);
     publicPageRead = read;
 
     // A draft written after the publish stays out of the public site, on

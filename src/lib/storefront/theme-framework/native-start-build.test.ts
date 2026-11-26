@@ -385,6 +385,23 @@ describe("a TanStack Start project built with its own configuration", () => {
     expect(workerSource).toContain("x-morph-content-origin");
   });
 
+  it("leaves Starter 32's Live Preview branch out of every bundle it ships", () => {
+    // __MORPH_START_LIVE_PREVIEW__ is false in a native build, so the loader
+    // never asks a live content accessor here: neither the accessor's name
+    // nor the flag survives in what is published.
+    const client = walk(join(artifactDir, "runtime/client"))
+      .filter((path) => path.endsWith(".js"))
+      .map((path) =>
+        readFileSync(join(artifactDir, "runtime/client", path), "utf8"),
+      )
+      .join("\n");
+    expect(client).toContain("_serverFn");
+    for (const shipped of [client, workerSource]) {
+      expect(shipped).not.toContain("__morphLivePreviewContent");
+      expect(shipped).not.toContain("__MORPH_START_LIVE_PREVIEW__");
+    }
+  });
+
   it("serves the static assets beside the Worker", async () => {
     const assets = walk(join(artifactDir, "runtime/client")).filter((path) =>
       path.endsWith(".css"),
