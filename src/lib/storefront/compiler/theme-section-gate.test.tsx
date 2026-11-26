@@ -161,6 +161,7 @@ describe("MorphSectionGate: visibility from the root route's snapshot", () => {
 
 describe("MorphPageSectionGate: visibility from the page the slot came from", () => {
   it("renders the section unless the page lists it hidden", () => {
+    routeContext.current = visibility([]);
     expect(
       renderToString(
         <gate.MorphPageSectionGate
@@ -184,10 +185,45 @@ describe("MorphPageSectionGate: visibility from the page the slot came from", ()
     ["a hidden list that is not an array", "hero"],
     ["a hidden list with a non-string", [1]],
   ])("refuses to render with %s", (_, hidden) => {
+    routeContext.current = visibility([]);
     const renderSection = vi.fn(() => <section>HERO</section>);
     expect(() =>
       renderToString(
         <gate.MorphPageSectionGate slot="hero" hidden={hidden} render={renderSection} />,
+      ),
+    ).toThrow(gate.MorphSectionVisibilityError);
+    expect(renderSection).not.toHaveBeenCalled();
+  });
+
+  // Review P2-4: in the Live Preview the root reads the overlay the editor
+  // has just written, while the loader still holds the saved page. A Hide
+  // shows at once, through the root list; a Show waits for the page.
+  it("follows the root route's live hidden list too, the same document's", () => {
+    routeContext.current = visibility(["hero"]);
+    const renderSection = vi.fn(() => <section>HERO-STORED</section>);
+    expect(
+      renderToString(
+        <gate.MorphPageSectionGate slot="hero" hidden={[]} render={renderSection} />,
+      ),
+    ).toBe("");
+    expect(renderSection).not.toHaveBeenCalled();
+  });
+
+  it("stays hidden while the page still lists it, after the root shows it", () => {
+    routeContext.current = visibility([]);
+    expect(
+      renderToString(
+        <gate.MorphPageSectionGate slot="hero" hidden={["hero"]} render={() => <p>HERO</p>} />,
+      ),
+    ).toBe("");
+  });
+
+  it("refuses to render when the root route carries no usable hidden list", () => {
+    routeContext.current = {};
+    const renderSection = vi.fn(() => <section>HERO</section>);
+    expect(() =>
+      renderToString(
+        <gate.MorphPageSectionGate slot="hero" hidden={[]} render={renderSection} />,
       ),
     ).toThrow(gate.MorphSectionVisibilityError);
     expect(renderSection).not.toHaveBeenCalled();
