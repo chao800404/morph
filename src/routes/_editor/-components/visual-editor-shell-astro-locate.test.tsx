@@ -2255,6 +2255,32 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
           componentDigest: DIGEST,
         });
       });
+
+      // Codex review P2 (re-derive keeps the old source baseline): an
+      // unrelated source save moves the workspace to generation 4 while the
+      // instance and its digest stay. The selection is confirmed again in
+      // Core's view of 4; an input after the new ack is staged at 4.
+      it("an input after a re-derive on an unrelated source save is staged at the new source generation", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "After save"));
+        await upAndAcked();
+
+        readRouteBindings.mockResolvedValue(bindingView({ sourceGeneration: 4 }));
+        act(() => {
+          useThemeWorkspaceStore.getState().setBaseSourceGeneration(4, scope);
+        });
+        await waitFor(() => expect(basisPosts()).toHaveLength(2));
+        await ackBasis(basisPosts()[1]!.presentationToken);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "After save" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          props: { title: "After save" },
+          expectedSourceGeneration: 4,
+          identity: MARKER,
+        });
+      });
     });
 
     // Lead decision Q3: after a frame reload the selection is not kept from
