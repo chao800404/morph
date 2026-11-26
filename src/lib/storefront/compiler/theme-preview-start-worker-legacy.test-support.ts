@@ -60,7 +60,18 @@ async function readSnapshot() {
   // content sync is picked up by the module runner without a restart, and
   // the two readers never disagree about which one is current.
   const module = await import("./${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}");
-  snapshot = JSON.parse(JSON.stringify(module.default ?? { templates: {}, pages: {} }));
+  const read = module.default ?? { templates: {}, pages: {} };
+  // Nothing orders two imports: one started before a sync rewrote the file
+  // can settle after one started later. Its older snapshot never replaces a
+  // newer one; an equal ticket (the same content, restamped for the server
+  // now running) or a higher one does.
+  if (snapshotTicket(read) < snapshotTicket(snapshot)) return;
+  snapshot = JSON.parse(JSON.stringify(read));
+}
+
+function snapshotTicket(value) {
+  const ticket = value && value.contentTicket;
+  return Number.isSafeInteger(ticket) && ticket > 0 ? ticket : 0;
 }
 
 const nativeFetch = globalThis.fetch.bind(globalThis);
