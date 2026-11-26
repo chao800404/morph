@@ -214,13 +214,20 @@ export async function resolveStorefrontContent(args: {
     ...(layoutDocument?.sections ?? []),
     ...(document?.sections ?? []),
   ]) {
-    if (count >= MAX_THEME_CONTENT_SLOTS) break;
-    if (!isValidThemeContentSlotId(section?.id)) continue;
-    if (section.enabled === false) {
-      if (!hiddenSlots.includes(section.id)) hiddenSlots.push(section.id);
-      delete slots[section.id];
+    // A hidden flag is kept for every id the Document schema accepts, not
+    // only the ids that can carry values: a loader read `page["hero.long"]`
+    // still reaches such a section, and its guard must see it hidden
+    // (re-review 2, C). Nor is it cut off by the slot cap.
+    if (section?.enabled === false) {
+      const id = section.id;
+      if (typeof id === "string" && id.length > 0) {
+        if (!hiddenSlots.includes(id)) hiddenSlots.push(id);
+        delete slots[id];
+      }
       continue;
     }
+    if (count >= MAX_THEME_CONTENT_SLOTS) continue;
+    if (!isValidThemeContentSlotId(section?.id)) continue;
     if (hiddenSlots.includes(section.id)) continue;
     const props = section.props;
     slots[section.id] =

@@ -416,6 +416,24 @@ describe("hidden sections (RUNTIME-01)", () => {
     expect(result.hiddenSlots).toEqual(["starter-promo"]);
   });
 
+  // Re-review 2, C: the Document schema accepts ids the slot validator does
+  // not (`hero.long`); a loader read `page["hero.long"]` still reaches the
+  // section, so its hidden flag must survive even though its values never
+  // become a slot.
+  it("keeps the hidden flag of a section whose id is not a valid slot id", async () => {
+    const result = await resolveStorefrontContent({
+      publicationId: "pub_1",
+      pathname: "/",
+      ports: ports([
+        { id: "hero.long", enabled: false, props: { heading: "Hidden" } },
+        { id: "hero.wide", enabled: true, props: { heading: "Shown" } },
+      ]),
+    });
+
+    expect(result.hiddenSlots).toEqual(["hero.long"]);
+    expect(result.slots).toEqual({});
+  });
+
   it("reports nothing hidden when every section is enabled", async () => {
     const result = await resolveStorefrontContent({
       publicationId: "pub_1",
