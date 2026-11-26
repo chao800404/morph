@@ -148,6 +148,7 @@ import {
   SECTION_HIDE_UNSUPPORTED,
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
+  parseSectionSourceRefusal,
 } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
 import {
@@ -4933,6 +4934,8 @@ export function VisualEditorShell({
       link: ContentResetLink | null,
       record: ((answeredDraftGeneration: unknown) => void) | undefined,
       code: string | undefined,
+      /** The refusal's message, where a section-source reason is read. */
+      message?: string,
     ) => {
       if (unconfirmedContentRef.current.has(key)) return;
       // A run's or a reset's own write is not the section's input: input
@@ -4941,6 +4944,25 @@ export function VisualEditorShell({
         link !== null ||
         Object.prototype.hasOwnProperty.call(sent, "resetProps");
       if (!isRun) refused.set(key, sent.sectionId);
+      // Codex review (unanswered resend): an Astro resend carries no
+      // identity (it goes exactly as first sent, and the first send's proof
+      // is not kept), and Core refuses it as preview-identity-legacy before
+      // reading or writing anything. That answers the resend only: the
+      // first write may still have landed. It stays held as unanswered,
+      // with what it completes and the copy it was composed on, so a later
+      // read-back that shows it is taken as landed; it is not sent again in
+      // this press.
+      if (
+        parseSectionSourceRefusal(message ?? "")?.reason ===
+        "preview-identity-legacy"
+      ) {
+        setDraftSaveState("error");
+        unconfirmedContentRef.current.set(key, sent);
+        if (link) unconfirmedResetLinksRef.current.set(key, link);
+        if (record) unconfirmedRecordersRef.current.set(key, record);
+        syncUnconfirmedContentCount();
+        return;
+      }
       const templateId =
         templateIdOfPendingContentKey(key, sent.sectionId) ?? key;
       // Every outcome below but the one that holds it again for a read-back
@@ -5062,11 +5084,13 @@ export function VisualEditorShell({
             link,
             record,
             (error as { code?: string }).code,
+            error instanceof Error ? error.message : undefined,
           ),
         );
         continue;
       }
       let resetCode: string | undefined;
+      let resetMessage: string | undefined;
       let resetRefused = false;
       await resetContentFieldsRef
         .current?.(sent.sectionId, [...(sent.resetProps ?? [])], {
@@ -5079,14 +5103,16 @@ export function VisualEditorShell({
           if (!answer.success) {
             resetRefused = true;
             resetCode = answer.error;
+            resetMessage = answer.message;
           }
         })
         .catch((error: unknown) => {
           resetRefused = true;
           resetCode = (error as { code?: string }).code;
+          resetMessage = error instanceof Error ? error.message : undefined;
         });
       if (resetRefused) {
-        await settleRefused(key, sent, link, record, resetCode);
+        await settleRefused(key, sent, link, record, resetCode, resetMessage);
       }
     }
     return refused;
