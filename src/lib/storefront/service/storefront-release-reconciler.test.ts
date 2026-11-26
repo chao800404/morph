@@ -710,3 +710,97 @@ describe("publish deployment of a server-only build (D92-C)", () => {
     });
   });
 });
+
+describe("Theme Worker script prefix (staging in the production account)", () => {
+  const STAGING = { MORPH_THEME_WORKER_SCRIPT_PREFIX: "morph-stg-m1-theme-" };
+
+  it("publish deploys under the configured prefix", async () => {
+    const deployer = okDeployer();
+    const basePorts = ports();
+    const result = await deployReleaseArtifact({
+      releaseId: "rel_1",
+      deployer,
+      r2Bucket: r2(),
+      env: STAGING,
+      ports: { getRelease: basePorts.getRelease, getBuild: basePorts.getBuild },
+    });
+    expect(result.success && result.scriptName).toBe("morph-stg-m1-theme-sf-1");
+    const calls = deployer.deploy.mock.calls as unknown as unknown[][];
+    expect(calls[0]?.[0]).toMatchObject({
+      plan: { scriptName: "morph-stg-m1-theme-sf-1" },
+    });
+  });
+
+  it("publish without the variable deploys today's name", async () => {
+    const deployer = okDeployer();
+    const basePorts = ports();
+    const result = await deployReleaseArtifact({
+      releaseId: "rel_1",
+      deployer,
+      r2Bucket: r2(),
+      env: {},
+      ports: { getRelease: basePorts.getRelease, getBuild: basePorts.getBuild },
+    });
+    expect(result.success && result.scriptName).toBe("morph-theme-sf-1");
+  });
+
+  it("publish under an invalid prefix never reaches the deployer", async () => {
+    const deployer = okDeployer();
+    const basePorts = ports();
+    const result = await deployReleaseArtifact({
+      releaseId: "rel_1",
+      deployer,
+      r2Bucket: r2(),
+      env: { MORPH_THEME_WORKER_SCRIPT_PREFIX: "" },
+      ports: { getRelease: basePorts.getRelease, getBuild: basePorts.getBuild },
+    });
+    expect(result).toMatchObject({
+      success: false,
+      reason: "PLAN_REJECTED",
+      detail: "INVALID_SCRIPT_PREFIX",
+    });
+    expect(deployer.deploy).not.toHaveBeenCalled();
+  });
+
+  it("activation under an invalid prefix refuses before claiming the release", async () => {
+    const deployer = okDeployer();
+    const activateRelease = vi.fn(async () => ({}));
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: "rel_OLD",
+      deployer,
+      r2Bucket: r2(),
+      env: { MORPH_THEME_WORKER_SCRIPT_PREFIX: "morph-theme-" },
+      ports: ports({ activateRelease }),
+    });
+    expect(result).toMatchObject({
+      success: false,
+      reason: "PLAN_REJECTED",
+      detail: "INVALID_SCRIPT_PREFIX",
+    });
+    expect(activateRelease).not.toHaveBeenCalled();
+    expect(deployer.deploy).not.toHaveBeenCalled();
+  });
+
+  it("activation deploys under the configured prefix", async () => {
+    const deployer = okDeployer();
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: null,
+      deployer,
+      r2Bucket: r2(),
+      env: STAGING,
+      ports: ports(),
+    });
+    expect(result.success && result.scriptName).toBe("morph-stg-m1-theme-sf-1");
+  });
+
+  it("names the invalid prefix in the publish failure, not the storefront id", () => {
+    const described = describeReleaseDeploymentFailure({
+      reason: "PLAN_REJECTED",
+      detail: "INVALID_SCRIPT_PREFIX",
+    });
+    expect(described.reason).toBe("INVALID_SCRIPT_PREFIX");
+    expect(described.message).toContain("MORPH_THEME_WORKER_SCRIPT_PREFIX");
+  });
+});

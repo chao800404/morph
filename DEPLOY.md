@@ -143,7 +143,8 @@ actually served.
   the service binding only; the deployer writes `workers_dev: false` and
   `preview_urls: false`. In the Cloudflare dashboard, the Theme Worker's
   *Domains & Routes* shows no workers.dev route and no preview URLs, and
-  `https://morph-theme-<storefront>.<subdomain>.workers.dev` does not answer
+  `https://morph-theme-<storefront>.<subdomain>.workers.dev` (the prefixed
+  name, when `MORPH_THEME_WORKER_SCRIPT_PREFIX` is set) does not answer
   with the storefront — while the storefront's own domain still does, which is
   the service binding working.
 - An SVG the storefront serves carries the isolation headers on the
@@ -300,6 +301,50 @@ Provisioning is different from deploying the existing environment. For a new env
 3. Replace only the resource names and IDs for that environment.
 4. Set independent Better Auth and email secrets.
 5. Apply all migrations before serving real traffic.
+
+### A second environment in the same Cloudflare account
+
+Worker script names and queue names are unique per account. A second
+environment such as staging, deployed into the production account, has to move
+both off the defaults. Otherwise it overwrites production's Theme Worker on its
+first publish, or its inventory exports go to the wrong consumer. Set these
+non-secret `vars` in the environment's configuration:
+
+```jsonc
+"vars": {
+  // Theme Worker scripts become <prefix><storefrontId>, for example
+  // morph-stg-m1-theme-00000000-0000-4000-8000-000000000002.
+  "MORPH_THEME_WORKER_SCRIPT_PREFIX": "morph-stg-m1-theme-",
+  // The names of this environment's own queues, matching its
+  // queues.producers and queues.consumers entries.
+  "MORPH_INVENTORY_EXPORT_QUEUE_NAME": "morph-stg-m1-inventory-exports",
+  "MORPH_THEME_BUILD_QUEUE_NAME": "morph-stg-m1-theme-builds"
+}
+```
+
+- **`MORPH_THEME_WORKER_SCRIPT_PREFIX`.** This matters because the first
+  storefront on every fresh D1 gets the same fixed id
+  (`00000000-0000-4000-8000-000000000002`), so two environments name the same
+  `morph-theme-<id>` script. The prefix must be 2 to 27 characters. It must
+  start with a lowercase letter, use only `[a-z0-9-]`, end with `-`, and not
+  start with `morph-theme-`. The whole name must fit Cloudflare's 63
+  characters; every UUID storefront fits under any accepted prefix. An invalid
+  value fails closed: publish and rollback refuse to deploy with
+  `INVALID_SCRIPT_PREFIX`, and the deployer is unavailable. Nothing falls back to
+  the default name. The `THEME_WORKER` service binding then points at the
+  prefixed name:
+  `{ "binding": "THEME_WORKER", "service": "morph-stg-m1-theme-<storefrontId>" }`.
+  Before the first publish, check that no Worker with that name exists.
+- **`MORPH_INVENTORY_EXPORT_QUEUE_NAME`, `MORPH_THEME_BUILD_QUEUE_NAME`.** These
+  default to `morph-inventory-exports` and `morph-theme-builds`. The Worker
+  hands a batch to a consumer only when its queue has one of these names. A
+  batch from any other queue throws and is retried, and is never acknowledged.
+  So a renamed queue whose variable is not set leaves its messages
+  unprocessed. Look for `has no consumer here` in Workers Logs. An invalid
+  value, or the same name for both, refuses every batch.
+
+Leave all three unset in production: unset, every name is exactly what it
+was before these variables existed.
 
 The legacy `pnpm setup:cloudflare` script rewrites `wrangler.jsonc` and is not part of the normal Morph deployment flow. Review and update that script before using it to provision a new environment.
 

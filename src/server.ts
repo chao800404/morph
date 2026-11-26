@@ -473,15 +473,24 @@ export default {
       await import("@/server/cms-frame-protection");
     return withCmsFrameProtection(response);
   },
+  // Routed by the configured queue names (src/server/queue-routing.ts); a
+  // batch from any other queue throws and is retried, never acknowledged.
   async queue(batch: WorkerQueueBatch): Promise<void> {
-    if (batch.queue === "morph-inventory-exports") {
-      const { processInventoryExportQueue } =
-        await import("@/server/inventory-export-queue");
-      await processInventoryExportQueue(batch);
-      return;
-    }
-    const { processThemeBuildQueue } =
-      await import("@/server/theme-build-queue");
-    await processThemeBuildQueue(batch);
+    const [{ env }, { dispatchQueueBatch }] = await Promise.all([
+      loadWorkersRuntime(),
+      import("@/server/queue-routing"),
+    ]);
+    await dispatchQueueBatch(batch, env as unknown as Record<string, unknown>, {
+      inventoryExport: async (b) => {
+        const { processInventoryExportQueue } =
+          await import("@/server/inventory-export-queue");
+        await processInventoryExportQueue(b);
+      },
+      themeBuild: async (b) => {
+        const { processThemeBuildQueue } =
+          await import("@/server/theme-build-queue");
+        await processThemeBuildQueue(b);
+      },
+    });
   },
 };

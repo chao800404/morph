@@ -102,6 +102,8 @@ export const activateStorefrontRelease = createServerFn({ method: "POST" })
         deployer: createServerThemeWorkerDeployer(),
         r2Bucket: (env as unknown as { R2_BUCKET?: unknown })
           .R2_BUCKET as never,
+        // Carries MORPH_THEME_WORKER_SCRIPT_PREFIX to the deployment plan.
+        env: env as unknown as Record<string, unknown>,
         ports: {
           getRelease: async (releaseId) => {
             const release = await storefrontReleaseDal.getById(

@@ -1,5 +1,8 @@
 import type { CanonicalThemeBuildManifest } from "../compiler/theme-build-artifact-store.types";
-import { themeWorkerScriptNameForStorefront } from "./theme-runtime.types";
+import {
+  resolveThemeWorkerScriptPrefix,
+  themeWorkerScriptNameForStorefront,
+} from "./theme-runtime.types";
 
 /**
  * Bindings a Theme Worker may never request.
@@ -71,7 +74,8 @@ export type ThemeWorkerDeploymentPlanFailureReason =
   | "MISSING_CLIENT_ASSETS"
   | "INVALID_WORKER_CONFIG"
   | "FORBIDDEN_BINDING"
-  | "INVALID_SCRIPT_NAME";
+  | "INVALID_SCRIPT_NAME"
+  | "INVALID_SCRIPT_PREFIX";
 
 export type ThemeWorkerDeploymentPlanResult =
   | { success: true; plan: ThemeWorkerDeploymentPlan }
@@ -126,15 +130,26 @@ function normalizeDirectory(value: string): string {
  * reconciled from `storefronts.active_release_id`. The name embedded in the
  * artifact's own config is deliberately ignored — an immutable artifact must
  * not carry a deployment target.
+ *
+ * `env` supplies `MORPH_THEME_WORKER_SCRIPT_PREFIX`. Absent, or without that
+ * variable, the name is the default `morph-theme-<storefront>`. An invalid
+ * prefix refuses the plan; it never falls back to the default name.
  */
 export function planThemeWorkerDeployment(args: {
   storefrontId: string;
   manifest: CanonicalThemeBuildManifest;
   workerConfig: unknown;
+  env?: Readonly<Record<string, unknown>>;
 }): ThemeWorkerDeploymentPlanResult {
+  const prefix = resolveThemeWorkerScriptPrefix(args.env);
+  if (!prefix.ok) return fail("INVALID_SCRIPT_PREFIX", prefix.message);
+
   let scriptName: string;
   try {
-    scriptName = themeWorkerScriptNameForStorefront(args.storefrontId);
+    scriptName = themeWorkerScriptNameForStorefront(
+      args.storefrontId,
+      prefix.prefix,
+    );
   } catch (error) {
     return fail(
       "INVALID_SCRIPT_NAME",

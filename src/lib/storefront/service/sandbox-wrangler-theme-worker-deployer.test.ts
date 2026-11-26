@@ -410,3 +410,51 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     expect(session.exec).toHaveBeenCalledOnce();
   });
 });
+
+describe("SandboxWranglerThemeWorkerDeployer under a script name prefix", () => {
+  const okExec = () =>
+    vi.fn(async () => ({
+      exitCode: 0,
+      success: true,
+      stdout: "Current Version ID: 1a2b3c4d-5e6f",
+      stderr: "",
+    }));
+
+  it("refuses a plan that is not the prefixed name, before any container starts", async () => {
+    const getSandbox = vi.fn();
+    const result = await new SandboxWranglerThemeWorkerDeployer({
+      sandboxProvider: { getSandbox },
+      sandboxBinding: {},
+      r2Bucket: r2(),
+      credentials: { apiToken: TOKEN, accountId: ACCOUNT },
+      scriptNamePrefix: "morph-stg-m1-theme-",
+    }).deploy(request);
+    expect(result).toMatchObject({
+      success: false,
+      reason: "DEPLOYER_NOT_CONFIGURED",
+    });
+    expect(getSandbox).not.toHaveBeenCalled();
+  });
+
+  it("deploys a plan whose name is the prefixed storefront name", async () => {
+    let config = "";
+    const { session } = sandboxStub(okExec());
+    session.writeFile = vi.fn(async (path: string, content: string) => {
+      if (path.endsWith("/server/wrangler.json")) config = content;
+    });
+    const result = await deployer(session, {
+      scriptNamePrefix: "morph-stg-m1-theme-",
+    }).deploy({
+      ...request,
+      plan: { ...request.plan, scriptName: "morph-stg-m1-theme-sf-1" },
+    });
+    expect(result.success && result.scriptName).toBe("morph-stg-m1-theme-sf-1");
+    expect(JSON.parse(config).name).toBe("morph-stg-m1-theme-sf-1");
+  });
+
+  it("without a prefix option deploys the plan's name exactly as before", async () => {
+    const { session } = sandboxStub(okExec());
+    const result = await deployer(session).deploy(request);
+    expect(result.success && result.scriptName).toBe("morph-theme-sf-1");
+  });
+});
