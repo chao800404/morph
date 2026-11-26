@@ -14,17 +14,31 @@
  *
  * The plan is a pure function of `scripts/vitest-shard-durations.json`:
  *
- *   - Every file named there is placed longest-first onto the shard that
- *     would finish earliest on PLAN_WORKERS workers (ties: lighter total,
- *     then lower shard index), over ALL files in the durations file, so the
- *     plan does not depend on which `groupOrder` group Vitest is asking about.
- *     Finish time, not summed seconds, because one 560 s file cannot be
+ *   - A file's WEIGHT is its recorded duration plus `overhead.perFileSeconds`
+ *     from the same file. A recorded duration is the file's own test time
+ *     (`endTime - startTime` in the report); it leaves out what every file
+ *     also costs a worker before its tests start (importing and transforming
+ *     the test and its modules, setup files, the test environment, collect).
+ *     That is small per file and large per shard: on the runs it was fitted
+ *     from (rebalance-vitest-shards.mjs), the shard holding 650 mostly tiny
+ *     files was the slowest although its summed test time was the lowest, so
+ *     planning by test time alone gave one shard too many files. The constant
+ *     is one number for every file: splitting it by project or by jsdom/node
+ *     did not beat it in leave-one-run-out checks. `overhead.perShardSeconds`
+ *     (what a shard costs whatever its files) is recorded for projections
+ *     only; it is the same for every shard and moves no file.
+ *   - Every file named there is placed longest-first (by weight) onto the
+ *     shard that would finish earliest on PLAN_WORKERS workers (ties: lighter
+ *     total, then lower shard index), over ALL files in the durations file, so
+ *     the plan does not depend on which `groupOrder` group Vitest is asking
+ *     about. Finish time, not summed seconds, because one 560 s file cannot be
  *     shared: the shard holding it is that long however little else it runs.
  *   - A file that is NOT named there (a new test) is placed after the planned
  *     files, in path order, each onto the then-lightest shard with a default
- *     weight (the median of the planned durations). It runs in exactly one
- *     shard, the same one on every runner, and costs the plan one
- *     default-weight file per new file until the next refresh.
+ *     weight (the median of the planned durations, plus the per-file
+ *     overhead). It runs in exactly one shard, the same one on every runner,
+ *     and costs the plan one default-weight file per new file until the next
+ *     refresh.
  *   - A file named there that no longer exists only adds phantom weight until
  *     the next refresh; it cannot make a shard run it.
  *
@@ -63,6 +77,32 @@ export function loadDurations(file = DURATIONS_FILE) {
   return files;
 }
 
+/**
+ * What every file costs beyond its own test time, from the durations file's
+ * `overhead` block (0 when it has none, so an older file plans as before).
+ * @param {string | URL} [file]
+ * @returns {{perFileSeconds: number, perShardSeconds: number}}
+ */
+export function loadOverhead(file = DURATIONS_FILE) {
+  const overhead = JSON.parse(readFileSync(file, "utf8"))?.overhead;
+  if (overhead === undefined) return { perFileSeconds: 0, perShardSeconds: 0 };
+  if (!overhead || typeof overhead !== "object" || Array.isArray(overhead))
+    throw new Error(
+      "VITEST_SHARD_DURATIONS_INVALID: `overhead` must be an object",
+    );
+  /** @param {string} key */
+  const read = (key) => {
+    const value = overhead[key] === undefined ? 0 : overhead[key];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+      throw new Error(`VITEST_SHARD_DURATIONS_INVALID: overhead.${key}`);
+    return value;
+  };
+  return {
+    perFileSeconds: read("perFileSeconds"),
+    perShardSeconds: read("perShardSeconds"),
+  };
+}
+
 /** @param {number} count */
 function assertCount(count) {
   if (!Number.isInteger(count) || count < 1)
@@ -99,22 +139,24 @@ function emptyShards(count) {
   return Array.from({ length: count }, () => ({
     workers: Array(PLAN_WORKERS).fill(0),
     sum: 0,
+    files: 0,
   }));
 }
 
 /**
  * Puts one file on the shard where the modelled finish time grows least
  * (ties: the lighter sum, then the lower index) and returns that shard.
- * @param {Array<{workers: number[], sum: number}>} shards
- * @param {number} seconds
+ * @param {Array<{workers: number[], sum: number, files: number}>} shards
+ * @param {number} weight seconds on a worker: duration plus per-file overhead
+ * @param {number} [seconds] the file's own duration, for the shard's `sum`
  */
-function place(shards, seconds) {
+function place(shards, weight, seconds = weight) {
   let best = 0;
   let bestEnd = Infinity;
   for (const [index, shard] of shards.entries()) {
     const end = Math.max(
       Math.max(...shard.workers),
-      Math.min(...shard.workers) + seconds,
+      Math.min(...shard.workers) + weight,
     );
     if (end < bestEnd || (end === bestEnd && shard.sum < shards[best].sum)) {
       best = index;
@@ -122,33 +164,36 @@ function place(shards, seconds) {
     }
   }
   const target = shards[best];
-  target.workers[target.workers.indexOf(Math.min(...target.workers))] +=
-    seconds;
+  target.workers[target.workers.indexOf(Math.min(...target.workers))] += weight;
   target.sum += seconds;
+  target.files += 1;
   return best;
 }
 
 /**
- * Longest-first onto the shard that finishes earliest, over every file in
+ * Longest-first (by duration plus overhead) onto the shard that finishes earliest, over every file in
  * `durations`.
  * @param {Readonly<Record<string, number>>} durations
  * @param {number} count
- * @returns {{shardOf: Map<string, number>, sum: number[], finish: number[]}}
- *   `shardOf` is 0-based; `sum` is each shard's total file seconds and
- *   `finish` its modelled finish time on PLAN_WORKERS workers
+ * @param {number} [perFile] seconds every file costs beyond its duration
+ * @returns {{shardOf: Map<string, number>, sum: number[], finish: number[], files: number[]}}
+ *   `shardOf` is 0-based; `sum` is each shard's total file seconds (without
+ *   the overhead), `finish` its modelled finish time on PLAN_WORKERS workers
+ *   with the overhead, `files` its file count
  */
-export function planShards(durations, count) {
+export function planShards(durations, count, perFile = 0) {
   const shards = emptyShards(count);
   const shardOf = new Map();
   const files = Object.entries(durations).sort(
     ([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0),
   );
   for (const [file, seconds] of files)
-    shardOf.set(file, place(shards, seconds));
+    shardOf.set(file, place(shards, seconds + perFile, seconds));
   return {
     shardOf,
     sum: shards.map((shard) => shard.sum),
     finish: shards.map((shard) => Math.max(...shard.workers)),
+    files: shards.map((shard) => shard.files),
   };
 }
 
@@ -160,15 +205,16 @@ export function planShards(durations, count) {
  * @param {readonly string[]} files repository-relative, `/`-separated
  * @param {Readonly<Record<string, number>>} durations
  * @param {number} count
+ * @param {number} [perFile] seconds every file costs beyond its duration
  * @returns {Map<string, number>}
  */
-export function assignShards(files, durations, count) {
+export function assignShards(files, durations, count, perFile = 0) {
   const shards = emptyShards(count);
   const shardOf = new Map();
   for (const [file, seconds] of Object.entries(durations).sort(
     ([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0),
   ))
-    shardOf.set(file, place(shards, seconds));
+    shardOf.set(file, place(shards, seconds + perFile, seconds));
   const weight = defaultWeight(durations);
   /** @type {Map<string, number>} */
   const assigned = new Map();
@@ -179,7 +225,8 @@ export function assignShards(files, durations, count) {
     else assigned.set(file, planned + 1);
   }
   unplanned.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  for (const file of unplanned) assigned.set(file, place(shards, weight) + 1);
+  for (const file of unplanned)
+    assigned.set(file, place(shards, weight + perFile, weight) + 1);
   return assigned;
 }
 
@@ -191,12 +238,20 @@ export function assignShards(files, durations, count) {
  * @param {number} index 1-based
  * @param {number} count
  * @param {(file: T) => string} [nameOf]
+ * @param {number} [perFile] seconds every file costs beyond its duration
  */
-export function selectShardFiles(files, durations, index, count, nameOf) {
+export function selectShardFiles(
+  files,
+  durations,
+  index,
+  count,
+  nameOf,
+  perFile = 0,
+) {
   if (!Number.isInteger(index) || index < 1 || index > count)
     throw new Error(`VITEST_SHARD_INDEX_INVALID: ${index}/${count}`);
   const name = nameOf ?? ((file) => file);
-  const assigned = assignShards(files.map(name), durations, count);
+  const assigned = assignShards(files.map(name), durations, count, perFile);
   return files.filter((file) => assigned.get(name(file)) === index);
 }
 
@@ -207,8 +262,14 @@ export default class DurationShardSequencer extends BaseSequencer {
     const { config } = this.ctx;
     const { index, count } = config.shard;
     const root = config.root.split(path.sep).join("/");
-    return selectShardFiles(files, loadDurations(), index, count, (spec) =>
-      path.posix.relative(root, spec.moduleId.split(path.sep).join("/")),
+    return selectShardFiles(
+      files,
+      loadDurations(),
+      index,
+      count,
+      (spec) =>
+        path.posix.relative(root, spec.moduleId.split(path.sep).join("/")),
+      loadOverhead().perFileSeconds,
     );
   }
 }
