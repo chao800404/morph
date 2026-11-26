@@ -227,6 +227,7 @@ export async function deployReleaseArtifact(args: {
   }
 
   const planned = planThemeWorkerDeployment({
+    target: "production",
     storefrontId: release.storefrontId,
     manifest: build.manifestJson as CanonicalThemeBuildManifest,
     workerConfig,
@@ -381,6 +382,7 @@ async function activateReleaseWithDeploymentUnsynchronised(args: {
   }
 
   const planned = planThemeWorkerDeployment({
+    target: "production",
     storefrontId: release.storefrontId,
     manifest: build.manifestJson as CanonicalThemeBuildManifest,
     workerConfig,

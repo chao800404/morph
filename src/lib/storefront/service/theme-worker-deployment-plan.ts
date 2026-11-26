@@ -1,4 +1,5 @@
 import type { CanonicalThemeBuildManifest } from "../compiler/theme-build-artifact-store.types";
+import { readRegisteredStaticPages } from "../compiler/theme-static-page-reader";
 import { themeWorkerScriptNameForStorefront } from "./theme-runtime.types";
 
 /**
@@ -71,7 +72,21 @@ export type ThemeWorkerDeploymentPlanFailureReason =
   | "MISSING_CLIENT_ASSETS"
   | "INVALID_WORKER_CONFIG"
   | "FORBIDDEN_BINDING"
-  | "INVALID_SCRIPT_NAME";
+  | "INVALID_SCRIPT_NAME"
+  | "INVALID_STATIC_PAGES";
+
+/**
+ * Who the Worker is deployed for.
+ *
+ * `production`: the storefront's Theme Worker. Core answers the build's
+ * registered static pages itself, from the active release's artifact, so
+ * their HTML is left out of the Worker's assets; a copy there could answer
+ * the page after the release no longer registers it.
+ *
+ * `build-preview`: the immutable Build Preview, which serves every file the
+ * build wrote, exactly as before static pages existed.
+ */
+export type ThemeWorkerDeploymentTarget = "production" | "build-preview";
 
 export type ThemeWorkerDeploymentPlanResult =
   | { success: true; plan: ThemeWorkerDeploymentPlan }
@@ -128,6 +143,7 @@ function normalizeDirectory(value: string): string {
  * not carry a deployment target.
  */
 export function planThemeWorkerDeployment(args: {
+  target: ThemeWorkerDeploymentTarget;
   storefrontId: string;
   manifest: CanonicalThemeBuildManifest;
   workerConfig: unknown;
@@ -230,6 +246,16 @@ export function planThemeWorkerDeployment(args: {
     );
   }
 
+  // Production only: the registered static pages' HTML, read through the one
+  // fail-closed reader. A registration that cannot be read refuses the
+  // deployment rather than shipping HTML Core is meant to answer.
+  let staticHtml = new Set<string>();
+  if (args.target === "production") {
+    const registered = readRegisteredStaticPages(args.manifest);
+    if (!registered.ok) return fail("INVALID_STATIC_PAGES", registered.message);
+    staticHtml = new Set(registered.pages.map((page) => page.artifactPath));
+  }
+
   const modules: ThemeWorkerModule[] = [];
   const assets: ThemeWorkerAsset[] = [];
   let clientOutputWritten = false;
@@ -254,6 +280,7 @@ export function planThemeWorkerDeployment(args: {
       clientOutputWritten = true;
       const servedPath = path.slice(clientDirectory.length + 1);
       if (ASSET_EXCLUSIONS.has(servedPath)) continue;
+      if (staticHtml.has(path)) continue;
       assets.push({
         servedPath: `/${servedPath}`,
         artifactPath: path,
