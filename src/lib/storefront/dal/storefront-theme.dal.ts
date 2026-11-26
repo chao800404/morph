@@ -50,7 +50,10 @@ import { updateStorefrontThemeRenderPolicyInputSchema } from "@/lib/validations/
 import type { z } from "zod";
 import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
 import { sameContent } from "@/lib/storefront/editor/pending-content-write";
-import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
+import {
+  readComponentSourcePaths,
+  resolveThemeContentCapabilities,
+} from "@/lib/storefront/theme-content-capability-resolver";
 import {
   analyzeB1Route,
   findB1WriteProvenanceFailure,
@@ -890,6 +893,179 @@ async function resolveAstroSectionWrite(args: {
 }
 
 /**
+ * "Show again" (M3 stage 1): refuses to show a stored section whose
+ * `componentRef` is known to name another component than the one the saved
+ * source renders for its slot now. Showing hands the section's stored props
+ * to whatever renders the slot, so props written for another component would
+ * reach a component that never declared them. The same rule as the Astro
+ * field write's `section-row-mismatch` (`resolveAstroSectionWrite`), raised
+ * in the same form.
+ *
+ * Two refs are the same component when they are equal or name the same
+ * source file (directly, or through the manifest's `components`).
+ *
+ * Where it can be determined:
+ * - Start (and a Theme recording no framework): the source's own answer for
+ *   the slot (`resolveSectionSourceComponent`, the route the template's
+ *   default or bound route; the layout for the layout).
+ * - Astro: the parser's reading of the template's page, every instance of
+ *   the slot (no preview identity is needed: Show writes no field, so only
+ *   which component renders the slot matters).
+ *
+ * Allowed without a comparison, as a plain Document section, where nothing
+ * renders the stored props from a source slot: the section names no ref;
+ * the source has no say (a legacy Theme with no route files, a layout shell
+ * that never reads the Document); the source declares no such slot; or Morph
+ * has no mapping from this kind of document to a source page (an Astro
+ * template that is not a page, such as its layout).
+ *
+ * Refused (`SECTION_SOURCE_UNCONFIRMED`, or `SECTION_SOURCE_UNCONFIRMABLE`
+ * when retrying may help) where a mapping exists but the source cannot
+ * answer: route errors, an ambiguous or unreadable page, a framework Design
+ * does not read. Nothing is written either way.
+ */
+export async function assertShownSectionMatchesSource(args: {
+  storefrontId: string;
+  themeId: string;
+  framework: string | null;
+  templateType: string;
+  templateRoutePath: string | null;
+  sectionId: string;
+  storedComponentRef: unknown;
+}): Promise<void> {
+  if (typeof args.storedComponentRef !== "string" || !args.storedComponentRef) {
+    return;
+  }
+  const storedRef = args.storedComponentRef;
+  const files = await listThemeSourceFiles(args.storefrontId, args.themeId);
+  const manifest = readComponentSourcePaths(
+    files.find((file) => normalizeThemeSourcePath(file.path) === "morph.theme.json")
+      ?.content ?? null,
+  );
+  const sourcePathOf = (ref: string) =>
+    normalizeThemeSourcePath(
+      ref.startsWith("src/") ? ref : (manifest.get(ref) ?? ""),
+    ) || null;
+  const assertSame = (renderedRef: string, renderedPath: string | null) => {
+    const storedPath = sourcePathOf(storedRef);
+    if (
+      renderedRef === storedRef ||
+      (storedPath !== null &&
+        storedPath ===
+          (renderedPath ? normalizeThemeSourcePath(renderedPath) : sourcePathOf(renderedRef)))
+    ) {
+      return;
+    }
+    throw new Error(
+      sectionSourceRefusalMessage(
+        false,
+        "section-row-mismatch",
+        `Morph cannot show this section again: it was stored for component ${storedRef}, not ${renderedRef}, which renders it now. Edit it in Code mode.`,
+      ),
+    );
+  };
+
+  if (args.framework === "astro") {
+    const pagePath = args.templateRoutePath
+      ? routeTemplatePathForRequest(args.templateRoutePath)
+      : args.templateType === "index"
+        ? "/"
+        : null;
+    if (!pagePath) return;
+    const ambiguous = astroRouteAmbiguity(files, pagePath);
+    if (ambiguous) {
+      throw new Error(
+        sectionSourceRefusalMessage(
+          false,
+          "ambiguous-route",
+          `Morph cannot tell which component shows this section: ${astroAmbiguousRouteDetail(pagePath, ambiguous)}.`,
+        ),
+      );
+    }
+    const page = astroPageAt(files, pagePath);
+    if (!page.ok) {
+      if (page.code === "route-missing") return;
+      throw new Error(sectionSourceRefusalMessage(false, page.code, page.reason));
+    }
+    const reading = await readAstroRoute({
+      binding: astroParserBindingFrom(env),
+      files,
+      route: {
+        path: page.record.path,
+        sourcePath: page.record.sourcePath,
+        dynamic: page.record.dynamic,
+      },
+    });
+    if (!reading.ok) throw astroSectionRefusal(reading);
+    const { analysis } = reading.identityInput;
+    const rendering = analysis.instances.filter(
+      (instance) => instance.section === args.sectionId,
+    );
+    if (rendering.length === 0) return;
+    if (analysis.diagnostics.length > 0) {
+      throw new Error(
+        sectionSourceRefusalMessage(
+          false,
+          "source-unconfirmed",
+          "Morph cannot tell which component shows this section: the page has diagnostics. Fix it in Code mode.",
+        ),
+      );
+    }
+    for (const instance of rendering) {
+      if (!instance.componentPath) {
+        throw new Error(
+          sectionSourceRefusalMessage(
+            false,
+            "source-unconfirmed",
+            "Morph cannot tell which component shows this section. Edit it in Code mode.",
+          ),
+        );
+      }
+      const identity = sourceSectionIdentity({
+        files,
+        componentSourcePath: instance.componentPath,
+        componentExport: instance.componentExport,
+        componentName: instance.componentName,
+      });
+      assertSame(identity.componentRef, instance.componentPath);
+    }
+    return;
+  }
+
+  if (args.templateType === "layout" && layoutIgnoresDocument(files)) return;
+  // A template no route serves renders nowhere, so nothing reads its props.
+  if (args.templateType !== "layout" && !args.templateRoutePath) {
+    const registry = buildThemeRouteRegistry(files);
+    if (
+      registry.valid &&
+      files.some((file) => file.path.startsWith("src/routes/")) &&
+      !findDefaultTemplateRoute(registry, args.templateType)
+    ) {
+      return;
+    }
+  }
+  const source = resolveSectionSourceComponent({
+    framework: args.framework,
+    templateType: args.templateType,
+    templateRoutePath: args.templateRoutePath,
+    sectionId: args.sectionId,
+    files,
+  });
+  if (source.kind === "legacy") return;
+  if (source.kind === "unconfirmed") {
+    if (source.notRendered) return;
+    throw new Error(
+      sectionSourceRefusalMessage(
+        false,
+        "source-unconfirmed",
+        `Morph cannot tell which component shows this section: ${source.reason}`,
+      ),
+    );
+  }
+  assertSame(source.componentRef, source.componentSourcePath);
+}
+
+/**
  * Where one section of a template is rendered, on every route that serves
  * the template (M3 Hide). A template can sit behind several routes, and a
  * hide is only safe when each of them can omit the section, so a hide is
@@ -1163,7 +1339,7 @@ export async function prepareTemplateDocumentWrite(
  * alternative was a hundred and fifty lines of optimistic concurrency living in
  * two places, where only one of them would receive the next correction.
  */
-async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
+export async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
   const write = await prepareTemplateDocumentWrite(args);
   try {
     await env.DATABASE.batch([write.guard, ...write.mutations]);

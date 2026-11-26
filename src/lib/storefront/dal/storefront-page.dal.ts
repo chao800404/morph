@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
 import {
   storefrontPageRevisions,
@@ -7,7 +8,7 @@ import {
   type StorefrontPageStatus,
 } from "@/db/storefront.schema";
 import { likeContains } from "@/lib/db/like-query";
-import { and, asc, count, desc, eq, isNull, max, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNull, max, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import {
   toStorefrontPageDTO,
@@ -20,6 +21,89 @@ import {
   sectionHideRefusal,
   sectionsNewlyHidden,
 } from "../content/section-hide-check";
+import {
+  showSectionAgainInDocument,
+  type ShowSectionAgainOutcome,
+} from "../content/show-section-again";
+import { assertShownSectionMatchesSource } from "./storefront-theme.dal";
+import { PAGE_DRAFT_VERSION_MISMATCH } from "../page-write-errors";
+import { batchGuard } from "@/lib/db/batch-guard";
+import type { BatchItem } from "drizzle-orm/batch";
+
+type Db = Awaited<ReturnType<typeof getDb>>;
+
+const pageDraftConflict = () =>
+  new Error(`${PAGE_DRAFT_VERSION_MISMATCH}: Page draft was modified concurrently.`);
+
+/**
+ * The first statement of every Page draft write's batch: the page is this
+ * storefront's, not deleted, and its draft is still the revision `version`
+ * the caller read. Versions are unique per page, so this pins the draft
+ * pointer exactly; a batch is one transaction, so a failed guard writes
+ * nothing (`batchGuard`).
+ */
+function pageDraftGuard(
+  db: Db,
+  args: { id: string; storefrontId: string; expectedDraftVersion: number },
+) {
+  return batchGuard(
+    db,
+    sql`EXISTS ${db
+      .select({ one: sql`1` })
+      .from(storefrontPages)
+      .innerJoin(
+        storefrontPageRevisions,
+        and(
+          eq(storefrontPageRevisions.id, storefrontPages.draftRevisionId),
+          eq(storefrontPageRevisions.pageId, storefrontPages.id),
+        ),
+      )
+      .where(
+        and(
+          eq(storefrontPages.id, args.id),
+          eq(storefrontPages.storefrontId, args.storefrontId),
+          isNull(storefrontPages.deletedAt),
+          eq(storefrontPageRevisions.version, args.expectedDraftVersion),
+        ),
+      )}`,
+  );
+}
+
+/**
+ * Only the failures a Page draft write owns are a conflict: its guard
+ * (`json('')`, "malformed JSON") and the (page, version) unique index two
+ * writers allocating the same next version meet. Any other failure — another
+ * constraint included — stays the failure it is.
+ */
+function isPageDraftBatchConflict(error: unknown): boolean {
+  const messages: string[] = [];
+  for (
+    let current: unknown = error, depth = 0;
+    current instanceof Error && depth < 4;
+    current = (current as { cause?: unknown }).cause, depth += 1
+  ) {
+    messages.push(current.message);
+  }
+  return messages.some(
+    (message) =>
+      message.includes("malformed JSON") ||
+      message.includes(
+        "UNIQUE constraint failed: storefront_page_revisions.page_id, storefront_page_revisions.version",
+      ),
+  );
+}
+
+async function runPageDraftBatch(
+  db: Db,
+  statements: [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+) {
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    if (isPageDraftBatchConflict(error)) throw pageDraftConflict();
+    throw error;
+  }
+}
 
 const activeStorefront = async () => {
   const db = await getDb();
@@ -190,16 +274,26 @@ export const storefrontPageDal = {
     hasPublishedVersion: boolean;
     createdBy: string;
     storefrontId: string;
+    expectedDraftVersion: number;
   }) {
     // M3 Hide: a Page section is not hidden until Morph can prove where its
     // route renders it (`section-hide-check.ts`). Judged against the draft
     // this write replaces; showing a section is always allowed. Restoring a
     // revision does not come through here and is never refused.
+    //
+    // The draft judged is the one the caller read (`expectedDraftVersion`),
+    // and the batch below refuses the write unless it is still the draft, so
+    // the verdict belongs to the revision this save replaces: a Show again
+    // or another tab's save in between makes this a conflict, never a write
+    // of a document judged against a draft that is gone.
     const current = await storefrontPageDal.findDetail(
       data.id,
       data.storefrontId,
     );
-    if (sectionsNewlyHidden(current?.document ?? null, data.document).length) {
+    if (!current || current.version !== data.expectedDraftVersion) {
+      throw pageDraftConflict();
+    }
+    if (sectionsNewlyHidden(current.document, data.document).length) {
       throw sectionHideRefusal(
         "no-call-site",
         PAGE_SECTION_HIDE_UNSUPPORTED_MESSAGE,
@@ -215,7 +309,8 @@ export const storefrontPageDal = {
     const now = new Date().toISOString();
     const status: StorefrontPageStatus =
       data.publish || data.hasPublishedVersion ? "published" : "draft";
-    await db.batch([
+    await runPageDraftBatch(db, [
+      pageDraftGuard(db, data),
       db.insert(storefrontPageRevisions).values({
         id: revisionId,
         pageId: data.id,
@@ -245,22 +340,36 @@ export const storefrontPageDal = {
     ]);
     return version;
   },
+  /**
+   * The metadata lives on the page row, not in a revision, but is written
+   * under the same draft guard as every other Page write: the form that
+   * sends it was loaded with that draft, and a Page changed elsewhere is
+   * reloaded before anything of it is saved. Null when the page is gone.
+   */
   async updateMetadata(
     id: string,
     storefrontId: string,
     metadata: Record<string, string>,
+    expectedDraftVersion: number,
   ) {
+    const current = await storefrontPageDal.findDetail(id, storefrontId);
+    if (!current) return null;
+    if (current.version !== expectedDraftVersion) throw pageDraftConflict();
     const db = await getDb();
-    await db
-      .update(storefrontPages)
-      .set({ metadata, updatedAt: new Date().toISOString() })
-      .where(
-        and(
-          eq(storefrontPages.id, id),
-          eq(storefrontPages.storefrontId, storefrontId),
-          isNull(storefrontPages.deletedAt),
+    await runPageDraftBatch(db, [
+      pageDraftGuard(db, { id, storefrontId, expectedDraftVersion }),
+      db
+        .update(storefrontPages)
+        .set({ metadata, updatedAt: new Date().toISOString() })
+        .where(
+          and(
+            eq(storefrontPages.id, id),
+            eq(storefrontPages.storefrontId, storefrontId),
+            isNull(storefrontPages.deletedAt),
+          ),
         ),
-      );
+    ]);
+    return { id };
   },
   async listRevisions(
     id: string,
@@ -311,20 +420,17 @@ export const storefrontPageDal = {
     revisionId: string;
     storefrontId: string;
     createdBy: string;
+    expectedDraftVersion: number;
   }) {
+    const current = await storefrontPageDal.findDetail(
+      data.id,
+      data.storefrontId,
+    );
+    if (!current) return null;
+    if (current.version !== data.expectedDraftVersion) {
+      throw pageDraftConflict();
+    }
     const db = await getDb();
-    const [record] = await db
-      .select({ id: storefrontPages.id })
-      .from(storefrontPages)
-      .where(
-        and(
-          eq(storefrontPages.id, data.id),
-          eq(storefrontPages.storefrontId, data.storefrontId),
-          isNull(storefrontPages.deletedAt),
-        ),
-      )
-      .limit(1);
-    if (!record) return null;
     const [source] = await db
       .select()
       .from(storefrontPageRevisions)
@@ -343,7 +449,8 @@ export const storefrontPageDal = {
     const revisionId = crypto.randomUUID();
     const version = Number(versionRow?.value ?? 0) + 1;
     const now = new Date().toISOString();
-    await db.batch([
+    await runPageDraftBatch(db, [
+      pageDraftGuard(db, data),
       db.insert(storefrontPageRevisions).values({
         id: revisionId,
         pageId: data.id,
@@ -360,9 +467,138 @@ export const storefrontPageDal = {
           and(
             eq(storefrontPages.id, data.id),
             eq(storefrontPages.storefrontId, data.storefrontId),
+            isNull(storefrontPages.deletedAt),
           ),
         ),
     ]);
     return { version };
+  },
+  /**
+   * "Show again" (M3 stage 1): one hidden section of the Page's draft back to
+   * shown, and nothing else (`showSectionAgainInDocument`).
+   *
+   * Like every Page draft write, this compares the draft the caller saw:
+   * its revision `version` must still be the draft's, both when read here
+   * and again inside the write's batch, where a compare-and-set over the
+   * draft revision id refuses a save that landed in between. The unique
+   * (page, version) index refuses a concurrent insert of the same version.
+   * Either way the batch writes nothing and the caller gets the Page draft
+   * conflict (`PAGE_DRAFT_VERSION_MISMATCH`).
+   *
+   * Writes a new draft revision, as every Page draft save does; the
+   * published revision, status, title and handle stay. Never publishes.
+   *
+   * Null when the page is not this storefront's or is deleted. A section
+   * not held exactly once, or one already shown, writes nothing; the latter
+   * answers the draft's version so a retried call reads as done.
+   */
+  async showSectionAgain(data: {
+    id: string;
+    storefrontId: string;
+    sectionId: string;
+    expectedDraftVersion: number;
+    createdBy: string;
+  }): Promise<
+    | null
+    | Readonly<{ kind: "section-not-found"; reason: "missing" | "ambiguous" }>
+    | Readonly<{
+        kind: "document-refused";
+        code: Extract<ShowSectionAgainOutcome, { kind: "refused" }>["code"];
+      }>
+    | Readonly<{ kind: "unchanged" | "shown"; version: number }>
+  > {
+    const draft = await env.DATABASE.prepare(
+      `SELECT r.id AS revisionId, r.version AS version, r.document AS document,
+              s.active_theme_id AS activeThemeId, th.framework AS framework
+         FROM storefront_pages p
+         INNER JOIN storefronts s ON s.id = p.storefront_id
+         INNER JOIN storefront_page_revisions r
+           ON r.id = p.draft_revision_id AND r.page_id = p.id
+         LEFT JOIN storefront_themes th
+           ON th.id = s.active_theme_id AND th.storefront_id = s.id
+          AND th.deleted_at IS NULL
+        WHERE p.id = ?1 AND p.storefront_id = ?2
+          AND p.deleted_at IS NULL AND s.deleted_at IS NULL
+        LIMIT 1`,
+    )
+      .bind(data.id, data.storefrontId)
+      .first<{
+        revisionId: string;
+        version: number;
+        document: string;
+        activeThemeId: string | null;
+        framework: string | null;
+      }>();
+    if (!draft) return null;
+
+    const outcome = showSectionAgainInDocument(draft.document, data.sectionId);
+    if (outcome.kind === "refused") {
+      return { kind: "document-refused", code: outcome.code };
+    }
+    if (outcome.kind === "not-found") {
+      return { kind: "section-not-found", reason: outcome.reason };
+    }
+    if (outcome.kind === "already-shown") {
+      return { kind: "unchanged", version: draft.version };
+    }
+    if (draft.version !== data.expectedDraftVersion) throw pageDraftConflict();
+    // The storefront's active Theme renders a Page through its page route;
+    // a storefront with none has no source to compare with.
+    if (draft.activeThemeId) {
+      await assertShownSectionMatchesSource({
+        storefrontId: data.storefrontId,
+        themeId: draft.activeThemeId,
+        framework: draft.framework,
+        templateType: "page",
+        templateRoutePath: null,
+        sectionId: data.sectionId,
+        storedComponentRef: outcome.section.componentRef,
+      });
+    }
+
+    const next = await env.DATABASE.prepare(
+      "SELECT COALESCE(MAX(version), 0) + 1 AS version FROM storefront_page_revisions WHERE page_id = ?1",
+    )
+      .bind(data.id)
+      .first<{ version: number }>();
+    const version = Number(next?.version ?? draft.version + 1);
+    const revisionId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    try {
+      await env.DATABASE.batch([
+        // The compare-and-set: the draft is still the revision read above.
+        env.DATABASE.prepare(
+          `SELECT CASE WHEN EXISTS (
+             SELECT 1 FROM storefront_pages p
+             INNER JOIN storefronts s ON s.id = p.storefront_id
+             WHERE p.id = ?1 AND p.storefront_id = ?2
+               AND p.draft_revision_id = ?3
+               AND p.deleted_at IS NULL AND s.deleted_at IS NULL
+           ) THEN 1 ELSE json('') END AS ok`,
+        ).bind(data.id, data.storefrontId, draft.revisionId),
+        env.DATABASE.prepare(
+          `INSERT INTO storefront_page_revisions
+             (id, page_id, version, document, created_by, created_at, published_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)`,
+        ).bind(
+          revisionId,
+          data.id,
+          version,
+          JSON.stringify(outcome.document),
+          data.createdBy,
+          now,
+        ),
+        env.DATABASE.prepare(
+          `UPDATE storefront_pages
+              SET draft_revision_id = ?1, updated_at = ?2
+            WHERE id = ?3 AND storefront_id = ?4
+              AND draft_revision_id = ?5 AND deleted_at IS NULL`,
+        ).bind(revisionId, now, data.id, data.storefrontId, draft.revisionId),
+      ]);
+    } catch (error) {
+      if (isPageDraftBatchConflict(error)) throw pageDraftConflict();
+      throw error;
+    }
+    return { kind: "shown", version };
   },
 };

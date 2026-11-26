@@ -6,6 +6,7 @@ import {
   storefrontConcreteRenderPolicySchema,
   storefrontPageRenderPolicySchema,
 } from "./storefront-render-policy";
+import { storefrontPageSectionIdSchema } from "./storefront-page";
 
 export const storefrontThemeEditorInputSchema = z.object({
   storefrontId: idSchema("storefront"),
@@ -211,6 +212,46 @@ export const renameStorefrontThemeSectionInputSchema =
     name: z.string().trim().min(1).max(100).nullable(),
     expectedDraftGeneration: z.number().int().min(1),
   });
+
+/**
+ * "Show again" (M3 stage 1): one hidden section of one draft back to shown.
+ *
+ * A CMS Page is addressed by its id within the active storefront, as every
+ * Page write is, and holds its draft revision's `version` (the Page detail's
+ * `version`). A template or the shared layout (a template of type `layout`)
+ * is addressed by storefront, Theme and template, as every section write is,
+ * and holds the template's `draftGeneration`.
+ *
+ * The section is named by the id it is stored under, so it is held to the
+ * rule a Document holds stored ids to (`storefrontPageSectionIdSchema`) and
+ * passed on exactly as sent: never trimmed, since `" hero "` and `"hero"`
+ * are two stored sections, and a `/promo` id a Document stores is accepted
+ * (unlike `documentSectionIdSchema`, which is for a content write naming a
+ * section from the editor's selection).
+ */
+const showAgainSectionIdSchema = z
+  .string()
+  .refine((id) => storefrontPageSectionIdSchema.safeParse(id).success, {
+    message: "Name the section by the id the Document stores.",
+  });
+
+export const showStorefrontSectionAgainInputSchema = z.discriminatedUnion(
+  "kind",
+  [
+    z.object({
+      kind: z.literal("page"),
+      pageId: z.uuid(),
+      sectionId: showAgainSectionIdSchema,
+      expectedDraftVersion: z.number().int().min(1),
+    }),
+    storefrontThemeEditorInputSchema.extend({
+      kind: z.literal("template"),
+      templateId: idSchema("storefront theme template"),
+      sectionId: showAgainSectionIdSchema,
+      expectedDraftGeneration: z.number().int().min(1),
+    }),
+  ],
+);
 
 export const storefrontThemeEditorSearchSchema = z.object({
   template: z

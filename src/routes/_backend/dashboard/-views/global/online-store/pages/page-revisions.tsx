@@ -9,6 +9,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearch } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { toast } from "sonner";
+import { PAGE_DRAFT_CONFLICT } from "@/lib/storefront/page-write-errors";
 import { restorePageRevisionAction } from "./page-actions";
 
 export default function StorefrontPageRevisions() {
@@ -17,6 +18,7 @@ export default function StorefrontPageRevisions() {
   const page = Number(search.page) || 1;
   const queryClient = useQueryClient();
   const query = useQuery(storefrontPageQueries.revisions(id, page));
+  const detail = useQuery(storefrontPageQueries.detail(id));
   const result = query.data;
   const columns = useMemo<DataTableColumn<StorefrontPageRevisionDTO>[]>(
     () => [
@@ -78,8 +80,31 @@ export default function StorefrontPageRevisions() {
           label: "Restore as draft",
           disabled: revision.isDraft,
           onSelect: async () => {
-            const restored = await restorePageRevisionAction(id, revision.id);
+            // Restoring replaces the draft, so it names the draft it was
+            // chosen against: the Page detail's version, not the list's,
+            // which may not hold the current draft on this page of it.
+            const draft = detail.data?.success ? detail.data.data : null;
+            if (!draft) {
+              toast.error("The page is still loading. Try again.", {
+                position: "top-center",
+              });
+              return;
+            }
+            const restored = await restorePageRevisionAction(
+              id,
+              revision.id,
+              draft.version,
+            );
             if (!restored.success) {
+              // Changed elsewhere: the latest Page and history are loaded;
+              // nothing is restored until the author chooses again.
+              if (
+                (restored as { error?: string }).error === PAGE_DRAFT_CONFLICT
+              ) {
+                await queryClient.invalidateQueries({
+                  queryKey: storefrontPageQueries.all(),
+                });
+              }
               toast.error(restored.message, { position: "top-center" });
               return;
             }
