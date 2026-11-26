@@ -1,6 +1,7 @@
 import { deriveThemeDocumentLayoutPath } from "@/lib/storefront/compiler/theme-route-sections";
 import {
   createHideCapabilityAnalyzer,
+  isHideGuardedModule,
   type HideGuardSite,
 } from "./theme-hide-capability";
 import { normalizeThemeSourcePath } from "./theme-content-binding";
@@ -38,9 +39,6 @@ export { THEME_HIDE_GUARD_VERSION } from "./theme-hide-guard-version";
 
 export type HideGuardPlan = ReadonlyMap<string, readonly HideGuardSite[]>;
 
-const ROUTE_MODULE = /^src\/routes\/.+\.(tsx|jsx)$/;
-const ROOT_ROUTE = /^src\/routes\/__root\.(tsx|jsx)$/;
-
 /**
  * Every call site that gets a guard, per file. Only the modules whose
  * sections a Document describes are guarded: route modules, and the document
@@ -61,12 +59,7 @@ export function planHideGuards(
   const plan = new Map<string, HideGuardSite[]>();
   for (const file of files) {
     const isLayout = file.path === layoutPath;
-    if (
-      !isLayout &&
-      (!ROUTE_MODULE.test(file.path) || ROOT_ROUTE.test(file.path))
-    ) {
-      continue;
-    }
+    if (!isHideGuardedModule(file.path, layoutPath)) continue;
     for (const slot of analyzer.sectionsIn(file.path)) {
       const capability = analyzer.classify({
         callSitePath: file.path,

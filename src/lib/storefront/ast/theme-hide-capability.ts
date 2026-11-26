@@ -1,9 +1,16 @@
-import { normalizeThemeSourcePath } from "./theme-content-binding";
+import {
+  readThemePathAliases,
+  resolveThemeBaseUrlImport,
+  resolveThemePathAlias,
+} from "../compiler/theme-path-aliases";
+import {
+  normalizeThemeSourcePath,
+  themeImportBase,
+} from "./theme-content-binding";
 import { confirmThemeContentModuleFunctionExport } from "./theme-content-module";
 import {
   analyzeB1Route,
   analyzeB1SlotUses,
-  reachableThemeModules,
   type B1RouteAnalysis,
   type B1SlotUse,
   type B1SlotUseAnalysis,
@@ -12,13 +19,21 @@ import {
 import {
   createThemeSourceAstReader,
   type ThemeSourceAstReader,
+  parseThemeSourceAst,
 } from "./theme-source-ast";
+import { deriveThemeDocumentLayoutPath } from "../compiler/theme-route-sections";
 import {
+  LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
+  STARTER_THEME_ROOT_ROUTE_SOURCE,
 } from "../starter-theme-v3-files";
 import {
+  THEME_CONTENT_CONTEXT_KEY,
   THEME_CONTENT_MODULE_PATH,
   THEME_SECTION_HIDDEN_HELPER,
 } from "../theme-content-slots";
@@ -147,7 +162,98 @@ const STARTER_PAGE_MODULE_SOURCES: readonly string[] = [
   LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
 ];
 
+/**
+ * Every Starter root route that loads the raw content into the route context
+ * (`loadContentSlots` → `MorphContentProvider`). The root has not changed
+ * since the content module was introduced.
+ */
+const STARTER_ROOT_ROUTE_SOURCES: readonly string[] = [
+  STARTER_THEME_ROOT_ROUTE_SOURCE,
+];
+
+/**
+ * Every Starter content module, whose `content`/`isSectionHidden` and
+ * context are the platform's. A content() guard reads the hidden list
+ * through them, so they are confirmed as code, not as a function shape: an
+ * `isSectionHidden` that answers a constant would pass a shape check.
+ */
+const STARTER_CONTENT_MODULE_SOURCES: readonly string[] = [
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
+];
+
+/** AST keys that carry position, comments or raw spelling, never meaning. */
+const NON_SEMANTIC_KEYS = new Set([
+  "start",
+  "end",
+  "loc",
+  "range",
+  "extra",
+  "comments",
+  "leadingComments",
+  "trailingComments",
+  "innerComments",
+  "tokens",
+]);
+
+/**
+ * A module's code with comments, whitespace and spelling of literals left
+ * out: two sources with the same key are the same program. Null when the
+ * source does not parse.
+ */
+function codeKey(path: string, content: string): string | null {
+  const parsed = parseThemeSourceAst({ path, content });
+  if (!parsed.ok) return null;
+  return JSON.stringify(parsed.ast.program, (key, value) =>
+    NON_SEMANTIC_KEYS.has(key) ? undefined : value,
+  );
+}
+
+const knownCodeKeys = new Map<readonly string[], ReadonlySet<string>>();
+/** Whether `content` is, as code, one of `sources`. */
+function isKnownCode(
+  sources: readonly string[],
+  path: string,
+  content: string,
+): boolean {
+  if (sources.includes(content)) return true;
+  let keys = knownCodeKeys.get(sources);
+  if (!keys) {
+    keys = new Set(
+      sources
+        .map((source) => codeKey(path, source))
+        .filter((key): key is string => key !== null),
+    );
+    knownCodeKeys.set(sources, keys);
+  }
+  const key = codeKey(path, content);
+  return key !== null && keys.has(key);
+}
+
 const SCRIPT_FILE = /\.(tsx|jsx|ts|js|mjs|cjs)$/;
+
+const ROUTE_MODULE = /^src\/routes\/.+\.(tsx|jsx)$/;
+const ROOT_ROUTE = /^src\/routes\/__root\.(tsx|jsx)$/;
+
+/**
+ * The modules whose supported call sites Morph's build guards
+ * (`planHideGuards`): every route module but the root, and the document
+ * layout. Elsewhere a call site is never wrapped, so a read there is a
+ * reader the guard does not cover.
+ */
+export function isHideGuardedModule(
+  path: string,
+  layoutPath: string | null,
+): boolean {
+  return (
+    path === layoutPath || (ROUTE_MODULE.test(path) && !ROOT_ROUTE.test(path))
+  );
+}
 
 function refuse(
   slot: string,
@@ -164,6 +270,16 @@ function refuse(
   };
 }
 
+/**
+ * For a route (or the layout) whose own JSX does not render a section:
+ * `not-rendered` only when the source proves nothing in its scope reads the
+ * section; otherwise the classifier's verdict (the route reads it after all)
+ * or why it cannot be proven. "Cannot analyse" is never "not rendered".
+ */
+export type HideNotRenderedProof =
+  | Readonly<{ kind: "not-rendered"; slot: string }>
+  | HideCapability;
+
 export type HideCapabilityAnalyzer = Readonly<{
   /** The sections B1 identifies in one module, in source order. */
   sectionsIn(path: string): readonly string[];
@@ -172,7 +288,246 @@ export type HideCapabilityAnalyzer = Readonly<{
     slot: string;
     scope: HideCapabilityScope;
   }): HideCapability;
+  /**
+   * Whether `slot` is proven unread by the route (or layout) at
+   * `sourcePath` and by every module of the Theme: runtime picks a document
+   * by the requested URL, and the route tree runs modules no import edge
+   * reaches, so the proof is a whole-Theme proof for either scope. Read with
+   * the same slot-use analysis the classifier uses, so the two cannot
+   * disagree about what a read is.
+   */
+  proveNotRendered(args: {
+    sourcePath: string;
+    slot: string;
+    scope: HideCapabilityScope;
+  }): HideNotRenderedProof;
+  /**
+   * For a section no route is found to serve: `not-rendered` only when no
+   * module of the Theme reads `slot` by any root, every module parses, and
+   * nothing reaches content in a way the analysis cannot follow.
+   */
+  proveUnread(args: { slot: string }): HideNotRenderedProof;
 }>;
+
+// Babel nodes are read structurally here, as in the other AST readers.
+type AnyNode = any;
+
+/** `content`/`morph` come from here; reached any other way, B1 cannot follow. */
+const SDK_SPECIFIER = /^@morph\/sdk(\/|$)/;
+/**
+ * Theme files only a Vite plugin (or another loader) can execute, which the
+ * slot-use analysis cannot read. Anywhere under `src/` they defeat the
+ * whole-Theme proof; imported, they are refused where they are imported.
+ */
+const UNANALYSED_SOURCE = /\.(mts|cts|mdx|vue|svelte|astro)$/;
+/** Imports that evaluate no Theme code: styles, data and media. */
+const INERT_MODULE =
+  /\.(css|scss|sass|less|json|svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|txt|mp4|webm|mp3)$/i;
+/** A Theme's own Vite config: aliases and plugins Morph cannot follow. */
+const VITE_CONFIG = /^vite\.config\.(ts|js|mjs|cjs|mts|cts)$/;
+/**
+ * What an extensionless relative import may name: Morph's own order and
+ * Vite's default `resolve.extensions` together. More than one existing
+ * candidate means the analysis and Vite may pick different files.
+ */
+const RESOLVE_SUFFIXES = [
+  "",
+  ".tsx",
+  ".ts",
+  ".jsx",
+  ".js",
+  ".mjs",
+  ".mts",
+  ".cjs",
+  ".cts",
+  ".json",
+  "/index.tsx",
+  "/index.ts",
+  "/index.jsx",
+  "/index.js",
+  "/index.mjs",
+  "/index.mts",
+  "/index.json",
+] as const;
+/** The route tree the build generates; it imports only `src/routes/` files. */
+const GENERATED_ROUTE_TREE = "src/routeTree.gen";
+const ROOT_ROUTE_PATH = "src/routes/__root.tsx";
+/** Where a Starter page answer carries its hidden slots (`_hidden`). */
+const HIDDEN_LIST_KEY = "_hidden";
+/** What a module may import from the content module, by name. */
+const CONTENT_MODULE_READERS = new Set(["content", "isSectionHidden", "morph"]);
+/**
+ * Router APIs that hand out match objects, the route context or another
+ * route's loader data: any of them can read the raw content the Starter
+ * root route puts in the route context.
+ */
+const ROUTER_CONTEXT_APIS = new Set([
+  "useRouteContext",
+  "useMatch",
+  "useMatches",
+  "useParentMatches",
+  "useChildMatches",
+  "useRouterState",
+  "useRouter",
+  "getRouteApi",
+  "useLoaderDeps",
+]);
+/** Route options TanStack calls with the route context. */
+const ROUTE_CONTEXT_OPTIONS = new Set([
+  "loader",
+  "beforeLoad",
+  "loaderDeps",
+  "context",
+  "head",
+  "headers",
+  "scripts",
+  "links",
+  "onEnter",
+  "onStay",
+  "onLeave",
+  "shouldReload",
+]);
+
+type ModuleAccessProblem = Readonly<{
+  reason: HideRefusalReason;
+  line: number;
+  detail: string;
+}>;
+
+type ModuleAccess = Readonly<{
+  /** Reaches content in a way the slot-use analysis cannot follow. */
+  problem: ModuleAccessProblem | null;
+  /**
+   * Reads of the hidden flag itself other than the exact Starter guard
+   * `!isSectionHidden("slot") && <El/>`: the slot read, or null when it
+   * cannot be named. Hiding changes what such code does.
+   */
+  hiddenFlagReads: readonly Readonly<{ slot: string | null; line: number }>[];
+}>;
+
+/** How one import specifier resolves, decided exactly or not at all. */
+type ResolvedSpecifier =
+  | Readonly<{ kind: "module"; target: string; alias: boolean }>
+  | Readonly<{ kind: "asset" }>
+  | Readonly<{ kind: "package" }>
+  | Readonly<{ kind: "refused"; detail: string }>;
+
+/**
+ * The plugins a Theme's own Vite config may use while Morph can still prove
+ * a hide: Start, React and Cloudflare's own, called as Morph's Starter and
+ * native template call them. `args: "none"` takes no options at all
+ * (`tanstackStart({ srcDirectory })` or a React Babel plugin would change
+ * what runs); `"literal"` takes plain data only.
+ */
+const PLAIN_VITE_PLUGINS: Readonly<
+  Record<string, Readonly<{ name: string; args: "none" | "literal" }>>
+> = {
+  "@cloudflare/vite-plugin": { name: "cloudflare", args: "literal" },
+  "@tanstack/react-start/plugin/vite": { name: "tanstackStart", args: "none" },
+  "@vitejs/plugin-react": { name: "default", args: "none" },
+};
+
+function isLiteralValue(node: AnyNode): boolean {
+  switch (node?.type) {
+    case "StringLiteral":
+    case "NumericLiteral":
+    case "BooleanLiteral":
+    case "NullLiteral":
+      return true;
+    case "ArrayExpression":
+      return (node.elements ?? []).every(isLiteralValue);
+    case "ObjectExpression":
+      return (node.properties ?? []).every(
+        (property: AnyNode) =>
+          property.type === "ObjectProperty" &&
+          !property.computed &&
+          (property.key?.type === "Identifier" ||
+            property.key?.type === "StringLiteral") &&
+          isLiteralValue(property.value),
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether a Theme's Vite config is exactly `export default defineConfig({
+ * plugins: [...] })` over the plain plugins above: no aliases, no other
+ * plugin, no option that changes which modules run or how. Anything else can
+ * resolve or transform a module in a way the proof cannot follow.
+ */
+function isPlainStartViteConfig(
+  file: B1SourceFile,
+  reader: ThemeSourceAstReader,
+): boolean {
+  const parsed = reader.read(file.path, file.content);
+  if (!parsed.ok) return false;
+  const locals = new Map<string, string>();
+  let config: AnyNode = null;
+  for (const statement of parsed.ast.program.body ?? []) {
+    if (statement.type === "ImportDeclaration") {
+      if (statement.importKind === "type") continue;
+      const source = statement.source?.value;
+      for (const specifier of statement.specifiers ?? []) {
+        const imported =
+          specifier.type === "ImportDefaultSpecifier"
+            ? "default"
+            : specifier.type === "ImportSpecifier"
+              ? specifier.imported?.type === "Identifier"
+                ? specifier.imported.name
+                : specifier.imported?.value
+              : null;
+        if (source === "vite" && imported === "defineConfig") {
+          locals.set(specifier.local.name, "defineConfig");
+        } else if (PLAIN_VITE_PLUGINS[source]?.name === imported) {
+          locals.set(specifier.local.name, source);
+        } else {
+          return false;
+        }
+      }
+      if ((statement.specifiers ?? []).length === 0) return false;
+    } else if (statement.type === "ExportDefaultDeclaration" && !config) {
+      config = statement.declaration;
+    } else {
+      return false;
+    }
+  }
+  if (
+    config?.type !== "CallExpression" ||
+    config.callee?.type !== "Identifier" ||
+    locals.get(config.callee.name) !== "defineConfig" ||
+    (config.arguments ?? []).length !== 1
+  ) {
+    return false;
+  }
+  const options = config.arguments[0];
+  if (options?.type !== "ObjectExpression") return false;
+  return (options.properties ?? []).every((property: AnyNode) => {
+    if (
+      property.type !== "ObjectProperty" ||
+      property.computed ||
+      property.key?.type !== "Identifier" ||
+      property.key.name !== "plugins" ||
+      property.value?.type !== "ArrayExpression"
+    ) {
+      return false;
+    }
+    return (property.value.elements ?? []).every((element: AnyNode) => {
+      if (
+        element?.type !== "CallExpression" ||
+        element.callee?.type !== "Identifier"
+      ) {
+        return false;
+      }
+      const plugin = PLAIN_VITE_PLUGINS[locals.get(element.callee.name) ?? ""];
+      if (!plugin) return false;
+      const args = element.arguments ?? [];
+      return plugin.args === "none"
+        ? args.length === 0
+        : args.length <= 1 && args.every(isLiteralValue);
+    });
+  });
+}
 
 /**
  * One analyzer per source snapshot, so classifying every section of a Theme
@@ -216,64 +571,785 @@ export function createHideCapabilityAnalyzer(
   // Asked only when a content() site needs it, from the shared parse.
   let sectionHiddenConfirmed: boolean | null = null;
   const sectionHiddenOk = () => {
-    sectionHiddenConfirmed ??= confirmThemeContentModuleFunctionExport(
-      files,
-      THEME_SECTION_HIDDEN_HELPER,
-      "hide this section",
-      contentModule
-        ? (reader.ast(contentModule.path, contentModule.content) ?? undefined)
-        : undefined,
-    ).ok;
+    sectionHiddenConfirmed ??=
+      contentModule !== undefined &&
+      isKnownCode(
+        STARTER_CONTENT_MODULE_SOURCES,
+        contentModule.path,
+        contentModule.content,
+      ) &&
+      confirmThemeContentModuleFunctionExport(
+        files,
+        THEME_SECTION_HIDDEN_HELPER,
+        "hide this section",
+        reader.ast(contentModule.path, contentModule.content) ?? undefined,
+      ).ok;
     return sectionHiddenConfirmed;
   };
   const pageModuleConfirmed =
     contentModule !== undefined &&
-    STARTER_PAGE_MODULE_SOURCES.includes(contentModule.content);
-  let reachableCache: Map<string, ReadonlySet<string> | null> | null = null;
-  const otherModules = (
-    callSitePath: string,
-    scope: HideCapabilityScope,
-  ): readonly string[] => {
-    const candidates =
-      scope === "layout"
-        ? files
-            .map((file) => file.path)
-            .filter((path) => path.startsWith("src/") && SCRIPT_FILE.test(path))
-        : (() => {
-            reachableCache ??= new Map();
-            let paths = reachableCache.get(callSitePath);
-            if (paths === undefined) {
-              const reachable = reachableThemeModules(
-                callSitePath,
-                files,
-                undefined,
-                reader.read,
-              );
-              paths =
-                reachable.unboundedDynamicImport || reachable.unparseable
-                  ? null
-                  : reachable.paths;
-              reachableCache.set(callSitePath, paths);
-            }
-            return paths === null ? null : [...paths];
-          })();
-    if (candidates === null) return ["*"];
-    return candidates.filter(
-      (path) =>
-        path !== callSitePath &&
-        path !== THEME_CONTENT_MODULE_PATH &&
-        SCRIPT_FILE.test(path) &&
-        files.some((file) => file.path === path),
+    isKnownCode(
+      STARTER_PAGE_MODULE_SOURCES,
+      contentModule.path,
+      contentModule.content,
     );
+  // The Starter root route loads the raw content (`loadContentSlots`) and
+  // puts it in the route context for `MorphContentProvider`. Only that exact
+  // module may import those helpers; with it present, every other module
+  // that can read the route context is a reader Morph cannot follow.
+  const rootConfirmed = files.some(
+    (file) =>
+      file.path === ROOT_ROUTE_PATH &&
+      isKnownCode(STARTER_ROOT_ROUTE_SOURCES, file.path, file.content),
+  );
+
+  // How each module reaches other modules, read from the shared parse. The
+  // slot-use analysis recognises `content`/`morph` only as a named import
+  // of the content module by a relative path. Every specifier is resolved
+  // exactly as Vite would, or refused: a module the analysis cannot name is
+  // never read as "nothing reads this".
+  const filePaths = new Set(files.map((file) => file.path));
+  let aliasLookup: {
+    byPath: ReadonlyMap<string, { path: string; content: string }>;
+    config: ReturnType<typeof readThemePathAliases>;
+  } | null = null;
+  const candidatesOf = (base: string) =>
+    RESOLVE_SUFFIXES.map((suffix) => `${base}${suffix}`).filter((path) =>
+      filePaths.has(path),
+    );
+  const resolveSpecifier = (
+    from: string,
+    specifier: string,
+  ): ResolvedSpecifier => {
+    if (specifier.includes("?") || specifier.includes("#")) {
+      return {
+        kind: "refused",
+        detail: `imports "${specifier}", with a query or hash Vite may load differently`,
+      };
+    }
+    if (specifier.startsWith("/")) {
+      return {
+        kind: "refused",
+        detail: `imports "${specifier}" by an absolute path, which Morph does not follow`,
+      };
+    }
+    if (
+      /^[a-z][a-z0-9+.-]*:/i.test(specifier) &&
+      !specifier.startsWith("node:")
+    ) {
+      return {
+        kind: "refused",
+        detail: `imports "${specifier}", a URL or virtual module Morph cannot read`,
+      };
+    }
+    if (specifier.startsWith(".")) {
+      const base = themeImportBase(from, specifier);
+      if (!base) {
+        return {
+          kind: "refused",
+          detail: `imports "${specifier}", outside src/, which Morph does not analyse`,
+        };
+      }
+      if (filePaths.has(base)) return { kind: "module", target: base, alias: false };
+      if (filePaths.has(`${base}/package.json`)) {
+        // Vite resolves a directory through its package.json entry first.
+        return {
+          kind: "refused",
+          detail: `imports "${specifier}", a directory whose package.json Vite may resolve to another file`,
+        };
+      }
+      const candidates = candidatesOf(base);
+      if (candidates.length === 1) {
+        return { kind: "module", target: candidates[0]!, alias: false };
+      }
+      if (candidates.length === 0 && base === GENERATED_ROUTE_TREE) {
+        return { kind: "asset" };
+      }
+      if (candidates.length === 0 && INERT_MODULE.test(base)) {
+        // A stylesheet or image Morph has no text for: it runs no code.
+        return { kind: "asset" };
+      }
+      return {
+        kind: "refused",
+        detail:
+          candidates.length === 0
+            ? `imports "${specifier}", which no Theme file Morph can read answers`
+            : `imports "${specifier}", which more than one file could answer (${candidates.join(", ")})`,
+      };
+    }
+    aliasLookup ??= {
+      byPath: new Map(files.map((file) => [file.path, file])),
+      config: readThemePathAliases(files),
+    };
+    const resolved =
+      resolveThemePathAlias(specifier, aliasLookup.byPath, aliasLookup.config) ??
+      resolveThemeBaseUrlImport(
+        specifier,
+        aliasLookup.byPath,
+        aliasLookup.config,
+      );
+    if (resolved) {
+      const target = normalizeThemeSourcePath(resolved);
+      const base = target.replace(/(\/index)?\.(tsx|ts|jsx|js|mjs|cjs)$/, "");
+      if (target !== base && candidatesOf(base).length > 1 && !specifier.endsWith(target.slice(target.lastIndexOf(".")))) {
+        return {
+          kind: "refused",
+          detail: `imports "${specifier}", which more than one file could answer (${candidatesOf(base).join(", ")})`,
+        };
+      }
+      const directory = target.match(/^(.*)\/index\.[a-z]+$/)?.[1];
+      if (directory && filePaths.has(`${directory}/package.json`)) {
+        return {
+          kind: "refused",
+          detail: `imports "${specifier}", a directory whose package.json Vite may resolve to another file`,
+        };
+      }
+      return { kind: "module", target, alias: true };
+    }
+    // A specifier a path alias (or baseUrl) claims but no Theme file answers:
+    // Vite may still find something there that Morph cannot read.
+    const { config } = aliasLookup;
+    const claimed =
+      config.aliases.some((alias) =>
+        alias.wildcard
+          ? specifier === alias.key || specifier.startsWith(`${alias.key}/`)
+          : specifier === alias.key,
+      ) ||
+      (config.baseUrl !== "" &&
+        (() => {
+          const root = normalizeThemeSourcePath(`${config.baseUrl}/${specifier}`);
+          return [...filePaths].some(
+            (path) => path === root || path.startsWith(`${root}.`) || path.startsWith(`${root}/`),
+          );
+        })());
+    if (claimed) {
+      return {
+        kind: "refused",
+        detail: `imports "${specifier}" through a path alias no Theme file Morph can read answers`,
+      };
+    }
+    return { kind: "package" };
   };
 
-  const classify: HideCapabilityAnalyzer["classify"] = ({
-    callSitePath,
-    slot,
-    scope,
-  }) => {
-    if (callSitePath === null) return refuse(slot, "legacy-shell");
-    const path = normalizeThemeSourcePath(callSitePath);
+  // A Vite config of the Theme's own, or a file only a plugin can execute,
+  // defeats the whole-Theme proof for every section.
+  const themeProblem: (ModuleAccessProblem & { file: string }) | null =
+    (() => {
+      const config = files.find(
+        (file) =>
+          VITE_CONFIG.test(file.path) && !isPlainStartViteConfig(file, reader),
+      );
+      if (config) {
+        return {
+          file: config.path,
+          reason: "source-unconfirmed",
+          line: 0,
+          detail: `${config.path} configures Vite itself; Morph cannot confirm how it resolves and transforms the Theme's modules.`,
+        };
+      }
+      const unanalysed = files.find(
+        (file) => file.path.startsWith("src/") && UNANALYSED_SOURCE.test(file.path),
+      );
+      if (unanalysed) {
+        return {
+          file: unanalysed.path,
+          reason: "source-unconfirmed",
+          line: 0,
+          detail: `${unanalysed.path} is a kind of module Morph cannot analyse.`,
+        };
+      }
+      return null;
+    })();
+
+  const accessCache = new Map<string, ModuleAccess>();
+  const moduleAccess = (path: string): ModuleAccess => {
+    const cached = accessCache.get(path);
+    if (cached) return cached;
+    const file = files.find((candidate) => candidate.path === path);
+    const parsed = file ? reader.read(file.path, file.content) : null;
+    let problem: ModuleAccessProblem | null = null;
+    const hiddenFlagReads: { slot: string | null; line: number }[] = [];
+    const flag = (reason: HideRefusalReason, node: AnyNode, detail: string) => {
+      problem ??= { reason, line: node?.loc?.start.line ?? 0, detail };
+    };
+    const isConfirmedRoot = rootConfirmed && path === ROOT_ROUTE_PATH;
+    const readsRouteContext = rootConfirmed && !isConfirmedRoot;
+    if (!parsed || !parsed.ok) {
+      problem = {
+        reason: "source-unconfirmed",
+        line: 0,
+        detail: parsed && !parsed.ok ? parsed.message : `${path} could not be read.`,
+      };
+    } else {
+      const reach = (
+        node: AnyNode,
+        specifier: unknown,
+        how: string,
+        names: readonly string[] = [],
+      ) => {
+        if (typeof specifier !== "string") {
+          return flag(
+            "untraced-use",
+            node,
+            `${path} loads a module Morph cannot name (${how}).`,
+          );
+        }
+        if (SDK_SPECIFIER.test(specifier)) {
+          return flag(
+            "untraced-use",
+            node,
+            `${path} reads Morph content through ${specifier} directly, which Morph does not follow yet.`,
+          );
+        }
+        const resolved = resolveSpecifier(path, specifier);
+        if (resolved.kind === "refused") {
+          return flag("untraced-use", node, `${path} ${resolved.detail}.`);
+        }
+        if (resolved.kind !== "module") return;
+        const { target, alias } = resolved;
+        if (target === THEME_CONTENT_MODULE_PATH) {
+          if (how !== "named import" || alias) {
+            return flag(
+              "untraced-use",
+              node,
+              `${path} reaches ${THEME_CONTENT_MODULE_PATH} through ${alias ? `the path alias "${specifier}"` : `a ${how}`}, which Morph does not follow yet.`,
+            );
+          }
+          const other = names.find((name) => !CONTENT_MODULE_READERS.has(name));
+          if (other !== undefined && !isConfirmedRoot) {
+            return flag(
+              "untraced-use",
+              node,
+              `${path} imports ${other} from ${THEME_CONTENT_MODULE_PATH}, which can read content in a way Morph does not follow.`,
+            );
+          }
+          return;
+        }
+        if (SCRIPT_FILE.test(target)) {
+          if (!target.startsWith("src/")) {
+            return flag(
+              "untraced-use",
+              node,
+              `${path} imports ${target}, outside src/, which Morph does not analyse.`,
+            );
+          }
+          return;
+        }
+        if (INERT_MODULE.test(target)) return;
+        return flag(
+          "source-unconfirmed",
+          node,
+          `${path} imports ${target}, a kind of module Morph cannot analyse.`,
+        );
+      };
+      const keyName = (key: AnyNode): string | null =>
+        key?.type === "Identifier"
+          ? key.name
+          : key?.type === "StringLiteral"
+            ? key.value
+            : null;
+      const visit = (node: AnyNode): void => {
+        if (!node || typeof node !== "object") return;
+        if (Array.isArray(node)) return node.forEach(visit);
+        if (node.type === "ImportDeclaration") {
+          const values = (node.specifiers ?? []).filter(
+            (specifier: AnyNode) => specifier.importKind !== "type",
+          );
+          if (node.importKind !== "type" && (values.length > 0 || (node.specifiers ?? []).length === 0)) {
+            const opaque = values.some(
+              (specifier: AnyNode) => specifier.type !== "ImportSpecifier",
+            );
+            reach(
+              node,
+              node.source?.value,
+              opaque ? "namespace or default import" : "named import",
+              values.map(
+                (specifier: AnyNode) => keyName(specifier.imported) ?? "",
+              ),
+            );
+          }
+        } else if (
+          (node.type === "ExportNamedDeclaration" ||
+            node.type === "ExportAllDeclaration") &&
+          node.source
+        ) {
+          if (node.exportKind !== "type") {
+            reach(node, node.source.value, "re-export");
+          }
+        } else if (node.type === "ImportExpression") {
+          reach(
+            node,
+            node.source?.type === "StringLiteral" ? node.source.value : null,
+            "dynamic import",
+          );
+        } else if (
+          node.type === "CallExpression" &&
+          (node.callee?.type === "Import" ||
+            (node.callee?.type === "Identifier" &&
+              node.callee.name === "require"))
+        ) {
+          const source = node.arguments?.[0];
+          reach(
+            node,
+            source?.type === "StringLiteral" ? source.value : null,
+            node.callee.type === "Import" ? "dynamic import" : "require",
+          );
+        } else if (
+          node.type === "MemberExpression" &&
+          node.object?.type === "MetaProperty" &&
+          node.object.meta?.name === "import" &&
+          !node.computed &&
+          typeof node.property?.name === "string" &&
+          node.property.name.startsWith("glob")
+        ) {
+          reach(node, null, "import.meta.glob");
+        } else if (
+          node.type === "NewExpression" &&
+          node.callee?.type === "Identifier"
+        ) {
+          const [first, second] = node.arguments ?? [];
+          if (
+            node.callee.name === "URL" &&
+            second?.type === "MemberExpression" &&
+            second.object?.type === "MetaProperty" &&
+            second.property?.name === "url"
+          ) {
+            // A worker or asset Vite emits from this module.
+            reach(
+              node,
+              first?.type === "StringLiteral" ? first.value : null,
+              "new URL(…, import.meta.url)",
+            );
+          } else if (
+            (node.callee.name === "Worker" ||
+              node.callee.name === "SharedWorker") &&
+            !(
+              first?.type === "NewExpression" &&
+              first.callee?.type === "Identifier" &&
+              first.callee.name === "URL"
+            )
+          ) {
+            flag(
+              "untraced-use",
+              node,
+              `${path} starts a worker Morph cannot name.`,
+            );
+          }
+        } else if (
+          (node.type === "StringLiteral" &&
+            node.value.includes("/_morph/")) ||
+          (node.type === "TemplateElement" &&
+            String(node.value?.raw ?? "").includes("/_morph/"))
+        ) {
+          flag(
+            "untraced-use",
+            node,
+            `${path} names Morph's content endpoint itself, which Morph does not follow.`,
+          );
+        }
+        if (readsRouteContext) {
+          // The route context carries the raw content (`morphContent`).
+          const name =
+            node.type === "Identifier"
+              ? node.name
+              : (node.type === "MemberExpression" ||
+                    node.type === "OptionalMemberExpression") &&
+                  (!node.computed || node.property?.type === "StringLiteral")
+                ? keyName(node.property)
+                : node.type === "StringLiteral"
+                  ? node.value
+                  : null;
+          if (
+            name !== null &&
+            (ROUTER_CONTEXT_APIS.has(name) ||
+              name === THEME_CONTENT_CONTEXT_KEY ||
+              (name === "context" && node.type !== "Identifier"))
+          ) {
+            flag(
+              "untraced-use",
+              node,
+              `${path} can read the route context, where the root route keeps the page's content.`,
+            );
+          }
+          if (node.type === "ObjectPattern") {
+            for (const property of node.properties ?? []) {
+              if (
+                property.type === "ObjectProperty" &&
+                !property.computed &&
+                keyName(property.key) === "context"
+              ) {
+                flag(
+                  "untraced-use",
+                  property,
+                  `${path} can read the route context, where the root route keeps the page's content.`,
+                );
+              }
+            }
+          }
+          // `createFileRoute("/x")({ … })`, `createRootRoute({ … })`, …: the
+          // options TanStack calls with the route context.
+          const factory =
+            node.type === "CallExpression"
+              ? node.callee?.type === "CallExpression"
+                ? node.callee.callee
+                : node.callee
+              : null;
+          const routeOptions =
+            factory?.type === "Identifier" &&
+            /^create\w*Route\w*$/.test(factory.name) &&
+            node.arguments?.[0]?.type === "ObjectExpression"
+              ? node.arguments[0].properties
+              : [];
+          for (const option of routeOptions) {
+            if (
+              (option.type !== "ObjectProperty" &&
+                option.type !== "ObjectMethod") ||
+              option.computed ||
+              !ROUTE_CONTEXT_OPTIONS.has(keyName(option.key) ?? "")
+            ) {
+              continue;
+            }
+            // Only a function whose first parameter is absent or destructured
+            // (without `context`, checked above) is followed.
+            const fn = option.type === "ObjectMethod" ? option : option.value;
+            const isFunction =
+              fn?.type === "ArrowFunctionExpression" ||
+              fn?.type === "FunctionExpression" ||
+              fn?.type === "ObjectMethod";
+            const first = isFunction ? fn.params?.[0] : undefined;
+            if (
+              !isFunction ||
+              (first !== undefined && first.type !== "ObjectPattern") ||
+              (first?.type === "ObjectPattern" &&
+                (first.properties ?? []).some(
+                  (property: AnyNode) => property.type === "RestElement",
+                ))
+            ) {
+              flag(
+                "untraced-use",
+                option,
+                `${path} hands the route context to code Morph does not follow.`,
+              );
+            }
+          }
+        }
+        for (const [key, value] of Object.entries(node)) {
+          if (
+            key === "loc" ||
+            key === "leadingComments" ||
+            key === "trailingComments" ||
+            key === "innerComments"
+          ) {
+            continue;
+          }
+          if (value && typeof value === "object") visit(value);
+        }
+      };
+      visit(parsed.ast.program);
+
+      // Names this module binds to the hidden flag and to route objects.
+      const hiddenLocals = new Set<string>();
+      const routeLocals = new Set<string>();
+      for (const statement of parsed.ast.program.body ?? []) {
+        if (statement.type === "ImportDeclaration") {
+          const source = statement.source?.value;
+          const resolved =
+            typeof source === "string" && !SDK_SPECIFIER.test(source)
+              ? resolveSpecifier(path, source)
+              : null;
+          if (
+            resolved?.kind === "module" &&
+            resolved.target === THEME_CONTENT_MODULE_PATH
+          ) {
+            for (const specifier of statement.specifiers ?? []) {
+              if (
+                specifier.type === "ImportSpecifier" &&
+                keyName(specifier.imported) === THEME_SECTION_HIDDEN_HELPER
+              ) {
+                hiddenLocals.add(specifier.local.name);
+              }
+            }
+          }
+          if (
+            readsRouteContext &&
+            typeof source === "string" &&
+            source.startsWith("@tanstack/") &&
+            (statement.specifiers ?? []).some(
+              (specifier: AnyNode) => specifier.type !== "ImportSpecifier",
+            )
+          ) {
+            flag(
+              "untraced-use",
+              statement,
+              `${path} imports the whole of ${source}, which can read the route context.`,
+            );
+          }
+        }
+      }
+      const routeFactory = (init: AnyNode): boolean => {
+        const callee =
+          init?.type === "CallExpression"
+            ? init.callee?.type === "CallExpression"
+              ? init.callee.callee
+              : init.callee
+            : null;
+        return (
+          callee?.type === "Identifier" && /^create\w*Route\w*$/.test(callee.name)
+        );
+      };
+      const declarators = (node: AnyNode): void => {
+        if (!node || typeof node !== "object") return;
+        if (Array.isArray(node)) return node.forEach(declarators);
+        if (
+          node.type === "VariableDeclarator" &&
+          node.id?.type === "Identifier" &&
+          routeFactory(node.init)
+        ) {
+          routeLocals.add(node.id.name);
+        }
+        for (const [key, value] of Object.entries(node)) {
+          if (NON_SEMANTIC_KEYS.has(key)) continue;
+          if (value && typeof value === "object") declarators(value);
+        }
+      };
+      if (readsRouteContext) declarators(parsed.ast.program);
+
+      // Every reference, with its ancestors.
+      const walk = (node: AnyNode, ancestors: AnyNode[]): void => {
+        if (!node || typeof node !== "object") return;
+        if (Array.isArray(node)) {
+          for (const item of node) walk(item, ancestors);
+          return;
+        }
+        const [parent, grand, great] = [
+          ancestors[ancestors.length - 1],
+          ancestors[ancestors.length - 2],
+          ancestors[ancestors.length - 3],
+        ];
+        if (
+          node.type === "Identifier" &&
+          parent?.type !== "ImportSpecifier" &&
+          !(
+            (parent?.type === "MemberExpression" ||
+              parent?.type === "OptionalMemberExpression") &&
+            parent.property === node &&
+            !parent.computed
+          ) &&
+          !(parent?.type === "ObjectProperty" && parent.key === node && !parent.computed)
+        ) {
+          if (hiddenLocals.has(node.name)) {
+            const call =
+              (parent?.type === "CallExpression" ||
+                parent?.type === "OptionalCallExpression") &&
+              parent.callee === node
+                ? parent
+                : null;
+            const literal =
+              call &&
+              call.arguments?.length === 1 &&
+              call.arguments[0]?.type === "StringLiteral"
+                ? (call.arguments[0].value as string)
+                : null;
+            const exactGuard =
+              literal !== null &&
+              grand?.type === "UnaryExpression" &&
+              grand.operator === "!" &&
+              grand.argument === call &&
+              great?.type === "LogicalExpression" &&
+              great.operator === "&&" &&
+              great.left === grand &&
+              great.right?.type === "JSXElement";
+            if (!exactGuard) {
+              hiddenFlagReads.push({
+                slot: literal,
+                line: node.loc?.start.line ?? 0,
+              });
+            }
+          }
+          if (
+            routeLocals.has(node.name) &&
+            !(parent?.type === "VariableDeclarator" && parent.id === node) &&
+            parent?.type !== "ExportSpecifier" &&
+            !(
+              (parent?.type === "MemberExpression" ||
+                parent?.type === "OptionalMemberExpression") &&
+              parent.object === node &&
+              !parent.computed
+            )
+          ) {
+            flag(
+              "untraced-use",
+              node,
+              `${path} uses its route object in a way Morph cannot follow, which can read the route context.`,
+            );
+          }
+        }
+        const next = [...ancestors, node];
+        for (const [key, value] of Object.entries(node)) {
+          if (NON_SEMANTIC_KEYS.has(key)) continue;
+          if (value && typeof value === "object") walk(value, next);
+        }
+      };
+      if (hiddenLocals.size > 0 || routeLocals.size > 0) {
+        walk(parsed.ast.program, []);
+      }
+    }
+    const access: ModuleAccess = { problem, hiddenFlagReads };
+    accessCache.set(path, access);
+    return access;
+  };
+  const accessRefusal = (path: string, slot: string): HideCapability | null => {
+    const { problem, hiddenFlagReads } = moduleAccess(path);
+    if (problem) {
+      return refuse(
+        slot,
+        problem.reason,
+        { file: path, line: problem.line },
+        problem.detail,
+      );
+    }
+    // The hidden state itself. A guard is sound only while it reads the
+    // effective hidden list: a module that writes, aliases or reads the
+    // page's `_hidden`, or asks `isSectionHidden` for this section other
+    // than as the exact guard, changes what hiding does.
+    const flagRead = hiddenFlagReads.find(
+      (read) => read.slot === slot || read.slot === null,
+    );
+    if (flagRead) {
+      return refuse(
+        slot,
+        "untraced-use",
+        { file: path, line: flagRead.line },
+        `${path} asks whether this section is hidden other than to omit it.`,
+      );
+    }
+    const uses = slotUses(path);
+    const hiddenList =
+      uses.uses.find((use) => use.slot === HIDDEN_LIST_KEY) ??
+      uses.escapes.find((escape) => escape.slot === HIDDEN_LIST_KEY);
+    if (hiddenList) {
+      return refuse(
+        slot,
+        "untraced-use",
+        { file: path, line: hiddenList.line },
+        `${path} touches the page's hidden list, which Morph's guard reads.`,
+      );
+    }
+    return null;
+  };
+
+  /**
+   * Every module the proof reads besides the call site: the whole Theme.
+   * Runtime picks a document by the requested URL, and the generated route
+   * tree runs parents, layouts, companions and catch-alls no import edge
+   * reaches, so a reader anywhere under `src/` may run while the section is
+   * hidden. The content module is the platform's own and is judged apart
+   * (`sectionHiddenOk`, `pageModuleConfirmed`, the import allow-list).
+   */
+  const themeModules = files
+    .map((file) => file.path)
+    .filter((path) => path.startsWith("src/") && SCRIPT_FILE.test(path))
+    .filter((path) => path !== THEME_CONTENT_MODULE_PATH);
+
+  // The modules whose supported call sites the build guards
+  // (`planHideGuards`): every route module but the root, and the layout.
+  let layoutPath: string | null | undefined;
+  const isGuardedModule = (path: string) => {
+    if (layoutPath === undefined) {
+      layoutPath = deriveThemeDocumentLayoutPath(files, reader);
+    }
+    return isHideGuardedModule(path, layoutPath);
+  };
+
+  type OtherModules =
+    | Readonly<{ refusal: HideCapability }>
+    | Readonly<{ sites: readonly HideGuardSite[] }>;
+
+  /**
+   * Every module but `path` that may read `slot` while it is hidden: a
+   * refusal, or the guarded call sites they render it through. Another
+   * module that renders the section is acceptable only where the build
+   * compiles a guard into it and every read there sits inside that guard,
+   * which reads the hidden state from the same content the slot comes from,
+   * whichever document that is. Shared by the classifier and the
+   * not-rendered proofs, so all of them mean the same thing by "reads it".
+   */
+  const otherModules = (path: string | null, slot: string): OtherModules => {
+    if (themeProblem) {
+      return {
+        refusal: refuse(
+          slot,
+          themeProblem.reason,
+          { file: themeProblem.file, line: themeProblem.line },
+          themeProblem.detail,
+        ),
+      };
+    }
+    const sites: HideGuardSite[] = [];
+    for (const other of themeModules) {
+      if (other === path) continue;
+      const otherUses = slotUses(other);
+      if (otherUses.diagnostics.length > 0) {
+        return {
+          refusal: refuse(
+            slot,
+            "source-unconfirmed",
+            { file: other, line: 0 },
+            otherUses.diagnostics[0],
+          ),
+        };
+      }
+      const read = otherUses.uses.find((use) => use.slot === slot);
+      if (read) {
+        // Another module that renders the section as a call site of its own
+        // is judged as one; a module that only reads it is a reader.
+        if (
+          isGuardedModule(other) &&
+          routeAnalysis(other).instances.some(
+            (instance) => instance.section === slot,
+          )
+        ) {
+          const local = localClassify(other, slot, () => null);
+          if (local.kind === "unsupported") return { refusal: local };
+          sites.push(...local.sites);
+          continue;
+        }
+        return {
+          refusal: refuse(slot, "component-reads-content", {
+            file: other,
+            line: read.line,
+          }),
+        };
+      }
+      const otherEscape = otherUses.escapes.find(
+        (candidate) =>
+          (candidate.slot === slot || candidate.slot === null) &&
+          (candidate.root !== "loader" || otherUses.loaderOrigin),
+      );
+      if (otherEscape) {
+        return {
+          refusal: refuse(slot, "component-reads-content", {
+            file: other,
+            line: otherEscape.line,
+          }),
+        };
+      }
+      const access = accessRefusal(other, slot);
+      if (access) return { refusal: access };
+    }
+    return { sites };
+  };
+
+  /**
+   * One module's own verdict for `slot`, as a call site. `others` runs where
+   * the rest of the Theme is judged, so a reason found earlier in this
+   * module is still named first.
+   */
+  const localClassify = (
+    path: string,
+    slot: string,
+    others: () => HideCapability | null,
+  ): HideCapability => {
     const at = (line: number) => ({ file: path, line });
     const b1 = routeAnalysis(path);
     const uses = slotUses(path);
@@ -285,6 +1361,10 @@ export function createHideCapabilityAnalyzer(
         b1.diagnostics[0] ?? uses.diagnostics[0],
       );
     }
+    // The call site's own module may also read content some other way (a
+    // second SDK import, a raw content helper, the route context).
+    const own = accessRefusal(path, slot);
+    if (own) return own;
 
     // A root handed whole to code Morph cannot follow may read this section
     // anywhere.
@@ -296,43 +1376,8 @@ export function createHideCapabilityAnalyzer(
     if (escape) return refuse(slot, "untraced-use", at(escape.line));
 
     // Every other module that can render with this section's content.
-    for (const other of otherModules(path, scope)) {
-      if (other === "*") {
-        return refuse(
-          slot,
-          "untraced-use",
-          null,
-          "Part of the Theme is loaded in a way Morph cannot follow.",
-        );
-      }
-      const otherUses = slotUses(other);
-      if (otherUses.diagnostics.length > 0) {
-        return refuse(
-          slot,
-          "source-unconfirmed",
-          { file: other, line: 0 },
-          otherUses.diagnostics[0],
-        );
-      }
-      const read = otherUses.uses.find((use) => use.slot === slot);
-      if (read) {
-        return refuse(slot, "component-reads-content", {
-          file: other,
-          line: read.line,
-        });
-      }
-      const otherEscape = otherUses.escapes.find(
-        (candidate) =>
-          (candidate.slot === slot || candidate.slot === null) &&
-          (candidate.root !== "loader" || otherUses.loaderOrigin),
-      );
-      if (otherEscape) {
-        return refuse(slot, "component-reads-content", {
-          file: other,
-          line: otherEscape.line,
-        });
-      }
-    }
+    const otherRefusal = others();
+    if (otherRefusal) return otherRefusal;
     const slotUsesHere = uses.uses.filter((use) => use.slot === slot);
 
     // Candidate call sites: B1-proven section instances of this slot.
@@ -454,6 +1499,90 @@ export function createHideCapabilityAnalyzer(
     return { kind: "supported", slot, sites };
   };
 
+  // `scope` no longer narrows what is read: a route's section and the
+  // layout's are both proven against the whole Theme (`themeModules`).
+  const classify: HideCapabilityAnalyzer["classify"] = ({
+    callSitePath,
+    slot,
+  }) => {
+    if (callSitePath === null) return refuse(slot, "legacy-shell");
+    const path = normalizeThemeSourcePath(callSitePath);
+    let elsewhere: readonly HideGuardSite[] = [];
+    const local = localClassify(path, slot, () => {
+      const verdict = otherModules(path, slot);
+      if ("refusal" in verdict) return verdict.refusal;
+      elsewhere = verdict.sites;
+      return null;
+    });
+    return local.kind === "supported" && elsewhere.length > 0
+      ? { ...local, sites: [...local.sites, ...elsewhere] }
+      : local;
+  };
+
+  const proveNotRendered: HideCapabilityAnalyzer["proveNotRendered"] = ({
+    sourcePath,
+    slot,
+    scope,
+  }) => {
+    const path = normalizeThemeSourcePath(sourcePath);
+    const b1 = routeAnalysis(path);
+    const uses = slotUses(path);
+    if (b1.diagnostics.length > 0 || uses.diagnostics.length > 0) {
+      return refuse(
+        slot,
+        "source-unconfirmed",
+        { file: path, line: 0 },
+        b1.diagnostics[0] ?? uses.diagnostics[0],
+      );
+    }
+    const own = accessRefusal(path, slot);
+    if (own) return own;
+    // The module reads the section after all, just not as a section its
+    // JSX names: that is the classifier's question, with this call site.
+    if (uses.uses.some((use) => use.slot === slot)) {
+      return classify({ callSitePath: path, slot, scope });
+    }
+    const escape = uses.escapes.find(
+      (candidate) =>
+        (candidate.slot === slot || candidate.slot === null) &&
+        (candidate.root !== "loader" || uses.loaderOrigin),
+    );
+    if (escape) {
+      return refuse(
+        slot,
+        "untraced-use",
+        { file: path, line: escape.line },
+        `${path}: ${escape.reason}.`,
+      );
+    }
+    const others = otherModules(path, slot);
+    if ("refusal" in others) return others.refusal;
+    if (
+      b1.taints.includes("content:*") ||
+      b1.taints.includes("page:*") ||
+      (uses.loaderOrigin && b1.taints.includes("loader:*"))
+    ) {
+      return refuse(slot, "untraced-use", { file: path, line: 0 });
+    }
+    return renderedElsewhere(slot, others.sites);
+  };
+
+  /** Not rendered, unless guarded call sites elsewhere render it. */
+  const renderedElsewhere = (
+    slot: string,
+    sites: readonly HideGuardSite[],
+  ): HideNotRenderedProof =>
+    sites.length > 0
+      ? { kind: "supported", slot, sites }
+      : { kind: "not-rendered", slot };
+
+  const proveUnread: HideCapabilityAnalyzer["proveUnread"] = ({ slot }) => {
+    const others = otherModules(null, slot);
+    return "refusal" in others
+      ? others.refusal
+      : renderedElsewhere(slot, others.sites);
+  };
+
   const sectionsIn: HideCapabilityAnalyzer["sectionsIn"] = (path) => [
     ...new Set(
       routeAnalysis(normalizeThemeSourcePath(path))
@@ -462,7 +1591,7 @@ export function createHideCapabilityAnalyzer(
     ),
   ];
 
-  return { classify, sectionsIn };
+  return { classify, sectionsIn, proveNotRendered, proveUnread };
 }
 
 /** One section, one snapshot; see `createHideCapabilityAnalyzer`. */

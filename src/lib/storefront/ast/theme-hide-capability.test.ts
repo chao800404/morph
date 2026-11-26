@@ -100,7 +100,11 @@ function theme(
     ...livePreviewPlatformFiles(),
     { path: "src/components/Hero.tsx", content: HERO },
     { path: "src/components/Card.tsx", content: CARD },
-    { path: "src/components/Promo.tsx", content: PROMO },
+    // The proof is whole-Theme: Promo reads `h10` wherever it sits, so it is
+    // in the Theme only when the route renders it.
+    ...(route.includes(`"../components/Promo"`)
+      ? [{ path: "src/components/Promo.tsx", content: PROMO }]
+      : []),
     { path: ROUTE, content: route },
     ...extra,
   ]) {
@@ -305,9 +309,13 @@ describe("classifyHideCapability: refused before hiding", () => {
         `import { morph } from "@morph/sdk/start";`,
       ),
     );
+    // The direct SDK import in the call-site module is itself a read Morph
+    // does not follow (PR-1 review item 3), so it is refused before the
+    // missing call site is.
     expect(classify(files, "h8")).toMatchObject({
       kind: "unsupported",
-      reason: "no-call-site",
+      reason: "untraced-use",
+      at: { file: ROUTE, line: expect.any(Number) },
     });
   });
 
@@ -454,17 +462,25 @@ describe("classifyHideCapability: reverse checks (one variable each)", () => {
     expect(classify(files, "h1")).toMatchObject({ kind: "supported" });
   });
 
-  it("A6: any edit to the content module refuses a loader hide (byte match only)", () => {
+  // Re-review 2 (F/I): the content module is confirmed as code, not bytes. A
+  // comment changes nothing a guard relies on; any change to the code does.
+  it("A6: any code edit to the content module refuses a loader hide; a comment does not", () => {
     const files = theme(H2);
-    const edited = files.map((file) =>
-      file.path === "src/morph/content.ts"
-        ? { ...file, content: `${file.content}\n// edited\n` }
-        : file,
-    );
-    expect(classify(edited, "h2")).toMatchObject({
+    const withContent = (content: (current: string) => string) =>
+      files.map((file) =>
+        file.path === "src/morph/content.ts"
+          ? { ...file, content: content(file.content) }
+          : file,
+      );
+    expect(
+      classify(withContent((current) => `${current}\nexport const edited = 1;\n`), "h2"),
+    ).toMatchObject({
       kind: "unsupported",
       reason: "content-module-unconfirmed",
     });
+    expect(
+      classify(withContent((current) => `${current}\n// edited\n`), "h2"),
+    ).toMatchObject({ kind: "supported" });
     expect(classify(files, "h2")).toMatchObject({ kind: "supported" });
   });
 
