@@ -1541,6 +1541,88 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(updateSectionProps).not.toHaveBeenCalled();
     });
 
+    // Hints review finding 4: a re-read that fails keeps the query's last
+    // view as its data (TanStack Query keeps data on a failed refetch). That
+    // view was read for the old document, so it must never be taken as the
+    // new document's: the re-derive fails closed as for no view.
+    it("after a reload whose view re-read fails, the selection clears and no basis is asked of the new document", async () => {
+      readRouteBindings
+        .mockResolvedValueOnce(bindingView())
+        .mockRejectedValue(new Error("binding view read failed"));
+      const token = await selectHero();
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+      expect(acceptedLine(token.operationId)).toBe(true);
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(readRouteBindings.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      await waitFor(() =>
+        expect(inspectorNotice()?.textContent ?? "").toContain(
+          "Couldn't restore your selection. Select the section again.",
+        ),
+      );
+
+      expect(inspectorNotice()!.getAttribute("data-astro-design-notice")).toBe(
+        "unconfirmed",
+      );
+      expect(sectionStatus()).toBeNull();
+      expect(basisPosts()).toHaveLength(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    // Finding 4, the click path: after a failed re-read the kept data is not
+    // a view either, so a new click is not matched against it. It is
+    // confirmed again only by a view read that succeeds.
+    it("a click after a failed view re-read is not matched against the earlier view", async () => {
+      readRouteBindings
+        .mockResolvedValueOnce(bindingView())
+        .mockRejectedValue(new Error("binding view read failed"));
+      const token = await selectHero();
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(readRouteBindings.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      await flush();
+
+      // A revision well past any the editor minted: an author click.
+      boundaryClick(100);
+      await flush();
+
+      expect(basisPosts()).toHaveLength(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+
+      // Only a read that succeeds, for the next document, confirms a click
+      // again.
+      readRouteBindings.mockResolvedValue(bindingView());
+      const reads = readRouteBindings.mock.calls.length;
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(readRouteBindings.mock.calls.length).toBeGreaterThan(reads),
+      );
+      await flush();
+      boundaryClick(101);
+      await waitFor(() => expect(basisPosts()).toHaveLength(2));
+      expect(basisPosts()[1]!.presentationToken).toMatchObject({
+        sectionId: "hero",
+        basis: { servedContent: { ticket: 7, instance: INSTANCE } },
+      });
+    });
+
     // Review finding 3: the author followed a link in the frame. The new
     // document is another page (the editor's page is unchanged, so the
     // route effect does not deselect), and Core's view of the editor's page
