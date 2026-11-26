@@ -20,6 +20,7 @@ import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
 import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
 
@@ -183,12 +184,11 @@ async function startPreview(): Promise<string> {
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
     previewRuntime: "start",
-    previewContent: {
+    previewContent: previewContentAsCoreWrites({
       templates: {
         index: { slots: { isolation: { marker: D } }, hiddenSlots: [] },
       },
-      pages: {},
-    } as never,
+    }),
   });
   if (!started.ok) {
     throw new Error(

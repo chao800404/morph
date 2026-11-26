@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 import {
   PREVIEW_SERVED_INSTANCE_TIMING,
   parsePreviewServedInstance,
@@ -73,6 +74,7 @@ async function startTheme(extra: { path: string; content: string }[] = []) {
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
     previewRuntime: "start",
+    previewContent: previewContentAsCoreWrites(),
   });
   if (!started.ok) {
     expect.fail(`${started.stage}: ${started.errorMessage}`);
