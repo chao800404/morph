@@ -261,3 +261,90 @@ describe("planFencedWrite across a file deleted and made again", () => {
     expect(plan.ledger.readAt).toEqual({ [HELLO]: 8 });
   });
 });
+
+// A module the sync rewrites only because another one changed (Morph's hide
+// guard, prepareChangedSourcesForLivePreview) carries its saved version, which
+// did not change: the version cannot order it. It is compiled from the
+// snapshot its sync read, so a newer generation's compile of it must not be
+// replaced by an older one. Found by the review of the P1-3 fix.
+describe("planFencedWrite: a module rewritten only because another changed", () => {
+  const ROUTE = "src/routes/index.tsx";
+  const gated = { files: { [ROUTE]: 7 }, readAt: { [ROUTE]: 12 }, generation: 12 };
+
+  it("does not let an older snapshot's compile replace a newer one of the same version", () => {
+    const plan = planFencedWrite(
+      gated,
+      [{ path: ROUTE, content: "route v7, compiled without the gate", fence: 7, derived: true }],
+      { [ROUTE]: "route v7, compiled with the gate" },
+      11,
+    );
+    expect(plan.refused).toEqual([]);
+    expect(plan.writes).toEqual([]);
+    expect(plan.held).toEqual([ROUTE]);
+    expect(plan.ledger.readAt[ROUTE]).toBe(12);
+  });
+
+  it("does not bring back a route a newer start removed", () => {
+    // B deleted the route; its start, read at 12, laid the workspace out
+    // without it. The ledger still remembers the route's last write, at 10.
+    const removed = { files: { [ROUTE]: 7 }, readAt: { [ROUTE]: 10 }, generation: 12 };
+    const plan = planFencedWrite(
+      removed,
+      [{ path: ROUTE, content: "route v7 from an older snapshot", fence: 7, derived: true }],
+      { [ROUTE]: null },
+      11,
+    );
+    expect(plan.writes).toEqual([]);
+    expect(plan.held).toEqual([ROUTE]);
+  });
+
+  it("holds it at the same generation too, which another write already laid out", () => {
+    const plan = planFencedWrite(
+      gated,
+      [{ path: ROUTE, content: "route v7, recompiled", fence: 7, derived: true }],
+      { [ROUTE]: "route v7, compiled with the gate" },
+      12,
+    );
+    expect(plan.writes).toEqual([]);
+    expect(plan.held).toEqual([ROUTE]);
+  });
+
+  it("writes it from a newer generation, and records when it was read", () => {
+    const plan = planFencedWrite(
+      gated,
+      [{ path: ROUTE, content: "route v7, compiled with the gate", fence: 7, derived: true }],
+      { [ROUTE]: "route v7, compiled without the gate" },
+      13,
+    );
+    expect(plan.held).toEqual([]);
+    expect(plan.writes.map((file) => file.path)).toEqual([ROUTE]);
+    expect(plan.ledger.readAt[ROUTE]).toBe(13);
+  });
+
+  it("holds it without a generation, which cannot order it", () => {
+    const plan = planFencedWrite(
+      gated,
+      [{ path: ROUTE, content: "route", fence: 7, derived: true }],
+      {},
+      null,
+    );
+    expect(plan.writes).toEqual([]);
+    expect(plan.held).toEqual([ROUTE]);
+  });
+
+  it("a held module never refuses the files the tab sent", () => {
+    const plan = planFencedWrite(
+      gated,
+      [
+        { path: HERO, content: "hero edit", fence: 3 },
+        { path: ROUTE, content: "route, older compile", fence: 7, derived: true },
+      ],
+      {},
+      11,
+    );
+    expect(plan.refused).toEqual([]);
+    expect(plan.writes.map((file) => file.path)).toEqual([HERO]);
+    expect(plan.held).toEqual([ROUTE]);
+  });
+});
+

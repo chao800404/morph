@@ -357,14 +357,18 @@ describe("a module rewritten because of another's edit", () => {
       isGenerated: () => false,
       write: async (files, generation) => {
         expect(generation).toBe(12);
-        writes.push(...files.map(({ path, fence }) => ({ path, fence })));
+        writes.push(
+          ...files.map(({ path, fence, derived }) =>
+            derived ? { path, fence, derived } : { path, fence },
+          ),
+        );
         return { changed: files.map((file) => file.path), unchanged: [] };
       },
     });
     expect(result.ok).toBe(true);
     expect(writes).toEqual([
       { path: HERO, fence: 4 },
-      { path: ROUTE, fence: 7 },
+      { path: ROUTE, fence: 7, derived: true },
     ]);
   });
 });
