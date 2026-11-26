@@ -3278,6 +3278,17 @@ export const storefrontThemeDal = {
       // template is judged against this build's own source revision and the
       // guard the build carries. Thrown before the batch below, so a refusal
       // writes nothing and the active release stays as it was.
+      //
+      // The guarantee is for newly sealed releases only. Rollback
+      // (`activateRelease`), the release reconciler and a failed publish's
+      // restore re-activate an exact earlier release, artifact and
+      // publication included, and are deliberately not judged here:
+      // blocking them would make incident recovery worse. A release sealed
+      // before this check therefore keeps whatever it sealed.
+      //
+      // A deleted CMS Page is not sealed at all (`resolveForTheme`); its
+      // URL falls back to the generic Page template, whose own hidden
+      // sections are judged here like any template's.
       const hiddenItems = publicationDocuments.filter(({ document: sealed }) =>
         sealed.sections.some((section) => section.enabled === false),
       );

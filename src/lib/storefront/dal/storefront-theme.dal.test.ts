@@ -6665,6 +6665,64 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
   });
 
   /**
+   * Review point 4: a deleted CMS Page leaves the publication, and its URL
+   * falls back to the generic Page template. That template's own hidden
+   * sections are judged like any other template's.
+   */
+  describe("a deleted Page whose URL falls back to the Page template", () => {
+    const pagesRoute = (early: boolean) =>
+      revision([
+        ["src/routes/pages.$handle.tsx", productRoute("/pages/$handle", early)],
+      ]);
+    const deletedPage = () => {
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_pages
+            (id, storefront_id, title, handle, status, published_revision_id, created_by, created_at, updated_at, deleted_at)
+          VALUES ('page-gone', 'storefront-a', 'Gone', 'gone', 'published', 'page-gone-rev', 'user-1', 'now', 'now', 'now')`,
+        )
+        .run();
+      sqlite
+        .prepare(
+          "INSERT INTO storefront_page_revisions VALUES ('page-gone-rev', 'page-gone', ?)",
+        )
+        .run(
+          JSON.stringify({
+            version: 1,
+            handle: "gone",
+            sections: [{ id: "hero", type: "hero", enabled: false, props: {} }],
+          }),
+        );
+    };
+    const sealedItems = () =>
+      sqlite
+        .prepare(
+          "SELECT item_type AS itemType, content_id AS contentId FROM storefront_content_publication_items",
+        )
+        .all();
+
+    it("judges the fallback template's hidden section and refuses what its route cannot hide", async () => {
+      seed({ type: "page", routePath: null });
+      deletedPage();
+      await expect(publish(pagesRoute(true))).rejects.toThrow(
+        /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the page page \(early-computation\)/,
+      );
+      expect(releases()).toEqual([]);
+    });
+
+    it("reverse: publishes when the route can hide it, and the deleted Page is not sealed", async () => {
+      seed({ type: "page", routePath: null });
+      deletedPage();
+      await expect(publish(pagesRoute(false))).resolves.toMatchObject({
+        releaseId: expect.any(String),
+      });
+      expect(sealedItems()).toEqual([
+        { itemType: "template", contentId: "template-multi" },
+      ]);
+    });
+  });
+
+  /**
    * Review point 3 (ported from 7782a73, PR-1 review item 5): publish judges
    * the binding the publication item captured, not the template row, which
    * a Code-mode rename can move while the publish runs. `/old` is a shell
