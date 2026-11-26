@@ -503,7 +503,7 @@ describe("what still refuses", () => {
 });
 
 // "Only an answered write with a valid document makes the first copy" (R1-R3)
-// moved to visual-editor-shell-route-document-writes.test.tsx. They wrote
+// moved to visual-editor-shell-route-document-writes-held.test.tsx. They wrote
 // with no copy held of an existing document, which stage 1 of "no basis ->
 // refuse" no longer sends (P2 above); they now run on the one no-copy write
 // left, a route document this editor's ensure created.
