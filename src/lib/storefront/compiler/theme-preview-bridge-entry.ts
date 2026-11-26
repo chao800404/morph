@@ -230,10 +230,15 @@ function isSectionPresentationCommitted(sectionId, enabled) {
       else shownGates += 1;
     });
   }
-  // Whether a gate for this section has committed in this document at all,
-  // kept after it unmounts.
-  const slots =
+  // Whether a gate for this section has committed on this page path, kept
+  // after it unmounts; a gate another route rendered before a client
+  // navigation does not count here.
+  const byPath =
     typeof window === "undefined" ? undefined : window.__morphSectionGateSlots;
+  const slots =
+    byPath && typeof byPath.get === "function"
+      ? byPath.get(location.pathname)
+      : undefined;
   const gated =
     hiddenGates + shownGates > 0 ||
     Boolean(slots && typeof slots.has === "function" && slots.has(sectionId));

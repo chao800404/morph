@@ -92,19 +92,28 @@ function gateCommits(): Set<MorphSectionGateCommit> | null {
 const useCommitEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
- * Every slot a gate has committed in this document, kept after the gate
- * unmounts: a section whose gate the page has rendered is acknowledged hidden
- * only by a gate committing it hidden, while one with no gate here at all (a
- * Theme Morph cannot hide, or a gate in a branch never taken) is hidden by
- * being absent, as before the gate.
+ * Every slot a gate has committed, per page path, kept after the gate
+ * unmounts: a section whose gate this route has rendered is acknowledged
+ * hidden only by a gate committing it hidden, while one with no gate here (a
+ * Theme Morph cannot hide, a gate in a branch never taken, or a gate another
+ * route rendered before a client navigation) is hidden by being absent, as
+ * before the gate.
  */
 function gateSlots(): Set<string> | null {
   if (typeof window === "undefined") return null;
-  const holder = window as unknown as { __morphSectionGateSlots?: Set<string> };
-  if (!(holder.__morphSectionGateSlots instanceof Set)) {
-    holder.__morphSectionGateSlots = new Set();
+  const holder = window as unknown as {
+    __morphSectionGateSlots?: Map<string, Set<string>>;
+  };
+  if (!(holder.__morphSectionGateSlots instanceof Map)) {
+    holder.__morphSectionGateSlots = new Map();
   }
-  return holder.__morphSectionGateSlots;
+  const path = window.location.pathname;
+  let slots = holder.__morphSectionGateSlots.get(path);
+  if (!slots) {
+    slots = new Set();
+    holder.__morphSectionGateSlots.set(path, slots);
+  }
+  return slots;
 }
 
 function useReportCommit(slot: string, hidden: boolean): void {
