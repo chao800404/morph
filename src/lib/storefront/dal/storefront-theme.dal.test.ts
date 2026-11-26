@@ -7037,6 +7037,79 @@ function Home() { return <main><Hero {...content("hero")} /></main>; }`;
       releaseId: expect.any(String),
     });
   });
+
+  /**
+   * Review point 6: a Page published from the Dashboard goes live with the
+   * next Theme publish. With the page, layout and deployed build unchanged
+   * that publish used to answer "already published" before reading the
+   * carried Page revisions, so a corrected Page could never go live.
+   */
+  describe("a Page published after the live release, with nothing else changed", () => {
+    /** The selected template's draft as it stands now. */
+    const currentDraft = () => {
+      const row = sqlite
+        .prepare(
+          "SELECT draft_revision_id AS id, draft_generation AS generation FROM storefront_theme_templates WHERE id = 'template-gate'",
+        )
+        .get() as { id: string; generation: number };
+      return row;
+    };
+    const publishDeployed = async () => {
+      const result = await publish(currentDraft());
+      if (result?.releaseCreated && result.releaseId) {
+        await storefrontReleaseDal.recordDeployedThemeBuild({
+          storefrontId: "storefront-a",
+          releaseId: result.releaseId,
+          themeBuildId: BUILD,
+        });
+      }
+      return result;
+    };
+    const livePageRevision = () =>
+      (
+        sqlite
+          .prepare(
+            `SELECT i.revision_id AS id
+               FROM storefronts s
+               JOIN storefront_releases r ON r.id = s.active_release_id
+               JOIN storefront_content_publication_items i ON i.publication_id = r.content_publication_id
+              WHERE s.id = 'storefront-a' AND i.item_type = 'page' AND i.content_id = 'page-about'`,
+          )
+          .get() as { id: string } | undefined
+      )?.id;
+
+    it("control: a republish with nothing new is already published", async () => {
+      seed({});
+      publishedPage({ hidden: false, revisionId: "page-rev-shown" });
+      await publishDeployed();
+      await expect(publishDeployed()).resolves.toMatchObject({
+        releaseCreated: false,
+      });
+    });
+
+    it("seals the newly published Page revision instead of answering already published", async () => {
+      seed({});
+      publishedPage({ hidden: false, revisionId: "page-rev-shown" });
+      await publishDeployed();
+      publishedPage({ hidden: false, revisionId: "page-rev-shown-2" });
+      await expect(publishDeployed()).resolves.toMatchObject({
+        releaseCreated: true,
+      });
+      expect(livePageRevision()).toBe("page-rev-shown-2");
+    });
+
+    it("judges that Page revision: a newly published hidden section is refused, not skipped", async () => {
+      seed({});
+      publishedPage({ hidden: false, revisionId: "page-rev-shown" });
+      const live = await publishDeployed();
+      publishedPage({ hidden: true, revisionId: "page-rev-hidden" });
+      await expect(publishDeployed()).rejects.toThrow(
+        /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the Page "About"/,
+      );
+      expect(livePageRevision()).toBe("page-rev-shown");
+      expect(liveState().active.id).toBe(live?.releaseId);
+    });
+  });
 });
 
 /**

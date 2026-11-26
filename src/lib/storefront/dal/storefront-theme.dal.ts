@@ -3201,7 +3201,7 @@ export const storefrontThemeDal = {
     // publish would report "already published" without ever deploying again,
     // leaving the active pointer naming a build the Worker never got. There is
     // then no way back short of editing the content to force a difference.
-    const unchanged = isPublishAlreadyLive({
+    const alreadyLive = isPublishAlreadyLive({
       templateUnchanged,
       sourceUnchanged,
       activeReleaseSourceRevisionId: activeRelease?.sourceRevisionId,
@@ -3212,26 +3212,68 @@ export const storefrontThemeDal = {
       sourceRevisionId,
       themeBuildId,
     });
+    const resolvePublication = () =>
+      storefrontContentPublicationDal.resolveForTheme({
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        templateId: data.templateId,
+        templateRevisionId: data.expectedDraftRevisionId,
+        alsoPublish: pendingShell
+          ? [
+              {
+                templateId: pendingShell.id,
+                revisionId: pendingShell.revisionId,
+              },
+            ]
+          : undefined,
+        createdBy: data.createdBy,
+      });
+    // Nor is it already live while the live release seals other content
+    // than this publish would: a Page published from the Dashboard (or any
+    // other carried revision) goes live only with the next Theme publish,
+    // and answering "already published" here would leave it out for as long
+    // as this page, the layout and the build stay as they are.
+    let carriedPublication: Awaited<ReturnType<typeof resolvePublication>> | null =
+      null;
+    let carriesNewContent = false;
+    if (alreadyLive && activeRelease?.contentPublicationId) {
+      carriedPublication = await resolvePublication();
+      const liveItems = await db
+        .select({
+          itemType: storefrontContentPublicationItems.itemType,
+          contentId: storefrontContentPublicationItems.contentId,
+          revisionId: storefrontContentPublicationItems.revisionId,
+        })
+        .from(storefrontContentPublicationItems)
+        .where(
+          and(
+            eq(
+              storefrontContentPublicationItems.publicationId,
+              activeRelease.contentPublicationId,
+            ),
+            isNull(storefrontContentPublicationItems.deletedAt),
+          ),
+        );
+      const live = new Map(
+        liveItems.map((item) => [
+          `${item.itemType}:${item.contentId}`,
+          item.revisionId,
+        ]),
+      );
+      carriesNewContent =
+        live.size !== carriedPublication.items.length ||
+        carriedPublication.items.some(
+          (item) =>
+            live.get(`${item.itemType}:${item.contentId}`) !== item.revisionId,
+        );
+    }
+    const unchanged = alreadyLive && !carriesNewContent;
     const releaseId = unchanged
       ? (activeRelease?.id ?? null)
       : crypto.randomUUID();
     const contentPublication = unchanged
       ? null
-      : await storefrontContentPublicationDal.resolveForTheme({
-          storefrontId: data.storefrontId,
-          themeId: data.themeId,
-          templateId: data.templateId,
-          templateRevisionId: data.expectedDraftRevisionId,
-          alsoPublish: pendingShell
-            ? [
-                {
-                  templateId: pendingShell.id,
-                  revisionId: pendingShell.revisionId,
-                },
-              ]
-            : undefined,
-          createdBy: data.createdBy,
-        });
+      : (carriedPublication ?? (await resolvePublication()));
 
     // Check the exact set being sealed, not just the selected page and pending
     // layout. Published sibling templates and Page revisions also travel with
