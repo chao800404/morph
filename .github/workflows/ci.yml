@@ -379,6 +379,33 @@ jobs:
       # package files, checksum for checksum, every time. So only the order of
       # mirrors changes: suites, components and the Signed-By keyring stay the
       # runner's own, and the install below keeps its timeouts and retries.
+      # Only Chromium's download is cached, not its operating-system packages:
+      # `playwright install --with-deps` below still runs unchanged on a hit,
+      # installing the apt packages and skipping a browser it finds complete.
+      # The key is the exact Playwright version the lockfile installed (the
+      # browser build follows from it) with the runner OS, architecture and
+      # image, and there is no restore-keys fallback, so a different version
+      # always misses and downloads as before. A cache is saved only by a
+      # successful job, and a pull request's cache is not readable by main.
+      - name: Resolve the Playwright browser cache key
+        id: playwright
+        run: |
+          version=$(pnpm exec playwright --version | awk '{print $2}')
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::Could not read the installed Playwright version (got '$version')."
+              exit 1
+              ;;
+          esac
+          echo "key=playwright-browsers-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Playwright browser download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
+
       - name: Use the primary Ubuntu archive for apt
         run: |
           grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
@@ -609,6 +636,33 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The same apt source as the shards'.
+      # Only Chromium's download is cached, not its operating-system packages:
+      # `playwright install --with-deps` below still runs unchanged on a hit,
+      # installing the apt packages and skipping a browser it finds complete.
+      # The key is the exact Playwright version the lockfile installed (the
+      # browser build follows from it) with the runner OS, architecture and
+      # image, and there is no restore-keys fallback, so a different version
+      # always misses and downloads as before. A cache is saved only by a
+      # successful job, and a pull request's cache is not readable by main.
+      - name: Resolve the Playwright browser cache key
+        id: playwright
+        run: |
+          version=$(pnpm exec playwright --version | awk '{print $2}')
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::Could not read the installed Playwright version (got '$version')."
+              exit 1
+              ;;
+          esac
+          echo "key=playwright-browsers-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Playwright browser download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
+
       - name: Use the primary Ubuntu archive for apt
         run: |
           grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
@@ -795,6 +849,33 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The same apt source as the shards'.
+      # Only Chromium's download is cached, not its operating-system packages:
+      # `playwright install --with-deps` below still runs unchanged on a hit,
+      # installing the apt packages and skipping a browser it finds complete.
+      # The key is the exact Playwright version the lockfile installed (the
+      # browser build follows from it) with the runner OS, architecture and
+      # image, and there is no restore-keys fallback, so a different version
+      # always misses and downloads as before. A cache is saved only by a
+      # successful job, and a pull request's cache is not readable by main.
+      - name: Resolve the Playwright browser cache key
+        id: playwright
+        run: |
+          version=$(pnpm exec playwright --version | awk '{print $2}')
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::Could not read the installed Playwright version (got '$version')."
+              exit 1
+              ;;
+          esac
+          echo "key=playwright-browsers-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Playwright browser download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
+
       - name: Use the primary Ubuntu archive for apt
         run: |
           grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
@@ -1189,6 +1270,33 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Only Chromium's download is cached, not its operating-system packages:
+      # `playwright install --with-deps` below still runs unchanged on a hit,
+      # installing the apt packages and skipping a browser it finds complete.
+      # The key is the exact Playwright version the lockfile installed (the
+      # browser build follows from it) with the runner OS, architecture and
+      # image, and there is no restore-keys fallback, so a different version
+      # always misses and downloads as before. A cache is saved only by a
+      # successful job, and a pull request's cache is not readable by main.
+      - name: Resolve the Playwright browser cache key
+        id: playwright
+        run: |
+          version=$(pnpm exec playwright --version | awk '{print $2}')
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::Could not read the installed Playwright version (got '$version')."
+              exit 1
+              ;;
+          esac
+          echo "key=playwright-browsers-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Playwright browser download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
+
       - name: Use the primary Ubuntu archive for apt
         run: |
           grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
@@ -1423,6 +1531,33 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Only Chromium's download is cached, not its operating-system packages:
+      # `playwright install --with-deps` below still runs unchanged on a hit,
+      # installing the apt packages and skipping a browser it finds complete.
+      # The key is the exact Playwright version the lockfile installed (the
+      # browser build follows from it) with the runner OS, architecture and
+      # image, and there is no restore-keys fallback, so a different version
+      # always misses and downloads as before. A cache is saved only by a
+      # successful job, and a pull request's cache is not readable by main.
+      - name: Resolve the Playwright browser cache key
+        id: playwright
+        run: |
+          version=$(pnpm exec playwright --version | awk '{print $2}')
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::Could not read the installed Playwright version (got '$version')."
+              exit 1
+              ;;
+          esac
+          echo "key=playwright-browsers-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Playwright browser download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
 
       - name: Use the primary Ubuntu archive for apt
         run: |
@@ -1773,6 +1908,33 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Only Chromium's download is cached, not its operating-system packages:
+      # `playwright install --with-deps` below still runs unchanged on a hit,
+      # installing the apt packages and skipping a browser it finds complete.
+      # The key is the exact Playwright version the lockfile installed (the
+      # browser build follows from it) with the runner OS, architecture and
+      # image, and there is no restore-keys fallback, so a different version
+      # always misses and downloads as before. A cache is saved only by a
+      # successful job, and a pull request's cache is not readable by main.
+      - name: Resolve the Playwright browser cache key
+        id: playwright
+        run: |
+          version=$(pnpm exec playwright --version | awk '{print $2}')
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::Could not read the installed Playwright version (got '$version')."
+              exit 1
+              ;;
+          esac
+          echo "key=playwright-browsers-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Playwright browser download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
+
       - name: Use the primary Ubuntu archive for apt
         run: |
           grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
@@ -2119,6 +2281,33 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Only Chromium's download is cached, not its operating-system packages:
+      # `playwright install --with-deps` below still runs unchanged on a hit,
+      # installing the apt packages and skipping a browser it finds complete.
+      # The key is the exact Playwright version the lockfile installed (the
+      # browser build follows from it) with the runner OS, architecture and
+      # image, and there is no restore-keys fallback, so a different version
+      # always misses and downloads as before. A cache is saved only by a
+      # successful job, and a pull request's cache is not readable by main.
+      - name: Resolve the Playwright browser cache key
+        id: playwright
+        run: |
+          version=$(pnpm exec playwright --version | awk '{print $2}')
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::Could not read the installed Playwright version (got '$version')."
+              exit 1
+              ;;
+          esac
+          echo "key=playwright-browsers-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-unknown}-${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Playwright browser download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
 
       - name: Use the primary Ubuntu archive for apt
         run: |

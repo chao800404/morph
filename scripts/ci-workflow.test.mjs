@@ -760,6 +760,50 @@ test("every job that installs Chromium first puts the primary Ubuntu archive ahe
   }
 });
 
+test("every job that installs Chromium caches only its download, keyed by the exact Playwright version", () => {
+  const installers = jobKeys(workflow).filter((key) =>
+    withoutComments(jobBlock(workflow, key)).includes(
+      "- name: Install Chromium for Playwright",
+    ),
+  );
+  assert.ok(installers.length >= 2, "both E2E matrices install Chromium");
+  for (const key of installers) {
+    const block = withoutComments(jobBlock(workflow, key));
+    const resolve = block.indexOf("- name: Resolve the Playwright browser cache key");
+    const restore = block.indexOf("- name: Restore the Playwright browser download");
+    const install = block.indexOf("- name: Install Chromium for Playwright");
+    assert.ok(resolve >= 0 && resolve < restore, `${key} must resolve the key before restoring`);
+    assert.ok(restore < install, `${key} must restore before installing`);
+    assert.ok(
+      block.indexOf("- name: Install dependencies") < resolve,
+      `${key} must read the version after pnpm install`,
+    );
+    const keyStep = block.slice(resolve, restore);
+    assert.ok(
+      keyStep.includes("pnpm exec playwright --version"),
+      `${key} must take the version from the installed Playwright`,
+    );
+    assert.ok(
+      keyStep.includes("${RUNNER_OS}") && keyStep.includes("${version}"),
+      `${key}'s key must carry the runner OS and the version`,
+    );
+    const restoreStep = block.slice(restore, block.indexOf("\n      - name:", restore));
+    assert.ok(restoreStep.includes("uses: actions/cache@v4"));
+    assert.ok(restoreStep.includes("path: ~/.cache/ms-playwright"));
+    assert.ok(
+      restoreStep.includes("key: ${{ steps.playwright.outputs.key }}"),
+      `${key} must key the cache by the resolved key`,
+    );
+    // A different version must miss; a fallback key could restore an old browser.
+    assert.doesNotMatch(restoreStep, /restore-keys/);
+    assert.doesNotMatch(restoreStep, /continue-on-error/);
+    // The install itself is untouched: still `--with-deps`, so a hit still gets its apt packages.
+    const installStep = block.slice(install, block.indexOf("\n      - name:", install));
+    assert.ok(installStep.includes("playwright install --with-deps chromium"));
+    assert.doesNotMatch(installStep, /cache-hit/);
+  }
+});
+
 test("the test job keeps Vitest's file timings without making them a condition of the run", () => {
   const block = withoutComments(jobBlock(workflow, "validate-test-shard"));
   const step = block.slice(
