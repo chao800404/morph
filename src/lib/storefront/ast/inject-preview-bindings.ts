@@ -21,6 +21,7 @@ import {
 } from "./theme-content-binding";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
+  hideGuardImportAnchor,
   hideGuardInsertions,
   planHideGuards,
   type HideGuardPlan,
@@ -1646,6 +1647,7 @@ export function injectPreviewBindings(
     for (const insertion of hideGuardInsertions(
       hideSites,
       usedIdentifierNames,
+      hideGuardImportAnchor(ast, file.content),
     )) {
       insertions.push(
         insertion.wrapper

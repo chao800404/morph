@@ -1,4 +1,5 @@
 import { deriveThemeDocumentLayoutPath } from "@/lib/storefront/compiler/theme-route-sections";
+import { THEME_SECTION_GATE_MODULE } from "@/lib/storefront/compiler/theme-section-gate";
 import {
   createHideCapabilityAnalyzer,
   isHideGuardedModule,
@@ -12,18 +13,25 @@ import {
 } from "./theme-source-ast";
 
 /**
- * M3 Hide, approach B: Morph's compiled guard at each call site the
+ * M3 Hide, approach E: Morph's compiled guard at each call site the
  * capability classifier supports (`theme-hide-capability.ts`).
  *
- *   {hidden ? null : <El …author props…/>}
+ *   <__MorphSectionGate slot={"x"} render={() => (<El …author props…/>)} />
  *
- * The condition is evaluated before the element, so a hidden section's props
- * are never computed and its component never runs: no defaults, and no read
- * of the value that is no longer there. The hidden state is read from the
- * same object the slot comes from — the content module's `isSectionHidden`
- * for a `content("x")` site, the page's own `_hidden` for a loader site — so
- * server render, dehydrated loader data and client hydration agree. Nothing
- * hidden is ever put back into what the page receives.
+ * The gate (`@morph/sdk/section-gate`, theme-section-gate.ts) reads the
+ * hidden list once, at its own top level, from the root route's snapshot
+ * (`content("x")` sites) or from the page object the slot came from (loader
+ * sites, `MorphPageSectionGate`). A hidden section's `render` is never
+ * called, so its props are never computed and its component never runs: no
+ * defaults, and no read of the value that is no longer there. A visible one
+ * is rendered by a body the gate mounts, so a hook its props call runs at a
+ * stable place. A missing or malformed hidden list throws rather than
+ * showing the section.
+ *
+ * Every supported site gets the gate, the Starter's own
+ * `!isSectionHidden("x") && <El/>` included: there the gate goes around the
+ * element, inside the author's check, so the Starter's `content()` is no
+ * longer called conditionally in the route's render.
  *
  * The same plan is used by the Live Preview (inside `injectPreviewBindings`,
  * on the authored offsets, so every `data-morph-loc` it writes still names
@@ -42,8 +50,7 @@ export type HideGuardPlan = ReadonlyMap<string, readonly HideGuardSite[]>;
 /**
  * Every call site that gets a guard, per file. Only the modules whose
  * sections a Document describes are guarded: route modules, and the document
- * layout. A site the Starter already guards (`!isSectionHidden("x") && …`)
- * is left exactly as the author has it.
+ * layout.
  */
 export function planHideGuards(
   sourceFiles: readonly B1SourceFile[],
@@ -67,9 +74,7 @@ export function planHideGuards(
         scope: isLayout ? "layout" : "route",
       });
       if (capability.kind !== "supported") continue;
-      const sites = capability.sites.filter(
-        (site) => site.file === file.path && site.position !== "guarded",
-      );
+      const sites = capability.sites.filter((site) => site.file === file.path);
       if (sites.length === 0) continue;
       plan.set(file.path, [...(plan.get(file.path) ?? []), ...sites]);
     }
@@ -85,50 +90,91 @@ export type HideGuardInsertion = Readonly<{
 }>;
 
 /**
+ * Where the gate's import goes: at the end of the module's first import
+ * declaration, on its own line, so no later line moves. A Theme written
+ * without semicolons ends the import at its specifier, so the statement is
+ * closed first.
+ */
+export type HideGuardImportAnchor = Readonly<{
+  end: number;
+  semicolon: boolean;
+}>;
+
+/** The first import declaration of a parsed module, as an anchor. */
+export function hideGuardImportAnchor(
+  ast: { program?: { body?: readonly unknown[] } } | null | undefined,
+  source: string,
+): HideGuardImportAnchor | null {
+  const first = (ast?.program?.body ?? []).find(
+    (statement) =>
+      (statement as { type?: string }).type === "ImportDeclaration",
+  ) as { end?: number } | undefined;
+  if (typeof first?.end !== "number") return null;
+  return { end: first.end, semicolon: source[first.end - 1] === ";" };
+}
+
+function freshName(base: string, usedNames: Set<string>): string {
+  let name = base;
+  for (let suffix = 0; usedNames.has(name); suffix += 1) {
+    name = `${base}${suffix}`;
+  }
+  usedNames.add(name);
+  return name;
+}
+
+/**
  * The text one file gains for its guards, at authored offsets. `usedNames`
- * holds every identifier the module already uses; the import's local name is
- * chosen outside it and added to it.
+ * holds every identifier the module already uses; the gates' local names
+ * are chosen outside it and added to it. With no import to anchor to, no
+ * guard is written (a module that renders a section imports what it
+ * renders).
  */
 export function hideGuardInsertions(
   sites: readonly HideGuardSite[],
   usedNames: Set<string>,
+  importAnchor: HideGuardImportAnchor | null,
 ): HideGuardInsertion[] {
+  if (!importAnchor) return [];
   const insertions: HideGuardInsertion[] = [];
-  let hiddenLocal: string | null = null;
+  let contentGate: string | null = null;
+  let pageGate: string | null = null;
+  const imports: string[] = [];
   for (const site of sites) {
-    let condition: string;
+    let open: string;
     if (site.root === "content") {
-      if (!site.contentImport) continue;
-      if (hiddenLocal === null) {
-        hiddenLocal = "__morphSectionHidden";
-        for (let suffix = 0; usedNames.has(hiddenLocal); suffix += 1) {
-          hiddenLocal = `__morphSectionHidden${suffix}`;
-        }
-        usedNames.add(hiddenLocal);
-        // On the import's own line, so no later line moves. A Theme written
-        // without semicolons ends the import at its specifier, so the
-        // statement is closed first: two imports on one line need one.
-        insertions.push({
-          at: site.contentImport.end,
-          text: `${site.contentImport.semicolon ? "" : ";"} import { isSectionHidden as ${hiddenLocal} } from ${JSON.stringify(site.contentImport.source)};`,
-        });
+      if (contentGate === null) {
+        contentGate = freshName("__MorphSectionGate", usedNames);
+        imports.push(`MorphSectionGate as ${contentGate}`);
       }
-      condition = `${hiddenLocal}(${JSON.stringify(site.slot)})`;
+      open = `<${contentGate} slot={${JSON.stringify(site.slot)}} render={() => (`;
     } else {
       if (!site.pageLocal) continue;
-      const page = site.pageLocal;
-      condition = `(Array.isArray(${page}?._hidden) && ${page}._hidden.includes(${JSON.stringify(site.slot)}))`;
+      if (pageGate === null) {
+        pageGate = freshName("__MorphPageSectionGate", usedNames);
+        imports.push(`MorphPageSectionGate as ${pageGate}`);
+      }
+      open = `<${pageGate} slot={${JSON.stringify(site.slot)}} hidden={${site.pageLocal}?._hidden} render={() => (`;
     }
-    const child = site.position === "child";
     insertions.push({
       at: site.start,
-      text: child ? `{${condition} ? null : ` : `(${condition} ? null : `,
+      text: open,
       wrapper: { side: "open", start: site.start, end: site.end },
     });
     insertions.push({
       at: site.end,
-      text: child ? "}" : ")",
+      text: ")} />",
       wrapper: { side: "close", start: site.start, end: site.end },
+    });
+  }
+  if (imports.length > 0) {
+    insertions.unshift({
+      at: importAnchor.end,
+      text: `${importAnchor.semicolon ? "" : ";"} ${imports
+        .map(
+          (specifier) =>
+            `import { ${specifier} } from ${JSON.stringify(THEME_SECTION_GATE_MODULE)};`,
+        )
+        .join(" ")}`,
     });
   }
   return insertions;
@@ -171,12 +217,27 @@ export type HideGuardResult = Readonly<{
 export function applyHideGuards(
   files: readonly { path: string; content: string }[],
 ): HideGuardResult {
-  const plan = planHideGuards(files);
+  const reader = createThemeSourceAstReader(
+    files.map((file) => ({
+      path: normalizeThemeSourcePath(file.path),
+      content: file.content,
+    })),
+  );
+  const plan = planHideGuards(files, { reader });
   const guarded: Record<string, string[]> = {};
   const out = files.map((file) => {
-    const sites = plan.get(normalizeThemeSourcePath(file.path));
+    const path = normalizeThemeSourcePath(file.path);
+    const sites = plan.get(path);
     if (!sites || sites.length === 0) return file;
-    const insertions = hideGuardInsertions(sites, identifierNames(file.content))
+    const anchor = hideGuardImportAnchor(
+      reader.ast(path, file.content) as never,
+      file.content,
+    );
+    const insertions = hideGuardInsertions(
+      sites,
+      identifierNames(file.content),
+      anchor,
+    )
       .map((insertion, order) => ({ ...insertion, order }))
       .sort(compareGuardInsertions);
     if (insertions.length === 0) return file;

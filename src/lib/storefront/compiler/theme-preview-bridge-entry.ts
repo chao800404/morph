@@ -217,14 +217,11 @@ function queuePresentationToken(sectionId, enabled, token) {
 
 function isSectionPresentationCommitted(sectionId, enabled) {
   const matches = document.querySelectorAll(previewSectionSelector(sectionId));
-  if (enabled === false) {
-    if (matches.length === 0) return true;
-    return Array.from(matches).every(
-      (element) =>
-        element.hasAttribute("hidden") ||
-        element.hasAttribute("data-morph-section-hidden"),
-    );
-  }
+  // Hidden means not rendered: Morph's compiled guard omits the section. An
+  // element kept under `hidden` or `data-morph-section-hidden` still
+  // rendered, with its values or its defaults, and the published site would
+  // show it, so it never acknowledges a Hide.
+  if (enabled === false) return matches.length === 0;
   if (matches.length !== 1) return false;
   const element = matches[0];
   return (

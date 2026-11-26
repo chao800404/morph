@@ -81,6 +81,17 @@ export type HideRefusalReason =
   | "no-call-site"
   | "source-unconfirmed"
   /**
+   * The Theme still has an older Starter's content module, whose read turns
+   * a failure into empty content: a hidden section could come back with its
+   * defaults. Hidden sections ship with Starter 32 (decision 2026-11-26).
+   */
+  | "starter-upgrade-required"
+  /**
+   * `src/routes/__root.tsx` is not the Starter's, so the root route's
+   * snapshot, which Morph's gate reads the hidden list from, is not known.
+   */
+  | "root-route-unconfirmed"
+  /**
    * The Theme's recorded framework is not Start. This classifier reads
    * Start source only, so the write boundary refuses such a hide before
    * calling it (until M3 P5).
@@ -148,6 +159,8 @@ const MESSAGES: Readonly<Record<HideRefusalReason, string>> = {
   "no-call-site": `${PREFIX}: Morph could not find where the page renders it.`,
   "source-unconfirmed": `${PREFIX}: the Theme source has errors Morph cannot analyse.`,
   "framework-not-supported": `${PREFIX}: hiding is only supported on TanStack Start pages so far. Edit it in Code mode.`,
+  "starter-upgrade-required": `${PREFIX}: this Theme still has an older Starter's ${THEME_CONTENT_MODULE_PATH}, which shows sections with their defaults when the page content cannot be read. Upgrade the Theme to the current Starter, then hide it.`,
+  "root-route-unconfirmed": `${PREFIX}: src/routes/__root.tsx has been changed from the Starter's, so Morph cannot confirm where the page learns which sections are hidden.`,
 };
 
 /** The capability-limit wording for a refusal reason. */
@@ -158,8 +171,6 @@ export function hideRefusalMessage(reason: HideRefusalReason): string {
 /** Every Starter content module whose `morph.pages.get` returns `_hidden`. */
 const STARTER_PAGE_MODULE_SOURCES: readonly string[] = [
   STARTER_THEME_CONTENT_MODULE_SOURCE,
-  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
-  LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
 ];
 
 /**
@@ -179,6 +190,14 @@ const STARTER_ROOT_ROUTE_SOURCES: readonly string[] = [
  */
 const STARTER_CONTENT_MODULE_SOURCES: readonly string[] = [
   STARTER_THEME_CONTENT_MODULE_SOURCE,
+];
+
+/**
+ * Older Starter content modules. Each answers a failed read with empty
+ * content somewhere (Starter 31's server read, for one), so a hidden section
+ * could come back with its defaults: such a Theme is asked to upgrade.
+ */
+const LEGACY_STARTER_CONTENT_MODULE_SOURCES: readonly string[] = [
   LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
@@ -1506,6 +1525,29 @@ export function createHideCapabilityAnalyzer(
     slot,
   }) => {
     if (callSitePath === null) return refuse(slot, "legacy-shell");
+    // The platform files every guard relies on, before anything else: the
+    // fail-closed Starter 32 content module, and the Starter root whose
+    // snapshot the gate reads the hidden list from.
+    if (!contentModule || !pageModuleConfirmed) {
+      const legacy =
+        contentModule !== undefined &&
+        isKnownCode(
+          LEGACY_STARTER_CONTENT_MODULE_SOURCES,
+          contentModule.path,
+          contentModule.content,
+        );
+      return refuse(
+        slot,
+        legacy ? "starter-upgrade-required" : "content-module-unconfirmed",
+        { file: THEME_CONTENT_MODULE_PATH, line: 0 },
+      );
+    }
+    if (!rootConfirmed) {
+      return refuse(slot, "root-route-unconfirmed", {
+        file: ROOT_ROUTE_PATH,
+        line: 0,
+      });
+    }
     const path = normalizeThemeSourcePath(callSitePath);
     let elsewhere: readonly HideGuardSite[] = [];
     const local = localClassify(path, slot, () => {

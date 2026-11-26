@@ -15,7 +15,14 @@
  * content module and root are confirmed as code, and computed router or
  * route-object access refuses.
  *
+ * hide-4 (approach E, step 1): every supported site is mounted through the
+ * platform's section gate (`@morph/sdk/section-gate`, theme-section-gate.ts),
+ * which reads the hidden list from the root route's snapshot and fails
+ * closed; only the Starter 32 content module and root are admitted. The
+ * gate's source is covered by this version: change it with the gate. Past
+ * hide-2 and hide-3 too, which the allowlist and PR-1 branches built with.
+ *
  * Kept apart from the transform so the identity can be read without loading
  * the analysis.
  */
-export const THEME_HIDE_GUARD_VERSION = "hide-3";
+export const THEME_HIDE_GUARD_VERSION = "hide-4";
