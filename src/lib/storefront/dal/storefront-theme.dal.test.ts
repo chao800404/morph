@@ -6524,10 +6524,10 @@ function Home() {
 
 /**
  * M3 Hide P4: a publish judges a hidden section on every route that serves
- * its template, as the write does, and leaves a template no route serves
- * alone: nothing renders it.
+ * its template, as the write does. A template no route serves is refused
+ * (M3 Hide step 1): that alone does not prove nothing renders it.
  */
-describe("M3 Hide: publish judges every route of the template, and none when no route serves it", () => {
+describe("M3 Hide: publish judges every route of the template, and refuses one no route serves", () => {
   const SOURCE = "22222222-2222-4222-8222-222222222222";
   const BUILD = "33333333-3333-4333-8333-333333333333";
   const DRAFT = "dddddddd-1111-4111-8111-111111111111";
@@ -6635,7 +6635,10 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
     });
   });
 
-  it("leaves alone a template no route serves: nothing can show its hidden section", async () => {
+  // M3 Hide step 1 (review point 1): "no route serves it" is not proof that
+  // nothing renders it, so until the whole-Theme proof lands such a hidden
+  // section is refused. These two used to publish.
+  it("refuses a template no route serves: Morph cannot confirm nothing renders its hidden section", async () => {
     seed({ type: "product", routePath: null });
     await expect(
       publish(
@@ -6647,14 +6650,18 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
           ],
         ]),
       ),
-    ).resolves.toMatchObject({ releaseId: expect.any(String) });
+    ).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the product page \(no-call-site\)/,
+    );
+    expect(releases()).toEqual([]);
   });
 
-  it("leaves alone a route document whose route is no longer in the Theme", async () => {
+  it("refuses a route document whose route is no longer in the Theme", async () => {
     seed({ type: "page", routePath: "/aboutus" });
-    await expect(publish(twoRoutes(true))).resolves.toMatchObject({
-      releaseId: expect.any(String),
-    });
+    await expect(publish(twoRoutes(false))).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the \/aboutus page \(no-call-site\)/,
+    );
+    expect(releases()).toEqual([]);
   });
 });
 
@@ -6895,6 +6902,187 @@ function Home() { return <main><Hero {...content("hero")} /></main>; }`;
       releaseId: expect.any(String),
     });
   });
+});
+
+/**
+ * M3 Hide step 1, review point 1: until the step-2 proof lands, a hidden
+ * section on a Start template publishes only when every route that serves
+ * the template is positively judged a supported call site. "Not rendered"
+ * by the route, and "no route serves it", are refused: a section moved into
+ * an imported wrapper is not named by the route, yet the wrapper renders it.
+ */
+describe("M3 Hide: a hidden Start section must be positively judged to publish", () => {
+  const SOURCE = "22222222-2222-4222-8222-222222222222";
+  const BUILD = "33333333-3333-4333-8333-333333333333";
+  const DRAFT = "eeeeeeee-1111-4111-8111-111111111111";
+  const LAYOUT_DRAFT = "eeeeeeee-2222-4222-8222-222222222222";
+  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+  const hero = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero({ heading = "HERO-DEFAULT" }) { return <h1>{heading}</h1>; }`;
+  const wrapper = `import { content } from "../morph/content";
+import Hero from "./Hero";
+export default function HeroWrapper() { return <Hero {...content("hero")} />; }`;
+  const wrappedRoute = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+import HeroWrapper from "../components/HeroWrapper";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return (
+    <main>
+      <HeroWrapper />
+      <Hero {...content("other")} />
+    </main>
+  );
+}`;
+  const wrappedRevision = async () => [
+    { path: "src/routes/__root.tsx", content: root },
+    {
+      path: "src/morph/content.ts",
+      content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+    },
+    { path: "src/components/Hero.tsx", content: hero },
+    { path: "src/components/HeroWrapper.tsx", content: wrapper },
+    { path: "src/routes/index.tsx", content: wrappedRoute },
+  ];
+  const starterRevision = async () =>
+    starterThemeWorkspaceFiles().map(({ path, content }) => ({
+      path,
+      content,
+    }));
+
+  function seed(options: {
+    document: StorefrontPageDocument;
+    layout?: StorefrontPageDocument;
+    compilerVersion: string;
+  }) {
+    const document = JSON.stringify(options.document);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+        VALUES ('template-judged', 'theme-a', 'index', 'Home', ?, ?, NULL, 1, 'now', 'now')`,
+      )
+      .run(document, DRAFT);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES (?, 'template-judged', 1, ?, 'now')`,
+      )
+      .run(DRAFT, document);
+    if (options.layout) {
+      const layout = JSON.stringify(options.layout);
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_templates
+            (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+          VALUES ('layout-judged', 'theme-a', 'layout', 'Layout', ?, ?, NULL, 1, 'now', 'now')`,
+        )
+        .run(layout, LAYOUT_DRAFT);
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_template_revisions
+            (id, template_id, version, document, created_at)
+          VALUES (?, 'layout-judged', 1, ?, 'now')`,
+        )
+        .run(LAYOUT_DRAFT, layout);
+    }
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_revisions
+          (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', 1, 'Checkpoint', 'publish', '[]', 'now', 'now')`,
+      )
+      .run(SOURCE);
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
+      )
+      .run(options.compilerVersion, BUILD);
+  }
+  const publish = (
+    readSourceRevisionFiles: () => Promise<
+      readonly { path: string; content: string }[]
+    >,
+  ) =>
+    storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles,
+      verifySourceRevision: acceptRevision,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-judged",
+      sourceRevisionId: SOURCE,
+      themeBuildId: BUILD,
+      expectedDraftRevisionId: DRAFT,
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+  const releases = () =>
+    sqlite.prepare("SELECT id FROM storefront_releases").all();
+  const section = (id: string, enabled: boolean) => ({
+    id,
+    type: "hero",
+    componentRef: "src/components/Hero.tsx",
+    enabled,
+    props: { heading: `Stored ${id}` },
+  });
+  const allHidden = (document: StorefrontPageDocument) => ({
+    ...document,
+    sections: document.sections.map((entry) => ({
+      ...entry,
+      enabled: false,
+    })),
+  });
+
+  it("refuses a hidden section the route renders only through an imported wrapper", async () => {
+    seed({
+      document: {
+        version: 1,
+        sections: [section("hero", false), section("other", true)],
+      },
+      compilerVersion: withThemeStartBuildIdentity("1.168.32"),
+    });
+    await expect(publish(wrappedRevision)).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the index page \(no-call-site\)/,
+    );
+    expect(releases()).toEqual([]);
+  });
+
+  it("reverse: the same Theme publishes while that section is shown", async () => {
+    seed({
+      document: {
+        version: 1,
+        sections: [section("hero", true), section("other", false)],
+      },
+      compilerVersion: withThemeStartBuildIdentity("1.168.32"),
+    });
+    await expect(publish(wrappedRevision)).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+  });
+
+  // The Starter's own home and layout hides must keep publishing: every
+  // section is rendered by a call site the classifier judges supported.
+  for (const [build, compilerVersion] of [
+    ["a guarded build", withThemeStartBuildIdentity("1.168.32")],
+    ["a build from before the guard", withThemeMorphSdkIdentity("1.168.32")],
+  ] as const) {
+    it(`still publishes the untouched Starter with every home and layout section hidden, on ${build}`, async () => {
+      seed({
+        document: allHidden(createDefaultStorefrontHomeDocument()),
+        layout: allHidden(createDefaultStorefrontLayoutDocument()),
+        compilerVersion,
+      });
+      await expect(publish(starterRevision)).resolves.toMatchObject({
+        releaseId: expect.any(String),
+      });
+    });
+  }
 });
 
 /**

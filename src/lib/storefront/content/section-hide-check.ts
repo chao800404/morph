@@ -1,6 +1,7 @@
 import {
   classifyHideCapability,
   createHideCapabilityAnalyzer,
+  hideRefusalMessage,
   type HideCapabilityScope,
   type HideRefusalReason,
 } from "@/lib/storefront/ast/theme-hide-capability";
@@ -112,8 +113,10 @@ export const PAGE_SECTION_HIDE_UNSUPPORTED_MESSAGE =
  *   author is told and asks for it.
  * - A section the Starter's own `!isSectionHidden(...)` guard already hides
  *   needs no Morph guard, so an older build is fine for it.
- * - A hidden section the revision's source does not render at all is not
- *   shown either way and is left alone, as the editor leaves it.
+ * - A hidden section no route is positively found to render (a route that
+ *   does not name it, or no route serving the template) is refused: the
+ *   route lookup reads only the route's own JSX, so an imported module may
+ *   still render it (M3 Hide step 1, until the whole-Theme proof).
  *
  * Release rollback and a failed publish's restore never come here: a
  * historical release keeps its own artifact and content.
@@ -132,11 +135,12 @@ export type PublishHiddenSectionProblem = Readonly<{
   reason: HideRefusalReason | "rebuild-required";
   message: string;
   /**
-   * Set when the item was refused without its source being judged
-   * (`partitionPublishHiddenItems`): a CMS Page, or a Theme that is not
-   * Start. Each has its own way out in the refusal.
+   * Set when the refusal has its own way out: a CMS Page, or a Theme that
+   * is not Start, refused without its source being judged
+   * (`partitionPublishHiddenItems`); or a Start section no route is found
+   * to render, which Design therefore does not list.
    */
-  refusedAs?: "page" | "framework";
+  refusedAs?: "page" | "framework" | "unlisted";
 }>;
 
 export function findPublishHiddenSectionProblems(args: {
@@ -180,11 +184,27 @@ export function findPublishHiddenSectionProblems(args: {
     // one that cannot hide it decides.
     let refusal: PublishHiddenSectionProblem | null = null;
     let needsGuard = false;
-    for (const callSitePath of args.resolveCallSites({
+    const callSites = args.resolveCallSites({
       templateType: entry.templateType,
       templateRoutePath: entry.templateRoutePath,
       sectionId,
-    })) {
+    });
+    // M3 Hide step 1: only a positive verdict publishes. A route that does
+    // not name the section may still render it through an imported module
+    // (the route lookup reads the route's own JSX only), and a template no
+    // route is found to serve is not proven unrendered either; until the
+    // whole-Theme proof (step 2) can show that nothing reads the slot, both
+    // are refused rather than left alone.
+    if (callSites.length === 0 || callSites.includes("not-rendered")) {
+      refusal = {
+        label: entry.label,
+        sectionId,
+        reason: "no-call-site",
+        message: hideRefusalMessage("no-call-site"),
+        refusedAs: "unlisted",
+      };
+    }
+    for (const callSitePath of refusal ? [] : callSites) {
       if (callSitePath === "not-rendered") continue;
       if (callSitePath !== null && typeof callSitePath === "object") {
         refusal = {
@@ -318,6 +338,9 @@ export function assertPublishHiddenSections(
     const pages = problems.unsupported.filter(
       (item) => item.refusedAs === "page",
     );
+    const unlisted = problems.unsupported.filter(
+      (item) => item.refusedAs === "unlisted",
+    );
     const source = problems.unsupported.filter(
       (item) => item.refusedAs === undefined,
     );
@@ -330,6 +353,11 @@ export function assertPublishHiddenSections(
     if (pages.length > 0) {
       sentences.push(
         `Morph cannot hide a section of a Page yet, so the live site would still show these hidden sections with their default content: ${list(pages)}. Show them again on the Page, publish the Page, then publish the Theme again.`,
+      );
+    }
+    if (unlisted.length > 0) {
+      sentences.push(
+        `Morph cannot find where this Theme's code renders these hidden sections, so it cannot confirm they would be left out of the live site and will not publish them: ${list(unlisted)}. Design does not list a section the page's code does not render directly, so it cannot be shown again there: change the code so the page renders it directly, show it again in Design, then publish, or contact support.`,
       );
     }
     if (source.length > 0) {
