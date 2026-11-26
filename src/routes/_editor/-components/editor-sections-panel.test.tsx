@@ -1391,6 +1391,21 @@ describe("EditorSectionsPanel on a Theme of another framework", () => {
     expect(screen.queryByRole("button", { name: "Add section" })).toBeNull();
   });
 
+  // Hints review finding 9: the row's full message was only in `title`,
+  // which assistive tech and touch do not reliably expose. It is in the
+  // row's own text too (visually hidden), beside the short badge.
+  it("says the selected Astro section's full status in the row's text, not only in its title", () => {
+    renderPanel(vi.fn(), vi.fn(), {
+      ...structureProps(true),
+      astroSectionNotice: unconfirmed,
+    });
+
+    const row = document.querySelector<HTMLElement>(
+      "[data-astro-section-status]",
+    )!;
+    expect(row.textContent).toContain(unconfirmed.message);
+  });
+
   it("shows no row for a notice with no section (a cleared selection)", () => {
     renderPanel(vi.fn(), vi.fn(), {
       ...structureProps(true),
