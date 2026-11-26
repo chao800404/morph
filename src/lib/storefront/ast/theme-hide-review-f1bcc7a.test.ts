@@ -240,3 +240,41 @@ function Home() {
     expect(classify(files)).toMatchObject({ kind: "unsupported" });
   });
 });
+
+describe("P2-6: the root pin counts what the compiler reads in comments and directives", () => {
+  const withRoot = (edit: (source: string) => string) => {
+    const files = theme(route(""));
+    return files.map((file) =>
+      file.path === "src/routes/__root.tsx"
+        ? { ...file, content: edit(file.content) }
+        : file,
+    );
+  };
+
+  it("control: a plain comment added to the root changes nothing", () => {
+    expect(
+      classify(withRoot((source) => `// The storefront's root.\n${source}`)),
+    ).toMatchObject({ kind: "supported" });
+  });
+
+  it.each([
+    ["@jsxImportSource", "/** @jsxImportSource preact */\n"],
+    ["@jsx", "/** @jsx h */\n"],
+    ["@jsxRuntime", "/** @jsxRuntime classic */\n"],
+    ["@jsxFrag", "/** @jsxFrag Fragment */\n"],
+  ])("refuses a root that gained a %s pragma", (_, pragma) => {
+    expectRefused(
+      classify(withRoot((source) => `${pragma}${source}`)),
+      "root-route-unconfirmed",
+      "src/routes/__root.tsx",
+    );
+  });
+
+  it("refuses a root that gained a directive", () => {
+    expectRefused(
+      classify(withRoot((source) => `"use client";\n${source}`)),
+      "root-route-unconfirmed",
+      "src/routes/__root.tsx",
+    );
+  });
+});
