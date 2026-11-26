@@ -1538,7 +1538,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         }),
       );
 
-    it("D2: in Code mode a confirmed click still locates its source (L1.5a), and asks for its basis", async () => {
+    it("D2: in Code mode a confirmed click stays a locate (L1.5a): Code stays shown and nothing is written", async () => {
       modelCurrentBridge();
       readRouteBindings.mockResolvedValue(bindingView());
       await settled(context, HOME, BASIS_READY, {
@@ -1555,8 +1555,9 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
       boundaryClick(1);
       // Code stays shown (the click is not a Design selection there); which
-      // file it opens is the L1.5a case above, from Design.
-      await waitFor(() => expect(basisPosts()).toHaveLength(1));
+      // file it opens is the L1.5a case above, from Design. The canvas
+      // is not on screen in Code, so no basis is asked of it here.
+      await flush();
       expect(
         screen.getByRole("textbox", { name: "Code editor" }),
       ).toBeTruthy();
