@@ -16,6 +16,19 @@ export type CanonicalThemeBuildManifestFile = {
 };
 
 /**
+ * A page this build serves as static HTML, registered by the artifact store
+ * from the build's immutable input (theme-static-pages.ts). `sha256` is the
+ * uploaded HTML's, so a response can name exactly the bytes it carries.
+ */
+export type CanonicalThemeStaticPage = {
+  /** The page's URL path, e.g. `/` or `/about`. */
+  path: string;
+  /** The HTML file in this artifact, e.g. `runtime/client/about/index.html`. */
+  artifactPath: string;
+  sha256: string;
+};
+
+/**
  * Canonical Theme Build Manifest stored in R2 as manifest.json.
  * Serves as the authoritative, verified provenance metadata for an immutable build.
  */
@@ -36,6 +49,11 @@ export type CanonicalThemeBuildManifest = {
     workerEntry?: string;
     clientAssetsDirectory?: string;
     previewEntry?: string;
+    /**
+     * Registered static pages. Absent when there are none, so a manifest
+     * without SSG pages is byte-identical to one written before they existed.
+     */
+    staticPages?: CanonicalThemeStaticPage[];
   };
 
   filesCount: number;
