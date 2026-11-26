@@ -522,6 +522,24 @@ describe("a failed platform build's message", () => {
 
   it("is the build's own output when no content read was refused", () => {
     expect(platformPrerenderFailure(output, undefined)).toBeUndefined();
+    // An empty record holds no refused read.
+    expect(platformPrerenderFailure(output, "")).toBeUndefined();
+    expect(platformPrerenderFailure(output, new Uint8Array())).toBeUndefined();
+  });
+
+  it("fails a build that exited 0 but recorded a refused read, with no output appended", () => {
+    const failure = platformPrerenderFailure(
+      "",
+      JSON.stringify({
+        path: "/elsewhere",
+        reason: PLATFORM_PRERENDER_PATH_NOT_SEALED,
+      }) + "\n",
+    )!;
+    expect(failure.code).toBe(PLATFORM_PRERENDER_CONTENT_UNAVAILABLE);
+    expect(failure.refusedReads).toEqual([
+      { path: "/elsewhere", reason: PLATFORM_PRERENDER_PATH_NOT_SEALED },
+    ]);
+    expect(failure.message).toMatch(/while prerendering\.$/);
   });
 
   it("names each refused path and its reason first, then keeps the build's output", () => {

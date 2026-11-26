@@ -4,7 +4,9 @@ import type { Sandbox } from "@cloudflare/sandbox";
 import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   createThemePrerenderContent,
+  MAX_PRERENDER_RECORD_BYTES,
   platformPrerenderFailure,
+  PRERENDER_RECORD_UNREADABLE,
   type NativePrerenderContent,
 } from "./theme-prerender-content";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
@@ -685,22 +687,27 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         if (startExecResult.stdout) addLog("info", startExecResult.stdout);
         const startSuccess =
           startExecResult.success ?? startExecResult.exitCode === 0;
-        if (!startSuccess) {
-          const errorMsg =
-            startExecResult.stderr ||
+        const errorMsg = startSuccess
+          ? ""
+          : startExecResult.stderr ||
             startExecResult.stdout ||
             "TanStack Start build exited with non-zero status code";
-          // A prerendered page that read content this build has not sealed
-          // fails only as "Failed to fetch <page>". The content endpoint
-          // records the path it refused (theme-prerender-content.ts); name it.
-          // Only a build that prerendered has that endpoint, so only its
-          // record is read.
-          const refused = prerenderContent
-            ? platformPrerenderFailure(
-                errorMsg,
-                await readFailedBuildRecord(sandboxSession, refusedReadsRecord),
-              )
-            : undefined;
+        // A read the content endpoint refused (theme-prerender-content.ts)
+        // fails the build, named, whether the build failed on it ("Failed to
+        // fetch <page>") or the Theme caught it and prerendered defaults.
+        // Only a build that prerendered has that endpoint, so only its record
+        // is read; on a refused read nothing past this point runs, and no
+        // artifact is read or returned.
+        const refused = prerenderContent
+          ? platformPrerenderFailure(
+              errorMsg,
+              await readPlatformPrerenderRecord(
+                sandboxSession,
+                refusedReadsRecord,
+              ),
+            )
+          : undefined;
+        if (!startSuccess || refused) {
           if (refused) addLog("error", refused.message);
           return {
             success: false,
@@ -1307,34 +1314,53 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
   }
 }
 
-/** A failed build's refused-read record larger than this is not read. */
-const MAX_FAILED_BUILD_RECORD_BYTES = 1024 * 1024;
-
 /**
- * A failed build's record at `fullPath`, or `undefined` when there is none
- * or it is larger than `MAX_FAILED_BUILD_RECORD_BYTES`: its size is checked
- * before its body is read.
+ * A build's record at `fullPath`: `undefined` when there is none,
+ * `PRERENDER_RECORD_UNREADABLE` when it is larger than
+ * `MAX_PRERENDER_RECORD_BYTES` — its size is checked before its body is
+ * read. A failed body read throws.
  */
-async function readFailedBuildRecord(
+async function readBuildRecord(
   sandbox: CloudflareSandboxSession,
   fullPath: string,
-): Promise<Uint8Array | undefined> {
+): Promise<Uint8Array | typeof PRERENDER_RECORD_UNREADABLE | undefined> {
   const sized = await sandbox.exec(`stat -c %s ${fullPath}`, {
     timeout: 10_000,
     timeoutMs: 10_000,
   });
   const size = Number.parseInt((sized.stdout ?? "").trim(), 10);
-  if (
-    !(sized.success ?? sized.exitCode === 0) ||
-    !Number.isInteger(size) ||
-    size > MAX_FAILED_BUILD_RECORD_BYTES
-  ) {
+  if (!(sized.success ?? sized.exitCode === 0) || !Number.isInteger(size)) {
     return undefined;
   }
+  if (size > MAX_PRERENDER_RECORD_BYTES) return PRERENDER_RECORD_UNREADABLE;
   const read = await sandbox.readFile(fullPath, { encoding: "none" });
   const raw =
     read && typeof read === "object" && "content" in read ? read.content : read;
   return fileContentToUint8Array(raw);
+}
+
+/** A native build's record, or `undefined` for none or one too large. */
+async function readFailedBuildRecord(
+  sandbox: CloudflareSandboxSession,
+  fullPath: string,
+): Promise<Uint8Array | undefined> {
+  const record = await readBuildRecord(sandbox, fullPath);
+  return record === PRERENDER_RECORD_UNREADABLE ? undefined : record;
+}
+
+/**
+ * A platform build's refused-read record. One that exists but cannot be
+ * read still says a read was refused, so it fails the build too.
+ */
+async function readPlatformPrerenderRecord(
+  sandbox: CloudflareSandboxSession,
+  fullPath: string,
+): Promise<Uint8Array | typeof PRERENDER_RECORD_UNREADABLE | undefined> {
+  try {
+    return await readBuildRecord(sandbox, fullPath);
+  } catch {
+    return PRERENDER_RECORD_UNREADABLE;
+  }
 }
 
 /** A build pass's nonce, from the Worker's own random source. */

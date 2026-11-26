@@ -22,8 +22,9 @@ export type ThemePrerenderContent = Readonly<
  * one JSON line (`{ path, reason }`, never content) per read, relative to the
  * workspace root. A native build's is read back by `nativeBuildResult` (and
  * a failed native build's by its framework's `failedBuildCause`), which fails
- * the build if it exists; a platform build's by its runner, when the
- * build has already failed, to name the paths (`platformPrerenderFailure`).
+ * the build if it exists; a platform build's by its runner after the
+ * prerendering build, which fails, naming the paths, when it holds a refused
+ * read (`platformPrerenderFailure`).
  */
 export const NATIVE_PRERENDER_REFUSED_READS_PATH =
   ".morph/prerender-refused-reads.ndjson";
@@ -42,6 +43,18 @@ export const PLATFORM_PRERENDER_CONTENT_UNAVAILABLE =
   "PLATFORM_PRERENDER_CONTENT_UNAVAILABLE";
 
 export type PrerenderRefusedRead = Readonly<{ path: string; reason: string }>;
+
+/**
+ * A refused-read record exists but could not be read — larger than
+ * `MAX_PRERENDER_RECORD_BYTES`, or the read failed: a read was refused, and
+ * the record cannot say which.
+ */
+export const PRERENDER_RECORD_UNREADABLE: unique symbol = Symbol(
+  "PRERENDER_RECORD_UNREADABLE",
+);
+
+/** A refused-read record larger than this is not read. */
+export const MAX_PRERENDER_RECORD_BYTES = 1024 * 1024;
 
 /** At most this many refused paths are named in a message or diagnostics. */
 const MAX_NAMED_REFUSED_READS = 10;
@@ -95,15 +108,20 @@ export function nativeRefusedReadsMessage(record: Uint8Array | string): string {
 }
 
 /**
- * A failed platform build's error, when its prerender recorded a refused
- * content read: the paths and reasons first, then the build's own output,
+ * A platform build's error when its prerender recorded a refused content
+ * read: the paths and reasons first, then the build's own output (if any),
  * which alone only says a page failed to fetch. `undefined` when there is no
- * record — the build failed for some other reason, and its output stands.
- * A refused read never turns a failure into a success; this only names it.
+ * record or it is empty — no read was refused.
+ *
+ * A recorded read fails the build even when the build itself exited 0: a
+ * Theme that caught the refused read prerendered component defaults where
+ * the author's content belongs, so that HTML is not a success. Pass `""` as
+ * `output` for such a build.
  */
 export function platformPrerenderFailure(
   output: string,
-  record: Uint8Array | string | undefined,
+  /** `PRERENDER_RECORD_UNREADABLE`: a record exists but could not be read. */
+  record: Uint8Array | string | typeof PRERENDER_RECORD_UNREADABLE | undefined,
 ):
   | {
       code: typeof PLATFORM_PRERENDER_CONTENT_UNAVAILABLE;
@@ -111,15 +129,22 @@ export function platformPrerenderFailure(
       refusedReads: PrerenderRefusedRead[];
     }
   | undefined {
-  if (record === undefined) return undefined;
-  const reads = readPrerenderRefusedReads(record).slice(
-    0,
-    MAX_NAMED_REFUSED_READS,
-  );
-  const detail = prerenderRefusedReadsDetail(reads);
+  if (
+    record === undefined ||
+    (record !== PRERENDER_RECORD_UNREADABLE && record.length === 0)
+  )
+    return undefined;
+  const reads =
+    record === PRERENDER_RECORD_UNREADABLE
+      ? []
+      : readPrerenderRefusedReads(record).slice(0, MAX_NAMED_REFUSED_READS);
+  const detail =
+    record === PRERENDER_RECORD_UNREADABLE
+      ? "paths unknown (the record of refused reads could not be read)"
+      : prerenderRefusedReadsDetail(reads);
   return {
     code: PLATFORM_PRERENDER_CONTENT_UNAVAILABLE,
-    message: `${PLATFORM_PRERENDER_CONTENT_UNAVAILABLE}: prerendering read Morph content this build has not sealed${detail ? `: ${detail}` : ""}. Only the pages this build prerenders (SSG) have sealed content: make the page whose content is read SSG as well, or stop reading it while prerendering.\n\n${output}`,
+    message: `${PLATFORM_PRERENDER_CONTENT_UNAVAILABLE}: prerendering read Morph content this build has not sealed${detail ? `: ${detail}` : ""}. Only the pages this build prerenders (SSG) have sealed content: make the page whose content is read SSG as well, or stop reading it while prerendering.${output ? `\n\n${output}` : ""}`,
     refusedReads: reads,
   };
 }

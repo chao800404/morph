@@ -537,15 +537,30 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
           },
         },
       );
-    const failingStartSandbox = (record: string | undefined) =>
+    const failingStartSandbox = (
+      record: string | undefined,
+      buildExit: 0 | 1 = 1,
+      statSize?: number,
+    ) =>
       createMockSandbox({
         exec: vi.fn(async (command: string) => {
+          if (command.includes("find /workspace/dist")) {
+            return {
+              exitCode: 0,
+              success: true,
+              stdout:
+                "200 /workspace/dist/runtime/server/index.js\n" +
+                "80 /workspace/dist/runtime/client/landing/index.html\n" +
+                "80 /workspace/dist/preview/index.html\n",
+              stderr: "",
+            };
+          }
           if (command.startsWith("stat -c %s ")) {
             return command.endsWith(refusedRecordPath) && record !== undefined
               ? {
                   exitCode: 0,
                   success: true,
-                  stdout: `${new TextEncoder().encode(record).byteLength}\n`,
+                  stdout: `${statSize ?? new TextEncoder().encode(record).byteLength}\n`,
                   stderr: "",
                 }
               : {
@@ -556,12 +571,19 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
                 };
           }
           if (command.includes("vite build")) {
-            return {
-              exitCode: 1,
-              success: false,
-              stdout: "",
-              stderr: startOutput,
-            };
+            return buildExit === 0
+              ? {
+                  exitCode: 0,
+                  success: true,
+                  stdout: "vite build complete",
+                  stderr: "",
+                }
+              : {
+                  exitCode: 1,
+                  success: false,
+                  stdout: "",
+                  stderr: startOutput,
+                };
           }
           return { exitCode: 0, success: true, stdout: "", stderr: "" };
         }),
@@ -569,9 +591,103 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
           if (filePath === refusedRecordPath && record !== undefined) {
             return { content: record };
           }
+          if (filePath.startsWith("/workspace/dist/")) {
+            return { content: "<html></html>" };
+          }
           throw new Error(`unexpected read of ${filePath}`);
         }) as any,
       });
+    const viteBuilds = (exec: unknown) =>
+      (exec as { mock: { calls: [string][] } }).mock.calls.filter(([command]) =>
+        command.includes("vite build"),
+      ).length;
+
+    it("fails a Start build that exited 0 when its prerender recorded a refused read, before any artifact is read", async () => {
+      // The Theme caught the refused read and rendered its defaults: the
+      // build succeeded, and its HTML holds defaults, not the author's content.
+      const record =
+        JSON.stringify({
+          path: "/elsewhere",
+          reason: PLATFORM_PRERENDER_PATH_NOT_SEALED,
+        }) + "\n";
+      const mock = failingStartSandbox(record, 0);
+      const runner = new CloudflareSandboxViteThemeBuildRunner({
+        sandboxProvider: { getSandbox: vi.fn(async () => mock.session) },
+      });
+
+      const result = await runner.run(ssgInput());
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect("artifacts" in result).toBe(false);
+      expect(result.errorMessage).toMatch(
+        /^PLATFORM_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: \/elsewhere \(PLATFORM_PRERENDER_PATH_NOT_SEALED: /,
+      );
+      expect(result.diagnosticsJson).toEqual({
+        stage: "sandbox-start-compiler",
+        errors: [
+          {
+            severity: "error",
+            message: result.errorMessage,
+            code: PLATFORM_PRERENDER_CONTENT_UNAVAILABLE,
+          },
+        ],
+        refusedReads: [
+          { path: "/elsewhere", reason: PLATFORM_PRERENDER_PATH_NOT_SEALED },
+        ],
+      });
+      // Stopped at the Start build: no preview build, no dist scan, no reads
+      // of build output.
+      expect(viteBuilds(mock.session.exec)).toBe(1);
+      expect(mock.session.exec).not.toHaveBeenCalledWith(
+        expect.stringContaining("find /workspace/dist"),
+        expect.anything(),
+      );
+      expect(mock.session.readFile).toHaveBeenCalledTimes(1);
+      expect(mock.session.readFile).toHaveBeenCalledWith(
+        refusedRecordPath,
+        expect.anything(),
+      );
+      expect(mock.session.destroy).toHaveBeenCalled();
+    });
+
+    it("fails a Start build that exited 0 when its record is too large to read, without reading it", async () => {
+      const mock = failingStartSandbox("x", 0, 2 * 1024 * 1024);
+      const runner = new CloudflareSandboxViteThemeBuildRunner({
+        sandboxProvider: { getSandbox: vi.fn(async () => mock.session) },
+      });
+
+      const result = await runner.run(ssgInput());
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.errorMessage).toMatch(
+        /^PLATFORM_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: paths unknown/,
+      );
+      expect(result.diagnosticsJson?.stage).toBe("sandbox-start-compiler");
+      expect(result.diagnosticsJson?.refusedReads).toEqual([]);
+      expect(mock.session.readFile).not.toHaveBeenCalled();
+      expect(viteBuilds(mock.session.exec)).toBe(1);
+    });
+
+    it.each([
+      ["no record", undefined],
+      ["an empty record", ""],
+    ])(
+      "succeeds as before when a prerendering build left %s",
+      async (_label, record) => {
+        const mock = failingStartSandbox(record, 0);
+        const runner = new CloudflareSandboxViteThemeBuildRunner({
+          sandboxProvider: { getSandbox: vi.fn(async () => mock.session) },
+        });
+
+        const result = await runner.run(ssgInput());
+
+        if (!result.success) throw new Error(result.errorMessage);
+        expect(viteBuilds(mock.session.exec)).toBe(2);
+        expect(result.contentDependency).toBe("dependent");
+      },
+    );
 
     it("names the refused path in the build's error and diagnostics, keeping the build's output and stage", async () => {
       const record =
