@@ -345,12 +345,14 @@ const runWithPinnedSnapshot = ${runWithPinnedSnapshot.toString()};
 const pinnedSnapshotForRead = ${pinnedSnapshotForRead.toString()};
 const previewServedContentTiming = ${previewServedContentTiming.toString()};
 
+// Through readSnapshot, so a request pins the newest snapshot this Worker
+// has read: an import settling with an older module never becomes one, and
+// a page loaded after the probe named a ticket renders at least that one.
 async function loadSnapshot() {
-  const module = await import("./${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}");
-  const read = module ? module.default : undefined;
-  // Nothing readable pins as unreadable: every content read is refused.
-  if (!isReadablePreviewSnapshot(read)) throw new Error("PREVIEW_CONTENT_UNREADABLE");
-  return JSON.parse(JSON.stringify(read));
+  await readSnapshot();
+  // Nothing readable kept: none is pinned, and every content read of the
+  // request is refused as an unreadable live read is.
+  return snapshot === null ? null : JSON.parse(JSON.stringify(snapshot));
 }
 `
     : "";
@@ -365,9 +367,19 @@ async function loadSnapshot() {
         headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
       });
     }
-    // Synchronous from here to the answer: nothing can replace it between.
+    // Answered from the pinned snapshot, synchronously: nothing can replace
+    // it between. The Worker's own newest read, the one the probe names, is
+    // put back after, so a request pinned to an older one never lowers it.
+    const live = snapshot;
     snapshot = read.snapshot;
-    const content = previewContentForPath(url.searchParams.get("path") || "/");
+    let content = null;
+    try {
+      content = previewContentForPath(url.searchParams.get("path") || "/");
+    } catch {
+      content = null;
+    } finally {
+      snapshot = live;
+    }
     return new Response(
       JSON.stringify(content || ${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}),
       {

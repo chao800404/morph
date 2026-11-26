@@ -7,8 +7,10 @@ import { PREVIEW_SERVED_CONTENT_TIMING } from "@/lib/storefront/editor/preview-p
 import { astroThemeFiles } from "../theme-framework/astro-native-prerender.fixtures";
 import { ASTRO_PRERENDER_ENTRY } from "../theme-framework/astro-native-prerender";
 import { planAstroPreviewWorkspace } from "../theme-framework/astro-preview-workspace";
+import { START_PREVIEW_ADDRESS_PROBE_PATH } from "../service/preview-address-probe";
 import { THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH } from "./theme-preview-content";
 import {
+  PREVIEW_CONTENT_TICKET_HEADER,
   THEME_PREVIEW_START_CONTENT_ORIGIN,
   THEME_PREVIEW_START_WORKER_PATH,
   pinnedSnapshotForRead,
@@ -321,6 +323,78 @@ describe("the pinned Worker", () => {
       (await unnamed.entry.fetch(new Request("https://preview.example/")))
         .headers.get("server-timing"),
     ).toBe(null);
+  });
+
+  const snapshotWith = (title: string, contentTicket: number) => ({
+    templates: { index: { slots: { hero: { title } }, hiddenSlots: [] } },
+    pages: {},
+    contentTicket,
+    previewInstance: INSTANCE,
+  });
+  const probe = (sandbox: ReturnType<typeof runWorker>) =>
+    sandbox.entry.fetch(
+      new Request(`https://preview.example${START_PREVIEW_ADDRESS_PROBE_PATH}`),
+    );
+
+  // Nothing orders two imports of the data module: one started before a sync
+  // rewrote the file can settle after one started later (readSnapshot). A
+  // content sync waits for the probe to name its ticket before the page
+  // reloads, so the reload must render at least that ticket.
+  it("never pins a snapshot older than one the probe already named", async () => {
+    const data = { current: snapshotWith("six", 6) as unknown };
+    const seen: unknown[] = [];
+    const sandbox = runWorker(async (box) => {
+      seen.push(await (await box.fetch(contentUrl("/"))).json());
+      return new Response("<html><head></head><body></body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }, data);
+    expect((await probe(sandbox)).headers.get(PREVIEW_CONTENT_TICKET_HEADER)).toBe(
+      "6",
+    );
+    // The page's import settles with the older module.
+    data.current = snapshotWith("five", 5);
+    const response = await sandbox.entry.fetch(
+      new Request("https://preview.example/"),
+    );
+    expect(seen).toEqual([{ slots: { hero: { title: "six" } }, hiddenSlots: [] }]);
+    expect(response.headers.get("server-timing")).toContain(
+      `${PREVIEW_SERVED_CONTENT_TIMING};desc="6.${INSTANCE}"`,
+    );
+  });
+
+  it("does not lower what the probe names when a request pinned to an older snapshot reads", async () => {
+    const data = { current: snapshotWith("five", 5) as unknown };
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: unknown[] = [];
+    const sandbox = runWorker(async (box) => {
+      await gate;
+      seen.push(await (await box.fetch(contentUrl("/"))).json());
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    }, data);
+    // Pinned to ticket 5 at its entry, then held mid-render.
+    const page = sandbox.entry.fetch(new Request("https://preview.example/"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A sync writes ticket 6 and the probe names it.
+    data.current = snapshotWith("six", 6);
+    expect((await probe(sandbox)).headers.get(PREVIEW_CONTENT_TICKET_HEADER)).toBe(
+      "6",
+    );
+    // The held page reads: still its own pinned snapshot.
+    release();
+    await page;
+    expect(seen).toEqual([{ slots: { hero: { title: "five" } }, hiddenSlots: [] }]);
+    // An import settling with the older module afterwards: the probe still
+    // names 6, as it did before the held page read.
+    data.current = snapshotWith("five", 5);
+    expect((await probe(sandbox)).headers.get(PREVIEW_CONTENT_TICKET_HEADER)).toBe(
+      "6",
+    );
   });
 
   it("refuses a content read that no request pinned, rather than reading live", async () => {
