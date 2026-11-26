@@ -4,15 +4,20 @@ import { describe, expect, it, vi } from "vitest";
 import {
   THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_CONTENT_PATH,
+  THEME_PREVIEW_CONTENT_UNREADABLE_BODY,
+  THEME_PREVIEW_CONTENT_UNREADABLE_STATUS,
   createThemePreviewContentSnapshot,
   themePreviewContentModuleSource,
   themePreviewContentPluginSource,
 } from "./theme-preview-content";
 import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 import {
+  PREVIEW_CONTENT_TICKET_HEADER,
+  PREVIEW_INSTANCE_HEADER,
   THEME_PREVIEW_START_CONTENT_ORIGIN,
   themePreviewStartWorkerSource,
 } from "./theme-preview-start-runtime";
+import { START_PREVIEW_ADDRESS_PROBE_PATH } from "../service/preview-address-probe";
 
 /**
  * Every Live Preview reader of the draft snapshot tells "nothing stored" from
@@ -21,11 +26,12 @@ import {
  * A snapshot Core wrote for a route with no Document holds that route's entry,
  * empty: `{ slots: {}, hiddenSlots: [] }`, which is an empty success. A
  * snapshot that is missing, unreadable, not JSON, or not of the shape Core
- * writes (no entry for the path asked about, an entry without its hidden
- * list) says nothing about the page, not even which sections the author hid,
- * so it is answered with a refusal. The Starter 32 reader rejects a refusal
- * and its router shows the error state; an empty success would instead render
- * every hidden section with its component defaults.
+ * writes (an entry or map Core always writes is missing, an entry without its
+ * hidden list, a slot that is not an object) says nothing about the page, not
+ * even which sections the author hid, so it is answered with a refusal. The
+ * Starter 32 reader rejects a refusal and its router shows the error state; an
+ * empty success would instead render every hidden section with its component
+ * defaults.
  *
  * The three readers are the ones the preview runs: the dev server's content
  * endpoint (client-only and Astro previews, the initial load), the page's own
@@ -48,6 +54,11 @@ const VALID = {
   shell: { slots: { header: { title: "Shell" } }, hiddenSlots: ["footer"] },
 };
 
+const withIndex = (index: unknown) => ({
+  ...VALID,
+  templates: { ...VALID.templates, index },
+});
+
 /** What Core writes for a store with no Document at all. */
 const nothingStored = () =>
   createThemePreviewContentSnapshot({ templates: [], pages: [] });
@@ -63,28 +74,52 @@ const UNREADABLE_SHAPES: readonly (readonly [string, unknown])[] = [
   ["null", null],
   ["an array", []],
   ["an object with no templates", { pages: {} }],
-  ["templates that are not an object", { templates: [], pages: {} }],
-  ["no pages map", { templates: VALID.templates }],
+  ["templates that are not an object", { ...VALID, templates: [] }],
+  ["no pages map", { ...VALID, pages: undefined }],
+  ["no routes map", { ...VALID, routes: undefined }],
+  ["routes that are not an object", { ...VALID, routes: [] }],
+  ["no shell", { ...VALID, shell: undefined }],
+  ["a shell with no hidden list", { ...VALID, shell: { slots: {} } }],
   ["the empty default", { templates: {}, pages: {} }],
   [
-    "an entry with no hidden list",
-    { ...VALID, templates: { ...VALID.templates, index: { slots: {} } } },
+    "a template entry Core always writes is missing",
+    { ...VALID, templates: { ...VALID.templates, blog: undefined } },
   ],
+  ["an entry with no hidden list", withIndex({ slots: {} })],
   [
     "an entry whose hidden list is not strings",
-    {
-      ...VALID,
-      templates: { ...VALID.templates, index: { slots: {}, hiddenSlots: [1] } },
-    },
+    withIndex({ slots: {}, hiddenSlots: [1] }),
+  ],
+  ["an entry whose slots are an array", withIndex({ slots: [], hiddenSlots: [] })],
+  ["a slot value that is null", withIndex({ slots: { hero: null }, hiddenSlots: [] })],
+  [
+    "a slot value that is a string",
+    withIndex({ slots: { hero: "Draft" }, hiddenSlots: [] }),
   ],
   [
-    "an entry whose slots are an array",
-    {
-      ...VALID,
-      templates: { ...VALID.templates, index: { slots: [], hiddenSlots: [] } },
-    },
+    "a slot value that is an array",
+    withIndex({ slots: { hero: [] }, hiddenSlots: [] }),
+  ],
+  [
+    "a page entry with no hidden list",
+    { ...VALID, pages: { about: { slots: {} } } },
   ],
 ];
+
+const REFUSAL = {
+  status: THEME_PREVIEW_CONTENT_UNREADABLE_STATUS,
+  body: THEME_PREVIEW_CONTENT_UNREADABLE_BODY,
+};
+
+/** Exactly the refusal: 503 and the `{ error }` body, no content. */
+function expectRefusal(response: { status: number; body: string }) {
+  expect(THEME_PREVIEW_CONTENT_UNREADABLE_STATUS).toBe(503);
+  expect({ status: response.status, body: JSON.parse(response.body) }).toEqual(
+    REFUSAL,
+  );
+}
+
+const BAD_ESCAPE_PATHS = ["/pages/%E0%A4%A", "/pages/%", "/pages/100%25off%zz"];
 
 // ---------------------------------------------------------------------------
 // The dev server's content endpoint
@@ -122,7 +157,7 @@ function devServerEndpoint(readFile: () => string) {
   });
   return {
     fs,
-    get(pathname: string) {
+    get(pathname: string, rawQuery?: string) {
       const res: FakeResponse = {
         statusCode: 0,
         headers: {},
@@ -137,30 +172,19 @@ function devServerEndpoint(readFile: () => string) {
       const next = vi.fn();
       middleware!(
         {
-          url: `${THEME_PREVIEW_CONTENT_PATH}?path=${encodeURIComponent(pathname)}`,
+          url: `${THEME_PREVIEW_CONTENT_PATH}?path=${rawQuery ?? encodeURIComponent(pathname)}`,
           method: "GET",
         },
         res,
         next,
       );
       expect(next).not.toHaveBeenCalled();
-      return res;
+      return { status: res.statusCode, body: res.body, headers: res.headers };
     },
   };
 }
 
-function expectRefusal(response: { status: number; body: string }) {
-  expect(response.status).toBeGreaterThanOrEqual(400);
-  // The existing error shape: a JSON body naming the error, no content.
-  const body = JSON.parse(response.body) as Record<string, unknown>;
-  expect(typeof body.error).toBe("string");
-  expect(body).not.toHaveProperty("slots");
-  expect(body).not.toHaveProperty("hiddenSlots");
-}
-
 describe("the dev server's content endpoint", () => {
-  const status = (res: FakeResponse) => ({ status: res.statusCode, body: res.body });
-
   it.each([
     [
       "a missing file",
@@ -178,7 +202,9 @@ describe("the dev server's content endpoint", () => {
     ["an empty file", () => ""],
   ])("refuses %s instead of answering empty content", (_label, readFile) => {
     const endpoint = devServerEndpoint(readFile);
-    expectRefusal(status(endpoint.get("/")));
+    const answer = endpoint.get("/");
+    expectRefusal(answer);
+    expect(answer.headers["cache-control"]).toBe("no-store");
     expect(endpoint.fs.readFileSync).toHaveBeenCalled();
   });
 
@@ -186,28 +212,31 @@ describe("the dev server's content endpoint", () => {
     "refuses a snapshot of the wrong shape: %s",
     (_label, snapshot) => {
       const endpoint = devServerEndpoint(() => JSON.stringify(snapshot));
-      expectRefusal(status(endpoint.get("/")));
+      expectRefusal(endpoint.get("/"));
     },
   );
 
-  it("refuses a path whose entry the snapshot does not hold", () => {
-    const { shell: _shell, ...withoutShell } = VALID;
-    const endpoint = devServerEndpoint(() => JSON.stringify(withoutShell));
-    // An unmapped route is answered from the shell; with none, it cannot be.
-    expectRefusal(status(endpoint.get("/contact")));
-    // A path the snapshot does describe is still answered.
-    expect(endpoint.get("/").statusCode).toBe(200);
-  });
+  it.each(BAD_ESCAPE_PATHS)(
+    "refuses a page handle that is not a valid escape (%s), never throwing",
+    (pathname) => {
+      const endpoint = devServerEndpoint(() => JSON.stringify(VALID));
+      expectRefusal(endpoint.get(pathname, encodeURIComponent(pathname)));
+    },
+  );
 
-  it("does not serve an earlier good snapshot once the file cannot be read", () => {
-    let text: string | null = JSON.stringify(VALID);
-    const endpoint = devServerEndpoint(() => {
-      if (text === null) throw new Error("ENOENT");
-      return text;
-    });
-    expect(endpoint.get("/").statusCode).toBe(200);
-    text = null;
-    expectRefusal(status(endpoint.get("/")));
+  it("answers good, then refuses malformed, then answers the repaired file", () => {
+    let text = JSON.stringify(VALID);
+    const endpoint = devServerEndpoint(() => text);
+    expect(JSON.parse(endpoint.get("/").body)).toEqual(VALID.templates.index);
+    text = JSON.stringify(withIndex({ slots: { hero: null }, hiddenSlots: [] }));
+    expectRefusal(endpoint.get("/"));
+    text = "";
+    expectRefusal(endpoint.get("/"));
+    const repaired = withIndex({ slots: { hero: { heading: "Fixed" } }, hiddenSlots: [] });
+    text = JSON.stringify(repaired);
+    const answer = endpoint.get("/");
+    expect(answer.status).toBe(200);
+    expect(JSON.parse(answer.body)).toEqual(repaired.templates.index);
   });
 
   it("answers a route with no Document with empty content", async () => {
@@ -215,7 +244,7 @@ describe("the dev server's content endpoint", () => {
     const endpoint = devServerEndpoint(() => JSON.stringify(snapshot));
     for (const pathname of ["/", "/contact", "/pages/about", "/products/a"]) {
       const res = endpoint.get(pathname);
-      expect(res.statusCode).toBe(200);
+      expect(res.status).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ slots: {}, hiddenSlots: [] });
     }
   });
@@ -223,7 +252,7 @@ describe("the dev server's content endpoint", () => {
   it("answers a valid snapshot exactly as before", () => {
     const endpoint = devServerEndpoint(() => JSON.stringify(VALID));
     const home = endpoint.get("/");
-    expect(home.statusCode).toBe(200);
+    expect(home.status).toBe(200);
     expect(home.headers["cache-control"]).toBe("no-store");
     expect(JSON.parse(home.body)).toEqual(VALID.templates.index);
     expect(JSON.parse(endpoint.get("/pages/about").body)).toEqual(
@@ -236,7 +265,11 @@ describe("the dev server's content endpoint", () => {
 // ---------------------------------------------------------------------------
 // The page's own fetch interception (client-only Live Preview)
 
-function previewFrame(snapshot: unknown) {
+/**
+ * The page, with its snapshot module evaluated as the module is: a JS object
+ * literal, where a `"__proto__"` key sets the prototype rather than a field.
+ */
+function previewFrame(snapshot: unknown, snapshotLiteral?: string) {
   let source = themePreviewContentModuleSource();
   for (const pattern of [
     /import \{[^}]*\} from "\.\/preview\/preview-protocol";\n/,
@@ -258,16 +291,19 @@ function previewFrame(snapshot: unknown) {
     setTimeout,
     clearTimeout,
   };
+  const initial = new Function(
+    `return (${snapshotLiteral ?? JSON.stringify(snapshot)});`,
+  )();
   const exports = new Function(
     "window",
     "initialSnapshot",
     "parseEditorToPreviewWindowEvent",
     "postPreviewToEditorMessage",
     "documentPreviewRuntimeChannel",
-    `${source}\nreturn { updatePreviewContent, previewSlotContent, previewSlotHidden };`,
+    `${source}\nreturn { updatePreviewContent, previewSlotContent, previewSlotHidden, livePreviewContentOverlay };`,
   )(
     window,
-    JSON.parse(JSON.stringify(snapshot)),
+    initial,
     () => null,
     () => {},
     () => null,
@@ -279,13 +315,14 @@ function previewFrame(snapshot: unknown) {
     ) => boolean;
     previewSlotContent: (sectionId: string) => unknown;
     previewSlotHidden: (sectionId: string) => boolean;
+    livePreviewContentOverlay: (pathname: string, base: unknown) => unknown;
   };
   return {
     ...exports,
     network,
-    read: async (pathname: string) => {
+    read: async (pathname: string, rawQuery?: string) => {
       const response = await window.fetch(
-        `${THEME_PREVIEW_CONTENT_PATH}?path=${encodeURIComponent(pathname)}`,
+        `${THEME_PREVIEW_CONTENT_PATH}?path=${rawQuery ?? encodeURIComponent(pathname)}`,
       );
       return { status: response.status, body: await response.text() };
     },
@@ -299,6 +336,23 @@ describe("the client-only preview's content reads", () => {
       const frame = previewFrame(snapshot);
       expectRefusal(await frame.read("/"));
       expect(frame.network).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses an entry whose slots and hidden list are only inherited", async () => {
+    const literal = JSON.stringify(VALID).replace(
+      JSON.stringify(VALID.templates.index),
+      '{"__proto__":{"slots":{},"hiddenSlots":[]}}',
+    );
+    const frame = previewFrame(null, literal);
+    expectRefusal(await frame.read("/"));
+  });
+
+  it.each(BAD_ESCAPE_PATHS)(
+    "refuses a page handle that is not a valid escape (%s), never throwing",
+    async (pathname) => {
+      const frame = previewFrame(VALID);
+      expectRefusal(await frame.read(pathname, encodeURIComponent(pathname)));
     },
   );
 
@@ -327,11 +381,25 @@ describe("the client-only preview's content reads", () => {
     expect(frame.updatePreviewContent("hero", { heading: "Typed" })).toBe(false);
   });
 
+  it("records no edit it could not apply, so no later overlay replays it", () => {
+    const frame = previewFrame({ templates: {}, pages: {} });
+    expect(frame.updatePreviewContent("hero", { heading: "Typed" })).toBe(false);
+    expect(frame.updatePreviewContent("promo", undefined, false)).toBe(false);
+    // The full Start overlay lays this page's recorded edits over a server
+    // read; there must be none.
+    expect(
+      frame.livePreviewContentOverlay("/", { slots: {}, hiddenSlots: [] }),
+    ).toBeNull();
+  });
+
   it("keeps the hidden list of a page it can read (control)", () => {
     const frame = previewFrame(VALID);
     expect(frame.previewSlotHidden("promo")).toBe(true);
     expect(frame.previewSlotHidden("hero")).toBe(false);
     expect(frame.updatePreviewContent("hero", { heading: "Typed" })).toBe(true);
+    expect(
+      frame.livePreviewContentOverlay("/", { slots: {}, hiddenSlots: [] }),
+    ).toEqual({ slots: { hero: { heading: "Typed" } }, hiddenSlots: [] });
   });
 });
 
@@ -340,6 +408,7 @@ describe("the client-only preview's content reads", () => {
 
 describe("the Start preview Worker's content origin", () => {
   const IMPORT_CALL = `import("./${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}")`;
+  const PROBE_URL = `https://preview.example${START_PREVIEW_ADDRESS_PROBE_PATH}`;
 
   function startWorker(load: () => Promise<unknown>) {
     const source = themePreviewStartWorkerSource("instance-123");
@@ -351,7 +420,9 @@ describe("the Start preview Worker's content origin", () => {
       Headers,
       fetch: globalThis.fetch as (input: string) => Promise<Response>,
       loadDataModule: load,
-      entry: undefined as unknown,
+      entry: undefined as unknown as {
+        fetch: (request: Request) => Promise<Response>;
+      },
     };
     runInNewContext(
       source
@@ -363,11 +434,41 @@ describe("the Start preview Worker's content origin", () => {
         .replace(IMPORT_CALL, "loadDataModule()"),
       sandbox,
     );
-    return async (pathname: string) => {
+    const read = async (pathname: string, rawQuery?: string) => {
       const response = await sandbox.fetch(
-        `${THEME_PREVIEW_START_CONTENT_ORIGIN}${THEME_PREVIEW_CONTENT_PATH}?path=${encodeURIComponent(pathname)}`,
+        `${THEME_PREVIEW_START_CONTENT_ORIGIN}${THEME_PREVIEW_CONTENT_PATH}?path=${rawQuery ?? encodeURIComponent(pathname)}`,
       );
       return { status: response.status, body: await response.text() };
+    };
+    const probe = async () => {
+      const response = await sandbox.entry.fetch(new Request(PROBE_URL));
+      return {
+        ticket: response.headers.get(PREVIEW_CONTENT_TICKET_HEADER),
+        instance: response.headers.get(PREVIEW_INSTANCE_HEADER),
+      };
+    };
+    return Object.assign(read, { probe });
+  }
+
+  const ticketed = (snapshot: object, contentTicket: number) => ({
+    ...snapshot,
+    contentTicket,
+    previewInstance: "server-a",
+  });
+
+  /** A Worker whose data file the test rewrites between reads. */
+  function workerOverFile(initial: unknown) {
+    let current: () => Promise<unknown> = () =>
+      Promise.resolve({ default: initial });
+    const read = startWorker(() => current());
+    return {
+      read,
+      file(next: unknown) {
+        current = () => Promise.resolve(next);
+      },
+      fail(error: Error) {
+        current = () => Promise.reject(error);
+      },
     };
   }
 
@@ -387,6 +488,72 @@ describe("the Start preview Worker's content origin", () => {
       expectRefusal(await read("/"));
     },
   );
+
+  it.each(BAD_ESCAPE_PATHS)(
+    "refuses a page handle that is not a valid escape (%s)",
+    async (pathname) => {
+      const read = startWorker(() => Promise.resolve({ default: VALID }));
+      expectRefusal(await read(pathname, encodeURIComponent(pathname)));
+    },
+  );
+
+  it.each([
+    ["a null default", { default: null }],
+    ["no default", {}],
+    ["a malformed snapshot with no ticket", { default: { templates: {} } }],
+    [
+      "a malformed snapshot with a lower ticket",
+      { default: ticketed(withIndex({ slots: { hero: null }, hiddenSlots: [] }), 1) },
+    ],
+  ])(
+    "drops a good snapshot it read before when a re-import gives %s",
+    async (_label, next) => {
+      const worker = workerOverFile(ticketed(VALID, 2));
+      expect((await worker.read("/")).status).toBe(200);
+      worker.file(next);
+      expectRefusal(await worker.read("/"));
+    },
+  );
+
+  it("drops a good snapshot it read before when the re-import fails", async () => {
+    const worker = workerOverFile(ticketed(VALID, 2));
+    expect((await worker.read("/")).status).toBe(200);
+    worker.fail(new SyntaxError("Unexpected end of JSON"));
+    expectRefusal(await worker.read("/"));
+  });
+
+  it("answers good, then refuses malformed, then answers the repaired file", async () => {
+    const worker = workerOverFile(ticketed(VALID, 2));
+    expect(JSON.parse((await worker.read("/")).body)).toEqual(
+      VALID.templates.index,
+    );
+    // Malformed, under a higher ticket than the repair that follows.
+    worker.file({
+      default: ticketed(withIndex({ slots: { hero: null }, hiddenSlots: [] }), 9),
+    });
+    expectRefusal(await worker.read("/"));
+    const repaired = withIndex({
+      slots: { hero: { heading: "Fixed" } },
+      hiddenSlots: [],
+    });
+    worker.file({ default: ticketed(repaired, 3) });
+    const answer = await worker.read("/");
+    expect(answer.status).toBe(200);
+    expect(JSON.parse(answer.body)).toEqual(repaired.templates.index);
+  });
+
+  it("confirms on the probe only a snapshot that passes validation", async () => {
+    const worker = workerOverFile(ticketed(VALID, 2));
+    expect(await worker.read.probe()).toEqual({ ticket: "2", instance: "server-a" });
+    // Corrupt content that still carries a valid ticket and instance.
+    worker.file({
+      default: ticketed(withIndex({ slots: {}, hiddenSlots: "promo" }), 4),
+    });
+    expect(await worker.read.probe()).toEqual({ ticket: "0", instance: "" });
+    expectRefusal(await worker.read("/"));
+    worker.file({ default: ticketed(VALID, 5) });
+    expect(await worker.read.probe()).toEqual({ ticket: "5", instance: "server-a" });
+  });
 
   it("answers a route with no Document with empty content", async () => {
     const snapshot = await nothingStored();
