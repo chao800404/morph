@@ -17397,6 +17397,38 @@ export function VisualEditorShell({
             // at whatever generation the queue holds now.
             throw missingBasisFailure();
           }
+          // Codex review P2 (global Undo): a removal on an Astro section is
+          // a write like any other there. Its basis proof is asked again
+          // here, after the queue and the snapshot read, and the write
+          // carries the identity that proof's token named and Core's digest
+          // (`astroWriteIdentityForProof`); with neither it is refused before
+          // anything is sent, never sent identity-free. A resend goes as
+          // first sent; a Start proof carries no basis.
+          let astroIdentity: Readonly<{
+            identity: string;
+            componentDigest: string;
+          }> | null = null;
+          if (presentationGated && presentationProof?.token.basis) {
+            astroIdentity = isSectionPresentationProofCurrent(
+              presentationProof,
+              resolvedTemplateId,
+              sectionId,
+            )
+              ? astroWriteIdentityForProof({
+                  token: presentationProof.token,
+                  issued: astroBasisIssuedRef.current.get(
+                    presentationProof.token.operationId,
+                  )?.selection,
+                  sectionId,
+                })
+              : null;
+            if (!astroIdentity) {
+              toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+                id: "preview-presentation-basis",
+              });
+              throw draftConflictFailure();
+            }
+          }
           reportSent(expectedDraftGeneration);
           const sent =
             resend?.sent ??
@@ -17417,6 +17449,7 @@ export function VisualEditorShell({
             expectedDraftGeneration,
             expectedSourceGeneration: sourceGeneration,
             ...(sent.routePath ? { routePath: sent.routePath } : {}),
+            ...(astroIdentity ?? {}),
             ...(resend ? { quietConflict: true } : {}),
           });
         },
