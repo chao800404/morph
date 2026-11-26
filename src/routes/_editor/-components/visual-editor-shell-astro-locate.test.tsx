@@ -1857,8 +1857,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
             .map((call) => call.filter((part) => typeof part === "string").join(" "))
             .filter((line) => line.includes("[preview-presentation]"))
             .slice(-25)
-            .join("
-");
+            .join(" | ");
         await waitFor(() =>
           expect(updateSectionProps, trace()).toHaveBeenCalledTimes(2),
         );
