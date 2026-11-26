@@ -447,7 +447,16 @@ type ModuleAccess = Readonly<{
    * `!isSectionHidden("slot") && <El/>`: the slot read, or null when it
    * cannot be named. Hiding changes what such code does.
    */
-  hiddenFlagReads: readonly Readonly<{ slot: string | null; line: number }>[];
+  /**
+   * Every `isSectionHidden` read but the Starter's exact check. A check
+   * that is exact in shape is kept with the element it omits (`omits`),
+   * still to be proven that section's own mount (`accessRefusal`).
+   */
+  hiddenFlagReads: readonly Readonly<{
+    slot: string | null;
+    line: number;
+    omits?: number;
+  }>[];
 }>;
 
 /** How one import specifier resolves, decided exactly or not at all. */
@@ -813,7 +822,7 @@ export function createHideCapabilityAnalyzer(
     const file = files.find((candidate) => candidate.path === path);
     const parsed = file ? reader.read(file.path, file.content) : null;
     let problem: ModuleAccessProblem | null = null;
-    const hiddenFlagReads: { slot: string | null; line: number }[] = [];
+    const hiddenFlagReads: { slot: string | null; line: number; omits?: number }[] = [];
     const flag = (reason: HideRefusalReason, node: AnyNode, detail: string) => {
       problem ??= { reason, line: node?.loc?.start.line ?? 0, detail };
     };
@@ -1166,10 +1175,12 @@ export function createHideCapabilityAnalyzer(
           for (const item of node) walk(item, ancestors);
           return;
         }
-        const [parent, grand, great] = [
+        const [parent, grand, great, container, holder] = [
           ancestors[ancestors.length - 1],
           ancestors[ancestors.length - 2],
           ancestors[ancestors.length - 3],
+          ancestors[ancestors.length - 4],
+          ancestors[ancestors.length - 5],
         ];
         if (
           node.type === "Identifier" &&
@@ -1203,13 +1214,17 @@ export function createHideCapabilityAnalyzer(
               great?.type === "LogicalExpression" &&
               great.operator === "&&" &&
               great.left === grand &&
-              great.right?.type === "JSXElement";
-            if (!exactGuard) {
-              hiddenFlagReads.push({
-                slot: literal,
-                line: node.loc?.start.line ?? 0,
-              });
-            }
+              great.right?.type === "JSXElement" &&
+              // Used only to omit: the check is a JSX child of its own,
+              // never kept, combined (`||`) or returned.
+              container?.type === "JSXExpressionContainer" &&
+              container.expression === great &&
+              (holder?.type === "JSXElement" || holder?.type === "JSXFragment");
+            hiddenFlagReads.push({
+              slot: literal,
+              line: node.loc?.start.line ?? 0,
+              ...(exactGuard ? { omits: great.right.start as number } : {}),
+            });
           }
           if (
             routeLocals.has(node.name) &&
@@ -1257,8 +1272,17 @@ export function createHideCapabilityAnalyzer(
     // effective hidden list: a module that writes, aliases or reads the
     // page's `_hidden`, or asks `isSectionHidden` for this section other
     // than as the exact guard, changes what hiding does.
+    // The exact check counts as omitting only the mount of its own section.
     const flagRead = hiddenFlagReads.find(
-      (read) => read.slot === slot || read.slot === null,
+      (read) =>
+        (read.slot === slot || read.slot === null) &&
+        !(
+          read.omits !== undefined &&
+          read.slot === slot &&
+          routeAnalysis(path).instances.some(
+            (instance) => instance.start === read.omits && instance.section === slot,
+          )
+        ),
     );
     if (flagRead) {
       return refuse(
