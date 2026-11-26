@@ -323,6 +323,12 @@ describe("I: the Starter root compared as code, not bytes", () => {
         slot: slot!,
         scope: "route",
       }),
-    ).toMatchObject({ kind: "unsupported", reason: "untraced-use" });
+    ).toMatchObject({
+      kind: "unsupported",
+      // Approach E: the root is the gate's source of visibility, so an
+      // edited root is refused first, and by name.
+      reason: "root-route-unconfirmed",
+      at: { file: "src/routes/__root.tsx" },
+    });
   });
 });

@@ -239,8 +239,12 @@ describe("Starter 32 (narrow A: the read source only)", () => {
     const args = { callSitePath: HOME, slot, scope: "route" as const };
     const hide = classifyHideCapability({ files: v32Workspace(), ...args });
     expect(hide).toMatchObject({ kind: "supported" });
-    // The Starter's own guard, through the module's isSectionHidden, as on 31.
-    expect(hide).toEqual(classifyHideCapability({ files: v31Workspace(), ...args }));
+    // Approach E (decision 2026-11-26, option A): Starter 31's content module
+    // turns a failed read into empty content, so a hidden section could come
+    // back with its defaults; that Theme is asked to upgrade first.
+    expect(
+      classifyHideCapability({ files: v31Workspace(), ...args }),
+    ).toMatchObject({ kind: "unsupported", reason: "starter-upgrade-required" });
   });
 
   describe("a route other than the home that reads its own Page Document", () => {
@@ -266,9 +270,9 @@ describe("Starter 32 (narrow A: the read source only)", () => {
         ...args,
       });
       expect(hide).toMatchObject({ kind: "supported" });
-      expect(hide).toEqual(
+      expect(
         classifyHideCapability({ files: withPage(v31Workspace()), ...args }),
-      );
+      ).toMatchObject({ kind: "unsupported", reason: "starter-upgrade-required" });
     });
 
     it("needs nothing more than the home: the route itself runs on client", () => {

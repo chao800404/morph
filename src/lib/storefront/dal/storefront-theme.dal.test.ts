@@ -47,6 +47,7 @@ import {
   LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
   STARTER_THEME_INDEX_SOURCE,
+  STARTER_THEME_ROOT_ROUTE_SOURCE,
 } from "../starter-theme-v3-files";
 import { reviewStarterThemeUpgrade } from "../starter-theme-upgrade-review";
 import {
@@ -55,7 +56,10 @@ import {
   STOREFRONT_LAYOUT_HEADER_SLOT_ID,
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
-import { renderLivePreviewRoute } from "@/lib/test-utils/live-preview-render";
+import {
+  livePreviewPlatformFiles,
+  renderLivePreviewRoute,
+} from "@/lib/test-utils/live-preview-render";
 import {
   analyzeSourceDefaultFields,
   proveAndPatchSourceDefault,
@@ -5988,14 +5992,25 @@ describe("Starter layout writes keep their source proof", () => {
 });
 
 /**
+ * M3 Hide approach E: Morph's gate reads the hidden list from the Starter
+ * root route's snapshot, so a hide is admitted only on the Starter's root.
+ * The hide fixtures below carry it, with the two files it imports (a layout
+ * that renders nothing of its own, and the stylesheet).
+ */
+const HIDE_STARTER_ROOT = STARTER_THEME_ROOT_ROUTE_SOURCE;
+const HIDE_ROOT_IMPORTS = livePreviewPlatformFiles().filter(
+  (file) =>
+    file.path === "src/layouts/StorefrontLayout.tsx" ||
+    file.path === "src/styles/global.css",
+);
+
+/**
  * M3 Hide P2: the write boundary refuses a hide the saved source cannot carry
  * out (`section-hide-check.ts`), judged on the same source snapshot the write
  * compares-and-sets on. Showing a section is never refused by it.
  */
 describe("M3 Hide: the write boundary checks a hide against the source it writes on", () => {
-  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
-export const Route = createRootRoute({ component: Root });
-function Root() { return <Outlet />; }`;
+  const root = HIDE_STARTER_ROOT;
   const hero = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
 } as const;
@@ -6046,6 +6061,7 @@ function Home() {
       VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
     `);
     insert.run("f-root", "src/routes/__root.tsx", root);
+    for (const file of HIDE_ROOT_IMPORTS) insert.run(`f-${file.path}`, file.path, file.content);
     insert.run(
       "f-content",
       "src/morph/content.ts",
@@ -6238,9 +6254,7 @@ function Home() {
  * of them can omit the section, whichever route the editor shows.
  */
 describe("M3 Hide: a hide is judged on every route that serves the template", () => {
-  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
-export const Route = createRootRoute({ component: Root });
-function Root() { return <Outlet />; }`;
+  const root = HIDE_STARTER_ROOT;
   const hero = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
 } as const;
@@ -6261,6 +6275,7 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
       VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
     `);
     insert.run("f-root", "src/routes/__root.tsx", root);
+    for (const file of HIDE_ROOT_IMPORTS) insert.run(`f-${file.path}`, file.path, file.content);
     insert.run(
       "f-content",
       "src/morph/content.ts",
@@ -6338,9 +6353,7 @@ describe("M3 Hide: publish judges hidden sections by the build's revision and gu
   const SOURCE = "22222222-2222-4222-8222-222222222222";
   const BUILD = "33333333-3333-4333-8333-333333333333";
   const DRAFT = "cccccccc-1111-4111-8111-111111111111";
-  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
-export const Route = createRootRoute({ component: Root });
-function Root() { return <Outlet />; }`;
+  const root = HIDE_STARTER_ROOT;
   const hero = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
 } as const;
@@ -6364,6 +6377,7 @@ function Home() {
 }`;
   const files = (routeSource: string) => [
     { path: "src/routes/__root.tsx", content: root },
+    ...HIDE_ROOT_IMPORTS,
     {
       path: "src/morph/content.ts",
       content: STARTER_THEME_CONTENT_MODULE_SOURCE,
@@ -6531,9 +6545,7 @@ describe("M3 Hide: publish judges every route of the template, and refuses one n
   const SOURCE = "22222222-2222-4222-8222-222222222222";
   const BUILD = "33333333-3333-4333-8333-333333333333";
   const DRAFT = "dddddddd-1111-4111-8111-111111111111";
-  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
-export const Route = createRootRoute({ component: Root });
-function Root() { return <Outlet />; }`;
+  const root = HIDE_STARTER_ROOT;
   const hero = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
 } as const;
@@ -6548,6 +6560,7 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
 }`;
   const revision = (routes: ReadonlyArray<[string, string]>) => [
     { path: "src/routes/__root.tsx", content: root },
+    ...HIDE_ROOT_IMPORTS,
     {
       path: "src/morph/content.ts",
       content: STARTER_THEME_CONTENT_MODULE_SOURCE,
@@ -6810,9 +6823,7 @@ function Old() { return <main>Old</main>; }`;
 describe("M3 Hide: publish judges every hidden item it seals", () => {
   const SOURCE = "22222222-2222-4222-8222-222222222222";
   const BUILD = "33333333-3333-4333-8333-333333333333";
-  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
-export const Route = createRootRoute({ component: Root });
-function Root() { return <Outlet />; }`;
+  const root = HIDE_STARTER_ROOT;
   const hero = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
 } as const;
@@ -6824,6 +6835,7 @@ export const Route = createFileRoute("/")({ component: Home });
 function Home() { return <main><Hero {...content("hero")} /></main>; }`;
   const revisionFiles = async () => [
     { path: "src/routes/__root.tsx", content: root },
+    ...HIDE_ROOT_IMPORTS,
     {
       path: "src/morph/content.ts",
       content: STARTER_THEME_CONTENT_MODULE_SOURCE,
@@ -7124,9 +7136,7 @@ describe("M3 Hide: a hidden Start section must be positively judged to publish",
   const BUILD = "33333333-3333-4333-8333-333333333333";
   const DRAFT = "eeeeeeee-1111-4111-8111-111111111111";
   const LAYOUT_DRAFT = "eeeeeeee-2222-4222-8222-222222222222";
-  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
-export const Route = createRootRoute({ component: Root });
-function Root() { return <Outlet />; }`;
+  const root = HIDE_STARTER_ROOT;
   const hero = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
 } as const;
@@ -7149,6 +7159,7 @@ function Home() {
 }`;
   const wrappedRevision = async () => [
     { path: "src/routes/__root.tsx", content: root },
+    ...HIDE_ROOT_IMPORTS,
     {
       path: "src/morph/content.ts",
       content: STARTER_THEME_CONTENT_MODULE_SOURCE,
@@ -7305,14 +7316,13 @@ describe("M3 Hide: a layout edit racing the publish", () => {
   const BUILD = "33333333-3333-4333-8333-333333333333";
   const DRAFT = "ffffffff-1111-4111-8111-111111111111";
   const LAYOUT_DRAFT = "ffffffff-2222-4222-8222-222222222222";
-  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
-export const Route = createRootRoute({ component: Root });
-function Root() { return <Outlet />; }`;
+  const root = HIDE_STARTER_ROOT;
   const index = `import { createFileRoute } from "@tanstack/react-router";
 export const Route = createFileRoute("/")({ component: Home });
 function Home() { return <main>Home</main>; }`;
   const revisionFiles = async () => [
     { path: "src/routes/__root.tsx", content: root },
+    ...HIDE_ROOT_IMPORTS,
     {
       path: "src/morph/content.ts",
       content: STARTER_THEME_CONTENT_MODULE_SOURCE,
