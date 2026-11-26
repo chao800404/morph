@@ -18,15 +18,42 @@ export type ThemePrerenderContent = Readonly<
 >;
 
 /**
- * Where a native build's prerender records each content read it could not
- * answer, one JSON line per read. Read back by `nativeBuildResult`, which
- * fails the build if it exists.
+ * Where a build's prerender records each content read it could not answer,
+ * one JSON line (`{ path, reason }`, never content) per read, relative to the
+ * workspace root. A native build's is read back by `nativeBuildResult` (and
+ * a failed native build's by its framework's `failedBuildCause`), which fails
+ * the build if it exists; a platform build's by its runner, when the
+ * build has already failed, to name the paths (`platformPrerenderFailure`).
  */
 export const NATIVE_PRERENDER_REFUSED_READS_PATH =
   ".morph/prerender-refused-reads.ndjson";
 
-/** Which paths' content reads were refused, and why, from the prerender's record. */
-export function nativeRefusedReadsMessage(record: Uint8Array | string): string {
+/**
+ * Why a platform build's content endpoint refused a read. A platform build
+ * seals content for exactly the pages it prerenders (the CMS's SSG pages), so
+ * unlike the native path — which seals every static route — the path may be
+ * a real route of the Theme that is simply not prerendered.
+ */
+export const PLATFORM_PRERENDER_PATH_NOT_SEALED =
+  "PLATFORM_PRERENDER_PATH_NOT_SEALED: this build sealed content only for the pages it prerenders";
+
+/** A failed platform build whose prerender read content it has not sealed. */
+export const PLATFORM_PRERENDER_CONTENT_UNAVAILABLE =
+  "PLATFORM_PRERENDER_CONTENT_UNAVAILABLE";
+
+export type PrerenderRefusedRead = Readonly<{ path: string; reason: string }>;
+
+/** At most this many refused paths are named in a message or diagnostics. */
+const MAX_NAMED_REFUSED_READS = 10;
+
+/**
+ * The refused reads a prerender recorded, first reason per path, in order.
+ * A torn line is skipped: it still means a read was refused, and the others
+ * say which.
+ */
+export function readPrerenderRefusedReads(
+  record: Uint8Array | string,
+): PrerenderRefusedRead[] {
   const reasons = new Map<string, string>();
   const text =
     typeof record === "string" ? record : new TextDecoder().decode(record);
@@ -41,14 +68,60 @@ export function nativeRefusedReadsMessage(record: Uint8Array | string): string {
         );
       }
     } catch {
-      // A torn line still means a read was refused; the others say which.
+      // Torn line: see above.
     }
   }
-  const detail = [...reasons]
-    .slice(0, 10)
-    .map(([path, reason]) => `${path} (${reason})`)
+  return [...reasons].map(([path, reason]) => ({ path, reason }));
+}
+
+/** `path (reason), …` for the first refused reads, or "" for none. */
+export function prerenderRefusedReadsDetail(
+  reads: readonly PrerenderRefusedRead[],
+): string {
+  return reads
+    .slice(0, MAX_NAMED_REFUSED_READS)
+    .map(({ path, reason }) => `${path} (${reason})`)
     .join(", ");
+}
+
+/**
+ * A native build's refused-read failure: which paths' content reads were
+ * refused, and why, from the prerender's record. Shared by `nativeBuildResult`
+ * and the frameworks' `failedBuildCause`.
+ */
+export function nativeRefusedReadsMessage(record: Uint8Array | string): string {
+  const detail = prerenderRefusedReadsDetail(readPrerenderRefusedReads(record));
   return `NATIVE_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed${detail ? `: ${detail}` : ""}. Build from the editor so the content is sealed with the build, or stop prerendering pages that read content.`;
+}
+
+/**
+ * A failed platform build's error, when its prerender recorded a refused
+ * content read: the paths and reasons first, then the build's own output,
+ * which alone only says a page failed to fetch. `undefined` when there is no
+ * record — the build failed for some other reason, and its output stands.
+ * A refused read never turns a failure into a success; this only names it.
+ */
+export function platformPrerenderFailure(
+  output: string,
+  record: Uint8Array | string | undefined,
+):
+  | {
+      code: typeof PLATFORM_PRERENDER_CONTENT_UNAVAILABLE;
+      message: string;
+      refusedReads: PrerenderRefusedRead[];
+    }
+  | undefined {
+  if (record === undefined) return undefined;
+  const reads = readPrerenderRefusedReads(record).slice(
+    0,
+    MAX_NAMED_REFUSED_READS,
+  );
+  const detail = prerenderRefusedReadsDetail(reads);
+  return {
+    code: PLATFORM_PRERENDER_CONTENT_UNAVAILABLE,
+    message: `${PLATFORM_PRERENDER_CONTENT_UNAVAILABLE}: prerendering read Morph content this build has not sealed${detail ? `: ${detail}` : ""}. Only the pages this build prerenders (SSG) have sealed content: make the page whose content is read SSG as well, or stop reading it while prerendering.\n\n${output}`,
+    refusedReads: reads,
+  };
 }
 
 /**
@@ -250,25 +323,44 @@ export async function createNativePrerenderContent(
 /** Node preview middleware only: neither the snapshot nor this plugin belongs
  * to the compiled Worker. The same endpoint/header contract is used in Core.
  *
- * With `refusedReadsPath` (a native build), the content file is a
- * `NativePrerenderContent` and each read it cannot answer is appended there;
- * without it (a platform build), the file maps paths to content and a read it
- * cannot answer is a plain 404.
+ * With `refusedReadsPath` alone (a native build), the content file is a
+ * `NativePrerenderContent` and each read it cannot answer is appended there
+ * with `answerSealedContentRead`'s reason.
+ *
+ * With `refusedReadsPath` and `platform` (a platform build), the file maps
+ * paths to content (`ThemePrerenderContent`), and each read it cannot answer
+ * is appended with `PLATFORM_PRERENDER_PATH_NOT_SEALED`. A record already in
+ * the workspace when the server starts is removed first: the workspace holds
+ * Theme files, and the runner reads this record only as this prerender's.
+ *
+ * Either way the read itself is still a 404: the record names it, never
+ * answers it. Without `refusedReadsPath`, a read it cannot answer is a plain
+ * 404 and nothing is recorded.
  */
 export function themePrerenderContentPluginSource(
   root: string,
-  options: Readonly<{ refusedReadsPath?: string }> = {},
+  options: Readonly<{ refusedReadsPath?: string; platform?: boolean }> = {},
 ): string {
   const contentFile = `path.join(${JSON.stringify(root)}, ${JSON.stringify(THEME_PRERENDER_CONTENT_FILE)})`;
-  const load = options.refusedReadsPath
-    ? `const sealed = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
+  const refusedReadsFile = options.refusedReadsPath
+    ? `const refusedReads = path.join(${JSON.stringify(root)}, ${JSON.stringify(options.refusedReadsPath)});`
+    : "";
+  const load = !options.refusedReadsPath
+    ? `const content = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));`
+    : options.platform
+      ? `const content = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
+      ${refusedReadsFile}
+      fs.rmSync(refusedReads, { force: true });`
+      : `const sealed = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
       const content = sealed.content;
       const answerSealedContentRead = (${answerSealedContentRead.toString()});
-      const refusedReads = path.join(${JSON.stringify(root)}, ${JSON.stringify(options.refusedReadsPath)});`
-    : `const content = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));`;
+      ${refusedReadsFile}`;
+  const reason = options.platform
+    ? JSON.stringify(PLATFORM_PRERENDER_PATH_NOT_SEALED)
+    : "answerSealedContentRead(sealed, pathname).refused";
   const refuse = options.refusedReadsPath
     ? `if (req.method === "GET") {
-              const reason = answerSealedContentRead(sealed, pathname).refused;
+              const reason = ${reason};
               fs.mkdirSync(path.dirname(refusedReads), { recursive: true });
               fs.appendFileSync(refusedReads, JSON.stringify({ path: pathname, reason }) + "\\n");
             }
