@@ -2572,6 +2572,149 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         await pastDebounce();
         expect(updateSectionProps).toHaveBeenCalledTimes(1);
       });
+
+      // Re-review N2: a sibling's basis the frame answered not-applied is
+      // answered, not awaited. It stays the sibling's latest token, but it is
+      // not part of the page the hero's input waits for; a click on the
+      // sibling issues a new token as before.
+      it("on an Astro frame a sibling's not-applied basis does not hold the hero's input", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "Not held by banner"));
+        await upAndAcked(WRITE_CONTEXT, HOME_URL, heroAndBanner());
+
+        boundaryClick(2, DIGEST, undefined, BANNER_MARKER);
+        await flush();
+        const banner = basisPosts()[1]!.presentationToken;
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: banner.operationId,
+          token: banner,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+        await flush();
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts()[2]!.presentationToken);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Not held by banner" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          sectionId: "hero",
+          props: { title: "Not held by banner" },
+          identity: MARKER,
+        });
+      });
+
+      /**
+       * The dispatch-time recheck (Codex review P1), one cause at a time:
+       * the hero's input is proven and queued behind the banner's write,
+       * which is still out; then the cause happens; then the banner's write
+       * is refused (an answer that moves no generation), and the hero's
+       * write reaches its dispatch. It must not leave.
+       */
+      const heroQueuedBehindBanner = async () => {
+        let answerBanner: (value: unknown) => void = () => {};
+        updateSectionProps.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answerBanner = resolve;
+            }),
+        );
+        updateSectionProps.mockResolvedValue(answered(5, "Queued hero"));
+        const client = await upAndAcked(WRITE_CONTEXT, HOME_URL, heroAndBanner());
+        boundaryClick(2, DIGEST, undefined, BANNER_MARKER);
+        await flush();
+        await ackBasis(basisPosts()[1]!.presentationToken);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Banner out" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts().at(-1)!.presentationToken);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Queued hero" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+        return {
+          client,
+          answerBanner: async () => {
+            await act(async () => {
+              answerBanner({
+                success: false,
+                error: "SECTION_SOURCE_UNCONFIRMABLE",
+                message:
+                  "SECTION_SOURCE_UNCONFIRMABLE: parser-unavailable: not this time",
+              });
+            });
+            await flush();
+            await pastDebounce();
+          },
+        };
+      };
+      const notSentAtDispatch = () => {
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_BASIS_MESSAGE,
+          expect.anything(),
+        );
+      };
+
+      it("dispatch recheck: a re-click on the section while its write is queued", async () => {
+        const queued = await heroQueuedBehindBanner();
+        boundaryClick(4);
+        await flush();
+        await queued.answerBanner();
+        notSentAtDispatch();
+      });
+
+      it("dispatch recheck: the section's ack withdrawn while its write is queued", async () => {
+        const queued = await heroQueuedBehindBanner();
+        const hero = basisPosts().at(-1)!.presentationToken;
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: hero.operationId,
+          token: hero,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+        await flush();
+        await queued.answerBanner();
+        notSentAtDispatch();
+      });
+
+      it("dispatch recheck: a frame reload while the write is queued", async () => {
+        const queued = await heroQueuedBehindBanner();
+        await reloadWith({ ticket: 7, instance: INSTANCE });
+        await queued.answerBanner();
+        notSentAtDispatch();
+      });
+
+      it("dispatch recheck: Core's record moving while the write is queued", async () => {
+        const queued = await heroQueuedBehindBanner();
+        act(() => {
+          queued.client.setQueryData(
+            themePreviewServerQueries.forTheme("storefront-1", "theme-1")
+              .queryKey,
+            {
+              success: true,
+              message: "Live Preview server ready",
+              data: {
+                url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+                ...START_DATA,
+                contentTicket: 8,
+                draftGenerations: { "template-1": 4 },
+              },
+            } as never,
+          );
+        });
+        await flush();
+        await queued.answerBanner();
+        notSentAtDispatch();
+      });
     });
 
     // Lead decision Q3: after a frame reload the selection is not kept from
