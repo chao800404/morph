@@ -516,6 +516,15 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
     onTabChange?.(tab);
   }, [onTabChange, tab]);
 
+  // D2 (M2 PR 3): a confirmed Astro selection opens the Inspector on its
+  // content, once per selection; the author's own tab choice after that
+  // stands. Comment mode keeps its own tab.
+  const astroContentKey = astroContent?.resetKey ?? null;
+  useEffect(() => {
+    if (astroContentKey === null) return;
+    setTab((current) => (current === "comments" ? current : "content"));
+  }, [astroContentKey]);
+
   useEffect(() => {
     persistEditorAssistantPanelTab(tab);
   }, [tab]);
