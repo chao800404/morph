@@ -14428,6 +14428,12 @@ export function VisualEditorShell({
         // click selects nothing.
         if (astroSelection.status !== "confirmed") {
           dispatchAstroDesignFocus({ kind: "deselected" });
+        } else if (!selectsInDesign) {
+          // Codex review P3: a locate only (a click in Code, or on a frame
+          // whose basis can never be acknowledged) stores no selection, so
+          // Design never shows inputs no qualifying Design click made. Like
+          // any other click it clears the status of the one before.
+          dispatchAstroDesignFocus({ kind: "deselected" });
         } else {
           // The source generation Core's view confirmed the instance at,
           // which `resolveAstroDesignSelection` matched to the workspace's:
