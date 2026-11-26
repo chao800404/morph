@@ -1536,12 +1536,18 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       await flush();
 
       boundaryClick(1);
-      const editor = await screen.findByRole(
-        "textbox",
-        { name: "Code editor" },
+      // Code was open on another file: the click moves it to the page's.
+      await waitFor(
+        () =>
+          expect(
+            (
+              screen.getByRole("textbox", {
+                name: "Code editor",
+              }) as HTMLTextAreaElement
+            ).value,
+          ).toBe(ASTRO_SOURCE),
         { timeout: 15_000 },
       );
-      expect((editor as HTMLTextAreaElement).value).toBe(ASTRO_SOURCE);
       await waitFor(() => expect(basisPosts()).toHaveLength(1));
       expect(updateSectionProps).not.toHaveBeenCalled();
     });
