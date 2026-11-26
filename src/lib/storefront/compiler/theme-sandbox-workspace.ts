@@ -1023,6 +1023,10 @@ return null;
 
 export default defineConfig({
   root: ${hostRootLiteral},
+  // True only in the full Start Live Preview: Starter 32's client loader lays
+  // the page's unsaved edits over its read there; everywhere else that branch
+  // is dead code (theme-preview-start-runtime.ts).
+  define: { __MORPH_START_LIVE_PREVIEW__: ${JSON.stringify(startPreview ? "true" : "false")} },
   base: isStartRuntimeBuild || isStartPreview
 ? "/"
 : isLivePreview

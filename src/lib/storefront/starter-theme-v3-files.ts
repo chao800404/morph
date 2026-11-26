@@ -2887,6 +2887,51 @@ function toContent(page: MorphPage): MorphContent {
 }
 
 /**
+ * Set by Morph's build: true only in the full Start Live Preview; false in a
+ * published build, Build Preview and the prerender, where the branch reading
+ * it is dead code.
+ */
+declare const __MORPH_START_LIVE_PREVIEW__: boolean | undefined;
+
+/**
+ * In the full Start Live Preview only: the edits this page received for the
+ * path read, laid over what the read returned. The editor puts each edit into
+ * the page's preview content as the author types; readPage answers from the
+ * saved drafts, so without this the canvas would wait for the save. Anything
+ * malformed is ignored, and the read is used as it was.
+ */
+function withLivePreviewEdits(pathname: string, read: MorphContent): MorphContent {
+  if (!(typeof __MORPH_START_LIVE_PREVIEW__ === "boolean" && __MORPH_START_LIVE_PREVIEW__)) {
+    return read;
+  }
+  const accessor = (globalThis as unknown as {
+    __morphLivePreviewContent?: { overlay?: unknown };
+  }).__morphLivePreviewContent;
+  if (!accessor || typeof accessor.overlay !== "function") return read;
+  try {
+    return liveContent(accessor.overlay(pathname, read)) ?? read;
+  } catch {
+    return read;
+  }
+}
+
+/** A copy of a well-formed { slots, hiddenSlots }, or null. */
+function liveContent(value: unknown): MorphContent | null {
+  if (!value || typeof value !== "object") return null;
+  const { slots, hiddenSlots } = value as { slots?: unknown; hiddenSlots?: unknown };
+  if (!slots || typeof slots !== "object" || Array.isArray(slots)) return null;
+  if (!Array.isArray(hiddenSlots) || !hiddenSlots.every((slot) => typeof slot === "string")) {
+    return null;
+  }
+  const copy: MorphContentSlots = {};
+  for (const [slotId, values] of Object.entries(slots)) {
+    if (!values || typeof values !== "object" || Array.isArray(values)) return null;
+    copy[slotId] = structuredClone(values);
+  }
+  return { slots: copy, hiddenSlots: [...hiddenSlots] };
+}
+
+/**
  * Loads the published content for one route.
  *
  * Two answers are kept apart. A read that succeeds with no content is empty
@@ -2901,7 +2946,7 @@ function toContent(page: MorphPage): MorphContent {
 export const loadContentSlots = createIsomorphicFn()
   .client(async (pathname: string): Promise<MorphContent> => {
     try {
-      return toContent(await readPage({ data: pathname }));
+      return withLivePreviewEdits(pathname, toContent(await readPage({ data: pathname })));
     } catch (error) {
       throw contentError(error);
     }

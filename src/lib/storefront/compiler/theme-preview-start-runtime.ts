@@ -301,6 +301,25 @@ documentPreviewRuntimeChannel();
 // without touching the SSR DOM. The bridge takes over after hydration.
 const contentModule = import("/${THEME_PREVIEW_CONTENT_MODULE_PATH}");
 let contentChangedBeforeBridge = false;
+
+// Starter 32's client loader reads through a server function, which answers
+// from the saved drafts only. Where its build says it runs in this preview
+// (__MORPH_START_LIVE_PREVIEW__), it lays the edits this page received over
+// that answer, read through this accessor: read-only, over the page's own
+// preview content, and only in a framed page the editor's channel opened.
+if (window.parent !== window && documentPreviewRuntimeChannel()) {
+  void contentModule.then(({ livePreviewContentOverlay }) => {
+    if (typeof livePreviewContentOverlay !== "function") return;
+    Object.defineProperty(window, "__morphLivePreviewContent", {
+      value: Object.freeze({
+        overlay: (pathname, base) => livePreviewContentOverlay(pathname, base),
+      }),
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  }, () => {}); // The awaited module below reports an import failure once.
+}
 const earlyPresentationQueue = (window.__morphEarlyPresentationQueue =
   window.__morphEarlyPresentationQueue || []);
 const receiveEarlyContent = (event) => {

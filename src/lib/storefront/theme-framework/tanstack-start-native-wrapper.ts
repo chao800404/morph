@@ -161,6 +161,9 @@ ${plugins.map((plugin) => `      ${plugin}`).join(",\n")},
     // (theme-morph-sdk.ts). mergeConfig puts these before the project's own
     // aliases, so a project alias cannot claim them.
     resolve: { alias: ${themeMorphSdkAliasesSource("workspaceRoot")} },
+    // Starter 32's Live Preview branch is dead code in a published build,
+    // whatever the project's own config defines (theme-preview-start-runtime.ts).
+    define: { __MORPH_START_LIVE_PREVIEW__: "false" },
     // Start prerenders by fetching a Vite preview server it starts on
     // "localhost". In the build container that name binds one loopback
     // family while the fetch connects to the other (ECONNREFUSED), so the
