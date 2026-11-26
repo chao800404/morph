@@ -10,6 +10,7 @@ import {
   validateAndCanonicalizeArtifactPath,
 } from "./cloudflare-r2-theme-build-artifact-store";
 import type { ThemeBuildArtifactFile } from "./theme-build-runner.types";
+import { starterThemeWorkspaceFiles } from "../starter-theme-files";
 
 describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
   const createMockR2 = () => {
@@ -473,5 +474,127 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
 
     expect(binaryArtifact?.content instanceof Uint8Array).toBe(true);
     expect(Array.from(binaryArtifact?.content as Uint8Array)).toEqual([1, 2, 3, 4]);
+  });
+
+  describe("registered static pages", () => {
+    const HOME_HTML = "<!doctype html><h1>Home A</h1>";
+    const starterInput = (
+      renderPolicy: { mode: "ssg" } | { mode: "ssr" },
+      templateType = "index",
+    ): StorefrontThemeBuildInput => ({
+      ...createDummyBuildInput(),
+      files: starterThemeWorkspaceFiles().map((file) => ({
+        path: file.path,
+        content: file.content,
+      })),
+      entry: "src/routes/index.tsx",
+      framework: "tanstack-start",
+      contentSnapshot: {
+        publicationId: "pub-1",
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        documents: [
+          {
+            item: {
+              id: "item-1",
+              publicationId: "pub-1",
+              itemType: "template",
+              contentId: "tpl-1",
+              revisionId: "tpl-rev-1",
+              metadata: {
+                templateType,
+                ...(templateType === "account" ? { routePath: "/account" } : {}),
+              },
+            },
+            document: { version: 1, sections: [], renderPolicy },
+          },
+        ],
+      } as NonNullable<StorefrontThemeBuildInput["contentSnapshot"]>,
+    });
+    const startArtifacts = (): ThemeBuildArtifactFile[] => [
+      { path: "preview/index.html", content: "<html></html>", mimeType: "text/html" },
+      {
+        path: "runtime/server/index.js",
+        content: "export default { fetch() {} }",
+        mimeType: "application/javascript",
+      },
+      { path: "runtime/client/index.html", content: HOME_HTML, mimeType: "text/html" },
+      {
+        path: "runtime/client/account/index.html",
+        content: "<h1>account</h1>",
+        mimeType: "text/html",
+      },
+      {
+        path: "runtime/client/assets/app.js",
+        content: "export {};",
+        mimeType: "application/javascript",
+      },
+    ];
+    const runnerManifest = {
+      artifactEntry: "preview/index.html",
+      metadata: {
+        runtime: "cloudflare-worker",
+        workerEntry: "runtime/server/index.js",
+        clientAssetsDirectory: "runtime/client",
+        previewEntry: "preview/index.html",
+        // A runner cannot register pages: the store derives them itself.
+        staticPages: [
+          {
+            path: "/account",
+            artifactPath: "runtime/client/account/index.html",
+            sha256: "0".repeat(64),
+          },
+        ],
+      },
+    };
+
+    it("freezes the server-registered page list, with the uploaded HTML's hash, in the canonical manifest", async () => {
+      const { r2Bucket } = createMockR2();
+      const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+      const result = await store.persistBuildArtifacts({
+        build: createDummyBuild(),
+        buildInput: starterInput({ mode: "ssg" }),
+        artifacts: startArtifacts(),
+        runnerManifest,
+      });
+      expect(result.manifest.runtime?.staticPages).toEqual([
+        {
+          path: "/",
+          artifactPath: "runtime/client/index.html",
+          sha256: calculateArtifactSha256(HOME_HTML),
+        },
+      ]);
+    });
+
+    it("keeps a manifest without SSG pages exactly as before", async () => {
+      const { r2Bucket } = createMockR2();
+      const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+      const result = await store.persistBuildArtifacts({
+        build: createDummyBuild(),
+        buildInput: starterInput({ mode: "ssr" }),
+        artifacts: startArtifacts(),
+        runnerManifest,
+      });
+      expect(result.manifest.runtime).toEqual({
+        kind: "cloudflare-worker",
+        workerEntry: "runtime/server/index.js",
+        clientAssetsDirectory: "runtime/client",
+        previewEntry: "preview/index.html",
+      });
+    });
+
+    it("refuses an ineligible SSG claim before writing anything", async () => {
+      const { r2Bucket, storage } = createMockR2();
+      const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+      await expect(
+        store.persistBuildArtifacts({
+          build: createDummyBuild(),
+          buildInput: starterInput({ mode: "ssg" }, "account"),
+          artifacts: startArtifacts(),
+          runnerManifest,
+        }),
+      ).rejects.toThrow(/SSG_PAGE_NOT_ELIGIBLE/);
+      expect(storage.size).toBe(0);
+    });
   });
 });
