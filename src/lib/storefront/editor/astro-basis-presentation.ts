@@ -206,12 +206,11 @@ export type AstroBasisRefusal =
   | "other-instance"
   | "no-core-generation";
 
-/** Checks shared by issuing a token and accepting its answer. */
-function astroBasisMismatch(
+/** The snapshot half of the checks: the pair is the one Core confirmed. */
+function astroBasisSnapshotMismatch(
   servedContent: PreviewServedContent,
   basis: AstroContentBasis | null,
-  templateId: string,
-): Readonly<{ reason: AstroBasisRefusal }> | Readonly<{ generation: number }> {
+): Readonly<{ reason: AstroBasisRefusal }> | null {
   if (!basis) return { reason: "no-confirmed-content" };
   // A document older (or newer) than what Core last wrote for this editor:
   // its generations are not the ones recorded, so it is never the basis.
@@ -220,7 +219,38 @@ function astroBasisMismatch(
   if (servedContent.instance !== basis.instance) {
     return { reason: "other-instance" };
   }
-  const generation = basis.draftGenerations[templateId];
+  return null;
+}
+
+/**
+ * The basis of a static route that has no Document of its own yet, named by
+ * its placeholder id (M2 PR 3, Codex review P2): Core's snapshot holds no
+ * generation under that id, so the page shows what the route renders with
+ * no Document. Such a token's `documentBasis` is `new-document`, its epoch
+ * the placeholder itself.
+ */
+function astroNewDocumentMismatch(
+  servedContent: PreviewServedContent,
+  basis: AstroContentBasis | null,
+  templateId: string,
+): Readonly<{ reason: AstroBasisRefusal }> | null {
+  const snapshot = astroBasisSnapshotMismatch(servedContent, basis);
+  if (snapshot) return snapshot;
+  if (basis!.draftGenerations[templateId] !== undefined) {
+    return { reason: "no-core-generation" };
+  }
+  return null;
+}
+
+/** Checks shared by issuing a token and accepting its answer. */
+function astroBasisMismatch(
+  servedContent: PreviewServedContent,
+  basis: AstroContentBasis | null,
+  templateId: string,
+): Readonly<{ reason: AstroBasisRefusal }> | Readonly<{ generation: number }> {
+  const snapshot = astroBasisSnapshotMismatch(servedContent, basis);
+  if (snapshot) return snapshot;
+  const generation = basis!.draftGenerations[templateId];
   if (
     typeof generation !== "number" ||
     !Number.isSafeInteger(generation) ||
@@ -248,6 +278,11 @@ export function astroBasisTokenFor(args: {
   sectionId: string;
   identity: string;
   presentationRevision: number;
+  /**
+   * `templateId` is a static route's placeholder: the route has no Document
+   * of its own yet, and the token's basis is a new document (M2 PR 3).
+   */
+  newRouteDocument?: boolean;
 }):
   | Readonly<{ status: "token"; token: SectionPresentationToken }>
   | Readonly<{ status: "refused"; reason: AstroBasisRefusal }> {
@@ -257,12 +292,26 @@ export function astroBasisTokenFor(args: {
   if (!args.servedContent) {
     return { status: "refused", reason: "no-served-content" };
   }
-  const checked = astroBasisMismatch(
-    args.servedContent,
-    args.basis,
-    args.templateId,
-  );
-  if ("reason" in checked) return { status: "refused", reason: checked.reason };
+  let documentBasis: SectionPresentationToken["documentBasis"];
+  if (args.newRouteDocument) {
+    const refused = astroNewDocumentMismatch(
+      args.servedContent,
+      args.basis,
+      args.templateId,
+    );
+    if (refused) return { status: "refused", reason: refused.reason };
+    documentBasis = { kind: "new-document", createEpoch: args.templateId };
+  } else {
+    const checked = astroBasisMismatch(
+      args.servedContent,
+      args.basis,
+      args.templateId,
+    );
+    if ("reason" in checked) {
+      return { status: "refused", reason: checked.reason };
+    }
+    documentBasis = { kind: "existing", draftGeneration: checked.generation };
+  }
   return {
     status: "token",
     token: {
@@ -270,7 +319,7 @@ export function astroBasisTokenFor(args: {
       templateId: args.templateId,
       routePath: args.routePath,
       sectionId: args.sectionId,
-      documentBasis: { kind: "existing", draftGeneration: checked.generation },
+      documentBasis,
       overlayRevision: 0,
       presentationRevision: args.presentationRevision,
       operationId: `section-basis-${args.presentationRevision}`,
@@ -312,6 +361,20 @@ export function acceptAstroBasisAck(args: {
     args.servedContent.instance !== tokenBasis.servedContent.instance
   ) {
     return { accept: false, reason: "other-snapshot" };
+  }
+  if (args.token.documentBasis.kind === "new-document") {
+    // Only a route placeholder's own basis, as issued (`newRouteDocument`).
+    if (args.token.documentBasis.createEpoch !== args.token.templateId) {
+      return { accept: false, reason: "no-core-generation" };
+    }
+    const refused = astroNewDocumentMismatch(
+      tokenBasis.servedContent,
+      args.basis,
+      args.token.templateId,
+    );
+    return refused
+      ? { accept: false, reason: refused.reason }
+      : { accept: true };
   }
   const checked = astroBasisMismatch(
     tokenBasis.servedContent,

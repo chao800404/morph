@@ -3771,8 +3771,8 @@ export function VisualEditorShell({
       // page's document newer than the page shows, holds this section too,
       // at input, at release and where the write leaves.
       if (!sectionPresentationPageReadyNowRef.current()) return false;
-      const documentId =
-        routeTemplateIdsRef.current.get(token.templateId) ?? token.templateId;
+      const createdId = routeTemplateIdsRef.current.get(token.templateId);
+      const documentId = createdId ?? token.templateId;
       const sectionKey = sectionPresentationKey(
         token.templateId,
         token.sectionId,
@@ -3783,6 +3783,9 @@ export function VisualEditorShell({
         basis: astroContentBasisRef.current,
         acceptedDraftGeneration:
           contentSnapshotsRef.current.get(documentId)?.draftGeneration,
+        routeDocumentCreatedElsewhere:
+          createdId !== undefined &&
+          !routeDocumentsCreatedHereRef.current.has(createdId),
         // Codex review P1: only while it is still the section's latest
         // token and the one whose `applied` was taken for it.
         latest: latestSectionPresentationRef.current.get(sectionKey),
@@ -16232,10 +16235,28 @@ export function VisualEditorShell({
     ) {
       return;
     }
+    // Codex review P2: the basis is the document this page's sections are
+    // stored in (`pageTemplateId`, as `templateIdForSection` names it), never
+    // a template the editor borrowed to load the route. A static route with
+    // no Document of its own is presented under its placeholder, as a new
+    // document; its first write creates it through the route ensure.
+    if (pageTemplateId === null) {
+      presentationTraceRef.current.anomaly(
+        presentationTraceScope(),
+        `basis not issued section=${sectionId} reason=no-page-document`,
+      );
+      dispatchAstroDesignFocus({
+        kind: "basis-unconfirmed",
+        sectionId,
+        reason: "no-core-generation",
+      });
+      return;
+    }
     const templateId =
-      routeTemplateIdsRef.current.get(activeTemplate.id) ?? activeTemplate.id;
+      routeTemplateIdsRef.current.get(pageTemplateId) ?? pageTemplateId;
     const presentationRevision = presentationRevisionRef.current + 1;
     const issued = astroBasisTokenFor({
+      newRouteDocument: routePathFromTemplatePlaceholder(templateId) !== null,
       capabilities: frame.capabilities,
       contentRefresh: previewContentRefreshRef.current,
       servedContent: frame.servedContent ?? null,

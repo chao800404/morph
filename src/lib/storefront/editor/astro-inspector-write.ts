@@ -50,6 +50,11 @@ export function astroBasisProofCurrent(args: {
   acceptedDraftGeneration: number | undefined;
   latest: SectionPresentationToken | undefined;
   acknowledged: SectionPresentationToken | undefined;
+  /**
+   * For a route placeholder's token: the route's document is known to exist
+   * and was not created by this editor's own ensure.
+   */
+  routeDocumentCreatedElsewhere?: boolean;
 }): boolean {
   if (!args.token.basis) return false;
   if (
@@ -66,7 +71,17 @@ export function astroBasisProofCurrent(args: {
     basis: args.basis,
   });
   if (!ack.accept) return false;
-  if (args.token.documentBasis.kind !== "existing") return false;
+  if (args.token.documentBasis.kind === "new-document") {
+    // A static route with no Document of its own yet (Codex review P2):
+    // proven only while the editor holds no copy of the route's document
+    // and no other editor created it (`routeDocumentCreatedElsewhere`); the
+    // write path then creates it through the route ensure and sends onto it
+    // only as this editor created it.
+    return (
+      args.acceptedDraftGeneration === undefined &&
+      args.routeDocumentCreatedElsewhere !== true
+    );
+  }
   return (
     args.acceptedDraftGeneration === undefined ||
     args.acceptedDraftGeneration <= args.token.documentBasis.draftGeneration

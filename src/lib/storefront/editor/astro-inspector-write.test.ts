@@ -95,6 +95,57 @@ describe("astroBasisProofCurrent", () => {
     expect(current({ latest: undefined })).toBe(false);
   });
 
+  // Codex review P2: a static route with no Document of its own is
+  // presented under its placeholder, as a new document.
+  describe("for a route with no Document of its own yet", () => {
+    const placeholder = "placeholder-route:/about";
+    const routeToken = basisToken({
+      templateId: placeholder,
+      routePath: "/about",
+      documentBasis: { kind: "new-document", createEpoch: placeholder },
+    });
+    const routeCurrent = (
+      args: Partial<Parameters<typeof astroBasisProofCurrent>[0]> = {},
+    ) =>
+      current({
+        token: routeToken,
+        latest: routeToken,
+        acknowledged: routeToken,
+        acceptedDraftGeneration: undefined,
+        ...args,
+      });
+
+    it("is current while the editor holds no copy of the route's document", () => {
+      expect(routeCurrent()).toBe(true);
+    });
+
+    it("is not current once the editor holds a copy, or the document was created elsewhere", () => {
+      expect(routeCurrent({ acceptedDraftGeneration: 2 })).toBe(false);
+      expect(routeCurrent({ routeDocumentCreatedElsewhere: true })).toBe(false);
+    });
+
+    it("is not current when Core's snapshot holds a document under that id, or the epoch is another", () => {
+      expect(
+        routeCurrent({
+          basis: coreBasis({
+            draftGenerations: { "template-1": 4, [placeholder]: 1 },
+          }),
+        }),
+      ).toBe(false);
+      const otherEpoch = basisToken({
+        templateId: placeholder,
+        documentBasis: { kind: "new-document", createEpoch: "template-1" },
+      });
+      expect(
+        routeCurrent({
+          token: otherEpoch,
+          latest: otherEpoch,
+          acknowledged: otherEpoch,
+        }),
+      ).toBe(false);
+    });
+  });
+
   it("an overlay token (every Start token) is never an Astro proof", () => {
     const { basis: _none, ...overlay } = basisToken();
     expect(current({ token: overlay })).toBe(false);
