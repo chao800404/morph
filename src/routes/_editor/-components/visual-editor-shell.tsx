@@ -18354,7 +18354,8 @@ export function VisualEditorShell({
         ...heldContentForSection(sectionId),
       }),
       shown: { generation: astroShownGeneration, selection },
-      heldFields: () => new Set(Object.keys(heldContentForSection(sectionId))),
+      heldFields: () =>
+        new Set(Object.keys(heldContentForSection(sectionId) ?? {})),
       // Staged as made on the copy the field showed: an input over a value
       // older than the copy now held is composed as out of date, never over
       // the newer Document (`earlierBasis`, `selectCurrentContentFields`).
