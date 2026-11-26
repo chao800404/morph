@@ -15,6 +15,7 @@ import {
   themeScopeFromEditorPath,
   writeThemeFiles,
 } from "./native-compat";
+import { LIVE_PREVIEW_ACCESS_BEGIN_PATH } from "../src/lib/storefront/editor/live-preview-access";
 import { astroConfig } from "../src/lib/storefront/theme-framework/astro-native-prerender.fixtures";
 
 /**
@@ -127,7 +128,25 @@ async function liveFrame(page: Page): Promise<Frame> {
       timeout: 180_000,
     })
     .toBeTruthy();
+  // The iframe's src is the preview-access begin page, on the preview's own
+  // origin: the frame answers to the host at once, but its document is then
+  // replaced by the address it returns to. Evaluating before that destroys
+  // the context, so wait for the final document.
+  await expect
+    .poll(() => new URL(frame!.url()).pathname, { timeout: 180_000 })
+    .not.toBe(LIVE_PREVIEW_ACCESS_BEGIN_PATH);
+  await frame!.waitForLoadState("load", { timeout: 180_000 });
   return frame!;
+}
+
+/**
+ * The address the editor framed, as the preview serves it: the begin page's
+ * `return` target (path and query) when the iframe starts at the preview
+ * access begin page, the iframe's own address otherwise.
+ */
+function framedAddress(iframeSrc: URL): URL {
+  const target = iframeSrc.searchParams.get("return");
+  return target ? new URL(target, iframeSrc.origin) : iframeSrc;
 }
 
 /** What the server-rendered page shows now, asked from inside the preview. */
@@ -270,8 +289,8 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
 
     await openEditor(page);
     const frame = await liveFrame(page);
-    const iframeSrc = new URL(
-      (await page.locator("iframe").first().getAttribute("src"))!,
+    const framed = framedAddress(
+      new URL((await page.locator("iframe").first().getAttribute("src"))!),
     );
 
     // The list is the Astro site's own pages, not the Starter's Start routes.
@@ -282,7 +301,7 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     await expect
       .poll(() => new URL(frame.url()).pathname, { timeout: 120_000 })
       .toBe(NAV_ROUTE);
-    expect(new URL(frame.url()).search).toBe(iframeSrc.search);
+    expect(new URL(frame.url()).search).toBe(framed.search);
     await expect(frame.locator(`[data-astro-nav="${marker}"]`)).toBeVisible({
       timeout: 120_000,
     });
