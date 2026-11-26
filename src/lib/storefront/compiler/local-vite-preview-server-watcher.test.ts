@@ -89,9 +89,9 @@ function newServer() {
   });
 }
 
-const start = (server: LocalVitePreviewServer) =>
+const start = (server: LocalVitePreviewServer, previewId = "watcher-guard") =>
   server.start({
-    previewId: "watcher-guard",
+    previewId,
     files: [{ path: "src/pages/index.tsx", content: PAGE }],
     entry: "src/pages/index.tsx",
     previewHostname: "127.0.0.1",
@@ -138,5 +138,79 @@ describe("the local preview's watcher guard", () => {
     expect(result.ok).toBe(true);
     expect(vite.listen).toHaveBeenCalled();
     expect(vite.close).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * What a start tells the watcher of the server it is about to start.
+ *
+ * On macOS FSEvents can deliver a write made just before a dev server started
+ * to that server's watcher. Measured on the client lane: the generated
+ * `vite.config.ts`, rewritten unchanged by the next start, reached the new
+ * server as a config change ~100 ms after it listened, Vite restarted itself,
+ * and the frame loading its first modules at that moment never came up. These
+ * pin the two halves of the answer; neither needs a Mac to be checked.
+ */
+describe("what a start tells the next server's watcher", () => {
+  it("keeps Vite's watcher off the generated config", async () => {
+    const vite = serverReporting(false);
+    vi.mocked(createServer).mockResolvedValue(vite as unknown as ViteDevServer);
+    const server = newServer();
+
+    expect((await start(server, "watcher-config")).ok).toBe(true);
+
+    const options = vi.mocked(createServer).mock.calls[0]![0]!;
+    const ignored = [options.server?.watch?.ignored ?? []].flat();
+    const root = server.workspaceRootFor("watcher-config");
+    const ignores = (file: string) =>
+      ignored.some((matcher) =>
+        typeof matcher === "function" ? matcher(file) : false,
+      );
+    expect(ignores(path.join(root, "vite.config.ts"))).toBe(true);
+    // Only the config: Theme source still reaches the page by HMR.
+    expect(ignores(path.join(root, "src/pages/index.tsx"))).toBe(false);
+    expect(ignores(path.join(root, "src/vite.config.ts"))).toBe(false);
+  });
+
+  it("rewrites only the files a new plan changed", async () => {
+    vi.mocked(createServer).mockImplementation(
+      async () => serverReporting(false) as unknown as ViteDevServer,
+    );
+    const server = newServer();
+    // Its own workspace, so the first start lays every file out.
+    const previewId = "watcher-rewrites";
+    const root = server.workspaceRootFor(previewId);
+
+    const first = await start(server, previewId);
+    expect(first.ok).toBe(true);
+    const config = path.join(root, "vite.config.ts");
+    const before = (await fs.stat(config)).mtimeMs;
+
+    // A changed page is a changed plan: the server is replaced and the
+    // workspace laid out again over the files the first start left.
+    const second = await server.start({
+      previewId,
+      files: [
+        {
+          path: "src/pages/index.tsx",
+          content: PAGE.replace("Hello", "Hello again"),
+        },
+      ],
+      entry: "src/pages/index.tsx",
+      previewHostname: "127.0.0.1",
+      platformHostEnv: {},
+    });
+
+    expect(second.ok).toBe(true);
+    expect(
+      await fs.readFile(path.join(root, "src/pages/index.tsx"), "utf8"),
+    ).toContain("Hello again");
+    // The unchanged config was not written, so no event can name it.
+    expect((await fs.stat(config)).mtimeMs).toBe(before);
+    const firstWrites = first.ok ? first.timings?.writeCalls : undefined;
+    const secondWrites = second.ok ? second.timings?.writeCalls : undefined;
+    expect(firstWrites).toBeGreaterThan(1);
+    expect(secondWrites).toBeGreaterThanOrEqual(1);
+    expect(secondWrites).toBeLessThan(firstWrites!);
   });
 });

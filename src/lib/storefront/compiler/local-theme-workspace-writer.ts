@@ -63,6 +63,11 @@ export class LocalThemeWorkspaceWriter implements ThemeWorkspaceWriter {
     return resolved;
   }
 
+  /** Where a workspace path lives on this machine; refused as writes are. */
+  hostPath(filePath: string): string {
+    return this.resolveInRoot(filePath);
+  }
+
   private async ready(): Promise<void> {
     this.prepared ??= fs.mkdir(this.root, { recursive: true }).then(() => {});
     await this.prepared;
