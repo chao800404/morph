@@ -47,9 +47,9 @@ export type FencedFile = Readonly<{
    * Rewritten only because another file changed: a module whose compiled
    * output depends on the rest of the Theme (Morph's hide guard), sent with
    * its unchanged saved version. That version cannot order it, so it is
-   * ordered by the generation its sync read: written only from a generation
-   * newer than the one the path was last written from, and otherwise held,
-   * never refused (see `planFencedWrite`).
+   * ordered by the generation its sync read: held when that is strictly
+   * older than what is laid out or than the path's last write, written
+   * otherwise, and never refused (see `planFencedWrite`).
    */
   derived?: boolean;
 }>;
@@ -119,14 +119,18 @@ export function planFencedWrite(
   };
 
   // A derived file is ordered by generation alone; one that cannot be is
-  // held. Written only from a snapshot at least as new as anything laid out
-  // (a newer start may have removed the file) and newer than the one its
-  // path was last written from (a newer sync may have compiled it already).
+  // held. Held only when its snapshot is strictly older than what is laid
+  // out (a newer start may have removed the file) or than the one its path
+  // was last written from (a newer sync has compiled it already, from its
+  // own newer snapshot, so the path converges without this write). An equal
+  // generation is written: the Design flow syncs an edit before saving it,
+  // reading at the very generation the route was laid out at, and no second
+  // sync follows the save.
   const holds = (path: string) => {
     if (typeof generation !== "number") return true;
     if (generation < ledger.generation) return true;
     const recordedAt = readAt[path];
-    return typeof recordedAt === "number" && generation <= recordedAt;
+    return typeof recordedAt === "number" && generation < recordedAt;
   };
   const held: string[] = [];
   const ordered: FencedFile[] = [];
