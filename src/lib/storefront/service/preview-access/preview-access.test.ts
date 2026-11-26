@@ -63,6 +63,7 @@ beforeEach(() => {
   for (const migration of [
     "drizzle/0081_preview_access_grants.sql",
     "drizzle/0082_preview_access_resolved_grant.sql",
+    "drizzle/0084_preview_access_channel_binding.sql",
   ]) {
     sqlite.exec(
       readFileSync(resolve(migration), "utf8")

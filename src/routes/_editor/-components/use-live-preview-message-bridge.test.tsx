@@ -57,8 +57,8 @@ describe("useLivePreviewMessageBridge", () => {
 
 describe("a ready that carries a channel bootstrap nonce", () => {
   const NONCE = "b".repeat(32);
-  const DOC_A = "doc-aaaaaaaa-1";
-  const DOC_B = "doc-bbbbbbbb-2";
+  const DOC_A = "a".repeat(32);
+  const DOC_B = "c".repeat(32);
 
   function setup(accept: ((nonce: string) => boolean) | undefined) {
     const previewWindow = { postMessage: vi.fn() } as unknown as Window;
