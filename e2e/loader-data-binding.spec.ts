@@ -1938,4 +1938,86 @@ function GuardedRoute() {
       previewFrame(page).getByRole("heading", { name: GUARDED_TITLE }),
     ).toBeVisible();
   });
+
+  // Review of f1bcc7a, P2-4: in one editor document, a Hide from the
+  // Sections panel takes the loader section out of the running preview
+  // before the page is read again, and a Show brings it back with its
+  // stored value. Neither document reloads.
+  test("Hide and Show from the Sections panel, without reopening the editor", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const section = previewFrame(page).locator(
+      `[data-storefront-section-id="${SLOT}"]`,
+    );
+    const stored = previewFrame(page).getByRole("heading", { name: GUARDED_TITLE });
+    await openGuarded(page);
+    await expect(stored).toBeVisible();
+    const treeNodes = page.locator(`[data-editor-tree-node-id^="${SLOT}:"]`);
+    await expect(treeNodes.first()).toBeAttached();
+
+    await page.evaluate(() => {
+      (window as unknown as { __hsNoReload?: boolean }).__hsNoReload = true;
+    });
+    await previewFrame(page)
+      .locator("html")
+      .evaluate(() => {
+        (window as unknown as { __hsNoReload?: boolean }).__hsNoReload = true;
+      });
+    const noReload = async () => {
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { __hsNoReload?: boolean }).__hsNoReload,
+        ),
+        "the editor reloaded",
+      ).toBe(true);
+      expect(
+        await previewFrame(page)
+          .locator("html")
+          .evaluate(
+            () => (window as unknown as { __hsNoReload?: boolean }).__hsNoReload,
+          ),
+        "the preview reloaded",
+      ).toBe(true);
+    };
+
+    const hide = treeNodes.first().getByRole("button", { name: /^Hide section / });
+    const sectionType = ((await hide.getAttribute("aria-label")) ?? "").replace(
+      /^Hide section /,
+      "",
+    );
+    expect(sectionType).not.toBe("");
+    const show = page.getByRole("button", { name: `Show section ${sectionType}` });
+    const hidden = page.waitForResponse(
+      (response) =>
+        isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps"),
+      { timeout: 30_000 },
+    );
+    await treeNodes.first().hover();
+    await hide.click();
+    try {
+      const answer = await (await hidden).text();
+      expect(answer).not.toContain("SECTION_HIDE_UNSUPPORTED");
+      // Gone from the running page: no wrapper, no stored value, no default.
+      await expect(section).toHaveCount(0, { timeout: 15_000 });
+      await expect(previewFrame(page).getByText(GUARDED_TITLE)).toHaveCount(0);
+      await expect(previewFrame(page).getByText(DEFAULT_TITLE)).toHaveCount(0);
+      await expect(previewFrame(page).getByText(PAGE_MARK)).toBeVisible();
+      await expect(show).toBeVisible();
+      await noReload();
+
+      const shown = page.waitForResponse(
+        (response) =>
+          isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps"),
+        { timeout: 30_000 },
+      );
+      await show.click();
+      await shown;
+      await expect(stored).toBeVisible({ timeout: 15_000 });
+      await expect(previewFrame(page).getByText(DEFAULT_TITLE)).toHaveCount(0);
+      await noReload();
+    } finally {
+      if (await show.isVisible().catch(() => false)) await show.click();
+    }
+  });
 });
