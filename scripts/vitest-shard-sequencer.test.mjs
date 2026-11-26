@@ -188,3 +188,163 @@ test("the sequencer shards each group's specs by path under the config root", as
   assert.deepEqual(ran.flat().sort(), [...ALL].sort());
   assert.equal(new Set(ran.flat()).size, ALL.length);
 });
+
+// A shard of many tiny files costs more than their test time: every file also
+// costs a worker its import, setup and collect.
+const MANY_SMALL = {
+  "src/big-a.test.tsx": 300,
+  "src/big-b.test.tsx": 300,
+  "src/big-c.test.tsx": 300,
+  ...Object.fromEntries(
+    Array.from({ length: 900 }, (_, index) => [`src/t${index}.test.ts`, 0.1]),
+  ),
+};
+
+test("a per-file overhead moves files between shards that test time alone leaves level", () => {
+  // Two shards, one 200 s file and 600 files of 0.1 s. By test time the tiny
+  // files are free, so they all go beside nothing heavy; at 1 s of overhead
+  // each they are 660 s of worker time, more than the other shard's 200 s.
+  const durations = {
+    "src/heavy.test.tsx": 200,
+    ...Object.fromEntries(
+      Array.from({ length: 600 }, (_, index) => [`src/t${index}.test.ts`, 0.1]),
+    ),
+  };
+  const plain = planShards(durations, 2, 0);
+  const weighted = planShards(durations, 2, 1);
+  assert.deepEqual(
+    [...plain.files].sort((a, b) => a - b),
+    [1, 600],
+  );
+  assert.ok(Math.min(...weighted.files) > 10, weighted.files.join("/"));
+  assert.ok(
+    Math.max(...weighted.finish) - Math.min(...weighted.finish) <= 2,
+    weighted.finish.join("/"),
+  );
+  // `sum` stays test seconds: the overhead is not added to it.
+  assert.equal(
+    Math.round(weighted.sum.reduce((a, b) => a + b, 0)),
+    Math.round(Object.values(durations).reduce((a, b) => a + b, 0)),
+  );
+});
+
+test("with the overhead, shards stay disjoint, complete and deterministic", () => {
+  const names = Object.keys(MANY_SMALL);
+  const files = [...names, "src/new-b.test.ts", "src/new-a.test.ts"];
+  const shards = Array.from({ length: COUNT }, (_, offset) =>
+    selectShardFiles(files, MANY_SMALL, offset + 1, COUNT, undefined, 0.8),
+  );
+  assert.deepEqual(shards.flat().sort(), [...files].sort());
+  assert.equal(new Set(shards.flat()).size, files.length);
+  const again = Array.from({ length: COUNT }, (_, offset) =>
+    selectShardFiles(
+      shuffled(files, 5),
+      MANY_SMALL,
+      offset + 1,
+      COUNT,
+      undefined,
+      0.8,
+    ),
+  );
+  assert.deepEqual(
+    again.map((shard) => [...shard].sort()),
+    shards.map((shard) => [...shard].sort()),
+  );
+});
+
+test("a new file is weighed at the median duration plus the overhead", () => {
+  // Three planned files of 10 s onto three shards; the median is 10 s. With
+  // 5 s of overhead each weighs 15 s, so a new file (also 15 s) joins the
+  // shard with the lowest finish, the lowest index when level.
+  const durations = {
+    "src/a.test.ts": 10,
+    "src/b.test.ts": 10,
+    "src/c.test.ts": 10,
+  };
+  const assigned = assignShards(
+    [...Object.keys(durations), "src/new.test.ts"],
+    durations,
+    COUNT,
+    5,
+  );
+  assert.deepEqual([...assigned.values()].sort(), [1, 1, 2, 3]);
+  assert.equal(assigned.get("src/new.test.ts"), 1);
+});
+
+test("loadOverhead reads the overhead block, and an absent one is zero", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { loadOverhead } = await import("./vitest-shard-sequencer.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "shard-overhead-"));
+  const write = (name, value) => {
+    const file = join(dir, name);
+    writeFileSync(file, JSON.stringify(value));
+    return file;
+  };
+  assert.deepEqual(loadOverhead(write("none.json", { files: {} })), {
+    perFileSeconds: 0,
+    perShardSeconds: 0,
+  });
+  assert.deepEqual(
+    loadOverhead(
+      write("ok.json", {
+        overhead: { perFileSeconds: 0.8, perShardSeconds: 90 },
+        files: {},
+      }),
+    ),
+    { perFileSeconds: 0.8, perShardSeconds: 90 },
+  );
+  for (const bad of [
+    { perFileSeconds: -1 },
+    { perFileSeconds: "1" },
+    { perShardSeconds: Number.NaN },
+  ])
+    assert.throws(
+      () => loadOverhead(write("bad.json", { overhead: bad, files: {} })),
+      /DURATIONS_INVALID/,
+    );
+  assert.throws(
+    () => loadOverhead(write("arr.json", { overhead: [], files: {} })),
+    /DURATIONS_INVALID/,
+  );
+});
+
+test("the committed durations file carries a positive fitted per-file overhead", async () => {
+  const { loadOverhead } = await import("./vitest-shard-sequencer.mjs");
+  const { perFileSeconds, perShardSeconds } = loadOverhead();
+  assert.ok(perFileSeconds > 0 && perFileSeconds < 10, String(perFileSeconds));
+  assert.ok(perShardSeconds >= 0);
+  const { finish, files } = planShards(loadDurations(), COUNT, perFileSeconds);
+  assert.ok(files.every((count) => count > 0));
+  // The three shards are modelled within a few percent of each other.
+  assert.ok(
+    (Math.max(...finish) - Math.min(...finish)) / Math.max(...finish) < 0.05,
+    finish.join("/"),
+  );
+});
+
+test("fitOverhead recovers the per-file overhead from shard spans", async () => {
+  const { fitOverhead, makespan } =
+    await import("./rebalance-vitest-shards.mjs");
+  const make = (seed, count) => {
+    let state = seed;
+    return Array.from({ length: count }, () => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return (state % 4000) / 100;
+    });
+  };
+  const shards = [make(1, 40), make(2, 300), make(3, 90), make(4, 700)].map(
+    (durations) => ({
+      durations,
+      span: 60 + makespan(durations.map((d) => d + 1.5)),
+    }),
+  );
+  const fit = fitOverhead([shards]);
+  assert.equal(fit.perFileSeconds, 1.5);
+  assert.ok(Math.abs(fit.perShardSeconds - 60) < 0.01);
+  // Shards of PLAN_WORKERS files or fewer say nothing about per-file cost.
+  const tiny = { durations: [500], span: 520 };
+  assert.deepEqual(fitOverhead([[...shards, tiny]]), fit);
+  assert.throws(() => fitOverhead([[tiny]]), /enough files/);
+});
