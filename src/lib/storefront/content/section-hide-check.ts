@@ -347,12 +347,12 @@ export function assertPublishHiddenSections(
     const sentences: string[] = [];
     if (framework.length > 0) {
       sentences.push(
-        `${framework[0]!.message}, so the live site would still show these hidden sections with their default content: ${list(framework)}. Clear their hidden flag so they are shown again, then publish.`,
+        `${framework[0]!.message}, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: ${list(framework)}. They cannot be shown again from the editor yet; contact support to show them again.`,
       );
     }
     if (pages.length > 0) {
       sentences.push(
-        `Morph cannot hide a section of a Page yet, so the live site would still show these hidden sections with their default content: ${list(pages)}. Show them again on the Page, publish the Page, then publish the Theme again.`,
+        `Morph cannot hide a section of a Page yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: ${list(pages)}. The Page editor cannot show a hidden section: if an earlier version of the Page shows it, restore that version as a draft from the Page's revisions, save the Page with Publish page on, then publish the Theme again; otherwise contact support.`,
       );
     }
     if (unlisted.length > 0) {
@@ -362,7 +362,7 @@ export function assertPublishHiddenSections(
     }
     if (source.length > 0) {
       sentences.push(
-        `These hidden sections cannot be hidden by this Theme's code yet, so the live site would still show them or break: ${list(source)}. Show them again in Design, or change the code so Morph can hide them, then publish.`,
+        `Morph cannot confirm that this Theme's code leaves these hidden sections out of the live site, so it will not publish them: ${list(source)}. Show them again in Design, or change the code so Morph can hide them, then publish.`,
       );
     }
     throw new Error(

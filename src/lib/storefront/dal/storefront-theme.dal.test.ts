@@ -6983,7 +6983,7 @@ function Home() { return <main><Hero {...content("hero")} /></main>; }`;
     const next = saveTemplateDraft(false);
     const before = liveState();
     await expect(publish(next)).rejects.toThrow(
-      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the Page "About" \(\/pages\/about\) \(no-call-site\).*Show them again on the Page, publish the Page, then publish the Theme again/,
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the Page "About" \(\/pages\/about\) \(no-call-site\).*restore that version as a draft from the Page's revisions, save the Page with Publish page on, then publish the Theme again; otherwise contact support/,
     );
     expect(liveState()).toEqual(before);
     expect(before.active.id).toBe(live?.releaseId);
@@ -7015,7 +7015,7 @@ function Home() { return <main><Hero {...content("hero")} /></main>; }`;
     const first = seed({ framework: "astro", templateHidden: true });
     const before = liveState();
     await expect(publish(first)).rejects.toThrow(
-      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide sections on Astro Themes yet.*"hero" on the index page \(framework-not-supported\).*Clear their hidden flag/,
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide sections on Astro Themes yet.*"hero" on the index page \(framework-not-supported\).*They cannot be shown again from the editor yet; contact support/,
     );
     expect(liveState()).toEqual(before);
   });

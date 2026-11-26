@@ -205,7 +205,7 @@ describe("partitionPublishHiddenItems and the publish refusal (M3 Hide step 1)",
     });
     expect(result.sourceChecked).toEqual([template]);
     expect(refusal(result)).toBe(
-      'PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide a section of a Page yet, so the live site would still show these hidden sections with their default content: "promo" on the Page "About" (/pages/about) (no-call-site). Show them again on the Page, publish the Page, then publish the Theme again. The live site is unchanged.',
+      `PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide a section of a Page yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: "promo" on the Page "About" (/pages/about) (no-call-site). The Page editor cannot show a hidden section: if an earlier version of the Page shows it, restore that version as a draft from the Page's revisions, save the Page with Publish page on, then publish the Theme again; otherwise contact support. The live site is unchanged.`,
     );
   });
 
@@ -219,7 +219,7 @@ describe("partitionPublishHiddenItems and the publish refusal (M3 Hide step 1)",
     });
     expect(result.sourceChecked).toEqual([]);
     expect(refusal(result)).toBe(
-      'PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide sections on Astro Themes yet, so the live site would still show these hidden sections with their default content: "hero" on the index page (framework-not-supported); "promo" on the Page "About" (/pages/about) (framework-not-supported). Clear their hidden flag so they are shown again, then publish. The live site is unchanged.',
+      `PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide sections on Astro Themes yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: "hero" on the index page (framework-not-supported); "promo" on the Page "About" (/pages/about) (framework-not-supported). They cannot be shown again from the editor yet; contact support to show them again. The live site is unchanged.`,
     );
   });
 
@@ -256,7 +256,7 @@ describe("partitionPublishHiddenItems and the publish refusal (M3 Hide step 1)",
         rebuild: [],
       }),
     ).toThrow(
-      'PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide a section of a Page yet, so the live site would still show these hidden sections with their default content: "hero" on the Page "About" (/pages/about) (no-call-site). Show them again on the Page, publish the Page, then publish the Theme again. These hidden sections cannot be hidden by this Theme\'s code yet, so the live site would still show them or break: "early" on the index page (early-computation). Show them again in Design, or change the code so Morph can hide them, then publish. The live site is unchanged.',
+      `PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide a section of a Page yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: "hero" on the Page "About" (/pages/about) (no-call-site). The Page editor cannot show a hidden section: if an earlier version of the Page shows it, restore that version as a draft from the Page's revisions, save the Page with Publish page on, then publish the Theme again; otherwise contact support. Morph cannot confirm that this Theme's code leaves these hidden sections out of the live site, so it will not publish them: "early" on the index page (early-computation). Show them again in Design, or change the code so Morph can hide them, then publish. The live site is unchanged.`,
     );
   });
 });
