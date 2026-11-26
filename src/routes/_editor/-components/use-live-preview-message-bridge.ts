@@ -126,12 +126,16 @@ export function useLivePreviewMessageBridge(
         envelope &&
         envelope.message.type === "morph:storefront-preview-ready" &&
         envelope.message.bootstrapNonce !== undefined &&
-        !eventsRef.current.acceptBootstrapNonce?.(
-          envelope.message.bootstrapNonce,
-        )
+        // A bootstrap ready names its document: it is confirmed with the
+        // ping like any other, never taken as an older bridge's first ready.
+        (envelope.previewDocument === null ||
+          !eventsRef.current.acceptBootstrapNonce?.(
+            envelope.message.bootstrapNonce,
+          ))
       ) {
-        // A document claiming a channel the editor never offered it, or one
-        // whose offer ran out: not taken, and no document decision is made.
+        // A document claiming a channel the editor never offered it, one
+        // whose offer ran out or was used, or one with no identity: not
+        // taken, and no document decision is made.
         const id = `${currentKeyRef.current() ?? ""}|bootstrap-nonce`;
         if (!loggedRef.current.has(id)) {
           loggedRef.current.add(id);

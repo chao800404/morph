@@ -86,29 +86,41 @@ describe("a ready that carries a channel bootstrap nonce", () => {
     return { ...rendered, ready, previewWindow };
   }
 
-  it("is taken when the editor offered that nonce on this frame", () => {
+  it("is asked of the editor once, for the nonce it names", () => {
+    const accept = vi.fn(() => true);
+    const { result, ready } = setup(accept);
+    const event = ready({ previewDocument: DOC_A, bootstrapNonce: NONCE });
+    result.current.parseMessage(event);
+    // The same event read again is decided once, not asked again.
+    result.current.parseMessage(event);
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(accept).toHaveBeenCalledWith(NONCE);
+  });
+
+  it("is not taken when it names no document: it could never be confirmed", () => {
     const accept = vi.fn(() => true);
     const { result, ready } = setup(accept);
     expect(
       result.current.parseMessage(ready({ bootstrapNonce: NONCE })),
-    ).toEqual({
-      type: "morph:storefront-preview-ready",
-      bootstrapNonce: NONCE,
-    });
-    expect(accept).toHaveBeenCalledWith(NONCE);
+    ).toBeNull();
+    expect(accept).not.toHaveBeenCalled();
   });
 
-  it("is not taken when the editor made no such offer, or it expired", () => {
+  it("is not taken when the editor made no such offer, or it expired or was used", () => {
     const { result, ready } = setup(() => false);
     expect(
-      result.current.parseMessage(ready({ bootstrapNonce: NONCE })),
+      result.current.parseMessage(
+        ready({ previewDocument: DOC_A, bootstrapNonce: NONCE }),
+      ),
     ).toBeNull();
   });
 
   it("is not taken when the editor can accept none", () => {
     const { result, ready } = setup(undefined);
     expect(
-      result.current.parseMessage(ready({ bootstrapNonce: NONCE })),
+      result.current.parseMessage(
+        ready({ previewDocument: DOC_A, bootstrapNonce: NONCE }),
+      ),
     ).toBeNull();
   });
 

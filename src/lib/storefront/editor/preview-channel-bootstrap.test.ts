@@ -29,8 +29,17 @@ const NONCE = "b".repeat(32);
 
 type Listener = (event: unknown) => void;
 
-function frameWindow(options: { href?: string; embedded?: boolean } = {}) {
+function frameWindow(
+  options: {
+    href?: string;
+    embedded?: boolean;
+    hostname?: string;
+    historyState?: unknown;
+    storage?: boolean;
+  } = {},
+) {
   const parent = { postMessage: vi.fn() };
+  const stored = new Map<string, string>();
   const listeners = new Map<string, Listener[]>();
   const replace = vi.fn();
   const reload = vi.fn();
@@ -40,18 +49,28 @@ function frameWindow(options: { href?: string; embedded?: boolean } = {}) {
     location: {
       href: options.href ?? "https://pv-x.preview.test/astro-nav-b",
       origin: "https://pv-x.preview.test",
+      hostname: options.hostname ?? "pv-x.preview.test",
       replace,
       reload,
     },
     addEventListener: (type: string, listener: Listener) => {
       listeners.set(type, [...(listeners.get(type) ?? []), listener]);
     },
-    history: { replaceState: vi.fn() },
+    history: { state: options.historyState ?? null, replaceState: vi.fn() },
+    ...(options.storage === false
+      ? {}
+      : {
+          sessionStorage: {
+            getItem: (key: string) => stored.get(key) ?? null,
+            setItem: (key: string, value: string) =>
+              void stored.set(key, value),
+          },
+        }),
   } as never;
   if (options.embedded === false) (win as { parent: unknown }).parent = win;
   const fire = (type: string, event: unknown) =>
     (listeners.get(type) ?? []).forEach((listener) => listener(event));
-  return { win, parent, replace, reload, fire, listeners };
+  return { win, parent, replace, reload, fire, listeners, stored };
 }
 
 const offer = (overrides: Record<string, unknown> = {}) => ({
@@ -103,9 +122,14 @@ describe("a queryless document's receiver", () => {
       string,
       RequestInit,
     ];
-    expect(path).toBe(PREVIEW_CHANNEL_VERIFY_PATH);
+    // The preview's own origin, spelled out: a Theme's <base> cannot move it.
+    expect(path).toBe(
+      `https://pv-x.preview.test${PREVIEW_CHANNEL_VERIFY_PATH}`,
+    );
     expect(init.method).toBe("POST");
     expect(init.credentials).toBe("same-origin");
+    expect(init.mode).toBe("same-origin");
+    expect(init.redirect).toBe("error");
     expect(init.cache).toBe("no-store");
     // What the editor claims, and where the message really came from.
     expect(JSON.parse(String(init.body))).toEqual({
@@ -328,12 +352,88 @@ describe("the bootstrap nonce a reloaded document carries", () => {
     expect(takeBootstrapNonce(frame.win)).toBeNull();
   });
 
-  it("is null for a document without one, and for one of the wrong shape", () => {
+  it("is null for a document without one", () => {
     expect(takeBootstrapNonce(frameWindow().win)).toBeNull();
+  });
+
+  it("leaves a Theme's own parameter of that name, and its history, alone", () => {
     const odd = frameWindow({
       href: `https://pv-x.preview.test/b?${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=not-a-nonce`,
     });
     expect(takeBootstrapNonce(odd.win)).toBeNull();
+    expect(odd.win.history.replaceState).not.toHaveBeenCalled();
+  });
+
+  it("keeps the history state the Theme set, and an address that begins with two slashes", () => {
+    const state = { scroll: 4 };
+    const frame = frameWindow({
+      href: `https://pv-x.preview.test//double/slash?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
+      historyState: state,
+    });
+    expect(takeBootstrapNonce(frame.win)).toBe(NONCE);
+    const call = (frame.win.history.replaceState as ReturnType<typeof vi.fn>)
+      .mock.calls[0]!;
+    expect(call[0]).toBe(state);
+    expect(new URL(String(call[2])).pathname).toBe("//double/slash");
+  });
+
+  it("says its nonce even when the address cannot be cleaned", () => {
+    const frame = frameWindow({
+      href: `https://pv-x.preview.test/b?${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
+    });
+    (
+      frame.win.history.replaceState as ReturnType<typeof vi.fn>
+    ).mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(takeBootstrapNonce(frame.win)).toBe(NONCE);
+  });
+});
+
+describe("a Theme that sends the channel away", () => {
+  it("is not followed past three bootstraps in thirty seconds", async () => {
+    const frame = frameWindow();
+    const fetchImpl = ok();
+    const documents = [] as Array<ReturnType<typeof frameWindow>>;
+    // Each load is a new document of the same frame: one session storage.
+    for (let load = 0; load < 4; load++) {
+      const next = frameWindow();
+      next.stored.clear();
+      for (const [key, value] of frame.stored) next.stored.set(key, value);
+      installPreviewChannelBootstrap({
+        window: next.win,
+        fetch: fetchImpl as never,
+      });
+      next.fire("message", {
+        source: next.parent,
+        origin: EDITOR,
+        data: offer(),
+      });
+      await settle();
+      for (const [key, value] of next.stored) frame.stored.set(key, value);
+      documents.push(next);
+    }
+    expect(documents.map((doc) => doc.replace.mock.calls.length)).toEqual([
+      1, 1, 1, 0,
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("is not followed at all where there is no session storage to count in", async () => {
+    const frame = frameWindow({ storage: false });
+    const fetchImpl = ok();
+    installPreviewChannelBootstrap({
+      window: frame.win,
+      fetch: fetchImpl as never,
+    });
+    frame.fire("message", {
+      source: frame.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
+    await settle();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(frame.replace).not.toHaveBeenCalled();
   });
 });
 
@@ -370,6 +470,23 @@ describe("the editor's offers", () => {
     ).toBe(false);
   });
 
+  it("is used up when a ready takes it: the same nonce is not taken twice", () => {
+    const offers = createPreviewChannelOffers();
+    const nonce = offers.issue("frame-1", T0);
+    expect(offers.consume("frame-2", nonce, T0 + 1)).toBe(false);
+    expect(offers.consume("frame-1", nonce, T0 + 1)).toBe(true);
+    expect(offers.consume("frame-1", nonce, T0 + 2)).toBe(false);
+    expect(offers.accepts("frame-1", nonce, T0 + 2)).toBe(false);
+  });
+
+  it("does not use a nonce up for a ready that arrives after it expired", () => {
+    const offers = createPreviewChannelOffers();
+    const nonce = offers.issue("frame-1", T0);
+    expect(
+      offers.consume("frame-1", nonce, T0 + PREVIEW_CHANNEL_OFFER_TTL_MS),
+    ).toBe(false);
+  });
+
   it("forgets every offer of a frame that was replaced or whose session changed", () => {
     const offers = createPreviewChannelOffers();
     const nonce = offers.issue("frame-1", T0);
@@ -401,5 +518,28 @@ describe("a document restored from the back-forward cache", () => {
     expect(frame.reload).not.toHaveBeenCalled();
     frame.fire("pageshow", { persisted: true });
     expect(frame.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a frame's own move for the Astro bridge, so the editor follows it back", () => {
+    const frame = frameWindow({
+      href: `https://pv-x.preview.test/a?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}`,
+    });
+    installPreviewDocumentRestoreGuard(frame.win);
+    frame.fire("pageshow", { persisted: true });
+    expect(
+      frame.stored.get(`morph:preview-document-navigation:${SESSION}`),
+    ).toBe("frame");
+  });
+
+  it("is left alone outside a protected preview's frame", () => {
+    const standalone = frameWindow({ embedded: false });
+    installPreviewDocumentRestoreGuard(standalone.win);
+    standalone.fire("pageshow", { persisted: true });
+    expect(standalone.reload).not.toHaveBeenCalled();
+
+    const open = frameWindow({ hostname: "preview.example.test" });
+    installPreviewDocumentRestoreGuard(open.win);
+    open.fire("pageshow", { persisted: true });
+    expect(open.reload).not.toHaveBeenCalled();
   });
 });

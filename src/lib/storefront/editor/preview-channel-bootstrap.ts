@@ -116,6 +116,22 @@ export function createPreviewChannelOffers() {
           now - offer.at < PREVIEW_CHANNEL_OFFER_TTL_MS,
       );
     },
+    /**
+     * Takes a nonce for good: true once for a live nonce of this frame, false
+     * for it afterwards. A ready is admitted on the nonce once.
+     */
+    consume(previewKey: string | null, nonce: string, now: number): boolean {
+      if (previewKey === null) return false;
+      const index = offers.findIndex(
+        (offer) =>
+          offer.key === previewKey &&
+          offer.nonce === nonce &&
+          now - offer.at < PREVIEW_CHANNEL_OFFER_TTL_MS,
+      );
+      if (index === -1) return false;
+      offers.splice(index, 1);
+      return true;
+    },
     /** A replaced frame or a changed session: nothing offered before counts. */
     clear() {
       offers = [];
@@ -129,11 +145,17 @@ export type PreviewChannelWindow = {
   readonly location: {
     readonly href: string;
     readonly origin: string;
+    readonly hostname: string;
     replace(url: string): void;
     reload(): void;
   };
   readonly history: {
+    readonly state?: unknown;
     replaceState(state: unknown, unused: string, url?: string | null): void;
+  };
+  readonly sessionStorage?: {
+    getItem(key: string): string | null;
+    setItem(key: string, value: string): void;
   };
   addEventListener(type: string, listener: (event: any) => void): void;
 };
@@ -144,6 +166,8 @@ export type PreviewChannelBootstrapEnvironment = Readonly<{
     input: string,
     init: {
       method: string;
+      mode: "same-origin";
+      redirect: "error";
       credentials: "same-origin";
       cache: "no-store";
       headers: Record<string, string>;
@@ -151,6 +175,33 @@ export type PreviewChannelBootstrapEnvironment = Readonly<{
     },
   ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 }>;
+
+/** A bootstrap loads the document again; a Theme that redirects the channel away must not loop. */
+const ATTEMPTS_KEY = "morph:preview-channel-bootstrap-attempts";
+const MAX_ATTEMPTS = 3;
+const ATTEMPT_WINDOW_MS = 30_000;
+
+/**
+ * Whether this frame may bootstrap once more: at most three loads of its own
+ * making in thirty seconds. Without a session storage there is no count, so
+ * none is made.
+ */
+function bootstrapAllowed(win: PreviewChannelWindow, now: number): boolean {
+  try {
+    const storage = win.sessionStorage;
+    if (!storage) return false;
+    const recorded: unknown = JSON.parse(storage.getItem(ATTEMPTS_KEY) ?? "[]");
+    const recent = (Array.isArray(recorded) ? recorded : []).filter(
+      (at): at is number =>
+        typeof at === "number" && now - at < ATTEMPT_WINDOW_MS,
+    );
+    if (recent.length >= MAX_ATTEMPTS) return false;
+    storage.setItem(ATTEMPTS_KEY, JSON.stringify([...recent, now]));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function isExactHttpOrigin(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -221,20 +272,28 @@ export function installPreviewChannelBootstrap(
     const offer = readOffer(event.data);
     if (!offer) return;
     attempted = true;
+    if (!bootstrapAllowed(win, Date.now())) return;
     const editorOrigin = event.origin;
     void (async () => {
       try {
-        const response = await environment.fetch(PREVIEW_CHANNEL_VERIFY_PATH, {
-          method: "POST",
-          credentials: "same-origin",
-          cache: "no-store",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            flowId: offer.flowId,
-            editorOrigin,
-            previewSession: offer.previewSession,
-          }),
-        });
+        // The preview's own origin, spelled out: a Theme's <base> must not
+        // move the question, and no redirect may answer it.
+        const response = await environment.fetch(
+          `${win.location.origin}${PREVIEW_CHANNEL_VERIFY_PATH}`,
+          {
+            method: "POST",
+            mode: "same-origin",
+            redirect: "error",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              flowId: offer.flowId,
+              editorOrigin,
+              previewSession: offer.previewSession,
+            }),
+          },
+        );
         if (!response.ok) return;
         const answer = (await response.json()) as { ok?: unknown } | null;
         if (!answer || answer.ok !== true) return;
@@ -260,20 +319,24 @@ export function installPreviewChannelBootstrap(
 export function takeBootstrapNonce(win: PreviewChannelWindow): string | null {
   if (nonceTaken.has(win)) return null;
   nonceTaken.add(win);
+  let url: URL;
+  let value: string | null;
   try {
-    const url = new URL(win.location.href);
-    const value = url.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM);
-    if (value === null) return null;
-    url.searchParams.delete(PREVIEW_CHANNEL_BOOTSTRAP_PARAM);
-    win.history.replaceState(
-      null,
-      "",
-      `${url.pathname}${url.search}${url.hash}`,
-    );
-    return NONCE.test(value) ? value : null;
+    url = new URL(win.location.href);
+    value = url.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM);
   } catch {
     return null;
   }
+  // Only a nonce of the shape a bootstrap makes is ours: any other value of
+  // that name is the Theme's own, and its address and history stay as they are.
+  if (value === null || !NONCE.test(value)) return null;
+  try {
+    url.searchParams.delete(PREVIEW_CHANNEL_BOOTSTRAP_PARAM);
+    win.history.replaceState(win.history.state ?? null, "", url.href);
+  } catch {
+    // The nonce is still this document's to say once.
+  }
+  return value;
 }
 
 /**
@@ -284,6 +347,26 @@ export function installPreviewDocumentRestoreGuard(
   win: PreviewChannelWindow,
 ): void {
   win.addEventListener("pageshow", (event: { persisted?: boolean }) => {
-    if (event.persisted) win.location.reload();
+    if (!event.persisted) return;
+    // Only a protected preview's frame: a standalone or open document has
+    // no editor behind it to be revalidated against.
+    if (win.parent === win || !win.parent) return;
+    if (!win.location.hostname.toLowerCase().startsWith("pv-")) return;
+    // The author came back to this page: as a followed link is, it is the
+    // frame's own move, not the editor's, so the editor follows it.
+    try {
+      const session = new URL(win.location.href).searchParams.get(
+        "previewSession",
+      );
+      if (session && SESSION.test(session)) {
+        win.sessionStorage?.setItem(
+          `morph:preview-document-navigation:${session}`,
+          "frame",
+        );
+      }
+    } catch {
+      // The reload still gives the document a new identity.
+    }
+    win.location.reload();
   });
 }

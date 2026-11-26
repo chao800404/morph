@@ -171,6 +171,24 @@ describe("verifyPreviewAccessChannel", () => {
     expect(answer).toMatchObject({ ok: true, grant: { id: grant.id } });
   });
 
+  it("activates the flow's own grant when no earlier request did", async () => {
+    // The page may have been served under an older grant the browser also
+    // held; the grant this flow redeemed is first presented here.
+    const { flowId, token } = await framedGrant();
+    expect(await ask({ flowId, tokens: [token] })).toMatchObject({ ok: true });
+    const row = sqlite
+      .prepare("SELECT activated_at FROM storefront_preview_access_grants")
+      .get() as { activated_at: string | null };
+    expect(row.activated_at).not.toBeNull();
+  });
+
+  it("refuses a grant first presented after its activation window", async () => {
+    const { flowId, token } = await framedGrant();
+    expect(
+      await ask({ flowId, tokens: [token], now: later(1000 + 121_000) }),
+    ).toEqual({ ok: false, reason: "GRANT_NOT_ACTIVATED" });
+  });
+
   it("refuses another editor origin", async () => {
     const { flowId, token } = await framedGrant();
     await activate(token);
@@ -331,6 +349,50 @@ describe("verifyPreviewAccessChannel", () => {
       ok: false,
       reason: "CHANNEL_NOT_BOUND",
     });
+  });
+});
+
+describe("migration 0084 on an existing database", () => {
+  it("keeps the exchanges recorded before it, binding nothing for them", () => {
+    const old = new Database(":memory:");
+    try {
+      old.pragma("foreign_keys = ON");
+      old.exec(`
+        CREATE TABLE storefronts (id text PRIMARY KEY);
+        CREATE TABLE storefront_themes (
+          id text PRIMARY KEY, storefront_id text NOT NULL, deleted_at text
+        );
+        INSERT INTO storefronts VALUES ('store-a');
+        INSERT INTO storefront_themes VALUES ('theme-a', 'store-a', NULL);
+      `);
+      const run = (file: string) =>
+        old.exec(
+          readFileSync(resolve(file), "utf8")
+            .split("--> statement-breakpoint")
+            .join("\n"),
+        );
+      run("drizzle/0081_preview_access_grants.sql");
+      run("drizzle/0082_preview_access_resolved_grant.sql");
+      old.exec(`
+        INSERT INTO storefront_preview_access_exchanges
+          (id, flow_id, code_hash, binder_hash, kind, session_id, user_id,
+           storefront_id, theme_id, preview_id, preview_host, expires_at,
+           consumed_at, resolved_grant_id, created_at, updated_at)
+        VALUES ('x1', '${"1".repeat(32)}', 'c', 'b', 'iframe', 's', 'u',
+           'store-a', 'theme-a', 'p', 'h', '2026-01-01', '2026-01-01',
+           'grant-1', '2026-01-01', '2026-01-01');
+      `);
+      run("drizzle/0084_preview_access_channel_binding.sql");
+      expect(
+        old
+          .prepare(
+            "SELECT resolved_grant_id AS grant, editor_origin AS origin, session_hash AS hash FROM storefront_preview_access_exchanges",
+          )
+          .all(),
+      ).toEqual([{ grant: "grant-1", origin: null, hash: null }]);
+    } finally {
+      old.close();
+    }
   });
 });
 

@@ -6017,11 +6017,13 @@ export function VisualEditorShell({
       };
       if (isLivePreviewAccessFailure(entry.flow, event, expected)) {
         entry.flow.ended = true;
+        previewChannelOffersRef.current.clear();
         failed();
         return;
       }
       if (isLivePreviewAccessEnded(event, expected)) {
         entry.flow.ended = true;
+        previewChannelOffersRef.current.clear();
         dispatchPreviewLifecycle({
           type: "server-failed",
           message: LIVE_PREVIEW_ACCESS_ENDED_NOTICE,
@@ -8136,7 +8138,7 @@ export function VisualEditorShell({
     {
       onUnconfirmableReady: () => setOlderBridgeReloaded(previewKeyRef.current),
       acceptBootstrapNonce: (nonce) =>
-        previewChannelOffersRef.current.accepts(
+        previewChannelOffersRef.current.consume(
           previewKeyRef.current,
           nonce,
           Date.now(),

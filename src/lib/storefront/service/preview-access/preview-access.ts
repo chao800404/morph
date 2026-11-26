@@ -589,8 +589,13 @@ export async function verifyPreviewAccessChannel(input: {
     (input.now ?? new Date()).getTime(),
   );
   if (refusal) return { ok: false, reason: refusal };
-  // The document asking was itself served under this grant.
-  if (!record.activatedAt) return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
+  // The flow's own grant, presented here by the browser that redeemed it, is
+  // activated by this request when no earlier one did: the page that was
+  // served may have been served under an older grant the browser also held.
+  // Activation is the guarded one: inside its window, once, extending nothing.
+  if (!(await activate(input.dal, record, () => input.now ?? new Date()))) {
+    return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
+  }
   return { ok: true, grant: verifiedGrant(record) };
 }
 
