@@ -8,6 +8,7 @@ import {
   createPreviewAccessSecret,
   hashPreviewAccessSecret,
   redeemPreviewAccessExchange,
+  verifyPreviewAccessChannel,
 } from "./preview-access";
 
 /**
@@ -39,6 +40,7 @@ import {
 
 export const PREVIEW_ACCESS_BEGIN_PATH = "/__morph/preview-auth/begin";
 export const PREVIEW_ACCESS_REDEEM_PATH = "/__morph/preview-auth/redeem";
+export const PREVIEW_ACCESS_CHANNEL_PATH = "/__morph/preview-auth/channel";
 export const PREVIEW_ACCESS_BEGIN_MESSAGE = "morph:preview-auth-begin";
 export const PREVIEW_ACCESS_CODE_MESSAGE = "morph:preview-auth-code";
 export const PREVIEW_ACCESS_FAILED_MESSAGE = "morph:preview-auth-failed";
@@ -333,6 +335,81 @@ export async function previewAccessRedeem(
     );
   }
   return redeemAnswer(200, { ok: true }, setCookies);
+}
+
+const PREVIEW_SESSION =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * POST channel, from a preview document's own same-origin request: the
+ * document has no channel in its URL and its parent offered one. The answer
+ * is only whether that editor, with that session, opened this frame, and
+ * whether this request carries the grant that frame's flow ended in
+ * (`verifyPreviewAccessChannel`). It says nothing else: no reason, no
+ * cookie, and nothing of the Theme.
+ */
+export async function previewAccessChannel(
+  request: Request,
+  deps: PreviewAccessPagesDeps,
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return redeemAnswer(405, { ok: false });
+  }
+  const url = new URL(request.url);
+  const site = request.headers.get("sec-fetch-site");
+  if (
+    request.headers.get("origin") !== url.origin ||
+    (site !== null && site !== "same-origin")
+  ) {
+    return redeemAnswer(403, { ok: false });
+  }
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return redeemAnswer(400, { ok: false });
+  }
+  const record =
+    typeof body === "object" && body !== null
+      ? (body as Record<string, unknown>)
+      : {};
+  const { flowId, editorOrigin, previewSession } = record;
+  if (
+    typeof flowId !== "string" ||
+    !FLOW_ID.test(flowId) ||
+    typeof editorOrigin !== "string" ||
+    typeof previewSession !== "string" ||
+    !PREVIEW_SESSION.test(previewSession) ||
+    appOriginShape(editorOrigin) === null
+  ) {
+    return redeemAnswer(400, { ok: false });
+  }
+  // Only one of Morph's own origins is believed as the editor.
+  if (!deps.isAppOrigin(editorOrigin)) return redeemAnswer(403, { ok: false });
+  const candidates = readPreviewAccessCandidates(request.headers.get("cookie"));
+  if (candidates.kind !== "candidates") return redeemAnswer(403, { ok: false });
+  const verified = await verifyPreviewAccessChannel({
+    dal: deps.dal,
+    tokens: candidates.tokens,
+    previewHost: url.hostname.toLowerCase().replace(/\.$/, ""),
+    flowId,
+    editorOrigin,
+    previewSession,
+    ...(deps.now ? { now: deps.now() } : {}),
+  });
+  return verified.ok
+    ? redeemAnswer(200, { ok: true })
+    : redeemAnswer(403, { ok: false });
+}
+
+function appOriginShape(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.origin === value ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function readCookie(header: string | null, name: string): string | null {

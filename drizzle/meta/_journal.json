@@ -491,6 +491,13 @@
       "when": 1794289003961,
       "tag": "0083_style_replay_causal_receipt",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "6",
+      "when": 1795715771325,
+      "tag": "0084_preview_access_channel_binding",
+      "breakpoints": true
     }
   ]
 }

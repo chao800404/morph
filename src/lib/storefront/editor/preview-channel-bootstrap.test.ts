@@ -29,15 +29,14 @@ const NONCE = "b".repeat(32);
 
 type Listener = (event: unknown) => void;
 
-function frameWindow(
-  options: { href?: string; embedded?: boolean } = {},
-) {
+function frameWindow(options: { href?: string; embedded?: boolean } = {}) {
   const parent = { postMessage: vi.fn() };
   const listeners = new Map<string, Listener[]>();
   const replace = vi.fn();
   const reload = vi.fn();
   const win: PreviewChannelWindow = {
-    parent: options.embedded === false ? (undefined as never) : (parent as never),
+    parent:
+      options.embedded === false ? (undefined as never) : (parent as never),
     location: {
       href: options.href ?? "https://pv-x.preview.test/astro-nav-b",
       origin: "https://pv-x.preview.test",
@@ -64,9 +63,17 @@ const offer = (overrides: Record<string, unknown> = {}) => ({
 });
 
 const ok = () =>
-  vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }));
+  vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: true }),
+  }));
 const refused = () =>
-  vi.fn(async () => ({ ok: false, status: 403, json: async () => ({ ok: false }) }));
+  vi.fn(async () => ({
+    ok: false,
+    status: 403,
+    json: async () => ({ ok: false }),
+  }));
 
 async function settle() {
   for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -76,16 +83,26 @@ describe("a queryless document's receiver", () => {
   it("stays silent until a verified offer, then loads itself again with the channel", async () => {
     const frame = frameWindow();
     const fetchImpl = ok();
-    installPreviewChannelBootstrap({ window: frame.win, fetch: fetchImpl as never });
+    installPreviewChannelBootstrap({
+      window: frame.win,
+      fetch: fetchImpl as never,
+    });
 
     expect(frame.replace).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
 
-    frame.fire("message", { source: frame.parent, origin: EDITOR, data: offer() });
+    frame.fire("message", {
+      source: frame.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
     await settle();
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [path, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const [path, init] = fetchImpl.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
     expect(path).toBe(PREVIEW_CHANNEL_VERIFY_PATH);
     expect(init.method).toBe("POST");
     expect(init.credentials).toBe("same-origin");
@@ -110,7 +127,11 @@ describe("a queryless document's receiver", () => {
       href: "https://pv-x.preview.test/shop?page=2#top",
     });
     installPreviewChannelBootstrap({ window: frame.win, fetch: ok() as never });
-    frame.fire("message", { source: frame.parent, origin: EDITOR, data: offer() });
+    frame.fire("message", {
+      source: frame.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
     await settle();
     const next = new URL(frame.replace.mock.calls[0]![0] as string);
     expect(next.searchParams.get("page")).toBe("2");
@@ -119,12 +140,24 @@ describe("a queryless document's receiver", () => {
 
   it("makes a second queryless document bootstrap on its own", async () => {
     const first = frameWindow();
-    const second = frameWindow({ href: "https://pv-x.preview.test/astro-live" });
+    const second = frameWindow({
+      href: "https://pv-x.preview.test/astro-live",
+    });
     const fetchImpl = ok();
-    installPreviewChannelBootstrap({ window: first.win, fetch: fetchImpl as never });
-    installPreviewChannelBootstrap({ window: second.win, fetch: fetchImpl as never });
+    installPreviewChannelBootstrap({
+      window: first.win,
+      fetch: fetchImpl as never,
+    });
+    installPreviewChannelBootstrap({
+      window: second.win,
+      fetch: fetchImpl as never,
+    });
 
-    first.fire("message", { source: first.parent, origin: EDITOR, data: offer() });
+    first.fire("message", {
+      source: first.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
     await settle();
     expect(first.replace).toHaveBeenCalledTimes(1);
     expect(second.replace).not.toHaveBeenCalled();
@@ -146,7 +179,10 @@ describe("a receiver that fails closed", () => {
     options?: Parameters<typeof frameWindow>[0],
   ) {
     const frame = frameWindow(options);
-    installPreviewChannelBootstrap({ window: frame.win, fetch: fetchImpl as never });
+    installPreviewChannelBootstrap({
+      window: frame.win,
+      fetch: fetchImpl as never,
+    });
     frame.fire("message", event(frame));
     await settle();
     return { frame, fetchImpl };
@@ -209,7 +245,11 @@ describe("a receiver that fails closed", () => {
       fetchImpl,
     );
     expect(frame.replace).not.toHaveBeenCalled();
-    frame.fire("message", { source: frame.parent, origin: EDITOR, data: offer() });
+    frame.fire("message", {
+      source: frame.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
     await settle();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(frame.replace).not.toHaveBeenCalled();
@@ -229,8 +269,15 @@ describe("a receiver that fails closed", () => {
   it("verifies one offer only: a second one, even a good one, is not tried", async () => {
     const frame = frameWindow();
     const fetchImpl = ok();
-    installPreviewChannelBootstrap({ window: frame.win, fetch: fetchImpl as never });
-    frame.fire("message", { source: frame.parent, origin: EDITOR, data: offer() });
+    installPreviewChannelBootstrap({
+      window: frame.win,
+      fetch: fetchImpl as never,
+    });
+    frame.fire("message", {
+      source: frame.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
     frame.fire("message", {
       source: frame.parent,
       origin: "https://other.example.test",
@@ -244,8 +291,15 @@ describe("a receiver that fails closed", () => {
     const href = `https://pv-x.preview.test/x?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}`;
     const frame = frameWindow({ href });
     const fetchImpl = refused();
-    installPreviewChannelBootstrap({ window: frame.win, fetch: fetchImpl as never });
-    frame.fire("message", { source: frame.parent, origin: EDITOR, data: offer() });
+    installPreviewChannelBootstrap({
+      window: frame.win,
+      fetch: fetchImpl as never,
+    });
+    frame.fire("message", {
+      source: frame.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
     await settle();
     // A document that already has its channel has no use for an offer.
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -259,10 +313,17 @@ describe("the bootstrap nonce a reloaded document carries", () => {
       href: `https://pv-x.preview.test/b?editorOrigin=${encodeURIComponent(EDITOR)}&previewSession=${SESSION}&${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}=${NONCE}`,
     });
     expect(takeBootstrapNonce(frame.win)).toBe(NONCE);
-    const replaceState = frame.win.history.replaceState as ReturnType<typeof vi.fn>;
+    const replaceState = frame.win.history.replaceState as ReturnType<
+      typeof vi.fn
+    >;
     expect(replaceState).toHaveBeenCalledTimes(1);
-    const cleaned = new URL(String(replaceState.mock.calls[0]![2]), frame.win.location.href);
-    expect(cleaned.searchParams.has(PREVIEW_CHANNEL_BOOTSTRAP_PARAM)).toBe(false);
+    const cleaned = new URL(
+      String(replaceState.mock.calls[0]![2]),
+      frame.win.location.href,
+    );
+    expect(cleaned.searchParams.has(PREVIEW_CHANNEL_BOOTSTRAP_PARAM)).toBe(
+      false,
+    );
     expect(cleaned.searchParams.get("previewSession")).toBe(SESSION);
     expect(takeBootstrapNonce(frame.win)).toBeNull();
   });
@@ -284,7 +345,9 @@ describe("the editor's offers", () => {
     const nonce = offers.issue("frame-1", T0);
     expect(nonce).toMatch(/^[0-9a-f]{32}$/);
     expect(offers.accepts("frame-1", nonce, T0 + 1)).toBe(true);
-    expect(offers.accepts("frame-1", nonce, T0 + PREVIEW_CHANNEL_OFFER_TTL_MS)).toBe(false);
+    expect(
+      offers.accepts("frame-1", nonce, T0 + PREVIEW_CHANNEL_OFFER_TTL_MS),
+    ).toBe(false);
   });
 
   it("refuses a nonce it never made, or made for another frame", () => {
@@ -302,7 +365,9 @@ describe("the editor's offers", () => {
     expect(second).not.toBe(first);
     expect(offers.accepts("frame-1", first, T0 + 4000)).toBe(true);
     expect(offers.accepts("frame-1", second, T0 + 4000)).toBe(true);
-    expect(offers.accepts("frame-1", first, T0 + PREVIEW_CHANNEL_OFFER_TTL_MS + 1)).toBe(false);
+    expect(
+      offers.accepts("frame-1", first, T0 + PREVIEW_CHANNEL_OFFER_TTL_MS + 1),
+    ).toBe(false);
   });
 
   it("forgets every offer of a frame that was replaced or whose session changed", () => {
@@ -314,7 +379,11 @@ describe("the editor's offers", () => {
 
   it("builds the message the receiver parses, carrying no secret but the nonce", () => {
     expect(
-      channelOfferMessage({ flowId: FLOW, previewSession: SESSION, bootstrapNonce: NONCE }),
+      channelOfferMessage({
+        flowId: FLOW,
+        previewSession: SESSION,
+        bootstrapNonce: NONCE,
+      }),
     ).toEqual({
       type: PREVIEW_CHANNEL_OFFER_MESSAGE,
       flowId: FLOW,

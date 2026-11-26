@@ -40,6 +40,7 @@ export function themePreviewBridgeEntrySource(): string {
   PREVIEW_SERVED_CONTENT_TIMING,
   previewServedContentFromEntries,
 } from "./preview/preview-protocol";
+import { takeBootstrapNonce } from "./preview/preview-channel-bootstrap";
 import {
   astroBasisAckVerdict,
   previewBoundaryNonce,
@@ -93,6 +94,10 @@ import {
 const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = ${JSON.stringify(THEME_PREVIEW_BRIDGE_CAPABILITIES, null, 2)};
 
 const channel = documentPreviewRuntimeChannel();
+// Set only on a document the editor's verified offer gave its channel to
+// (preview-channel-bootstrap.ts): said once, in its first ready, and removed
+// from the address so a reload of this document carries none.
+let bootstrapNonce = channel ? takeBootstrapNonce(window as never) : null;
 // A refused selection-field post is said here, in the page, and nowhere else.
 const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
 
@@ -1702,6 +1707,8 @@ function reportReady() {
       : BRIDGE_CAPABILITIES;
   const servedContent =
     typeof readyServedContent === "function" ? readyServedContent() : null;
+  const readyNonce = bootstrapNonce;
+  bootstrapNonce = null;
   // The capabilities say what this bridge reads: an editor posts a
   // selection field only to a page that says it reads the section it names.
   postPreviewToEditorMessage(
@@ -1711,11 +1718,13 @@ function reportReady() {
           servedInstance,
           capabilities: [...capabilities],
           ...(servedContent ? { servedContent } : {}),
+          ...(readyNonce ? { bootstrapNonce: readyNonce } : {}),
         }
       : {
           type: "morph:storefront-preview-ready",
           capabilities: [...capabilities],
           ...(servedContent ? { servedContent } : {}),
+          ...(readyNonce ? { bootstrapNonce: readyNonce } : {}),
         },
     channel,
   );

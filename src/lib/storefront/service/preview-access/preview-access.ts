@@ -53,7 +53,9 @@ export type PreviewAccessRefusal =
   | "GRANT_REVOKED"
   | "GRANT_EXPIRED"
   | "GRANT_NOT_ACTIVATED"
-  | "HOST_MISMATCH";
+  | "HOST_MISMATCH"
+  | "CHANNEL_BINDING_INVALID"
+  | "CHANNEL_NOT_BOUND";
 
 export type VerifiedPreviewAccessGrant = Readonly<{
   id: string;
@@ -122,6 +124,15 @@ export async function issuePreviewAccessExchange(input: {
   previewHost: string;
   flowId: string;
   binderHash: string;
+  /**
+   * The channel binding, for a frame's flow: the exact origin of the editor
+   * that opened the frame and the SHA-256 of the preview session it framed
+   * the preview with. Both or neither. A document that later has no channel
+   * in its URL may be given one only by this editor with this session
+   * (`verifyPreviewAccessChannel`).
+   */
+  editorOrigin?: string;
+  previewSessionHash?: string;
   now?: Date;
 }): Promise<
   | Readonly<{ ok: true; code: string; expiresAt: string }>
@@ -132,6 +143,14 @@ export async function issuePreviewAccessExchange(input: {
   }
   if (!SECRET_PATTERN.test(input.binderHash)) {
     return { ok: false, reason: "BINDER_INVALID" };
+  }
+  if (
+    (input.editorOrigin === undefined) !==
+      (input.previewSessionHash === undefined) ||
+    (input.previewSessionHash !== undefined &&
+      !SECRET_PATTERN.test(input.previewSessionHash))
+  ) {
+    return { ok: false, reason: "CHANNEL_BINDING_INVALID" };
   }
   const now = input.now ?? new Date();
   const code = createPreviewAccessSecret();
@@ -150,6 +169,12 @@ export async function issuePreviewAccessExchange(input: {
     themeId: input.themeId,
     previewId: input.previewId,
     previewHost: input.previewHost,
+    ...(input.editorOrigin !== undefined
+      ? {
+          editorOrigin: input.editorOrigin,
+          sessionHash: input.previewSessionHash!,
+        }
+      : {}),
     expiresAt,
     now: now.toISOString(),
   });
@@ -506,6 +531,67 @@ function compareCandidates(
   if (a.expiresAt !== b.expiresAt) return a.expiresAt < b.expiresAt ? 1 : -1;
   if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
+/**
+ * Whether the editor at `editorOrigin`, framing the preview with
+ * `previewSession`, is the one that opened the frame whose flow is `flowId`,
+ * and whether the request asking carries that flow's own grant, live now.
+ *
+ * It is what lets a preview document with no channel in its URL take one from
+ * its parent: the parent only names itself, so this answers from what the
+ * editor itself reported when it opened the frame (the exchange's binding),
+ * never from the request. The request must carry the grant the flow's
+ * exchange ended in (`resolvedGrantId`): another valid grant, a tab grant or
+ * a grant on another host does not do, and a grant that was revoked, expired
+ * or whose session or Theme no longer holds is refused as any request is.
+ * A flow recorded without a binding, or never redeemed, binds nothing.
+ */
+export async function verifyPreviewAccessChannel(input: {
+  dal: StorefrontPreviewAccessDAL;
+  tokens: readonly string[];
+  previewHost: string;
+  flowId: string;
+  editorOrigin: string;
+  previewSession: string;
+  now?: Date;
+}): Promise<
+  | Readonly<{ ok: true; grant: VerifiedPreviewAccessGrant }>
+  | Readonly<{ ok: false; reason: PreviewAccessRefusal }>
+> {
+  const notBound = { ok: false, reason: "CHANNEL_NOT_BOUND" } as const;
+  const wellFormed = [...new Set(input.tokens)].filter((token) =>
+    SECRET_PATTERN.test(token),
+  );
+  if (wellFormed.length === 0) return { ok: false, reason: "GRANT_UNKNOWN" };
+  if (!FLOW_ID_PATTERN.test(input.flowId)) return notBound;
+  const binding = await input.dal.findChannelBinding(input.flowId);
+  if (
+    !binding ||
+    binding.kind !== "iframe" ||
+    binding.previewHost !== input.previewHost ||
+    !binding.editorOrigin ||
+    !binding.sessionHash ||
+    binding.editorOrigin !== input.editorOrigin ||
+    binding.sessionHash !==
+      (await hashPreviewAccessSecret(input.previewSession))
+  ) {
+    return notBound;
+  }
+  const records = await input.dal.findGrantsByTokenHashes(
+    await Promise.all(wellFormed.map(hashPreviewAccessSecret)),
+  );
+  const record = records.find((entry) => entry.id === binding.resolvedGrantId);
+  if (!record || record.kind !== "iframe") return notBound;
+  const refusal = grantRefusal(
+    record,
+    input.previewHost,
+    (input.now ?? new Date()).getTime(),
+  );
+  if (refusal) return { ok: false, reason: refusal };
+  // The document asking was itself served under this grant.
+  if (!record.activatedAt) return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
+  return { ok: true, grant: verifiedGrant(record) };
 }
 
 /** Ends one session's grants; says which previews they were for. */

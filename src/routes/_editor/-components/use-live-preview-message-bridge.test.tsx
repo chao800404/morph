@@ -89,7 +89,9 @@ describe("a ready that carries a channel bootstrap nonce", () => {
   it("is taken when the editor offered that nonce on this frame", () => {
     const accept = vi.fn(() => true);
     const { result, ready } = setup(accept);
-    expect(result.current.parseMessage(ready({ bootstrapNonce: NONCE }))).toEqual({
+    expect(
+      result.current.parseMessage(ready({ bootstrapNonce: NONCE })),
+    ).toEqual({
       type: "morph:storefront-preview-ready",
       bootstrapNonce: NONCE,
     });
@@ -98,18 +100,24 @@ describe("a ready that carries a channel bootstrap nonce", () => {
 
   it("is not taken when the editor made no such offer, or it expired", () => {
     const { result, ready } = setup(() => false);
-    expect(result.current.parseMessage(ready({ bootstrapNonce: NONCE }))).toBeNull();
+    expect(
+      result.current.parseMessage(ready({ bootstrapNonce: NONCE })),
+    ).toBeNull();
   });
 
   it("is not taken when the editor can accept none", () => {
     const { result, ready } = setup(undefined);
-    expect(result.current.parseMessage(ready({ bootstrapNonce: NONCE }))).toBeNull();
+    expect(
+      result.current.parseMessage(ready({ bootstrapNonce: NONCE })),
+    ).toBeNull();
   });
 
   it("is not taken with a nonce of the wrong shape, and does not ask the editor", () => {
     const accept = vi.fn(() => true);
     const { result, ready } = setup(accept);
-    expect(result.current.parseMessage(ready({ bootstrapNonce: "short" }))).toBeNull();
+    expect(
+      result.current.parseMessage(ready({ bootstrapNonce: "short" })),
+    ).toBeNull();
     expect(accept).not.toHaveBeenCalled();
   });
 
@@ -117,10 +125,13 @@ describe("a ready that carries a channel bootstrap nonce", () => {
     const { result, ready, previewWindow } = setup(() => true);
     // A first, id-less ready makes a verified document current later.
     expect(
-      result.current.parseMessage(ready({ previewDocument: DOC_A, bootstrapNonce: NONCE })),
+      result.current.parseMessage(
+        ready({ previewDocument: DOC_A, bootstrapNonce: NONCE }),
+      ),
     ).toBeNull();
     expect(
-      (previewWindow as unknown as { postMessage: ReturnType<typeof vi.fn> }).postMessage,
+      (previewWindow as unknown as { postMessage: ReturnType<typeof vi.fn> })
+        .postMessage,
     ).toHaveBeenCalledWith(
       expect.objectContaining({ type: "morph:storefront-preview-ping" }),
       firstChannel.targetOrigin,

@@ -129,7 +129,11 @@ async function framedGrant(
       : {}),
   });
   if (!redeemed.ok) throw new Error(redeemed.reason);
-  return { flowId, token: redeemed.token ?? overrides.reuse![0]!, grant: redeemed.grant };
+  return {
+    flowId,
+    token: redeemed.token ?? overrides.reuse![0]!,
+    grant: redeemed.grant,
+  };
 }
 
 async function activate(token: string) {
@@ -171,7 +175,11 @@ describe("verifyPreviewAccessChannel", () => {
     const { flowId, token } = await framedGrant();
     await activate(token);
     expect(
-      await ask({ flowId, tokens: [token], editorOrigin: "https://evil.example.test" }),
+      await ask({
+        flowId,
+        tokens: [token],
+        editorOrigin: "https://evil.example.test",
+      }),
     ).toEqual({ ok: false, reason: "CHANNEL_NOT_BOUND" });
   });
 
@@ -190,14 +198,18 @@ describe("verifyPreviewAccessChannel", () => {
   it("refuses a flow nobody bound, and one that never existed", async () => {
     const unbound = await framedGrant({ previewSession: null });
     await activate(unbound.token);
-    expect(await ask({ flowId: unbound.flowId, tokens: [unbound.token] })).toEqual({
+    expect(
+      await ask({ flowId: unbound.flowId, tokens: [unbound.token] }),
+    ).toEqual({
       ok: false,
       reason: "CHANNEL_NOT_BOUND",
     });
-    expect(await ask({ flowId: newFlowId(), tokens: [unbound.token] })).toEqual({
-      ok: false,
-      reason: "CHANNEL_NOT_BOUND",
-    });
+    expect(await ask({ flowId: newFlowId(), tokens: [unbound.token] })).toEqual(
+      {
+        ok: false,
+        reason: "CHANNEL_NOT_BOUND",
+      },
+    );
   });
 
   it("refuses a flow whose code was never redeemed", async () => {
@@ -260,7 +272,11 @@ describe("verifyPreviewAccessChannel", () => {
     const { flowId, token } = await framedGrant();
     await activate(token);
     expect(await ask({ flowId, tokens: [token] })).toMatchObject({ ok: true });
-    await revokePreviewAccessForSession({ dal, sessionId: "session-a", now: later(2500) });
+    await revokePreviewAccessForSession({
+      dal,
+      sessionId: "session-a",
+      now: later(2500),
+    });
     expect(await ask({ flowId, tokens: [token] })).toEqual({
       ok: false,
       reason: "GRANT_REVOKED",
@@ -357,9 +373,13 @@ describe("the preview host's channel page", () => {
     await activate(token);
     const d = deps();
     const response = await handlePreviewAccessRequest(
-      post(null, { flowId, editorOrigin: EDITOR, previewSession: SESSION }, {
-        cookie: await cookieFor(token),
-      }),
+      post(
+        null,
+        { flowId, editorOrigin: EDITOR, previewSession: SESSION },
+        {
+          cookie: await cookieFor(token),
+        },
+      ),
       d,
     );
     expect(response?.status).toBe(200);
@@ -369,12 +389,22 @@ describe("the preview host's channel page", () => {
   });
 
   it("refuses an editor origin that is not one of Morph's own", async () => {
-    const { flowId, token } = await framedGrant({ editorOrigin: "https://evil.example.test" });
+    const { flowId, token } = await framedGrant({
+      editorOrigin: "https://evil.example.test",
+    });
     await activate(token);
     const response = await handlePreviewAccessRequest(
-      post(null, { flowId, editorOrigin: "https://evil.example.test", previewSession: SESSION }, {
-        cookie: await cookieFor(token),
-      }),
+      post(
+        null,
+        {
+          flowId,
+          editorOrigin: "https://evil.example.test",
+          previewSession: SESSION,
+        },
+        {
+          cookie: await cookieFor(token),
+        },
+      ),
       deps(),
     );
     expect(response?.status).toBe(403);
@@ -410,9 +440,16 @@ describe("the preview host's channel page", () => {
       {},
       { flowId: "x", editorOrigin: EDITOR, previewSession: SESSION },
       { flowId: newFlowId(), editorOrigin: EDITOR, previewSession: "nope" },
-      { flowId: newFlowId(), editorOrigin: `${EDITOR}/path`, previewSession: SESSION },
+      {
+        flowId: newFlowId(),
+        editorOrigin: `${EDITOR}/path`,
+        previewSession: SESSION,
+      },
     ]) {
-      const response = await handlePreviewAccessRequest(post(null, body, { cookie }), deps());
+      const response = await handlePreviewAccessRequest(
+        post(null, body, { cookie }),
+        deps(),
+      );
       expect(response?.status).toBe(400);
     }
   });

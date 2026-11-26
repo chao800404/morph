@@ -1,5 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { isMorphAppOrigin } from "@/lib/storefront/service/preview-access/preview-access-app-origin";
 import { z } from "zod";
 import { fail, ok, parseInput } from "@/lib/db/server-result";
 import { idSchema } from "@/lib/validations/commerce";
@@ -22,6 +24,16 @@ const issuePreviewAccessInputSchema = z
      * opened (#214 P3). Redeem must present the same kind.
      */
     kind: z.enum(["iframe", "tab"]).default("iframe"),
+    /**
+     * SHA-256 of the preview session the editor framed the preview with, for
+     * a frame's flow: with this request's own origin it is what a later
+     * document with no channel in its URL is given one against. Not a secret
+     * (the session is in the framed address); a tab's flow binds none.
+     */
+    previewSessionHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
   })
   .strict();
 
@@ -40,7 +52,37 @@ export const issueThemePreviewAccess = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     if (!input.success) return input;
-    const { storefrontId, themeId, flowId, binderHash, kind } = input.data;
+    const {
+      storefrontId,
+      themeId,
+      flowId,
+      binderHash,
+      kind,
+      previewSessionHash,
+    } = input.data;
+    // The editor's own origin, from this request: never taken from the
+    // client, and only one of Morph's own is bound.
+    let editorOrigin: string | undefined;
+    if (previewSessionHash !== undefined) {
+      if (kind !== "iframe") {
+        return fail("Preview sign-in could not start. Retry Preview.", {
+          error: "CHANNEL_BINDING_INVALID",
+        });
+      }
+      const requestOrigin = new URL(getRequest().url).origin;
+      if (
+        !isMorphAppOrigin(
+          requestOrigin,
+          env as unknown as Record<string, unknown>,
+          import.meta.env.DEV,
+        )
+      ) {
+        return fail("Preview sign-in could not start. Retry Preview.", {
+          error: "CHANNEL_BINDING_INVALID",
+        });
+      }
+      editorOrigin = requestOrigin;
+    }
     const parent = (env as unknown as Record<string, unknown>)
       .THEME_PREVIEW_HOSTNAME;
     if (typeof parent !== "string" || !parent) {
@@ -75,6 +117,9 @@ export const issueThemePreviewAccess = createServerFn({ method: "POST" })
       previewHost: previewAccessHostname(previewId, parent),
       flowId,
       binderHash,
+      ...(editorOrigin !== undefined
+        ? { editorOrigin, previewSessionHash: previewSessionHash! }
+        : {}),
     });
     if (!issued.ok) {
       return fail("Preview sign-in could not start. Retry Preview.", {
