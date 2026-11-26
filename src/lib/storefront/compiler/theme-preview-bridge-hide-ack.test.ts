@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { previewSectionSelector } from "@/lib/storefront/editor/preview-protocol";
+import { previewSectionSelector } from "@/lib/storefront/editor/preview-dom";
 import { themePreviewBridgeEntrySource } from "./theme-preview-bridge-entry";
 
 /**
