@@ -32,7 +32,8 @@
  *   reads (`DEFAULT_THEME_SERVICE_BINDING`), so a rename on either side is
  *   caught rather than silently falling through to a 503.
  * - The target script name can only be checked for **shape**. It is
- *   `morph-theme-<storefrontId>`, and the storefront id is a deployment fact
+ *   `morph-theme-<storefrontId>` (or `<prefix><storefrontId>` when the config's
+ *   `vars` set `MORPH_THEME_WORKER_SCRIPT_PREFIX`), and the storefront id is a deployment fact
  *   that is not in the repository. `themeWorkerScriptName(themeBuildId)`
  *   produces the same shape, so a config pointing at a build-scoped name passes
  *   this check. `theme-runtime.types.ts` says those two names are "kept separate
@@ -52,6 +53,41 @@ export const FAIL = "FAIL";
  * `[^a-z0-9-]` folded to `-`, at most 54 characters.
  */
 const STOREFRONT_SCRIPT_NAME = /^morph-theme-[a-z0-9-]{1,54}$/;
+
+/**
+ * `MORPH_THEME_WORKER_SCRIPT_PREFIX`, mirrored from
+ * `validateThemeWorkerScriptPrefix` and `themeWorkerScriptNameForStorefront`
+ * in `theme-runtime.types.ts`: 2 to 27 characters, a lowercase letter first,
+ * `[a-z0-9-]`, a trailing dash, not inside the default `morph-theme-`, and the
+ * whole name at most 63 characters.
+ */
+const SCRIPT_PREFIX_VAR = "MORPH_THEME_WORKER_SCRIPT_PREFIX";
+const SCRIPT_PREFIX_SHAPE = /^[a-z][a-z0-9-]*-$/;
+
+function prefixedScriptNameShape(config) {
+  const vars = config && typeof config.vars === "object" ? config.vars : null;
+  if (!vars || !(SCRIPT_PREFIX_VAR in vars)) {
+    return { ok: true, prefix: null };
+  }
+  const prefix = vars[SCRIPT_PREFIX_VAR];
+  if (
+    typeof prefix !== "string" ||
+    prefix.length < 2 ||
+    prefix.length > 27 ||
+    !SCRIPT_PREFIX_SHAPE.test(prefix) ||
+    prefix.startsWith("morph-theme-")
+  ) {
+    return { ok: false, prefix: String(prefix) };
+  }
+  return { ok: true, prefix };
+}
+
+function matchesStorefrontScriptName(service, prefix) {
+  if (typeof service !== "string") return false;
+  if (prefix === null) return STOREFRONT_SCRIPT_NAME.test(service);
+  if (!service.startsWith(prefix) || service.length > 63) return false;
+  return /^[a-z0-9-]{1,54}$/.test(service.slice(prefix.length));
+}
 
 /**
  * Blanks out `//` and block comments without moving any byte.
@@ -239,14 +275,29 @@ export function evaluateThemeRuntimeWiring({ config, defaultBindingName }) {
     };
   }
 
-  if (typeof theme.service !== "string" || !STOREFRONT_SCRIPT_NAME.test(theme.service)) {
+  const prefix = prefixedScriptNameShape(config);
+  if (!prefix.ok) {
+    return {
+      state: FAIL,
+      message:
+        `vars.${SCRIPT_PREFIX_VAR} is "${prefix.prefix}", which the deployer refuses ` +
+        "(2 to 27 characters, a lowercase letter first, [a-z0-9-], a trailing dash, " +
+        'not starting with "morph-theme-"), so no Theme Worker can be published here.',
+    };
+  }
+
+  if (!matchesStorefrontScriptName(theme.service, prefix.prefix)) {
+    const expected =
+      prefix.prefix === null
+        ? "morph-theme-<storefrontId>, lowercase, [a-z0-9-], at most 54 characters"
+        : `${prefix.prefix}<storefrontId> under vars.${SCRIPT_PREFIX_VAR}, ` +
+          "lowercase, [a-z0-9-], at most 63 characters in all";
     return {
       state: FAIL,
       message:
         `"${defaultBindingName}" points at ` +
         `${typeof theme.service === "string" ? `"${theme.service}"` : "a missing or non-string service"}, ` +
-        "which is not a storefront Theme Worker script name (morph-theme-<storefrontId>, " +
-        "lowercase, [a-z0-9-], at most 54 characters).",
+        `which is not a storefront Theme Worker script name (${expected}).`,
     };
   }
 

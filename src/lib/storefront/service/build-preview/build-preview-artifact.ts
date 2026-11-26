@@ -132,6 +132,9 @@ export async function readBuildPreviewArtifact(args: {
       `Build artifact is missing a readable "${GENERATED_WORKER_CONFIG_PATH}".`,
     );
   }
+  // No `env`: a Build Preview runs the artifact in its own container and
+  // never uses the plan's script name, so MORPH_THEME_WORKER_SCRIPT_PREFIX
+  // does not apply here.
   const planned = planThemeWorkerDeployment({
     storefrontId: build.storefrontId,
     manifest,

@@ -176,12 +176,16 @@ export type ReleaseDeploymentOutcome =
  * It only transports bytes: activation state is never read or written here, so
  * the same routine serves both the publish path (where D1 was already updated
  * atomically) and the rollback path (where activation is claimed first).
+ *
+ * `env` carries `MORPH_THEME_WORKER_SCRIPT_PREFIX` to the plan; see
+ * `planThemeWorkerDeployment`.
  */
 export async function deployReleaseArtifact(args: {
   releaseId: string;
   deployer: ThemeWorkerDeployer;
   ports: Pick<ReleaseReconcilerPorts, "getRelease" | "getBuild">;
   r2Bucket?: R2BucketLike;
+  env?: Readonly<Record<string, unknown>>;
 }): Promise<ReleaseDeploymentOutcome> {
   const release = await args.ports.getRelease(args.releaseId);
   if (!release) {
@@ -230,6 +234,7 @@ export async function deployReleaseArtifact(args: {
     storefrontId: release.storefrontId,
     manifest: build.manifestJson as CanonicalThemeBuildManifest,
     workerConfig,
+    env: args.env,
   });
   if (!planned.success) {
     return {
@@ -299,6 +304,7 @@ export async function activateReleaseWithDeployment(args: {
   deployer: ThemeWorkerDeployer;
   ports: ReleaseReconcilerPorts;
   r2Bucket?: R2BucketLike;
+  env?: Readonly<Record<string, unknown>>;
 }): Promise<ReleaseActivationResult> {
   const lease = args.ports.deploymentLease;
   if (!lease) return activateReleaseWithDeploymentUnsynchronised(args);
@@ -336,6 +342,7 @@ async function activateReleaseWithDeploymentUnsynchronised(args: {
   deployer: ThemeWorkerDeployer;
   ports: ReleaseReconcilerPorts;
   r2Bucket?: R2BucketLike;
+  env?: Readonly<Record<string, unknown>>;
 }): Promise<ReleaseActivationResult> {
   const release = await args.ports.getRelease(args.releaseId);
   if (!release) {
@@ -384,6 +391,7 @@ async function activateReleaseWithDeploymentUnsynchronised(args: {
     storefrontId: release.storefrontId,
     manifest: build.manifestJson as CanonicalThemeBuildManifest,
     workerConfig,
+    env: args.env,
   });
   if (!planned.success) {
     return {

@@ -185,3 +185,65 @@ describe("the three states", () => {
     );
   });
 });
+
+describe("MORPH_THEME_WORKER_SCRIPT_PREFIX in the config's vars", () => {
+  const staging = (service, prefix = "morph-stg-m1-theme-") => ({
+    services: [{ binding: BINDING, service }],
+    vars: { MORPH_THEME_WORKER_SCRIPT_PREFIX: prefix },
+  });
+
+  it("a target under the configured prefix is PASS", () => {
+    assert.equal(
+      evaluateThemeRuntimeWiring({
+        config: staging("morph-stg-m1-theme-00000000-0000-4000-8000-000000000002"),
+        defaultBindingName: BINDING,
+      }).state,
+      PASS,
+    );
+  });
+
+  it("a default-named target under a configured prefix is FAIL: it is another deployment's script", () => {
+    const verdict = evaluateThemeRuntimeWiring({
+      config: staging("morph-theme-00000000-0000-4000-8000-000000000002"),
+      defaultBindingName: BINDING,
+    });
+    assert.equal(verdict.state, FAIL);
+    assert.match(verdict.message, /morph-stg-m1-theme-/);
+  });
+
+  it("an invalid prefix is FAIL whatever the target", () => {
+    const verdict = evaluateThemeRuntimeWiring({
+      config: staging("Staging-shop", "Staging"),
+      defaultBindingName: BINDING,
+    });
+    assert.equal(verdict.state, FAIL);
+    assert.match(verdict.message, /MORPH_THEME_WORKER_SCRIPT_PREFIX/);
+  });
+
+  it("a prefixed target over 63 characters is FAIL", () => {
+    assert.equal(
+      evaluateThemeRuntimeWiring({
+        config: staging(`morph-stg-m1-theme-${"a".repeat(45)}`),
+        defaultBindingName: BINDING,
+      }).state,
+      FAIL,
+    );
+  });
+
+  it("without the variable the default shape is unchanged, 54-character segment included", () => {
+    assert.equal(
+      evaluateThemeRuntimeWiring({
+        config: withServices([{ binding: BINDING, service: `morph-theme-${"a".repeat(54)}` }]),
+        defaultBindingName: BINDING,
+      }).state,
+      PASS,
+    );
+    assert.equal(
+      evaluateThemeRuntimeWiring({
+        config: withServices([{ binding: BINDING, service: "morph-stg-m1-theme-shop" }]),
+        defaultBindingName: BINDING,
+      }).state,
+      FAIL,
+    );
+  });
+});

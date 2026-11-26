@@ -94,3 +94,41 @@ describe("createServerThemeWorkerDeployer", () => {
     expect(result.message).toContain("CLOUDFLARE_API_TOKEN");
   });
 });
+
+describe("createServerThemeWorkerDeployer and MORPH_THEME_WORKER_SCRIPT_PREFIX", () => {
+  it("refuses to wire a deployer under an invalid prefix", async () => {
+    setEnv({ ...FULL, MORPH_THEME_WORKER_SCRIPT_PREFIX: "Staging" });
+    const deployer = createServerThemeWorkerDeployer();
+    expect(deployer.kind).toBe("unavailable");
+    const result = await deployer.deploy({} as never);
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.message).toContain("MORPH_THEME_WORKER_SCRIPT_PREFIX");
+  });
+
+  it("a prefixed deployer refuses a plan that names the default script", async () => {
+    setEnv({ ...FULL, MORPH_THEME_WORKER_SCRIPT_PREFIX: "morph-stg-m1-theme-" });
+    const deployer = createServerThemeWorkerDeployer();
+    expect(deployer.kind).toBe("sandbox-wrangler");
+    const result = await deployer.deploy({
+      storefrontId: "00000000-0000-4000-8000-000000000002",
+      releaseId: "rel_1",
+      themeBuildId: "bld_1",
+      artifactPrefix: "themes/th_1/builds/bld_1",
+      plan: {
+        scriptName: "morph-theme-00000000-0000-4000-8000-000000000002",
+        mainModule: "index.js",
+        compatibilityDate: "2025-09-02",
+        compatibilityFlags: [],
+        modules: [],
+        assets: [],
+      },
+    });
+    expect(result).toMatchObject({
+      success: false,
+      reason: "DEPLOYER_NOT_CONFIGURED",
+    });
+    if (result.success) return;
+    expect(result.message).toContain("morph-stg-m1-theme-00000000-0000-4000-8000-000000000002");
+  });
+});

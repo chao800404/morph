@@ -26,6 +26,8 @@ const EXPLANATIONS: Record<ReleaseDeploymentFailureCode, string> = {
   FORBIDDEN_BINDING:
     "the build's Worker config asks for a binding the platform does not provide",
   INVALID_SCRIPT_NAME: "this storefront's id cannot name a Theme Worker",
+  INVALID_SCRIPT_PREFIX:
+    "MORPH_THEME_WORKER_SCRIPT_PREFIX is invalid in this environment",
   RELEASE_NOT_FOUND: "the release was not found",
   BUILD_NOT_DEPLOYABLE: "the release has no succeeded build to deploy",
   WORKER_CONFIG_UNREADABLE: "the build's Worker config could not be read",

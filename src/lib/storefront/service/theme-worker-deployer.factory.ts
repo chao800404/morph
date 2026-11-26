@@ -2,6 +2,10 @@ import { env } from "cloudflare:workers";
 import { SandboxWranglerThemeWorkerDeployer } from "./sandbox-wrangler-theme-worker-deployer";
 import { isProductionEnvironment } from "./storefront-domain-provider";
 import {
+  DEFAULT_THEME_WORKER_SCRIPT_PREFIX,
+  resolveThemeWorkerScriptPrefix,
+} from "./theme-runtime.types";
+import {
   OperatorManagedThemeWorkerDeployer,
   UnavailableThemeWorkerDeployer,
   type ThemeWorkerDeployer,
@@ -59,9 +63,18 @@ export function createServerThemeWorkerDeployer(): ThemeWorkerDeployer {
     );
   }
 
+  // An invalid prefix leaves no deployer at all rather than one that would
+  // upload under the default name, which is the name the prefix exists to
+  // keep this environment off.
+  const prefix = resolveThemeWorkerScriptPrefix(bindings);
+  if (!prefix.ok) return new UnavailableThemeWorkerDeployer(prefix.message);
+
   return new SandboxWranglerThemeWorkerDeployer({
     sandboxBinding,
     r2Bucket: r2Bucket as never,
     credentials: { apiToken, accountId },
+    ...(prefix.prefix !== DEFAULT_THEME_WORKER_SCRIPT_PREFIX
+      ? { scriptNamePrefix: prefix.prefix }
+      : {}),
   });
 }

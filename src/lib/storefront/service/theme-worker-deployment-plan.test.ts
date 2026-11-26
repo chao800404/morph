@@ -371,6 +371,55 @@ describe("planThemeWorkerDeployment", () => {
     expect(result.plan.scriptName).not.toContain("bld");
   });
 
+  it("an environment without MORPH_THEME_WORKER_SCRIPT_PREFIX plans today's name", () => {
+    const result = planThemeWorkerDeployment({
+      storefrontId: "00000000-0000-4000-8000-000000000002",
+      manifest: manifest(),
+      workerConfig: REAL_WORKER_CONFIG,
+      env: { MORPH_THEME_SERVICE_BINDINGS: "" },
+    });
+    expect(result.success && result.plan.scriptName).toBe(
+      "morph-theme-00000000-0000-4000-8000-000000000002",
+    );
+  });
+
+  it("plans under MORPH_THEME_WORKER_SCRIPT_PREFIX when it is set", () => {
+    const result = planThemeWorkerDeployment({
+      storefrontId: "00000000-0000-4000-8000-000000000002",
+      manifest: manifest(),
+      workerConfig: REAL_WORKER_CONFIG,
+      env: { MORPH_THEME_WORKER_SCRIPT_PREFIX: "morph-stg-m1-theme-" },
+    });
+    expect(result.success && result.plan.scriptName).toBe(
+      "morph-stg-m1-theme-00000000-0000-4000-8000-000000000002",
+    );
+  });
+
+  it("refuses to plan under an invalid prefix rather than using the default name", () => {
+    const result = planThemeWorkerDeployment({
+      storefrontId: "sf_1",
+      manifest: manifest(),
+      workerConfig: REAL_WORKER_CONFIG,
+      env: { MORPH_THEME_WORKER_SCRIPT_PREFIX: "Morph_Stg" },
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.reason).toBe("INVALID_SCRIPT_PREFIX");
+    expect(result.message).toContain("MORPH_THEME_WORKER_SCRIPT_PREFIX");
+  });
+
+  it("refuses a storefront whose prefixed name exceeds 63 characters", () => {
+    const result = planThemeWorkerDeployment({
+      storefrontId: "a".repeat(45),
+      manifest: manifest(),
+      workerConfig: REAL_WORKER_CONFIG,
+      env: { MORPH_THEME_WORKER_SCRIPT_PREFIX: "morph-stg-m1-theme-" },
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.reason).toBe("INVALID_SCRIPT_NAME");
+  });
+
   it("collects the whole server module graph and excludes build bookkeeping", () => {
     const result = planThemeWorkerDeployment({
       storefrontId: "sf_1",

@@ -11,6 +11,10 @@ import type {
   ThemeWorkerDeploymentRequest,
   ThemeWorkerDeploymentResult,
 } from "./theme-worker-deployer.types";
+import {
+  THEME_WORKER_SCRIPT_PREFIX_VAR,
+  themeWorkerScriptNameForStorefront,
+} from "./theme-runtime.types";
 
 const DEPLOY_ROOT = "/workspace/deploy";
 const SERVER_DIR = `${DEPLOY_ROOT}/server`;
@@ -127,6 +131,15 @@ export type SandboxWranglerDeployerOptions = Readonly<{
   r2Bucket?: R2BucketLike;
   credentials?: ThemeDeploymentCredentials;
   maxDurationMs?: number;
+  /**
+   * The validated `MORPH_THEME_WORKER_SCRIPT_PREFIX` of this environment, set
+   * by the factory only when it is not the default. With it, a plan is
+   * deployed only under the name that prefix gives the request's storefront:
+   * a caller that planned without the environment would otherwise upload over
+   * the default-named script, which in a shared account is another
+   * deployment's Theme Worker.
+   */
+  scriptNamePrefix?: string;
 }>;
 
 /**
@@ -198,6 +211,26 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
     request: ThemeWorkerDeploymentRequest,
   ): Promise<ThemeWorkerDeploymentResult> {
     const startedAt = Date.now();
+
+    if (this.options.scriptNamePrefix !== undefined) {
+      let expected: string | null;
+      try {
+        expected = themeWorkerScriptNameForStorefront(
+          request.storefrontId,
+          this.options.scriptNamePrefix,
+        );
+      } catch {
+        expected = null;
+      }
+      if (expected === null || request.plan.scriptName !== expected) {
+        return {
+          success: false,
+          reason: "DEPLOYER_NOT_CONFIGURED",
+          message: `Refusing to deploy "${request.plan.scriptName}": under ${THEME_WORKER_SCRIPT_PREFIX_VAR} this storefront's Theme Worker is ${expected === null ? "not nameable" : `"${expected}"`}.`,
+        };
+      }
+    }
+
     const apiToken = this.options.credentials?.apiToken;
     const accountId = this.options.credentials?.accountId;
 

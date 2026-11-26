@@ -820,6 +820,8 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
                   r2Bucket: (
                     cloudflareEnv as unknown as { R2_BUCKET?: unknown }
                   ).R2_BUCKET as never,
+                  // Carries MORPH_THEME_WORKER_SCRIPT_PREFIX to the plan.
+                  env: cloudflareEnv as unknown as Record<string, unknown>,
                   ports: {
                     getRelease: async (releaseId) => {
                       const release = await storefrontReleaseDal.getById(
