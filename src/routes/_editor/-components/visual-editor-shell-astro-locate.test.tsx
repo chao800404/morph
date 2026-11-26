@@ -40,6 +40,7 @@ import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.q
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
   CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
+  PREVIEW_PRESENTATION_BASIS_MESSAGE,
   SOURCE_LOCATION_STALE_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
@@ -71,6 +72,7 @@ const saveThemeFile = vi.hoisted(() => vi.fn());
 const getThemeFile = vi.hoisted(() => vi.fn());
 const getSession = vi.hoisted(() => vi.fn());
 const readRouteBindings = vi.hoisted(() => vi.fn());
+const ensureRouteTemplate = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "@/server/storefront/storefront-themes.serverFn",
@@ -79,6 +81,7 @@ vi.mock(
     updateStorefrontThemeSectionProps: updateSectionProps,
     getStorefrontThemeEditor: getThemeEditor,
     readThemeRouteBindings: readRouteBindings,
+    ensureStorefrontThemeRouteTemplate: ensureRouteTemplate,
   }),
 );
 vi.mock(
@@ -360,8 +363,12 @@ const flush = () =>
 let showEditorPage: (page: {
   template: "index" | "page";
   templateId: string;
-  routePath: string;
+  routePath: string | undefined;
 }) => void = () => {
+  throw new Error("settled() has not rendered the shell");
+};
+/** The editor was given a newer read of the Theme (another tab wrote). */
+let showEditorContext: (context: StorefrontThemeEditorDTO) => void = () => {
   throw new Error("settled() has not rendered the shell");
 };
 
@@ -371,7 +378,8 @@ async function settled(
   page: {
     template: "index" | "page";
     templateId: string;
-    routePath: string;
+    /** Absent as the editor URL leaves Home's (no `routePath` at all). */
+    routePath: string | undefined;
   } = { template: "page", templateId: TEMPLATE_ID, routePath: ROUTE_PATH },
   capabilities?: string[],
   /** Basis-ack cases only: more start data, and the ready's stamp. */
@@ -399,10 +407,12 @@ async function settled(
     treeAt(3) as never,
   );
   const onSearchChange = vi.fn();
+  let shownPage = page;
+  let shownContext = themeContext;
   const shellOn = (shown: typeof page) => (
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={themeContext}
+        context={shownContext}
         search={
           {
             template: shown.template,
@@ -418,7 +428,14 @@ async function settled(
     </QueryClientProvider>
   );
   const { rerender } = render(shellOn(page));
-  showEditorPage = (next) => rerender(shellOn(next));
+  showEditorPage = (next) => {
+    shownPage = next;
+    rerender(shellOn(next));
+  };
+  showEditorContext = (next) => {
+    shownContext = next;
+    rerender(shellOn(shownPage));
+  };
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
   fromPreview({
     type: "morph:storefront-preview-ready",
@@ -436,12 +453,12 @@ async function settled(
   fromPreview({
     type: "morph:storefront-preview-route-applied",
     routeRequestId: request?.routeRequestId,
-    routePath: page.routePath,
+    routePath: page.routePath ?? "/",
   });
   fromPreview({
     type: "morph:storefront-preview-structure",
     nodes: [],
-    routePath: page.routePath,
+    routePath: page.routePath ?? "/",
   });
   await flush();
   // For a case that changes what Core answered after the page came up.
@@ -478,6 +495,7 @@ beforeEach(() => {
   getThemeFile.mockReset();
   getThemeFile.mockResolvedValue(stored());
   updateSectionProps.mockReset();
+  ensureRouteTemplate.mockReset();
   readRouteBindings.mockReset();
   readRouteBindings.mockResolvedValue({
     success: false,
@@ -739,6 +757,8 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     sourceDigest = DIGEST,
     /** The file version the frame located in; another one is stale. */
     sourceVersion = astroPreviewSourceHash(ASTRO_SOURCE),
+    /** The v2 boundary the click lands in; another instance's for a sibling. */
+    marker = MARKER,
   ) {
     fromPreview({
       type: "morph:storefront-preview-select-section",
@@ -748,7 +768,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       sourceFilePath: ASTRO_PAGE,
       sourceLocation: `${ASTRO_PAGE}:5:3`,
       sourceVersion,
-      previewBoundary: { marker: MARKER, selectable: true, reason: null },
+      previewBoundary: { marker, selectable: true, reason: null },
       sourceDigest,
       locatedAt: null,
       elementKey: null,
@@ -1885,6 +1905,142 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
           identity: MARKER,
           componentDigest: DIGEST,
         });
+      });
+
+      /** WRITE_CONTEXT with the hero holding `props` at `draftGeneration`. */
+      const contextWithHero = (
+        draftGeneration: number,
+        props: Record<string, unknown>,
+      ) =>
+        ({
+          ...WRITE_CONTEXT,
+          templates: WRITE_CONTEXT.templates.map((template) =>
+            template.id === "template-1"
+              ? {
+                  ...template,
+                  draftGeneration,
+                  document: {
+                    version: 1,
+                    sections: [
+                      { id: "hero", type: "hero", enabled: true, props },
+                    ],
+                  },
+                }
+              : template,
+          ),
+        }) as unknown as StorefrontThemeEditorDTO;
+      /** Comes up on `themeContext` at `page`, selects the hero, acks it. */
+      async function upAndAcked(
+        themeContext: StorefrontThemeEditorDTO = WRITE_CONTEXT,
+        page: Parameters<typeof settled>[1] = HOME,
+        view: ReturnType<typeof bindingView> = bindingView(),
+      ) {
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: themeContext,
+        });
+        readRouteBindings.mockResolvedValue(view);
+        modelCurrentBridge();
+        const client = await settled(themeContext, page, BASIS_READY, {
+          serverData: START_DATA,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        });
+        await waitFor(() =>
+          expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(1);
+        await ackBasis(basisPosts()[0]!.presentationToken);
+        return client;
+      }
+
+      // Codex review P1 (superseded proof): a click again on the same
+      // section in the same round issues a new latest token and drops the
+      // section's acknowledgement. The token the input was staged with is
+      // then no proof, whatever the frame and Core still say of it.
+      it("a re-click in the same round makes the input's proof stale: held through the new token's not-applied, sent on a later applied", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "Re-clicked"));
+        await upAndAcked();
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Re-clicked" },
+        });
+        // Within the input's debounce: a new token, not answered yet.
+        boundaryClick(2);
+        await flush();
+        expect(basisPosts()).toHaveLength(2);
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+
+        const second = basisPosts()[1]!.presentationToken;
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: second.operationId,
+          token: second,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+        await flush();
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+        expect((await heroTitleField()).value).toBe("Re-clicked");
+
+        // Only the section's latest token, applied, proves it again.
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts()[2]!.presentationToken);
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          props: { title: "Re-clicked" },
+          expectedDraftGeneration: 4,
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
+
+      // Codex review P1 (proof at dispatch): an input proven at generation 4
+      // and queued behind a write still out must not go on that write's
+      // generation (5) before the page shows it. Checked where it is sent,
+      // after the queue and the snapshot read; refused with the basis
+      // message, the draft kept.
+      it("a second input queued behind an unanswered write is not sent on that write's generation before the page shows it", async () => {
+        let answerFirst: (value: unknown) => void = () => {};
+        updateSectionProps.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answerFirst = resolve;
+            }),
+        );
+        updateSectionProps.mockResolvedValue(answered(6, "Second"));
+        await upAndAcked();
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "First" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        // Typed while the first write is out; the page still shows 4.
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Second" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          answerFirst(answered(5, "First"));
+        });
+        await flush();
+        await pastDebounce();
+
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_BASIS_MESSAGE,
+          expect.anything(),
+        );
+        expect((await heroTitleField()).value).toBe("Second");
       });
     });
 
