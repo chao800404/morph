@@ -273,8 +273,13 @@ const COMPILER_COMMENT = /[@#]\s*(jsx\w*|__PURE__|__NO_SIDE_EFFECTS__|vite-ignor
  * program; the comments a compiler reads are kept beside it, in order, so a
  * pragma added to a pinned file changes its key.
  */
-function codeKey(path: string, content: string): string | null {
-  const parsed = parseThemeSourceAst({ path, content });
+function codeKey(
+  path: string,
+  content: string,
+  read: ThemeSourceParse = (file, text) =>
+    parseThemeSourceAst({ path: file, content: text }),
+): string | null {
+  const parsed = read(path, content);
   if (!parsed.ok) return null;
   // Each with where it stands in the code: the index of the first
   // statement after it, so moving a pragma counts and reformatting does not.
@@ -300,11 +305,23 @@ function codeKey(path: string, content: string): string | null {
 }
 
 const knownCodeKeys = new Map<readonly string[], ReadonlySet<string>>();
-/** Whether `content` is, as code, one of `sources`. */
+/** How a Theme file is parsed: by the analysis's shared reader, when it has one. */
+type ThemeSourceParse = (
+  path: string,
+  content: string,
+) => ReturnType<typeof parseThemeSourceAst>;
+
+/**
+ * Whether `content` is, as code, one of `sources`. The Theme's own file is
+ * parsed through `read`, the analysis's shared reader, so pinning it costs
+ * no parse of its own (the B1 parse-once contract); the pinned sources are
+ * parsed once per process.
+ */
 function isKnownCode(
   sources: readonly string[],
   path: string,
   content: string,
+  read?: ThemeSourceParse,
 ): boolean {
   if (sources.includes(content)) return true;
   let keys = knownCodeKeys.get(sources);
@@ -316,7 +333,7 @@ function isKnownCode(
     );
     knownCodeKeys.set(sources, keys);
   }
-  const key = codeKey(path, content);
+  const key = codeKey(path, content, read);
   return key !== null && keys.has(key);
 }
 
@@ -662,12 +679,14 @@ export function createHideCapabilityAnalyzer(
   const contentModule = files.find(
     (file) => file.path === THEME_CONTENT_MODULE_PATH,
   );
+  const knownCode = (sources: readonly string[], path: string, content: string) =>
+    isKnownCode(sources, path, content, (file, text) => reader.read(file, text));
   // Asked only when a content() site needs it, from the shared parse.
   let sectionHiddenConfirmed: boolean | null = null;
   const sectionHiddenOk = () => {
     sectionHiddenConfirmed ??=
       contentModule !== undefined &&
-      isKnownCode(
+      knownCode(
         STARTER_CONTENT_MODULE_SOURCES,
         contentModule.path,
         contentModule.content,
@@ -682,7 +701,7 @@ export function createHideCapabilityAnalyzer(
   };
   const pageModuleConfirmed =
     contentModule !== undefined &&
-    isKnownCode(
+    knownCode(
       STARTER_PAGE_MODULE_SOURCES,
       contentModule.path,
       contentModule.content,
@@ -694,7 +713,7 @@ export function createHideCapabilityAnalyzer(
   const rootConfirmed = files.some(
     (file) =>
       file.path === ROOT_ROUTE_PATH &&
-      isKnownCode(STARTER_ROOT_ROUTE_SOURCES, file.path, file.content),
+      knownCode(STARTER_ROOT_ROUTE_SOURCES, file.path, file.content),
   );
 
   // How each module reaches other modules, read from the shared parse. The
@@ -1725,7 +1744,7 @@ export function createHideCapabilityAnalyzer(
     if (!contentModule || !pageModuleConfirmed) {
       const legacy =
         contentModule !== undefined &&
-        isKnownCode(
+        knownCode(
           LEGACY_STARTER_CONTENT_MODULE_SOURCES,
           contentModule.path,
           contentModule.content,
