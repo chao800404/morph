@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import {
   EDITOR_SHARDS,
   EDITOR_SHARD_COUNT,
+  LANE_EXCLUSIVE_SPECS,
   editorShardArguments,
   latestShardReportFiles,
 } from "./editor-e2e-shards.mjs";
+import { START_PREVIEW_SHARDS } from "./editor-e2e-start.mjs";
 import { DURATIONS_FILE, budgetWarnings } from "./rebalance-e2e-shards.mjs";
 import { EXPECTED_CI_CHECKS } from "./ci-required-checks.mjs";
 import {
@@ -251,6 +253,8 @@ export function records(report) {
       for (const test of spec.tests ?? []) {
         found.push({
           id: spec.id,
+          file: path.basename(spec.file ?? suite.file ?? ""),
+          title: spec.title,
           project: test.projectName,
           results: test.results ?? [],
         });
@@ -262,6 +266,83 @@ export function records(report) {
   return found;
 }
 
+const LANES = ["client", "start"];
+
+/**
+ * The lane-exclusive registry itself, and where its files are planned: each
+ * entry names a spec file, its lane and a non-empty list of distinct titles,
+ * no file has two entries, and each file is planned exactly once on its own
+ * lane and nowhere on the other (client: EDITOR_SHARDS; start:
+ * START_PREVIEW_SHARDS).
+ */
+export function verifyLaneExclusivePlan(
+  registry = LANE_EXCLUSIVE_SPECS,
+  clientShards = EDITOR_SHARDS,
+  startShards = START_PREVIEW_SHARDS,
+) {
+  const files = new Set();
+  for (const entry of registry) {
+    assert.ok(
+      typeof entry?.file === "string" && /^[\w.-]+\.spec\.ts$/.test(entry.file),
+      `LANE_EXCLUSIVE_ENTRY: ${JSON.stringify(entry?.file)} is not a spec file name`,
+    );
+    assert.ok(
+      LANES.includes(entry.lane),
+      `LANE_EXCLUSIVE_ENTRY: ${entry.file} names lane ${JSON.stringify(entry.lane)}, not ${LANES.join(" or ")}`,
+    );
+    assert.ok(
+      Array.isArray(entry.titles) &&
+        entry.titles.length > 0 &&
+        entry.titles.every((title) => typeof title === "string" && title.trim() !== ""),
+      `LANE_EXCLUSIVE_EMPTY: ${entry.file} lists no test titles`,
+    );
+    assert.equal(
+      new Set(entry.titles).size,
+      entry.titles.length,
+      `LANE_EXCLUSIVE_ENTRY: ${entry.file} lists a title twice`,
+    );
+    assert.ok(!files.has(entry.file), `LANE_EXCLUSIVE_ENTRY: ${entry.file} has two entries`);
+    files.add(entry.file);
+    const planned = {
+      client: clientShards.flat().filter((file) => file === entry.file).length,
+      start: startShards.flat().filter((file) => file === entry.file).length,
+    };
+    const other = entry.lane === "client" ? "start" : "client";
+    assert.deepEqual(
+      { [entry.lane]: planned[entry.lane], [other]: planned[other] },
+      { [entry.lane]: 1, [other]: 0 },
+      `LANE_EXCLUSIVE_PLACEMENT: ${entry.file} is ${entry.lane}-only, so it must be planned once on the ${entry.lane} lane and never on the ${other} lane (found ${planned.client} on the editor shards, ${planned.start} on the full Start shards)`,
+    );
+  }
+}
+
+/**
+ * Each registry entry against the collected suite: the editor tests its file
+ * holds are exactly its titles, each once. Returns the IDs of the verified
+ * `start` tests, the only ones the editor shards do not cover.
+ */
+export function verifyLaneExclusiveCollection(
+  expected,
+  registry = LANE_EXCLUSIVE_SPECS,
+) {
+  const editor = expected.filter((r) => r.project === "editor");
+  const startIds = [];
+  for (const entry of registry) {
+    const collected = editor.filter((r) => r.file === entry.file);
+    const titles = collected.map((r) => r.title);
+    const stale = entry.titles.filter((title) => !titles.includes(title));
+    const unlisted = titles.filter((title) => !entry.titles.includes(title));
+    const repeated = titles.filter((title, index) => titles.indexOf(title) !== index);
+    assert.deepEqual(
+      { stale, unlisted, repeated },
+      { stale: [], unlisted: [], repeated: [] },
+      `LANE_EXCLUSIVE_STALE: ${entry.file}'s registered titles differ from the tests collected in it`,
+    );
+    if (entry.lane === "start") startIds.push(...collected.map((r) => r.id));
+  }
+  return startIds;
+}
+
 // Dependency projects intentionally repeat; editor tests must appear exactly
 // once across all shards. Count IDs, not just totals: missing + duplicate tests
 // can otherwise cancel each other out.
@@ -270,13 +351,17 @@ export function verifyCoverage(
   shards,
   executed = false,
   count = EDITOR_SHARD_COUNT,
+  registry = LANE_EXCLUSIVE_SPECS,
 ) {
   assert.equal(shards.length, count, `All ${count} shard reports are required`);
+  // Only the verified Start-only tests leave what the shards must cover.
+  const startOnly = new Set(verifyLaneExclusiveCollection(expected, registry));
   const wanted = expected
-    .filter((r) => r.project === "editor")
+    .filter((r) => r.project === "editor" && !startOnly.has(r.id))
     .map((r) => r.id);
   assert.ok(wanted.length > 0, "The full suite must not be empty");
   const actual = [];
+  const allEditor = [];
   let ran = 0;
   for (const shard of shards) {
     const editor = shard.filter((r) => r.project === "editor");
@@ -296,6 +381,7 @@ export function verifyCoverage(
       }
     }
     actual.push(...editor.map((r) => r.id));
+    allEditor.push(...editor);
     if (executed) {
       const passed = editor.filter((r) =>
         r.results.some((v) => v.status === "passed"),
@@ -322,11 +408,25 @@ export function verifyCoverage(
     wanted.sort(),
     "Shard coverage differs from the complete suite",
   );
-  if (executed)
+  if (executed) {
     assert.ok(
       ran >= 20,
       "The original suite execution minimum remains required",
     );
+    // A client-only test runs nowhere else: here it must have passed.
+    for (const entry of registry.filter((e) => e.lane === "client"))
+      for (const title of entry.titles) {
+        const found = allEditor.filter(
+          (r) => r.file === entry.file && r.title === title,
+        );
+        assert.ok(
+          found.length === 1 &&
+            found[0].results.length > 0 &&
+            found[0].results.every((v) => v.status === "passed"),
+          `LANE_EXCLUSIVE_NOT_PASSED: the client-only test ${entry.file} › ${title} must run once and pass on the editor shards (found ${found.length}, ${found.map((r) => r.results.map((v) => v.status).join(",")).join(" / ") || "no result"})`,
+        );
+      }
+  }
   return shards.map((s) => s.filter((r) => r.project === "editor").length);
 }
 
@@ -361,6 +461,7 @@ if (
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   verifyPlanShape();
+  verifyLaneExclusivePlan();
   const workflow = readFileSync(WORKFLOW_FILE, "utf8");
   verifyWorkflowWiring(workflow);
   verifyCheckNameContract(workflow);

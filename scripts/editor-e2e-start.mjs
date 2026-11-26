@@ -16,7 +16,9 @@
  * Every spec that reads `MORPH_E2E_PREVIEW_RUNTIME` is listed either here or
  * in `START_PREVIEW_EXCLUDED` with its reason; check-e2e-start fails on a spec
  * that is in neither, so a new Start-gated spec cannot stay CI-skipped by
- * omission.
+ * omission. A spec listed here may instead take the runtime through an
+ * `e2e/helpers/` module that reads it, or be a Start-only file of
+ * `LANE_EXCLUSIVE_SPECS` (editor-e2e-shards.mjs), which runs nowhere else.
  */
 /** The job's name, as GitHub reports the check. */
 export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
@@ -32,16 +34,22 @@ export const START_PREVIEW_SHARDS = [
   // navigation-matrix: its Start preview cells took ~2.6 min locally (the
   // spec was added to the then-shortest shard).
   ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "spread-override-binding.spec.ts", "navigation-matrix.spec.ts"],
-  ["code-controlled-field.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts", "starter-upgrade.spec.ts"],
+  // starter-upgrade-start: the Starter upgrades that apply the current
+  // Starter (D, B, Q, R, and an unrecorded Starter 31 Theme switched to Full
+  // Start then upgraded), Start only (LANE_EXCLUSIVE_SPECS in
+  // editor-e2e-shards.mjs). Split from starter-upgrade.spec.ts on this shard;
+  // not measured on its own.
+  ["code-controlled-field.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts", "starter-upgrade.spec.ts", "starter-upgrade-start.spec.ts"],
   // selection-field-frame-navigated: accepted on full Start by the user's
   // decision; added to what was then the shortest shard.
-  // content-module-restore: from Starter 32 the restore command writes a
-  // module that needs the full Start preview, so its successful restore runs
-  // here (on the client lane the same restore is refused by design and the
-  // lane checks that). Added after the projection above, to its shortest
-  // shard (652 s); about 51 s on the editor shards (durations file), not
-  // measured under Start.
-  ["binding-acceptance-p.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "content-module-restore.spec.ts"],
+  // content-module-restore: added after the projection above, to its
+  // shortest shard (652 s); about 51 s on the editor shards (durations file),
+  // not measured under Start. From Starter 32 the restore command writes a
+  // module that needs the full Start preview, so the successful restore is
+  // content-module-restore-start, Start only (LANE_EXCLUSIVE_SPECS in
+  // editor-e2e-shards.mjs); the client lane checks the refusal in a file of
+  // its own.
+  ["binding-acceptance-p.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "content-module-restore.spec.ts", "content-module-restore-start.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
@@ -111,14 +119,5 @@ export const START_PREVIEW_EXPECTED_SKIPS = [
     file: "starter-upgrade.spec.ts",
     title:
       "E. a toolchain pin an earlier Starter wrote: refused by the build, built once the reviewed upgrade is applied",
-  },
-  // Not a client-only gap either: the client lane's own case. Its Themes are
-  // the pinned Starter 31 workspace recording no runtime, where the restore
-  // of the current Starter's module is refused; here the restore succeeds,
-  // which the case before it checks.
-  {
-    file: "content-module-restore.spec.ts",
-    title:
-      "on a client-lane Theme the restore is refused, saying why, and nothing is written",
   },
 ];

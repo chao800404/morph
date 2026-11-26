@@ -30,6 +30,10 @@ export const EDITOR_SHARDS = [
     // 42387058349 (8m08s; shard 5 7m42s, the others 9m11s to 15m55s).
     "unstored-list-inspector-writes.spec.ts",
     "content-module-restore.spec.ts",
+    // Client lane only (LANE_EXCLUSIVE_SPECS below): the restore refused on a
+    // Starter 31 Theme. Split from content-module-restore.spec.ts, whose
+    // measured seconds included it; not measured on its own.
+    "content-module-restore-client.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -157,6 +161,53 @@ export const EDITOR_SHARDS = [
 ];
 
 export const EDITOR_SHARD_COUNT = EDITOR_SHARDS.length;
+
+/**
+ * Spec files that run on one lane only, each assigned there as a whole file:
+ * `client` files are on exactly one editor shard above and in no full Start
+ * shard (scripts/editor-e2e-start.mjs), `start` files the other way round. A
+ * file is lane-exclusive by where it is planned, never by a skip of its own,
+ * so no case of it can be reported as run where it was only skipped.
+ *
+ * `titles` are every test title the file holds, exactly. check-e2e-shards
+ * holds each entry to the collected suite (a stale, missing or unlisted title
+ * fails), takes only these `start` tests out of the tests the editor shards
+ * must cover, and requires each `client` test to pass in the shard reports;
+ * check-e2e-start requires each `start` test to appear once and pass in the
+ * full Start reports.
+ *
+ * From Starter 32 the current Starter's content module needs the full Start
+ * preview, and the client lane's Themes are the pinned Starter 31 workspace
+ * recording no runtime: what applies the current Starter runs on Start only,
+ * and the client lane checks its refusal.
+ */
+export const LANE_EXCLUSIVE_SPECS = Object.freeze([
+  Object.freeze({
+    file: "content-module-restore-start.spec.ts",
+    lane: "start",
+    titles: Object.freeze([
+      "deleted in Code mode, it is restored by the command, saved, and the Live Preview renders",
+    ]),
+  }),
+  Object.freeze({
+    file: "starter-upgrade-start.spec.ts",
+    lane: "start",
+    titles: Object.freeze([
+      "D. the workspace marked older: opening writes nothing; applying the empty review records the version",
+      "B. the untouched pre-pages module on an older Starter: reviewed, then only content.ts is replaced, once",
+      "Q. a Theme of unknown origin, upgraded in part: still pending, and the next review offers only what is left",
+      "R. a Theme created without the Starter's new pages: offered unselected; the Header waits for them",
+      "explains Full Start before Apply; the switch changes no file, version or content; Apply then records 32 and renders it",
+    ]),
+  }),
+  Object.freeze({
+    file: "content-module-restore-client.spec.ts",
+    lane: "client",
+    titles: Object.freeze([
+      "on a client-lane Theme the restore is refused, saying why, and nothing is written",
+    ]),
+  }),
+]);
 
 // Test-body seconds a shard may project before the shard check warns. Each
 // shard adds about two minutes of fixed setup on top (install, browser, dev

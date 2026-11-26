@@ -16,6 +16,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { jobBlock } from "./ci-workflow.mjs";
+import { LANE_EXCLUSIVE_SPECS } from "./editor-e2e-shards.mjs";
 import {
   START_PREVIEW_EXCLUDED,
   START_PREVIEW_EXPECTED_SKIPS,
@@ -31,15 +32,47 @@ const WORKFLOW_FILE = path.join(ROOT, ".github", "workflows", "ci.yml");
 const E2E_DIR = path.join(ROOT, "e2e");
 const GATE = "MORPH_E2E_PREVIEW_RUNTIME";
 
+/** The Start-only files of LANE_EXCLUSIVE_SPECS: where their titles must pass. */
+export const START_EXCLUSIVE_SPECS = LANE_EXCLUSIVE_SPECS.filter(
+  (entry) => entry.lane === "start",
+);
+
+/**
+ * Whether a spec takes the gate through the `e2e/helpers/` modules it
+ * imports, directly or through one another.
+ * @param {string} source the spec's source
+ * @param {Record<string, string>} helperSources file name → source, e2e/helpers/*.ts
+ */
+function readsGateThroughHelpers(source, helperSources) {
+  const imported = (/** @type {string} */ text, /** @type {RegExp} */ pattern) =>
+    [...text.matchAll(pattern)].map((match) => `${match[1]}.ts`);
+  const pending = imported(source, /from\s+"\.\/helpers\/([\w.-]+?)(?:\.ts)?"/g);
+  const seen = new Set();
+  while (pending.length > 0) {
+    const helper = /** @type {string} */ (pending.pop());
+    if (seen.has(helper) || !(helper in helperSources)) continue;
+    seen.add(helper);
+    if (helperSources[helper].includes(GATE)) return true;
+    pending.push(...imported(helperSources[helper], /from\s+"\.\/([\w.-]+?)(?:\.ts)?"/g));
+  }
+  return false;
+}
+
 /**
  * Every spec reading the Start gate is either run by the job or excluded with
- * a reason, and every listed spec exists and reads it.
+ * a reason, and every listed spec exists. An excluded spec reads the gate
+ * itself; a spec the job runs reads it itself, through an `e2e/helpers/`
+ * module it imports, or is a Start-only file of LANE_EXCLUSIVE_SPECS, which
+ * gets its runtime from where it is planned.
  * @param {Record<string, string>} specSources file name → source, e2e/*.spec.ts
+ * @param {Record<string, string>} helperSources file name → source, e2e/helpers/*.ts
  */
 export function verifyStartPlan(
   specSources,
   specs = START_PREVIEW_SPECS,
   excluded = START_PREVIEW_EXCLUDED,
+  helperSources = {},
+  startExclusive = START_EXCLUSIVE_SPECS,
 ) {
   assert.ok(
     START_PREVIEW_SHARDS.every((shard) => shard.length > 0),
@@ -65,9 +98,25 @@ export function verifyStartPlan(
       file in specSources,
       `${file} is listed but does not exist in e2e/`,
     );
+  }
+  for (const file of Object.keys(excluded)) {
     assert.ok(
       gated.includes(file),
       `${file} is listed but does not read ${GATE}`,
+    );
+  }
+  for (const entry of startExclusive) {
+    assert.ok(
+      specs.includes(entry.file),
+      `START_EXCLUSIVE_UNPLANNED: ${entry.file} is Start-only (LANE_EXCLUSIVE_SPECS) but not in the full Start plan`,
+    );
+  }
+  for (const file of specs) {
+    const throughHelper = readsGateThroughHelpers(specSources[file], helperSources);
+    const startOnly = startExclusive.some((entry) => entry.file === file);
+    assert.ok(
+      gated.includes(file) || throughHelper || startOnly,
+      `${file} is listed but does not read ${GATE}, neither itself nor through an e2e/helpers/ module, and is not a Start-only file of LANE_EXCLUSIVE_SPECS`,
     );
   }
   const unclassified = gated.filter(
@@ -189,6 +238,9 @@ export function verifyStartReport(
   report,
   specs = START_PREVIEW_SPECS,
   expectedSkips = START_PREVIEW_EXPECTED_SKIPS,
+  startExclusive = START_EXCLUSIVE_SPECS.filter((entry) =>
+    specs.includes(entry.file),
+  ),
 ) {
   const records = startRecords(report);
   for (const project of ["setup", "preview-transport"]) {
@@ -229,6 +281,24 @@ export function verifyStartReport(
     );
   }
   const problems = [];
+  // A Start-only test runs nowhere else: each must be here once, and pass.
+  for (const entry of startExclusive)
+    for (const title of entry.titles) {
+      const found = editor.filter(
+        (r) => r.file === entry.file && r.title === title,
+      );
+      if (found.length !== 1)
+        problems.push(
+          `START_EXCLUSIVE_NOT_ONCE: ${entry.file} › ${title} is Start-only and must appear once in the report (found ${found.length})`,
+        );
+      else if (
+        found[0].statuses.length === 0 ||
+        !found[0].statuses.every((s) => s === "passed")
+      )
+        problems.push(
+          `START_EXCLUSIVE_NOT_PASSED: ${entry.file} › ${title} is Start-only and ended ${found[0].statuses.join(",") || "without a result"}`,
+        );
+    }
   let passed = 0;
   for (const record of editor) {
     const { statuses } = record;
@@ -294,6 +364,9 @@ export function verifyStartShardReports(directory) {
       START_PREVIEW_EXPECTED_SKIPS.filter((skip) =>
         startPreviewFilesForShard(index + 1).includes(skip.file),
       ),
+      START_EXCLUSIVE_SPECS.filter((entry) =>
+        startPreviewFilesForShard(index + 1).includes(entry.file),
+      ),
     ),
   );
 }
@@ -304,6 +377,17 @@ function e2eSpecSources() {
   for (const file of readdirSync(E2E_DIR)) {
     if (file.endsWith(".spec.ts"))
       sources[file] = readFileSync(path.join(E2E_DIR, file), "utf8");
+  }
+  return sources;
+}
+
+function e2eHelperSources() {
+  const directory = path.join(E2E_DIR, "helpers");
+  /** @type {Record<string, string>} */
+  const sources = {};
+  for (const file of readdirSync(directory)) {
+    if (file.endsWith(".ts"))
+      sources[file] = readFileSync(path.join(directory, file), "utf8");
   }
   return sources;
 }
@@ -327,12 +411,13 @@ if (
       JSON.parse(readFileSync(reportPath, "utf8")),
       files,
       START_PREVIEW_EXPECTED_SKIPS.filter((skip) => files.includes(skip.file)),
+      START_EXCLUSIVE_SPECS.filter((entry) => files.includes(entry.file)),
     );
     console.log(
       `Full Start report verified: ${passed} passed, ${skipped} skipped by design, none skipped otherwise`,
     );
   } else {
-    verifyStartPlan(e2eSpecSources());
+    verifyStartPlan(e2eSpecSources(), START_PREVIEW_SPECS, START_PREVIEW_EXCLUDED, e2eHelperSources());
     verifyStartWorkflow(readFileSync(WORKFLOW_FILE, "utf8"));
     console.log(
       `Full Start plan verified: ${START_PREVIEW_SPECS.length} spec(s) run, ${Object.keys(START_PREVIEW_EXCLUDED).length} excluded with a reason`,
