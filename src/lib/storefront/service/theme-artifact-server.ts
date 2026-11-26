@@ -152,6 +152,13 @@ export type ThemeArtifactRequest = Readonly<{
   artifactPath?: string;
   r2Bucket?: R2BucketLike;
   policy: ThemeArtifactServingPolicy;
+  /**
+   * When set, the ETag is `"<etagScope>:<manifest sha256>"` instead of the
+   * storage object's. A static page names its release here, so the same
+   * bytes under another release are another representation and an old
+   * validator never revalidates against a different release.
+   */
+  etagScope?: string;
 }>;
 
 export type ThemeArtifactFailure = Readonly<{
@@ -310,8 +317,9 @@ export async function serveThemeArtifact(
     corsHeaders["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS";
   }
 
-  const etag =
-    object.httpEtag || (manifestFile ? `"${manifestFile.sha256}"` : undefined);
+  const etag = args.etagScope
+    ? `"${args.etagScope}:${manifestFile.sha256}"`
+    : object.httpEtag || (manifestFile ? `"${manifestFile.sha256}"` : undefined);
 
   const cacheControl = isHtml
     ? policy.htmlCacheControl

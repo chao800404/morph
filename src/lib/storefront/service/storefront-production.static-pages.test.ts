@@ -51,7 +51,7 @@ function manifest(
       kind: "cloudflare-worker",
       workerEntry: "runtime/server/index.js",
       clientAssetsDirectory: "runtime/client",
-      ...(staticPages === undefined ? {} : { staticPages }),
+      ...(staticPages === null ? {} : { staticPages }),
     },
   };
 }
@@ -269,7 +269,7 @@ describe("the generic asset entry and prerendered HTML", () => {
     ["an unregistered page's", "/landing/index.html"],
     ["the root", "/index.html"],
   ])("does not serve %s index.html directly", async (_, path) => {
-    const { service: core, theme, bucket } = service({ manifestJson: manifest(undefined) });
+    const { service: core, theme, bucket } = service({ manifestJson: manifest(null) });
     const response = await core.handleRequest(req(path));
     expect(await response.text()).toBe("rendered by the Theme Worker");
     expect(theme.handle).toHaveBeenCalledTimes(1);
@@ -279,7 +279,7 @@ describe("the generic asset entry and prerendered HTML", () => {
   it("does not serve a registered page's index.html outside the release dispatch", async () => {
     // A release without registrations: the same file is just a build output,
     // and the generic entry must not turn it into a public page.
-    const { service: core, bucket } = service({ manifestJson: manifest(undefined) });
+    const { service: core, bucket } = service({ manifestJson: manifest(null) });
     await core.handleRequest(req("/about/index.html"));
     expect(bucket.get).not.toHaveBeenCalled();
   });
