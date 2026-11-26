@@ -37,9 +37,10 @@ import { astroConfig } from "../src/lib/storefront/theme-framework/astro-native-
  * 2. A click on a section Core's binding view confirms is acknowledged as
  *    the basis only after Core has confirmed the frame's own ticket and
  *    instance: while that confirmation is held back the click is refused
- *    with the reload hint and nothing is posted to the frame; once Core
- *    answered, the click is posted as a basis token naming that same pair,
- *    the frame answers `applied`, and the editor takes it.
+ *    with the reload hint and nothing is posted to the frame; Core's answer
+ *    itself then issues that kept click's basis token, naming that same
+ *    pair, the frame answers `applied`, and the editor takes it; the next
+ *    click yields exactly one more token. No post is without its cause.
  *    Then a stale document: content another writer synced after the
  *    editor's basis is shown by a reloaded frame whose stamp Core never
  *    confirmed to this editor. The click is refused with the same hint, and
@@ -760,8 +761,23 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
         (await observed.lifecycle()).acks.filter((ack) => ack.status === "applied"),
       ).toEqual([]);
 
-      // B. Core answers; the next click is posted as a basis token naming
-      //    the frame's stamp, the frame acknowledges it, the editor takes it.
+      // B. Core answers. The section the author clicked while the confirm
+      //    was held is kept (hints review finding 2): Core's answer itself
+      //    issues its basis token, naming the frame's stamp, with no new
+      //    click. The author's next click then yields exactly one more
+      //    token. Every post has its cause (the answer, then the click), and
+      //    every accepted op is exactly one post: an extra or duplicate post
+      //    fails here.
+      const linesBefore = observed.lines.length;
+      const acceptedOps = (): string[] =>
+        observed.lines
+          .slice(linesBefore)
+          .flatMap((line) => {
+            const match = /ack accepted op=(section-basis-\d+) .*status=applied/.exec(
+              line,
+            );
+            return match ? [match[1]!] : [];
+          });
       const confirmAnswered = page.waitForResponse(
         (response) =>
           isServerFn(response.url(), "confirmThemePreviewContent") &&
@@ -770,49 +786,68 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
       );
       release();
       await confirmAnswered;
+      // The answer's token, accepted, before any new click.
+      await expect
+        .poll(() => acceptedOps().length, {
+          timeout: 30_000,
+          message: "Core's answer issues the held click's basis token, and the editor accepts it",
+        })
+        .toBe(1);
       await expect(hint).toHaveCount(0, { timeout: 30_000 });
+      frame = await backToDesign(page);
+      const answered = await observed.posts(frame);
+      expect(answered, "one token, issued on Core's answer, for the held click").toHaveLength(1);
+      const answerPost = answered[0]!;
+      expect(answerPost.operationId).toBe(acceptedOps()[0]);
+      expect(answerPost.basis).toMatchObject({
+        kind: "astro-boundary",
+        servedContent: { ticket: stamp.ticket, instance: stamp.instance },
+      });
       await ensureSelection(page, frame);
       // Still a document of the start's snapshot (a new one if the canvas
       // was taken down in Code mode).
       expect((await observed.lifecycle()).readies.at(-1)?.servedContent).toEqual(
         stamp,
       );
-      const linesBefore = observed.lines.length;
       await frame.locator("[data-basis-hero] h1").click();
-      const acceptedOp = (): string | null => {
-        for (const line of observed.lines.slice(linesBefore)) {
-          const match = /ack accepted op=(section-basis-\d+) .*status=applied/.exec(
-            line,
-          );
-          if (match) return match[1]!;
-        }
-        return null;
-      };
       await expect
-        .poll(acceptedOp, {
+        .poll(() => acceptedOps().length, {
           timeout: 30_000,
-          message: "the editor accepts the frame's applied basis ack",
+          message: "the editor accepts the frame's applied ack for the click's token",
         })
-        .not.toBeNull();
+        .toBe(2);
       frame = await backToDesign(page);
       const posts = await observed.posts(frame);
-      expect(posts, "one basis token, for this click").toHaveLength(1);
-      const post = posts[0]!;
-      expect(post.operationId).toBe(acceptedOp());
+      expect(posts, "the answer's token and exactly one for the click").toHaveLength(2);
+      expect(posts[0]).toEqual(answerPost);
+      const post = posts[1]!;
+      expect(new Set(posts.map((each) => each.operationId)).size).toBe(2);
+      expect(post.operationId).toBe(acceptedOps()[1]);
+      expect([...acceptedOps()].sort()).toEqual(
+        posts.map((each) => each.operationId).sort(),
+      );
+      // The same section both times: the held click's and this click's.
+      expect(post.basis).toEqual(answerPost.basis);
       expect(post.basis).toMatchObject({
         kind: "astro-boundary",
         servedContent: { ticket: stamp.ticket, instance: stamp.instance },
       });
-      expect(
-        (await observed.lifecycle()).acks.some(
-          (ack) =>
-            ack.operationId === post.operationId && ack.status === "applied",
-        ),
-      ).toBe(true);
+      const { acks } = await observed.lifecycle();
+      for (const each of posts) {
+        expect(
+          acks.filter(
+            (ack) =>
+              ack.operationId === each.operationId && ack.status === "applied",
+          ),
+          `one applied ack for ${each.operationId}`,
+        ).toHaveLength(1);
+      }
       expect(
         observed.lines.slice(linesBefore).some((line) => line.includes("basis ack held")),
         observed.lines.join("\n"),
       ).toBe(false);
+      // Nothing more is posted after a settle.
+      expect(await observed.posts(frame)).toEqual(posts);
       // The pair the token named is Core's own, asked independently.
       expect(await confirmed(writer, stamp.ticket)).toMatchObject({
         success: true,
