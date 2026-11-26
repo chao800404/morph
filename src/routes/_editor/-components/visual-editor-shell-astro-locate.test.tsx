@@ -2325,6 +2325,60 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
           identity: MARKER,
         });
       });
+
+      const unconfirmedCount = () =>
+        document
+          .querySelector("[data-editor-unconfirmed-saves]")
+          ?.getAttribute("data-editor-unconfirmed-saves") ?? null;
+      // Codex review, unanswered resend: the resend of a write that got no
+      // answer carries no identity, and Core refuses it as
+      // preview-identity-legacy before writing. That answers the resend
+      // only; the first write may still have landed, so it stays held as
+      // unanswered and a later read-back that shows it is taken as landed.
+      it("a resend Core refuses for carrying no identity keeps the unanswered write, so its late success is still recognised", async () => {
+        updateSectionProps
+          .mockRejectedValueOnce(new Error("offline"))
+          .mockResolvedValueOnce({
+            success: false,
+            error: "SECTION_SOURCE_UNCONFIRMABLE",
+            message:
+              "SECTION_SOURCE_UNCONFIRMABLE: preview-identity-legacy: the write carries no v2 instance identity; reload the preview",
+          });
+        await upAndAcked();
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Lost answer" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        await waitFor(() =>
+          expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy(),
+        );
+        expect(unconfirmedCount()).not.toBeNull();
+
+        // The read-back shows nothing landed: sent again, refused for its
+        // missing identity.
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+        await flush();
+        expect(unconfirmedCount()).not.toBeNull();
+
+        // The first write did land after all: the next read-back shows it.
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: contextWithHero(5, {
+            title: "Lost answer",
+            subtitle: "Stored subtitle",
+          }),
+        });
+        await waitFor(() =>
+          expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy(),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await waitFor(() => expect(unconfirmedCount()).toBeNull());
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(2);
+      });
     });
 
     // Lead decision Q3: after a frame reload the selection is not kept from
