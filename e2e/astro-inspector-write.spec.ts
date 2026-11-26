@@ -230,8 +230,17 @@ test.describe("Astro Inspector write on the container Live Preview (M2 PR 3)", (
         homeId!,
         JSON.stringify({
           version: 1,
+          // The row Core writes for this instance: its ref and type are
+          // Core's own (`resolveAstroSectionWrite`). A row with no ref is
+          // refused as section-row-mismatch, never re-pointed.
           sections: [
-            { id: "hero", type: "hero", enabled: true, props: { ...start } },
+            {
+              id: "hero",
+              type: "hero",
+              componentRef: "src/components/Hero.astro",
+              enabled: true,
+              props: { ...start },
+            },
           ],
         }),
         now,
