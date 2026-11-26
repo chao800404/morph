@@ -47,15 +47,16 @@ import {
   verifyPublishedArtifact,
 } from "./verify-published-artifact.mjs";
 import {
+  CLIENT_LANE_SEEDS_FILE,
   CLIENT_LANE_STARTER_VERSION,
   CLIENT_LANE_THEMES_FILE,
-  CLIENT_LANE_THEMES_VAR,
   CLIENT_LANE_USES_FILE,
-  CLIENT_LANE_USES_VAR,
   CLIENT_LANE_VERDICT_SUFFIX,
+  allocateSharedClientLaneTheme,
+  clientLaneRegisteredThemeIds,
+  clientLaneSuiteEnv,
   clientLaneVerdict,
   isClientLaneRun,
-  parseClientLaneThemes,
   readFixtureFileDigests,
   requiredClientLaneRefusal,
 } from "./e2e-client-lane-guard.mjs";
@@ -1659,44 +1660,69 @@ function openSidecarSwap({ swap, report, secrets, oldSidecar }) {
 }
 
 /**
- * After the suite on the client lane: reads each seeded Theme's stored
- * runtime again, keeps the verdict beside the report whatever it says (with
- * the evidence itself, so the acceptance job checks it again instead of
- * trusting `ok`), and refuses the run unless it passes.
+ * After the suite on the client lane: reads every Theme the lane seeded (the
+ * slots, the shared slot, each throwaway) again, and every Theme the run
+ * previewed (its preview tickets), keeps the verdict beside the report
+ * whatever it says (with the evidence itself, so the acceptance job checks
+ * it again instead of trusting `ok`), and refuses the run unless it passes.
  *
  * @param {ReturnType<typeof readFixtureFileDigests>} expected
  * @param {string | undefined} workerValue
  * @param {string} report
+ * @param {string} sharedText the shared slot's allocation, as the specs got it
  */
-async function verifyClientLane(expected, workerValue, report) {
-  const themesFile = path.join(stateDir, CLIENT_LANE_THEMES_FILE);
-  const usesFile = path.join(stateDir, CLIENT_LANE_USES_FILE);
-  const themesText = existsSync(themesFile)
-    ? await readFile(themesFile, "utf8")
-    : undefined;
-  const usesText = existsSync(usesFile)
-    ? await readFile(usesFile, "utf8")
-    : undefined;
-  const parsed = parseClientLaneThemes(themesText);
-  const afterSuite = ("themes" in parsed ? parsed.themes : [])
-    .map((entry) => entry?.themeId)
-    .filter((themeId) => typeof themeId === "string")
-    .map((themeId) => {
+async function verifyClientLane(expected, workerValue, report, sharedText) {
+  const read = async (/** @type {string} */ name) => {
+    const file = path.join(stateDir, name);
+    return existsSync(file) ? await readFile(file, "utf8") : undefined;
+  };
+  const themesText = await read(CLIENT_LANE_THEMES_FILE);
+  const usesText = await read(CLIENT_LANE_USES_FILE);
+  const seedsText = await read(CLIENT_LANE_SEEDS_FILE);
+  const afterSuite = clientLaneRegisteredThemeIds(themesText, seedsText).map(
+    (themeId) => {
       const rows = queryLifecycleD1(
         stateDir,
-        "SELECT preview_runtime FROM storefront_themes WHERE id = ?1",
+        `SELECT storefront_id, preview_runtime, deleted_at,
+                json_extract(metadata, '$.starterTemplateVersion') AS starter_version
+         FROM storefront_themes WHERE id = ?1`,
         themeId,
       );
       return {
         themeId,
         rows: rows.length,
+        storefrontId: rows[0]?.storefront_id ?? null,
         previewRuntime: rows[0]?.preview_runtime ?? null,
+        starterTemplateVersion: rows[0]?.starter_version ?? null,
+        deletedAt: rows[0]?.deleted_at ?? null,
       };
-    });
+    },
+  );
+  // Every preview start takes a ticket for its Theme, so these are the
+  // Themes the run previewed, however a spec reached them. Unreadable (no
+  // database at all) is left undefined, which the verdict refuses.
+  /** @type {{ storefrontId: unknown, themeId: unknown }[] | undefined} */
+  let previewed;
+  try {
+    previewed = queryLifecycleD1(
+      stateDir,
+      `SELECT DISTINCT storefront_id, theme_id
+       FROM storefront_theme_preview_content_tickets
+       ORDER BY storefront_id, theme_id`,
+    ).map((row) => ({ storefrontId: row.storefront_id, themeId: row.theme_id }));
+  } catch (error) {
+    log(
+      `client lane: the run's preview tickets could not be read: ${error instanceof Error ? error.message : error}`,
+    );
+    previewed = undefined;
+  }
   const verdict = clientLaneVerdict({
     themesText,
     usesText,
+    seedsText,
+    sharedText,
     afterSuite,
+    previewed,
     workerValue,
     expected,
   });
@@ -1708,7 +1734,7 @@ async function verifyClientLane(expected, workerValue, report) {
   if (!verdict.ok) throw new Error(verdict.refusal ?? "CLIENT_LANE_UNVERIFIED");
   const used = (usesText ?? "").split("\n").filter((line) => line.trim()).length;
   log(
-    `client lane verified: ${afterSuite.length} dedicated Starter ${CLIENT_LANE_STARTER_VERSION} Themes seeded before the suite, all still recording no runtime and served the client-only preview; ${used} use(s) by specs`,
+    `client lane verified: ${afterSuite.length} Starter ${CLIENT_LANE_STARTER_VERSION} Themes seeded (slots, the shared slot and throwaways), all still recording no runtime and served the client-only preview; ${previewed?.length ?? 0} Theme(s) previewed, every one of them seeded; ${used} slot use(s) by specs`,
   );
 }
 
@@ -1808,12 +1834,24 @@ async function main() {
   // dedicated Starter 31 Themes, seeded by auth.setup before any editor opens
   // (scripts/e2e-client-lane-guard.mjs). Read before anything starts, so a
   // checkout without the fixture is refused rather than run unchecked.
+  //
+  // On the lane `E2E_EDITOR_PATH` is not the storefront's own default Theme,
+  // which from Starter 32 records the full Start preview: the shared slot is
+  // a Theme of its own, its ids allocated here, before Playwright loads any
+  // spec (several read the path at module scope), and seeded by auth.setup
+  // before the transport check opens it.
   const clientLane = isClientLaneRun(specRuntime, recordRuntime, USES_SIDECAR)
-    ? { expected: readFixtureFileDigests() }
+    ? {
+        expected: readFixtureFileDigests(),
+        shared: allocateSharedClientLaneTheme(
+          process.env.E2E_EDITOR_PATH,
+          randomUUID,
+        ),
+      }
     : null;
   if (clientLane) {
     log(
-      `client lane: dedicated Starter ${CLIENT_LANE_STARTER_VERSION} Themes are seeded before the suite and must still record no runtime after it`,
+      `client lane: dedicated Starter ${CLIENT_LANE_STARTER_VERSION} Themes, the shared one (E2E_EDITOR_PATH ${clientLane.shared.editorPath}) and every throwaway are seeded before use and must still record no runtime after the suite`,
     );
   }
   if (recordRuntime) {
@@ -2050,12 +2088,7 @@ async function main() {
   try {
     await runWhileServing("playwright", "npx", suite, {
       ...(sidecarSwap ? sidecarSwap.suiteEnv : {}),
-      ...(clientLane
-        ? {
-            [CLIENT_LANE_THEMES_VAR]: path.join(stateDir, CLIENT_LANE_THEMES_FILE),
-            [CLIENT_LANE_USES_VAR]: path.join(stateDir, CLIENT_LANE_USES_FILE),
-          }
-        : {}),
+      ...(clientLane ? clientLaneSuiteEnv(stateDir, clientLane.shared) : {}),
       // Asserted as a precondition, so a run that silently fell back to the
       // container transport fails instead of passing for the wrong reason.
       E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,
@@ -2093,7 +2126,14 @@ async function main() {
 
   sidecarSwap?.verify();
 
-  if (clientLane) await verifyClientLane(clientLane.expected, workerRuntime.value, report);
+  if (clientLane) {
+    await verifyClientLane(
+      clientLane.expected,
+      workerRuntime.value,
+      report,
+      JSON.stringify(clientLane.shared),
+    );
+  }
 
   await verifyPublishedRelease();
 

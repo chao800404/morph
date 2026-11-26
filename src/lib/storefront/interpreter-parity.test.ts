@@ -18,7 +18,13 @@ import {
   normalizeThemeMarkup as normalize,
 } from "@/lib/test-utils/theme-module-loader";
 import { renderSafeThemeRoute } from "@/components/storefront/safe-theme-route-renderer";
+import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { createDefaultStorefrontHomeDocument } from "@/lib/storefront/default-storefront-document";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import {
+  LIVE_PREVIEW_START_PACKAGES,
+  withLivePreviewContent,
+} from "@/lib/test-utils/live-preview-render";
 import {
   STARTER_THEME_V3_NEW_FILES,
   STARTER_THEME_V4_NEW_FILES,
@@ -47,17 +53,14 @@ const files = Array.from(
       ...STARTER_THEME_FILES,
       ...STARTER_THEME_V3_NEW_FILES,
       ...STARTER_THEME_V4_NEW_FILES,
-    ].map((file) => [
-      file.path,
-      { path: file.path, content: file.content },
-    ]),
+    ].map((file) => [file.path, { path: file.path, content: file.content }]),
   ).values(),
 );
 
 // Handed the harness's own router rather than letting the loader resolve one:
 // `<Link>` reads the router from React context, and a second copy of the
 // library would leave that context empty however the provider is set up.
-const { loadModule, preloadPackages } = createThemeModuleLoader(files, {
+const { loadModule } = createThemeModuleLoader(files, {
   packages: { "@tanstack/react-router": reactRouter },
 });
 
@@ -139,7 +142,9 @@ const SELF_CONTAINED_COMPONENTS: ReadonlyArray<
 describe("interpreter and React render the same DOM", () => {
   for (const [sourcePath, props] of SELF_CONTAINED_COMPONENTS) {
     const label = sourcePath.split("/").pop();
-    const propsLabel = Object.keys(props).length ? " with props" : " with defaults";
+    const propsLabel = Object.keys(props).length
+      ? " with props"
+      : " with defaults";
 
     it(`${label}${propsLabel}`, async () => {
       const fromReact = normalize(await renderWithReact(sourcePath, props));
@@ -167,14 +172,24 @@ describe("interpreter and the real router agree about a whole route", () => {
    * loader it calls, the React context that carries the result, and `Outlet`.
    * Those are the pieces the interpreter has to model, and the pieces every
    * gap found by hand so far has been in.
+   *
+   * The content module reads through `@morph/sdk/start` and a
+   * `createServerFn`. The router side gets the Live Preview harness's
+   * stand-ins for those (`LIVE_PREVIEW_START_PACKAGES`), which read `document`
+   * as the preview serves `/_morph/content`; the interpreter is handed the same
+   * Document. Both sides render the same authored content.
    */
-  async function renderThroughRouter(): Promise<string> {
-    await preloadPackages([
-      "@tanstack/react-router",
-      "@tanstack/react-start",
-      "@tanstack/react-start/server",
-    ]);
+  const routerLoader = createThemeModuleLoader(files, {
+    packages: {
+      "@tanstack/react-router": reactRouter,
+      ...LIVE_PREVIEW_START_PACKAGES,
+    },
+  });
 
+  async function renderThroughRouter(
+    document: StorefrontPageDocument,
+  ): Promise<string> {
+    const { loadModule } = routerLoader;
     const root = loadModule("src/routes/__root.tsx") as {
       Route: { options: Record<string, unknown> };
     };
@@ -191,27 +206,48 @@ describe("interpreter and the real router agree about a whole route", () => {
       path: "/",
       component: home.Route.options.component as never,
     });
-    const router = buildRuntimeRouter({
-      routeTree: rootRoute.addChildren([homeRoute as never]),
-      history: createMemoryHistory({ initialEntries: ["/"] }),
-    });
-    await router.load();
+    return withLivePreviewContent({ index: document }, undefined, async () => {
+      const router = buildRuntimeRouter({
+        routeTree: rootRoute.addChildren([homeRoute as never]),
+        history: createMemoryHistory({ initialEntries: ["/"] }),
+      });
+      await router.load();
 
-    return renderToStaticMarkup(
-      createElement(RouterProvider as never, { router } as never),
-    );
+      return renderToStaticMarkup(
+        createElement(RouterProvider as never, { router } as never),
+      );
+    });
+  }
+
+  /**
+   * The Starter's home Document with one authored heading: stored values on
+   * every section, so the comparison covers content reaching the components,
+   * not only the components' defaults.
+   */
+  const AUTHORED_HEADING = "Parity: an authored heading";
+  function authoredHomeDocument(): StorefrontPageDocument {
+    const document = createDefaultStorefrontHomeDocument();
+    return {
+      ...document,
+      sections: document.sections.map((section) =>
+        section.id === "starter-hero"
+          ? {
+              ...section,
+              props: { ...section.props, heading: AUTHORED_HEADING },
+            }
+          : section,
+      ),
+    };
   }
 
   it("renders the home route identically", async () => {
-    const fromRouter = normalize(await renderThroughRouter());
+    const document = authoredHomeDocument();
+    const fromRouter = normalize(await renderThroughRouter(document));
 
-    // No authored content on either side: the router's loader has no request
-    // to fetch content with, so both render the components' own defaults —
-    // which is the only comparison where neither side is being simulated.
     const interpreted = renderSafeThemeRoute({
       files,
       pathname: "/",
-      document: { version: 1, sections: [] } as never,
+      document,
     });
     expect(
       interpreted.success,
@@ -224,7 +260,13 @@ describe("interpreter and the real router agree about a whole route", () => {
     );
 
     expect(fromRouter.length).toBeGreaterThan(1_000);
+    // Guards the comparison itself: the router side really read the Document
+    // (the authored heading, and the Document's newsletter copy rather than
+    // the component's default "Join our newsletter"), so a match is about
+    // content, not two sets of defaults.
+    expect(fromRouter).toContain(AUTHORED_HEADING);
+    expect(fromRouter).toContain("A quieter kind of inbox.");
+    expect(fromRouter).not.toContain("Join our newsletter");
     expect(fromInterpreter).toBe(fromRouter);
   });
 });
-

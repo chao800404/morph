@@ -388,10 +388,94 @@ export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
 
 // Below \`updatePreviewContent\`: the dev-server plugin copies the resolver
 // above it, and these read the browser's page.
-function currentPreviewContent() {
-  const pathname = window.__morphPreviewRouter?.state?.location?.pathname ||
+function currentPreviewPath() {
+  return window.__morphPreviewRouter?.state?.location?.pathname ||
     (window.location.pathname.startsWith(${JSON.stringify(THEME_PREVIEW_SERVER_BASE_PATH)}) ? "/" : window.location.pathname) || "/";
-  return previewContentForPath(pathname);
+}
+
+/** Set only while \`livePreviewContentOverlay\` replays edits onto its copy. */
+let previewContentTarget = null;
+
+function currentPreviewContent() {
+  return previewContentTarget || previewContentForPath(currentPreviewPath());
+}
+
+/**
+ * The edits this page received, per exact path, in order: what
+ * \`updatePreviewContent\` applied to that path's content. Kept apart from
+ * the content itself only so they can be laid over another answer for the
+ * same path (\`livePreviewContentOverlay\`); nothing else reads them.
+ */
+const livePreviewEdits = new Map();
+
+// Every caller (the bridge, the Start client's early receiver) imports
+// \`updatePreviewContent\`; its binding is replaced here, once, by one that
+// also records the edit for its path. What it does to the page's content is
+// the function above, unchanged.
+const applyPreviewContentUpdate = updatePreviewContent;
+updatePreviewContent = function updatePreviewContent(sectionId, props, enabled, resetKeys) {
+  recordLivePreviewEdit(sectionId, props, enabled, resetKeys);
+  return applyPreviewContentUpdate(sectionId, props, enabled, resetKeys);
+};
+
+function livePreviewPathKey(pathname) {
+  return (pathname || "/").split("?")[0].replace(/\\/+$/, "") || "/";
+}
+
+function recordLivePreviewEdit(sectionId, props, enabled, resetKeys) {
+  const key = livePreviewPathKey(currentPreviewPath());
+  const edits = livePreviewEdits.get(key) || [];
+  const last = edits[edits.length - 1];
+  const valuesOnly = enabled === undefined && !Array.isArray(resetKeys);
+  // A run of value edits to one section is one edit with their values merged:
+  // applying them in turn gives the same slot.
+  if (
+    props && valuesOnly && last && last.sectionId === sectionId &&
+    last.props && last.enabled === undefined && !last.resetKeys
+  ) {
+    last.props = { ...last.props, ...structuredClone(props) };
+  } else {
+    edits.push({
+      sectionId,
+      props: props ? structuredClone(props) : undefined,
+      enabled,
+      resetKeys: Array.isArray(resetKeys) ? [...resetKeys] : undefined,
+    });
+  }
+  livePreviewEdits.set(key, edits);
+}
+
+/**
+ * Starter 32's client loader reads through a server function, which answers
+ * from the saved drafts only, so this page's unsaved edits would not show.
+ * Given what that read returned for \`pathname\`, this answers it with the
+ * edits this page received for exactly that path laid over it, applied as
+ * \`updatePreviewContent\` applied them here: a newer edit wins over a saved
+ * older one, and saved values it did not touch stay. Null when the path has
+ * no edit. A new object each time; nothing the caller does reaches the page's
+ * own content. Read through the Start Live Preview's accessor only.
+ */
+export function livePreviewContentOverlay(pathname, base) {
+  const edits = livePreviewEdits.get(livePreviewPathKey(pathname));
+  if (!edits || edits.length === 0) return null;
+  if (!base || typeof base !== "object" || !base.slots || !Array.isArray(base.hiddenSlots)) {
+    return null;
+  }
+  const content = structuredClone({ slots: base.slots, hiddenSlots: base.hiddenSlots });
+  previewContentTarget = content;
+  try {
+    for (const edit of edits) {
+      applyPreviewContentUpdate(
+        edit.sectionId,
+        edit.props ? structuredClone(edit.props) : undefined,
+        edit.enabled,
+        edit.resetKeys,
+      );
+    }
+  } finally {
+    previewContentTarget = null;
+  }
+  return content;
 }
 
 /** The values this page's content holds for one slot, as it renders from them. */

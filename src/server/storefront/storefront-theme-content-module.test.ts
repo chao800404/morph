@@ -379,7 +379,20 @@ async function deleteContentModule() {
   expect(await contentModule()).toBeUndefined();
 }
 
+/**
+ * The Theme records the full Start preview, as an author who switched has:
+ * from Starter 32 the Starter's content module needs it, so a restore of it
+ * is held to such a Theme (the runtime rule is the last describe's).
+ */
+function recordStart() {
+  sqlite
+    .prepare("UPDATE storefront_themes SET preview_runtime = 'start' WHERE id = ?")
+    .run(THEME);
+}
+
 describe("the author's content module on the server", () => {
+  beforeEach(recordStart);
+
   it("takes an author's edit like any source file", async () => {
     seedStarterWorkspace();
     const existing = (await contentModule())!;
@@ -473,6 +486,8 @@ describe("a restore the editor declares", () => {
   // resolves the Starter file for the path itself. The request's bytes are
   // never what is written, so a later change to the restore's source or
   // format cannot make a restore look like an author's create.
+  beforeEach(recordStart);
+
   it("writes the Starter's own module, whatever bytes the request carries", async () => {
     seedStarterWorkspace();
     await deleteContentModule();

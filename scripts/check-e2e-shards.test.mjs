@@ -5,6 +5,8 @@ import path from "node:path";
 import {
   latestShardReports,
   verifyCoverage,
+  verifyLaneExclusiveCollection,
+  verifyLaneExclusivePlan,
   verifyPlanShape,
   verifyCheckNameContract,
   verifyPlannedFilesExist,
@@ -15,8 +17,10 @@ import { workflowCheckNames } from "./ci-workflow.mjs";
 import {
   EDITOR_SHARDS,
   EDITOR_SHARD_COUNT,
+  LANE_EXCLUSIVE_SPECS,
   editorShardArguments,
 } from "./editor-e2e-shards.mjs";
+import { START_PREVIEW_SHARDS } from "./editor-e2e-start.mjs";
 import {
   allocate,
   budgetWarnings,
@@ -117,8 +121,9 @@ const shards = () =>
     record("transport", "preview-transport"),
     ...expected.slice(n * 7, n * 7 + 7),
   ]);
+// The fixtures hold no lane-exclusive file; the registry cases below add one.
 const verify = (wanted, reports, executed = false) =>
-  verifyCoverage(wanted, reports, executed, 3);
+  verifyCoverage(wanted, reports, executed, 3, []);
 
 test("complete isolated shards retain exact coverage and both preconditions", () => {
   assert.deepEqual(verify(expected, shards(), true), [7, 7, 7]);
@@ -171,6 +176,140 @@ test("failed test fails even when other shards pass", () => {
 });
 test("empty expected suite fails", () =>
   assert.throws(() => verify([], shards()), /empty/));
+
+// Lane-exclusive files: planned on one lane as whole files, held to the
+// collected suite, and only the verified Start-only IDs leave client coverage.
+const fileRecord = (id, file, title, status = "passed") => ({
+  ...record(id, "editor", status),
+  file,
+  title,
+});
+const START_ONLY = { file: "s.spec.ts", lane: "start", titles: ["s1", "s2"] };
+const CLIENT_ONLY = { file: "c.spec.ts", lane: "client", titles: ["c1"] };
+const laneSuite = [
+  ...expected,
+  fileRecord("s-1", "s.spec.ts", "s1"),
+  fileRecord("s-2", "s.spec.ts", "s2"),
+  fileRecord("c-1", "c.spec.ts", "c1"),
+];
+const laneShards = (status = "passed") => {
+  const reports = shards();
+  reports[1].push(fileRecord("c-1", "c.spec.ts", "c1", status));
+  return reports;
+};
+const laneVerify = (wanted, reports, executed, registry = [START_ONLY, CLIENT_ONLY]) =>
+  verifyCoverage(wanted, reports, executed, 3, registry);
+
+test("the real registry is planned on its lanes and matches the collected titles' shape", () => {
+  assert.ok(LANE_EXCLUSIVE_SPECS.length > 0);
+  verifyLaneExclusivePlan();
+});
+test("only the verified Start-only tests leave the client coverage", () => {
+  assert.deepEqual(laneVerify(laneSuite, laneShards(), true), [7, 8, 7]);
+  assert.deepEqual(laneVerify(laneSuite, laneShards(), false), [7, 8, 7]);
+});
+test("an ordinary test left out of the shards still fails beside the registry", () => {
+  const reports = laneShards();
+  reports[0].pop();
+  assert.throws(() => laneVerify(laneSuite, reports, true), /coverage differs/);
+});
+test("a Start-only test found on an editor shard fails the exact comparison", () => {
+  const reports = laneShards();
+  reports[2].push(fileRecord("s-1", "s.spec.ts", "s1"));
+  assert.throws(() => laneVerify(laneSuite, reports, true), /coverage differs/);
+});
+test("a stale, unlisted or repeated registered title fails against the collection", () => {
+  assert.throws(
+    () =>
+      verifyLaneExclusiveCollection(laneSuite, [
+        { ...START_ONLY, titles: ["s1", "s2", "renamed"] },
+      ]),
+    /LANE_EXCLUSIVE_STALE: s\.spec\.ts/,
+  );
+  assert.throws(
+    () =>
+      verifyLaneExclusiveCollection(laneSuite, [{ ...START_ONLY, titles: ["s1"] }]),
+    /LANE_EXCLUSIVE_STALE/,
+  );
+  assert.throws(
+    () =>
+      verifyLaneExclusiveCollection(
+        [...laneSuite, fileRecord("s-3", "s.spec.ts", "s1")],
+        [START_ONLY],
+      ),
+    /LANE_EXCLUSIVE_STALE/,
+  );
+  // A registered file that collects nothing is stale too.
+  assert.throws(
+    () =>
+      verifyLaneExclusiveCollection(laneSuite, [
+        { file: "gone.spec.ts", lane: "start", titles: ["x"] },
+      ]),
+    /LANE_EXCLUSIVE_STALE: gone\.spec\.ts/,
+  );
+  assert.deepEqual(verifyLaneExclusiveCollection(laneSuite, [START_ONLY, CLIENT_ONLY]), [
+    "s-1",
+    "s-2",
+  ]);
+});
+test("an empty or malformed entry fails", () => {
+  const plan = { client: [["c.spec.ts"]], start: [["s.spec.ts"]] };
+  const check = (registry) =>
+    verifyLaneExclusivePlan(registry, plan.client, plan.start);
+  check([START_ONLY, CLIENT_ONLY]);
+  assert.throws(() => check([{ ...START_ONLY, titles: [] }]), /LANE_EXCLUSIVE_EMPTY/);
+  assert.throws(() => check([{ ...START_ONLY, titles: [" "] }]), /LANE_EXCLUSIVE_EMPTY/);
+  assert.throws(() => check([{ ...START_ONLY, lane: "both" }]), /LANE_EXCLUSIVE_ENTRY/);
+  assert.throws(() => check([{ ...START_ONLY, file: "s.ts" }]), /LANE_EXCLUSIVE_ENTRY/);
+  assert.throws(() => check([START_ONLY, START_ONLY]), /two entries/);
+  assert.throws(
+    () => check([{ ...START_ONLY, titles: ["s1", "s1"] }]),
+    /title twice/,
+  );
+});
+test("a lane-exclusive file on the wrong lane, on both, or twice fails", () => {
+  const check = (client, start, registry = [START_ONLY, CLIENT_ONLY]) =>
+    verifyLaneExclusivePlan(registry, client, start);
+  assert.throws(
+    () => check([["c.spec.ts", "s.spec.ts"]], [["s.spec.ts"]]),
+    /LANE_EXCLUSIVE_PLACEMENT: s\.spec\.ts/,
+  );
+  assert.throws(
+    () => check([["c.spec.ts"]], [["s.spec.ts", "c.spec.ts"]]),
+    /LANE_EXCLUSIVE_PLACEMENT: c\.spec\.ts/,
+  );
+  assert.throws(
+    () => check([["c.spec.ts"]], [["x.spec.ts"]]),
+    /LANE_EXCLUSIVE_PLACEMENT: s\.spec\.ts/,
+  );
+  assert.throws(
+    () => check([["c.spec.ts"], ["c.spec.ts"]], [["s.spec.ts"]]),
+    /LANE_EXCLUSIVE_PLACEMENT: c\.spec\.ts/,
+  );
+  // The real files, moved onto the other lane.
+  const start = LANE_EXCLUSIVE_SPECS.find((entry) => entry.lane === "start");
+  assert.throws(
+    () =>
+      verifyLaneExclusivePlan(
+        LANE_EXCLUSIVE_SPECS,
+        EDITOR_SHARDS.map((files, index) => (index === 0 ? [...files, start.file] : files)),
+        START_PREVIEW_SHARDS,
+      ),
+    /LANE_EXCLUSIVE_PLACEMENT/,
+  );
+});
+test("a skipped, failed or missing client-only test fails the shard reports", () => {
+  assert.throws(
+    () => laneVerify(laneSuite, laneShards("skipped"), true),
+    /LANE_EXCLUSIVE_NOT_PASSED: the client-only test c\.spec\.ts › c1/,
+  );
+  assert.throws(
+    () => laneVerify(laneSuite, laneShards("failed"), true),
+    /Failed|LANE_EXCLUSIVE_NOT_PASSED/,
+  );
+  const missing = shards();
+  assert.throws(() => laneVerify(laneSuite, missing, true), /coverage differs/);
+});
 
 // The workflow's three spellings of the shard count must follow the plan.
 const workflow = readFileSync(

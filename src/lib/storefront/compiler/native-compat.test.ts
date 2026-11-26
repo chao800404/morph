@@ -33,6 +33,10 @@ import {
   assertByteStreaming,
 } from "../compat/assert-native-transport";
 import { calculateThemeSourceSha256 } from "../storage/cloudflare-r2-theme-source-blob-store";
+import {
+  startCorePublicEntry,
+  type CorePublicEntry,
+} from "../service/core-public-entry.test-support";
 
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
@@ -54,6 +58,50 @@ import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
  */
 
 const BUILD_BUDGET_MS = 240_000;
+
+/**
+ * Only Morph Core reaches a released Theme Worker, and Core always names the
+ * content source the Worker reads published content from. A Starter that reads
+ * content through `@morph/sdk/start` refuses a read with no content source
+ * (an explicit error, never default content), so these tests reach the built
+ * Worker through Core's public entry on loopback, over real HTTP so streaming
+ * and request bodies are the Worker's own. `core.close()` ends it.
+ */
+const startCoreFor = (
+  worker: Awaited<ReturnType<typeof unstable_startWorker>>,
+): Promise<CorePublicEntry> =>
+  startCorePublicEntry({
+    fetch: async (forwarded) => {
+      const url = new URL(forwarded.url);
+      const headers = new Headers(forwarded.headers);
+      for (const name of ["host", "connection", "content-length"]) {
+        headers.delete(name);
+      }
+      const hasBody = forwarded.method !== "GET" && forwarded.method !== "HEAD";
+      return fetch(new URL(url.pathname + url.search, await worker.url), {
+        method: forwarded.method,
+        headers,
+        redirect: "manual",
+        ...(hasBody ? { body: forwarded.body, duplex: "half" } : {}),
+      } as RequestInit);
+    },
+  });
+
+/**
+ * A page request that reaches the Worker with no content source: the read
+ * fails, and nothing is shown as published.
+ */
+const expectExplicitErrorWithoutContentSource = async (
+  response: Response,
+  path: string,
+) => {
+  const html = await response.text();
+  expect(response.status, path).toBeGreaterThanOrEqual(500);
+  expect(html, path).toContain("No content source.");
+  expect(html, path).not.toContain("Objects for everyday rituals.");
+  expect(html, path).not.toContain("<footer");
+  expect(html, path).not.toContain("© Online Store");
+};
 
 const input = (
   files: ThemeBuildRunnerInput["files"],
@@ -104,6 +152,7 @@ describe(
   () => {
     let dir = "";
     let worker: Awaited<ReturnType<typeof unstable_startWorker>> | null = null;
+    let core: CorePublicEntry | null = null;
 
     beforeAll(async () => {
       const blobs = new Map(
@@ -192,18 +241,32 @@ describe(
         dev: { server: { port: 0 }, inspector: false, logLevel: "error" },
       });
       await worker.ready;
+      core = await startCoreFor(worker);
     }, BUILD_BUDGET_MS + 60_000);
 
     afterAll(async () => {
+      core?.close();
       await worker?.dispose();
       if (dir) rmSync(dir, { recursive: true, force: true });
     });
 
-    type WorkerInit = Parameters<
-      Awaited<ReturnType<typeof unstable_startWorker>>["fetch"]
-    >[1];
-    const request = (path: string, init?: WorkerInit) =>
-      worker!.fetch(`http://localhost${path}`, { redirect: "manual", ...init });
+    // Through Core's public entry, as a shopper reaches the Theme.
+    const request = (path: string, init?: RequestInit) =>
+      fetch(core!.origin + path, { redirect: "manual", ...init });
+
+    it("refuses a page request that reaches the Worker with no content source, rendering no defaults", async () => {
+      // The Worker called directly, as nothing but Core should: no
+      // x-morph-content-origin.
+      for (const path of ["/", "/compat"]) {
+        await expectExplicitErrorWithoutContentSource(
+          (await worker!.fetch(`http://localhost${path}`, {
+            redirect: "manual",
+          })) as unknown as Response,
+          path,
+        );
+      }
+    });
+
     it("executes a local .server helper through the built Worker", async () => {
       const page = await request("/server-helper");
       expect(page.status).toBe(200);
@@ -217,9 +280,9 @@ describe(
       expect(response.status).toBe(200);
       expect(await response.text()).toBe("server-helper-ran");
     });
-    // Exercise browser-facing HTTP, not Wrangler's in-process dispatch bridge.
+    // Browser-facing HTTP through Core, not Wrangler's in-process dispatch bridge.
     const transportRequest = async (path: string, init?: RequestInit) =>
-      fetch(new URL(path, await worker!.url), { redirect: "manual", ...init });
+      fetch(core!.origin + path, { redirect: "manual", ...init });
     const visibleText = (html: string) =>
       html
         .replace(/<script[\s\S]*?<\/script>/g, "")
@@ -339,6 +402,7 @@ describe(
   () => {
     let dir = "";
     let worker: Awaited<ReturnType<typeof unstable_startWorker>> | null = null;
+    let core: CorePublicEntry | null = null;
 
     beforeAll(async () => {
       // Every Theme build also runs a client-only preview build, whose stand-in
@@ -364,38 +428,37 @@ describe(
         dev: { server: { port: 0 }, inspector: false, logLevel: "error" },
       });
       await worker.ready;
+      core = await startCoreFor(worker);
     }, BUILD_BUDGET_MS + 60_000);
 
     afterAll(async () => {
+      core?.close();
       await worker?.dispose();
       if (dir) rmSync(dir, { recursive: true, force: true });
     });
 
     it("builds, and getCookie, setCookie and deleteCookie work in the Worker", async () => {
-      const set = await worker!.fetch("http://localhost/api/compat-cookie");
+      const set = await fetch(core!.origin + "/api/compat-cookie");
       expect(await set.json()).toEqual({ before: null });
       expect(set.headers.get("set-cookie")).toMatch(
         /compat_helper=set; Path=\/; HttpOnly/i,
       );
 
-      const read = await worker!.fetch("http://localhost/api/compat-cookie", {
+      const read = await fetch(core!.origin + "/api/compat-cookie", {
         headers: { cookie: "compat_helper=set" },
       });
       expect(await read.json()).toEqual({ before: "set" });
 
-      const cleared = await worker!.fetch(
-        "http://localhost/api/compat-cookie?clear",
-        {
-          headers: { cookie: "compat_helper=set" },
-        },
-      );
+      const cleared = await fetch(core!.origin + "/api/compat-cookie?clear", {
+        headers: { cookie: "compat_helper=set" },
+      });
       expect(cleared.headers.get("set-cookie")).toMatch(
         /compat_helper=;.*(Max-Age=0|Expires=Thu, 01 Jan 1970)/i,
       );
     });
 
     it("reads a cookie in a server function during SSR", async () => {
-      const response = await worker!.fetch("http://localhost/compat-cookies", {
+      const response = await fetch(core!.origin + "/compat-cookies", {
         headers: { cookie: "compat_helper=from-header" },
       });
       expect(await response.text()).toContain("from-header");

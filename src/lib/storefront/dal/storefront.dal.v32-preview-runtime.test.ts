@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * A Theme created from Starter 32 records the full Start preview (R-0, R1).
- * Starter 32 does not exist yet, so the current version is replaced with it
- * here; everything else is the real `ensureDefault`.
+ * Starter 32 is the current version, so nothing is replaced here: this is the
+ * real `ensureDefault` with the real Starter version.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -12,10 +12,6 @@ const mocks = vi.hoisted(() => ({
   initStarterTheme: vi.fn(),
 }));
 
-vi.mock("../default-storefront-document", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../default-storefront-document")>()),
-  STOREFRONT_STARTER_TEMPLATE_VERSION: 32,
-}));
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
 // The Starter upgrade record is SQL handed to D1 directly (#260); it lands.
 vi.mock("cloudflare:workers", () => ({

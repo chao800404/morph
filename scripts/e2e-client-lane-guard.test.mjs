@@ -6,9 +6,25 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 
 import {
+  CLIENT_LANE_SEEDS_FILE,
+  CLIENT_LANE_SEEDS_VAR,
+  CLIENT_LANE_SHARED_SLOT,
+  CLIENT_LANE_SHARED_VAR,
   CLIENT_LANE_STARTER_FIXTURE,
+  CLIENT_LANE_THEMES_FILE,
+  CLIENT_LANE_THEMES_VAR,
   CLIENT_LANE_THEME_SLOTS,
+  CLIENT_LANE_USES_FILE,
+  CLIENT_LANE_USES_VAR,
   REQUIRE_CLIENT_LANE_VAR,
+  allocateSharedClientLaneTheme,
+  clientLaneRegisteredThemeIds,
+  clientLaneSeedLine,
+  clientLaneSuiteEnv,
+  parseClientLaneSeeds,
+  parseSharedAllocation,
+  storefrontIdFromEditorPath,
+  throwawayThemePlan,
   clientLaneEditorPath,
   clientLaneEvidenceRefusal,
   clientLaneThemeRefusal,
@@ -48,8 +64,35 @@ function seededTheme(i) {
   };
 }
 
+/** The dedicated slots, then the shared slot, at index 7. */
+const ALL_SLOTS = [...CLIENT_LANE_THEME_SLOTS, CLIENT_LANE_SHARED_SLOT];
+const SHARED_INDEX = CLIENT_LANE_THEME_SLOTS.length;
+const shared = {
+  storefrontId: STOREFRONT,
+  themeId: themeId(SHARED_INDEX),
+  indexTemplateId: templateId(SHARED_INDEX),
+};
+const sharedAllocation = { ...shared, editorPath: clientLaneEditorPath(shared) };
+const sharedText = JSON.stringify(sharedAllocation);
+/** Two throwaways a run's specs seeded, at indexes 20 and 21. */
+const THROWAWAYS = [20, 21];
+
+function seedLine(i, mutate = (seed) => seed) {
+  return clientLaneSeedLine(
+    mutate({
+      storefrontId: STOREFRONT,
+      themeId: themeId(i),
+      indexTemplateId: templateId(i),
+      name: `throwaway-${i}`,
+      test: "a spec > a test",
+      seeded: seededTheme(i),
+    }),
+  );
+}
+const seedsText = THROWAWAYS.map((i) => seedLine(i)).join("");
+
 function themesRecord(mutate = (themes) => themes) {
-  const themes = CLIENT_LANE_THEME_SLOTS.map((slot, i) => {
+  const themes = ALL_SLOTS.map((slot, i) => {
     const entry = {
       slot,
       storefrontId: STOREFRONT,
@@ -62,12 +105,21 @@ function themesRecord(mutate = (themes) => themes) {
 }
 
 const afterSuite = (overrides = {}) =>
-  CLIENT_LANE_THEME_SLOTS.map((_, i) => ({
+  [...ALL_SLOTS.map((_, i) => i), ...THROWAWAYS].map((i) => ({
     themeId: themeId(i),
     rows: 1,
+    storefrontId: STOREFRONT,
     previewRuntime: null,
+    starterTemplateVersion: 31,
+    deletedAt: null,
     ...(overrides[i] ?? {}),
   }));
+
+/** The Themes a passing run previewed: the shared slot, a slot, a throwaway. */
+const previewedScopes = [SHARED_INDEX, 0, 20].map((i) => ({
+  storefrontId: STOREFRONT,
+  themeId: themeId(i),
+}));
 
 const uses = (slots) =>
   slots
@@ -77,7 +129,10 @@ const uses = (slots) =>
 const passing = (extra = {}) => ({
   themesText: themesRecord(),
   usesText: uses(["editor"]),
+  seedsText,
+  sharedText,
   afterSuite: afterSuite(),
+  previewed: previewedScopes,
   workerValue: undefined,
   expected,
   ...extra,
@@ -241,6 +296,190 @@ describe("a run's evidence", () => {
   });
 });
 
+describe("the shared slot", () => {
+  test("is allocated in the storefront .env.e2e names, with an editor path on its own index template", () => {
+    let n = 0;
+    const ids = ["00000000-0000-4000-8000-0000000000a1", "00000000-0000-4000-8000-0000000000a2"];
+    const allocated = allocateSharedClientLaneTheme(
+      `/store/${STOREFRONT}/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004`,
+      () => ids[n++],
+    );
+    assert.deepEqual(allocated, {
+      storefrontId: STOREFRONT,
+      themeId: ids[0],
+      indexTemplateId: ids[1],
+      editorPath: `/store/${STOREFRONT}/themes/${ids[0]}/editor?templateId=${ids[1]}`,
+    });
+    assert.equal(storefrontIdFromEditorPath(allocated.editorPath), STOREFRONT);
+    // Not the storefront's own default Theme.
+    assert.notEqual(allocated.themeId, "00000000-0000-4000-8000-000000000003");
+    assert.deepEqual(parseSharedAllocation(JSON.stringify(allocated)), { shared: allocated });
+  });
+
+  test("a path naming no storefront, or one id for both, is refused", () => {
+    assert.throws(() => allocateSharedClientLaneTheme(undefined, () => "x"), /CLIENT_LANE_SHARED: E2E_EDITOR_PATH names no storefront/);
+    assert.throws(() => allocateSharedClientLaneTheme("/dashboard", () => "x"), /names no storefront/);
+    assert.throws(
+      () => allocateSharedClientLaneTheme(`/store/${STOREFRONT}/themes/x/editor`, () => "same"),
+      /one id/,
+    );
+  });
+
+  test("the runner gives Playwright the shared slot as E2E_EDITOR_PATH, and the files under the state dir", () => {
+    const env = clientLaneSuiteEnv("/state", sharedAllocation);
+    assert.deepEqual(env, {
+      [CLIENT_LANE_THEMES_VAR]: path.join("/state", CLIENT_LANE_THEMES_FILE),
+      [CLIENT_LANE_USES_VAR]: path.join("/state", CLIENT_LANE_USES_FILE),
+      [CLIENT_LANE_SEEDS_VAR]: path.join("/state", CLIENT_LANE_SEEDS_FILE),
+      [CLIENT_LANE_SHARED_VAR]: sharedText,
+      E2E_EDITOR_PATH: sharedAllocation.editorPath,
+    });
+  });
+
+  test("a missing or malformed allocation is refused", () => {
+    assert.match(parseSharedAllocation(undefined).refusal, /named no shared slot/);
+    assert.match(parseSharedAllocation("{").refusal, /is not JSON/);
+    assert.match(parseSharedAllocation(JSON.stringify({ ...sharedAllocation, themeId: "" })).refusal, /does not name/);
+    assert.match(
+      parseSharedAllocation(JSON.stringify({ ...sharedAllocation, editorPath: clientLaneEditorPath({ ...shared, indexTemplateId: templateId(0) }) })).refusal,
+      /does not open its own index template/,
+    );
+  });
+});
+
+describe("a throwaway the specs ask for", () => {
+  const lane = { [CLIENT_LANE_THEMES_VAR]: "/state/themes.json", [CLIENT_LANE_SEEDS_VAR]: "/state/seeds.jsonl" };
+
+  test("off the lane the row is inserted, as before", () => {
+    for (const previewRuntime of [null, "client", "start"]) {
+      assert.deepEqual(throwawayThemePlan({ previewRuntime }, {}), { action: "row" });
+    }
+  });
+
+  test("on the lane a Starter-backed throwaway, recording none or client, is seeded instead of inserted raw", () => {
+    assert.deepEqual(throwawayThemePlan({ previewRuntime: null }, lane), { action: "seed" });
+    assert.deepEqual(throwawayThemePlan({ previewRuntime: "client" }, lane), { action: "seed" });
+  });
+
+  test("on the lane a bare row stays a row, only when asked for", () => {
+    assert.deepEqual(throwawayThemePlan({ previewRuntime: null, rowOnly: true, metadata: "{}" }, lane), { action: "row" });
+  });
+
+  test("on the lane a start Theme, its own metadata or framework, or no seeds file is refused", () => {
+    assert.match(throwawayThemePlan({ previewRuntime: "start" }, lane).refusal, /^CLIENT_LANE_THROWAWAY: a throwaway that records the full Start preview/);
+    assert.match(throwawayThemePlan({ previewRuntime: null, metadata: "{}" }, lane).refusal, /metadata and framework/);
+    assert.match(throwawayThemePlan({ previewRuntime: null, framework: "astro" }, lane).refusal, /metadata and framework/);
+    assert.match(
+      throwawayThemePlan({ previewRuntime: null }, { [CLIENT_LANE_THEMES_VAR]: "/state/themes.json" }).refusal,
+      /MORPH_E2E_CLIENT_LANE_SEEDS is not set/,
+    );
+  });
+
+  test("a seed line reads back as written; every registered Theme is listed once", () => {
+    const { seeds, failures } = parseClientLaneSeeds(seedsText);
+    assert.deepEqual(failures, []);
+    assert.deepEqual(seeds.map((seed) => [seed.version, seed.themeId]), THROWAWAYS.map((i) => [1, themeId(i)]));
+    assert.deepEqual(
+      clientLaneRegisteredThemeIds(themesRecord(), seedsText + seedLine(20)),
+      [...ALL_SLOTS.map((_, i) => themeId(i)), ...THROWAWAYS.map((i) => themeId(i))],
+    );
+    assert.deepEqual(clientLaneRegisteredThemeIds(undefined, undefined), []);
+  });
+});
+
+describe("what the run previewed and seeded", () => {
+  test("the shared slot seeded as allocated and previewed, and throwaways seeded and kept, pass", () => {
+    assert.equal(clientLaneEvidenceRefusal(passing()), null);
+    // A run whose specs seeded no throwaway, and previewed none.
+    assert.equal(
+      clientLaneEvidenceRefusal(passing({ seedsText: "", previewed: previewedScopes.slice(0, 2) })),
+      null,
+    );
+    // The same run, had it previewed a throwaway it never seeded.
+    assert.match(clientLaneEvidenceRefusal(passing({ seedsText: "" })), /which the lane never seeded/);
+  });
+
+  test("a previewed Theme the lane never seeded is a refusal: a direct navigation or a raw insert", () => {
+    const raw = { storefrontId: STOREFRONT, themeId: themeId(30) };
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ previewed: [...previewedScopes, raw] })),
+      new RegExp(`the run previewed Theme "${themeId(30)}" of storefront "${STOREFRONT}", which the lane never seeded`),
+    );
+    // The storefront's own default Theme (Starter 32, records start).
+    const defaultTheme = { storefrontId: STOREFRONT, themeId: "00000000-0000-4000-8000-000000000003" };
+    assert.match(clientLaneEvidenceRefusal(passing({ previewed: [...previewedScopes, defaultTheme] })), /which the lane never seeded/);
+    // A seeded id in another storefront is not the seeded Theme.
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ previewed: [{ storefrontId: "other", themeId: themeId(0) }, ...previewedScopes] })),
+      /storefront "other", which the lane never seeded/,
+    );
+  });
+
+  test("previews not read, or the shared slot never previewed, is a refusal", () => {
+    assert.match(clientLaneEvidenceRefusal(passing({ previewed: undefined })), /were not read/);
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ previewed: previewedScopes.slice(1) })),
+      /shared slot's Theme .* was never previewed/,
+    );
+  });
+
+  test("the shared slot missing, not as allocated, or the allocation missing is a refusal", () => {
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ themesText: themesRecord((themes) => themes.filter((t) => t.slot !== "shared")) })),
+      /slot shared was not seeded/,
+    );
+    const moved = themesRecord((themes) => {
+      const entry = themes[SHARED_INDEX];
+      entry.themeId = themeId(9);
+      entry.seeded = seededTheme(9);
+      entry.indexTemplateId = templateId(9);
+      entry.editorPath = clientLaneEditorPath(entry);
+      return themes;
+    });
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ themesText: moved })),
+      /slot shared: seeded themeId .*, not the .* the runner gave the specs as E2E_EDITOR_PATH/,
+    );
+    assert.match(clientLaneEvidenceRefusal(passing({ sharedText: undefined })), /named no shared slot/);
+  });
+
+  test("a throwaway seeded off the fixture, unreadable, or sharing a slot's Theme is a refusal", () => {
+    const off = seedLine(20, (seed) => ({ ...seed, seeded: { ...seed.seeded, starterTemplateVersion: 32 } }));
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ seedsText: off })),
+      /throwaway 1 \(Theme .*\) before the suite: CLIENT_LANE_THEME_NOT_STARTER_31: .*records Starter 32/,
+    );
+    assert.match(clientLaneEvidenceRefusal(passing({ seedsText: "nope\n" })), /throwaway seed 1 is not JSON/);
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ seedsText: seedLine(0) })),
+      /throwaway 1 \(Theme .*\) shares Theme .* with slot editor/,
+    );
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ seedsText: seedLine(20, (seed) => ({ ...seed, indexTemplateId: templateId(21) })) })),
+      /throwaway 1 .*: its index template is not the one it names/,
+    );
+  });
+
+  test("after the suite every registered Theme is a live Starter 31 row recording no runtime", () => {
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ afterSuite: afterSuite({ 20: { previewRuntime: "start" } }) })),
+      /throwaway 1 .*: after the suite Theme .* records "start"/,
+    );
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ afterSuite: afterSuite({ [SHARED_INDEX]: { starterTemplateVersion: 32 } }) })),
+      /slot shared: after the suite Theme .* records Starter 32, not 31/,
+    );
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ afterSuite: afterSuite({ 21: { deletedAt: "2026-11-26" } }) })),
+      /throwaway 2 .*: after the suite Theme .* is deleted/,
+    );
+    assert.match(
+      clientLaneEvidenceRefusal(passing({ afterSuite: afterSuite().filter((row) => row.themeId !== themeId(21)) })),
+      /throwaway 2 .*: Theme .* was not read back after the suite/,
+    );
+  });
+});
+
 describe("the acceptance check across shards", () => {
   let root;
   before(async () => {
@@ -284,6 +523,26 @@ describe("the acceptance check across shards", () => {
       return shard === 2 ? { ...verdict, afterSuite: afterSuite({ 0: { previewRuntime: "start" } }) } : verdict;
     });
     assert.match(clientLaneVerdictsRefusal(files, expected), /shard 2: CLIENT_LANE_UNVERIFIED/);
+  });
+
+  test("a verdict whose previews name an unseeded Theme, or whose throwaway is off the fixture, is a refusal", async () => {
+    const files = await shards("previews", (shard) => {
+      const verdict = clientLaneVerdict(passing({ usesText: uses(slotsOf(shard)) }));
+      if (shard === 3) return { ...verdict, previewed: [...previewedScopes, { storefrontId: STOREFRONT, themeId: themeId(30) }] };
+      if (shard === 5) return { ...verdict, seeds: seedLine(20, (seed) => ({ ...seed, seeded: { ...seed.seeded, previewRuntime: "start" } })) };
+      return verdict;
+    });
+    const refusal = clientLaneVerdictsRefusal(files, expected);
+    assert.match(refusal, /shard 3: CLIENT_LANE_UNVERIFIED: .*which the lane never seeded/);
+    assert.match(refusal, /shard 5: CLIENT_LANE_UNVERIFIED: .*throwaway 1 .*records preview runtime "start"/);
+  });
+
+  test("a verdict without the shared slot's allocation or the previews is a refusal", async () => {
+    const files = await shards("old", (shard) => {
+      const verdict = clientLaneVerdict(passing({ usesText: uses(slotsOf(shard)) }));
+      return shard === 1 ? { ...verdict, shared: null, previewed: null } : verdict;
+    });
+    assert.match(clientLaneVerdictsRefusal(files, expected), /shard 1: .*named no shared slot.*were not read/);
   });
 
   test("a slot no shard's specs took is a refusal", async () => {

@@ -16,7 +16,9 @@
  * Every spec that reads `MORPH_E2E_PREVIEW_RUNTIME` is listed either here or
  * in `START_PREVIEW_EXCLUDED` with its reason; check-e2e-start fails on a spec
  * that is in neither, so a new Start-gated spec cannot stay CI-skipped by
- * omission.
+ * omission. A spec listed here may instead take the runtime through an
+ * `e2e/helpers/` module that reads it, or be a Start-only file of
+ * `LANE_EXCLUSIVE_SPECS` (editor-e2e-shards.mjs), which runs nowhere else.
  */
 /** The job's name, as GitHub reports the check. */
 export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
@@ -32,10 +34,22 @@ export const START_PREVIEW_SHARDS = [
   // navigation-matrix: its Start preview cells took ~2.6 min locally (the
   // spec was added to the then-shortest shard).
   ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "spread-override-binding.spec.ts", "navigation-matrix.spec.ts"],
-  ["code-controlled-field.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts", "starter-upgrade.spec.ts"],
+  // starter-upgrade-start: the Starter upgrades that apply the current
+  // Starter (D, B, Q, R, and an unrecorded Starter 31 Theme switched to Full
+  // Start then upgraded), Start only (LANE_EXCLUSIVE_SPECS in
+  // editor-e2e-shards.mjs). Split from starter-upgrade.spec.ts on this shard;
+  // not measured on its own.
+  ["code-controlled-field.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts", "starter-upgrade.spec.ts", "starter-upgrade-start.spec.ts"],
   // selection-field-frame-navigated: accepted on full Start by the user's
   // decision; added to what was then the shortest shard.
-  ["binding-acceptance-p.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts"],
+  // content-module-restore: added after the projection above, to its
+  // shortest shard (652 s); about 51 s on the editor shards (durations file),
+  // not measured under Start. From Starter 32 the restore command writes a
+  // module that needs the full Start preview, so the successful restore is
+  // content-module-restore-start, Start only (LANE_EXCLUSIVE_SPECS in
+  // editor-e2e-shards.mjs); the client lane checks the refusal in a file of
+  // its own.
+  ["binding-acceptance-p.spec.ts", "history-back-controlled-repro.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "content-module-restore.spec.ts", "content-module-restore-start.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
@@ -73,6 +87,8 @@ export const START_PREVIEW_EXCLUDED = {
     "The M1 1c revocation timeline runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox), on the pv- host only a container fronts; the full Start job runs on the local-sidecar transport. Its exact titles are in container-acceptance-targets/preview-revocation-timeline.mjs; no CI step runs that check yet.",
   "preview-start-two-tab-race.spec.ts":
     "Auto-retry v2's two-tab start race runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox), where the current-start guard and the fence ledger it meets in live; the full Start job runs on the local-sidecar transport. Its exact titles are in container-acceptance-targets/preview-start-two-tab-race.mjs; the editor-e2e-container-preview job runs that check.",
+  "starter-v32-full-start-acceptance.spec.ts":
+    "Lane B, the shipped Starter 32 on the full Start runtime, publishes, which builds in the Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox), and reads the pv- host only a container fronts; the full Start job runs on the local-sidecar transport. Its exact titles are in container-acceptance-targets/starter-v32-full-start.mjs; the editor-e2e-container-starter-publish job runs that check.",
   "public-svg.spec.ts":
     "Reads the variable only inside a test that plants a file in a Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the rest of the file is not Start-gated and runs on the shards.",
 };

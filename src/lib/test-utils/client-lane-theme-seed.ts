@@ -1,5 +1,11 @@
+import { and, eq, isNull } from "drizzle-orm";
+
 import { getDb } from "@/db";
-import { storefrontThemes } from "@/db/storefront.schema";
+import {
+  storefrontThemes,
+  storefrontThemeTemplates,
+} from "@/db/storefront.schema";
+import { createDefaultStorefrontHomeDocument } from "@/lib/storefront/default-storefront-document";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import { ensureStarterHomeDocument } from "@/lib/storefront/dal/storefront.dal";
@@ -41,6 +47,24 @@ export type ClientLaneSeedInput = {
   files: readonly StarterWorkspaceFile[];
   routePaths?: readonly string[];
   now?: string;
+  /**
+   * The id the Theme's index template must have, when the caller named the
+   * editor path before the Theme existed: the client lane's shared slot,
+   * whose `E2E_EDITOR_PATH` the runner sets before Playwright loads a spec.
+   * The template is then inserted here, as `ensureStarterHomeDocument`
+   * inserts one (same type, name and default home Document), and that step
+   * finds it and creates none.
+   */
+  indexTemplateId?: string;
+  /**
+   * A retry of a seed whose earlier attempt may have stopped part way (a
+   * busy database), for a Theme whose id the caller cannot change. Every
+   * step is taken only if it has not been: the row is inserted unless this
+   * seed's row is already there, the init returns the files it already
+   * wrote, and a Starter 31 record already written counts. The read-back
+   * check afterwards is the same as for a first attempt.
+   */
+  resume?: boolean;
 };
 
 export type ClientLaneSeedResult = {
@@ -70,22 +94,79 @@ export async function seedClientLaneTheme(
   });
 
   const db = await getDb();
-  await db.insert(storefrontThemes).values({
-    id: input.themeId,
-    storefrontId: input.storefrontId,
-    name: input.name,
-    previewRuntime: null,
-    metadata: {},
-    createdAt: now,
-    updatedAt: now,
-  });
+  const [existing] = input.resume
+    ? await db
+        .select({
+          storefrontId: storefrontThemes.storefrontId,
+          name: storefrontThemes.name,
+          previewRuntime: storefrontThemes.previewRuntime,
+          deletedAt: storefrontThemes.deletedAt,
+        })
+        .from(storefrontThemes)
+        .where(eq(storefrontThemes.id, input.themeId))
+        .limit(1)
+    : [];
+  if (existing) {
+    // Only this seed's own row is taken up again: same storefront and name,
+    // no runtime, not deleted.
+    if (
+      existing.storefrontId !== input.storefrontId ||
+      existing.name !== input.name ||
+      existing.previewRuntime !== null ||
+      existing.deletedAt !== null
+    ) {
+      throw new Error(
+        `CLIENT_LANE_SEED: Theme ${input.themeId} already exists and is not an earlier attempt of this seed: ${JSON.stringify(existing)}`,
+      );
+    }
+  } else {
+    await db.insert(storefrontThemes).values({
+      id: input.themeId,
+      storefrontId: input.storefrontId,
+      name: input.name,
+      previewRuntime: null,
+      metadata: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
 
+  // Returns the files it already wrote when the workspace is not empty.
   await storefrontThemeFileDal.initStarterTheme(
     input.storefrontId,
     input.themeId,
     input.createdBy,
     { files },
   );
+
+  if (input.indexTemplateId) {
+    const [index] = await db
+      .select({ id: storefrontThemeTemplates.id })
+      .from(storefrontThemeTemplates)
+      .where(
+        and(
+          eq(storefrontThemeTemplates.themeId, input.themeId),
+          eq(storefrontThemeTemplates.type, "index"),
+          isNull(storefrontThemeTemplates.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!index) {
+      await db.insert(storefrontThemeTemplates).values({
+        id: input.indexTemplateId,
+        themeId: input.themeId,
+        type: "index",
+        name: "Default",
+        document: createDefaultStorefrontHomeDocument(),
+        createdAt: now,
+        updatedAt: now,
+      });
+    } else if (index.id !== input.indexTemplateId) {
+      throw new Error(
+        `CLIENT_LANE_SEED: Theme ${input.themeId} has index template ${index.id}, not ${input.indexTemplateId}.`,
+      );
+    }
+  }
 
   const recorded = await ensureStarterHomeDocument(db, input.themeId, {
     filesSaved: true,
@@ -94,10 +175,13 @@ export async function seedClientLaneTheme(
     createdBy: input.createdBy,
     targetVersion: CLIENT_LANE_STARTER_VERSION,
   });
-  if (
-    recorded.status !== "recorded" ||
-    recorded.version !== CLIENT_LANE_STARTER_VERSION
-  ) {
+  const recordedVersion =
+    recorded.status === "recorded"
+      ? recorded.version
+      : input.resume && recorded.status === "already-current"
+        ? recorded.storedVersion
+        : null;
+  if (recordedVersion !== CLIENT_LANE_STARTER_VERSION) {
     throw new Error(
       `CLIENT_LANE_SEED: Starter ${CLIENT_LANE_STARTER_VERSION} was not recorded for Theme ${input.themeId}: ${JSON.stringify(recorded)}`,
     );

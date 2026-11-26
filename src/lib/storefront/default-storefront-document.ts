@@ -73,8 +73,16 @@ import {
  *     the cards' `href` and the actions' `actionHref`, which the Starter's
  *     components no longer read. Preview runtime is unchanged: a Theme
  *     created from 31 records none, as from 30.
+ * 32: an untouched `src/morph/content.ts` reads every page through one
+ *     server function that calls the hosted SDK (`@morph/sdk/start`), and a
+ *     failed or refused read is an error instead of empty content, so a
+ *     hidden section no longer comes back with its defaults. Its exports are
+ *     unchanged and the routes and layout are 31's, so Design keeps binding,
+ *     structure editing and Hide. The module needs the full Start preview: a
+ *     Theme created from 32 records `start`, and an upgrade, initialisation or
+ *     restore that writes it is held to a Theme that records `start`.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 31;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 32;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

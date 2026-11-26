@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { build, type Rollup } from "vite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "./starter-theme-v3-files";
+import { LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE } from "./starter-theme-v3-files";
 
 /**
  * Whether a built Theme can be steered to another store by the shell it runs in.
@@ -24,6 +24,11 @@ import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "./starter-theme-v3-files";
  *
  * What this covers is the production transform of the starter content module.
  * It is not Morph's Build Preview or prerender pipeline.
+ *
+ * The module built is Starter 31's, the last one that reads
+ * `MORPH_CONTENT_ORIGIN` itself (Themes recorded at 30 and 31, and edited ones
+ * kept through the upgrade, still run it). From 32 the module reads through
+ * `@morph/sdk/start`, whose development-only origin rule is the SDK's.
  */
 
 const execFileAsync = promisify(execFile);
@@ -46,7 +51,7 @@ async function recordingStore(body: unknown) {
 function writeSources(dir: string) {
   const write = (name: string, content: string) =>
     writeFileSync(path.join(dir, name), content);
-  write("content.ts", STARTER_THEME_CONTENT_MODULE_SOURCE);
+  write("content.ts", LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE);
   write("entry.ts", 'export * from "./content";\n');
   // The server build keeps the server branch of an isomorphic function.
   write(

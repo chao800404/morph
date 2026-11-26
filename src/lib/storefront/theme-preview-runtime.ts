@@ -49,14 +49,15 @@ export function themeFrameworkAllowsPreviewRuntime(
 
 /**
  * The first Starter version whose new Themes record the full Start preview.
- * That Starter's route layer reads content through the SDK on the server, so
- * a Theme created from it needs `start` to preview at all (R-0).
+ * That Starter reads content through the SDK on the server, so a Theme
+ * created from it needs `start` to preview at all (R-0).
  *
  * It was 30 until Starter 30 shipped for another reason: its content module
  * sends the render context back (G3b) and leaves preview as 29 did. It was
  * then 31 until Starter 31 shipped to re-offer the upgrade to Themes recorded
- * at 30, for their content migration. The route layer that needs `start` is
- * now planned as Starter 32.
+ * at 30, for their content migration. Starter 32 is that Starter: its content
+ * module reads every page through a server function that calls
+ * `@morph/sdk/start` (narrow A: the routes and the layout stay 31's).
  */
 export const FIRST_STARTER_VERSION_RECORDING_START_PREVIEW = 32;
 

@@ -7,17 +7,20 @@
  * the product's own initialisation (`storefrontDal.ensureDefault` ->
  * `ensureStarterThemeWorkspace` -> `storefrontThemeFileDal.initStarterTheme`)
  * stored in `storefront_theme_files` on a fresh, fully migrated local D1
- * (`src/lib/test-utils/starter-workspace-d1.ts`). This test runs that same
- * init again and requires the same paths and the same bytes, file by file.
+ * (`src/lib/test-utils/starter-workspace-d1.ts`), at `sourceCommit`, while
+ * the Starter was version 31.
+ *
+ * The Starter is 32 now, and the fixture never changes: the client-runtime
+ * CI lane keeps its dedicated Themes on what Starter 31 really created. This
+ * test runs today's init again and requires that it differs from the fixture
+ * only where Starter 32 changed the Starter: the same paths, and the same
+ * bytes file by file except `src/morph/content.ts`, which is Starter 31's
+ * module (kept verbatim as LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE) in
+ * the fixture and 32's in today's workspace.
  *
  * Every run writes what the init produced to `PRODUCED_FIXTURE_PATH` in the
- * fixture's format; that is how the fixture is regenerated (copy it over the
- * fixture, set `sourceCommit`), and only while the Starter is version 31.
- *
- * When the Starter version is bumped past 31 the "is what the init produces
- * today" cases are expected to change (the version case fails first); the
- * fixture itself never changes, because the client-runtime CI lane keeps its
- * shared Theme on what Starter 31 really created.
+ * fixture's format, for a reader comparing the two; it is not copied over
+ * this fixture.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,7 +36,10 @@ import {
   type StarterWorkspaceFixture,
 } from "@/lib/test-utils/starter-workspace-d1";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "./default-storefront-document";
-import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "./starter-theme-v3-files";
+import {
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
+} from "./starter-theme-v3-files";
 
 const CONTENT_MODULE_PATH = "src/morph/content.ts";
 
@@ -77,25 +83,27 @@ describe("Starter 31 workspace fixture", () => {
     expect(filesSha256(fixture.files)).toBe(fixture.sha256);
   });
 
-  it("is what the init produces while the Starter is version 31", () => {
-    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(31);
-    expect(produced.metadata.starterTemplateVersion).toBe(31);
+  it("differs from what the init produces at Starter 32 only in the content module", () => {
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(32);
+    expect(produced.metadata.starterTemplateVersion).toBe(32);
 
     expect(produced.files.map((file) => file.path).sort()).toEqual(
       fixture.files.map((file) => file.path).sort(),
     );
     const byPath = new Map(produced.files.map((file) => [file.path, file]));
+    const differing: string[] = [];
     for (const file of fixture.files) {
       const actual = byPath.get(file.path)!;
-      expect(actual.content, file.path).toBe(file.content);
+      if (actual.content !== file.content) differing.push(file.path);
       expect(actual.mimeType, file.path).toBe(file.mimeType);
       expect(actual.encoding, file.path).toBe(file.encoding);
       expect(actual.isEntry, file.path).toBe(file.isEntry);
     }
-    expect(filesSha256(produced.files)).toBe(fixture.sha256);
+    expect(differing).toEqual([CONTENT_MODULE_PATH]);
+    expect(filesSha256(produced.files)).not.toBe(fixture.sha256);
   });
 
-  it("holds the content module the init writes", () => {
+  it("holds Starter 31's content module, and the init writes 32's", () => {
     const pinned = fixture.files.find(
       (file) => file.path === CONTENT_MODULE_PATH,
     );
@@ -104,7 +112,8 @@ describe("Starter 31 workspace fixture", () => {
     );
     expect(pinned).toBeDefined();
     expect(written).toBeDefined();
-    expect(pinned!.content).toBe(written!.content);
-    expect(pinned!.content).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    expect(pinned!.content).toBe(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE);
+    expect(written!.content).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    expect(pinned!.content).not.toBe(written!.content);
   });
 });

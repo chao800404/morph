@@ -8,6 +8,7 @@ import {
 } from "./helpers";
 import { queryLocalD1 } from "./helpers/editor-writes-paused";
 import { themeScopeFromEditorPath } from "./native-compat";
+import { onClientLane } from "./helpers/client-lane-theme";
 import { STARTER_THEME_CATALOG_FILES } from "../src/lib/storefront/starter-theme-catalog-files";
 
 test.skip(
@@ -104,8 +105,32 @@ async function installCatalogByReview(page: Page) {
   const starter = dialog.getByRole("checkbox", {
     name: "Apply the Starter upgrade",
   });
+  // On the client lane the shared Theme records no runtime, so a Starter
+  // part that writes the current content module (which needs the full Start
+  // preview) is explained before Apply and blocks it while selected.
+  const startOnly =
+    onClientLane() &&
+    (await starter.count()) > 0 &&
+    (await starter.isChecked()) &&
+    (await dialog
+      .getByRole("region", { name: "Starter upgrade" })
+      .getByRole("button", { name: "src/morph/content.ts" })
+      .count()) > 0;
+  if (startOnly) {
+    await expect(dialog.getByRole("alert")).toContainText(
+      "This upgrade needs the full Start Live Preview.",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Apply selected" }),
+    ).toBeDisabled();
+  }
   if ((await starter.count()) > 0 && (await starter.isChecked())) {
     await starter.click();
+  }
+  if (startOnly) {
+    await expect(
+      dialog.locator('[data-starter-start-preview="required"]'),
+    ).toHaveCount(0);
   }
 
   // Nothing is written while the author reads it.

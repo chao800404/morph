@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  START_EXCLUSIVE_SPECS,
   verifyStartPlan,
   verifyStartReport,
   verifyStartWorkflow,
@@ -31,39 +32,89 @@ const sources = {
   "c.spec.ts": "test('plain', () => {})",
 };
 test("a plan classifying every gated spec passes", () => {
-  verifyStartPlan(sources, ["a.spec.ts"], { "b.spec.ts": "container only" });
+  verifyStartPlan(sources, ["a.spec.ts"], { "b.spec.ts": "container only" }, {}, []);
 });
 test("a gated spec in neither list fails", () => {
   assert.throws(
-    () => verifyStartPlan(sources, ["a.spec.ts"], {}),
+    () => verifyStartPlan(sources, ["a.spec.ts"], {}, {}, []),
     /neither run .* nor excluded.*b\.spec\.ts/,
   );
 });
 test("an exclusion without a reason fails", () => {
   assert.throws(
-    () => verifyStartPlan(sources, ["a.spec.ts"], { "b.spec.ts": " " }),
+    () => verifyStartPlan(sources, ["a.spec.ts"], { "b.spec.ts": " " }, {}, []),
     /without a reason/,
   );
 });
 test("a listed spec that is missing or not gated fails", () => {
   assert.throws(
     () =>
-      verifyStartPlan(sources, ["a.spec.ts", "gone.spec.ts"], {
-        "b.spec.ts": "x",
-      }),
+      verifyStartPlan(
+        sources,
+        ["a.spec.ts", "gone.spec.ts"],
+        { "b.spec.ts": "x" },
+        {},
+        [],
+      ),
     /does not exist/,
   );
   assert.throws(
     () =>
-      verifyStartPlan(sources, ["a.spec.ts", "c.spec.ts"], {
-        "b.spec.ts": "x",
-      }),
+      verifyStartPlan(
+        sources,
+        ["a.spec.ts", "c.spec.ts"],
+        { "b.spec.ts": "x" },
+        {},
+        [],
+      ),
     /does not read/,
   );
 });
+test("a run spec may take the gate through a helper, transitively, or by being Start-only", () => {
+  const plan = {
+    ...sources,
+    "h.spec.ts": 'import { x } from "./helpers/outer";',
+    "s.spec.ts": "test('start only', () => {})",
+  };
+  const helpers = {
+    "outer.ts": 'import { y } from "./inner";',
+    "inner.ts": `export const y = ${GATE} === "start";`,
+  };
+  const startOnly = [{ file: "s.spec.ts", lane: "start", titles: ["start only"] }];
+  verifyStartPlan(plan, ["a.spec.ts", "h.spec.ts", "s.spec.ts"], { "b.spec.ts": "x" }, helpers, startOnly);
+  // Without the helper that reads it, or without the registry entry, it fails.
+  assert.throws(
+    () =>
+      verifyStartPlan(plan, ["a.spec.ts", "h.spec.ts"], { "b.spec.ts": "x" }, { "outer.ts": helpers["outer.ts"] }, []),
+    /h\.spec\.ts is listed but does not read/,
+  );
+  assert.throws(
+    () => verifyStartPlan(plan, ["a.spec.ts", "s.spec.ts"], { "b.spec.ts": "x" }, helpers, []),
+    /s\.spec\.ts is listed but does not read/,
+  );
+  // An excluded spec must read the gate itself; a helper does not count.
+  assert.throws(
+    () => verifyStartPlan(plan, ["a.spec.ts"], { "b.spec.ts": "x", "h.spec.ts": "x" }, helpers, []),
+    /h\.spec\.ts is listed but does not read/,
+  );
+});
+test("a Start-only file missing from the plan fails", () => {
+  assert.throws(
+    () =>
+      verifyStartPlan(sources, ["a.spec.ts"], { "b.spec.ts": "x" }, {}, [
+        { file: "c.spec.ts", lane: "start", titles: ["plain"] },
+      ]),
+    /START_EXCLUSIVE_UNPLANNED: c\.spec\.ts/,
+  );
+});
+test("the real plan, helpers and registry pass", () => {
+  assert.ok(START_EXCLUSIVE_SPECS.length > 0);
+  for (const entry of START_EXCLUSIVE_SPECS)
+    assert.ok(START_PREVIEW_SPECS.includes(entry.file), entry.file);
+});
 test("a spec both run and excluded fails", () => {
   assert.throws(
-    () => verifyStartPlan(sources, ["a.spec.ts"], { "a.spec.ts": "x" }),
+    () => verifyStartPlan(sources, ["a.spec.ts"], { "a.spec.ts": "x" }, {}, []),
     /both run and excluded/,
   );
 });
@@ -167,17 +218,24 @@ const passingReport = () => ({
       ["passed"],
       "preview-transport",
     ),
-    ...START_PREVIEW_SPECS.map((file) =>
-      spec(file, `${file} runs`, ["passed"]),
+    ...START_PREVIEW_SPECS.flatMap((file) =>
+      titlesOf(file).map((title) => spec(file, title, ["passed"])),
     ),
     ...START_PREVIEW_EXPECTED_SKIPS.map(({ file, title }) =>
       spec(file, title, ["skipped"]),
     ),
   ],
 });
+/** A Start-only file's registered titles, or one passing test for any other. */
+const titlesOf = (file) =>
+  START_EXCLUSIVE_SPECS.find((entry) => entry.file === file)?.titles ?? [
+    `${file} runs`,
+  ];
+const passedIn = (files) =>
+  files.reduce((sum, file) => sum + titlesOf(file).length, 0);
 test("a report with every Start test passed and only the listed skips passes", () => {
   assert.deepEqual(verifyStartReport(passingReport()), {
-    passed: START_PREVIEW_SPECS.length,
+    passed: passedIn(START_PREVIEW_SPECS),
     skipped: START_PREVIEW_EXPECTED_SKIPS.length,
   });
 });
@@ -217,6 +275,85 @@ test("a listed skip that ran, or no longer exists, fails", () => {
   gone.suites = gone.suites.filter((suite) => suite.specs[0].title !== title);
   assert.throws(() => verifyStartReport(gone), /stale entry/);
 });
+// A Start-only file's tests run nowhere else, so each must be there once and pass.
+const [startOnly] = START_EXCLUSIVE_SPECS;
+const withStartOnly = (change) => {
+  const report = passingReport();
+  report.suites = change(report.suites);
+  return report;
+};
+test("a Start-only title missing from a file that still has passing cases fails", () => {
+  const [first] = startOnly.titles;
+  const report = withStartOnly((suites) => [
+    ...suites.filter((suite) => suite.specs[0].title !== first),
+    // The file still reports a passing test, so START_SPEC_MISSING cannot catch it.
+    spec(startOnly.file, "some other case", ["passed"]),
+  ]);
+  assert.throws(() => verifyStartReport(report), /START_EXCLUSIVE_NOT_ONCE.*found 0/);
+});
+test("a Start-only title reported twice fails", () => {
+  const [first] = startOnly.titles;
+  const report = withStartOnly((suites) => [
+    ...suites,
+    spec(startOnly.file, first, ["passed"]),
+  ]);
+  assert.throws(() => verifyStartReport(report), /START_EXCLUSIVE_NOT_ONCE.*found 2/);
+});
+test("a skipped Start-only title fails", () => {
+  const [first] = startOnly.titles;
+  const report = withStartOnly((suites) =>
+    suites.map((suite) =>
+      suite.specs[0].title === first ? spec(startOnly.file, first, ["skipped"]) : suite,
+    ),
+  );
+  assert.throws(() => verifyStartReport(report), /START_EXCLUSIVE_NOT_PASSED/);
+});
+test("the aggregate requires each Start-only title on its own shard", () => {
+  const shard = START_PREVIEW_SHARDS.findIndex((files) => files.includes(startOnly.file)) + 1;
+  assert.ok(shard > 0);
+  const [first] = startOnly.titles;
+  const report = {
+    suites: [
+      spec("auth.setup.ts", "authenticate", ["passed"], "setup"),
+      spec("preview-transport.spec.ts", "transport", ["passed"], "preview-transport"),
+      ...startPreviewFilesForShard(shard).flatMap((file) =>
+        titlesOf(file)
+          .filter((title) => title !== first)
+          .map((title) => spec(file, title, ["passed"])),
+      ),
+      spec(startOnly.file, "some other case", ["passed"]),
+      ...START_PREVIEW_EXPECTED_SKIPS.filter((skip) =>
+        startPreviewFilesForShard(shard).includes(skip.file),
+      ).map(({ file, title }) => spec(file, title, ["skipped"])),
+    ],
+  };
+  const directory = mkdtempSync(path.join(tmpdir(), "morph-start-only-"));
+  try {
+    for (let index = 1; index <= START_PREVIEW_SHARDS.length; index += 1) {
+      const folder = path.join(directory, `editor-e2e-full-start-${index}-attempt-1`);
+      mkdirSync(folder);
+      const good = {
+        suites: [
+          spec("auth.setup.ts", "authenticate", ["passed"], "setup"),
+          spec("preview-transport.spec.ts", "transport", ["passed"], "preview-transport"),
+          ...startPreviewFilesForShard(index).flatMap((file) =>
+            titlesOf(file).map((title) => spec(file, title, ["passed"])),
+          ),
+          ...START_PREVIEW_EXPECTED_SKIPS.filter((skip) =>
+            startPreviewFilesForShard(index).includes(skip.file),
+          ).map(({ file, title }) => spec(file, title, ["skipped"])),
+        ],
+      };
+      writeFileSync(
+        path.join(folder, `full-start-${index}.json`),
+        JSON.stringify(index === shard ? report : good),
+      );
+    }
+    assert.throws(() => verifyStartShardReports(directory), /START_EXCLUSIVE_NOT_ONCE/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 test("a plan spec absent from the report fails", () => {
   const report = passingReport();
   report.suites = report.suites.filter(
@@ -254,8 +391,8 @@ test("aggregate reads every Start shard's latest attempt and rejects missing or 
         ["passed"],
         "preview-transport",
       ),
-      ...startPreviewFilesForShard(shard).map((file) =>
-        spec(file, `${file} runs`, ["passed"]),
+      ...startPreviewFilesForShard(shard).flatMap((file) =>
+        titlesOf(file).map((title) => spec(file, title, ["passed"])),
       ),
       ...START_PREVIEW_EXPECTED_SKIPS.filter((skip) =>
         startPreviewFilesForShard(shard).includes(skip.file),
@@ -289,7 +426,7 @@ test("aggregate reads every Start shard's latest attempt and rejects missing or 
       verifyStartShardReports(directory).map((result) => result.passed),
       // One passing test per planned spec: derived from the plan, so moving
       // specs between shards does not change what this asserts.
-      START_PREVIEW_SHARDS.map((files) => files.length),
+      START_PREVIEW_SHARDS.map((files) => passedIn(files)),
     );
     const bad = reportFor(2);
     bad.suites[2] = spec(startPreviewFilesForShard(2)[0], "failed", ["failed"]);

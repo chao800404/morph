@@ -34,6 +34,8 @@ import {
   LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
@@ -1493,11 +1495,44 @@ describe("content module upgrade", () => {
 
     expect(upgrade).toBeDefined();
     expect(upgrade!.content).toContain("loadContentSlots");
-    expect(upgrade!.content).toContain("x-morph-content-origin");
+    // Since Starter 32 the module loads published content through the hosted
+    // SDK, which reads the platform's content origin itself; before 32 it read
+    // the origin header on its own (x-morph-content-origin).
+    expect(upgrade!.content).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    expect(upgrade!.content).toContain('from "@morph/sdk/start"');
     expect(upgrade).toMatchObject({
       expectedFileId: "content",
       expectedVersion: 3,
     });
+  });
+
+  it("replaces an untouched Starter 31 module with the one that reads through the hosted SDK", () => {
+    expect(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE).not.toBe(
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withContentModule(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE) as never,
+    );
+    const upgrade = upgrades.find(
+      (candidate) => candidate.path === "src/morph/content.ts",
+    );
+
+    expect(upgrade).toMatchObject({
+      content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+      expectedFileId: "content",
+      expectedVersion: 3,
+    });
+  });
+
+  it("never overwrites an edited Starter 31 module", () => {
+    const authored = `${LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE}\n// the author's\n`;
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      withContentModule(authored) as never,
+    );
+
+    expect(
+      upgrades.some((candidate) => candidate.path === "src/morph/content.ts"),
+    ).toBe(false);
   });
 
   it("never overwrites an authored content module", () => {

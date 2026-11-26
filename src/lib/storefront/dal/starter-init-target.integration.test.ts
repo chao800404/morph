@@ -131,7 +131,10 @@ describe("initStarterTheme with a given file set", () => {
   });
 
   it("without the option writes the current Starter, as before", async () => {
-    const themeId = await emptyTheme();
+    // From Starter 32 the current Starter's content module needs the full
+    // Start preview, so its init is held to a Theme that records start (the
+    // given-file cases keep a Theme that records none).
+    const themeId = await emptyTheme("start");
     await storefrontThemeFileDal.initStarterTheme(storefrontId, themeId);
     const expected = [...starterThemeWorkspaceFiles()].sort((a, b) =>
       a.path < b.path ? -1 : 1,

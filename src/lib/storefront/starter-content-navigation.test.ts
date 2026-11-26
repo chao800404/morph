@@ -3,18 +3,22 @@ import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import {
   STARTER_THEME_CONTENT_MODULE_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
 } from "./starter-theme-v3-files";
 import { createStarterThemeWorkspaceUpgrade } from "./starter-theme-files";
 
-// Execute the actual trusted platform starter module, not a handwritten copy
-// of its loader. This is a test harness, never an untrusted-source sandbox.
+// Execute the actual trusted platform starter module that fetches its own
+// content (Starter 31's, kept verbatim; 32's reads through the hosted SDK and
+// is executed in starter-v32-content-read-failure.test.ts), not a handwritten
+// copy of its loader. This is a test harness, never an untrusted-source
+// sandbox.
 function clientLoader(
   fetcher: typeof fetch,
 ): (pathname: string) => Promise<unknown> {
   // The module reads import.meta.env, which a CommonJS evaluation cannot parse.
   const compiled = ts
-    .transpileModule(STARTER_THEME_CONTENT_MODULE_SOURCE, {
+    .transpileModule(LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE, {
       compilerOptions: {
         module: ts.ModuleKind.CommonJS,
         target: ts.ScriptTarget.ES2022,

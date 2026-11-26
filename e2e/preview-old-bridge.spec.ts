@@ -22,7 +22,6 @@ import {
   openContentTab,
   previewFrame,
 } from "./helpers";
-import { execLocalD1 } from "./helpers/editor-writes-paused";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -30,6 +29,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * The current editor driving a preview page that runs a real OLDER Live
@@ -302,12 +302,16 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     ...themeScopeFromEditorPath(EDITOR_PATH!),
     themeId: randomUUID(),
   };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
-    VALUES ('${created.themeId}', '${created.storefrontId}',
-      'old-bridge-${created.themeId}', '{"starterTemplateVersion":1}',
-      'client', '${now}', '${now}');`);
+  // Through the shared helper. Off the client lane the row records the
+  // client-only preview, as it always did; on the client lane it is seeded
+  // on the pinned Starter 31 workspace recording no runtime, which the lane's
+  // Worker serves as the client-only preview (the lane's guard checks it).
+  insertThrowawayTheme({
+    themeId: created.themeId,
+    storefrontId: created.storefrontId,
+    name: `old-bridge-${created.themeId}`,
+    previewRuntime: "client",
+  });
   return created;
 }
 

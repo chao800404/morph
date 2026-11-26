@@ -13,6 +13,7 @@ import {
 import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../starter-theme-v3-files";
 import { starterThemeWorkspaceFiles } from "../starter-theme-files";
@@ -93,9 +94,11 @@ vi.mock("cloudflare:workers", () => ({
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
 /**
  * Which planned paths count as needing the full Start preview. Null keeps the
- * real detection (no current Starter file below 32 needs it); a list stands in
- * for a Starter whose files do, so the refusal is exercised on the real
- * review, apply and record write.
+ * real detection: since Starter 32 the current content module needs it, and
+ * no other Starter file does. A list names the paths that do instead, so the
+ * refusal is exercised on the real review, apply and record write; an empty
+ * list stands in for a Starter none of whose files needs it (every Starter
+ * before 32).
  */
 const startPreview = vi.hoisted(() => ({
   requiredPaths: null as null | readonly string[],
@@ -190,7 +193,16 @@ function upgradedWorkspace(): WorkspaceFile[] {
   );
 }
 
-function seedTheme(metadata: Record<string, unknown> | null) {
+/**
+ * Since Starter 32 every upgrade and initialisation here writes the content
+ * module, which only the full Start preview runs, so it is held to a Theme
+ * that records `start`. The seeded Theme records it, as one the author has
+ * switched to Start does; the cases about that rule set their own runtime.
+ */
+function seedTheme(
+  metadata: Record<string, unknown> | null,
+  previewRuntime: string | null = "start",
+) {
   const now = "2026-10-01T00:00:00.000Z";
   sqlite
     .prepare(
@@ -200,13 +212,14 @@ function seedTheme(metadata: Record<string, unknown> | null) {
     .run(STOREFRONT_ID, THEME_ID, now, now);
   sqlite
     .prepare(
-      `INSERT INTO storefront_themes (id, storefront_id, name, status, metadata, created_at, updated_at)
-       VALUES (?, ?, 'Default', 'published', ?, ?, ?)`,
+      `INSERT INTO storefront_themes (id, storefront_id, name, status, metadata, preview_runtime, created_at, updated_at)
+       VALUES (?, ?, 'Default', 'published', ?, ?, ?, ?)`,
     )
     .run(
       THEME_ID,
       STOREFRONT_ID,
       metadata === null ? null : JSON.stringify(metadata),
+      previewRuntime,
       now,
       now,
     );
@@ -2968,7 +2981,9 @@ describe("a Starter upgrade whose files need the full Start preview", () => {
   });
 
   it("leaves a Theme on the client runtime upgraded as before when no planned file needs Start", async () => {
-    startPreview.requiredPaths = null;
+    // A Starter none of whose files needs Start (every one before 32). The
+    // real detection finds the current content module, which does.
+    startPreview.requiredPaths = [];
     setPreviewRuntime("client");
     const reviewed = await review();
     expect(reviewed.startPreview).toEqual({
@@ -3056,13 +3071,161 @@ describe("opening the editor on an empty Theme while the Starter needs the full 
   });
 
   it("initialises an empty Theme on the client runtime as before when no Starter file needs Start", async () => {
-    startPreview.requiredPaths = null;
+    // A Starter none of whose files needs Start (every one before 32).
+    startPreview.requiredPaths = [];
     setPreviewRuntime("client");
 
     await expect(openEditor()).resolves.toBe(true);
 
     expect(workspace.initStarterTheme).toHaveBeenCalledTimes(1);
     expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+    expect(storedRuntime()).toEqual({ preview_runtime: "client" });
+  });
+});
+
+describe("a Starter 31 Theme reviewed for Starter 32 (the real detection)", () => {
+  // No stand-in here: `startPreview.requiredPaths` stays null, so the module
+  // Starter 32 writes is judged by its own imports. 31's module fetched its
+  // own content and needed no Start; 32's reads through `@morph/sdk/start` in
+  // a server function, which only the full Start preview runs.
+  const CONTENT = "src/morph/content.ts";
+
+  function v31Workspace(): WorkspaceFile[] {
+    return starterThemeWorkspaceFiles().map((file, index) => ({
+      id: `file-${index}`,
+      path: file.path,
+      content:
+        file.path === CONTENT
+          ? LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE
+          : file.content,
+      version: 3,
+    }));
+  }
+
+  function setPreviewRuntime(runtime: string | null) {
+    sqlite
+      .prepare("UPDATE storefront_themes SET preview_runtime = ? WHERE id = ?")
+      .run(runtime, THEME_ID);
+  }
+
+  function storedRuntime() {
+    return sqlite
+      .prepare("SELECT preview_runtime FROM storefront_themes WHERE id = ?")
+      .get(THEME_ID);
+  }
+
+  async function review() {
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    if (!reviewed) throw new Error("no review");
+    return reviewed;
+  }
+
+  function apply(starterDigest: string) {
+    return storefrontDal.applyReviewedStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+      createdBy: "user-a",
+      expectedSourceGeneration: 5,
+      starterDigest,
+    });
+  }
+
+  beforeEach(() => {
+    seedTheme({ starterTemplateVersion: 31 });
+    workspace.files.set(THEME_ID, v31Workspace());
+    workspace.generation.set(THEME_ID, 5);
+  });
+
+  it("offers 32's content module in place of 31's untouched one, and nothing else", async () => {
+    expect(CURRENT).toBe(32);
+    const reviewed = await review();
+    expect(reviewed.versionState).toBe("available");
+    expect(reviewed.review.changes).toEqual([
+      {
+        path: CONTENT,
+        operation: "update",
+        before: LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
+        after: STARTER_THEME_CONTENT_MODULE_SOURCE,
+      },
+    ]);
+  });
+
+  it.each([null, "client"])(
+    "is refused on a Theme that records %s, with nothing written and the runtime left alone",
+    async (runtime) => {
+      setPreviewRuntime(runtime);
+      const reviewed = await review();
+      expect(reviewed.startPreview).toEqual({
+        paths: [CONTENT],
+        satisfied: false,
+        reason: expect.stringContaining("Switch this Theme's preview to Start"),
+      });
+      const before = storedRawRow();
+      const filesBefore = JSON.stringify(workspace.files.get(THEME_ID));
+
+      await expect(apply(reviewed.review.digest)).resolves.toMatchObject({
+        status: "start-preview-required",
+        paths: [CONTENT],
+      });
+
+      expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+      expect(JSON.stringify(workspace.files.get(THEME_ID))).toBe(filesBefore);
+      expect(storedRawRow()).toEqual(before);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(31);
+      expect(storedRuntime()).toEqual({ preview_runtime: runtime });
+    },
+  );
+
+  it("applies on a Theme that records start: 32's module is written and 32 recorded", async () => {
+    setPreviewRuntime("start");
+    const reviewed = await review();
+    expect(reviewed.startPreview).toEqual({
+      paths: [CONTENT],
+      satisfied: true,
+      reason: null,
+    });
+
+    await expect(apply(reviewed.review.digest)).resolves.toMatchObject({
+      status: "applied",
+      versionRecorded: true,
+    });
+    expect(
+      workspace.files.get(THEME_ID)!.find((file) => file.path === CONTENT)
+        ?.content,
+    ).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    expect(storedRow().metadata.starterTemplateVersion).toBe(32);
+    expect(storedRuntime()).toEqual({ preview_runtime: "start" });
+  });
+
+  it("keeps an edited 31 module on client: nothing needs Start, so the version is recorded as before", async () => {
+    setPreviewRuntime("client");
+    const authored = `${LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE}\n// the author's\n`;
+    workspace.files.set(
+      THEME_ID,
+      v31Workspace().map((file) =>
+        file.path === CONTENT ? { ...file, content: authored } : file,
+      ),
+    );
+    const reviewed = await review();
+    expect(reviewed.review.changes).toEqual([]);
+    expect(reviewed.startPreview).toEqual({
+      paths: [],
+      satisfied: true,
+      reason: null,
+    });
+
+    await expect(apply(reviewed.review.digest)).resolves.toMatchObject({
+      status: "applied",
+      versionRecorded: true,
+    });
+    expect(
+      workspace.files.get(THEME_ID)!.find((file) => file.path === CONTENT)
+        ?.content,
+    ).toBe(authored);
+    expect(storedRow().metadata.starterTemplateVersion).toBe(32);
     expect(storedRuntime()).toEqual({ preview_runtime: "client" });
   });
 });

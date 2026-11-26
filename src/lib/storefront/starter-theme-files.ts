@@ -25,6 +25,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
@@ -1479,7 +1480,11 @@ function planStarterThemeWorkspaceWrites(
           LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE ||
         // Before its server reads sent back the render context.
         existingContentModule.content ===
-          LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE)
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE ||
+        // Before its reads went through the hosted SDK, and while a failed
+        // server read still answered with empty content (Starter 32).
+        existingContentModule.content ===
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE)
     ) {
       upgrades.push({
         path: existingContentModule.path,

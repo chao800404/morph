@@ -16,6 +16,7 @@ import {
 } from "./native-compat";
 import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../src/lib/storefront/starter-theme-v3-files";
 import { insertThrowawayTheme } from "./helpers/throwaway-theme";
+import { laneStarterContentModule } from "./helpers/client-lane-theme";
 
 /**
  * An author's `content()` that changes a value on its way to the component.
@@ -51,7 +52,13 @@ const REFUSED_HINT =
 const MODULE = "src/morph/content.ts";
 const STARTER_LINE =
   "  return useContext(MorphContentContext).slots[slotId] ?? {};";
-const TRANSFORMED_MODULE = STARTER_THEME_CONTENT_MODULE_SOURCE.replace(
+/**
+ * The Starter module the Theme holds: on the client lane the pinned
+ * Starter 31 fixture's (the lane's Themes are seeded on it), elsewhere the
+ * current Starter's.
+ */
+const STARTER_MODULE = laneStarterContentModule(STARTER_THEME_CONTENT_MODULE_SOURCE);
+const TRANSFORMED_MODULE = STARTER_MODULE.replace(
   STARTER_LINE,
   `  const values = useContext(MorphContentContext).slots[slotId] ?? {};
   if (slotId === "${SLOT}" && typeof values.title === "string") {
@@ -240,7 +247,7 @@ test.describe("an author's content() that transforms a value", () => {
   test.describe.configure({ mode: "serial" });
 
   test.beforeAll(async ({ browser }) => {
-    expect(TRANSFORMED_MODULE).not.toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    expect(TRANSFORMED_MODULE).not.toBe(STARTER_MODULE);
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
     scope = await createThrowawayTheme();
@@ -270,7 +277,7 @@ test.describe("an author's content() that transforms a value", () => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
     const restored = await writeThemeFiles(page, scope!, [
-      { path: MODULE, content: STARTER_THEME_CONTENT_MODULE_SOURCE },
+      { path: MODULE, content: STARTER_MODULE },
     ]);
     expect(restored.success, JSON.stringify(restored)).toBe(true);
     const removed = await removeThemeFiles(

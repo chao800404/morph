@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "./default-storefront-document";
 import {
   defaultPreviewRuntimeForNewTheme,
   deploymentThemePreviewRuntime,
@@ -65,12 +66,16 @@ describe("what a new Theme records", () => {
     expect(defaultPreviewRuntimeForNewTheme(30)).toBeNull();
   });
 
-  it("records nothing from Starter 31, the current one, as from 30", () => {
+  it("records nothing from Starter 31, the previous one, as from 30", () => {
     expect(defaultPreviewRuntimeForNewTheme(31)).toBeNull();
   });
 
-  it("records start from Starter 32 on", () => {
+  it("records start from Starter 32, the current one, on", () => {
     expect(FIRST_STARTER_VERSION_RECORDING_START_PREVIEW).toBe(32);
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(32);
+    expect(
+      defaultPreviewRuntimeForNewTheme(STOREFRONT_STARTER_TEMPLATE_VERSION),
+    ).toBe("start");
     expect(defaultPreviewRuntimeForNewTheme(32)).toBe("start");
     expect(defaultPreviewRuntimeForNewTheme(33)).toBe("start");
   });

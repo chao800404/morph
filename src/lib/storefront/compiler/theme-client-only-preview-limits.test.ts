@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES,
@@ -148,13 +150,62 @@ describe("client-only preview limits", () => {
       ).toEqual(NOTHING);
     });
 
-    it("the starter Theme and its catalog module", () => {
+    // The client runtime keeps its coverage on the workspace Starter 31
+    // really created, the fixture the client CI lane seeds its Themes from:
+    // 31 read its content through plain fetches, so nothing in it needs the
+    // full Start preview. Starter 32 does (next describe).
+    it("the pinned Starter 31 workspace", () => {
+      const fixture = JSON.parse(
+        readFileSync(
+          join(
+            __dirname,
+            "..",
+            "__fixtures__",
+            "starter-workspace",
+            "v31.json",
+          ),
+          "utf8",
+        ),
+      ) as {
+        starterVersion: number;
+        files: { path: string; content: string }[];
+      };
+      expect(fixture.starterVersion).toBe(31);
+      expect(fixture.files.length).toBeGreaterThan(0);
+      expect(collectThemeClientOnlyPreviewLimits(fixture.files)).toEqual(
+        NOTHING,
+      );
+    });
+  });
+
+  describe("the current Starter", () => {
+    // Starter 32 reads every page through one server function that calls the
+    // hosted SDK (@morph/sdk/start), so it needs the full Start preview.
+    const starterFiles = [
+      ...STARTER_THEME_FILES,
+      ...STARTER_THEME_CATALOG_FILES,
+    ];
+
+    it("is reported as needing the full Start preview: its content module's createServerFn", () => {
+      const { limits } = collectThemeClientOnlyPreviewLimits(starterFiles);
+      expect(limits).toEqual([
+        {
+          file: "src/morph/content.ts",
+          line: expect.any(Number),
+          kind: "createServerFn",
+        },
+      ]);
       expect(
-        collectThemeClientOnlyPreviewLimits([
-          ...STARTER_THEME_FILES,
-          ...STARTER_THEME_CATALOG_FILES,
-        ]),
-      ).toEqual(NOTHING);
+        themePreviewRuntimeReport({
+          previewRuntime: undefined,
+          frameworkId: "tanstack-start",
+          files: starterFiles,
+        }),
+      ).toMatchObject({
+        previewRuntime: "client",
+        clientOnlyLimits: limits,
+        clientOnlyLimitsIncomplete: false,
+      });
     });
   });
 

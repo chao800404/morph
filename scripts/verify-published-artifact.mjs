@@ -235,13 +235,40 @@ export async function queryRunD1({ persistTo, workDir }, sql, ...params) {
     remoteBindings: false,
   });
   try {
-    const { results } = await platform.env.DATABASE.prepare(sql)
-      .bind(...params)
-      .all();
-    return results;
+    return await readRunD1WithBusyRetry(sql, async () => {
+      const { results } = await platform.env.DATABASE.prepare(sql)
+        .bind(...params)
+        .all();
+      return results;
+    });
   } finally {
     await platform.dispose();
     await rm(configPath, { force: true });
+  }
+}
+
+/**
+ * The run's Worker can hold the D1 write lock when this proxy reads, and
+ * workerd sets no busy timeout on it, so a read is refused as a bare "internal
+ * error" (seen in CI on the B1 publish acceptance). A read is asked again a
+ * few times; anything that is not a plain read is sent once only, so a retry
+ * can never apply a write twice.
+ */
+export async function readRunD1WithBusyRetry(
+  sql,
+  run,
+  { attempts = 5, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {},
+) {
+  const read = /^\s*(select|with)\b/i.test(sql) && !/\b(insert|update|delete|replace)\b/i.test(sql);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      const message = `${error?.message ?? error} ${String(error?.cause ?? "")}`;
+      const busy = /SQLITE_BUSY|SQLITE_LOCKED|database is locked|D1_ERROR.*internal error/i.test(message);
+      if (!read || !busy || attempt >= attempts) throw error;
+      await sleep(500 * attempt);
+    }
   }
 }
 
@@ -297,6 +324,46 @@ export async function writeRunD1({ persistTo, workDir }, sql, ...params) {
       .bind(...params)
       .run();
     return result.meta.changes;
+  } finally {
+    await platform.dispose();
+    await rm(configPath, { force: true });
+  }
+}
+
+/**
+ * Reads one build's objects from this run's local R2, through the same
+ * binding the verifier below reads a released artifact with: every key under
+ * `prefix`, and the bytes of each of `paths` under it (null when absent).
+ * For a spec that has to state what a build wrote, or did not write, without
+ * a release pointing at it. Read-only.
+ */
+export async function readRunR2({ persistTo, workDir }, prefix, paths = []) {
+  const { getPlatformProxy } = await import("wrangler");
+  await mkdir(workDir, { recursive: true });
+  const configPath = path.join(workDir, "r2-reader.wrangler.json");
+  await writeFile(configPath, JSON.stringify(verifierConfig({ d1: false })));
+  const platform = await getPlatformProxy({
+    configPath,
+    persist: { path: path.join(persistTo, "v3") },
+    remoteBindings: false,
+  });
+  try {
+    const bucket = platform.env.R2_BUCKET;
+    const keys = [];
+    let cursor;
+    do {
+      const listed = await bucket.list({ prefix: `${prefix}/`, cursor });
+      for (const object of listed.objects) keys.push(object.key);
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+    const objects = {};
+    for (const relative of paths) {
+      const object = await bucket.get(`${prefix}/${relative}`);
+      objects[relative] = object
+        ? new Uint8Array(await object.arrayBuffer())
+        : null;
+    }
+    return { keys, objects };
   } finally {
     await platform.dispose();
     await rm(configPath, { force: true });

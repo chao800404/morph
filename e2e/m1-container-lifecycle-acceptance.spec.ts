@@ -705,9 +705,11 @@ test.describe("M1 container lifecycle acceptance", () => {
     });
 
     // M1 source isolation, G6: the public storefront in a browser while Draft
-    // B is unpublished. Client-side navigation reads same-origin
-    // /_morph/content from the Starter's client branch, so every page shown —
-    // after <Link>, back, and reload — must still be Release 1's.
+    // B is unpublished. Client-side navigation reads the page's content from
+    // the Starter's client branch — up to Starter 31 a same-origin
+    // /_morph/content, from Starter 32 a GET of the content module's one
+    // server function (/_serverFn/<id>) that calls the hosted SDK — so every
+    // page shown — after <Link>, back, and reload — must still be Release 1's.
     await test.step("G6: public storefront in a browser shows A, never Draft B, across navigation", async () => {
       const shopper = await browser.newContext();
       try {
@@ -715,16 +717,34 @@ test.describe("M1 container lifecycle acceptance", () => {
         const contentReads: Array<
           Promise<{ path: string | null; status: number; body: string }>
         > = [];
+        /** Every GET server function call, by function: Starter 32's page reads are among them. */
+        const serverFnReads: Array<
+          Promise<{ fn: string; status: number; body: string }>
+        > = [];
         shop.on("response", (response) => {
           const url = new URL(response.url());
-          if (url.pathname !== "/_morph/content") return;
-          contentReads.push(
-            response.text().then((body) => ({
-              path: url.searchParams.get("path"),
-              status: response.status(),
-              body,
-            })),
-          );
+          if (url.pathname === "/_morph/content") {
+            contentReads.push(
+              response.text().then((body) => ({
+                path: url.searchParams.get("path"),
+                status: response.status(),
+                body,
+              })),
+            );
+            return;
+          }
+          if (
+            url.origin === new URL(origin).origin &&
+            url.pathname.startsWith("/_serverFn/") &&
+            response.request().method() === "GET"
+          ) {
+            serverFnReads.push(
+              response.text().then(
+                (body) => ({ fn: url.pathname, status: response.status(), body }),
+                () => ({ fn: url.pathname, status: response.status(), body: "" }),
+              ),
+            );
+          }
         });
         /** Whether the page is still the document the first load made. */
         const sameDocument = () =>
@@ -805,20 +825,40 @@ test.describe("M1 container lifecycle acceptance", () => {
         expect(await sameDocument(), "reload loads a new document").toBe(false);
 
         // The client really read content on its own while navigating, and
-        // every read it made was Release 1's.
+        // every read it made was Release 1's. The first load and the reload
+        // are server renders, so a read in the browser comes from the
+        // client navigations.
         const reads = await Promise.all(contentReads);
-        const homeReads = reads.filter((read) => read.path === "/");
-        expect(
-          homeReads.length,
-          "client navigation to / read /_morph/content",
-        ).toBeGreaterThan(0);
         for (const read of reads) {
           expect(read.status, `/_morph/content?path=${read.path}`).toBe(200);
           expect(read.body, `/_morph/content?path=${read.path}`).not.toContain(
             draftB,
           );
         }
+        const homeReads = reads.filter((read) => read.path === "/");
         for (const read of homeReads) expect(read.body).toContain(contentA);
+        // Starter 32: the page read is the server function whose answers
+        // carry a page (its `_hidden` list). Every call to that function —
+        // a refused or failed one included — must be a 200 without the
+        // draft, and one of them is the home's, with Release 1's content.
+        const calls = await Promise.all(serverFnReads);
+        const pageReadFns = new Set(
+          calls
+            .filter((call) => call.status === 200 && call.body.includes("_hidden"))
+            .map((call) => call.fn),
+        );
+        const pageReads = calls.filter((call) => pageReadFns.has(call.fn));
+        for (const read of pageReads) {
+          expect(read.status, `page read ${read.fn}`).toBe(200);
+          expect(read.body, `page read ${read.fn}`).not.toContain(draftB);
+        }
+        const homeServerFnReads = pageReads.filter((read) =>
+          read.body.includes(contentA),
+        );
+        expect(
+          homeReads.length + homeServerFnReads.length,
+          "client navigation to / read the home's content (/_morph/content up to Starter 31, its page-read server function from Starter 32), and got Release 1's",
+        ).toBeGreaterThan(0);
       } finally {
         await shopper.close();
       }

@@ -8,10 +8,8 @@ import {
   themeSourceGeneration,
   writeThemeFiles,
 } from "../native-compat";
-import {
-  recordedPreviewRuntimeSql,
-  verifyRecordedThemePreviewRuntime,
-} from "./recorded-preview-runtime";
+import { insertThrowawayTheme, recordedOrSpecPreviewRuntime } from "./throwaway-theme";
+import { verifyRecordedThemePreviewRuntime } from "./recorded-preview-runtime";
 
 export const UNBOUND_ROUTE = "/unbound-preservation";
 export const UNBOUND_TITLE = "Stored explicit-prop hero, not a default";
@@ -56,11 +54,18 @@ export async function unboundSectionsFixture(page: Page) {
     ...themeScopeFromEditorPath(EDITOR_PATH),
     themeId: randomUUID(),
   };
-  const now = new Date().toISOString();
-  execLocalD1(`INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
-    VALUES (${literal(scope.themeId)}, ${literal(scope.storefrontId)}, 'unbound-content', '{"starterTemplateVersion":1}',
-      ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`);
+  // Through the shared helper: on the client lane it is seeded on the pinned
+  // Starter 31 workspace; elsewhere the row records the run's record mode or
+  // the runtime the specs expect (start in the full Start job, where from
+  // Starter 32 the editor provisions the Starter only into such a Theme).
+  insertThrowawayTheme({
+    themeId: scope.themeId,
+    storefrontId: scope.storefrontId,
+    name: "unbound-content",
+    previewRuntime: recordedOrSpecPreviewRuntime(),
+  });
+  // Record mode (never in CI): read back and resolved like every recorded
+  // Theme before its preview is read. Does nothing otherwise.
   verifyRecordedThemePreviewRuntime(scope);
   const initialized = (await serverFn(
     page,

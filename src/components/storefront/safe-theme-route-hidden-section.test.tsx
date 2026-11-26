@@ -48,7 +48,8 @@ function renderHome(document: StorefrontPageDocument): string {
 
 describe("hidden page section on the safe route renderer (current Starter)", () => {
   it("uses the current Starter template", () => {
-    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(31);
+    // 32: its routes and layout are 31's; only the content module changed.
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(32);
     expect(
       createDefaultStorefrontHomeDocument().sections.some(
         (section) => section.id === NEWSLETTER_SLOT,

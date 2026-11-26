@@ -136,9 +136,11 @@ setup("authenticate", async ({ page, browser, baseURL }) => {
   fs.mkdirSync(path.dirname(STORAGE_STATE), { recursive: true });
   await page.context().storageState({ path: STORAGE_STATE });
 
-  // The client lane's dedicated Starter 31 Themes, written through the DAL in
-  // Node while nothing else writes: the store now exists, no editor has
-  // opened, and this page is left before the seed starts.
+  // The client lane's Starter 31 Themes, written through the DAL in Node
+  // while nothing else writes: the store now exists, no editor has opened,
+  // and this page is left before the seed starts. The shared slot comes
+  // first, the Theme E2E_EDITOR_PATH names on the lane, which the transport
+  // check opens next.
   await page.goto("about:blank");
   seedClientLaneThemes();
 });

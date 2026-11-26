@@ -327,6 +327,10 @@ describe("an Astro build's result", () => {
       success: false,
       diagnosticsJson: { stage: "prerender-content" },
     });
+    // The build's own output is kept alongside the refusal.
+    expect(stopped.success ? "" : stopped.errorMessage).toContain(
+      "NATIVE_BUILD_FAILED: x",
+    );
     // A record of another build says nothing: the build's own failure stands.
     const foreign = result(
       new Map([

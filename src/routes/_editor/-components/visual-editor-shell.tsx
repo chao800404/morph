@@ -597,6 +597,11 @@ import { EditorLeaveDialog } from "./editor-leave-dialog";
 import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import { EditorStarterUpgradeNotice } from "./editor-starter-upgrade-notice";
 import {
+  EditorStarterInitNextStep,
+  isStarterInitStartRequired,
+  StarterInitError,
+} from "./editor-starter-init-next-step";
+import {
   EditorLockedPanel,
   EditorThemeReadNotice,
 } from "./editor-locked-panel";
@@ -6198,7 +6203,9 @@ export function VisualEditorShell({
             },
           }),
       );
-      if (!result.success) throw new Error(result.message);
+      // The code is kept: a refusal for the preview runtime has a next step
+      // of its own (`EditorStarterInitNextStep`), not just a toast.
+      if (!result.success) throw new StarterInitError(result.message, result.error);
       return result.data;
     },
     onSuccess: async (data) => {
@@ -6217,6 +6224,7 @@ export function VisualEditorShell({
       setPreviewRevision((revision) => revision + 1);
     },
     onError: (error) => {
+      if (isStarterInitStartRequired(error)) return;
       toast.error(
         error instanceof Error
           ? error.message
@@ -20620,6 +20628,18 @@ export function VisualEditorShell({
               // through the lifecycle owner, as adding a section does.
               dispatchPreviewLifecycle({ type: "manual-recovery" });
             }}
+            // An upgrade that needs Full Start offers the runtime switch the
+            // menu uses; switching applies nothing.
+            context={context}
+            onPreviewRuntimeChanged={retryLivePreview}
+          />
+          {/* An empty Theme whose Starter init needs Full Start: the editor
+              stays open and offers the switch, then initialises again. */}
+          <EditorStarterInitNextStep
+            context={context}
+            error={starterInitMutation.error}
+            onInitialise={() => starterInitMutation.mutate()}
+            onRuntimeChanged={retryLivePreview}
           />
         </div>
       </div>

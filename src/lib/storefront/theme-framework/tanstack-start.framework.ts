@@ -1,4 +1,8 @@
 import { assertThemePrerenderArtifacts } from "../compiler/theme-prerender";
+import {
+  NATIVE_PRERENDER_REFUSED_READS_PATH,
+  nativeRefusedReadsMessage,
+} from "../compiler/theme-prerender-content";
 import { THEME_FRAMEWORK_ROUTES } from "./theme-routes";
 import { THEME_START_TOOLCHAIN } from "../compiler/theme-start-toolchain";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "../compiler/theme-preview-dev-server";
@@ -95,6 +99,19 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
       },
       allowedPackages: nativeAllowedPackages,
       plan: planNativeStartBuild,
+      // A Theme whose read failure is fatal (Starter 32) stops the prerender
+      // on the first, content-less pass's refused read: the build exits
+      // non-zero, and the record is what sends it to the sealed pass. A
+      // refusal in the sealed pass still fails the build.
+      failedBuildCause(outputs) {
+        const refused = outputs.get(NATIVE_PRERENDER_REFUSED_READS_PATH);
+        return refused === undefined
+          ? null
+          : {
+              stage: "prerender-content",
+              message: nativeRefusedReadsMessage(refused),
+            };
+      },
       collect: collectNativeStartArtifact,
       artifactEntry: WORKER_ENTRY,
       verifyArtifact({ artifactPaths, routeRegistry, contentSnapshot }) {

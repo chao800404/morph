@@ -44,12 +44,13 @@ export function recordedPreviewRuntimeSql(): string {
 
 /**
  * The value an `INSERT INTO storefront_themes` writes for a Theme that names
- * its preview runtime itself: `'start'` records the full Start preview, null
- * records nothing (`NULL`, the Theme is previewed as the Worker says). Unlike
- * `recordedPreviewRuntimeSql` it does not read the run's record mode.
+ * its preview runtime itself: `'start'` records the full Start preview,
+ * `'client'` the client-only one, null records nothing (`NULL`, the Theme is
+ * previewed as the Worker says). Unlike `recordedPreviewRuntimeSql` it does
+ * not read the run's record mode.
  */
-export function previewRuntimeSql(runtime: "start" | null): string {
-  return runtime === "start" ? "'start'" : "NULL";
+export function previewRuntimeSql(runtime: "start" | "client" | null): string {
+  return runtime === null ? "NULL" : `'${runtime}'`;
 }
 
 /** One SELECT against the runner-owned database, its rows. */

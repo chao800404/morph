@@ -2,15 +2,26 @@ import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../src/lib/storefront/starter-theme-v3-files";
 import { EDITOR_PATH, isServerFunctionCall, openEditor, previewFrame } from "./helpers";
-import { themeScopeFromEditorPath, writeThemeFiles, type ThemeScope } from "./native-compat";
-import { insertThrowawayTheme } from "./helpers/throwaway-theme";
+import { writeThemeFiles, type ThemeScope } from "./native-compat";
+import { laneStarterContentModule } from "./helpers/client-lane-theme";
+import {
+  CONTENT_MODULE,
+  SERVER_FN_MODULE,
+  byPath,
+  createOwnTheme,
+  listFiles,
+  openCodeMode,
+  openCommandPalette,
+  restoreCommand,
+} from "./helpers/content-module-restore";
 
 /**
  * `src/morph/content.ts` is the author's file. These run the real editor,
  * transport and Live Preview against it:
  *
  * - deleted in Code mode, it comes back only through the explicit restore
- *   command, which creates the Starter module and touches nothing else;
+ *   command, which creates the Starter module and touches nothing else
+ *   (content-module-restore-start.spec.ts and -client.spec.ts, below);
  * - while it exists the command is disabled and the author's module stays;
  * - when Design cannot confirm the `content()` it writes, Add section and
  *   Bind say why and change neither the source nor its generation;
@@ -21,6 +32,17 @@ import { insertThrowawayTheme } from "./helpers/throwaway-theme";
  * Each test inserts its own Theme row in the runner's throwaway database, the
  * way initial-code-publish.spec.ts does, so deleting the module can never
  * leave the suite's shared Theme broken for the specs after it.
+ *
+ * Where each case runs. The restore command writes the current Starter's
+ * module, which from Starter 32 needs the full Start preview. So the
+ * successful restore is content-module-restore-start.spec.ts, run by the
+ * full Start job only; on the client lane, whose Themes are the pinned
+ * Starter 31 workspace recording no runtime, the same restore is refused
+ * with nothing written, which content-module-restore-client.spec.ts checks
+ * there only. Each file is assigned to its lane as a whole
+ * (LANE_EXCLUSIVE_SPECS, scripts/editor-e2e-shards.mjs). The cases here apply
+ * nothing of the current Starter and run on both, each on the module its
+ * Theme holds.
  */
 
 test.skip(
@@ -28,83 +50,14 @@ test.skip(
   "Needs the runner-owned throwaway store.",
 );
 
-const CONTENT_MODULE = "src/morph/content.ts";
-const RESTORE_COMMAND = "Theme: Restore Starter Content Module";
-const SERVER_FN_MODULE =
-  "/src/server/storefront/storefront-theme-files.serverFn.ts";
-
-type ListedFile = { path: string; id: string; version: number; content: string };
-type Listing = { sourceGeneration: number; files: ListedFile[] };
-
-/** A Theme of this test's own, provisioned by the ordinary editor read. */
-async function createOwnTheme(page: Page): Promise<{ scope: ThemeScope; editorPath: string }> {
-  const scope = {
-    ...themeScopeFromEditorPath(EDITOR_PATH!),
-    themeId: randomUUID(),
-  };
-  insertThrowawayTheme({
-    themeId: scope.themeId,
-    storefrontId: scope.storefrontId,
-    name: `content-module-${scope.themeId}`,
-    previewRuntime: null,
-  });
-  const context = await page.evaluate(async (scope) => {
-    const module = "/src/server/storefront/storefront-themes.serverFn.ts";
-    const fns = await import(/* @vite-ignore */ module);
-    const result = await fns.getStorefrontThemeEditor({ data: scope });
-    if (!result.success) throw new Error(result.message);
-    return result.data;
-  }, scope);
-  const home = context.templates.find(
-    (item: { type: string }) => item.type === "index",
-  );
-  return {
-    scope,
-    editorPath: `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home.id}`,
-  };
-}
-
-function listFiles(page: Page, scope: ThemeScope): Promise<Listing> {
-  return page.evaluate(
-    async ({ module, scope }) => {
-      const fns = await import(/* @vite-ignore */ module);
-      const listed = await fns.listStorefrontThemeFiles({ data: scope });
-      if (!listed?.success) throw new Error(listed?.message ?? "list failed");
-      return {
-        sourceGeneration: listed.data.sourceGeneration,
-        files: listed.data.files.map(
-          (file: ListedFile) => ({
-            path: file.path,
-            id: file.id,
-            version: file.version,
-            content: file.content,
-          }),
-        ),
-      };
-    },
-    { module: SERVER_FN_MODULE, scope },
-  );
-}
-
-const byPath = (listing: Listing) =>
-  new Map(listing.files.map((file) => [file.path, file]));
-
-async function openCodeMode(page: Page) {
-  await page.getByRole("button", { name: "Code", exact: true }).click();
-  await expect(page.getByRole("tree", { name: "Theme files" })).toBeVisible();
-}
-
-function restoreCommand(page: Page) {
-  return page.getByRole("option", { name: RESTORE_COMMAND });
-}
-
-async function openCommandPalette(page: Page) {
-  await page.getByTitle("Command Palette (Ctrl+Shift+P)").click();
-  await expect(restoreCommand(page)).toBeVisible();
-}
+/**
+ * The Starter module the Theme holds: on the client lane the pinned
+ * Starter 31 fixture's, elsewhere the current Starter's.
+ */
+const STARTER_MODULE = laneStarterContentModule(STARTER_THEME_CONTENT_MODULE_SOURCE);
 
 /** The author's own module: `content` made by a factory Design cannot confirm. */
-const FACTORY_MODULE = STARTER_THEME_CONTENT_MODULE_SOURCE.replace(
+const FACTORY_MODULE = STARTER_MODULE.replace(
   "export function content(slotId: string): Record<string, unknown> {",
   "function readSlot(slotId: string): Record<string, unknown> {",
 ).concat(
@@ -112,83 +65,13 @@ const FACTORY_MODULE = STARTER_THEME_CONTENT_MODULE_SOURCE.replace(
 );
 
 test.describe("the author's content module", () => {
-  test("deleted in Code mode, it is restored by the command, saved, and the Live Preview renders", async ({
-    page,
-  }) => {
-    test.setTimeout(240_000);
-    await openEditor(page);
-    const { scope, editorPath } = await createOwnTheme(page);
-    await openEditor(page, editorPath);
-    await openCodeMode(page);
-
-    // Deleted the way an author would.
-    const tree = page.getByRole("tree", { name: "Theme files" });
-    const row = tree.getByText("content.ts", { exact: true });
-    // A real right-click, with the row centred: near the bottom edge the
-    // menu can open under the pointer, and releasing the button then picks an
-    // item. That is tracked on its own; this covers the ordinary case.
-    await row.evaluate((element) => element.scrollIntoView({ block: "center" }));
-    await row.click({ button: "right" });
-    await page.getByRole("menuitem", { name: /Delete File/i }).click();
-    await page.getByRole("button", { name: "Delete", exact: true }).click();
-    await expect
-      .poll(async () => byPath(await listFiles(page, scope)).has(CONTENT_MODULE), {
-        timeout: 20_000,
-      })
-      .toBe(false);
-    const beforeRestore = await listFiles(page, scope);
-
-    const saves: string[] = [];
-    const previewSyncs: string[] = [];
-    page.on("request", (request) => {
-      const url = request.url();
-      if (isServerFunctionCall(url, "saveStorefrontThemeFile")) saves.push(url);
-      if (
-        isServerFunctionCall(url, "startThemePreviewServer") ||
-        isServerFunctionCall(url, "applyThemePreviewFiles")
-      ) {
-        previewSyncs.push(url);
-      }
-    });
-    await openCommandPalette(page);
-    await expect(restoreCommand(page)).not.toHaveAttribute("aria-disabled", "true");
-    await restoreCommand(page).click();
-
-    await expect(page.getByText(`Created ${CONTENT_MODULE}`)).toBeVisible({
-      timeout: 20_000,
-    });
-    expect(saves).toHaveLength(1);
-    const afterRestore = await listFiles(page, scope);
-    const restored = byPath(afterRestore).get(CONTENT_MODULE);
-    expect(restored?.content).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
-    expect(afterRestore.sourceGeneration).toBe(beforeRestore.sourceGeneration + 1);
-    // Only the module was written: every other file is as it was.
-    const others = (listing: Listing) =>
-      listing.files
-        .filter((file) => file.path !== CONTENT_MODULE)
-        .map(({ path, version, content }) => ({ path, version, content }))
-        .sort((a, b) => a.path.localeCompare(b.path));
-    expect(others(afterRestore)).toEqual(others(beforeRestore));
-
-    // The Live Preview is brought up again on the restored source, not left
-    // showing the document it rendered before the deletion.
-    await expect
-      .poll(() => previewSyncs.length, { timeout: 30_000 })
-      .toBeGreaterThan(0);
-    await page.getByRole("button", { name: "Design", exact: true }).click();
-    await expect(
-      previewFrame(page).locator("[data-storefront-section-id]").first(),
-    ).toBeAttached({ timeout: 60_000 });
-    await expect(page.getByText(/Remote source changes detected/i)).toHaveCount(0);
-  });
-
   test("while the module exists the command is disabled and the author's module stays", async ({
     page,
   }) => {
     test.setTimeout(180_000);
     await openEditor(page);
     const { scope, editorPath } = await createOwnTheme(page);
-    const authored = `${STARTER_THEME_CONTENT_MODULE_SOURCE}\n// the author's own change\n`;
+    const authored = `${STARTER_MODULE}\n// the author's own change\n`;
     expect(
       await writeThemeFiles(page, scope, [{ path: CONTENT_MODULE, content: authored }]),
     ).toMatchObject({ success: true });
