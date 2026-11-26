@@ -62,6 +62,9 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/run-editor-e2e.test.mjs",
   "scripts/run-start-preview-shard.mjs",
   "scripts/verify-published-artifact.mjs",
+  // Which test files each Vitest shard runs (vitest.config.ts uses it).
+  "scripts/vitest-shard-sequencer.mjs",
+  "scripts/vitest-shard-sequencer.test.mjs",
   // The Starter 31 bytes the client lane's guard compares each Theme against.
   "src/lib/storefront/__fixtures__/starter-workspace/v31.json",
   // Which preview runtime the runner expects a run to have used.
@@ -82,6 +85,8 @@ export const NOT_CI_RULES = Object.freeze({
     "serialises local runs on one machine; it does not choose what runs or how it exits",
   "scripts/rebalance-e2e-shards.mjs":
     "the shard guard reads its budget projection as advisory annotations only; it fails nothing",
+  "scripts/rebalance-vitest-shards.mjs":
+    "regenerates the shard durations data; the sequencer plans from that data and the shard guard still fails any file run in no shard or in two",
   "scripts/sidecar-observe-record.mjs":
     "records the local preview sidecar for diagnosis; never read for a result",
 });

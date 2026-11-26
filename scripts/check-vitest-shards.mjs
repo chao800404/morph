@@ -255,4 +255,13 @@ if (
   console.log(
     `Vitest shard coverage verified: ${counts.join(" / ")} of ${expected.length} test files`,
   );
+  // Advisory only: which files the shard plan (scripts/vitest-shard-sequencer.mjs)
+  // had no duration for. They still ran exactly once, at a default weight;
+  // refresh scripts/vitest-shard-durations.json when this list grows long.
+  const { loadDurations } = await import("./vitest-shard-sequencer.mjs");
+  const planned = new Set(Object.keys(loadDurations()));
+  const unplanned = expected.filter((file) => !planned.has(file));
+  console.log(
+    `Vitest shard plan: ${unplanned.length} of ${expected.length} test files have no recorded duration${unplanned.length ? ` (${unplanned.slice(0, 10).join(", ")}${unplanned.length > 10 ? ", ..." : ""})` : ""}`,
+  );
 }

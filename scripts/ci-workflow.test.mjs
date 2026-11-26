@@ -230,7 +230,7 @@ test("Validation tests waits for every shard, refuses any other result, and chec
   assert.match(download, /path: vitest-shard-artifacts\n/);
   assert.ok(
     block.includes(
-      "node --test scripts/check-vitest-shards.test.mjs\n          node scripts/check-vitest-shards.mjs vitest-shard-artifacts\n",
+      "node --test scripts/check-vitest-shards.test.mjs scripts/vitest-shard-sequencer.test.mjs\n          node scripts/check-vitest-shards.mjs vitest-shard-artifacts\n",
     ),
     "the aggregate must test the guard and then run it on the downloaded reports",
   );
