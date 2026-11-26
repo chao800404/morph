@@ -15,6 +15,7 @@ import { test } from "node:test";
 import {
   CHECK_DEPENDENCIES,
   CONTAINER_STAGE3_CHECKS,
+  SANDBOX_PRERENDER_SMOKE_CHECK,
   VALIDATE_CHECK,
   VALIDATION_CHECKS,
   VALIDATION_TEST_CHECK,
@@ -1153,4 +1154,34 @@ test("the six client shards must be the client lane, and the acceptance job chec
   );
   assert.ok(download >= 0, "the acceptance job downloads every shard's results");
   assert.ok(check > download, "the acceptance job checks the client lane verdicts after downloading them");
+});
+
+test("the Sandbox prerender smoke is its own job: the repository's launcher, a 15 minute timeout, and none of the container E2E setup", () => {
+  assert.deepEqual(jobCheckNames(workflow, "sandbox-prerender-smoke"), [
+    SANDBOX_PRERENDER_SMOKE_CHECK,
+  ]);
+  const block = withoutComments(jobBlock(workflow, "sandbox-prerender-smoke"));
+  assert.match(block, /^ {4}runs-on: ubuntu-24\.04$/m);
+  assert.match(block, /^ {4}timeout-minutes: 15$/m);
+  const steps = [...block.matchAll(/^ {6}- name: (.+)$/gm)].map((m) => m[1]);
+  assert.deepEqual(steps, [
+    "Checkout",
+    "Setup pnpm",
+    "Setup Node.js",
+    "Install dependencies",
+    "Run the Sandbox prerender smoke",
+  ]);
+  const start = block.indexOf("- name: Run the Sandbox prerender smoke");
+  const step = block.slice(start);
+  assert.match(step, /^ {8}run: pnpm test:sandbox-prerender$/m);
+  // Its two inner timeouts leave room for checkout, install and the image's
+  // first build inside the job's 15 minutes.
+  const seconds = (name) =>
+    Number(new RegExp(name + ": \"([0-9]+)\"").exec(step)?.[1]);
+  assert.ok(seconds("MORPH_SANDBOX_SMOKE_BUILD_S") + seconds("MORPH_SANDBOX_SMOKE_TEST_S") <= 13 * 60);
+  // Nothing of the container E2E jobs' setup, no continue-on-error, and the
+  // launcher is the very script the package runs.
+  assert.doesNotMatch(block, /playwright|continue-on-error|run-container-e2e|addr_gen_mode/);
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.scripts["test:sandbox-prerender"], "node scripts/sandbox-prerender-smoke.mjs");
 });

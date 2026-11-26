@@ -61,6 +61,9 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/run-editor-e2e.mjs",
   "scripts/run-editor-e2e.test.mjs",
   "scripts/run-start-preview-shard.mjs",
+  // Fails the Sandbox prerender smoke job when a test was skipped or none
+  // passed, so the job cannot go green without having prerendered anything.
+  "scripts/sandbox-prerender-smoke.mjs",
   "scripts/verify-published-artifact.mjs",
   "scripts/verify-published-artifact.test.mjs",
   // Which test files each Vitest shard runs (vitest.config.ts uses it).

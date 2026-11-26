@@ -38,6 +38,7 @@ import {
   CONTAINER_ACCEPTANCE_CHECK,
   CONTAINER_PRESENTATION_ACK_CHECK,
   CONTAINER_STAGE3_CHECKS,
+  SANDBOX_PRERENDER_SMOKE_CHECK,
   EXPECTED_CI_CHECKS,
   START_PREVIEW_SHARD_CHECKS,
   VALIDATION_CHECKS,
@@ -83,6 +84,7 @@ const baseGreen = () => [
   success(CONTAINER_ACCEPTANCE_CHECK),
   success(CONTAINER_PRESENTATION_ACK_CHECK),
   ...CONTAINER_STAGE3_CHECKS.map(success),
+  success(SANDBOX_PRERENDER_SMOKE_CHECK),
 ];
 const without = (checks, name) => checks.filter((check) => check.name !== name);
 const replaced = (checks, name, patch) =>
@@ -106,6 +108,7 @@ describe("the expected set of checks", () => {
       "Editor E2E container publish acceptance",
       "Editor E2E container Starter upgrade publish acceptance",
       "Editor E2E container socket, content sync and case E acceptance",
+      SANDBOX_PRERENDER_SMOKE_CHECK,
     ]);
   });
 
