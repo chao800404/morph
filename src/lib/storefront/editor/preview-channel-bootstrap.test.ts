@@ -67,6 +67,7 @@ function frameWindow(
             getItem: (key: string) => stored.get(key) ?? null,
             setItem: (key: string, value: string) =>
               void stored.set(key, value),
+            removeItem: (key: string) => void stored.delete(key),
           },
         }),
   } as never;
