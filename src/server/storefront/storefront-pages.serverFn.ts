@@ -5,6 +5,22 @@ import {
   SECTION_HIDE_UNSUPPORTED,
 } from "@/lib/storefront/theme-write-errors";
 import {
+  PAGE_DRAFT_CONFLICT,
+  PAGE_DRAFT_CONFLICT_MESSAGE,
+  PAGE_DRAFT_VERSION_MISMATCH,
+} from "@/lib/storefront/page-write-errors";
+
+/**
+ * A Page draft write refused because the draft moved since the caller read
+ * it (`page-write-errors.ts`), as its structured answer; null otherwise.
+ */
+function pageDraftConflictAnswer(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  return message.includes(PAGE_DRAFT_VERSION_MISMATCH)
+    ? fail(PAGE_DRAFT_CONFLICT_MESSAGE, { error: PAGE_DRAFT_CONFLICT })
+    : null;
+}
+import {
   createStorefrontPageInputSchema,
   getStorefrontPageInputSchema,
   listStorefrontPageRevisionsInputSchema,
@@ -163,6 +179,8 @@ export const updateStorefrontPage = createServerFn({ method: "POST" })
         version,
       });
     } catch (error) {
+      const conflict = pageDraftConflictAnswer(error);
+      if (conflict) return conflict;
       // M3 Hide: a Page section cannot be hidden yet. Answered in the
       // section-source refusal form (M2 C7), reason under `errors.reason`.
       const refusal = parseSectionSourceRefusal(
@@ -199,13 +217,18 @@ export const updateStorefrontPageMetadata = createServerFn({ method: "POST" })
         return fail("Storefront not found", { error: "NOT_FOUND" });
       const page = await storefrontPageDal.findDetail(data.id, storefront.id);
       if (!page) return fail("Page not found", { error: "NOT_FOUND" });
-      await storefrontPageDal.updateMetadata(
+      const updated = await storefrontPageDal.updateMetadata(
         data.id,
         storefront.id,
         data.metadata,
+        data.expectedDraftVersion,
       );
-      return ok("Page metadata updated", { id: data.id });
+      return updated
+        ? ok("Page metadata updated", { id: data.id })
+        : fail("Page not found", { error: "NOT_FOUND" });
     } catch (error) {
+      const conflict = pageDraftConflictAnswer(error);
+      if (conflict) return conflict;
       return failure(
         "Update storefront page metadata error",
         error,
@@ -273,6 +296,8 @@ export const restoreStorefrontPageRevision = createServerFn({ method: "POST" })
         ? ok("Revision restored as a new draft", restored)
         : fail("Page revision not found", { error: "NOT_FOUND" });
     } catch (error) {
+      const conflict = pageDraftConflictAnswer(error);
+      if (conflict) return conflict;
       return failure(
         "Restore storefront page revision error",
         error,

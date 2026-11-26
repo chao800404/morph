@@ -18,6 +18,16 @@ const checked = (data: FormData, key: string) => {
   return value === "true" || value === "on";
 };
 
+/**
+ * The draft revision `version` the form was loaded with. Every Page draft
+ * write sends it, and the server refuses the write as `PAGE_DRAFT_CONFLICT`
+ * when the draft has moved since (`page-write-errors.ts`).
+ */
+const draftVersion = (data: FormData) => {
+  const value = Number(text(data, "expectedDraftVersion"));
+  return Number.isSafeInteger(value) && value >= 1 ? value : null;
+};
+
 export const createPageAction = async ({ data }: { data: FormData }) => {
   const title = text(data, "title");
   if (!title)
@@ -40,7 +50,8 @@ export const updatePageAction = async ({ data }: { data: FormData }) => {
   const title = text(data, "title");
   const handle = text(data, "handle");
   const documentText = text(data, "document");
-  if (!id || !title || !handle || !documentText)
+  const expectedDraftVersion = draftVersion(data);
+  if (!id || !title || !handle || !documentText || !expectedDraftVersion)
     return { success: false, message: "Page data is incomplete" };
   let documentInput: unknown;
   try {
@@ -58,6 +69,7 @@ export const updatePageAction = async ({ data }: { data: FormData }) => {
       handle,
       document: parsedDocument.data satisfies StorefrontPageDocument,
       publish: checked(data, "publish"),
+      expectedDraftVersion,
     },
   });
 };
@@ -69,7 +81,8 @@ export const updatePageMetadataAction = async ({
 }) => {
   const id = text(data, "id");
   const raw = data.get("metadata");
-  if (!id || typeof raw !== "string")
+  const expectedDraftVersion = draftVersion(data);
+  if (!id || typeof raw !== "string" || !expectedDraftVersion)
     return { success: false, message: "Page metadata is incomplete" };
   let input: unknown;
   try {
@@ -80,10 +93,16 @@ export const updatePageMetadataAction = async ({
   const parsed = metadataInputSchema.safeParse(input);
   if (!parsed.success)
     return { success: false, message: "Page metadata is invalid" };
-  return updateStorefrontPageMetadata({ data: { id, metadata: parsed.data } });
+  return updateStorefrontPageMetadata({
+    data: { id, metadata: parsed.data, expectedDraftVersion },
+  });
 };
 
 export const restorePageRevisionAction = async (
   id: string,
   revisionId: string,
-) => restoreStorefrontPageRevision({ data: { id, revisionId } });
+  expectedDraftVersion: number,
+) =>
+  restoreStorefrontPageRevision({
+    data: { id, revisionId, expectedDraftVersion },
+  });

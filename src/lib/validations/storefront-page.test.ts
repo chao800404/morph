@@ -29,6 +29,7 @@ describe("storefront page validation", () => {
       updateStorefrontPageMetadataInputSchema.safeParse({
         id: crypto.randomUUID(),
         metadata,
+        expectedDraftVersion: 1,
       }).success,
     ).toBe(false);
   });

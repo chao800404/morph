@@ -6,6 +6,11 @@ import {
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
+import {
+  PAGE_DRAFT_CONFLICT,
+  PAGE_DRAFT_CONFLICT_MESSAGE,
+  PAGE_DRAFT_VERSION_MISMATCH,
+} from "@/lib/storefront/page-write-errors";
 import { showStorefrontSectionAgainInputSchema } from "@/lib/validations/storefront-theme";
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
@@ -20,8 +25,9 @@ import { commerceAdminMiddleware } from "../middleware/auth.middleware";
  * - `NOT_FOUND`: the document is not this storefront's (or there is none);
  * - `SECTION_NOT_FOUND`: the draft does not hold that section exactly once,
  *   with `errors.reason` `missing` or `ambiguous`;
- * - `TEMPLATE_DRAFT_CONFLICT`: the draft moved since the caller read it,
- *   the conflict every template write answers (a Page uses it too);
+ * - `PAGE_DRAFT_CONFLICT` / `TEMPLATE_DRAFT_CONFLICT`: the draft moved
+ *   since the caller read it, the conflict every write of that kind of
+ *   document answers;
  * - success with `changed: false` for a section already shown, so a retry
  *   after a lost answer reads as done.
  */
@@ -77,6 +83,9 @@ export const showStorefrontSectionAgain = createServerFn({ method: "POST" })
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
+      if (message.includes(PAGE_DRAFT_VERSION_MISMATCH)) {
+        return fail(PAGE_DRAFT_CONFLICT_MESSAGE, { error: PAGE_DRAFT_CONFLICT });
+      }
       if (message.includes(TEMPLATE_DRAFT_GENERATION_MISMATCH)) {
         return fail("The draft was modified concurrently.", {
           error: TEMPLATE_DRAFT_CONFLICT,

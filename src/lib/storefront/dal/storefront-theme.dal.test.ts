@@ -7633,6 +7633,10 @@ describe("publishing one page after a rollback", () => {
       publish: true,
       hasPublishedVersion: true,
       createdBy: "user-a",
+      expectedDraftVersion: (await storefrontPageDal.findDetail(
+        PAGE,
+        "storefront-a",
+      ))!.version,
     });
     return (
       sqlite

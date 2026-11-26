@@ -137,6 +137,7 @@ describe("a CMS Page write (storefrontPageDal.update)", () => {
     const { storefrontPageDal } = await import("../dal/storefront-page.dal");
     vi.spyOn(storefrontPageDal, "findDetail").mockResolvedValue({
       document: page(stored),
+      version: 1,
     } as never);
     return storefrontPageDal.update({
       id: "page-1",
@@ -147,6 +148,7 @@ describe("a CMS Page write (storefrontPageDal.update)", () => {
       hasPublishedVersion: false,
       createdBy: "user-1",
       storefrontId: "storefront-1",
+      expectedDraftVersion: 1,
     });
   };
 

@@ -50,17 +50,26 @@ export const createStorefrontPageInputSchema = z.object({
   publish: z.boolean().default(false),
 });
 
+/**
+ * Every Page draft write names the draft revision `version` its caller read
+ * (the Page detail's `version`); a write against any other draft is refused
+ * as `PAGE_DRAFT_CONFLICT` (`page-write-errors.ts`).
+ */
+const expectedDraftVersionSchema = z.number().int().min(1);
+
 export const updateStorefrontPageInputSchema = z.object({
   id: z.uuid(),
   title: z.string().trim().min(1).max(200),
   handle: handleSchema,
   document: storefrontPageDocumentSchema,
   publish: z.boolean().default(false),
+  expectedDraftVersion: expectedDraftVersionSchema,
 });
 
 export const updateStorefrontPageMetadataInputSchema = z.object({
   id: z.uuid(),
   metadata: metadataInputSchema,
+  expectedDraftVersion: expectedDraftVersionSchema,
 });
 
 export const listStorefrontPageRevisionsInputSchema = z.object({
@@ -72,4 +81,5 @@ export const listStorefrontPageRevisionsInputSchema = z.object({
 export const restoreStorefrontPageRevisionInputSchema = z.object({
   id: z.uuid(),
   revisionId: z.uuid(),
+  expectedDraftVersion: expectedDraftVersionSchema,
 });

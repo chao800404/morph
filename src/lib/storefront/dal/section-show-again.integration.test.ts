@@ -15,6 +15,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { openMigratedD1 } from "@/lib/test-utils/real-d1";
 import { TEMPLATE_DRAFT_GENERATION_MISMATCH } from "../theme-write-errors";
+import { PAGE_DRAFT_VERSION_MISMATCH } from "../page-write-errors";
 import { storefrontPageDal } from "./storefront-page.dal";
 import { storefrontThemeDal } from "./storefront-theme.dal";
 import { showTemplateSectionAgain } from "./storefront-template-show-again.dal";
@@ -227,6 +228,7 @@ describe("CMS Page: Show again", () => {
       document: saved.draftDocument,
       publish: false,
       hasPublishedVersion: false,
+      expectedDraftVersion: 4,
       createdBy: "merchant",
       storefrontId,
     });
@@ -237,7 +239,7 @@ describe("CMS Page: Show again", () => {
     await seedPage();
     const before = await pageState();
     await expect(show({ expectedDraftVersion: 2 })).rejects.toThrow(
-      TEMPLATE_DRAFT_GENERATION_MISMATCH,
+      PAGE_DRAFT_VERSION_MISMATCH,
     );
     expect(await pageState()).toEqual(before);
   });
@@ -268,7 +270,7 @@ describe("CMS Page: Show again", () => {
       },
     });
     try {
-      await expect(show()).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
+      await expect(show()).rejects.toThrow(PAGE_DRAFT_VERSION_MISMATCH);
     } finally {
       (env as unknown as { DATABASE: D1Database }).DATABASE = database;
     }

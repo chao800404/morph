@@ -6,6 +6,10 @@ import {
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
+import {
+  PAGE_DRAFT_CONFLICT,
+  PAGE_DRAFT_VERSION_MISMATCH,
+} from "@/lib/storefront/page-write-errors";
 
 /**
  * "Show again" through the real server function handler and the real
@@ -185,13 +189,26 @@ describe.each([
     });
   });
 
-  it("answers the draft conflict for a stale expected revision", async () => {
-    const stale = new Error(`${TEMPLATE_DRAFT_GENERATION_MISMATCH}: moved`);
-    spies.showPageSection.mockRejectedValue(stale);
-    spies.showTemplateSection.mockRejectedValue(stale);
+  it("answers its kind's draft conflict for a stale expected revision", async () => {
+    spies.showPageSection.mockRejectedValue(
+      new Error(`${PAGE_DRAFT_VERSION_MISMATCH}: moved`),
+    );
+    spies.showTemplateSection.mockRejectedValue(
+      new Error(`${TEMPLATE_DRAFT_GENERATION_MISMATCH}: moved`),
+    );
     expect(await call(input)).toMatchObject({
       success: false,
-      error: TEMPLATE_DRAFT_CONFLICT,
+      error: input.kind === "page" ? PAGE_DRAFT_CONFLICT : TEMPLATE_DRAFT_CONFLICT,
+    });
+  });
+
+  it("keeps any other failure a generic failure", async () => {
+    const other = new Error("UNIQUE constraint failed: storefront_pages.handle");
+    spies.showPageSection.mockRejectedValue(other);
+    spies.showTemplateSection.mockRejectedValue(other);
+    expect(await call(input)).toMatchObject({
+      success: false,
+      error: "UPDATE_FAILED",
     });
   });
 
