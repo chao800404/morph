@@ -180,14 +180,36 @@ async function readSnapshot() {
   // too, re-imported on each read: a newer snapshot written by a start or a
   // content sync is picked up by the module runner without a restart, and
   // the two readers never disagree about which one is current.
-  const module = await import("./${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}");
-  const read = module.default ?? null;
+  //
+  // Only a snapshot that passes \`isReadablePreviewSnapshot\` is ever kept,
+  // so only such a snapshot sets the ticket later reads are ordered by. A
+  // file that fails to import, or that is anything else (null, no default,
+  // malformed under any ticket, or valid but with no ticket after one that
+  // had one), drops what was kept: the file now says nothing readable, and
+  // an earlier answer would be a stale one.
+  let read;
+  try {
+    const module = await import("./${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}");
+    read = module ? module.default : undefined;
+  } catch (error) {
+    snapshot = null;
+    throw error;
+  }
+  if (!isReadablePreviewSnapshot(read)) {
+    snapshot = null;
+    return;
+  }
+  const ticket = snapshotTicket(read);
+  if (ticket === 0 && snapshotTicket(snapshot) > 0) {
+    snapshot = null;
+    return;
+  }
   // Nothing orders two imports: one started before a sync rewrote the file
   // can settle after one started later. Its older snapshot never replaces a
   // newer one; an equal ticket (the same content, restamped for the server
   // now running) or a higher one does.
-  if (snapshotTicket(read) < snapshotTicket(snapshot)) return;
-  snapshot = read === null ? null : JSON.parse(JSON.stringify(read));
+  if (ticket < snapshotTicket(snapshot)) return;
+  snapshot = JSON.parse(JSON.stringify(read));
 }
 
 function snapshotTicket(value) {
@@ -246,8 +268,12 @@ export default {
       let instance = "";
       try {
         await readSnapshot();
-        ticket = snapshot && Number.isSafeInteger(snapshot.contentTicket) ? snapshot.contentTicket : 0;
-        instance = snapshot && typeof snapshot.previewInstance === "string" ? snapshot.previewInstance : "";
+        // Only a snapshot every content read can be answered from is named:
+        // a corrupt file that keeps its ticket must not confirm a sync.
+        if (isReadablePreviewSnapshot(snapshot)) {
+          ticket = snapshotTicket(snapshot);
+          instance = typeof snapshot.previewInstance === "string" ? snapshot.previewInstance : "";
+        }
       } catch {
         // Unreadable: the probe still answers, naming no snapshot.
       }

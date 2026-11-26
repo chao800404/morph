@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { themePreviewContentModuleSource } from "./theme-preview-content";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 
 /**
  * The full Start Live Preview's unsaved edits, as Starter 32's client loader
@@ -69,13 +70,12 @@ function previewPage(snapshot: unknown, pathname = "/") {
   };
 }
 
-const SNAPSHOT = {
+const SNAPSHOT = previewContentAsCoreWrites({
   templates: {
     index: { slots: { hero: { title: "Loaded" } }, hiddenSlots: [] },
     product: { slots: { card: { title: "Product loaded" } }, hiddenSlots: [] },
   },
-  pages: {},
-};
+});
 
 /** What the server function returned: the saved drafts. */
 const saved = (slots: Content["slots"], hiddenSlots: string[] = []): Content => ({

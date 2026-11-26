@@ -270,7 +270,7 @@ export type FencePlanners = Readonly<{
  * source; so it names nothing outside its parameters.
  */
 export function applyFencedRequest(
-  io: FenceIo,
+  io: FenceIo & { renameInto(from: string, to: string): void },
   ledgerPath: string,
   request: FencedWriteRequest,
   planners: FencePlanners,
@@ -525,13 +525,22 @@ export function applyFencedRequest(
       const placed = io.within(request.root, request.content.path);
       const text = io.readText(placed);
       if (instance && text !== null) {
+        let stamped: string | null = null;
         try {
-          io.writeText(
-            placed,
-            JSON.stringify({ ...JSON.parse(text), previewInstance: instance.trim() }),
-          );
+          stamped = JSON.stringify({
+            ...JSON.parse(text),
+            previewInstance: instance.trim(),
+          });
         } catch {
           // Not a snapshot: left as it is.
+        }
+        if (stamped !== null) {
+          // By one rename, as a content sync writes it
+          // (`applyPreviewContentRequest`): the server already running reads
+          // this file, and a read of it half written is now refused.
+          const next = placed + ".next";
+          io.writeText(next, stamped);
+          io.renameInto(next, placed);
         }
       }
     }

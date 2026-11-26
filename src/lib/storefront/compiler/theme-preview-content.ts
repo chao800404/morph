@@ -323,11 +323,21 @@ function templateTypeForPath(pathname) {
   return null;
 }
 
+/**
+ * The page handle \`pathname\` names: null for a path that is not a page,
+ * false for one whose handle is not a valid percent-escape (which no
+ * snapshot can answer, so it is refused rather than thrown).
+ */
 function pageHandleForPath(pathname) {
   const normalized = (pathname || "/").split("?")[0].replace(/\\/+$/, "") || "/";
   if (!normalized.startsWith("/pages/")) return null;
   const handle = normalized.slice("/pages/".length);
-  return handle && !handle.includes("/") ? decodeURIComponent(handle) : null;
+  if (!handle || handle.includes("/")) return null;
+  try {
+    return decodeURIComponent(handle);
+  } catch {
+    return false;
+  }
 }
 
 function isPreviewContentRecord(value) {
@@ -338,12 +348,61 @@ function hasOwnPreviewEntry(record, key) {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-/** Whether \`value\` is one path's content as Core writes it. */
+/**
+ * Whether \`value\` is one path's content as Core writes it
+ * (\`resolveStorefrontContent\`): its own \`slots\`, every value an object of
+ * props, and its own \`hiddenSlots\`, a list of ids. Own fields only: in the
+ * snapshot module a \`"__proto__"\` key would otherwise lend them.
+ */
 function isReadablePreviewContent(value) {
-  return isPreviewContentRecord(value) &&
-    isPreviewContentRecord(value.slots) &&
-    Array.isArray(value.hiddenSlots) &&
-    value.hiddenSlots.every((id) => typeof id === "string");
+  if (
+    !isPreviewContentRecord(value) ||
+    !hasOwnPreviewEntry(value, "slots") ||
+    !hasOwnPreviewEntry(value, "hiddenSlots") ||
+    !isPreviewContentRecord(value.slots) ||
+    !Array.isArray(value.hiddenSlots) ||
+    !value.hiddenSlots.every((id) => typeof id === "string")
+  ) {
+    return false;
+  }
+  for (const id of Object.keys(value.slots)) {
+    if (!isPreviewContentRecord(value.slots[id])) return false;
+  }
+  return true;
+}
+
+/** The template types Core writes an entry for in every snapshot. */
+const PREVIEW_SNAPSHOT_TEMPLATE_TYPES = ["index", "product", "collection", "page", "blog"];
+
+function isReadablePreviewEntries(record) {
+  if (!isPreviewContentRecord(record)) return false;
+  for (const key of Object.keys(record)) {
+    if (!isReadablePreviewContent(record[key])) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether \`value\` is a whole snapshot as Core writes it
+ * (\`createThemePreviewContentSnapshot\`): an entry for every template type,
+ * the \`pages\` and \`routes\` maps, and the shell, each well formed. Anything
+ * less is not "nothing stored" but a snapshot that cannot be read, and no
+ * path is answered from it. The Start Worker's probe asks the same question
+ * before it reports a snapshot as the one it serves.
+ */
+function isReadablePreviewSnapshot(value) {
+  if (!isPreviewContentRecord(value)) return false;
+  for (const key of ["templates", "pages", "routes", "shell"]) {
+    if (!hasOwnPreviewEntry(value, key)) return false;
+  }
+  if (!isPreviewContentRecord(value.templates)) return false;
+  for (const type of PREVIEW_SNAPSHOT_TEMPLATE_TYPES) {
+    if (!hasOwnPreviewEntry(value.templates, type)) return false;
+  }
+  return isReadablePreviewEntries(value.templates) &&
+    isReadablePreviewEntries(value.pages) &&
+    isReadablePreviewEntries(value.routes) &&
+    isReadablePreviewContent(value.shell);
 }
 
 /**
@@ -352,39 +411,27 @@ function isReadablePreviewContent(value) {
  *
  * Core writes an entry for every template type and for the shell, empty for
  * a route with no Document (\`createThemePreviewContentSnapshot\`), so
- * "nothing stored" is an entry, read as it is. An absent or malformed entry,
- * or a snapshot that is not one at all, is null and never empty content:
- * answered empty, a page would render the sections its author hid.
+ * "nothing stored" is an entry, read as it is. A snapshot that is not whole
+ * and well formed (\`isReadablePreviewSnapshot\`), or a page handle that is
+ * not a valid escape, is null and never empty content: answered empty, a
+ * page would render the sections its author hid.
  */
 export function previewContentForPath(pathname) {
-  if (
-    !isPreviewContentRecord(snapshot) ||
-    !isPreviewContentRecord(snapshot.templates) ||
-    !isPreviewContentRecord(snapshot.pages)
-  ) {
-    return null;
-  }
+  if (!isReadablePreviewSnapshot(snapshot)) return null;
   const handle = pageHandleForPath(pathname);
+  if (handle === false) return null;
   // A page with a draft Document of its own; one without is the page template's.
   if (handle && hasOwnPreviewEntry(snapshot.pages, handle)) {
-    const page = snapshot.pages[handle];
-    return isReadablePreviewContent(page) ? page : null;
+    return snapshot.pages[handle];
   }
   const type = templateTypeForPath(pathname);
-  if (type) {
-    const template = hasOwnPreviewEntry(snapshot.templates, type) ? snapshot.templates[type] : null;
-    return isReadablePreviewContent(template) ? template : null;
-  }
-  if (snapshot.routes !== undefined && !isPreviewContentRecord(snapshot.routes)) return null;
-  const routes = snapshot.routes || (snapshot.routes = {});
+  if (type) return snapshot.templates[type];
+  const routes = snapshot.routes;
   const routePath = (pathname || "/").split("?")[0].replace(/\\/+$/, "") || "/";
-  if (hasOwnPreviewEntry(routes, routePath)) {
-    return isReadablePreviewContent(routes[routePath]) ? routes[routePath] : null;
-  }
+  if (hasOwnPreviewEntry(routes, routePath)) return routes[routePath];
   // Created per path from the shell, so a live edit on one route never leaks
   // into another that has no document of its own.
   const shell = snapshot.shell;
-  if (!isReadablePreviewContent(shell)) return null;
   routes[routePath] = { slots: { ...shell.slots }, hiddenSlots: [...shell.hiddenSlots] };
   return routes[routePath];
 }
@@ -477,6 +524,10 @@ const livePreviewEdits = new Map();
 // the function above, unchanged.
 const applyPreviewContentUpdate = updatePreviewContent;
 updatePreviewContent = function updatePreviewContent(sectionId, props, enabled, resetKeys) {
+  // An edit the page cannot apply, because its content could not be read, is
+  // not recorded either: \`livePreviewContentOverlay\` would otherwise lay it
+  // over a later answer the page never showed it on.
+  if (!currentPreviewContent()) return false;
   recordLivePreviewEdit(sectionId, props, enabled, resetKeys);
   return applyPreviewContentUpdate(sectionId, props, enabled, resetKeys);
 };
@@ -560,7 +611,12 @@ export function previewSlotHidden(sectionId) {
 
 /** The answer to a content read for \`pathname\`: its content, or the refusal. */
 function previewContentResponse(pathname) {
-  const content = previewContentForPath(pathname);
+  let content = null;
+  try {
+    content = previewContentForPath(pathname);
+  } catch {
+    content = null;
+  }
   return new Response(JSON.stringify(content || ${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}), {
     status: content ? 200 : ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS},
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
@@ -667,7 +723,12 @@ export function themePreviewContentPluginSource(): string {
       } catch {
         snapshot = null;
       }
-      const content = previewContentForPath(url.searchParams.get("path") || "/");
+      let content = null;
+      try {
+        content = previewContentForPath(url.searchParams.get("path") || "/");
+      } catch {
+        content = null;
+      }
       res.statusCode = content ? 200 : ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS};
       res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
