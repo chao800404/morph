@@ -2187,6 +2187,74 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
           componentDigest: DIGEST,
         });
       });
+
+      // Codex review P2 (global Undo): the first value of a field the hero
+      // did not store is undone by a reset. That reset is a write of an
+      // Astro section like any other: sent under a current basis proof with
+      // its identity and Core's digest, never identity-free.
+      it("Undo of the first value of an unset field resets it with the identity and digest of a current basis", async () => {
+        const unset = contextWithHero(4, { subtitle: "Stored subtitle" });
+        updateSectionProps.mockResolvedValueOnce(answered(5, "First"));
+        updateSectionProps.mockResolvedValueOnce({
+          success: true,
+          message: "Section updated",
+          data: {
+            draftGeneration: 6,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  enabled: true,
+                  props: { subtitle: "Stored subtitle" },
+                },
+              ],
+            },
+          },
+        });
+        vi.mocked(syncThemePreviewContent).mockResolvedValue({
+          success: true,
+          message: "Live Preview content synced",
+          data: {
+            ticket: 8,
+            sentTicket: 8,
+            draftGenerations: { "template-1": 5 },
+            instance: INSTANCE,
+          },
+        } as never);
+        await upAndAcked(unset);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "First" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        await waitFor(() =>
+          expect(vi.mocked(syncThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await flush();
+        await reloadWith({ ticket: 8, instance: INSTANCE });
+        await waitFor(() =>
+          expect(basisPosts().length).toBeGreaterThanOrEqual(2),
+        );
+        await ackBasis(basisPosts().at(-1)!.presentationToken);
+
+        await waitFor(() =>
+          expect(
+            screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+          ).toBe(false),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+        expect(sentData(1)).toMatchObject({
+          sectionId: "hero",
+          resetProps: ["title"],
+          expectedDraftGeneration: 5,
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
     });
 
     // Lead decision Q3: after a frame reload the selection is not kept from
