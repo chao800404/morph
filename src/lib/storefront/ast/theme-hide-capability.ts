@@ -247,16 +247,34 @@ const NON_SEMANTIC_KEYS = new Set([
 ]);
 
 /**
+ * Comments a compiler reads: JSX pragmas (`@jsx`, `@jsxFrag`,
+ * `@jsxImportSource`, `@jsxRuntime`), which change what esbuild emits for
+ * the module's JSX, and bundler annotations that change what is kept.
+ */
+const COMPILER_COMMENT = /[@#]\s*(jsx\w*|__PURE__|__NO_SIDE_EFFECTS__|vite-ignore)\b/;
+
+/**
  * A module's code with comments, whitespace and spelling of literals left
  * out: two sources with the same key are the same program. Null when the
- * source does not parse.
+ * source does not parse. Directives (`"use client"`) are part of the
+ * program; the comments a compiler reads are kept beside it, in order, so a
+ * pragma added to a pinned file changes its key.
  */
 function codeKey(path: string, content: string): string | null {
   const parsed = parseThemeSourceAst({ path, content });
   if (!parsed.ok) return null;
-  return JSON.stringify(parsed.ast.program, (key, value) =>
-    NON_SEMANTIC_KEYS.has(key) ? undefined : value,
-  );
+  const comments = ((parsed.ast as { comments?: Array<{ value?: string }> }).comments ?? [])
+    .map((comment) => String(comment.value ?? ""))
+    .filter((value) => COMPILER_COMMENT.test(value))
+    .map((value) => value.replace(/\s+/g, " ").trim());
+  return JSON.stringify({
+    program: JSON.parse(
+      JSON.stringify(parsed.ast.program, (key, value) =>
+        NON_SEMANTIC_KEYS.has(key) ? undefined : value,
+      ),
+    ),
+    compilerComments: comments,
+  });
 }
 
 const knownCodeKeys = new Map<readonly string[], ReadonlySet<string>>();
