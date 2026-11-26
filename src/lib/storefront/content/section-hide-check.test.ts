@@ -4,6 +4,8 @@ import {
   assertPublishHiddenSections,
   assertSectionHideSupported,
   partitionPublishHiddenItems,
+  PublishHiddenSectionsError,
+  type PublishHiddenSectionProblem,
   sectionHideRefusal,
   sectionsNewlyHidden,
 } from "./section-hide-check";
@@ -175,6 +177,8 @@ describe("partitionPublishHiddenItems and the publish refusal (M3 Hide step 1)",
     hidden: readonly string[],
   ) => ({
     itemType,
+    contentId: `${itemType}:${label}`,
+    templateType: itemType === "page" ? "page" : "index",
     label,
     document: {
       sections: ["hero", "promo"].map((id) => ({
@@ -249,6 +253,9 @@ describe("partitionPublishHiddenItems and the publish refusal (M3 Hide step 1)",
         unsupported: [
           ...refused,
           {
+            itemType: "template",
+            contentId: "template-index",
+            templateType: "index",
             label: "the index page",
             sectionId: "early",
             reason: "early-computation",
@@ -260,5 +267,135 @@ describe("partitionPublishHiddenItems and the publish refusal (M3 Hide step 1)",
     ).toThrow(
       `PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide a section of a Page yet, so it cannot confirm these hidden sections would be left out of the live site and will not publish them: "hero" on the Page "About" (/pages/about) (no-call-site). The Page editor cannot show a hidden section: if an earlier version of the Page shows it, restore that version as a draft from the Page's revisions, save the Page with Publish page on, then publish the Theme again; otherwise contact support. Morph cannot confirm that this Theme's code leaves these hidden sections out of the live site, so it will not publish them: "early" on the index page (early-computation). Show them again in Design, or change the code so Morph can hide them, then publish. The live site is unchanged.`,
     );
+  });
+});
+
+describe("the publish refusal carries its problems as data (M3 stage 1)", () => {
+  const problem = (
+    overrides: Partial<PublishHiddenSectionProblem> = {},
+  ): PublishHiddenSectionProblem => ({
+    itemType: "template",
+    contentId: "template-index",
+    templateType: "index",
+    label: "the index page",
+    sectionId: "early",
+    reason: "early-computation",
+    message: "m",
+    ...overrides,
+  });
+  const thrown = (unsupported: PublishHiddenSectionProblem[]) => {
+    try {
+      assertPublishHiddenSections({ unsupported, rebuild: [] });
+    } catch (error) {
+      return error;
+    }
+    throw new Error("expected a refusal");
+  };
+
+  it("names the Page, the template and the layout with what each must publish", () => {
+    const { refused } = partitionPublishHiddenItems({
+      framework: null,
+      items: [
+        {
+          itemType: "page",
+          contentId: "page-about",
+          templateType: "page",
+          label: 'the Page "About" (/pages/about)',
+          document: { sections: [{ id: "newsletter", enabled: false }] },
+        },
+      ],
+    });
+    const error = thrown([
+      ...refused,
+      problem(),
+      problem({
+        contentId: "template-layout",
+        templateType: "layout",
+        label: "the layout",
+        sectionId: "promo",
+        reason: "no-call-site",
+        refusedAs: "unlisted",
+      }),
+    ]);
+    expect(error).toBeInstanceOf(PublishHiddenSectionsError);
+    expect((error as PublishHiddenSectionsError).details).toEqual({
+      kind: "publish-hidden-sections",
+      truncated: false,
+      problems: [
+        {
+          itemType: "page",
+          contentId: "page-about",
+          templateType: "page",
+          sectionId: "newsletter",
+          reason: "no-call-site",
+          refusedAs: "page",
+          mustPublish: "page",
+          label: 'the Page "About" (/pages/about)',
+        },
+        {
+          itemType: "template",
+          contentId: "template-index",
+          templateType: "index",
+          sectionId: "early",
+          reason: "early-computation",
+          refusedAs: "source",
+          mustPublish: "theme",
+          label: "the index page",
+        },
+        {
+          itemType: "template",
+          contentId: "template-layout",
+          templateType: "layout",
+          sectionId: "promo",
+          reason: "no-call-site",
+          refusedAs: "unlisted",
+          mustPublish: "theme",
+          label: "the layout",
+        },
+      ],
+    });
+  });
+
+  it("keeps the message exactly as the text-only refusal said it", () => {
+    const error = thrown([problem()]) as Error;
+    expect(error.message).toBe(
+      `PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot confirm that this Theme's code leaves these hidden sections out of the live site, so it will not publish them: "early" on the index page (early-computation). Show them again in Design, or change the code so Morph can hide them, then publish. The live site is unchanged.`,
+    );
+  });
+
+  it("carries at most 50 problems and says when there were more", () => {
+    const many = (count: number) =>
+      Array.from({ length: count }, (_, index) =>
+        problem({ sectionId: `s${index}` }),
+      );
+    const at50 = thrown(many(50)) as PublishHiddenSectionsError;
+    expect(at50.details.problems).toHaveLength(50);
+    expect(at50.details.truncated).toBe(false);
+    const at51 = thrown(many(51)) as PublishHiddenSectionsError;
+    expect(at51.details.problems).toHaveLength(50);
+    expect(at51.details.problems.at(-1)?.sectionId).toBe("s49");
+    expect(at51.details.truncated).toBe(true);
+  });
+
+  it("never carries section content: the message of a problem is left out", () => {
+    const error = thrown([
+      problem({ message: "SECRET-CONTENT" }),
+    ]) as PublishHiddenSectionsError;
+    expect(JSON.stringify(error.details)).not.toContain("SECRET-CONTENT");
+  });
+
+  it("leaves the rebuild refusal as it was, with no details", () => {
+    let caught: unknown;
+    try {
+      assertPublishHiddenSections({
+        unsupported: [],
+        rebuild: [problem({ reason: "rebuild-required" })],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(PublishHiddenSectionsError);
+    expect((caught as Error).message).toMatch(/^PUBLISH_HIDE_REBUILD_REQUIRED: /);
   });
 });

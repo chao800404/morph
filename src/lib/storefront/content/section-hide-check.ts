@@ -8,6 +8,11 @@ import {
 import { THEME_HIDE_GUARD_VERSION } from "@/lib/storefront/ast/theme-hide-guard-version";
 import type { B1SourceFile } from "@/lib/storefront/ast/theme-content-provenance";
 import {
+  PUBLISH_HIDDEN_SECTIONS_DETAIL_LIMIT,
+  type PublishHiddenSectionDetail,
+  type PublishHiddenSectionsDetails,
+} from "@/lib/storefront/publish-hidden-sections-details";
+import {
   PUBLISH_HIDDEN_SECTION_UNSUPPORTED,
   PUBLISH_HIDE_REBUILD_REQUIRED,
   SECTION_HIDE_UNSUPPORTED,
@@ -121,15 +126,41 @@ export const PAGE_SECTION_HIDE_UNSUPPORTED_MESSAGE =
  * Release rollback and a failed publish's restore never come here: a
  * historical release keeps its own artifact and content.
  */
-export type PublishHiddenSectionsDocument = Readonly<{
-  /** How the author knows the document: "the page /about", "the layout". */
-  label: string;
+/**
+ * Which document of the publication a hidden section belongs to, carried
+ * from the sealed publication item so a refusal can name it as data (M3
+ * stage 1: the editor offers "Show again" on exactly that draft).
+ */
+export type PublishHiddenTarget = Readonly<{
+  itemType: "template" | "page";
+  /** The publication item's content id: the template id, or the Page id. */
+  contentId: string;
+  /** The template type the item was sealed under; `"page"` for a CMS Page. */
   templateType: string;
-  templateRoutePath: string | null;
-  document: DocumentVisibility;
 }>;
 
-export type PublishHiddenSectionProblem = Readonly<{
+/**
+ * What the author must publish once the section is shown again. A CMS Page
+ * travels with a Theme publish at its published revision, so a Show again on
+ * its draft goes live only after the Page itself is published; a template's
+ * draft is what a Theme publish seals.
+ */
+export function mustPublishFor(
+  itemType: PublishHiddenTarget["itemType"],
+): "page" | "theme" {
+  return itemType === "page" ? "page" : "theme";
+}
+
+export type PublishHiddenSectionsDocument = PublishHiddenTarget &
+  Readonly<{
+    /** How the author knows the document: "the page /about", "the layout". */
+    label: string;
+    templateRoutePath: string | null;
+    document: DocumentVisibility;
+  }>;
+
+export type PublishHiddenSectionProblem = PublishHiddenTarget &
+  Readonly<{
   label: string;
   sectionId: string;
   reason: HideRefusalReason | "rebuild-required";
@@ -197,7 +228,7 @@ export function findPublishHiddenSectionProblems(args: {
     // are refused rather than left alone.
     if (callSites.length === 0 || callSites.includes("not-rendered")) {
       refusal = {
-        label: entry.label,
+        ...problemTarget(entry),
         sectionId,
         reason: "no-call-site",
         message: hideRefusalMessage("no-call-site"),
@@ -208,7 +239,7 @@ export function findPublishHiddenSectionProblems(args: {
       if (callSitePath === "not-rendered") continue;
       if (callSitePath !== null && typeof callSitePath === "object") {
         refusal = {
-          label: entry.label,
+          ...problemTarget(entry),
           sectionId,
           reason: "source-unconfirmed",
           message: callSitePath.unconfirmed,
@@ -222,7 +253,7 @@ export function findPublishHiddenSectionProblems(args: {
       });
       if (capability.kind === "unsupported") {
         refusal = {
-          label: entry.label,
+          ...problemTarget(entry),
           sectionId,
           reason: capability.reason,
           message: capability.message,
@@ -237,7 +268,7 @@ export function findPublishHiddenSectionProblems(args: {
       unsupported.push(refusal);
     } else if (!guardCurrent && needsGuard) {
       rebuild.push({
-        label: entry.label,
+        ...problemTarget(entry),
         sectionId,
         reason: "rebuild-required",
         message:
@@ -252,12 +283,24 @@ export function findPublishHiddenSectionProblems(args: {
  * One item of the publication being sealed that carries a hidden section:
  * a Theme template, or a CMS Page.
  */
-export type PublishHiddenItem = Readonly<{
-  itemType: "template" | "page";
-  /** How the author knows it: "the index page", `the Page "About" (/pages/about)`. */
-  label: string;
-  document: DocumentVisibility;
-}>;
+export type PublishHiddenItem = PublishHiddenTarget &
+  Readonly<{
+    /** How the author knows it: "the index page", `the Page "About" (/pages/about)`. */
+    label: string;
+    document: DocumentVisibility;
+  }>;
+
+/** The part of an item or document a problem names it by. */
+function problemTarget(
+  entry: PublishHiddenTarget & Readonly<{ label: string }>,
+): PublishHiddenTarget & Readonly<{ label: string }> {
+  return {
+    itemType: entry.itemType,
+    contentId: entry.contentId,
+    templateType: entry.templateType,
+    label: entry.label,
+  };
+}
 
 /** How the publish refusal names a recorded framework. */
 function frameworkDisplayName(framework: string): string {
@@ -303,14 +346,14 @@ export function partitionPublishHiddenItems<T extends PublishHiddenItem>(args: {
       refused.push(
         start
           ? {
-              label: item.label,
+              ...problemTarget(item),
               sectionId: section.id,
               reason: "no-call-site",
               message: PAGE_SECTION_HIDE_UNSUPPORTED_MESSAGE,
               refusedAs: "page",
             }
           : {
-              label: item.label,
+              ...problemTarget(item),
               sectionId: section.id,
               reason: "framework-not-supported",
               message: `Morph cannot hide sections on ${frameworkDisplayName(framework)} Themes yet`,
@@ -320,6 +363,54 @@ export function partitionPublishHiddenItems<T extends PublishHiddenItem>(args: {
     }
   }
   return { refused, sourceChecked };
+}
+
+/**
+ * The publish refusal for hidden sections, with the problems as data
+ * (`details`) beside the message every caller already reads. The message is
+ * unchanged, so a caller that reads only the message (or an RPC hop that
+ * keeps only it) answers as before.
+ */
+export class PublishHiddenSectionsError extends Error {
+  readonly details: PublishHiddenSectionsDetails;
+  constructor(message: string, details: PublishHiddenSectionsDetails) {
+    super(message);
+    this.name = "PublishHiddenSectionsError";
+    this.details = details;
+  }
+}
+
+/**
+ * The refusal's problems as `ServerFailure.details`: names only, never
+ * section content, and at most `PUBLISH_HIDDEN_SECTIONS_DETAIL_LIMIT` of
+ * them, with `truncated` saying when there were more.
+ */
+export function publishHiddenSectionsDetails(
+  problems: readonly PublishHiddenSectionProblem[],
+): PublishHiddenSectionsDetails {
+  const listed: PublishHiddenSectionDetail[] = [];
+  for (const problem of problems.slice(
+    0,
+    PUBLISH_HIDDEN_SECTIONS_DETAIL_LIMIT,
+  )) {
+    // Rebuild problems have their own refusal and never come here.
+    if (problem.reason === "rebuild-required") continue;
+    listed.push({
+      itemType: problem.itemType,
+      contentId: problem.contentId,
+      templateType: problem.templateType,
+      sectionId: problem.sectionId,
+      reason: problem.reason,
+      refusedAs: problem.refusedAs ?? "source",
+      mustPublish: mustPublishFor(problem.itemType),
+      label: problem.label,
+    });
+  }
+  return {
+    kind: "publish-hidden-sections",
+    problems: listed,
+    truncated: problems.length > PUBLISH_HIDDEN_SECTIONS_DETAIL_LIMIT,
+  };
 }
 
 /** The refusal `publishTemplate` raises, or nothing when the publish may go. */
@@ -365,8 +456,9 @@ export function assertPublishHiddenSections(
         `Morph cannot confirm that this Theme's code leaves these hidden sections out of the live site, so it will not publish them: ${list(source)}. Show them again in Design, or change the code so Morph can hide them, then publish.`,
       );
     }
-    throw new Error(
+    throw new PublishHiddenSectionsError(
       `${PUBLISH_HIDDEN_SECTION_UNSUPPORTED}: ${sentences.join(" ")} The live site is unchanged.`,
+      publishHiddenSectionsDetails(problems.unsupported),
     );
   }
   if (problems.rebuild.length > 0) {

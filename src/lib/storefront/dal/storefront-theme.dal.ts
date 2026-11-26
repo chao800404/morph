@@ -3545,6 +3545,7 @@ export const storefrontThemeDal = {
             const title = page?.title ?? handle ?? item.contentId;
             return {
               itemType: "page" as const,
+              contentId: item.contentId,
               label: `the Page "${title}"${handle ? ` (/pages/${handle})` : ""}`,
               templateType: "page",
               templateRoutePath: null,
@@ -3566,6 +3567,7 @@ export const storefrontThemeDal = {
           const routePath = item.metadata?.routePath ?? null;
           return {
             itemType: "template" as const,
+            contentId: item.contentId,
             label:
               templateType === "layout"
                 ? "the layout"
