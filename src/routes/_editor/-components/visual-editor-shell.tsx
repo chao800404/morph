@@ -17655,6 +17655,21 @@ export function VisualEditorShell({
         frameRecord.capabilities.has("section-presentation-ack-v1"),
       );
       const shownWhileHeld = !presentationReadyAtInput && frameCanAcknowledge;
+      // M2 PR 3: an Astro section's input is never shown as an overlay; its
+      // proof is the basis the page was rendered from. Held while no current
+      // basis proves it (the page is reloading onto the editor's own write,
+      // or Core wrote a newer snapshot), it is released by the next
+      // acknowledged basis, which is checked again against the input's own
+      // basis (`presentationShowsWriteBasis`) and Core's record before it is
+      // sent, exactly as a shown Start draft is.
+      const heldForAstroBasis =
+        !presentationReadyAtInput &&
+        sectionsUnavailableForFramework &&
+        Boolean(
+          astroSectionsOnPageRef.current
+            .get(currentSearchRoutePathRef.current ?? "/")
+            ?.has(sectionId),
+        );
       const awaitingSignedBefore = awaitingSignedPostRef.current.has(sectionId);
       if (!presentationReadyAtInput && !frameCanAcknowledge) {
         cancelAwaitingSignedPost(sectionId);
@@ -17807,7 +17822,7 @@ export function VisualEditorShell({
           : {
               ...staged,
               presentationBlocked: true,
-              ...(shownWhileHeld &&
+              ...((shownWhileHeld || heldForAstroBasis) &&
               (routePathFromTemplatePlaceholder(keyTemplateId) === null ||
                 (staged.fields !== undefined &&
                   Object.values(staged.fields).every(
@@ -17868,6 +17883,7 @@ export function VisualEditorShell({
       captureCurrentSectionPresentationProof,
       provenFieldGeneration,
       replaySectionProps,
+      sectionsUnavailableForFramework,
       unnamedCopyBasis,
     ],
   );
