@@ -257,15 +257,19 @@ describe("the pinned Worker", () => {
     expect(source).toContain(importLine);
     expect(source).toContain(alsLine);
     expect(source).toContain(dataImport);
-    runInNewContext(
-      source
-        .replace(importLine, "")
-        .replace(alsLine, "")
-        .replaceAll(dataImport, "__loadData()")
-        .replace("export default {", "entry = {"),
-      sandbox,
-    );
-    return sandbox;
+    // A block per evaluation, so the module can be evaluated again in the
+    // same global, as the dev server's module runner does after a reload.
+    const evaluate = () =>
+      runInNewContext(
+        `{\n${source
+          .replace(importLine, "")
+          .replace(alsLine, "")
+          .replaceAll(dataImport, "__loadData()")
+          .replace("export default {", "entry = {")}\n}`,
+        sandbox,
+      );
+    evaluate();
+    return Object.assign(sandbox, { evaluate });
   }
 
   it("serves every content read of a page from its entry snapshot and stamps that snapshot", async () => {
@@ -394,6 +398,29 @@ describe("the pinned Worker", () => {
     data.current = snapshotWith("five", 5);
     expect((await probe(sandbox)).headers.get(PREVIEW_CONTENT_TICKET_HEADER)).toBe(
       "6",
+    );
+  });
+
+  // The Astro dev server's module runner evaluates the Worker again after a
+  // full reload (the content data file's). The newest evaluation's fetch is
+  // the global one, and a request can still be running through an earlier
+  // evaluation's entry: its pinned snapshot must reach that fetch.
+  it("answers a page served by an earlier evaluation of the Worker from its pinned snapshot", async () => {
+    const data = { current: snapshotWith("five", 5) as unknown };
+    const seen: unknown[] = [];
+    const sandbox = runWorker(async (box) => {
+      seen.push(await (await box.fetch(contentUrl("/"))).json());
+      return new Response("<html><head></head><body></body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }, data);
+    const earlier = sandbox.entry;
+    sandbox.evaluate();
+    expect(sandbox.entry).not.toBe(earlier);
+    const response = await earlier.fetch(new Request("https://preview.example/"));
+    expect(seen).toEqual([{ slots: { hero: { title: "five" } }, hiddenSlots: [] }]);
+    expect(response.headers.get("server-timing")).toContain(
+      `${PREVIEW_SERVED_CONTENT_TIMING};desc="5.${INSTANCE}"`,
     );
   });
 

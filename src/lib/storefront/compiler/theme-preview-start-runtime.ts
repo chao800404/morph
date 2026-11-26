@@ -340,7 +340,11 @@ export function themePreviewStartWorkerSource(
 // One snapshot per request (Astro): read once at the request's entry, and
 // every content read made while it runs is answered from it, never from a
 // newer one written mid-render or from another request's.
-const requestSnapshots = new AsyncLocalStorage();
+// One store for every evaluation of this module: the dev server evaluates it
+// again after a full reload, and the newest evaluation's fetch (the global
+// one) must find a snapshot pinned by a request still running through an
+// earlier evaluation's entry.
+const requestSnapshots = (globalThis[Symbol.for("morph.preview.requestSnapshots")] ??= new AsyncLocalStorage());
 const runWithPinnedSnapshot = ${runWithPinnedSnapshot.toString()};
 const pinnedSnapshotForRead = ${pinnedSnapshotForRead.toString()};
 const previewServedContentTiming = ${previewServedContentTiming.toString()};
