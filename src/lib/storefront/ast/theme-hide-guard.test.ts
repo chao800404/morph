@@ -135,9 +135,12 @@ function Home() {
     expect(out).toContain(`<__MorphSectionGate0 slot={"h1"} render={() => (<Hero`);
   });
 
-  it("H7: wraps the Starter's own guarded mounts too, inside the author's check", () => {
+  it("H7: wraps the Starter's own guarded mounts too, around the author's check", () => {
     // The Starter's `!isSectionHidden("x") && <X {...content("x")} />`
     // otherwise calls `content()`, a hook, only while the section shows.
+    // The gate goes around the whole check (review P2-7): it then renders
+    // whether the section shows or not, so a Hide can be acknowledged by the
+    // gate's own commit of it, never by the section's absence alone.
     const files = starterThemeWorkspaceFiles().map((file) => ({
       path: file.path,
       content: file.content,
@@ -145,7 +148,7 @@ function Home() {
     const result = applyHideGuards(files);
     const home = routeOut(result.files);
     expect(home).toContain(
-      `{!isSectionHidden("starter-hero") && ${gate("starter-hero", `<Hero {...content("starter-hero")} />`)}}`,
+      `{${gate("starter-hero", `!isSectionHidden("starter-hero") && <Hero {...content("starter-hero")} />`)}}`,
     );
     expect(result.guarded[ROUTE]).toEqual([
       "starter-hero",
