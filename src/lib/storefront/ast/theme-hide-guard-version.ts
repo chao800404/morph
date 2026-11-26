@@ -30,7 +30,10 @@
  * hide-6 (the review of b4e81b2): the gate also records every slot it has
  * committed in the document, and a JSX string key is repeated as its value.
  *
+ * hide-7 (the review of 8dcffba): the record of gated slots is kept per page
+ * path.
+ *
  * Kept apart from the transform so the identity can be read without loading
  * the analysis.
  */
-export const THEME_HIDE_GUARD_VERSION = "hide-6";
+export const THEME_HIDE_GUARD_VERSION = "hide-7";
