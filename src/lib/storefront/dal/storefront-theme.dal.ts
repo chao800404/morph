@@ -1163,7 +1163,7 @@ export async function prepareTemplateDocumentWrite(
  * alternative was a hundred and fifty lines of optimistic concurrency living in
  * two places, where only one of them would receive the next correction.
  */
-async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
+export async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
   const write = await prepareTemplateDocumentWrite(args);
   try {
     await env.DATABASE.batch([write.guard, ...write.mutations]);

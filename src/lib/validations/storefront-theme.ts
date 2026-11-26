@@ -212,6 +212,33 @@ export const renameStorefrontThemeSectionInputSchema =
     expectedDraftGeneration: z.number().int().min(1),
   });
 
+/**
+ * "Show again" (M3 stage 1): one hidden section of one draft back to shown.
+ *
+ * A CMS Page is addressed by its id within the active storefront, as every
+ * Page write is, and holds its draft revision's `version` (the Page detail's
+ * `version`). A template or the shared layout (a template of type `layout`)
+ * is addressed by storefront, Theme and template, as every section write is,
+ * and holds the template's `draftGeneration`.
+ */
+export const showStorefrontSectionAgainInputSchema = z.discriminatedUnion(
+  "kind",
+  [
+    z.object({
+      kind: z.literal("page"),
+      pageId: z.uuid(),
+      sectionId: documentSectionIdSchema,
+      expectedDraftVersion: z.number().int().min(1),
+    }),
+    storefrontThemeEditorInputSchema.extend({
+      kind: z.literal("template"),
+      templateId: idSchema("storefront theme template"),
+      sectionId: documentSectionIdSchema,
+      expectedDraftGeneration: z.number().int().min(1),
+    }),
+  ],
+);
+
 export const storefrontThemeEditorSearchSchema = z.object({
   template: z
     .enum(["index", "product", "collection", "page", "blog", "layout"])

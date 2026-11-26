@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
 import {
   storefrontPageRevisions,
@@ -20,6 +21,8 @@ import {
   sectionHideRefusal,
   sectionsNewlyHidden,
 } from "../content/section-hide-check";
+import { showSectionAgainInDocument } from "../content/show-section-again";
+import { TEMPLATE_DRAFT_GENERATION_MISMATCH } from "../theme-write-errors";
 
 const activeStorefront = async () => {
   const db = await getDb();
@@ -364,5 +367,112 @@ export const storefrontPageDal = {
         ),
     ]);
     return { version };
+  },
+  /**
+   * "Show again" (M3 stage 1): one hidden section of the Page's draft back to
+   * shown, and nothing else (`showSectionAgainInDocument`).
+   *
+   * Unlike `update`, this compares the draft the caller saw: its revision
+   * `version` must still be the draft's, both when read here and again
+   * inside the write's batch, where a compare-and-set over the draft
+   * revision id refuses a save that landed in between. The page row's
+   * unique (page, version) index refuses a concurrent insert of the same
+   * version. Either way the batch writes nothing and the caller gets the
+   * draft conflict (`TEMPLATE_DRAFT_GENERATION_MISMATCH`).
+   *
+   * Writes a new draft revision, as every Page draft save does; the
+   * published revision, status, title and handle stay. Never publishes.
+   *
+   * Null when the page is not this storefront's or is deleted. A section
+   * not held exactly once, or one already shown, writes nothing; the latter
+   * answers the draft's version so a retried call reads as done.
+   */
+  async showSectionAgain(data: {
+    id: string;
+    storefrontId: string;
+    sectionId: string;
+    expectedDraftVersion: number;
+    createdBy: string;
+  }): Promise<
+    | null
+    | Readonly<{ kind: "section-not-found"; reason: "missing" | "ambiguous" }>
+    | Readonly<{ kind: "unchanged" | "shown"; version: number }>
+  > {
+    const draft = await env.DATABASE.prepare(
+      `SELECT r.id AS revisionId, r.version AS version, r.document AS document
+         FROM storefront_pages p
+         INNER JOIN storefronts s ON s.id = p.storefront_id
+         INNER JOIN storefront_page_revisions r
+           ON r.id = p.draft_revision_id AND r.page_id = p.id
+        WHERE p.id = ?1 AND p.storefront_id = ?2
+          AND p.deleted_at IS NULL AND s.deleted_at IS NULL
+        LIMIT 1`,
+    )
+      .bind(data.id, data.storefrontId)
+      .first<{ revisionId: string; version: number; document: string }>();
+    if (!draft) return null;
+
+    const outcome = showSectionAgainInDocument(draft.document, data.sectionId);
+    if (outcome.kind === "not-found") {
+      return { kind: "section-not-found", reason: outcome.reason };
+    }
+    if (outcome.kind === "already-shown") {
+      return { kind: "unchanged", version: draft.version };
+    }
+    if (draft.version !== data.expectedDraftVersion) {
+      throw new Error(
+        `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Page draft was modified concurrently.`,
+      );
+    }
+
+    const next = await env.DATABASE.prepare(
+      "SELECT COALESCE(MAX(version), 0) + 1 AS version FROM storefront_page_revisions WHERE page_id = ?1",
+    )
+      .bind(data.id)
+      .first<{ version: number }>();
+    const version = Number(next?.version ?? draft.version + 1);
+    const revisionId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    try {
+      await env.DATABASE.batch([
+        // The compare-and-set: the draft is still the revision read above.
+        env.DATABASE.prepare(
+          `SELECT CASE WHEN EXISTS (
+             SELECT 1 FROM storefront_pages p
+             INNER JOIN storefronts s ON s.id = p.storefront_id
+             WHERE p.id = ?1 AND p.storefront_id = ?2
+               AND p.draft_revision_id = ?3
+               AND p.deleted_at IS NULL AND s.deleted_at IS NULL
+           ) THEN 1 ELSE json('') END AS ok`,
+        ).bind(data.id, data.storefrontId, draft.revisionId),
+        env.DATABASE.prepare(
+          `INSERT INTO storefront_page_revisions
+             (id, page_id, version, document, created_by, created_at, published_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)`,
+        ).bind(
+          revisionId,
+          data.id,
+          version,
+          JSON.stringify(outcome.document),
+          data.createdBy,
+          now,
+        ),
+        env.DATABASE.prepare(
+          `UPDATE storefront_pages
+              SET draft_revision_id = ?1, updated_at = ?2
+            WHERE id = ?3 AND storefront_id = ?4
+              AND draft_revision_id = ?5 AND deleted_at IS NULL`,
+        ).bind(revisionId, now, data.id, data.storefrontId, draft.revisionId),
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("malformed JSON") || message.includes("constraint")) {
+        throw new Error(
+          `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Page draft was modified concurrently.`,
+        );
+      }
+      throw error;
+    }
+    return { kind: "shown", version };
   },
 };

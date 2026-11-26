@@ -127,3 +127,11 @@ export function sectionSourceRefusalMessage(
 ): string {
   return `${temporarily ? SECTION_SOURCE_UNCONFIRMABLE : SECTION_SOURCE_UNCONFIRMED}: ${reason}: ${text}`;
 }
+
+/**
+ * "Show again" (M3 stage 1) named a section the stored draft does not hold
+ * exactly once. Nothing is written. A stale tab that still shows the section
+ * reloads; a section only a route's source declares was never stored, so it
+ * was never hidden.
+ */
+export const SECTION_NOT_FOUND = "SECTION_NOT_FOUND";
