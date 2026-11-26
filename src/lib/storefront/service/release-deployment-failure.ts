@@ -26,6 +26,8 @@ const EXPLANATIONS: Record<ReleaseDeploymentFailureCode, string> = {
   FORBIDDEN_BINDING:
     "the build's Worker config asks for a binding the platform does not provide",
   INVALID_SCRIPT_NAME: "this storefront's id cannot name a Theme Worker",
+  INVALID_STATIC_PAGES:
+    "the build's static pages do not match the files it holds",
   RELEASE_NOT_FOUND: "the release was not found",
   BUILD_NOT_DEPLOYABLE: "the release has no succeeded build to deploy",
   WORKER_CONFIG_UNREADABLE: "the build's Worker config could not be read",
@@ -44,6 +46,7 @@ const BUILD_SHAPE_CODES = new Set<ReleaseDeploymentFailureCode>([
   "MISSING_CLIENT_ASSETS",
   "INVALID_WORKER_CONFIG",
   "FORBIDDEN_BINDING",
+  "INVALID_STATIC_PAGES",
 ]);
 
 function isCode(value: unknown): value is ReleaseDeploymentFailureCode {

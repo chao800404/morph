@@ -133,6 +133,7 @@ export async function readBuildPreviewArtifact(args: {
     );
   }
   const planned = planThemeWorkerDeployment({
+    target: "build-preview",
     storefrontId: build.storefrontId,
     manifest,
     workerConfig,

@@ -210,6 +210,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
   // directory it wrote holds only files the platform never deploys.
   it("is planned with an empty asset set, its whole module graph and its assets binding", () => {
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: astroSsrOnlyManifest(),
       workerConfig: ASTRO_WORKER_CONFIG,
@@ -230,6 +231,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
 
   it("still refuses it when the client output is missing altogether", () => {
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: astroSsrOnlyManifest(
         ASTRO_SSR_ONLY_FILES.filter(([p]) => !p.startsWith("runtime/client/")),
@@ -245,6 +247,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
   it("still refuses it when the Worker entry is missing from the files", () => {
     expect(
       planThemeWorkerDeployment({
+        target: "production",
         storefrontId: "sf_1",
         manifest: astroSsrOnlyManifest(without("runtime/server/entry.mjs")),
         workerConfig: ASTRO_WORKER_CONFIG,
@@ -256,6 +259,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
     const base = astroSsrOnlyManifest();
     expect(
       planThemeWorkerDeployment({
+        target: "production",
         storefrontId: "sf_1",
         manifest: { ...base, runtime: undefined },
         workerConfig: ASTRO_WORKER_CONFIG,
@@ -270,6 +274,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
     ]);
     expect(
       planThemeWorkerDeployment({
+        target: "production",
         storefrontId: "sf_1",
         manifest: {
           ...base,
@@ -285,6 +290,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
     const base = astroSsrOnlyManifest();
     expect(
       planThemeWorkerDeployment({
+        target: "production",
         storefrontId: "sf_1",
         manifest: {
           ...base,
@@ -306,6 +312,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
     ]) {
       expect(
         planThemeWorkerDeployment({
+          target: "production",
           storefrontId: "sf_1",
           manifest: astroSsrOnlyManifest(),
           workerConfig,
@@ -317,6 +324,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
   it("still refuses it when the Worker config requests a platform binding", () => {
     expect(
       planThemeWorkerDeployment({
+        target: "production",
         storefrontId: "sf_1",
         manifest: astroSsrOnlyManifest(),
         workerConfig: {
@@ -329,6 +337,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
 
   it("deploys a real client file as an asset once there is one", () => {
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: astroSsrOnlyManifest([
         ...ASTRO_SSR_ONLY_FILES,
@@ -345,6 +354,7 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
 describe("planThemeWorkerDeployment", () => {
   it("plans a deployable Worker from a real build artifact", () => {
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: manifest(),
       workerConfig: REAL_WORKER_CONFIG,
@@ -361,6 +371,7 @@ describe("planThemeWorkerDeployment", () => {
 
   it("targets the storefront-stable script name, ignoring the name baked into the artifact", () => {
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: manifest(),
       workerConfig: { ...REAL_WORKER_CONFIG, name: "morph-theme-bld-1" },
@@ -373,6 +384,7 @@ describe("planThemeWorkerDeployment", () => {
 
   it("collects the whole server module graph and excludes build bookkeeping", () => {
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: manifest(),
       workerConfig: REAL_WORKER_CONFIG,
@@ -391,6 +403,7 @@ describe("planThemeWorkerDeployment", () => {
 
   it("collects client assets at their served paths and never the editor preview bundle", () => {
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: manifest(),
       workerConfig: REAL_WORKER_CONFIG,
@@ -407,6 +420,7 @@ describe("planThemeWorkerDeployment", () => {
 
   it("refuses an artifact that is not a deployable Worker runtime", () => {
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: manifest({ runtime: undefined }),
       workerConfig: REAL_WORKER_CONFIG,
@@ -425,6 +439,7 @@ describe("planThemeWorkerDeployment", () => {
       ["durable_objects", { bindings: [{ name: "DO", class_name: "C" }] }],
     ] as Array<[string, unknown]>) {
       const result = planThemeWorkerDeployment({
+        target: "production",
         storefrontId: "sf_1",
         manifest: manifest(),
         workerConfig: { ...REAL_WORKER_CONFIG, [key]: value },
@@ -440,6 +455,7 @@ describe("planThemeWorkerDeployment", () => {
     // Astro's entry falls back to env.ASSETS for every path it does not
     // route; the adapter's Worker config names it.
     const astro = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: manifest(),
       workerConfig: {
@@ -450,6 +466,7 @@ describe("planThemeWorkerDeployment", () => {
     expect(astro.success && astro.plan.assetsBinding).toBe("ASSETS");
 
     const start = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: manifest(),
       workerConfig: REAL_WORKER_CONFIG,
@@ -459,6 +476,7 @@ describe("planThemeWorkerDeployment", () => {
     for (const binding of ["", "ASSETS; rm", 42]) {
       expect(
         planThemeWorkerDeployment({
+          target: "production",
           storefrontId: "sf_1",
           manifest: manifest(),
           workerConfig: {
@@ -473,6 +491,7 @@ describe("planThemeWorkerDeployment", () => {
   it("refuses a Worker config with no compatibility date", () => {
     const { compatibility_date: _omitted, ...withoutDate } = REAL_WORKER_CONFIG;
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: manifest(),
       workerConfig: withoutDate,
@@ -485,6 +504,7 @@ describe("planThemeWorkerDeployment", () => {
   it("refuses an artifact whose declared worker entry is absent from the manifest", () => {
     const base = manifest();
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: {
         ...base,
@@ -500,6 +520,7 @@ describe("planThemeWorkerDeployment", () => {
   it("refuses a build that wrote no client output at all", () => {
     const base = manifest();
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: {
         ...base,
@@ -515,6 +536,7 @@ describe("planThemeWorkerDeployment", () => {
   it("never deploys a build's own _headers or _redirects", () => {
     const base = manifest();
     const result = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: "sf_1",
       manifest: {
         ...base,
@@ -537,5 +559,110 @@ describe("planThemeWorkerDeployment", () => {
     const served = result.plan.assets.map((asset) => asset.servedPath);
     expect(served).not.toContain("/_headers");
     expect(served).not.toContain("/_redirects");
+  });
+});
+
+describe("registered static pages in the Theme Worker manifest", () => {
+  const HOME = "1".repeat(64);
+  const ABOUT = "2".repeat(64);
+  const html = (path: string, sha256: string) => ({
+    path,
+    contentType: "text/html",
+    sizeBytes: 100,
+    sha256,
+  });
+  const withPages = (
+    staticPages: unknown = [
+      { path: "/", artifactPath: "runtime/client/index.html", sha256: HOME },
+      {
+        path: "/about",
+        artifactPath: "runtime/client/about/index.html",
+        sha256: ABOUT,
+      },
+    ],
+  ): CanonicalThemeBuildManifest => {
+    const base = manifest();
+    return {
+      ...base,
+      files: [
+        ...base.files,
+        html("runtime/client/index.html", HOME),
+        html("runtime/client/about/index.html", ABOUT),
+        // Prerendered but not registered: not this rule's to drop.
+        html("runtime/client/landing/index.html", "3".repeat(64)),
+      ],
+      runtime: { ...base.runtime!, staticPages } as never,
+    };
+  };
+  const withoutPages = (): CanonicalThemeBuildManifest => {
+    const registered = withPages();
+    const { staticPages: _dropped, ...runtime } = registered.runtime!;
+    return { ...registered, runtime };
+  };
+  const plan = (
+    target: "production" | "build-preview",
+    built: CanonicalThemeBuildManifest,
+  ) => {
+    const result = planThemeWorkerDeployment({
+      target,
+      storefrontId: "sf_1",
+      manifest: built,
+      workerConfig: REAL_WORKER_CONFIG,
+    });
+    if (!result.success) throw new Error(result.message);
+    return result.plan;
+  };
+
+  it("leaves exactly the registered HTML out of a production deployment", () => {
+    const production = plan("production", withPages());
+    const everything = plan("production", withoutPages());
+    const served = production.assets.map((asset) => asset.artifactPath);
+    expect(served).not.toContain("runtime/client/index.html");
+    expect(served).not.toContain("runtime/client/about/index.html");
+    expect(served).toContain("runtime/client/landing/index.html");
+    expect(
+      everything.assets
+        .map((asset) => asset.artifactPath)
+        .filter((path) => !served.includes(path)),
+    ).toEqual([
+      "runtime/client/index.html",
+      "runtime/client/about/index.html",
+    ]);
+    expect(production.assets).toEqual(
+      everything.assets.filter(
+        (asset) =>
+          asset.artifactPath !== "runtime/client/index.html" &&
+          asset.artifactPath !== "runtime/client/about/index.html",
+      ),
+    );
+    // JS, CSS and the module graph are unchanged.
+    expect(production.modules).toEqual(everything.modules);
+    expect(production.mainModule).toBe(everything.mainModule);
+  });
+
+  it("leaves a Build Preview deployment unchanged", () => {
+    expect(plan("build-preview", withPages())).toEqual(
+      plan("build-preview", withoutPages()),
+    );
+    expect(
+      plan("build-preview", withPages()).assets.map((asset) => asset.artifactPath),
+    ).toContain("runtime/client/about/index.html");
+  });
+
+  it("refuses a production deployment whose registration names a file the build does not hold", () => {
+    expect(
+      planThemeWorkerDeployment({
+        target: "production",
+        storefrontId: "sf_1",
+        manifest: withPages([
+          {
+            path: "/contact",
+            artifactPath: "runtime/client/contact/index.html",
+            sha256: HOME,
+          },
+        ]),
+        workerConfig: REAL_WORKER_CONFIG,
+      }),
+    ).toMatchObject({ success: false, reason: "INVALID_STATIC_PAGES" });
   });
 });

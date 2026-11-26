@@ -1,5 +1,10 @@
 import { applyLibrarySvgHeaders } from "@/lib/asset/svg-delivery";
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
+import type { CanonicalThemeStaticPage } from "../compiler/theme-build-artifact-store.types";
+import {
+  normalizedPagePath,
+  readRegisteredStaticPages,
+} from "../compiler/theme-static-page-reader";
 import {
   lookupPublishedMedia,
   parsePublishedMediaPath,
@@ -160,6 +165,35 @@ function themeRuntimeFailureResponse(
     hint: THEME_RUNTIME_NOT_CONFIGURED_HINTS[notConfigured.code],
   });
   return errorResponse(failure.status, THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE);
+}
+
+export const STATIC_PAGE_FAILURE_LOG_LABEL =
+  "[storefront] Static page unavailable";
+
+/** Fixed public copy; what an operator needs goes to the log as a code. */
+export const STATIC_PAGE_UNAVAILABLE_MESSAGE =
+  "SSG_ARTIFACT_UNAVAILABLE: This page is temporarily unavailable. Please try again later.";
+
+/**
+ * The registered page a request path names: `/about`, `/about/` and
+ * `/about/index.html` are one page, as are `/` and `/index.html`.
+ */
+function matchRegisteredStaticPage(
+  pages: readonly CanonicalThemeStaticPage[],
+  pathname: string,
+): CanonicalThemeStaticPage | null {
+  let path: string;
+  try {
+    path = sanitizeArtifactPath(pathname);
+  } catch {
+    return null;
+  }
+  if (path === "index.html") path = "";
+  else if (path.endsWith("/index.html")) {
+    path = path.slice(0, -"/index.html".length);
+  }
+  const key = path === "" ? "/" : `/${path}`;
+  return pages.find((page) => normalizedPagePath(page.path) === key) ?? null;
 }
 
 function privateSameOriginResponse(response: Response): Response {
@@ -368,6 +402,8 @@ export class StorefrontProductionService {
     }
 
     if (request.method === "GET" || request.method === "HEAD") {
+      const page = await this.tryServeStaticPage(request, url, resolved);
+      if (page) return page;
       const asset = await this.tryServeClientAsset(request, url, resolved);
       if (asset) return asset;
     }
@@ -549,6 +585,73 @@ export class StorefrontProductionService {
   }
 
   /**
+   * Serves a page the active release registered as static HTML, or returns
+   * `null` when the path is not one.
+   *
+   * The page list is the one frozen in the active release's build manifest
+   * (theme-static-pages.ts), so publish, a later publish and a rollback each
+   * change which HTML answers by changing `active_release_id` alone. The
+   * bytes come from that build's immutable artifact through the shared
+   * artifact core. The ETag names the release and the HTML's hash, and a
+   * 304 is only answered after the active release was resolved, so an old
+   * validator never revalidates another release's page.
+   *
+   * A registered page Core cannot serve is an error, never the Theme
+   * Worker's SSR: the production Theme Worker was deployed without this
+   * HTML, and a silent SSR answer would present a broken release as working.
+   */
+  private async tryServeStaticPage(
+    request: Request,
+    url: URL,
+    resolved: ResolvedStorefrontHost,
+  ): Promise<Response | null> {
+    const registered = readRegisteredStaticPages(resolved.manifest);
+    // Intended: a release whose registration cannot be read cannot say which
+    // paths are static, so every GET and HEAD of that release answers 503,
+    // its JS and CSS included, until another release is active.
+    if (!registered.ok) {
+      console.error(STATIC_PAGE_FAILURE_LOG_LABEL, {
+        storefrontId: resolved.storefrontId,
+        releaseId: resolved.releaseId,
+        themeBuildId: resolved.themeBuildId,
+        reason: "REGISTRATION_INVALID",
+      });
+      return errorResponse(503, STATIC_PAGE_UNAVAILABLE_MESSAGE);
+    }
+    if (registered.pages.length === 0) return null;
+    const page = matchRegisteredStaticPage(registered.pages, url.pathname);
+    if (!page) return null;
+
+    const served = await serveThemeArtifact({
+      request,
+      artifactPrefix: resolved.artifactPrefix,
+      manifest: resolved.manifest,
+      artifactPath: page.artifactPath,
+      r2Bucket: this.options.r2Bucket,
+      policy: PRODUCTION_ARTIFACT_POLICY,
+      etagScope: `ssg:${resolved.releaseId}`,
+      verifySize: true,
+    });
+    if (!served.success) {
+      console.error(STATIC_PAGE_FAILURE_LOG_LABEL, {
+        storefrontId: resolved.storefrontId,
+        releaseId: resolved.releaseId,
+        themeBuildId: resolved.themeBuildId,
+        reason: served.failure.kind,
+        page: page.path,
+      });
+      return errorResponse(503, STATIC_PAGE_UNAVAILABLE_MESSAGE);
+    }
+    if (request.method === "HEAD") {
+      return new Response(null, {
+        status: served.response.status,
+        headers: served.response.headers,
+      });
+    }
+    return served.response;
+  }
+
+  /**
    * Serves a declared client asset, or returns `null` when the path is not one,
    * in which case the request is a page request for the Theme Worker.
    */
@@ -566,6 +669,12 @@ export class StorefrontProductionService {
       return errorResponse(400, "Invalid asset path.");
     }
     if (requestedPath === "") return null;
+    // Prerendered page HTML is never a plain asset. A registered page was
+    // answered by the release dispatch above; any other `index.html` is a
+    // page request, so a build's HTML cannot shadow the page's real mode.
+    if (requestedPath === "index.html" || requestedPath.endsWith("/index.html")) {
+      return null;
+    }
 
     const assetsDirectory = readClientAssetsDirectory(resolved);
     const candidate = `${assetsDirectory}/${requestedPath}`;

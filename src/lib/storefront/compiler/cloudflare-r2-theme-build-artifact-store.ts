@@ -10,6 +10,7 @@ import type {
   ThemeBuildArtifactStoreResult,
 } from "./theme-build-artifact-store.types";
 import type { ThemeBuildArtifactFile } from "./theme-build-runner.types";
+import { registerThemeStaticPages } from "./theme-static-pages";
 
 /**
  * Minimal interface representing Cloudflare R2 bucket binding operations.
@@ -359,6 +360,20 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       );
     }
 
+    // Static pages are registered from the build's own immutable input and
+    // the hashes taken above, before anything is written: an ineligible SSG
+    // claim leaves no objects behind. The runner's manifest is not consulted.
+    const staticPages = registerThemeStaticPages({
+      buildInput,
+      clientAssetsDirectory: runtime.clientAssetsDirectory,
+      files: validatedFiles.map((file) => ({
+        path: file.relPath,
+        sha256: file.sha256,
+      })),
+    });
+    const canonicalRuntime =
+      staticPages.length > 0 ? { ...runtime, staticPages } : runtime;
+
     // Stage 2: Upload all artifact files via atomic conditional creates
     const uploadedManifestFiles: CanonicalThemeBuildManifestFile[] = [];
 
@@ -476,7 +491,7 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
       sourceEntry: buildInput.entry,
       entry: buildInput.entry,
       artifactEntry,
-      runtime,
+      runtime: canonicalRuntime,
       filesCount: uploadedManifestFiles.length,
       totalSizeBytes,
       files: uploadedManifestFiles,

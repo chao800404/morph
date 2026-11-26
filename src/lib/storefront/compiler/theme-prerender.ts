@@ -16,6 +16,13 @@ export function isStaticPageRoute(
   );
 }
 
+/** Where a prerendered page's HTML lands in the build artifact. */
+export const PRERENDER_CLIENT_DIRECTORY = "runtime/client";
+
+export function prerenderedHtmlArtifactPath(pagePath: string): string {
+  return `${PRERENDER_CLIENT_DIRECTORY}${pagePath === "/" ? "" : pagePath.replace(/\/$/, "")}/index.html`;
+}
+
 export function assertThemePrerenderArtifacts(
   snapshot: ThemeBuildContentSnapshot | undefined,
   registry: ThemeRouteRegistry,
@@ -23,7 +30,7 @@ export function assertThemePrerenderArtifacts(
 ) {
   for (const page of themePrerenderOptions(snapshot, registry, true)?.pages ??
     []) {
-    const expected = `runtime/client${page.path === "/" ? "" : page.path.replace(/\/$/, "")}/index.html`;
+    const expected = prerenderedHtmlArtifactPath(page.path);
     if (!artifactPaths.has(expected)) {
       throw new Error(`INCOMPLETE_SSG_ARTIFACT: Missing HTML for ${page.path}`);
     }

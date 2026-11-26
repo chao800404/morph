@@ -35,6 +35,7 @@ import {
 } from "./native-acceptance";
 import {
   themeScopeFromEditorPath,
+  removeThemeFiles,
   themeSourceGeneration,
   writeThemeFiles,
   type ThemeScope,
@@ -95,7 +96,10 @@ import {
  *      (no session, and a session without this preview's grant), and the
  *      public site's reads naming a content origin, a render context or a
  *      release it may not see;
- *   6. a static (ssg) home, published once: the publish builds first, sealed
+ *   6. a static (ssg) home, published once. First the test-only route is
+ *      removed: static HTML is made only from the Starter's exact route set
+ *      (ssg-eligibility.ts), so with it the home's SSG claim would be refused
+ *      (SSG_PAGE_NOT_ELIGIBLE). The publish builds first, sealed
  *      with the home's draft and a new author value. Starter 32 is built by
  *      the platform-owned Start build, whose prerender reads that sealed
  *      content on its first and only pass (`contentDependency: "dependent"`;
@@ -285,6 +289,13 @@ function V32Page() {
 }
 `;
 
+/** The test-only route; removed before case 6 (see there). */
+const TEST_ROUTE_PATH = "src/routes/e2e-v32-page.tsx";
+/** The shipped Starter's route files: the only set static HTML is made from. */
+const STARTER_ROUTE_PATHS = [...WORKSPACE_FILES.keys()]
+  .filter((path) => path.startsWith("src/routes/"))
+  .sort();
+
 const TEST_FILES = [
   {
     path: "src/components/V32Shown.tsx",
@@ -294,7 +305,7 @@ const TEST_FILES = [
     path: "src/components/V32Hidden.tsx",
     content: componentSource("V32Hidden", HIDDEN_DEFAULT),
   },
-  { path: "src/routes/e2e-v32-page.tsx", content: PAGE_ROUTE_SOURCE },
+  { path: TEST_ROUTE_PATH, content: PAGE_ROUTE_SOURCE },
 ] as const;
 
 const sqlText = (value: string) => `'${value.replace(/'/g, "''")}'`;
@@ -1288,6 +1299,29 @@ test.describe("Starter 32 on the full Start runtime", () => {
     const page = shared!;
     const before = await harness!.publishedState();
     expect(before.active, "case 4's release is serving").toBe(servingRelease);
+
+    // Static HTML is made only from the shipped Starter's exact route set
+    // (ssg-eligibility.ts: the route tree loads every route module while any
+    // page prerenders, so an added route makes the home unverifiable and its
+    // SSG claim is refused with SSG_PAGE_NOT_ELIGIBLE). The test-only route
+    // has done its work (cases 2-5; case 4's release keeps serving it), so
+    // it is removed and the home's render input is the Starter's again. Its
+    // components stay: no route imports them now.
+    const removed = await removeThemeFiles(page, scope!, [TEST_ROUTE_PATH]);
+    expect(removed.success, JSON.stringify(removed)).toBe(true);
+    const files = await workspace(page);
+    expect(files[TEST_ROUTE_PATH], "the test-only route is removed").toBeUndefined();
+    expect(
+      Object.keys(files)
+        .filter((path) => path.startsWith("src/routes/"))
+        .sort(),
+      "the workspace's route files are exactly the Starter's",
+    ).toEqual(STARTER_ROUTE_PATHS);
+    for (const path of STARTER_ROUTE_PATHS) {
+      expect(files[path], `${path} is the provisioned Starter's`).toBe(
+        WORKSPACE_FILES.get(path),
+      );
+    }
 
     // A value no release has, so the prerendered home can only be this
     // build's seal of the draft.

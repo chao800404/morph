@@ -152,6 +152,19 @@ export type ThemeArtifactRequest = Readonly<{
   artifactPath?: string;
   r2Bucket?: R2BucketLike;
   policy: ThemeArtifactServingPolicy;
+  /**
+   * When set, the ETag is `"<etagScope>:<manifest sha256>"` instead of the
+   * storage object's. A static page names its release here, so the same
+   * bytes under another release are another representation and an old
+   * validator never revalidates against a different release.
+   */
+  etagScope?: string;
+  /**
+   * Refuse the object unless its stored size is the manifest's `sizeBytes`
+   * (OBJECT_MISMATCH). A static page's ETag names the manifest's hash, so
+   * bytes that are visibly not those must not be served under it.
+   */
+  verifySize?: boolean;
 }>;
 
 export type ThemeArtifactFailure = Readonly<{
@@ -160,6 +173,7 @@ export type ThemeArtifactFailure = Readonly<{
     | "INVALID_MANIFEST"
     | "NOT_IN_MANIFEST"
     | "OBJECT_MISSING"
+    | "OBJECT_MISMATCH"
     | "STORAGE_UNAVAILABLE";
   status: number;
   message: string;
@@ -296,6 +310,21 @@ export async function serveThemeArtifact(
     };
   }
 
+  if (args.verifySize) {
+    const storedSize = (object as { size?: unknown }).size;
+    if (typeof storedSize !== "number" || storedSize !== manifestFile.sizeBytes) {
+      return {
+        success: false,
+        failure: {
+          kind: "OBJECT_MISMATCH",
+          status: 500,
+          message: `Artifact object "${canonicalPath}" is not the size its manifest records`,
+          canonicalPath,
+        },
+      };
+    }
+  }
+
   const isHtml =
     isEntryFile ||
     canonicalPath.endsWith(".html") ||
@@ -310,8 +339,9 @@ export async function serveThemeArtifact(
     corsHeaders["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS";
   }
 
-  const etag =
-    object.httpEtag || (manifestFile ? `"${manifestFile.sha256}"` : undefined);
+  const etag = args.etagScope
+    ? `"${args.etagScope}:${manifestFile.sha256}"`
+    : object.httpEtag || (manifestFile ? `"${manifestFile.sha256}"` : undefined);
 
   const cacheControl = isHtml
     ? policy.htmlCacheControl
