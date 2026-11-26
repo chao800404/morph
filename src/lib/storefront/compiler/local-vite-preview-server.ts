@@ -256,6 +256,30 @@ async function stampPreviewInstance(root: string, instance: string): Promise<voi
   await fs.rename(next, target);
 }
 
+/**
+ * Whether `target` already holds exactly `content`.
+ *
+ * A start lays its plan over a workspace that usually holds most of it
+ * already. Writing a file that is already right is not harmless: it is a
+ * filesystem event, and on macOS FSEvents can hand such an event to the
+ * watcher of the dev server started a moment *after* the write. Measured on
+ * the client lane (Mac, 2026-11-26): the generated `vite.config.ts`,
+ * rewritten unchanged, arrived at the new server about 100 ms after it began
+ * listening as a config change, and Vite restarted itself while the frame
+ * was loading its first modules. Linux's inotify never reports a write made
+ * before the watch, which is why only a Mac showed it.
+ */
+async function holdsSameContent(
+  target: string,
+  content: string | Uint8Array,
+): Promise<boolean> {
+  const onDisk = await fs.readFile(target).catch(() => null);
+  if (onDisk === null) return false;
+  return typeof content === "string"
+    ? onDisk.equals(Buffer.from(content, "utf8"))
+    : onDisk.equals(content);
+}
+
 /** The draft content snapshot's module in a workspace (`/workspace/...`). */
 const CONTENT_SNAPSHOT_MODULE_PATH = `/workspace/${THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH}`;
 
@@ -732,7 +756,13 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             mkdirCalls += 1;
             await writer.mkdir(dirPath, options);
           },
+          // A file that already holds what the plan says is left alone, so
+          // the server started next is not told about a write that changed
+          // nothing (see holdsSameContent). Only real writes are counted.
           async writeFile(filePath, content) {
+            if (await holdsSameContent(writer.hostPath(filePath), content)) {
+              return;
+            }
             writeCalls += 1;
             await writer.writeFile(filePath, content);
           },
@@ -936,7 +966,21 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             server: {
               host: LOCAL_PREVIEW_HOST,
               port: this.port,
-              watch: { usePolling: false },
+              // The generated config is the plan's, never an author's file:
+              // a changed one is a changed plan, which this transport answers
+              // by stopping this server and starting another. Vite's own
+              // restart on a config change is therefore never wanted here,
+              // and it is harmful: a restart drops every connection, and a
+              // frame loading its first modules at that moment never comes up
+              // (see holdsSameContent for how a stale event reaches it).
+              watch: {
+                usePolling: false,
+                ignored: [
+                  (watched: string) =>
+                    path.resolve(watched) ===
+                    path.resolve(root, "vite.config.ts"),
+                ],
+              },
             },
             clearScreen: false,
             customLogger: this.previewLogger(addLog),
