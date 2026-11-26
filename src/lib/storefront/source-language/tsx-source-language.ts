@@ -2,6 +2,9 @@ import { hoistColocatedContentFieldsForPreview } from "../ast/hoist-colocated-co
 import { injectPreviewBindings } from "../ast/inject-preview-bindings";
 import { stripEditorMarkers } from "../ast/strip-editor-markers";
 import { applyHideGuards } from "../ast/theme-hide-guard";
+import { isHideGuardedModule } from "../ast/theme-hide-capability";
+import { normalizeThemeSourcePath } from "../ast/theme-content-binding";
+import { deriveThemeDocumentLayoutPath } from "../compiler/theme-route-sections";
 
 /**
  * The TSX/JSX file-language layer: what Morph does to a Theme's source files,
@@ -41,8 +44,16 @@ export function prepareSourcesForLivePreview(
 /**
  * An incremental Code save still needs the whole saved source graph so the
  * binding analyser can resolve imports and component declarations. The
- * edited files override that same-generation snapshot for analysis, but only
- * those edited paths are returned for writing into the preview workspace.
+ * edited files override that same-generation snapshot for analysis.
+ *
+ * Returned for writing: the edited paths, and every module Morph's hide
+ * guard can be written into (the route modules and the document layout,
+ * `isHideGuardedModule`), prepared from the same snapshot. Whether a
+ * section can be hidden is decided over the whole Theme, so an edit to one
+ * module can add a guard to a route, or take one away, without touching it;
+ * the running preview must carry that route as a full layout of the same
+ * source would. A module whose prepared output did not change is reported
+ * unchanged by the write and not rewritten.
  */
 export function prepareChangedSourcesForLivePreview(
   changedFiles: readonly SourceFile[],
@@ -59,11 +70,32 @@ export function prepareChangedSourcesForLivePreview(
 
   return {
     ...prepared,
-    files: changedFiles.flatMap((file) => {
-      const output = preparedByPath.get(file.path);
-      return output && changedPaths.has(output.path) ? [output] : [];
-    }),
+    files: [
+      ...changedFiles.flatMap((file) => {
+        const output = preparedByPath.get(file.path);
+        return output && changedPaths.has(output.path) ? [output] : [];
+      }),
+      ...guardableModules([...analysisFiles.values()]).flatMap((path) => {
+        if (changedPaths.has(path)) return [];
+        const output = preparedByPath.get(path);
+        return output ? [output] : [];
+      }),
+    ],
   };
+}
+
+/** The paths of the modules Morph's hide guard can be written into. */
+function guardableModules(files: readonly SourceFile[]): string[] {
+  const normalized = files.map((file) => ({
+    path: normalizeThemeSourcePath(file.path),
+    content: file.content,
+  }));
+  const layoutPath = deriveThemeDocumentLayoutPath(normalized);
+  return files
+    .filter((file) =>
+      isHideGuardedModule(normalizeThemeSourcePath(file.path), layoutPath),
+    )
+    .map((file) => file.path);
 }
 
 /**

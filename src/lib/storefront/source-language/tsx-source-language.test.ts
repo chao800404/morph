@@ -95,7 +95,9 @@ function Page() {
       fullSource,
     );
 
-    expect(prepared.files.map((file) => file.path)).toEqual([routePath]);
+    // The edited route first; any other module the hide guard can be
+    // written into follows it, prepared from the same snapshot.
+    expect(prepared.files[0]!.path).toBe(routePath);
     expect(prepared.files[0]!.content).toContain(
       'data-storefront-section-id="error-recovery"',
     );

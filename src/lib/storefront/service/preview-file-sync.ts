@@ -57,8 +57,12 @@ export async function syncPreviewFiles(args: {
   readSaved(paths: string[]): Promise<{
     files: ReadonlyMap<string, SavedThemeFile>;
     generation: number | null;
-    /** Full same-generation source graph used only to resolve cross-file bindings. */
-    sourceFiles: readonly PreviewFileWrite[];
+    /**
+     * Full same-generation source graph, to resolve cross-file bindings, with
+     * each file's saved version: a module the passes rewrite although the
+     * tab did not send it is written as that version.
+     */
+    sourceFiles: readonly (PreviewFileWrite & Readonly<{ version?: number }>)[];
   }>;
   /** The passes the workspace was laid out with (bindings, hoisting). */
   prepare(
@@ -92,6 +96,14 @@ export async function syncPreviewFiles(args: {
   const fences = new Map(
     args.files.map((file) => [file.path, fenceFor(file, saved.get(file.path))]),
   );
+  // A module rewritten only because another one changed (its hide guard,
+  // `prepareChangedSourcesForLivePreview`) is the saved version this same
+  // snapshot read.
+  const snapshotVersions = new Map(
+    sourceFiles.flatMap((file) =>
+      typeof file.version === "number" ? [[file.path, file.version] as const] : [],
+    ),
+  );
 
   const skipped: string[] = [];
   const writable: FencedPreviewFileWrite[] = [];
@@ -109,7 +121,7 @@ export async function syncPreviewFiles(args: {
     writable.push({
       path: file.path,
       content: String(file.content),
-      fence: fences.get(file.path) ?? 0,
+      fence: fences.get(file.path) ?? snapshotVersions.get(file.path) ?? 0,
     });
   }
 

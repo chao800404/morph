@@ -1215,7 +1215,13 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
                 sourceFiles: workspaceEntries.flatMap((entry) =>
                   isBinaryThemeFile(entry)
                     ? []
-                    : [{ path: entry.path, content: entry.content }],
+                    : [
+                        {
+                          path: entry.path,
+                          content: entry.content,
+                          version: entry.version,
+                        },
+                      ],
                 ),
               };
             },
