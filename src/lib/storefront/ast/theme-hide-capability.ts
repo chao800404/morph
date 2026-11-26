@@ -16,7 +16,10 @@ import {
   type B1SlotUseAnalysis,
   type B1SourceFile,
 } from "./theme-content-provenance";
-import { findComponentReferences } from "./theme-hide-component-mounts";
+import {
+  findComponentReferences,
+  type ComponentImport,
+} from "./theme-hide-component-mounts";
 import { isThemeStartConfigPath } from "../compiler/theme-start-toolchain";
 import {
   createThemeSourceAstReader,
@@ -137,11 +140,12 @@ export type HideGuardSite = Readonly<{
   /** For a `loader` root: the local that holds the whole page. */
   pageLocal: string | null;
   /**
-   * The module the element renders (its default export), when the proof
-   * resolves it. Every other reference to it in the Theme must be a section
-   * mount of its own (`theme-hide-component-mounts.ts`).
+   * The import the element renders (module and export name), when the
+   * proof resolves it. Every other reference to the component it names, by
+   * any path, must be a section mount of its own
+   * (`theme-hide-component-mounts.ts`).
    */
-  component?: string | null;
+  component?: ComponentImport | null;
 }>;
 
 export type HideCapability =
@@ -1340,8 +1344,9 @@ export function createHideCapabilityAnalyzer(
   };
 
   const referenceCache = new Map<string, ReturnType<typeof findComponentReferences>>();
-  const componentReferences = (componentPath: string) => {
-    let found = referenceCache.get(componentPath);
+  const componentReferences = (component: ComponentImport) => {
+    const key = `${component.path}#${component.exportName}`;
+    let found = referenceCache.get(key);
     if (!found) {
       found = findComponentReferences({
         modules: themeModules.map((path) => {
@@ -1352,9 +1357,9 @@ export function createHideCapabilityAnalyzer(
           const resolved = resolveSpecifier(from, specifier);
           return resolved.kind === "module" ? resolved.target : null;
         },
-        componentPath,
+        component,
       });
-      referenceCache.set(componentPath, found);
+      referenceCache.set(key, found);
     }
     return found;
   };
@@ -1556,7 +1561,12 @@ export function createHideCapabilityAnalyzer(
         position,
         contentImport: contentSite ? uses.contentImport : null,
         pageLocal: loaderSite ? [...pageLocals][0]! : null,
-        component: instance.componentPath,
+        component: instance.componentPath
+          ? {
+              path: instance.componentPath,
+              exportName: instance.componentExport ?? "default",
+            }
+          : null,
       });
     }
 
@@ -1657,10 +1667,13 @@ export function createHideCapabilityAnalyzer(
     }
     // The component a supported mount renders is rendered nowhere else
     // except as a section mount of its own.
-    for (const component of new Set(
-      verdict.sites.map((site) => site.component ?? null),
-    )) {
-      if (!component) continue;
+    const components = new Map<string, ComponentImport>();
+    for (const site of verdict.sites) {
+      if (site.component) {
+        components.set(`${site.component.path}#${site.component.exportName}`, site.component);
+      }
+    }
+    for (const component of components.values()) {
       const stray = componentReferences(component).find(
         (reference) =>
           reference.elementStart === null ||
@@ -1675,7 +1688,8 @@ export function createHideCapabilityAnalyzer(
           slot,
           "unguarded-mount",
           { file: stray.file, line: stray.line },
-          `${stray.file}:${stray.line} renders ${component} without a section's content.`,
+          stray.detail ??
+            `${stray.file}:${stray.line} renders ${component.path} without a section's content.`,
         );
       }
     }
