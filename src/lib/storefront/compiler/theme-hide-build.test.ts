@@ -228,7 +228,7 @@ describe("a hidden section in a real platform Start build, prerendered", () => {
         expect(server, absent).not.toContain(absent);
       }
       // Built under the hardened guard.
-      expect(input(true).compilerVersion).toMatch(/\.hide-4$/);
+      expect(input(true).compilerVersion).toMatch(/\.hide-5$/);
       expect(result.artifacts.some((file) => file.path.includes(".morph/"))).toBe(
         false,
       );

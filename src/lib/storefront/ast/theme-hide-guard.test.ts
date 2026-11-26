@@ -361,7 +361,7 @@ describe("the build records the guard in its compiler identity", () => {
     const start = withThemeStartBuildIdentity("1.2.3");
     // Past every value a branch built with (hide-1 main, hide-2 the
     // allowlist, hide-3 PR-1), so none of their artifacts is trusted.
-    expect(THEME_HIDE_GUARD_VERSION).toBe("hide-4");
+    expect(THEME_HIDE_GUARD_VERSION).toBe("hide-5");
     expect(start).toBe(
       `${withThemeMorphSdkIdentity("1.2.3")}.${THEME_HIDE_GUARD_VERSION}`,
     );

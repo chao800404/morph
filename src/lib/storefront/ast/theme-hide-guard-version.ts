@@ -22,7 +22,12 @@
  * gate's source is covered by this version: change it with the gate. Past
  * hide-2 and hide-3 too, which the allowlist and PR-1 branches built with.
  *
+ * hide-5 (the review of f1bcc7a): the gate reports each commit of a slot's
+ * visibility for the Live Preview's Hide ack, a loader site's gate honours
+ * the root's hidden list too, the Starter's whole check is wrapped rather
+ * than the element inside it, and a list item's key is repeated on its gate.
+ *
  * Kept apart from the transform so the identity can be read without loading
  * the analysis.
  */
-export const THEME_HIDE_GUARD_VERSION = "hide-4";
+export const THEME_HIDE_GUARD_VERSION = "hide-5";
