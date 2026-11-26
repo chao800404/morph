@@ -63,9 +63,59 @@ import {
 } from "../theme-framework/theme-toolchains";
 import {
   createThemePrerenderContent,
+  NATIVE_PRERENDER_REFUSED_READS_PATH,
+  platformPrerenderFailure,
   THEME_PRERENDER_CONTENT_FILE,
   type NativePrerenderContent,
 } from "./theme-prerender-content";
+
+/** A platform build whose prerender read content it has not sealed. */
+class PlatformPrerenderContentError extends Error {
+  readonly code: string;
+  readonly refusedReads: ReadonlyArray<{ path: string; reason: string }>;
+  constructor(
+    failure: NonNullable<ReturnType<typeof platformPrerenderFailure>>,
+  ) {
+    super(failure.message);
+    this.code = failure.code;
+    this.refusedReads = failure.refusedReads;
+  }
+}
+
+/** A failed build's refused-read record larger than this is not read. */
+const MAX_FAILED_BUILD_RECORD_BYTES = 1024 * 1024;
+
+/**
+ * Runs the platform prerender build. When it fails and its content endpoint
+ * recorded a refused read (theme-prerender-content.ts), the failure names the
+ * path; the build fails either way.
+ */
+async function runPlatformPrerenderBuild(
+  workspace: string,
+  build: () => Promise<unknown>,
+): Promise<void> {
+  const recordPath = path.join(workspace, NATIVE_PRERENDER_REFUSED_READS_PATH);
+  // Only this build's endpoint writes it, never the Theme's files.
+  await fs.rm(recordPath, { force: true });
+  try {
+    await build();
+  } catch (error) {
+    const size = await fs
+      .stat(recordPath)
+      .then((stat) => stat.size)
+      .catch(() => undefined);
+    const record =
+      size !== undefined && size <= MAX_FAILED_BUILD_RECORD_BYTES
+        ? await fs.readFile(recordPath).catch(() => undefined)
+        : undefined;
+    const refused = platformPrerenderFailure(
+      error instanceof Error ? error.message : String(error),
+      record,
+    );
+    if (refused) throw new PlatformPrerenderContentError(refused);
+    throw error;
+  }
+}
 
 function getMimeType(filePath: string): string {
   const publicTextType = themePublicTextMimeType(filePath);
@@ -733,7 +783,6 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             routeRegistry,
             Boolean(prerenderContent),
           );
-          let prerenderConfig: string | undefined;
           if (prerenderOptions) {
             // Native Start reopens this config in vite.preview(). Use the same
             // platform-owned configuration as Sandbox, never customer config.
@@ -756,8 +805,8 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             );
             if (!config || !("content" in config))
               throw new Error("SSG_CONFIG_MISSING");
-            prerenderConfig = path.join(tempDir, "vite.config.ts");
-            await fs.writeFile(prerenderConfig, config.content);
+            const configPath = path.join(tempDir, "vite.config.ts");
+            await fs.writeFile(configPath, config.content);
             const contentFile = plan.workspaceFiles.find(
               (file) =>
                 file.path === `/workspace/${THEME_PRERENDER_CONTENT_FILE}`,
@@ -777,35 +826,37 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
               ),
               "bin/vite.js",
             );
-            await promisify(execFile)(
-              process.execPath,
-              [
-                "--unhandled-rejections=strict",
-                viteCli,
-                "build",
-                "--app",
-                "--config",
-                prerenderConfig,
-                "--logLevel",
-                "error",
-              ],
-              {
-                cwd: tempDir,
-                env: {
-                  PATH: process.env.PATH,
-                  HOME: tempDir,
-                  NODE_ENV: "production",
-                  WRANGLER_SEND_METRICS: "false",
-                  ...(process.platform === "win32"
-                    ? { SystemRoot: process.env.SystemRoot }
-                    : {}),
+            await runPlatformPrerenderBuild(tempDir, () =>
+              promisify(execFile)(
+                process.execPath,
+                [
+                  "--unhandled-rejections=strict",
+                  viteCli,
+                  "build",
+                  "--app",
+                  "--config",
+                  configPath,
+                  "--logLevel",
+                  "error",
+                ],
+                {
+                  cwd: tempDir,
+                  env: {
+                    PATH: process.env.PATH,
+                    HOME: tempDir,
+                    NODE_ENV: "production",
+                    WRANGLER_SEND_METRICS: "false",
+                    ...(process.platform === "win32"
+                      ? { SystemRoot: process.env.SystemRoot }
+                      : {}),
+                  },
+                  timeout: Math.max(
+                    1,
+                    this.maxDurationMs - (Date.now() - startTime),
+                  ),
+                  maxBuffer: 1024 * 1024,
                 },
-                timeout: Math.max(
-                  1,
-                  this.maxDurationMs - (Date.now() - startTime),
-                ),
-                maxBuffer: 1024 * 1024,
-              },
+              ),
             );
             return;
           }
@@ -1097,6 +1148,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         diagnosticsJson: {
           stage: "compiler",
           errors: [diagnostic],
+          ...(err instanceof PlatformPrerenderContentError
+            ? { refusedReads: err.refusedReads }
+            : {}),
         },
         logs,
         durationMs: Date.now() - startTime,
