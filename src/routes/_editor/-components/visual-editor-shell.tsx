@@ -15692,6 +15692,24 @@ export function VisualEditorShell({
           ) {
             continue;
           }
+          // Re-review N2: only a token still awaiting the frame's answer, or
+          // the one acknowledged, is part of the page. One answered
+          // not-applied, or whose `applied` was held (`basis-unconfirmed`),
+          // is answered: it is no proof for its own section (its proof
+          // needs the latest token acknowledged), and it does not hold the
+          // others. A click on that section issues a new token as before.
+          const awaited = pendingSectionPresentationRef.current.has(
+            token.operationId,
+          );
+          const acknowledged = acknowledgedSectionPresentationRef.current.get(
+            sectionPresentationKey(token.templateId, token.sectionId),
+          );
+          if (
+            !awaited &&
+            !(acknowledged && sameSectionPresentationToken(acknowledged, token))
+          ) {
+            continue;
+          }
           const documentId =
             routeTemplateIdsRef.current.get(token.templateId) ??
             token.templateId;
