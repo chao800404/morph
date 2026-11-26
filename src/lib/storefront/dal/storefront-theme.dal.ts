@@ -74,6 +74,7 @@ import {
   assertPublishHiddenSections,
   assertSectionHideSupported,
   findPublishHiddenSectionProblems,
+  partitionPublishHiddenItems,
   sectionHideRefusal,
 } from "../content/section-hide-check";
 import { hideRefusalMessage } from "../ast/theme-hide-capability";
@@ -95,7 +96,16 @@ import {
   collectMediaAssetIds,
   verifyMediaReferences,
 } from "@/lib/storefront/theme-media-verification";
-import { and, asc, eq, isNull, max, notInArray, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNull,
+  max,
+  notInArray,
+  or,
+} from "drizzle-orm";
 import {
   recordedThemePreviewRuntime,
   THEME_PREVIEW_RUNTIMES,
@@ -3252,54 +3262,104 @@ export const storefrontThemeDal = {
         }
       }
 
-      // M3 Hide: every hidden section being sealed, judged against this
-      // build's own source revision and the guard the build carries. Start
-      // only; another framework's Hide is a later phase (P5).
-      const hiddenTemplates = publicationDocuments.filter(
-        ({ item, document: sealed }) =>
-          item.itemType === "template" &&
-          sealed.sections.some((section) => section.enabled === false),
+      // M3 Hide: every item being sealed that carries a hidden section is
+      // judged, so none reaches a release unjudged. A CMS Page item, and
+      // every item of a Theme that is not Start (Astro is M3b), are refused
+      // without reading source (`partitionPublishHiddenItems`); a Start
+      // template is judged against this build's own source revision and the
+      // guard the build carries. Thrown before the batch below, so a refusal
+      // writes nothing and the active release stays as it was.
+      const hiddenItems = publicationDocuments.filter(({ document: sealed }) =>
+        sealed.sections.some((section) => section.enabled === false),
       );
-      if (
-        hiddenTemplates.length > 0 &&
-        designWritesUnavailableReason(template.framework) === null
-      ) {
+      if (hiddenItems.length > 0) {
         const templateRows = new Map(
-          (
-            await db
-              .select({
-                id: storefrontThemeTemplates.id,
-                type: storefrontThemeTemplates.type,
-                routePath: storefrontThemeTemplates.routePath,
-              })
-              .from(storefrontThemeTemplates)
-              .where(eq(storefrontThemeTemplates.themeId, data.themeId))
-          ).map((row) => [row.id, row]),
+          hiddenItems.some(({ item }) => item.itemType === "template")
+            ? (
+                await db
+                  .select({
+                    id: storefrontThemeTemplates.id,
+                    type: storefrontThemeTemplates.type,
+                    routePath: storefrontThemeTemplates.routePath,
+                  })
+                  .from(storefrontThemeTemplates)
+                  .where(eq(storefrontThemeTemplates.themeId, data.themeId))
+              ).map((row) => [row.id, row])
+            : [],
         );
-        const revisionFiles =
-          await data.readSourceRevisionFiles(sourceRevisionId);
-        const textFiles = revisionFiles.filter(
-          (file): file is { path: string; content: string } =>
-            typeof file.content === "string",
-        );
-        assertPublishHiddenSections(
-          findPublishHiddenSectionProblems({
+        // A Page's title for the refusal; a deleted Page's retained revision
+        // still travels, so its row is read whatever its state. D1 caps
+        // bound parameters per statement.
+        const hiddenPageIds = hiddenItems
+          .filter(({ item }) => item.itemType === "page")
+          .map(({ item }) => item.contentId);
+        const pageRows = new Map<string, { title: string; handle: string }>();
+        for (let start = 0; start < hiddenPageIds.length; start += 50) {
+          for (const row of await db
+            .select({
+              id: storefrontPages.id,
+              title: storefrontPages.title,
+              handle: storefrontPages.handle,
+            })
+            .from(storefrontPages)
+            .where(
+              and(
+                eq(storefrontPages.storefrontId, data.storefrontId),
+                inArray(
+                  storefrontPages.id,
+                  hiddenPageIds.slice(start, start + 50),
+                ),
+              ),
+            )) {
+            pageRows.set(row.id, row);
+          }
+        }
+        const labelled = hiddenItems.map(({ item, document: sealed }) => {
+          if (item.itemType !== "template") {
+            const page = pageRows.get(item.contentId);
+            const handle = item.metadata?.handle ?? page?.handle ?? null;
+            const title = page?.title ?? handle ?? item.contentId;
+            return {
+              itemType: "page" as const,
+              label: `the Page "${title}"${handle ? ` (/pages/${handle})` : ""}`,
+              templateType: "page",
+              templateRoutePath: null,
+              document: sealed,
+            };
+          }
+          const row = templateRows.get(item.contentId);
+          const templateType =
+            item.metadata?.templateType ?? row?.type ?? "page";
+          return {
+            itemType: "template" as const,
+            label:
+              templateType === "layout"
+                ? "the layout"
+                : `the ${row?.routePath ?? templateType} page`,
+            templateType,
+            templateRoutePath: row?.routePath ?? null,
+            document: sealed,
+          };
+        });
+        const { refused, sourceChecked } = partitionPublishHiddenItems({
+          framework: template.framework,
+          items: labelled,
+        });
+        let judged: ReturnType<typeof findPublishHiddenSectionProblems> = {
+          unsupported: [],
+          rebuild: [],
+        };
+        if (sourceChecked.length > 0) {
+          const revisionFiles =
+            await data.readSourceRevisionFiles(sourceRevisionId);
+          const textFiles = revisionFiles.filter(
+            (file): file is { path: string; content: string } =>
+              typeof file.content === "string",
+          );
+          judged = findPublishHiddenSectionProblems({
             files: revisionFiles,
             buildGuardVersion: buildHideGuardVersion(build.compilerVersion),
-            documents: hiddenTemplates.map(({ item, document: sealed }) => {
-              const row = templateRows.get(item.contentId);
-              const templateType =
-                item.metadata?.templateType ?? row?.type ?? "page";
-              return {
-                label:
-                  templateType === "layout"
-                    ? "the layout"
-                    : `the ${row?.routePath ?? templateType} page`,
-                templateType,
-                templateRoutePath: row?.routePath ?? null,
-                document: sealed,
-              };
-            }),
+            documents: sourceChecked,
             // Every route that serves the template, as the write judged it;
             // a template no route serves renders nothing and is left alone.
             resolveCallSites: ({
@@ -3314,8 +3374,12 @@ export const storefrontThemeDal = {
                 sectionId,
                 files: textFiles,
               }),
-          }),
-        );
+          });
+        }
+        assertPublishHiddenSections({
+          unsupported: [...refused, ...judged.unsupported],
+          rebuild: judged.rebuild,
+        });
       }
     }
 

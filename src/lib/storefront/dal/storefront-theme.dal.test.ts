@@ -6659,6 +6659,245 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
 });
 
 /**
+ * M3 Hide step 1: every item in the sealed publication that carries a hidden
+ * section is judged, not only Start templates. A CMS Page item (D4) and any
+ * Theme whose framework is not Start (D3; Astro until M3b) are refused,
+ * naming the item and section with the way out, and the active release,
+ * its publication and every published pointer stay as they were.
+ */
+describe("M3 Hide: publish judges every hidden item it seals", () => {
+  const SOURCE = "22222222-2222-4222-8222-222222222222";
+  const BUILD = "33333333-3333-4333-8333-333333333333";
+  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+  const hero = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero({ heading = "HERO-DEFAULT" }) { return <h1>{heading}</h1>; }`;
+  const index = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><Hero {...content("hero")} /></main>; }`;
+  const revisionFiles = async () => [
+    { path: "src/routes/__root.tsx", content: root },
+    {
+      path: "src/morph/content.ts",
+      content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+    },
+    { path: "src/components/Hero.tsx", content: hero },
+    { path: "src/routes/index.tsx", content: index },
+  ];
+  const documentOf = (heading: string, hidden: boolean, handle?: string) =>
+    JSON.stringify({
+      version: 1,
+      ...(handle ? { handle } : {}),
+      sections: [
+        {
+          id: "hero",
+          type: "hero",
+          componentRef: "src/components/Hero.tsx",
+          enabled: !hidden,
+          props: { heading },
+        },
+      ],
+    });
+
+  let draft = 0;
+  /** A new template draft, so the next publish seals a new publication. */
+  const saveTemplateDraft = (hidden: boolean) => {
+    draft += 1;
+    const id = `tpl-draft-${draft}`;
+    const document = documentOf(`Home ${draft}`, hidden);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES (?, 'template-gate', ?, ?, 'now')`,
+      )
+      .run(id, draft, document);
+    sqlite
+      .prepare(
+        `UPDATE storefront_theme_templates
+           SET draft_revision_id = ?, document = ?, draft_generation = ?
+         WHERE id = 'template-gate'`,
+      )
+      .run(id, document, draft);
+    return { id, generation: draft };
+  };
+  /** A Page whose published revision a Theme publish carries. */
+  const publishedPage = (options: { hidden: boolean; revisionId: string }) => {
+    sqlite
+      .prepare(
+        "INSERT INTO storefront_page_revisions VALUES (?, 'page-about', ?)",
+      )
+      .run(options.revisionId, documentOf("About us", options.hidden, "about"));
+    const exists = sqlite
+      .prepare("SELECT id FROM storefront_pages WHERE id = 'page-about'")
+      .get();
+    if (exists) {
+      sqlite
+        .prepare(
+          "UPDATE storefront_pages SET published_revision_id = ? WHERE id = 'page-about'",
+        )
+        .run(options.revisionId);
+    } else {
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_pages
+            (id, storefront_id, title, handle, status, published_revision_id, created_by, created_at, updated_at)
+          VALUES ('page-about', 'storefront-a', 'About', 'about', 'published', ?, 'user-1', 'now', 'now')`,
+        )
+        .run(options.revisionId);
+    }
+  };
+
+  function seed(options: { framework?: string; templateHidden?: boolean }) {
+    draft = 0;
+    if (options.framework) {
+      sqlite
+        .prepare(
+          "UPDATE storefront_themes SET framework = ? WHERE id = 'theme-a'",
+        )
+        .run(options.framework);
+    }
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+        VALUES ('template-gate', 'theme-a', 'index', 'Home', '{}', NULL, NULL, 0, 'now', 'now')`,
+      )
+      .run();
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_revisions
+          (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', 1, 'Checkpoint', 'publish', '[]', 'now', 'now')`,
+      )
+      .run(SOURCE);
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
+      )
+      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+    return saveTemplateDraft(options.templateHidden ?? false);
+  }
+
+  const publish = (draftRevision: { id: string; generation: number }) => {
+    const { generation } = sqlite
+      .prepare(
+        "SELECT release_generation AS generation FROM storefront_themes WHERE id = 'theme-a'",
+      )
+      .get() as { generation: number };
+    return storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: revisionFiles,
+      verifySourceRevision: acceptRevision,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-gate",
+      sourceRevisionId: SOURCE,
+      themeBuildId: BUILD,
+      expectedDraftRevisionId: draftRevision.id,
+      expectedDraftGeneration: draftRevision.generation,
+      expectedReleaseGeneration: generation,
+    });
+  };
+  /** Everything a publish writes: releases, pointers, publications. */
+  const liveState = () => ({
+    releases: sqlite.prepare("SELECT id FROM storefront_releases").all(),
+    active: sqlite
+      .prepare(
+        "SELECT active_release_id AS id FROM storefronts WHERE id = 'storefront-a'",
+      )
+      .get() as { id: string | null },
+    theme: sqlite
+      .prepare(
+        "SELECT release_generation, published_source_revision_id FROM storefront_themes WHERE id = 'theme-a'",
+      )
+      .get(),
+    template: sqlite
+      .prepare(
+        "SELECT published_revision_id AS id, draft_generation FROM storefront_theme_templates WHERE id = 'template-gate'",
+      )
+      .get(),
+    publications: sqlite
+      .prepare("SELECT id FROM storefront_content_publications")
+      .all(),
+    items: sqlite
+      .prepare("SELECT id FROM storefront_content_publication_items")
+      .all(),
+  });
+
+  it("refuses a CMS Page item with a hidden section, naming the Page and section, and leaves the active release as it was", async () => {
+    const first = seed({});
+    publishedPage({ hidden: false, revisionId: "page-rev-shown" });
+    const live = await publish(first);
+    expect(live?.releaseId).toBeTruthy();
+
+    // A Page section hidden before Pages refused new hides, published from
+    // the Dashboard: it goes live with the next Theme publish.
+    publishedPage({ hidden: true, revisionId: "page-rev-hidden" });
+    const next = saveTemplateDraft(false);
+    const before = liveState();
+    await expect(publish(next)).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the Page "About" \(\/pages\/about\) \(no-call-site\).*Show them again on the Page, publish the Page, then publish the Theme again/,
+    );
+    expect(liveState()).toEqual(before);
+    expect(before.active.id).toBe(live?.releaseId);
+  });
+
+  it("reverse: the same publish with the Page's section shown goes ahead", async () => {
+    const first = seed({});
+    publishedPage({ hidden: false, revisionId: "page-rev-shown" });
+    await expect(publish(first)).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+    const next = saveTemplateDraft(false);
+    await expect(publish(next)).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+    expect(liveState().releases).toHaveLength(2);
+  });
+
+  it("still judges a Start template's hidden section by its source alongside a shown Page", async () => {
+    const first = seed({ templateHidden: true });
+    publishedPage({ hidden: false, revisionId: "page-rev-shown" });
+    // `hero` is a plain spread the guard omits: supported, as before.
+    await expect(publish(first)).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+  });
+
+  it("refuses an Astro Theme's hidden section until Morph can hide it there, and writes nothing", async () => {
+    const first = seed({ framework: "astro", templateHidden: true });
+    const before = liveState();
+    await expect(publish(first)).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide sections on Astro Themes yet.*"hero" on the index page \(framework-not-supported\).*Clear their hidden flag/,
+    );
+    expect(liveState()).toEqual(before);
+  });
+
+  it("refuses a hidden section on any other framework that is not Start, Pages included", async () => {
+    const first = seed({ framework: "other-framework" });
+    publishedPage({ hidden: true, revisionId: "page-rev-hidden" });
+    const before = liveState();
+    await expect(publish(first)).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot hide sections on other-framework Themes yet.*"hero" on the Page "About" \(\/pages\/about\) \(framework-not-supported\)/,
+    );
+    expect(liveState()).toEqual(before);
+  });
+
+  it("reverse: an Astro Theme with nothing hidden publishes as before", async () => {
+    const first = seed({ framework: "astro" });
+    publishedPage({ hidden: false, revisionId: "page-rev-shown" });
+    await expect(publish(first)).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+  });
+});
+
+/**
  * A rollback moves only the live pointer (`activateRelease`); template and
  * Page rows keep recording the revision their own last publish sealed. The
  * next publish must start from the release the rollback restored and replace
