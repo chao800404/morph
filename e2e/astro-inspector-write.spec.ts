@@ -148,6 +148,31 @@ async function liveFrame(page: Page): Promise<Frame> {
   return frame!;
 }
 
+/**
+ * The live frame once `selector` in it shows `text`. A write's sync ->
+ * confirm -> reload can replace the canvas frame while this waits, so the
+ * frame is looked up again on every poll rather than held from before.
+ */
+async function frameShowing(
+  page: Page,
+  selector: string,
+  text: string,
+): Promise<Frame> {
+  await expect
+    .poll(
+      async () => {
+        const frame = await liveFrame(page);
+        return frame
+          .locator(selector)
+          .textContent({ timeout: 5_000 })
+          .catch(() => null);
+      },
+      { timeout: 120_000, message: `the page shows ${text} at ${selector}` },
+    )
+    .toBe(text);
+  return liveFrame(page);
+}
+
 /** Turns the pointer tool on, unless it is on, and waits for the frame. */
 async function ensureSelection(page: Page, frame: Frame) {
   const off = page.getByRole("button", { name: "Disable section selection" });
@@ -399,10 +424,7 @@ test.describe("Astro Inspector write on the container Live Preview (M2 PR 3)", (
     expect(heroOf(afterTitle)).toEqual({ ...start, title: edited });
 
     // The page shows it after sync -> confirm -> reload.
-    frame = await liveFrame(page);
-    await expect(frame.locator("[data-m2w-hero] h1")).toHaveText(edited, {
-      timeout: 120_000,
-    });
+    frame = await frameShowing(page, "[data-m2w-hero] h1", edited);
     await expect(frame.locator("[data-m2w-hero] p")).toHaveText(start.subtitle);
 
     // 3. The same text into the subtitle, sent only on the reloaded page's
@@ -427,10 +449,7 @@ test.describe("Astro Inspector write on the container Live Preview (M2 PR 3)", (
     expect(afterSubtitle.sections.map((section) => section.id)).toEqual(
       before.sections.map((section) => section.id),
     );
-    frame = await liveFrame(page);
-    await expect(frame.locator("[data-m2w-hero] p")).toHaveText(edited, {
-      timeout: 120_000,
-    });
+    frame = await frameShowing(page, "[data-m2w-hero] p", edited);
     await expect(frame.locator("[data-m2w-hero] h1")).toHaveText(edited);
 
     // 4. An editor reload: the page, the Inspector and D1 agree.
