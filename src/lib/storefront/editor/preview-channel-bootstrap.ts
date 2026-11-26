@@ -324,7 +324,7 @@ export function installPreviewChannelBootstrap(
         // the replacement request untouched, and only ours is removed.
         let key: string = PREVIEW_CHANNEL_BOOTSTRAP_PARAM;
         for (let suffix = 1; next.searchParams.has(key); suffix++) {
-          if (suffix > 9) return;
+          if (suffix > 99) return;
           key = `${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}${suffix}`;
         }
         // The document that loads takes the nonce only against this record.
@@ -372,7 +372,7 @@ export function takeBootstrapNonce(win: PreviewChannelWindow): string | null {
     const handoff = JSON.parse(raw) as { key?: unknown; nonce?: unknown };
     if (
       typeof handoff.key !== "string" ||
-      !new RegExp(`^${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}[0-9]?$`).test(
+      !new RegExp(`^${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}[0-9]{0,2}$`).test(
         handoff.key,
       ) ||
       typeof handoff.nonce !== "string" ||
@@ -410,8 +410,9 @@ export function installPreviewDocumentRestoreGuard(
     // Only a protected preview's frame: a standalone or open document has
     // no editor behind it to be revalidated against.
     if (!inProtectedFrame(win)) return;
-    // The author came back to this page: as a followed link is, it is the
-    // frame's own move, not the editor's, so the editor follows it.
+    // The author came back to this page: Back or Forward is the frame's own
+    // move, not the editor's, so the editor follows it (the bridge swallows
+    // only the resync that names the page just left).
     try {
       const session = new URL(win.location.href).searchParams.get(
         "previewSession",
@@ -419,7 +420,7 @@ export function installPreviewDocumentRestoreGuard(
       if (session && SESSION.test(session)) {
         win.sessionStorage?.setItem(
           `morph:preview-document-navigation:${session}`,
-          "frame",
+          "history",
         );
       }
     } catch {

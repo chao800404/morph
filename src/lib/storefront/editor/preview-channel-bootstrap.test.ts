@@ -211,6 +211,38 @@ describe("a queryless document's receiver", () => {
     expect(next.hash).toBe("#top");
   });
 
+  it("still hands over when the Theme's address uses the first ten keys", async () => {
+    const taken = [
+      PREVIEW_CHANNEL_BOOTSTRAP_PARAM,
+      ...Array.from(
+        { length: 9 },
+        (_, index) => `${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}${index + 1}`,
+      ),
+    ]
+      .map((key) => `${key}=theme`)
+      .join("&");
+    const frame = frameWindow({
+      href: `https://pv-x.preview.test/shop?${taken}`,
+    });
+    installPreviewChannelBootstrap({
+      window: frame.win,
+      fetch: ok() as never,
+    });
+    frame.fire("message", {
+      source: frame.parent,
+      origin: EDITOR,
+      data: offer(),
+    });
+    await settle();
+    const next = new URL(frame.replace.mock.calls[0]![0] as string);
+    expect(next.searchParams.get(`${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}10`)).toBe(
+      NONCE,
+    );
+    expect(next.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM)).toBe(
+      "theme",
+    );
+  });
+
   it("makes a second queryless document bootstrap on its own", async () => {
     const first = frameWindow();
     const second = frameWindow({
@@ -646,7 +678,7 @@ describe("a document restored from the back-forward cache", () => {
     frame.fire("pageshow", { persisted: true });
     expect(
       frame.stored.get(`morph:preview-document-navigation:${SESSION}`),
-    ).toBe("frame");
+    ).toBe("history");
   });
 
   it("is left alone outside a protected preview's frame", () => {

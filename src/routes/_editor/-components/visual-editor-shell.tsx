@@ -6072,7 +6072,9 @@ export function VisualEditorShell({
           );
         },
         () => {
-          if (previewAccessFlowRef.current === entry) failed();
+          if (previewAccessFlowRef.current === entry && !entry.cancelled) {
+            failed();
+          }
         },
       );
     };

@@ -368,6 +368,39 @@ describe("a page that navigates as documents (Astro)", () => {
     }
   });
 
+  it("keeps following links across a page the editor does not list: the resync is swallowed whatever page the author left", () => {
+    // /  ->  /products/123 (unlisted)  ->  /about, by links. The editor still
+    // has / selected, and its ready-time resync names /.
+    const page = bridgeRouting({
+      pathname: "/about",
+      navigation: "document",
+      recorded: "frame",
+      left: "/products/123",
+    });
+    page.applyEditorRoute(setRoute("/", 11));
+    expect(page.assigned).toEqual([]);
+    expect(page.posted[0]).toMatchObject({
+      type: "morph:storefront-preview-route-applied",
+      routePath: "/about",
+    });
+  });
+
+  it("swallows the resync of a restored document that names the page just left, and loads any other", () => {
+    for (const [asked, assigned] of [
+      ["/contact", []],
+      ["/pricing", [`${ORIGIN}/pricing${QUERY}`]],
+    ] as const) {
+      const page = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+        recorded: "history",
+        left: "/contact",
+      });
+      page.applyEditorRoute(setRoute(asked, 11));
+      expect(page.assigned).toEqual(assigned);
+    }
+  });
+
   it("says the page it leaves, once, for the next document, and keeps one already said", () => {
     const page = bridgeRouting({ pathname: "/about", navigation: "document" });
     page.fire("pagehide");

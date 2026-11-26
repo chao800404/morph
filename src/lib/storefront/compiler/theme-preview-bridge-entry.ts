@@ -602,8 +602,10 @@ if (documentNavigation) {
     const left = sessionStorage.getItem(DOCUMENT_NAVIGATION_LEFT_KEY);
     sessionStorage.removeItem(DOCUMENT_NAVIGATION_LEFT_KEY);
     if (typeof left === "string" && left.startsWith("/")) leftBefore = left;
-    if (recorded === "frame") arrivedBy = { kind: "frame", left: leftBefore };
-    else if (typeof recorded === "string" && recorded.startsWith("editor:")) {
+    if (recorded === "frame") arrivedBy = { kind: "frame" };
+    else if (recorded === "history") {
+      arrivedBy = { kind: "history", left: leftBefore };
+    } else if (typeof recorded === "string" && recorded.startsWith("editor:")) {
       arrivedBy = { kind: "editor", target: recorded.slice("editor:".length) };
     }
   } catch {
@@ -616,7 +618,7 @@ if (documentNavigation) {
     try {
       const navigation = performance.getEntriesByType("navigation")[0];
       if (navigation && navigation.type === "back_forward") {
-        arrivedBy = { kind: "frame", left: leftBefore };
+        arrivedBy = { kind: "history", left: leftBefore };
       }
     } catch {
       // No navigation timing: nothing is known of how this document arrived.
@@ -734,12 +736,15 @@ function applyDocumentRoute(message) {
   }
   if (
     arrival !== null &&
-    // A frame arrival swallows the editor's resync only: the request that
-    // names the page the author just left. An explicit pick of any other page
-    // is the editor's own move and is loaded. Without a page recorded as left
-    // every first request is taken as the resync.
-    ((arrival.kind === "frame" &&
-      (arrival.left === undefined || sameDocumentPath(arrival.left, target))) ||
+    // A link or form the author followed: the first request is the editor
+    // still naming the page it had, whatever page that is. Back and Forward
+    // (history): the editor's resync names the page just left, and only that
+    // request is swallowed; an explicit pick of any other page is the
+    // editor's own move and is loaded. Without a page recorded as left, every
+    // first request is taken as the resync.
+    (arrival.kind === "frame" ||
+      (arrival.kind === "history" &&
+        (arrival.left === undefined || sameDocumentPath(arrival.left, target))) ||
       (arrival.kind === "editor" && sameDocumentPath(arrival.target, target)))
   ) {
     // Answered first, then reported: the report after the answer is the one
