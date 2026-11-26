@@ -2090,20 +2090,23 @@ function PlainRoute() {
     })) as { success: boolean };
   }
 
-  /** Opens the editor on the route; answers with the route's own server HTML. */
+  /**
+   * Opens the editor on the route; answers with the route's own server HTML,
+   * read whole from the preview's origin. The frame itself may arrive at the
+   * route by a client navigation, so its document is not that response.
+   */
   async function openPlain(page: Page): Promise<string> {
     const url = new URL(plainEditorPath!, "http://placeholder");
     url.searchParams.set("routePath", PLAIN_ROUTE);
-    const document = page.waitForResponse(
-      (response) =>
-        response.request().resourceType() === "document" &&
-        new URL(response.url()).pathname === PLAIN_ROUTE,
-      { timeout: 90_000 },
-    );
     await page.goto(`${url.pathname}${url.search}`, { waitUntil: "domcontentloaded" });
-    const html = await (await document).text();
     await expect(previewFrame(page).getByText(PLAIN_MARK)).toBeVisible({ timeout: 90_000 });
-    return html;
+    return previewFrame(page)
+      .locator("html")
+      .evaluate(async (_root, path) => {
+        const response = await fetch(path, { credentials: "include" });
+        if (!response.ok) throw new Error(`the route answered ${response.status}`);
+        return response.text();
+      }, PLAIN_ROUTE);
   }
 
   test.beforeAll(async ({ browser }) => {
