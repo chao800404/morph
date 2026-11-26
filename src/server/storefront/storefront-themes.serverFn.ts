@@ -12,6 +12,7 @@ import { parseRejectedContentField } from "@/lib/storefront/theme-content-capabi
 import {
   PUBLISH_HIDDEN_SECTION_UNSUPPORTED,
   PUBLISH_HIDE_REBUILD_REQUIRED,
+  PublishHiddenSectionsError,
 } from "@/lib/storefront/content/section-hide-check";
 import {
   PUBLISH_SCOPE_CHANGED,
@@ -920,7 +921,15 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
         if (message.includes(`${code}:`)) {
           return fail(
             message.slice(message.indexOf(`${code}:`) + code.length + 1).trim(),
-            { error: code },
+            {
+              error: code,
+              // M3 stage 1: which documents and sections, as data, so the
+              // editor can offer "Show again" on each. Additive: the message
+              // and code are as before.
+              ...(error instanceof PublishHiddenSectionsError
+                ? { details: error.details }
+                : {}),
+            },
           );
         }
       }

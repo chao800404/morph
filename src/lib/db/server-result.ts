@@ -1,4 +1,5 @@
 import type { ZodType, z } from "zod";
+import type { PublishHiddenSectionsDetails } from "@/lib/storefront/publish-hidden-sections-details";
 
 /**
  * The shape every server function returns.
@@ -13,6 +14,14 @@ import type { ZodType, z } from "zod";
  * the product module do not do.
  */
 export type FieldErrors = Record<string, string[]>;
+
+/**
+ * Structured detail a failure may carry beside its `message` and `error`,
+ * discriminated by `kind` so later kinds can be added as further members.
+ * Optional and additive: a client that does not read it sees the failure
+ * exactly as before.
+ */
+export type ServerFailureDetails = PublishHiddenSectionsDetails;
 
 /**
  * The failure half is **not** generic.
@@ -34,6 +43,7 @@ export interface ServerFailure {
    */
   reason?: string;
   errors?: FieldErrors;
+  details?: ServerFailureDetails;
 }
 
 export type ServerResult<TData> =
@@ -50,7 +60,12 @@ export const ok = <TData>(
 
 export const fail = (
   message: string,
-  options: { error?: string; reason?: string; errors?: FieldErrors } = {},
+  options: {
+    error?: string;
+    reason?: string;
+    errors?: FieldErrors;
+    details?: ServerFailureDetails;
+  } = {},
 ): ServerFailure => ({
   success: false,
   message,
