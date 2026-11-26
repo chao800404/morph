@@ -16,6 +16,8 @@ import {
   type B1SlotUseAnalysis,
   type B1SourceFile,
 } from "./theme-content-provenance";
+import { findComponentReferences } from "./theme-hide-component-mounts";
+import { isThemeStartConfigPath } from "../compiler/theme-start-toolchain";
 import {
   createThemeSourceAstReader,
   type ThemeSourceAstReader,
@@ -92,6 +94,18 @@ export type HideRefusalReason =
    */
   | "root-route-unconfirmed"
   /**
+   * The section's component is also rendered somewhere other than as a
+   * section (`<Hero />` in another component, `createElement(Hero)`), which
+   * would keep showing it, with its defaults, while it is hidden.
+   */
+  | "unguarded-mount"
+  /**
+   * The Theme carries a build input Morph's managed Start build does not
+   * account for: a root-level tool config or script, a `.morph/` file, a
+   * `package.json` under `src/`, a Start entry override, a CSS plugin.
+   */
+  | "custom-build"
+  /**
    * The Theme's recorded framework is not Start. This classifier reads
    * Start source only, so the write boundary refuses such a hide before
    * calling it (until M3 P5).
@@ -122,6 +136,12 @@ export type HideGuardSite = Readonly<{
   }> | null;
   /** For a `loader` root: the local that holds the whole page. */
   pageLocal: string | null;
+  /**
+   * The module the element renders (its default export), when the proof
+   * resolves it. Every other reference to it in the Theme must be a section
+   * mount of its own (`theme-hide-component-mounts.ts`).
+   */
+  component?: string | null;
 }>;
 
 export type HideCapability =
@@ -160,6 +180,8 @@ const MESSAGES: Readonly<Record<HideRefusalReason, string>> = {
   "source-unconfirmed": `${PREFIX}: the Theme source has errors Morph cannot analyse.`,
   "framework-not-supported": `${PREFIX}: hiding is only supported on TanStack Start pages so far. Edit it in Code mode.`,
   "starter-upgrade-required": `${PREFIX}: this Theme still has an older Starter's ${THEME_CONTENT_MODULE_PATH}, which shows sections with their defaults when the page content cannot be read. Upgrade the Theme to the current Starter, then hide it.`,
+  "custom-build": `${PREFIX}: this Theme changes how it is built, so Morph cannot confirm what the live site would run.`,
+  "unguarded-mount": `${PREFIX}: the Theme renders this section's component somewhere without its content, so it would still show there, with its defaults.`,
   "root-route-unconfirmed": `${PREFIX}: src/routes/__root.tsx has been changed from the Starter's, so Morph cannot confirm where the page learns which sections are hidden.`,
 };
 
@@ -1270,6 +1292,73 @@ export function createHideCapabilityAnalyzer(
     .filter((path) => path.startsWith("src/") && SCRIPT_FILE.test(path))
     .filter((path) => path !== THEME_CONTENT_MODULE_PATH);
 
+  /**
+   * A build input the managed Start build does not account for. The
+   * Theme's own Vite and Wrangler config are judged by the proof itself
+   * (a native project), and so is a directory import a package.json could
+   * redirect; this names what is left.
+   */
+  let buildInputChecked = false;
+  let buildInput: { file: string; detail: string } | null = null;
+  const buildInputProblem = () => {
+    if (buildInputChecked) return buildInput;
+    buildInputChecked = true;
+    for (const file of files) {
+      const path = file.path;
+      const name = path.slice(path.lastIndexOf("/") + 1);
+      if (!path.includes("/")) {
+        if (isThemeStartConfigPath(path)) continue;
+        if (
+          SCRIPT_FILE.test(path) ||
+          (/config/i.test(name) && name !== "tsconfig.json" && name !== "jsconfig.json") ||
+          /^.(postcssrc|babelrc)/.test(name)
+        ) {
+          buildInput = { file: path, detail: `${path} configures the build.` };
+          return buildInput;
+        }
+        continue;
+      }
+      if (path.startsWith(".morph/")) {
+        buildInput = { file: path, detail: `${path} is the platform's place for its own build files.` };
+        return buildInput;
+      }
+      if (!path.startsWith("src/")) continue;
+      if (name === "package.json") {
+        buildInput = { file: path, detail: `${path} can change how its directory's imports resolve.` };
+        return buildInput;
+      }
+      if (/^src/(server|client|start|ssr|global-middleware).(tsx|ts|jsx|js|mjs)$/.test(path)) {
+        buildInput = { file: path, detail: `${path} replaces a Start entry point.` };
+        return buildInput;
+      }
+      if (/.css$/i.test(path) && /@(plugin|config)/.test(file.content)) {
+        buildInput = { file: path, detail: `${path} loads a build plugin or config from CSS.` };
+        return buildInput;
+      }
+    }
+    return null;
+  };
+
+  const referenceCache = new Map<string, ReturnType<typeof findComponentReferences>>();
+  const componentReferences = (componentPath: string) => {
+    let found = referenceCache.get(componentPath);
+    if (!found) {
+      found = findComponentReferences({
+        modules: themeModules.map((path) => {
+          const file = files.find((entry) => entry.path === path)!;
+          return { path, ast: reader.ast(path, file.content) };
+        }),
+        resolve: (from, specifier) => {
+          const resolved = resolveSpecifier(from, specifier);
+          return resolved.kind === "module" ? resolved.target : null;
+        },
+        componentPath,
+      });
+      referenceCache.set(componentPath, found);
+    }
+    return found;
+  };
+
   // The modules whose supported call sites the build guards
   // (`planHideGuards`): every route module but the root, and the layout.
   let layoutPath: string | null | undefined;
@@ -1467,6 +1556,7 @@ export function createHideCapabilityAnalyzer(
         position,
         contentImport: contentSite ? uses.contentImport : null,
         pageLocal: loaderSite ? [...pageLocals][0]! : null,
+        component: instance.componentPath,
       });
     }
 
@@ -1556,9 +1646,40 @@ export function createHideCapabilityAnalyzer(
       elsewhere = verdict.sites;
       return null;
     });
-    return local.kind === "supported" && elsewhere.length > 0
-      ? { ...local, sites: [...local.sites, ...elsewhere] }
-      : local;
+    const verdict =
+      local.kind === "supported" && elsewhere.length > 0
+        ? { ...local, sites: [...local.sites, ...elsewhere] }
+        : local;
+    if (verdict.kind !== "supported") return verdict;
+    const build = buildInputProblem();
+    if (build) {
+      return refuse(slot, "custom-build", { file: build.file, line: 0 }, build.detail);
+    }
+    // The component a supported mount renders is rendered nowhere else
+    // except as a section mount of its own.
+    for (const component of new Set(
+      verdict.sites.map((site) => site.component ?? null),
+    )) {
+      if (!component) continue;
+      const stray = componentReferences(component).find(
+        (reference) =>
+          reference.elementStart === null ||
+          !routeAnalysis(reference.file).instances.some(
+            (instance) =>
+              instance.start === reference.elementStart &&
+              instance.section !== null,
+          ),
+      );
+      if (stray) {
+        return refuse(
+          slot,
+          "unguarded-mount",
+          { file: stray.file, line: stray.line },
+          `${stray.file}:${stray.line} renders ${component} without a section's content.`,
+        );
+      }
+    }
+    return verdict;
   };
 
   const proveNotRendered: HideCapabilityAnalyzer["proveNotRendered"] = ({
