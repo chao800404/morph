@@ -234,3 +234,42 @@ describe("a gated section the page does not mount (review of b4e81b2, N1)", () =
   });
 });
 
+// Review of 8dcffba, R2: what the gates recorded belongs to the route they
+// rendered on. After a client navigation, a section gated on the route left
+// behind is not gated on this one, where hiding it is its absence.
+describe("the gates a route rendered do not follow a client navigation", () => {
+  it("acknowledges a Hide by absence on a route where the section has no gate", () => {
+    window.history.pushState({}, "", "/route-a");
+    routeContext.current = visibility([]);
+    const view = render(
+      <main>
+        <gate.MorphSectionGate
+          slot="hero"
+          render={() => <div data-storefront-section-id="hero">HERO</div>}
+        />
+      </main>,
+    );
+    expect(committed("hero", true)).toBe(true);
+    // Client navigation to route B, which renders hero with no gate; hidden
+    // there, it is absent.
+    window.history.pushState({}, "", "/route-b");
+    view.rerender(<main><p>Route B</p></main>);
+    expect(committed("hero", false)).toBe(true);
+  });
+
+  it("still asks route A's gate when the page returns to route A", () => {
+    window.history.pushState({}, "", "/route-a");
+    routeContext.current = visibility([]);
+    const view = render(
+      <main>
+        <gate.MorphSectionGate slot="hero" render={() => <p>shown</p>} />
+      </main>,
+    );
+    window.history.pushState({}, "", "/route-b");
+    view.rerender(<main />);
+    window.history.pushState({}, "", "/route-a");
+    // Route A's gate is not mounted (its error state, say): not applied.
+    expect(committed("hero", false)).toBe(false);
+  });
+});
+
