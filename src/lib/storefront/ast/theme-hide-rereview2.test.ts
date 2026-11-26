@@ -170,13 +170,13 @@ export const check = isSectionHidden;
     });
   });
 
-  it("reverse: the exact Starter guard, and a flag read of another slot, are not readers", () => {
+  it("reverse: a flag read of another slot is not a reader", () => {
     const files = theme(contentRoute(), [
       {
         path: "src/components/Teaser.tsx",
         content: `import { isSectionHidden } from "../morph/content";
 export default function Teaser() {
-  return <div>{!isSectionHidden("hero") && <p>teaser</p>}{isSectionHidden("other") && <p />}</div>;
+  return <div>{isSectionHidden("other") && <p />}</div>;
 }
 `,
       },
@@ -185,8 +185,11 @@ export default function Teaser() {
   });
 
   it("but a second mount of the section's component without its content is refused", () => {
-    // Since approach E step 1: the Starter guard around a bare <Hero /> still
-    // renders Hero's defaults while shown, outside any gate.
+    // Since the review of f1bcc7a (P1-2) the Starter's check is exempt only
+    // around the section's own mount, which a bare <Hero /> in a component
+    // is not: the check is a read of the flag, refused before the mount scan.
+    // The exact check around the section's real mount is covered by the
+    // Starter Themes and theme-hide-review-f1bcc7a.test.ts.
     const files = theme(contentRoute(), [
       {
         path: "src/components/Teaser.tsx",
@@ -200,7 +203,7 @@ export default function Teaser() {
     ]);
     expect(classify(files)).toMatchObject({
       kind: "unsupported",
-      reason: "unguarded-mount",
+      reason: "untraced-use",
     });
   });
 });
