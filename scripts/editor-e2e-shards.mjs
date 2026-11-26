@@ -103,8 +103,10 @@ export const EDITOR_SHARDS = [
     // CI shard. They stay in the plan so coverage remains complete; the full
     // Start ones are run by the full Start job (editor-e2e-start.mjs).
     "astro-island-hmr.spec.ts",
-    // Container transport only (its click case also needs
-    // MORPH_E2E_ASTRO_PARSER=1), so it skips on every shard.
+    // Container transport, MORPH_ASTRO_THEMES=1 and MORPH_E2E_ASTRO_PARSER=1
+    // only (file gates), so it skips on every shard. Its exact tests are
+    // listed in scripts/container-acceptance-targets/astro-basis-ack.mjs; no
+    // CI step runs that check yet.
     "astro-basis-ack.spec.ts",
     "astro-preview-container.spec.ts",
     "astro-publish-acceptance.spec.ts",

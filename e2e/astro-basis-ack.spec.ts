@@ -53,11 +53,17 @@ import { astroConfig } from "../src/lib/storefront/theme-framework/astro-native-
  * through Core's own server functions from a second page, so the editor
  * under test learns of them only from the frame.
  *
- * Container transport only, with `MORPH_ASTRO_THEMES=1`. Test 2 also needs
- * the `.astro` parser behind Core's `ASTRO_PARSER` binding
- * (`MORPH_E2E_ASTRO_PARSER=1`), which the container transport has only with
- * test/astro-parser-container-binding: without it Core's binding view
- * refuses every click (`parser-binding-missing`), and no basis is issued.
+ * Container transport only, with Astro on (`MORPH_ASTRO_THEMES=1`, in the
+ * Worker's `.dev.vars` and in this process) and the `.astro` parser behind
+ * Core's `ASTRO_PARSER` binding (`MORPH_E2E_ASTRO_PARSER=1`): without it
+ * Core's binding view refuses every click (`parser-binding-missing`), and no
+ * basis is issued. With the parser opted in, the runner itself makes one
+ * real parse through Core's binding before any test and refuses the run if
+ * it is not confirmed (`confirmAstroParserBinding` in
+ * scripts/run-editor-e2e.mjs). Every gate is a file gate: where one does not
+ * hold, the whole file skips, and its container acceptance
+ * (scripts/container-acceptance-targets/astro-basis-ack.mjs) then fails for
+ * the missing cases rather than passing.
  */
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
 const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
@@ -68,6 +74,14 @@ test.skip(
 test.skip(
   TRANSPORT !== "cloudflare-sandbox",
   "The Astro dev server runs in the Sandbox container; run with MORPH_E2E_TRANSPORT=cloudflare-sandbox.",
+);
+test.skip(
+  process.env.MORPH_ASTRO_THEMES !== "1",
+  "Astro is previewed only where the server sets MORPH_ASTRO_THEMES=1.",
+);
+test.skip(
+  process.env.MORPH_E2E_ASTRO_PARSER !== "1",
+  "Core's binding view needs the .astro parser behind ASTRO_PARSER; run with MORPH_E2E_ASTRO_PARSER=1.",
 );
 
 const PREVIEW =
@@ -424,10 +438,6 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
   test.describe.configure({ mode: "serial" });
   test.setTimeout(30 * 60_000);
   test.use({ actionTimeout: 60_000 });
-  test.skip(
-    process.env.MORPH_ASTRO_THEMES !== "1",
-    "Astro is previewed only where the server sets MORPH_ASTRO_THEMES=1.",
-  );
 
   const scope: ThemeScope | null = EDITOR_PATH
     ? { ...themeScopeFromEditorPath(EDITOR_PATH), themeId: randomUUID() }
@@ -638,10 +648,6 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
     page,
     browser,
   }) => {
-    test.skip(
-      process.env.MORPH_E2E_ASTRO_PARSER !== "1",
-      "Core's binding view needs the .astro parser (MORPH_E2E_ASTRO_PARSER=1, container binding from test/astro-parser-container-binding).",
-    );
     const writer = await signedInPage(browser);
     await writer.goto("/", { waitUntil: "domcontentloaded" });
 
@@ -693,7 +699,11 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
         isServerFn(response.url(), "readThemeRouteBindings") && response.ok(),
       { timeout: 180_000 },
     );
-    const hint = page.getByText(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+    // Where the editor says it (a toast, or the section's notice and the
+    // Code-mode status bar), only what is on screen.
+    const hint = page
+      .getByText(ASTRO_BASIS_UNCONFIRMED_MESSAGE)
+      .filter({ visible: true });
 
     try {
       await openCaseEditor(page);
@@ -735,7 +745,7 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
       //    the reload hint, and no basis token reaches the frame.
       await ensureSelection(page, frame);
       await frame.locator("[data-basis-hero] h1").click();
-      await expect(hint).toBeVisible({ timeout: 30_000 });
+      await expect(hint.first()).toBeVisible({ timeout: 30_000 });
       expect(
         observed.lines.some(
           (line) =>
@@ -848,7 +858,7 @@ test.describe("Astro basis acknowledgement on the container Live Preview (option
       ]);
       const linesBeforeStale = observed.lines.length;
       await frame.locator("[data-basis-hero] h1").click();
-      await expect(hint).toBeVisible({ timeout: 30_000 });
+      await expect(hint.first()).toBeVisible({ timeout: 30_000 });
       expect(
         observed.lines
           .slice(linesBeforeStale)
