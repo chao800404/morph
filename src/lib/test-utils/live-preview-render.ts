@@ -1,3 +1,4 @@
+import * as react from "react";
 import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as reactRouter from "@tanstack/react-router";
@@ -26,6 +27,10 @@ import * as morphSdkCore from "../../../packages/morph-sdk/src/index";
 import { createMorphReader } from "../../../packages/morph-sdk/src/client";
 import { prepareSourcesForLivePreview } from "@/lib/storefront/source-language/tsx-source-language";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import {
+  THEME_SECTION_GATE_MODULE,
+  themeSectionGateSource,
+} from "@/lib/storefront/compiler/theme-section-gate";
 import {
   createThemeModuleLoader,
   type ThemeSourceFile,
@@ -226,6 +231,28 @@ const morphForPreview: typeof previewReader = {
 };
 
 /**
+ * The platform's section gate (`@morph/sdk/section-gate`), which Morph's
+ * compiled hide guard imports: its actual source, run on this harness's
+ * React and router, as every Start workspace carries it.
+ */
+function sectionGatePackage(): Record<string, unknown> {
+  const compiled = ts.transpileModule(themeSectionGateSource(), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const exports: Record<string, unknown> = {};
+  const load = (name: string) => {
+    if (name === "react") return react;
+    if (name === "@tanstack/react-router") return reactRouter;
+    throw new Error(`live-preview-render: the section gate imports ${name}`);
+  };
+  new Function("exports", "require", compiled)(exports, load);
+  return exports;
+}
+
+/**
  * The Start packages this harness hands a Theme: `@morph/sdk/start` (the
  * reader above), the in-process `createServerFn` and the client branch of
  * `createIsomorphicFn`. Exported so a test that renders a route through its own
@@ -233,6 +260,7 @@ const morphForPreview: typeof previewReader = {
  */
 export const LIVE_PREVIEW_START_PACKAGES = {
   "@morph/sdk/start": { ...morphSdkCore, morph: morphForPreview },
+  [THEME_SECTION_GATE_MODULE]: sectionGatePackage(),
   "@tanstack/react-start": {
     createIsomorphicFn: createClientIsomorphicFn,
     createServerFn: createInProcessServerFn,

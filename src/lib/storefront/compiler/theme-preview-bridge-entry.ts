@@ -218,7 +218,7 @@ function queuePresentationToken(sectionId, enabled, token) {
 function isSectionPresentationCommitted(sectionId, enabled) {
   const matches = document.querySelectorAll(previewSectionSelector(sectionId));
   // Hidden means not rendered: Morph's compiled guard omits the section. An
-  // element kept under `hidden` or `data-morph-section-hidden` still
+  // element kept under a hidden or data-morph-section-hidden attribute still
   // rendered, with its values or its defaults, and the published site would
   // show it, so it never acknowledges a Hide.
   if (enabled === false) return matches.length === 0;
