@@ -8,7 +8,12 @@ import { astroThemeFiles } from "../theme-framework/astro-native-prerender.fixtu
 import { ASTRO_PRERENDER_ENTRY } from "../theme-framework/astro-native-prerender";
 import { planAstroPreviewWorkspace } from "../theme-framework/astro-preview-workspace";
 import { START_PREVIEW_ADDRESS_PROBE_PATH } from "../service/preview-address-probe";
-import { THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH } from "./theme-preview-content";
+import {
+  THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
+  THEME_PREVIEW_CONTENT_UNREADABLE_BODY,
+  THEME_PREVIEW_CONTENT_UNREADABLE_STATUS,
+} from "./theme-preview-content";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 import {
   PREVIEW_CONTENT_TICKET_HEADER,
   THEME_PREVIEW_START_CONTENT_ORIGIN,
@@ -275,8 +280,9 @@ describe("the pinned Worker", () => {
   it("serves every content read of a page from its entry snapshot and stamps that snapshot", async () => {
     const data = {
       current: {
-        templates: { index: { slots: { hero: { title: "one" } }, hiddenSlots: [] } },
-        pages: {},
+        ...previewContentAsCoreWrites({
+          templates: { index: { slots: { hero: { title: "one" } }, hiddenSlots: [] } },
+        }),
         contentTicket: 5,
         previewInstance: INSTANCE,
       } as unknown,
@@ -286,8 +292,9 @@ describe("the pinned Worker", () => {
       seen.push(await (await box.fetch(contentUrl("/"))).json());
       // A sync writes ticket 6 while the page is still rendering.
       data.current = {
-        templates: { index: { slots: { hero: { title: "two" } }, hiddenSlots: [] } },
-        pages: {},
+        ...previewContentAsCoreWrites({
+          templates: { index: { slots: { hero: { title: "two" } }, hiddenSlots: [] } },
+        }),
         contentTicket: 6,
         previewInstance: INSTANCE,
       };
@@ -312,7 +319,7 @@ describe("the pinned Worker", () => {
     const named = runWorker(
       async () =>
         new Response("{}", { headers: { "content-type": "application/json" } }),
-      { current: { templates: {}, pages: {}, contentTicket: 5, previewInstance: INSTANCE } },
+      { current: { ...previewContentAsCoreWrites(), contentTicket: 5, previewInstance: INSTANCE } },
     );
     expect(
       (await named.entry.fetch(new Request("https://preview.example/api")))
@@ -321,7 +328,7 @@ describe("the pinned Worker", () => {
     const unnamed = runWorker(
       async () =>
         new Response("<html></html>", { headers: { "content-type": "text/html" } }),
-      { current: { templates: {}, pages: {} } },
+      { current: previewContentAsCoreWrites() },
     );
     expect(
       (await unnamed.entry.fetch(new Request("https://preview.example/")))
@@ -330,8 +337,9 @@ describe("the pinned Worker", () => {
   });
 
   const snapshotWith = (title: string, contentTicket: number) => ({
-    templates: { index: { slots: { hero: { title } }, hiddenSlots: [] } },
-    pages: {},
+    ...previewContentAsCoreWrites({
+      templates: { index: { slots: { hero: { title } }, hiddenSlots: [] } },
+    }),
     contentTicket,
     previewInstance: INSTANCE,
   });
@@ -427,9 +435,67 @@ describe("the pinned Worker", () => {
   it("refuses a content read that no request pinned, rather than reading live", async () => {
     const sandbox = runWorker(
       async () => new Response("unused"),
-      { current: { templates: {}, pages: {}, contentTicket: 5, previewInstance: INSTANCE } },
+      { current: { ...snapshotWith("five", 5) } },
     );
     const response = await sandbox.fetch(contentUrl("/"));
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(THEME_PREVIEW_CONTENT_UNREADABLE_STATUS);
+    expect(await response.json()).toEqual(THEME_PREVIEW_CONTENT_UNREADABLE_BODY);
+  });
+
+  // #479: an unreadable data file is refused, never answered empty or from
+  // what was read before. A request pinned when the file is unreadable is
+  // refused the same way, and its page names no snapshot.
+  it("refuses every content read of a request whose entry found nothing readable", async () => {
+    for (const unreadable of [
+      null,
+      { templates: {}, pages: {} },
+      { ...snapshotWith("five", 5), templates: "malformed" },
+    ]) {
+      const data = { current: snapshotWith("five", 5) as unknown };
+      const reads: Array<{ status: number; body: unknown }> = [];
+      const sandbox = runWorker(async (box) => {
+        const response = await box.fetch(contentUrl("/"));
+        reads.push({ status: response.status, body: await response.json() });
+        return new Response("<html><head></head><body></body></html>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }, data);
+      // A readable snapshot read first, so an earlier one could be served.
+      expect((await probe(sandbox)).headers.get(PREVIEW_CONTENT_TICKET_HEADER)).toBe(
+        "5",
+      );
+      data.current = unreadable;
+      const page = await sandbox.entry.fetch(new Request("https://preview.example/"));
+      expect(reads, JSON.stringify(unreadable)).toEqual([
+        {
+          status: THEME_PREVIEW_CONTENT_UNREADABLE_STATUS,
+          body: THEME_PREVIEW_CONTENT_UNREADABLE_BODY,
+        },
+      ]);
+      expect(page.headers.get("server-timing")).toBe(null);
+      expect((await probe(sandbox)).headers.get(PREVIEW_CONTENT_TICKET_HEADER)).toBe(
+        "0",
+      );
+    }
+  });
+
+  it("refuses every content read of a request whose entry import failed", async () => {
+    const data = { current: snapshotWith("five", 5) as unknown };
+    const reads: Array<{ status: number; body: unknown }> = [];
+    const sandbox = runWorker(async (box) => {
+      const response = await box.fetch(contentUrl("/"));
+      reads.push({ status: response.status, body: await response.json() });
+      return new Response("<html></html>", { headers: { "content-type": "text/html" } });
+    }, data);
+    (sandbox as { __loadData: () => Promise<unknown> }).__loadData = async () => {
+      throw new SyntaxError("not JSON");
+    };
+    await sandbox.entry.fetch(new Request("https://preview.example/"));
+    expect(reads).toEqual([
+      {
+        status: THEME_PREVIEW_CONTENT_UNREADABLE_STATUS,
+        body: THEME_PREVIEW_CONTENT_UNREADABLE_BODY,
+      },
+    ]);
   });
 });
