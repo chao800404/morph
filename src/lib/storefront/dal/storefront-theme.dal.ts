@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import {
+  PUBLISH_HIDDEN_SECTION_UNSUPPORTED,
   SECTION_SOURCE_UNCONFIRMED,
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
@@ -3273,20 +3274,6 @@ export const storefrontThemeDal = {
         sealed.sections.some((section) => section.enabled === false),
       );
       if (hiddenItems.length > 0) {
-        const templateRows = new Map(
-          hiddenItems.some(({ item }) => item.itemType === "template")
-            ? (
-                await db
-                  .select({
-                    id: storefrontThemeTemplates.id,
-                    type: storefrontThemeTemplates.type,
-                    routePath: storefrontThemeTemplates.routePath,
-                  })
-                  .from(storefrontThemeTemplates)
-                  .where(eq(storefrontThemeTemplates.themeId, data.themeId))
-              ).map((row) => [row.id, row])
-            : [],
-        );
         // A Page's title for the refusal; a deleted Page's retained revision
         // still travels, so its row is read whatever its state. D1 caps
         // bound parameters per statement.
@@ -3327,17 +3314,27 @@ export const storefrontThemeDal = {
               document: sealed,
             };
           }
-          const row = templateRows.get(item.contentId);
-          const templateType =
-            item.metadata?.templateType ?? row?.type ?? "page";
+          // Judged on the binding the publication item captured, which is
+          // what this release seals and what runtime looks the document up
+          // by: the template row can be renamed in Code mode while the
+          // publish runs, and the CAS below does not cover its route path.
+          // An item with no captured binding is refused, never judged on
+          // the row.
+          const templateType = item.metadata?.templateType;
+          if (templateType === undefined) {
+            throw new Error(
+              `${PUBLISH_HIDDEN_SECTION_UNSUPPORTED}: Morph cannot confirm which page a hidden section belongs to, so it will not publish it. Publish again; if this keeps happening, contact support. The live site is unchanged.`,
+            );
+          }
+          const routePath = item.metadata?.routePath ?? null;
           return {
             itemType: "template" as const,
             label:
               templateType === "layout"
                 ? "the layout"
-                : `the ${row?.routePath ?? templateType} page`,
+                : `the ${routePath ?? templateType} page`,
             templateType,
-            templateRoutePath: row?.routePath ?? null,
+            templateRoutePath: routePath,
             document: sealed,
           };
         });
@@ -3361,7 +3358,7 @@ export const storefrontThemeDal = {
             buildGuardVersion: buildHideGuardVersion(build.compilerVersion),
             documents: sourceChecked,
             // Every route that serves the template, as the write judged it;
-            // a template no route serves renders nothing and is left alone.
+            // a template no route serves is refused (see the check).
             resolveCallSites: ({
               templateType,
               templateRoutePath,

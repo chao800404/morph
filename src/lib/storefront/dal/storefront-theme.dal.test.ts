@@ -6663,6 +6663,83 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
     );
     expect(releases()).toEqual([]);
   });
+
+  /**
+   * Review point 3 (ported from 7782a73, PR-1 review item 5): publish judges
+   * the binding the publication item captured, not the template row, which
+   * a Code-mode rename can move while the publish runs. `/old` is a shell
+   * that never reads the Document, so its hidden section cannot be hidden
+   * there; `/new` renders it through a call site the guard omits.
+   */
+  describe("a route rename racing the publish", () => {
+    const oldShell = `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/old")({ component: Old });
+function Old() { return <main>Old</main>; }`;
+    const renameRevision = () =>
+      revision([
+        ["src/routes/old.tsx", oldShell],
+        ["src/routes/new.tsx", productRoute("/new", false)],
+      ]);
+    const duringPublish = (change: () => void, strip = false) => {
+      const original =
+        storefrontContentPublicationDal.readDocumentsForDraft.bind(
+          storefrontContentPublicationDal,
+        );
+      return vi
+        .spyOn(storefrontContentPublicationDal, "readDocumentsForDraft")
+        .mockImplementation(async (args) => {
+          const documents = await original(args);
+          // After the publication captured `/old`, before the hide check.
+          change();
+          return strip
+            ? documents.map((entry) => ({
+                ...entry,
+                item: { ...entry.item, metadata: undefined },
+              }))
+            : documents;
+        });
+    };
+    const rename = () =>
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_templates SET route_path = '/new' WHERE id = 'template-multi'",
+        )
+        .run();
+
+    it("judges the captured /old, and refuses, when the row is renamed to /new mid-publish", async () => {
+      seed({ type: "page", routePath: "/old" });
+      const spy = duringPublish(rename);
+      try {
+        await expect(publish(renameRevision())).rejects.toThrow(
+          /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" on the \/old page \(legacy-shell\)/,
+        );
+        expect(spy).toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+      expect(releases()).toEqual([]);
+    });
+
+    it("control: a template bound to /new from the start publishes", async () => {
+      seed({ type: "page", routePath: "/new" });
+      await expect(publish(renameRevision())).resolves.toMatchObject({
+        releaseId: expect.any(String),
+      });
+    });
+
+    it("refuses an item that captured no binding instead of judging the row", async () => {
+      seed({ type: "page", routePath: "/new" });
+      const spy = duringPublish(() => {}, true);
+      try {
+        await expect(publish(renameRevision())).rejects.toThrow(
+          /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: Morph cannot confirm which page a hidden section belongs to/,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      expect(releases()).toEqual([]);
+    });
+  });
 });
 
 /**
