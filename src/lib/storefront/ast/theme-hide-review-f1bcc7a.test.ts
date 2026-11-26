@@ -169,7 +169,9 @@ export default function Promo() {
 `,
       },
     ]);
-    expectRefused(classify(files), "unguarded-mount", "src/components/Promo.tsx");
+    // Refused before the mount scan: the module-access check already treats an
+    // import() it cannot name as a read it cannot follow.
+    expectRefused(classify(files), "untraced-use", "src/components/Promo.tsx");
   });
 
   it("a component wrapped before it is exported, rendered elsewhere unwrapped", () => {
