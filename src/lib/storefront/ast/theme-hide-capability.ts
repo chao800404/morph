@@ -1311,7 +1311,7 @@ export function createHideCapabilityAnalyzer(
         if (
           SCRIPT_FILE.test(path) ||
           (/config/i.test(name) && name !== "tsconfig.json" && name !== "jsconfig.json") ||
-          /^.(postcssrc|babelrc)/.test(name)
+          /^\.(postcssrc|babelrc)/.test(name)
         ) {
           buildInput = { file: path, detail: `${path} configures the build.` };
           return buildInput;
@@ -1327,11 +1327,11 @@ export function createHideCapabilityAnalyzer(
         buildInput = { file: path, detail: `${path} can change how its directory's imports resolve.` };
         return buildInput;
       }
-      if (/^src/(server|client|start|ssr|global-middleware).(tsx|ts|jsx|js|mjs)$/.test(path)) {
+      if (/^src\/(server|client|start|ssr|global-middleware)\.(tsx|ts|jsx|js|mjs)$/.test(path)) {
         buildInput = { file: path, detail: `${path} replaces a Start entry point.` };
         return buildInput;
       }
-      if (/.css$/i.test(path) && /@(plugin|config)/.test(file.content)) {
+      if (/\.css$/i.test(path) && /@(plugin|config)\b/.test(file.content)) {
         buildInput = { file: path, detail: `${path} loads a build plugin or config from CSS.` };
         return buildInput;
       }

@@ -15,6 +15,11 @@ import { themePreviewBridgeEntrySource } from "./theme-preview-bridge-entry";
  * The bridge's check is run as written, cut from the generated script.
  */
 
+// jsdom has no CSS.escape, which the bridge's selector uses in a browser.
+const cssGlobal = globalThis as { CSS?: { escape?: (value: string) => string } };
+cssGlobal.CSS ??= {};
+cssGlobal.CSS.escape ??= (value: string) => value.replace(/["\\]/g, "\\$&");
+
 const BRIDGE = themePreviewBridgeEntrySource();
 const start = BRIDGE.indexOf("function isSectionPresentationCommitted");
 const end = BRIDGE.indexOf("function flushPendingPresentationTokens");
