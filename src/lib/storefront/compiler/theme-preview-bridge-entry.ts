@@ -217,12 +217,30 @@ function queuePresentationToken(sectionId, enabled, token) {
 
 function isSectionPresentationCommitted(sectionId, enabled) {
   const matches = document.querySelectorAll(previewSectionSelector(sectionId));
+  // What Morph's section gates committed for this section (theme-section-
+  // gate.ts): an entry per mounted gate, kept only while it is on screen.
+  let hiddenGates = 0;
+  let shownGates = 0;
+  const commits =
+    typeof window === "undefined" ? undefined : window.__morphSectionGateCommits;
+  if (commits && typeof commits.forEach === "function") {
+    commits.forEach((commit) => {
+      if (!commit || commit.slot !== sectionId) return;
+      if (commit.hidden === true) hiddenGates += 1;
+      else shownGates += 1;
+    });
+  }
   // Hidden means not rendered: Morph's compiled guard omits the section. An
   // element kept under a hidden or data-morph-section-hidden attribute still
   // rendered, with its values or its defaults, and the published site would
-  // show it, so it never acknowledges a Hide.
-  if (enabled === false) return matches.length === 0;
-  if (matches.length !== 1) return false;
+  // show it, so it never acknowledges a Hide. Nor does the section's absence
+  // alone: the route may be showing its error state, or a Suspense fallback
+  // may stand in for it. Only a gate that committed the section hidden, and
+  // none still showing it, says the Hide was applied.
+  if (enabled === false) {
+    return matches.length === 0 && hiddenGates > 0 && shownGates === 0;
+  }
+  if (matches.length !== 1 || hiddenGates > 0) return false;
   const element = matches[0];
   return (
     !element.hasAttribute("hidden") &&

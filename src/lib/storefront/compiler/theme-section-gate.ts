@@ -42,7 +42,7 @@ export const THEME_SECTION_GATE_MODULE = "@morph/sdk/section-gate";
 /** Where the gate lives in a workspace, relative to its root. */
 export const THEME_SECTION_GATE_PATH = ".morph/section-gate.ts";
 
-const SECTION_GATE_SOURCE = `import { createElement, type ReactNode } from "react";
+const SECTION_GATE_SOURCE = `import { createElement, useEffect, useLayoutEffect, type ReactNode } from "react";
 import { useRouteContext } from "@tanstack/react-router";
 
 /**
@@ -68,6 +68,41 @@ function MorphSectionBody(props: { render: () => ReactNode }): ReactNode {
   return props.render();
 }
 
+/**
+ * What each mounted gate last committed: its slot, and whether it hid it.
+ * Read by the Live Preview bridge, which acknowledges a Hide only once a
+ * gate has committed the section hidden. An entry exists only while its
+ * gate is mounted and on screen: React removes layout effects when the
+ * route unmounts (its error state) and while a Suspense fallback stands in
+ * for it, so neither counts as a Hide applied.
+ */
+type MorphSectionGateCommit = { slot: string; hidden: boolean };
+
+function gateCommits(): Set<MorphSectionGateCommit> | null {
+  if (typeof window === "undefined") return null;
+  const holder = window as unknown as {
+    __morphSectionGateCommits?: Set<MorphSectionGateCommit>;
+  };
+  if (!(holder.__morphSectionGateCommits instanceof Set)) {
+    holder.__morphSectionGateCommits = new Set();
+  }
+  return holder.__morphSectionGateCommits;
+}
+
+const useCommitEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+function useReportCommit(slot: string, hidden: boolean): void {
+  useCommitEffect(() => {
+    const commits = gateCommits();
+    if (!commits) return undefined;
+    const entry = { slot, hidden };
+    commits.add(entry);
+    return () => {
+      commits.delete(entry);
+    };
+  }, [slot, hidden]);
+}
+
 /** The root route's hidden list: the snapshot its beforeLoad loaded. */
 function useRootHiddenList(): readonly string[] {
   const context = useRouteContext({ from: "__root__" } as never) as unknown;
@@ -85,8 +120,9 @@ function useRootHiddenList(): readonly string[] {
 
 /** A section read through content(): visibility from the root route's snapshot. */
 export function MorphSectionGate(props: { slot: string; render: () => ReactNode }): ReactNode {
-  const hidden = useRootHiddenList();
-  if (hidden.includes(props.slot)) return null;
+  const hidden = useRootHiddenList().includes(props.slot);
+  useReportCommit(props.slot, hidden);
+  if (hidden) return null;
   return createElement(MorphSectionBody, { render: props.render });
 }
 
@@ -106,8 +142,10 @@ export function MorphPageSectionGate(props: {
   render: () => ReactNode;
 }): ReactNode {
   const live = useRootHiddenList();
-  const page = hiddenList(props.hidden, "The page");
-  if (page.includes(props.slot) || live.includes(props.slot)) return null;
+  const hidden =
+    hiddenList(props.hidden, "The page").includes(props.slot) || live.includes(props.slot);
+  useReportCommit(props.slot, hidden);
+  if (hidden) return null;
   return createElement(MorphSectionBody, { render: props.render });
 }
 `;

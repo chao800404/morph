@@ -160,15 +160,17 @@ export function hideGuardInsertions(
       }
       open = `<${pageGate}${keyAttribute(site)} slot={${JSON.stringify(site.slot)}} hidden={${site.pageLocal}?._hidden} render={() => (`;
     }
+    const start = site.wrap?.start ?? site.start;
+    const end = site.wrap?.end ?? site.end;
     insertions.push({
-      at: site.start,
+      at: start,
       text: open,
-      wrapper: { side: "open", start: site.start, end: site.end },
+      wrapper: { side: "open", start, end },
     });
     insertions.push({
-      at: site.end,
+      at: end,
       text: ")} />",
-      wrapper: { side: "close", start: site.start, end: site.end },
+      wrapper: { side: "close", start, end },
     });
   }
   if (imports.length > 0) {

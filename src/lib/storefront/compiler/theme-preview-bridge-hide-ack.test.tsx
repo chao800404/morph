@@ -81,9 +81,10 @@ describe("a Hide is acknowledged only once the section is gone", () => {
     expect(end).toBeGreaterThan(start);
   });
 
-  it("acknowledges a Hide when the section is not rendered at all", () => {
+  it("does not acknowledge a Hide from the section's absence alone", () => {
+    // Since the review of f1bcc7a (P2-7): a gate must have committed it hidden.
     page(`<main><div data-storefront-section-id="other"></div></main>`);
-    expect(committed("hero", false)).toBe(true);
+    expect(committed("hero", false)).toBe(false);
   });
 
   it("does not take a section under a hidden attribute for a hidden one", () => {

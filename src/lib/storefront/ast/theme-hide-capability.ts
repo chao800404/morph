@@ -152,6 +152,13 @@ export type HideGuardSite = Readonly<{
    * (`theme-hide-component-mounts.ts`).
    */
   component?: ComponentImport | null;
+  /**
+   * What the gate encloses when it is more than the element: for a
+   * `guarded` site, the Starter's whole `!isSectionHidden("x") && <El/>`,
+   * so the gate renders, and reports its commit, whether the section shows
+   * or not.
+   */
+  wrap?: Readonly<{ start: number; end: number }> | null;
 }>;
 
 export type HideCapability =
@@ -1636,6 +1643,7 @@ export function createHideCapabilityAnalyzer(
         contentImport: contentSite ? uses.contentImport : null,
         pageLocal: loaderSite ? [...pageLocals][0]! : null,
         key,
+        wrap: position === "guarded" ? (element?.guard ?? null) : null,
         component: instance.componentPath
           ? {
               path: instance.componentPath,

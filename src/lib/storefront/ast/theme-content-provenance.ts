@@ -2552,6 +2552,8 @@ export type B1SlotUseAnalysis = Readonly<{
       guardSlot: string | null;
       /** An await or yield of the enclosing function inside the element. */
       suspends: boolean;
+      /** For a `guarded` element: the range of the whole check around it. */
+      guard: Readonly<{ start: number; end: number }> | null;
       /**
        * The element's `key` expression, when it has one, and whether it can
        * be evaluated a second time with the same result (a name, a
@@ -2993,6 +2995,7 @@ function elementPositions(ctx: ModuleContext): B1SlotUseAnalysis["elements"] {
       position: B1ElementPosition;
       guardSlot: string | null;
       suspends: boolean;
+      guard: { start: number; end: number } | null;
       key: { start: number; end: number; repeatable: boolean } | null;
     }
   >();
@@ -3108,6 +3111,12 @@ function elementPositions(ctx: ModuleContext): B1SlotUseAnalysis["elements"] {
         position,
         guardSlot,
         suspends: hasSuspensionOutsideNestedFunction(node),
+        guard:
+          position === "guarded" &&
+          typeof parent?.start === "number" &&
+          typeof parent?.end === "number"
+            ? { start: parent.start as number, end: parent.end as number }
+            : null,
         key: keyOf(node.openingElement),
       });
     }
