@@ -1220,6 +1220,7 @@ async function readPendingSharedLayout(themeId: string, templateId: string) {
       id: storefrontThemeTemplates.id,
       draftRevisionId: storefrontThemeTemplates.draftRevisionId,
       publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+      draftGeneration: storefrontThemeTemplates.draftGeneration,
       document: storefrontThemeTemplateRevisions.document,
     })
     .from(storefrontThemeTemplates)
@@ -1250,6 +1251,12 @@ async function readPendingSharedLayout(themeId: string, templateId: string) {
          * failed deploy can put it back (`restoreFailedPublish`).
          */
         publishedRevisionId: shell.publishedRevisionId,
+        /**
+         * The draft generation this document was read at. An unpublished
+         * draft is edited in place, so a publish that seals this document
+         * repeats it in its batch (`publishTemplate`).
+         */
+        draftGeneration: shell.draftGeneration,
         document: shell.document,
       }
     : null;
@@ -3125,6 +3132,7 @@ export const storefrontThemeDal = {
       ? {
           id: shell.id,
           revisionId: shell.revisionId,
+          draftGeneration: shell.draftGeneration,
           document: normalizeDocumentRowIds(
             storefrontPageDocumentSchema.parse(
               typeof shell.document === "string"
@@ -3417,6 +3425,29 @@ export const storefrontThemeDal = {
       ),
     ];
 
+    // The pending layout is sealed from the copy read above, while the checks
+    // before this batch (the hide check among them) reread its revision. An
+    // unpublished draft is edited in place, so another editor could change
+    // it between those reads, and this batch would then write back a
+    // document nothing checked. The same precondition `sealForThemeBuild`
+    // puts on the layout: still that draft, at the generation read.
+    if (pendingShell) {
+      statements.push(
+        env.DATABASE.prepare(
+          `SELECT CASE WHEN EXISTS (
+            SELECT 1 FROM storefront_theme_templates
+            WHERE id = ?1 AND theme_id = ?2 AND draft_revision_id = ?3
+              AND draft_generation = ?4 AND deleted_at IS NULL
+          ) THEN 1 ELSE json('') END AS ok`,
+        ).bind(
+          pendingShell.id,
+          data.themeId,
+          pendingShell.revisionId,
+          pendingShell.draftGeneration,
+        ),
+      );
+    }
+
     if (contentPublication) {
       statements.push(
         ...storefrontContentPublicationDal.insertStatements(contentPublication),
@@ -3573,6 +3604,19 @@ export const storefrontThemeDal = {
         ) {
           throw new Error(
             `${TEMPLATE_DRAFT_CONFLICT}: Template draft was modified concurrently.`,
+          );
+        }
+        const latestShell = pendingShell
+          ? latestContext?.templates.find((t) => t.id === pendingShell.id)
+          : undefined;
+        if (
+          pendingShell &&
+          (!latestShell ||
+            latestShell.draftRevisionId !== pendingShell.revisionId ||
+            latestShell.draftGeneration !== pendingShell.draftGeneration)
+        ) {
+          throw new Error(
+            `${PUBLISH_SCOPE_CHANGED}: The shared layout changed while this publish was running.`,
           );
         }
         throw new Error(

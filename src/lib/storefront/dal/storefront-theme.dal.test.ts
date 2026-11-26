@@ -7163,6 +7163,162 @@ function Home() {
 });
 
 /**
+ * M3 Hide step 1, review point 2: the hide check must judge the bytes the
+ * publish seals. The pending layout is sealed from the copy the publish read
+ * first, and its unpublished draft is edited in place, so an edit between
+ * that read and the check's reread used to be checked while the first copy
+ * was written back. The batch now repeats the layout's draft generation.
+ */
+describe("M3 Hide: a layout edit racing the publish", () => {
+  const SOURCE = "22222222-2222-4222-8222-222222222222";
+  const BUILD = "33333333-3333-4333-8333-333333333333";
+  const DRAFT = "ffffffff-1111-4111-8111-111111111111";
+  const LAYOUT_DRAFT = "ffffffff-2222-4222-8222-222222222222";
+  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+  const index = `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main>Home</main>; }`;
+  const revisionFiles = async () => [
+    { path: "src/routes/__root.tsx", content: root },
+    {
+      path: "src/morph/content.ts",
+      content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+    },
+    { path: "src/routes/index.tsx", content: index },
+  ];
+  const layoutOf = (promoEnabled: boolean) =>
+    JSON.stringify({
+      version: 1,
+      sections: [
+        {
+          id: "promo",
+          type: "promo",
+          enabled: promoEnabled,
+          props: { title: "Stored promo" },
+        },
+      ],
+    });
+
+  function seed() {
+    const document = JSON.stringify({ version: 1, sections: [] });
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+        VALUES ('template-race', 'theme-a', 'index', 'Home', ?, ?, NULL, 1, 'now', 'now')`,
+      )
+      .run(document, DRAFT);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES (?, 'template-race', 1, ?, 'now')`,
+      )
+      .run(DRAFT, document);
+    // The layout's draft hides `promo`; nothing in this Theme can hide it.
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+        VALUES ('layout-race', 'theme-a', 'layout', 'Layout', ?, ?, NULL, 1, 'now', 'now')`,
+      )
+      .run(layoutOf(false), LAYOUT_DRAFT);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES (?, 'layout-race', 1, ?, 'now')`,
+      )
+      .run(LAYOUT_DRAFT, layoutOf(false));
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_revisions
+          (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', 1, 'Checkpoint', 'publish', '[]', 'now', 'now')`,
+      )
+      .run(SOURCE);
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
+      )
+      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+  }
+  const publish = () =>
+    storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: revisionFiles,
+      verifySourceRevision: acceptRevision,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-race",
+      sourceRevisionId: SOURCE,
+      themeBuildId: BUILD,
+      expectedDraftRevisionId: DRAFT,
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+  /** What another editor's in-place Show of `promo` leaves. */
+  const showPromoInPlace = () => {
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_template_revisions SET document = ? WHERE id = ?",
+      )
+      .run(layoutOf(true), LAYOUT_DRAFT);
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_templates SET document = ?, draft_generation = draft_generation + 1 WHERE id = 'layout-race'",
+      )
+      .run(layoutOf(true));
+  };
+  const layoutState = () =>
+    sqlite
+      .prepare(
+        `SELECT t.document AS row, t.draft_generation AS generation, t.published_revision_id AS published, r.document AS revision
+           FROM storefront_theme_templates t
+           JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+          WHERE t.id = 'layout-race'`,
+      )
+      .get();
+
+  it("refuses when the layout draft is edited between the publish's reads, and keeps that edit", async () => {
+    seed();
+    const original = storefrontContentPublicationDal.readDocumentsForDraft.bind(
+      storefrontContentPublicationDal,
+    );
+    const spy = vi
+      .spyOn(storefrontContentPublicationDal, "readDocumentsForDraft")
+      .mockImplementation(async (args) => {
+        // After the publish read the hidden layout, before the check rereads it.
+        showPromoInPlace();
+        return original(args);
+      });
+    try {
+      await expect(publish()).rejects.toThrow(/^PUBLISH_SCOPE_CHANGED:/);
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sqlite.prepare("SELECT id FROM storefront_releases").all()).toEqual(
+      [],
+    );
+    expect(layoutState()).toEqual({
+      row: layoutOf(true),
+      generation: 2,
+      published: null,
+      revision: layoutOf(true),
+    });
+  });
+
+  it("control: without the edit, the hidden layout section is refused by the check", async () => {
+    seed();
+    await expect(publish()).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"promo" on the layout/,
+    );
+  });
+});
+
+/**
  * A rollback moves only the live pointer (`activateRelease`); template and
  * Page rows keep recording the revision their own last publish sealed. The
  * next publish must start from the release the rollback restored and replace
