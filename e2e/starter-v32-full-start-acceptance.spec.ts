@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   expect,
@@ -14,7 +12,7 @@ import { queryLifecycleD1 } from "../scripts/verify-published-artifact.mjs";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 import { starterThemeWorkspaceFiles } from "../src/lib/storefront/starter-theme-files";
 import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../src/lib/storefront/starter-theme-v3-files";
-import { EDITOR_PATH } from "./helpers";
+import { EDITOR_PATH, decodeServerFnResult } from "./helpers";
 import { execLocalD1 } from "./helpers/editor-writes-paused";
 import {
   RECORDED_PREVIEW_RUNTIME,
@@ -22,6 +20,7 @@ import {
 } from "./helpers/recorded-preview-runtime";
 import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 import {
+  BUILDS,
   DOMAINS,
   THEMES,
   latestRelease,
@@ -29,6 +28,7 @@ import {
   openPublish,
   publishShowingRelease,
   serverFn,
+  serverFnPaths,
   signedInPage,
   storefrontFetcher,
   storefrontHarness,
@@ -86,26 +86,36 @@ import {
  *   2. in-site navigation from `/` to the test route and back, through
  *      `/_serverFn`, in the preview;
  *   3. direct load and reload of the non-home page (SSR) in the preview;
- *   4. publish, then read back: the test route is published, then the home
- *      with a static (ssg) page policy, so the Sandbox publish build
- *      prerenders the shipped home. Its first pass has no sealed content and
- *      Starter 32 rejects the refused read, so the build only succeeds
- *      through its sealed pass; a refused read there fails the build (and
- *      with it this case). The released artifact's prerendered home HTML must
- *      carry the author's values and neither the hidden newsletter nor the
- *      hidden footer (markers or default text); then the public site's SSR,
- *      content answer, in-site navigation and a later draft staying out;
+ *   4. publish on SSR, then read back: the test route is published, then
+ *      the home with its page policy explicitly SSR. The releases are this
+ *      Theme's and name their build and content; the released artifact is
+ *      served, and the public site's SSR, content answer, in-site navigation
+ *      and a later draft staying out are checked;
  *   5. refused reads: the preview's `/_serverFn` read without preview access
  *      (no session, and a session without this preview's grant), and the
  *      public site's reads naming a content origin, a render context or a
  *      release it may not see;
- *   6. a sealed-pass read that still cannot read content fails the build: a
+ *   6. a static (ssg) home, published once: the publish builds first, sealed
+ *      with the home's draft and a new author value. Starter 32 is built by
+ *      the platform-owned Start build, whose prerender reads that sealed
+ *      content on its first and only pass (`contentDependency: "dependent"`;
+ *      the contentless first pass and NATIVE_PRERENDER_CONTENT_UNAVAILABLE
+ *      belong to a Theme's own build configuration, not to this one). The
+ *      build's own prerendered home, read from this run's R2 and held to its
+ *      manifest's size and SHA-256, carries the new value and neither the
+ *      hidden newsletter nor the hidden footer. The publish is then refused
+ *      by the deliberate guard (PUBLISH_RENDER_POLICY_NOT_READY: no SSG
+ *      release until Core is proven to serve the active release's HTML), no
+ *      release is made, and the public site keeps case 4's;
+ *   7. a static route whose read finds no content fails the publish build: a
  *      test-only static route (`src/routes/e2e-v32-unsealed.tsx`, ssg) whose
- *      loader reads a path no static route of the build has, so the sealed
- *      pass refuses it (NATIVE_PRERENDER_PATH_NOT_SEALED). The publish build
- *      fails with NATIVE_PRERENDER_CONTENT_UNAVAILABLE naming that path, no
- *      release is made or activated, and the public site keeps serving case
- *      4's release. Last: it leaves a failed build behind.
+ *      loader reads a path no Document of the build's seal has. The sealed
+ *      content answers it with a bare 404, which the read reports as
+ *      `content_not_found`; only then does the loader throw an error naming
+ *      that path, so no other failure can stand in for it. The build fails
+ *      at `sandbox-start-compiler` with that error, writes nothing to R2, no
+ *      publish is sent, and the public site keeps serving case 4's release.
+ *      Last: it leaves a failed build behind.
  *
  * Containers only, run on its own: publishing builds in the Sandbox
  * container, and it moves the storefront's active release to this Theme's.
@@ -158,7 +168,7 @@ const SHIPPED_FILES = Object.fromEntries(
 ) as Record<(typeof SHIPPED_PATHS)[number], string>;
 const PAGE_PATH = "/e2e-v32-page";
 const HOST = "v32-start.localhost";
-/** Where a native Start build writes the prerendered home (theme-prerender.ts). */
+/** Where a Start build writes the prerendered home (theme-prerender.ts). */
 const PRERENDERED_HOME = "runtime/client/index.html";
 
 const SHOWN_SLOT = "v32-shown";
@@ -189,18 +199,35 @@ const PREVIEW_REFUSAL = "Preview access required";
 /** What Core's content endpoint answers a render context it cannot verify. */
 const RENDER_CONTEXT_REFUSAL = "RENDER_CONTEXT_INVALID";
 
-/** Case 6: a static route whose loader reads a path no static route has. */
+/** Case 7: a static route whose loader reads a path no Document of the seal has. */
 const UNSEALED_PATH = "/e2e-v32-unsealed";
 const NEVER_SEALED_PATH = "/e2e-v32-never-sealed";
-/** nativeRefusedReadsMessage (theme-prerender-content.ts). */
-const SEALED_PASS_REFUSAL = "NATIVE_PRERENDER_CONTENT_UNAVAILABLE";
+/**
+ * What the route's loader throws, naming the path, once the read reported
+ * `content_not_found` (the platform build's sealed content answers a path it
+ * does not hold with a bare 404). Any other failure is thrown as it came.
+ */
+const UNSEALED_READ_REFUSAL = "V32_UNSEALED_CONTENT_NOT_FOUND";
+/** The platform Start build's runtime compile (cloudflare-sandbox-vite-theme-build-runner.ts). */
+const START_COMPILER_STAGE = "sandbox-start-compiler";
 const UNSEALED_ROUTE = {
   path: "src/routes/e2e-v32-unsealed.tsx",
   content: `import { createFileRoute } from "@tanstack/react-router";
 import { morph } from "../morph/content";
 
 export const Route = createFileRoute("${UNSEALED_PATH}")({
-  loader: () => morph.pages.get("${NEVER_SEALED_PATH}"),
+  loader: async () => {
+    try {
+      return await morph.pages.get("${NEVER_SEALED_PATH}");
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "content_not_found") {
+        const message = "${UNSEALED_READ_REFUSAL}: no content for ${NEVER_SEALED_PATH}";
+        console.error(message);
+        throw new Error(message);
+      }
+      throw error;
+    }
+  },
   component: V32Unsealed,
 });
 
@@ -218,6 +245,8 @@ const FOOTER_MARKER = `v32-footer-${RUN}`;
 const SHOWN_MARKER = `v32-shown-${RUN}`;
 const HIDDEN_MARKER = `v32-hidden-${RUN}`;
 const DRAFT_MARKER = `v32-draft-${RUN}`;
+/** Case 6: the hero's value in the static home's draft, never published. */
+const SSG_HERO_MARKER = `v32-ssg-hero-${RUN}`;
 
 const componentSource = (name: string, fallback: string) => `import type { ThemeContentFields } from "../morph/content-fields";
 
@@ -411,8 +440,8 @@ function expectFooterHidden(html: string, where: string) {
  * The Starter's home as its Document says: the author's values in place of
  * the defaults, neither the hidden newsletter nor the hidden Footer.
  */
-function expectHomeHtml(html: string, where: string) {
-  expect(html, `${where}: the hero's Document value`).toContain(HERO_MARKER);
+function expectHomeHtml(html: string, where: string, hero = HERO_MARKER) {
+  expect(html, `${where}: the hero's Document value`).toContain(hero);
   expect(html, `${where}: the introduction's Document value`).toContain(
     INTRO_MARKER,
   );
@@ -567,7 +596,7 @@ test.describe("Starter 32 on the full Start runtime", () => {
   /** The in-site `/_serverFn` reads of the test route, in the preview (case 2) and on the public site (case 4). */
   let previewPageRead: ServerFnCall | null = null;
   let publicPageRead: ServerFnCall | null = null;
-  /** Case 4's release, which case 6's failed build must leave serving. */
+  /** Case 4's release, which cases 6 and 7 must leave serving. */
   let servingRelease = "";
 
   const queryD1 = (sql: string, ...params: unknown[]) =>
@@ -669,6 +698,95 @@ test.describe("Starter 32 on the full Start runtime", () => {
       (await storedSection(page, templateId, sectionId))?.enabled,
       `${sectionId} is hidden in its Document`,
     ).toBe(false);
+  }
+
+  /** A page's render policy, through the rendering panel's write; read back. */
+  async function setPagePolicy(page: Page, templateId: string, mode: "ssr" | "ssg") {
+    const draft = await template(page, templateId);
+    const policy = (await serverFn(page, THEMES, "updateStorefrontThemeRenderPolicy", {
+      ...scope!,
+      templateId,
+      expectedDraftGeneration: draft.draftGeneration,
+      expectedSourceGeneration: await themeSourceGeneration(page, scope!),
+      setting: { scope: "page", policy: { mode } },
+    })) as { success: boolean; message?: string; error?: string };
+    expect(policy.success, `${templateId} ${mode}: ${policy.error ?? policy.message}`).toBe(
+      true,
+    );
+    expect(
+      (await template(page, templateId)).document.renderPolicy?.mode,
+      `the Document's page policy is ${mode}`,
+    ).toBe(mode);
+  }
+
+  type BuildRow = {
+    id: string;
+    status: string;
+    error_message: string | null;
+    content_publication_id: string | null;
+  };
+  const buildRow = (buildId: string) =>
+    queryD1(
+      "SELECT id, status, error_message, content_publication_id FROM storefront_theme_builds WHERE id = ?1 AND theme_id = ?2",
+      buildId,
+      scope!.themeId,
+    )[0] as BuildRow | undefined;
+
+  /**
+   * The build the editor's next publish makes: its id, from the answer to
+   * the createPreviewBuild the page sends, and the build and publish POSTs
+   * counted from now on.
+   */
+  async function watchPublish(page: Page) {
+    const paths = await serverFnPaths(page);
+    const posts = { build: 0, publish: 0 };
+    page.on("request", (request) => {
+      if (request.method() !== "POST") return;
+      const path = new URL(request.url()).pathname;
+      if (path === paths.build) posts.build += 1;
+      if (path === paths.publish) posts.publish += 1;
+    });
+    const created = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === paths.build,
+      { timeout: 5 * 60_000 },
+    );
+    return {
+      paths,
+      posts,
+      async buildId() {
+        const answer = decodeServerFnResult(await (await created).text()) as {
+          success?: boolean;
+          message?: string;
+          data?: { id?: string };
+        };
+        expect(answer.success, `the publish build was created: ${answer.message}`).toBe(true);
+        expect(answer.data?.id, "the created build's id").toBeTruthy();
+        return answer.data!.id!;
+      },
+    };
+  }
+
+  /** A build row once it is done (queued and building are not). */
+  async function finishedBuild(buildId: string): Promise<BuildRow> {
+    let finished: BuildRow | undefined;
+    await expect
+      .poll(
+        () => {
+          finished = buildRow(buildId);
+          return finished && finished.status !== "queued" && finished.status !== "building"
+            ? finished.status
+            : null;
+        },
+        { timeout: 9 * 60_000, message: `build ${buildId} finished` },
+      )
+      .not.toBeNull();
+    test.info().annotations.push({
+      type: "observed",
+      description: JSON.stringify(finished),
+    });
+    return finished!;
   }
 
   test.beforeAll(async ({ browser }) => {
@@ -962,7 +1080,7 @@ test.describe("Starter 32 on the full Start runtime", () => {
     await expectPageDom(tab!, SHOWN_MARKER);
   });
 
-  test("publish, then read back: the released home carries the author's values, the hidden newsletter and footer absent", async ({
+  test("publish on SSR, then read back: the released home carries the author's values, the hidden newsletter and footer absent", async ({
     browser,
   }) => {
     const page = shared!;
@@ -979,23 +1097,11 @@ test.describe("Starter 32 on the full Start runtime", () => {
     await (await publishShowingRelease(page)).close();
     const pageRelease = await latestRelease(page, scope!);
 
-    // The home as a static page, through the rendering panel's write, so the
-    // Sandbox publish build prerenders the shipped home: its first pass has
-    // no sealed content and the read is refused, and only the sealed pass
-    // can succeed. A refused read there fails the build, and the publish.
-    const draft = await template(page, homeTemplateId);
-    const policy = (await serverFn(page, THEMES, "updateStorefrontThemeRenderPolicy", {
-      ...scope!,
-      templateId: homeTemplateId,
-      expectedDraftGeneration: draft.draftGeneration,
-      expectedSourceGeneration: await themeSourceGeneration(page, scope!),
-      setting: { scope: "page", policy: { mode: "ssg" } },
-    })) as { success: boolean; message?: string; error?: string };
-    expect(policy.success, `home ssg: ${policy.error ?? policy.message}`).toBe(true);
-    expect(
-      (await template(page, homeTemplateId)).document.renderPolicy?.mode,
-      "the home Document is static",
-    ).toBe("ssg");
+    // The home explicitly on SSR, through the rendering panel's write. A
+    // static (ssg) release is refused until Core is proven to serve the
+    // active release's HTML (PUBLISH_RENDER_POLICY_NOT_READY); case 6 holds
+    // the static home's build to its prerendered HTML instead.
+    await setPagePolicy(page, homeTemplateId, "ssr");
 
     await openEditor(page, homeEditorPath);
     await (await publishShowingRelease(page)).close();
@@ -1010,23 +1116,8 @@ test.describe("Starter 32 on the full Start runtime", () => {
     const built = await harness!.releaseBuild(release);
     expect(built.buildId, "the release names its build").toBeTruthy();
     expect(built.releaseContent, "the release names its content").toBeTruthy();
-    expect(
-      built.dependency,
-      "the build read sealed content: the home was prerendered in its sealed pass",
-    ).toBe("dependent");
-    const published = await harness!.serveActiveRelease(
-      SHOWN_MARKER,
-      release,
-      publicOrigin(),
-    );
+    await harness!.serveActiveRelease(SHOWN_MARKER, release, publicOrigin());
     servingRelease = release;
-
-    // The released artifact itself: the prerendered home, as the build wrote it.
-    const prerendered = readFileSync(
-      join(published.artifactDir, PRERENDERED_HOME),
-      "utf8",
-    );
-    expectHomeHtml(prerendered, `artifact ${PRERENDERED_HOME}`);
 
     // The public site, through Core and the released Theme Worker.
     const storefront = storefrontFetcher(publicOrigin());
@@ -1187,13 +1278,138 @@ test.describe("Starter 32 on the full Start runtime", () => {
     for (const value of draftValues) expect(pinned.body).not.toContain(value);
   });
 
-  // The read-failure trap, at build time. Starter 32 rejects a refused read
-  // instead of rendering defaults, so a native build's content-less first
-  // pass stops and its sealed pass decides. Here the sealed pass cannot read
-  // either: the route's loader names a path no static route of this build
-  // has. That must be a failed build, never static HTML from defaults, and
-  // the site must stay on the release it was serving.
-  test("a sealed-pass read that still cannot read content fails the publish build and leaves the serving release live", async () => {
+  // The static home, published once. The publish builds first, sealed with
+  // the home's draft (prerendering it needs the content), and the platform
+  // Start build's prerender reads that seal on its only pass. The guard then
+  // refuses the publish itself: no static release until Core is proven to
+  // serve the active release's HTML. The build, its seal and its artifact
+  // stay; nothing is released, and the site stays on case 4's release.
+  test("a static (ssg) home publish prerenders the sealed draft, then is refused before release and the serving release stays live", async () => {
+    const page = shared!;
+    const before = await harness!.publishedState();
+    expect(before.active, "case 4's release is serving").toBe(servingRelease);
+
+    // A value no release has, so the prerendered home can only be this
+    // build's seal of the draft.
+    await writeSection(page, homeTemplateId, HERO, { heading: SSG_HERO_MARKER });
+    expect((await storedSection(page, homeTemplateId, HERO))?.props).toMatchObject({
+      heading: SSG_HERO_MARKER,
+    });
+    await setPagePolicy(page, homeTemplateId, "ssg");
+
+    await openEditor(page, homeEditorPath);
+    const watched = await watchPublish(page);
+    const refusal = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === watched.paths.publish,
+      { timeout: 10 * 60_000 },
+    );
+    await openPublish(page);
+    const buildId = await watched.buildId();
+
+    // The exact build: succeeded, sealed, proven to carry that content.
+    const done = await finishedBuild(buildId);
+    expect(done.status, "the publish build succeeded").toBe("succeeded");
+    const answer = (await serverFn(page, BUILDS, "getThemeBuild", {
+      ...scope!,
+      buildId,
+    })) as {
+      success: boolean;
+      message?: string;
+      data?: {
+        status: string;
+        contentPublicationId?: string | null;
+        contentDependency?: string | null;
+        artifactPrefix: string | null;
+        manifestJson: { files?: { path: string; sizeBytes: number; sha256: string }[] } | null;
+      };
+    };
+    expect(answer.success, answer.message).toBe(true);
+    const build = answer.data!;
+    expect(build.status).toBe("succeeded");
+    expect(build.contentPublicationId, "the build is sealed with content").toBeTruthy();
+    expect(
+      build.contentDependency,
+      "the build read its sealed content: the home was prerendered from it",
+    ).toBe("dependent");
+    expect(build.artifactPrefix, "the build recorded its artifact").toBeTruthy();
+    const [sealed] = queryD1(
+      `SELECT count(*) AS carries
+         FROM storefront_content_publication_items i
+         JOIN storefront_theme_template_revisions t ON t.id = i.revision_id
+        WHERE i.publication_id = ?1 AND instr(t.document, ?2) > 0`,
+      build.contentPublicationId,
+      SSG_HERO_MARKER,
+    ) as { carries: number }[];
+    expect(sealed?.carries, "the seal holds the home's draft value").toBeGreaterThan(0);
+
+    // The prerendered home, as the build wrote it to this run's R2, held to
+    // the build's manifest.
+    const entry = build.manifestJson?.files?.find((file) => file.path === PRERENDERED_HOME);
+    expect(entry, `the manifest lists ${PRERENDERED_HOME}`).toBeDefined();
+    const stored = await harness!.buildObjects(build.artifactPrefix!, [
+      "manifest.json",
+      PRERENDERED_HOME,
+    ]);
+    expect(stored.keys, `R2 holds ${PRERENDERED_HOME} under the build's prefix`).toContain(
+      `${build.artifactPrefix}/${PRERENDERED_HOME}`,
+    );
+    const storedManifest = JSON.parse(
+      new TextDecoder().decode(stored.objects["manifest.json"] ?? new Uint8Array()),
+    ) as { files?: { path: string; sizeBytes: number; sha256: string }[] };
+    expect(
+      storedManifest.files?.find((file) => file.path === PRERENDERED_HOME),
+      "R2's manifest and the build's agree on the prerendered home",
+    ).toEqual(entry);
+    const bytes = stored.objects[PRERENDERED_HOME];
+    expect(bytes, `${PRERENDERED_HOME} is in R2`).toBeTruthy();
+    expect(bytes!.byteLength, "its size is the manifest's").toBe(entry!.sizeBytes);
+    expect(
+      createHash("sha256").update(bytes!).digest("hex"),
+      "its SHA-256 is the manifest's",
+    ).toBe(entry!.sha256);
+    const prerendered = new TextDecoder().decode(bytes!);
+    expectHomeHtml(prerendered, `build ${PRERENDERED_HOME}`, SSG_HERO_MARKER);
+    expect(prerendered, "not the released hero value").not.toContain(HERO_MARKER);
+
+    // The publish itself is refused by the guard, saying so; nothing is
+    // released and the editor reports no publish.
+    const refused = decodeServerFnResult(await (await refusal).text()) as {
+      success?: boolean;
+      error?: string;
+    };
+    expect(refused.success, "the publish is refused").toBe(false);
+    expect(refused.error).toBe("PUBLISH_RENDER_POLICY_NOT_READY");
+    await expect(page.locator("[data-publish-pending]")).toHaveAttribute(
+      "data-publish-pending",
+      "false",
+      { timeout: 60_000 },
+    );
+    expect(watched.posts, "one build, one publish").toEqual({ build: 1, publish: 1 });
+    await expect(
+      page.locator("[data-editor-save-status]"),
+      "the editor does not report a publish",
+    ).not.toHaveAttribute("aria-label", "Published");
+    await expect(page.locator('iframe[data-build-preview="release"]')).toHaveCount(0);
+    expect(await harness!.publishedState(), "no release, no publication").toEqual(before);
+
+    // The public site still serves case 4's release, on SSR.
+    const storefront = storefrontFetcher(publicOrigin());
+    const home = await storefront("/");
+    expect(home.status).toBe(200);
+    expectHomeHtml(home.body, "public / (after the refused publish)");
+    expect(home.body, "not the refused draft's value").not.toContain(SSG_HERO_MARKER);
+  });
+
+  // The read-failure trap, at build time. Starter 32 rejects a failed read
+  // instead of rendering defaults. The platform Start build gives its
+  // prerender the sealed content on its only pass; here the route's loader
+  // names a path no Document of that seal has, which the sealed content
+  // answers with a bare 404 (`content_not_found`). That must be a failed
+  // build, never static HTML from defaults, no publish may be sent, and the
+  // site must stay on the release it was serving.
+  test("a static route whose read finds no sealed content fails the publish build, writes no artifact, and leaves the serving release live", async () => {
     const page = shared!;
     const before = await harness!.publishedState();
     expect(before.active, "case 4's release is serving").toBe(servingRelease);
@@ -1222,54 +1438,65 @@ test.describe("Starter 32 on the full Start runtime", () => {
       (await template(page, unsealedTemplateId)).document.renderPolicy?.mode,
     ).toBe("ssg");
 
-    const builds = () =>
-      queryD1(
-        "SELECT id, status, error_message FROM storefront_theme_builds WHERE theme_id = ?1 ORDER BY created_at DESC",
-        scope!.themeId,
-      ) as { id: string; status: string; error_message: string | null }[];
-    const buildsBefore = new Set(builds().map((row) => row.id));
-
     await openEditor(
       page,
       `/store/${scope!.storefrontId}/themes/${scope!.themeId}/editor?templateId=${unsealedTemplateId}&routePath=${UNSEALED_PATH}`,
     );
+    const watched = await watchPublish(page);
     await openPublish(page);
-    let finished: { id: string; status: string; error_message: string | null } | undefined;
-    await expect
-      .poll(
-        () => {
-          finished = builds().find(
-            (row) =>
-              !buildsBefore.has(row.id) &&
-              // StorefrontThemeBuildStatus: queued and building are not done.
-              row.status !== "queued" &&
-              row.status !== "building",
-          );
-          return finished?.status ?? null;
-        },
-        { timeout: 9 * 60_000, message: "the publish build finished" },
-      )
-      .not.toBeNull();
-    test.info().annotations.push({
-      type: "observed",
-      description: JSON.stringify(finished),
-    });
-    expect(finished!.status, "the publish build failed").toBe("failed");
-    expect(finished!.error_message ?? "", "it says why, by name").toContain(
-      SEALED_PASS_REFUSAL,
+    const buildId = await watched.buildId();
+    const finished = await finishedBuild(buildId);
+    expect(finished.status, "the publish build failed").toBe("failed");
+    expect(finished.content_publication_id, "the build was sealed with content").toBeTruthy();
+    const answer = (await serverFn(page, BUILDS, "getThemeBuild", {
+      ...scope!,
+      buildId,
+    })) as {
+      success: boolean;
+      message?: string;
+      data?: {
+        artifactPrefix: string | null;
+        diagnosticsJson: { stage?: unknown } | null;
+        errorMessage: string | null;
+      };
+    };
+    expect(answer.success, answer.message).toBe(true);
+    expect(
+      answer.data!.diagnosticsJson?.stage,
+      "it failed in the platform Start build's runtime compile",
+    ).toBe(START_COMPILER_STAGE);
+    expect(finished.error_message ?? "", "it says why, by name").toContain(
+      UNSEALED_READ_REFUSAL,
     );
-    expect(finished!.error_message ?? "", "and names the unreadable path").toContain(
+    expect(finished.error_message ?? "", "and names the unreadable path").toContain(
       NEVER_SEALED_PATH,
     );
+    expect(answer.data!.artifactPrefix, "a failed build records no artifact").toBeNull();
+    const stored = await harness!.buildObjects(
+      `storefronts/${scope!.storefrontId}/themes/${scope!.themeId}/builds/${buildId}`,
+    );
+    expect(stored.keys, "the failed build wrote nothing to R2").toEqual([]);
+
+    // The editor gives up after the build: no publish is sent.
+    await expect(page.locator("[data-publish-pending]")).toHaveAttribute(
+      "data-publish-pending",
+      "false",
+      { timeout: 60_000 },
+    );
+    expect(watched.posts, "one build, and no publish after it failed").toEqual({
+      build: 1,
+      publish: 0,
+    });
     await expect(
       page.locator("[data-editor-save-status]"),
       "the editor does not report a publish",
-    ).not.toHaveAttribute("aria-label", "Published", { timeout: 60_000 });
+    ).not.toHaveAttribute("aria-label", "Published");
 
     // No release was made or activated: the site stays on case 4's.
     const after = await harness!.publishedState();
     expect(after.active, "the serving release is unchanged").toBe(servingRelease);
     expect(after.releases, "no release was made").toBe(before.releases);
+    expect(after, "no release, no publication").toEqual(before);
     const storefront = storefrontFetcher(publicOrigin());
     const home = await storefront("/");
     expect(home.status).toBe(200);
