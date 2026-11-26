@@ -2682,6 +2682,11 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
       expect(basisPosts()).toHaveLength(1);
       expect(updateSectionProps).not.toHaveBeenCalled();
+      // That refused click only located, in Code. Codex review P3: a click
+      // in Code selects nothing, so the next click is made back in Design,
+      // where a confirmed click selects.
+      switchToDesign();
+      await flush();
 
       // Only a read that succeeds, for the next document, confirms a click
       // again.
