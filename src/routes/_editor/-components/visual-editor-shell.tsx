@@ -7080,6 +7080,30 @@ export function VisualEditorShell({
         resumeAstroRederiveOnPageRef.current();
       });
   };
+  /**
+   * Hints review finding 5: the workspace's source generation can move on
+   * after the frame's ready was answered (the store sees it later than the
+   * frame). A kept selection was then matched against the old source's view
+   * and nothing matched it again in the new one. Any change of generation
+   * matches it again, in the view read for the source the workspace now
+   * holds, on the frame shown now.
+   */
+  const astroRederivedSourceGenerationRef = useRef(
+    astroBindingSourceGeneration,
+  );
+  useEffect(() => {
+    const previous = astroRederivedSourceGenerationRef.current;
+    astroRederivedSourceGenerationRef.current = astroBindingSourceGeneration;
+    if (previous === astroBindingSourceGeneration) return;
+    if (!astroDesignFocusRef.current?.selection) return;
+    const previewKey = previewKeyRef.current;
+    if (!previewKey) return;
+    rederiveAstroDesignFocusRef.current(
+      previewKey,
+      previewReadyRoundRef.current,
+      null,
+    );
+  }, [astroBindingSourceGeneration]);
   const routeStructurePending = Boolean(
     (pendingRoutePath !== null &&
       !editorRoutePathsMatch(pendingRoutePath, search.routePath) &&
