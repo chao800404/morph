@@ -710,3 +710,72 @@ describe("publish deployment of a server-only build (D92-C)", () => {
     });
   });
 });
+
+describe("production deployments and registered static pages", () => {
+  const HTML_SHA = "4".repeat(64);
+  const withPage = {
+    ...manifest,
+    runtime: {
+      ...manifest.runtime,
+      staticPages: [
+        {
+          path: "/",
+          artifactPath: "runtime/client/index.html",
+          sha256: HTML_SHA,
+        },
+      ],
+    },
+    files: [
+      ...manifest.files,
+      {
+        path: "runtime/client/index.html",
+        contentType: "text/html",
+        sizeBytes: 10,
+        sha256: HTML_SHA,
+      },
+    ],
+  };
+  const registeredPorts = ports({
+    getBuild: async () => ({
+      id: "bld_1",
+      storefrontId: "sf_1",
+      status: "succeeded",
+      artifactPrefix: "themes/th_1/builds/bld_1",
+      manifestJson: withPage,
+    }),
+  });
+  const deployedAssets = (deployer: ReturnType<typeof okDeployer>) =>
+    (
+      deployer.deploy.mock.calls[0] as unknown as [
+        { plan: { assets: Array<{ artifactPath: string }> } },
+      ]
+    )[0].plan.assets.map((asset) => asset.artifactPath);
+
+  it("publish deploys the Theme Worker without the registered HTML", async () => {
+    const deployer = okDeployer();
+    const result = await deployReleaseArtifact({
+      releaseId: "rel_1",
+      deployer,
+      r2Bucket: r2(),
+      ports: {
+        getRelease: registeredPorts.getRelease,
+        getBuild: registeredPorts.getBuild,
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(deployedAssets(deployer)).toEqual(["runtime/client/assets/app.js"]);
+  });
+
+  it("rollback deploys the Theme Worker without the registered HTML", async () => {
+    const deployer = okDeployer();
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: "rel_0",
+      deployer,
+      r2Bucket: r2(),
+      ports: registeredPorts,
+    });
+    expect(result.success).toBe(true);
+    expect(deployedAssets(deployer)).toEqual(["runtime/client/assets/app.js"]);
+  });
+});

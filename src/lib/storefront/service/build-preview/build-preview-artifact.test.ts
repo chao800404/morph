@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { wranglerDeployConfig } from "../sandbox-wrangler-theme-worker-deployer";
 import { planThemeWorkerDeployment } from "../theme-worker-deployment-plan";
@@ -21,6 +22,7 @@ describe("readBuildPreviewArtifact", () => {
       ))!.text(),
     );
     const planned = planThemeWorkerDeployment({
+      target: "production",
       storefrontId: build.storefrontId,
       manifest: build.manifestJson as never,
       workerConfig,
@@ -104,5 +106,37 @@ describe("readBuildPreviewArtifact", () => {
       ok: false,
       reason: "BUILD_NOT_PREVIEWABLE",
     });
+  });
+
+  it("keeps a registered static page's HTML, which only production leaves out", async () => {
+    const aboutHtml = "<!doctype html><h1>About</h1>";
+    const plain = fixtureBuild({
+      files: { "runtime/client/about/index.html": aboutHtml },
+    });
+    const registered = fixtureBuild({
+      files: { "runtime/client/about/index.html": aboutHtml },
+      manifest: {
+        runtime: {
+          kind: "cloudflare-worker",
+          workerEntry: "runtime/server/index.js",
+          clientAssetsDirectory: "runtime/client",
+          staticPages: [
+            {
+              path: "/about",
+              artifactPath: "runtime/client/about/index.html",
+              sha256: createHash("sha256").update(aboutHtml).digest("hex"),
+            },
+          ],
+        },
+      },
+    });
+    const before = await readBuildPreviewArtifact(plain);
+    const after = await readBuildPreviewArtifact(registered);
+    if (!before.ok || !after.ok) throw new Error("not previewable");
+    // Build Preview is unchanged by registration: same plan, same files.
+    expect(after.artifact.plan).toEqual(before.artifact.plan);
+    expect(after.artifact.assets.map((asset) => asset.path)).toContain(
+      "/about/index.html",
+    );
   });
 });
