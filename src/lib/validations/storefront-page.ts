@@ -12,6 +12,9 @@ export const storefrontPageStatusSchema = z.enum([
   "archived",
 ]);
 
+/** The rule a Document's stored section id is held to. */
+export const storefrontPageSectionIdSchema = z.string().trim().min(1).max(100);
+
 export const storefrontPageDocumentSchema = z.object({
   version: z.literal(1),
   handle: handleSchema.optional(),
@@ -20,7 +23,7 @@ export const storefrontPageDocumentSchema = z.object({
   sections: z
     .array(
       z.object({
-        id: z.string().trim().min(1).max(100),
+        id: storefrontPageSectionIdSchema,
         type: z.string().trim().min(1).max(100),
         componentRef: z.string().trim().min(1).max(160).optional().nullable(),
         // Declared, because this schema is not `.strict()` and zod drops what

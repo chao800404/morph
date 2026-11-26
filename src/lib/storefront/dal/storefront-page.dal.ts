@@ -21,7 +21,11 @@ import {
   sectionHideRefusal,
   sectionsNewlyHidden,
 } from "../content/section-hide-check";
-import { showSectionAgainInDocument } from "../content/show-section-again";
+import {
+  showSectionAgainInDocument,
+  type ShowSectionAgainOutcome,
+} from "../content/show-section-again";
+import { assertShownSectionMatchesSource } from "./storefront-theme.dal";
 import { PAGE_DRAFT_VERSION_MISMATCH } from "../page-write-errors";
 import { batchGuard } from "@/lib/db/batch-guard";
 import type { BatchItem } from "drizzle-orm/batch";
@@ -497,23 +501,40 @@ export const storefrontPageDal = {
   }): Promise<
     | null
     | Readonly<{ kind: "section-not-found"; reason: "missing" | "ambiguous" }>
+    | Readonly<{
+        kind: "document-refused";
+        code: Extract<ShowSectionAgainOutcome, { kind: "refused" }>["code"];
+      }>
     | Readonly<{ kind: "unchanged" | "shown"; version: number }>
   > {
     const draft = await env.DATABASE.prepare(
-      `SELECT r.id AS revisionId, r.version AS version, r.document AS document
+      `SELECT r.id AS revisionId, r.version AS version, r.document AS document,
+              s.active_theme_id AS activeThemeId, th.framework AS framework
          FROM storefront_pages p
          INNER JOIN storefronts s ON s.id = p.storefront_id
          INNER JOIN storefront_page_revisions r
            ON r.id = p.draft_revision_id AND r.page_id = p.id
+         LEFT JOIN storefront_themes th
+           ON th.id = s.active_theme_id AND th.storefront_id = s.id
+          AND th.deleted_at IS NULL
         WHERE p.id = ?1 AND p.storefront_id = ?2
           AND p.deleted_at IS NULL AND s.deleted_at IS NULL
         LIMIT 1`,
     )
       .bind(data.id, data.storefrontId)
-      .first<{ revisionId: string; version: number; document: string }>();
+      .first<{
+        revisionId: string;
+        version: number;
+        document: string;
+        activeThemeId: string | null;
+        framework: string | null;
+      }>();
     if (!draft) return null;
 
     const outcome = showSectionAgainInDocument(draft.document, data.sectionId);
+    if (outcome.kind === "refused") {
+      return { kind: "document-refused", code: outcome.code };
+    }
     if (outcome.kind === "not-found") {
       return { kind: "section-not-found", reason: outcome.reason };
     }
@@ -521,6 +542,19 @@ export const storefrontPageDal = {
       return { kind: "unchanged", version: draft.version };
     }
     if (draft.version !== data.expectedDraftVersion) throw pageDraftConflict();
+    // The storefront's active Theme renders a Page through its page route;
+    // a storefront with none has no source to compare with.
+    if (draft.activeThemeId) {
+      await assertShownSectionMatchesSource({
+        storefrontId: data.storefrontId,
+        themeId: draft.activeThemeId,
+        framework: draft.framework,
+        templateType: "page",
+        templateRoutePath: null,
+        sectionId: data.sectionId,
+        storedComponentRef: outcome.section.componentRef,
+      });
+    }
 
     const next = await env.DATABASE.prepare(
       "SELECT COALESCE(MAX(version), 0) + 1 AS version FROM storefront_page_revisions WHERE page_id = ?1",

@@ -135,3 +135,18 @@ export function sectionSourceRefusalMessage(
  * was never hidden.
  */
 export const SECTION_NOT_FOUND = "SECTION_NOT_FOUND";
+
+/**
+ * "Show again" refused a stored draft that is not a document every reader
+ * accepts (an `enabled: null`, text that is not JSON). Nothing is written;
+ * the draft needs repair, not a visibility change.
+ */
+export const SHOW_AGAIN_DOCUMENT_INVALID = "SHOW_AGAIN_DOCUMENT_INVALID";
+
+/**
+ * "Show again" refused because writing the draft back would change a value
+ * outside the section's visibility: an integer beyond
+ * `Number.MAX_SAFE_INTEGER`, `-0`, a number too large for a double, a key
+ * stored twice. Nothing is written (`show-section-again.ts`).
+ */
+export const SHOW_AGAIN_VALUE_NOT_PRESERVED = "SHOW_AGAIN_VALUE_NOT_PRESERVED";

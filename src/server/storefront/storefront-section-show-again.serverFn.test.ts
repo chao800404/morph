@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { classifyAuthFailure } from "@/lib/auth/auth-failure";
 import {
   SECTION_NOT_FOUND,
+  SECTION_SOURCE_UNCONFIRMED,
+  SHOW_AGAIN_DOCUMENT_INVALID,
+  SHOW_AGAIN_VALUE_NOT_PRESERVED,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
@@ -199,6 +202,30 @@ describe.each([
     expect(await call(input)).toMatchObject({
       success: false,
       error: input.kind === "page" ? PAGE_DRAFT_CONFLICT : TEMPLATE_DRAFT_CONFLICT,
+    });
+  });
+
+  it.each([SHOW_AGAIN_DOCUMENT_INVALID, SHOW_AGAIN_VALUE_NOT_PRESERVED])(
+    "answers a refused stored draft with %s",
+    async (code) => {
+      const answer = { kind: "document-refused", code };
+      spies.showPageSection.mockResolvedValue(answer);
+      spies.showTemplateSection.mockResolvedValue(answer);
+      expect(await call(input)).toMatchObject({ success: false, error: code });
+    },
+  );
+
+  it("answers a component mismatch in the section-source refusal form", async () => {
+    const refusal = new Error(
+      `${SECTION_SOURCE_UNCONFIRMED}: section-row-mismatch: Morph cannot show this section again.`,
+    );
+    spies.showPageSection.mockRejectedValue(refusal);
+    spies.showTemplateSection.mockRejectedValue(refusal);
+    expect(await call(input)).toMatchObject({
+      success: false,
+      error: SECTION_SOURCE_UNCONFIRMED,
+      message: "Morph cannot show this section again.",
+      errors: { reason: ["section-row-mismatch"] },
     });
   });
 

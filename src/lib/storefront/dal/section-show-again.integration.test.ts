@@ -14,7 +14,13 @@ import { env } from "cloudflare:workers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { openMigratedD1 } from "@/lib/test-utils/real-d1";
-import { TEMPLATE_DRAFT_GENERATION_MISMATCH } from "../theme-write-errors";
+import {
+  SECTION_SOURCE_UNCONFIRMED,
+  SHOW_AGAIN_DOCUMENT_INVALID,
+  SHOW_AGAIN_VALUE_NOT_PRESERVED,
+  TEMPLATE_DRAFT_GENERATION_MISMATCH,
+} from "../theme-write-errors";
+import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import { PAGE_DRAFT_VERSION_MISMATCH } from "../page-write-errors";
 import { storefrontPageDal } from "./storefront-page.dal";
 import { storefrontThemeDal } from "./storefront-theme.dal";
@@ -139,7 +145,7 @@ describe("CMS Page: Show again", () => {
        VALUES (?1, ?2, 3, ?3, 'author', ?4, ?5)`,
       revisionId,
       pageId,
-      JSON.stringify(document),
+      typeof document === "string" ? document : JSON.stringify(document),
       NOW,
       options.published ? NOW : null,
     );
@@ -314,6 +320,60 @@ describe("CMS Page: Show again", () => {
     const before = await pageState();
     expect(await show({ sectionId: "hero" })).toEqual({ kind: "unchanged", version: 3 });
     expect(await pageState()).toEqual(before);
+  });
+
+  it("refuses a draft whose values would not survive the write, and writes nothing", async () => {
+    // 9007199254740993 is not a double: re-serialised it would become …992.
+    const text = JSON.stringify(legacyDocument()).replace(
+      '"title":"About us"',
+      '"title":"About us","count":9007199254740993',
+    );
+    await seedPage(text);
+    const before = await pageState();
+    expect(await show()).toEqual({
+      kind: "document-refused",
+      code: SHOW_AGAIN_VALUE_NOT_PRESERVED,
+    });
+    expect(await pageState()).toEqual(before);
+    const raw = await first<{ document: string }>(
+      "SELECT document FROM storefront_page_revisions WHERE page_id = ?1",
+      pageId,
+    );
+    expect(raw!.document).toBe(text);
+  });
+
+  it("refuses `enabled: null` as an invalid draft rather than answering it shown", async () => {
+    const document = legacyDocument() as { sections: Record<string, unknown>[] };
+    document.sections[1]!.enabled = null;
+    await seedPage(document);
+    const before = await pageState();
+    expect(await show()).toEqual({
+      kind: "document-refused",
+      code: SHOW_AGAIN_DOCUMENT_INVALID,
+    });
+    expect(await pageState()).toEqual(before);
+  });
+
+  it("keeps a batch failure it does not own a failure, not a draft conflict", async () => {
+    await seedPage();
+    const database = env.DATABASE;
+    const holder = env as unknown as { DATABASE: D1Database };
+    holder.DATABASE = new Proxy(database, {
+      get(target, key, receiver) {
+        if (key !== "batch") return Reflect.get(target, key, receiver);
+        return async () => {
+          throw new Error("D1_ERROR: FOREIGN KEY constraint failed: SQLITE_CONSTRAINT");
+        };
+      },
+    });
+    try {
+      const error = await show().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("FOREIGN KEY constraint failed");
+      expect((error as Error).message).not.toContain(PAGE_DRAFT_VERSION_MISMATCH);
+    } finally {
+      holder.DATABASE = database;
+    }
   });
 });
 
@@ -516,5 +576,72 @@ describe("Theme template and layout: Show again", () => {
     // Show again is the one visibility change it takes.
     expect(await show()).toMatchObject({ kind: "shown", draftGeneration: 8 });
     expect((await templateState()).draftDocument).toEqual(expectedShown());
+  });
+
+  describe("on a Start Theme whose route renders the slot", () => {
+    /** The home route renders `newsletter` with `Newsletter.tsx`. */
+    async function seedRouteFiles() {
+      const files = [
+        ...livePreviewPlatformFiles(),
+        {
+          path: "src/components/Newsletter.tsx",
+          content:
+            'export const contentFields = { heading: { type: "text", label: "Heading" } } as const;\nexport default function Newsletter({ heading = "DEFAULT" }) { return <h2>{heading}</h2>; }\n',
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Newsletter from "../components/Newsletter";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Newsletter {...content("newsletter")} /></main>;
+}
+`,
+        },
+      ];
+      for (const file of files) {
+        await run(
+          `INSERT INTO storefront_theme_files (id, storefront_id, theme_id, path, content, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
+          randomUUID(),
+          storefrontId,
+          themeId,
+          file.path,
+          file.content,
+          NOW,
+        );
+      }
+    }
+
+    const withNewsletterRef = (componentRef: string) => {
+      const document = legacyDocument();
+      document.sections[1]!.componentRef = componentRef;
+      return document;
+    };
+
+    it("refuses a section stored for another component than the one rendering it, and writes nothing", async () => {
+      await seedTemplate({ document: withNewsletterRef("src/components/OldPromo.tsx") });
+      await seedRouteFiles();
+      const before = await templateState();
+      await expect(show()).rejects.toThrow(
+        `${SECTION_SOURCE_UNCONFIRMED}: section-row-mismatch:`,
+      );
+      expect(await templateState()).toEqual(before);
+    });
+
+    it("shows a section stored for the component that renders it", async () => {
+      await seedTemplate({ document: withNewsletterRef("src/components/Newsletter.tsx") });
+      await seedRouteFiles();
+      expect(await show()).toMatchObject({ kind: "shown", draftGeneration: 8 });
+    });
+
+    it("shows a section the route does not render, as a plain Document section", async () => {
+      const document = withNewsletterRef("src/components/OldPromo.tsx");
+      document.sections[1]!.id = "promo";
+      await seedTemplate({ document });
+      await seedRouteFiles();
+      expect(await show({ sectionId: "promo" })).toMatchObject({ kind: "shown" });
+    });
   });
 });

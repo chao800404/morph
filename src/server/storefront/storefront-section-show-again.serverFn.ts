@@ -2,7 +2,10 @@ import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import { showTemplateSectionAgain } from "@/lib/storefront/dal/storefront-template-show-again.dal";
 import {
+  parseSectionSourceRefusal,
+  SECTION_HIDE_UNSUPPORTED,
   SECTION_NOT_FOUND,
+  SHOW_AGAIN_VALUE_NOT_PRESERVED,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
@@ -28,6 +31,13 @@ import { commerceAdminMiddleware } from "../middleware/auth.middleware";
  * - `PAGE_DRAFT_CONFLICT` / `TEMPLATE_DRAFT_CONFLICT`: the draft moved
  *   since the caller read it, the conflict every write of that kind of
  *   document answers;
+ * - `SHOW_AGAIN_DOCUMENT_INVALID` / `SHOW_AGAIN_VALUE_NOT_PRESERVED`: the
+ *   stored draft is not a valid document, or writing it back would change a
+ *   value beside the visibility (`show-section-again.ts`); nothing written;
+ * - `SECTION_SOURCE_UNCONFIRMED` (`errors.reason` `section-row-mismatch`
+ *   and others) / `SECTION_SOURCE_UNCONFIRMABLE`: the section was stored for
+ *   another component than the one rendering its slot now, or the source
+ *   cannot say which (`assertShownSectionMatchesSource`);
  * - success with `changed: false` for a section already shown, so a retry
  *   after a lost answer reads as done.
  */
@@ -71,6 +81,13 @@ export const showStorefrontSectionAgain = createServerFn({ method: "POST" })
           data.kind === "page" ? "Page not found" : "Theme template not found",
           { error: "NOT_FOUND" },
         );
+      if (result.kind === "document-refused")
+        return fail(
+          result.code === SHOW_AGAIN_VALUE_NOT_PRESERVED
+            ? "Morph cannot show this section again without changing other content in the draft. Contact support."
+            : "This draft cannot be read as a page document. Contact support.",
+          { error: result.code },
+        );
       if (result.kind === "section-not-found")
         return fail("This section is not in the draft. Reload and try again.", {
           error: SECTION_NOT_FOUND,
@@ -89,6 +106,15 @@ export const showStorefrontSectionAgain = createServerFn({ method: "POST" })
       if (message.includes(TEMPLATE_DRAFT_GENERATION_MISMATCH)) {
         return fail("The draft was modified concurrently.", {
           error: TEMPLATE_DRAFT_CONFLICT,
+        });
+      }
+      // The stored section was written for another component than the one
+      // the source renders for its slot, or the source cannot say which.
+      const refusal = parseSectionSourceRefusal(message);
+      if (refusal && refusal.code !== SECTION_HIDE_UNSUPPORTED) {
+        return fail(refusal.text, {
+          error: refusal.code,
+          ...(refusal.reason ? { errors: { reason: [refusal.reason] } } : {}),
         });
       }
       return failure(
