@@ -19,8 +19,9 @@ import { expectClosedToAnotherAccount } from "./helpers/editor-writes-account-ch
 
 // Part of the former editor-writes-auth.spec.ts, split for CI shard balance.
 
+test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
+
 test.describe("unsaved work when the signed-in account changes", () => {
-  test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
   restoreHeroAfterFailure();
 
   test("another account signed in here: the draft is never saved as that account", async ({
