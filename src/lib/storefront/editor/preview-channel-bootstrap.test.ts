@@ -211,11 +211,11 @@ describe("a queryless document's receiver", () => {
     expect(next.hash).toBe("#top");
   });
 
-  it("still hands over when the Theme's address uses the first ten keys", async () => {
+  it("still hands over when the Theme's address uses the first hundred keys", async () => {
     const taken = [
       PREVIEW_CHANNEL_BOOTSTRAP_PARAM,
       ...Array.from(
-        { length: 9 },
+        { length: 99 },
         (_, index) => `${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}${index + 1}`,
       ),
     ]
@@ -235,12 +235,16 @@ describe("a queryless document's receiver", () => {
     });
     await settle();
     const next = new URL(frame.replace.mock.calls[0]![0] as string);
-    expect(next.searchParams.get(`${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}10`)).toBe(
+    expect(next.searchParams.get(`${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}100`)).toBe(
       NONCE,
     );
     expect(next.searchParams.get(PREVIEW_CHANNEL_BOOTSTRAP_PARAM)).toBe(
       "theme",
     );
+    // The document that loads reads the same key back.
+    const arrival = frameWindow({ href: next.href });
+    for (const [key, value] of frame.stored) arrival.stored.set(key, value);
+    expect(takeBootstrapNonce(arrival.win)).toBe(NONCE);
   });
 
   it("makes a second queryless document bootstrap on its own", async () => {

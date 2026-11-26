@@ -323,8 +323,8 @@ export function installPreviewChannelBootstrap(
         // A key the Theme's own address does not use: its parameter reaches
         // the replacement request untouched, and only ours is removed.
         let key: string = PREVIEW_CHANNEL_BOOTSTRAP_PARAM;
+        // Finite: an address holds only so many keys.
         for (let suffix = 1; next.searchParams.has(key); suffix++) {
-          if (suffix > 99) return;
           key = `${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}${suffix}`;
         }
         // The document that loads takes the nonce only against this record.
@@ -372,7 +372,7 @@ export function takeBootstrapNonce(win: PreviewChannelWindow): string | null {
     const handoff = JSON.parse(raw) as { key?: unknown; nonce?: unknown };
     if (
       typeof handoff.key !== "string" ||
-      !new RegExp(`^${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}[0-9]{0,2}$`).test(
+      !new RegExp(`^${PREVIEW_CHANNEL_BOOTSTRAP_PARAM}[0-9]*$`).test(
         handoff.key,
       ) ||
       typeof handoff.nonce !== "string" ||

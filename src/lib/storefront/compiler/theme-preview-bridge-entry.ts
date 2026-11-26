@@ -658,6 +658,10 @@ if (documentNavigation) {
     } catch {}
     if (Date.now() - frameNavigationIntentAt > 10000) return;
     try {
+      // A restored document reloading itself leaves with the "history" record
+      // the restore guard wrote for the document that loads next: a click it
+      // took long ago must not turn that into a link arrival.
+      if (sessionStorage.getItem(DOCUMENT_NAVIGATION_KEY) === "history") return;
       sessionStorage.setItem(DOCUMENT_NAVIGATION_KEY, "frame");
     } catch {}
   });

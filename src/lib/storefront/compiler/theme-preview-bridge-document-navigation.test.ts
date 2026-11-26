@@ -401,6 +401,22 @@ describe("a page that navigates as documents (Astro)", () => {
     }
   });
 
+  it("keeps the history record a restored document's own reload leaves behind, after a click it took long ago", () => {
+    const page = bridgeRouting({
+      pathname: "/about",
+      navigation: "document",
+      recorded: "frame",
+    });
+    page.fire("click", {
+      button: 0,
+      target: { closest: () => ({ target: "", hasAttribute: () => false }) },
+    });
+    // The restore guard, on pageshow, then the reload's pagehide.
+    page.stored.set(page.key, "history");
+    page.fire("pagehide");
+    expect(page.stored.get(page.key)).toBe("history");
+  });
+
   it("says the page it leaves, once, for the next document, and keeps one already said", () => {
     const page = bridgeRouting({ pathname: "/about", navigation: "document" });
     page.fire("pagehide");
