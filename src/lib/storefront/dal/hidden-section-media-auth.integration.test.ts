@@ -17,7 +17,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { openMigratedD1 } from "@/lib/test-utils/real-d1";
-import { lookupPublishedMedia } from "../service/storefront-media-delivery";
+import {
+  lookupPublishedMedia,
+  publishedMediaPath,
+} from "../service/storefront-media-delivery";
 import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
 
 let harness: Awaited<ReturnType<typeof openMigratedD1>>;
@@ -412,5 +415,137 @@ describe("public media for hidden sections", () => {
     expect(
       await storefrontContentPublicationDal.findPublishedAssetReferences([hiddenOnly]),
     ).toEqual(new Set([hiddenOnly]));
+  });
+});
+
+/**
+ * The authorised set is exactly what the runtime's slots emit
+ * (`buildStorefrontContent`), not a second reading of its rules.
+ */
+describe("public media follows the runtime's slots", () => {
+  it("does not serve an enabled section's media when a disabled section shares its id", async () => {
+    const twin = randomUUID();
+    await publish(
+      await templateRevision(
+        indexId,
+        doc([
+          section("hero", true, { image: media(twin) }),
+          section("hero", false, { text: "Off" }),
+        ]),
+      ),
+    );
+
+    expect(await visitorReads(twin)).toBe("not-published");
+  });
+
+  it("does not serve media of a visible section whose id cannot be a slot", async () => {
+    const invalid = randomUUID();
+    const valid = randomUUID();
+    await publish(
+      await templateRevision(
+        indexId,
+        doc([
+          section("hero.long", true, { image: media(invalid) }),
+          section("hero", true, { image: media(valid) }),
+        ]),
+      ),
+    );
+
+    expect(await visitorReads(invalid)).toBe("not-published");
+    expect(await visitorReads(valid)).toBe("found");
+  });
+
+  it("serves only the surviving row's media when a later visible row overwrites a slot", async () => {
+    const overwritten = randomUUID();
+    const surviving = randomUUID();
+    await publish(
+      await templateRevision(
+        indexId,
+        doc([
+          section("hero", true, { image: media(overwritten) }),
+          section("hero", true, { image: media(surviving) }),
+        ]),
+      ),
+    );
+
+    expect(await visitorReads(overwritten)).toBe("not-published");
+    expect(await visitorReads(surviving)).toBe("found");
+  });
+
+  it("serves a hidden-only asset a visible slot still shows through a pasted storefront media URL", async () => {
+    const pasted = randomUUID();
+    const legacyPasted = randomUUID();
+    await publish(
+      await templateRevision(
+        indexId,
+        doc([
+          section("promo", false, {
+            image: media(pasted),
+            other: media(legacyPasted),
+          }),
+          section("hero", true, {
+            image: { src: publishedMediaPath(pasted, keyOf(pasted)), alt: "" },
+            // An older pasted URL with no version.
+            poster: publishedMediaPath(legacyPasted),
+          }),
+        ]),
+      ),
+    );
+
+    expect(await visitorReads(pasted)).toBe("found");
+    expect(await visitorReads(pasted, false)).toBe("found");
+    expect(await visitorReads(legacyPasted, false)).toBe("found");
+    expect(await visitorReads(legacyPasted)).toBe("found");
+  });
+
+  it("does not serve a hidden-only asset when no visible slot names it", async () => {
+    const hiddenOnly = randomUUID();
+    const unrelated = randomUUID();
+    await publish(
+      await templateRevision(
+        indexId,
+        doc([
+          section("promo", false, { image: media(hiddenOnly) }),
+          section("hero", true, {
+            poster: publishedMediaPath(unrelated, keyOf(unrelated)),
+          }),
+        ]),
+      ),
+    );
+
+    expect(await visitorReads(hiddenOnly)).toBe("not-published");
+    expect(await visitorReads(hiddenOnly, false)).toBe("not-published");
+  });
+
+  it("does not let a pasted URL authorise a version the publication never referenced", async () => {
+    // Another tenant's asset, or another version of this one: a pasted path
+    // only selects among references the content itself holds.
+    const foreign = randomUUID();
+    const own = randomUUID();
+    await publish(
+      await templateRevision(
+        indexId,
+        doc([
+          section("hero", true, {
+            image: media(own),
+            foreign: publishedMediaPath(foreign, keyOf(foreign)),
+            otherVersion: publishedMediaPath(own, `assets/${own}-old.png`),
+          }),
+        ]),
+      ),
+    );
+
+    expect(await visitorReads(foreign)).toBe("not-published");
+    expect(await visitorReads(own)).toBe("found");
+    const live = await first<{ publicationId: string }>(
+      `SELECT r.content_publication_id AS publicationId
+         FROM storefronts s INNER JOIN storefront_releases r ON r.id = s.active_release_id
+        WHERE s.id = ?1`,
+      storefrontId,
+    );
+    const keys = await storefrontContentPublicationDal.listPublishedAssetKeys(
+      live!.publicationId,
+    );
+    expect(keys.get(own)).toEqual(new Set([keyOf(own)]));
   });
 });
