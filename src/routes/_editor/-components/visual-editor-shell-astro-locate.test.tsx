@@ -1567,6 +1567,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
           name: "Code",
         }),
       );
+    const switchToDesign = () =>
+      fireEvent.click(
+        within(document.querySelector("header")!).getByRole("button", {
+          name: "Design",
+        }),
+      );
 
     it("D2: in Code mode a confirmed click stays a locate (L1.5a): Code stays shown and nothing is written", async () => {
       modelCurrentBridge();
@@ -1591,6 +1597,44 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(
         screen.getByRole("textbox", { name: "Code editor" }),
       ).toBeTruthy();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      // Codex review P3: the locate stored no selection, so back in Design
+      // the Inspector offers no input for the section.
+      switchToDesign();
+      await flush();
+      openInspectorContent();
+      expect(astroContent()).toBeNull();
+      expect(basisPosts()).toHaveLength(0);
+    });
+
+    // Codex review P3: on a frame without the basis path (an older preview)
+    // a confirmed click only locates; Design then has no selection whose
+    // inputs could never be sent.
+    it("D2: a locate-only click on a frame without the basis path leaves no selection for Design to show inputs for", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      await settled(context, HOME, V2_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      boundaryClick(1);
+      expect(
+        await screen.findByRole(
+          "textbox",
+          { name: "Code editor" },
+          { timeout: 15_000 },
+        ),
+      ).toBeTruthy();
+      switchToDesign();
+      await flush();
+      openInspectorContent();
+      expect(astroContent()).toBeNull();
+      expect(
+        within(inspectorPanel()).queryByRole("textbox", { name: "Hero title" }),
+      ).toBeNull();
       expect(updateSectionProps).not.toHaveBeenCalled();
     });
 
@@ -2835,17 +2879,20 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         expect(bar.textContent).toBe("");
       });
 
-      it("a new selection clears the old hint from the bar", async () => {
+      // Codex review P3: a click in Code is a locate only, so it no longer
+      // selects the section again (it used to, with a second basis token).
+      // Like any other click it clears the old hint, and selects nothing.
+      it("a click in Code is a locate only: it clears the old hint from the bar and selects nothing", async () => {
         await heroWithHint();
         await openInCode();
         const bar = statusBar()!;
         expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
 
-        // A confirmed click on the section again: a new selection.
+        // A confirmed click on the section, in Code: located, not selected.
         boundaryClick(2);
         await flush();
 
-        expect(basisPosts()).toHaveLength(2);
+        expect(basisPosts()).toHaveLength(1);
         expect(statusBar()).toBe(bar);
         expect(bar.getAttribute("data-astro-design-status-bar")).toBe("none");
         expect(bar.textContent).toBe("");
