@@ -250,9 +250,86 @@ describe("readRegisteredStaticPages", () => {
         ],
       },
     ],
+    // The files below exist with matching hashes: only the shape rule
+    // that ties a page's path to its HTML refuses them.
+    [
+      "a page path that names another page's HTML",
+      {
+        staticPages: [
+          { path: "/about", artifactPath: "runtime/client/index.html", sha256: SHA_HOME },
+        ],
+      },
+    ],
+    [
+      "one HTML file registered for two pages",
+      {
+        staticPages: [
+          { path: "/", artifactPath: "runtime/client/index.html", sha256: SHA_HOME },
+          { path: "/home", artifactPath: "runtime/client/index.html", sha256: SHA_HOME },
+        ],
+      },
+    ],
+    [
+      "an HTML file that only ends in index.html",
+      {
+        staticPages: [
+          {
+            path: "/foo",
+            artifactPath: "runtime/client/fooindex.html",
+            sha256: SHA_ACCOUNT,
+          },
+        ],
+      },
+    ],
   ])("refuses a registration with %s, never reading it as no pages", (_, extra) => {
     expect(
-      readRegisteredStaticPages(manifest({ ...runtime, ...extra })).ok,
+      readRegisteredStaticPages(
+        manifest({ ...runtime, ...extra }, [
+          ...uploaded,
+          { path: "runtime/client/fooindex.html", sha256: SHA_ACCOUNT },
+        ]),
+      ).ok,
     ).toBe(false);
+  });
+});
+
+describe("frameworks outside the allow list", () => {
+  it("registers nothing and refuses nothing for an Astro build that claims SSG, as before", () => {
+    expect(
+      registerThemeStaticPages({
+        buildInput: buildInput({
+          framework: "astro",
+          contentSnapshot: snapshot([
+            { templateType: "index", renderPolicy: { mode: "ssg" } },
+            {
+              templateType: "page",
+              routePath: "/about",
+              renderPolicy: { mode: "ssg" },
+            },
+          ]),
+        }),
+        clientAssetsDirectory: "runtime/client",
+        files: uploaded,
+      }),
+    ).toEqual([]);
+  });
+
+  it("registers nothing and refuses nothing for a Start build with its own build config", () => {
+    expect(
+      registerThemeStaticPages({
+        buildInput: buildInput({
+          buildMode: "native",
+          contentSnapshot: snapshot([
+            {
+              templateType: "account",
+              routePath: "/account",
+              renderPolicy: { mode: "ssg" },
+            },
+          ]),
+        }),
+        clientAssetsDirectory: "runtime/client",
+        files: uploaded,
+      }),
+    ).toEqual([]);
   });
 });

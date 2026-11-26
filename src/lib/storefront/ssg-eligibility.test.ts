@@ -54,10 +54,84 @@ describe("SSG page eligibility (server allow list)", () => {
         "src/components/Header.tsx",
         "src/components/Footer.tsx",
         "src/morph/content.ts",
+        // Every route module is loaded while the home is prerendered (the
+        // generated route tree imports them all), so they and everything
+        // they import are part of the render input too.
+        "src/routes/account.tsx",
+        "src/routes/order-transfer.tsx",
       ]),
     );
-    // A route the home never renders is not part of its closure.
-    expect(closure).not.toContain("src/routes/account.tsx");
+  });
+
+  it.each([
+    "src/routes/index.lazy.tsx",
+    "src/routes/index.loader.ts",
+    "src/routes/index.component.tsx",
+    "src/routes/index.errorComponent.tsx",
+    "src/routes/index.notFoundComponent.tsx",
+    "src/routes/index.pendingComponent.tsx",
+    "src/routes/__root.lazy.tsx",
+  ])("refuses the home once a route companion %s is added", (path) => {
+    const files = [
+      ...starter(),
+      { path, content: "export const Route = {};\n" },
+    ];
+    expect(
+      resolveSsgPageEligibility({ framework: "tanstack-start", files, routePath: "/" }),
+    ).toMatchObject({ eligible: false, code: "SSG_PAGE_SOURCE_NOT_VERIFIED" });
+  });
+
+  it("refuses the home once any other route is added or its module changes (its top level runs at prerender)", () => {
+    const added = [
+      ...starter(),
+      {
+        path: "src/routes/about.tsx",
+        content:
+          'import { createFileRoute } from "@tanstack/react-router";\nexport const Route = createFileRoute("/about")({ component: () => null });\n',
+      },
+    ];
+    const sideEffect = edit(starter(), "src/routes/account.tsx", (content) =>
+      `${content}\nglobalThis.__price = 1;\n`,
+    );
+    for (const files of [added, sideEffect]) {
+      expect(
+        resolveSsgPageEligibility({ framework: "tanstack-start", files, routePath: "/" }),
+      ).toMatchObject({ eligible: false, code: "SSG_PAGE_SOURCE_NOT_VERIFIED" });
+    }
+  });
+
+  it.each([
+    [
+      "a tsconfig that aliases a package to a workspace file",
+      "tsconfig.json",
+      JSON.stringify({
+        compilerOptions: { paths: { "@tanstack/react-router": ["src/evil.tsx"] } },
+      }),
+    ],
+    [
+      "a jsconfig that aliases a package",
+      "jsconfig.json",
+      JSON.stringify({ compilerOptions: { paths: { react: ["src/evil.tsx"] } } }),
+    ],
+    ["a route config", "tsr.config.json", JSON.stringify({ quoteStyle: "double" })],
+  ])("refuses the home with %s", (_, path, content) => {
+    const files = [
+      ...starter(),
+      { path, content },
+      { path: "src/evil.tsx", content: "export {};\n" },
+    ];
+    expect(
+      resolveSsgPageEligibility({ framework: "tanstack-start", files, routePath: "/" }),
+    ).toMatchObject({ eligible: false, code: "SSG_PAGE_SOURCE_NOT_VERIFIED" });
+  });
+
+  it("refuses the home once package.json is not the Starter's", () => {
+    const files = edit(starter(), "package.json", (content) =>
+      content.replace(/\}\s*$/, ',\n  "imports": { "#x": "./src/evil.tsx" }\n}\n'),
+    );
+    expect(
+      resolveSsgPageEligibility({ framework: "tanstack-start", files, routePath: "/" }),
+    ).toMatchObject({ eligible: false, code: "SSG_PAGE_SOURCE_NOT_VERIFIED" });
   });
 
   it("refuses the home once a shared header in its closure is edited (it could read the cart)", () => {

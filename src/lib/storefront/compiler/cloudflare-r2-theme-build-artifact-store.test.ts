@@ -583,6 +583,24 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
       });
     });
 
+    it("persists an Astro build that claims SSG exactly as before, registering nothing", async () => {
+      const { r2Bucket, storage } = createMockR2();
+      const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+      const result = await store.persistBuildArtifacts({
+        build: createDummyBuild(),
+        buildInput: { ...starterInput({ mode: "ssg" }, "account"), framework: "astro" },
+        artifacts: startArtifacts(),
+        runnerManifest,
+      });
+      expect(result.manifest.runtime).toEqual({
+        kind: "cloudflare-worker",
+        workerEntry: "runtime/server/index.js",
+        clientAssetsDirectory: "runtime/client",
+        previewEntry: "preview/index.html",
+      });
+      expect(storage.size).toBe(startArtifacts().length + 1);
+    });
+
     it("refuses an ineligible SSG claim before writing anything", async () => {
       const { r2Bucket, storage } = createMockR2();
       const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
