@@ -64,6 +64,13 @@ export type PendingContentEntry = {
    * every one of them is gone.
    */
   resetProps?: readonly string[];
+  /**
+   * Astro only (M2 PR 3, re-review N1): the instance identity and Core's
+   * component digest a write was sent with, set on the sent entry only. A
+   * resend of that unanswered write sends them again, as first sent; Core
+   * verifies them again. Absent on every Start write.
+   */
+  astroIdentity?: Readonly<{ identity: string; componentDigest: string }>;
 };
 
 /**

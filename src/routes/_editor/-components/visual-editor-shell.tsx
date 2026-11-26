@@ -4211,11 +4211,18 @@ export function VisualEditorShell({
                     throw draftConflictFailure();
                   }
                 }
+                // Re-review N1: the sent entry keeps the identity it was sent
+                // with, so a resend of it (unanswered) goes exactly as first
+                // sent, identity and digest included, and Core answers it
+                // as any write: landed, or refused by its CAS.
+                if (replay?.resend) astroIdentity = entry.astroIdentity ?? null;
                 sentDraftGeneration =
                   entry.expectedDraftGeneration ?? generation;
                 reportSent(sentDraftGeneration);
                 sentTemplateId = templateId;
-                sentEntry = entry;
+                sentEntry = astroIdentity
+                  ? { ...entry, astroIdentity }
+                  : entry;
                 return updatePropsMutation.mutateAsync({
                   templateId,
                   sectionId: entry.sectionId,
@@ -4944,14 +4951,14 @@ export function VisualEditorShell({
         link !== null ||
         Object.prototype.hasOwnProperty.call(sent, "resetProps");
       if (!isRun) refused.set(key, sent.sectionId);
-      // Codex review (unanswered resend): an Astro resend carries no
-      // identity (it goes exactly as first sent, and the first send's proof
-      // is not kept), and Core refuses it as preview-identity-legacy before
-      // reading or writing anything. That answers the resend only: the
-      // first write may still have landed. It stays held as unanswered,
-      // with what it completes and the copy it was composed on, so a later
-      // read-back that shows it is taken as landed; it is not sent again in
-      // this press.
+      // A resend goes exactly as first sent, an Astro write's identity and
+      // digest included (`astroIdentity`, re-review N1). Should Core still
+      // refuse one as preview-identity-legacy (a write held from before its
+      // identity was kept), that answers the resend only: the first write
+      // may have landed. It is read back once, as a resend refused out of
+      // date is (`refusedAt`): landed is confirmed; anything else is
+      // released as moved, so it is never sent again on its own and no
+      // later write is held behind it. Never a loop.
       if (
         parseSectionSourceRefusal(message ?? "")?.reason ===
         "preview-identity-legacy"
@@ -4961,6 +4968,11 @@ export function VisualEditorShell({
         if (link) unconfirmedResetLinksRef.current.set(key, link);
         if (record) unconfirmedRecordersRef.current.set(key, record);
         syncUnconfirmedContentCount();
+        await settleUnconfirmedContent({ refusedAt: new Set([key]) }).catch(
+          () => {
+            // No answer to the read: still unknown, so still held.
+          },
+        );
         return;
       }
       const templateId =
@@ -17485,6 +17497,9 @@ export function VisualEditorShell({
               throw draftConflictFailure();
             }
           }
+          // Re-review N1: a resend goes as first sent, the identity it was
+          // sent with included.
+          if (resend) astroIdentity = resend.sent.astroIdentity ?? null;
           reportSent(expectedDraftGeneration);
           const sent =
             resend?.sent ??
@@ -17495,6 +17510,7 @@ export function VisualEditorShell({
               routePath: routePathForTemplate(templateId),
               expectedSourceGeneration: sourceGeneration,
               expectedDraftGeneration,
+              ...(astroIdentity ? { astroIdentity } : {}),
             });
           sentEntry = sent;
           return updatePropsMutation.mutateAsync({
