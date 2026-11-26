@@ -1546,6 +1546,20 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(updateSectionProps).not.toHaveBeenCalled();
     });
 
+    it("D2: the selection opens the Inspector on its Content tab", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      await selectHero();
+
+      const contentTab = within(inspectorPanel()).getByRole("button", {
+        name: "Content",
+        hidden: true,
+      });
+      await waitFor(() =>
+        expect(contentTab.getAttribute("aria-pressed")).toBe("true"),
+      );
+      expect(astroContent()).not.toBeNull();
+    });
+
     it("D2: Open in Code is an explicit action of the selected section", async () => {
       readRouteBindings.mockResolvedValue(bindingView());
       const token = await selectHero();
