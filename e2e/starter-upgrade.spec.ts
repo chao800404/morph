@@ -18,7 +18,9 @@ import { execLocalD1, queryLocalD1 } from "./helpers/editor-writes-paused";
 import {
   expectHydrated,
   savedField,
+  serverFn,
   signedInPage,
+  THEMES,
 } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -28,6 +30,7 @@ import {
 } from "./native-compat";
 import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../src/lib/storefront/starter-theme-v3-files";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "../src/lib/storefront/compiler/theme-preview-dev-server";
@@ -37,6 +40,7 @@ import {
   laneStarterVersion,
   onClientLane,
 } from "./helpers/client-lane-theme";
+import { insertThrowawayTheme } from "./helpers/throwaway-theme";
 
 /**
  * The Starter upgrade on the workspace the editor provisions, the way an
@@ -985,5 +989,159 @@ test.describe("Starter upgrade, reviewed by the author", () => {
       if (restore.length > 0) await save(page, restore);
       setStarterVersion(LANE_STARTER);
     }
+  });
+});
+
+/**
+ * An unrecorded Starter 31 Theme, upgraded to 32 through the review, on the
+ * full Start lane. Starter 32's content module reads through a server
+ * function, so the server applies it only to a Theme that records `start`
+ * (STARTER_UPGRADE_START_PREVIEW_REQUIRED, nothing written otherwise). The
+ * review says so before Apply and blocks Apply; its "Switch Live Preview to
+ * Full Start" records the runtime through the editor's own compare-and-set
+ * and changes nothing else; Apply is then the author's separate action.
+ *
+ * Its own Theme: provisioned with the current Starter (recording start, as
+ * the editor requires for that), then made what a Theme created before 32
+ * is: Starter 31's content module, Starter 31 recorded, no runtime recorded.
+ * Only the content module differs between the two Starters' workspaces
+ * (starter-workspace-v31.test.ts).
+ */
+test.describe("an unrecorded Starter 31 Theme upgraded through the review", () => {
+  test.skip(
+    !START_PREVIEW || onClientLane(),
+    "Starter 32 is applied only on a Theme that records Full Start; the full Start job runs this. The client lane's Themes stay on Starter 31.",
+  );
+
+  const PREVIEW_SERVER =
+    "/src/server/storefront/storefront-theme-preview-server.serverFn.ts";
+
+  test("explains Full Start before Apply; the switch changes no file, version or content; Apply then records 32 and renders it", async ({
+    page,
+  }) => {
+    test.setTimeout(6 * 60_000);
+    const own = {
+      ...themeScopeFromEditorPath(EDITOR_PATH!),
+      themeId: randomUUID(),
+    };
+    const row = () =>
+      d1(
+        `SELECT preview_runtime, json_extract(metadata, '$.starterTemplateVersion') AS version FROM storefront_themes WHERE id = '${own.themeId}'`,
+      )[0] as { preview_runtime: string | null; version: number } | undefined;
+    const callServer = async (module: string, name: string, data: unknown) =>
+      (await serverFn(page, module, name, data)) as {
+        success: boolean;
+        message?: string;
+        data?: any;
+      };
+    const filesOf = async () => {
+      const listed = await callServer(SERVER_FN_MODULE, "listStorefrontThemeFiles", own);
+      expect(listed.success, listed.message).toBe(true);
+      return Object.fromEntries(
+        (listed.data.files as { path: string; content: string }[]).map(
+          (file) => [file.path, file.content],
+        ),
+      );
+    };
+    const documentsOf = async () => {
+      const editor = await callServer(THEMES, "getStorefrontThemeEditor", own);
+      expect(editor.success, editor.message).toBe(true);
+      return Object.fromEntries(
+        (editor.data.templates as { id: string; document: unknown }[]).map(
+          (template) => [template.id, template.document],
+        ),
+      );
+    };
+
+    insertThrowawayTheme({
+      themeId: own.themeId,
+      storefrontId: own.storefrontId,
+      name: `upgrade-start-${own.themeId}`,
+      previewRuntime: "start",
+      // An empty row, for the editor to provision the current Starter into.
+      rowOnly: true,
+    });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const provisioned = await callServer(THEMES, "getStorefrontThemeEditor", own);
+    expect(provisioned.success, provisioned.message).toBe(true);
+    const home = (provisioned.data.templates as { id: string; type: string }[]).find(
+      (template) => template.type === "index",
+    )!;
+    expect((await filesOf())[CONTENT_MODULE]).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+
+    // What a Theme created from Starter 31 holds: its module, its version,
+    // and no recorded runtime.
+    const saved = await writeThemeFiles(page, own, [
+      { path: CONTENT_MODULE, content: LEGACY_STARTER_THEME_CONTENT_MODULE_V31_SOURCE },
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    execLocalD1(
+      `UPDATE storefront_themes SET metadata = json_set(COALESCE(metadata, '{}'), '$.starterTemplateVersion', 31) WHERE id = '${own.themeId}'`,
+    );
+    const cleared = await callServer(PREVIEW_SERVER, "setThemePreviewRuntime", {
+      ...own,
+      previewRuntime: null,
+      expectedPreviewRuntime: "start",
+    });
+    expect(cleared.success, cleared.message).toBe(true);
+    expect(row()).toEqual({ preview_runtime: null, version: 31 });
+    const filesBefore = await filesOf();
+    const documentsBefore = await documentsOf();
+
+    const applies: string[] = [];
+    page.on("request", (request) => {
+      if (isServerFunctionCall(request.url(), "applyStorefrontStarterUpgrade")) {
+        applies.push(request.url());
+      }
+    });
+    await page.goto(
+      `/store/${own.storefrontId}/themes/${own.themeId}/editor?templateId=${home.id}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.waitForTimeout(4_000);
+
+    // 1. The review says so before Apply, and Apply is blocked.
+    const dialog = await openReview(page);
+    const requirement = dialog.getByRole("alert");
+    await expect(requirement).toContainText(
+      "This upgrade needs the full Start Live Preview.",
+    );
+    await expect(requirement).toContainText(CONTENT_MODULE);
+    const apply = dialog.getByRole("button", { name: /^Apply selected$/ });
+    await expect(apply).toBeDisabled();
+
+    // 2. The switch records Full Start and changes nothing else.
+    const switched = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        isServerFunctionCall(response.url(), "setThemePreviewRuntime"),
+      { timeout: 60_000 },
+    );
+    await dialog
+      .getByRole("button", { name: "Switch Live Preview to Full Start" })
+      .click();
+    assertServerFnSuccess(await (await switched).text());
+    await expect(dialog.getByRole("alert")).toHaveCount(0, { timeout: 30_000 });
+    await expect(apply).toBeEnabled();
+    expect(row()).toEqual({ preview_runtime: "start", version: 31 });
+    expect(await filesOf()).toEqual(filesBefore);
+    expect(await documentsOf()).toEqual(documentsBefore);
+    expect(applies, "switching applies nothing").toEqual([]);
+
+    // 3. Applying is the author's own action: Starter 32 is recorded and runs.
+    await applyReview(page, dialog, /^Apply selected$/);
+    expect(applies).toHaveLength(1);
+    expect(row()).toEqual({ preview_runtime: "start", version: 32 });
+    expect((await filesOf())[CONTENT_MODULE]).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    await page.goto(
+      `/store/${own.storefrontId}/themes/${own.themeId}/editor?templateId=${home.id}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(
+      previewFrame(page).locator('[data-storefront-section-id="starter-hero"]'),
+    ).toBeVisible({ timeout: 120_000 });
   });
 });
