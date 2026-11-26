@@ -63,8 +63,10 @@ import {
 } from "../theme-framework/theme-toolchains";
 import {
   createThemePrerenderContent,
+  MAX_PRERENDER_RECORD_BYTES,
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   platformPrerenderFailure,
+  PRERENDER_RECORD_UNREADABLE,
   THEME_PRERENDER_CONTENT_FILE,
   type NativePrerenderContent,
 } from "./theme-prerender-content";
@@ -82,13 +84,12 @@ class PlatformPrerenderContentError extends Error {
   }
 }
 
-/** A failed build's refused-read record larger than this is not read. */
-const MAX_FAILED_BUILD_RECORD_BYTES = 1024 * 1024;
-
 /**
- * Runs the platform prerender build. When it fails and its content endpoint
- * recorded a refused read (theme-prerender-content.ts), the failure names the
- * path; the build fails either way.
+ * Runs the platform prerender build. A read its content endpoint refused
+ * (theme-prerender-content.ts) fails it, named: when the build failed on the
+ * read, and when the Theme caught it and the build exited 0 having
+ * prerendered component defaults. Thrown before the caller collects any
+ * artifact.
  */
 async function runPlatformPrerenderBuild(
   workspace: string,
@@ -97,24 +98,35 @@ async function runPlatformPrerenderBuild(
   const recordPath = path.join(workspace, NATIVE_PRERENDER_REFUSED_READS_PATH);
   // Only this build's endpoint writes it, never the Theme's files.
   await fs.rm(recordPath, { force: true });
-  try {
-    await build();
-  } catch (error) {
+  // No record: no read was refused. A record that exists but cannot be
+  // read still says one was.
+  const readRecord = async (): Promise<
+    Uint8Array | typeof PRERENDER_RECORD_UNREADABLE | undefined
+  > => {
     const size = await fs
       .stat(recordPath)
       .then((stat) => stat.size)
       .catch(() => undefined);
-    const record =
-      size !== undefined && size <= MAX_FAILED_BUILD_RECORD_BYTES
-        ? await fs.readFile(recordPath).catch(() => undefined)
-        : undefined;
+    if (size === undefined) return undefined;
+    if (size > MAX_PRERENDER_RECORD_BYTES) return PRERENDER_RECORD_UNREADABLE;
+    try {
+      return await fs.readFile(recordPath);
+    } catch {
+      return PRERENDER_RECORD_UNREADABLE;
+    }
+  };
+  try {
+    await build();
+  } catch (error) {
     const refused = platformPrerenderFailure(
       error instanceof Error ? error.message : String(error),
-      record,
+      await readRecord(),
     );
     if (refused) throw new PlatformPrerenderContentError(refused);
     throw error;
   }
+  const refused = platformPrerenderFailure("", await readRecord());
+  if (refused) throw new PlatformPrerenderContentError(refused);
 }
 
 function getMimeType(filePath: string): string {

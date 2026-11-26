@@ -392,3 +392,60 @@ export const Route = createFileRoute('/landing')({
     );
   },
 );
+
+it(
+  "fails the build, naming the path and writing no artifact, when a prerendered page catches a refused read and renders defaults",
+  { timeout: 240_000 },
+  async () => {
+    const input = nativeInput();
+    const result = await new LocalViteThemeBuildRunner({
+      maxDurationMs: 200_000,
+    }).run({
+      ...input,
+      buildId: "native-prerender-caught-read",
+      files: input.files.map((file) =>
+        file.path === "src/routes/landing.tsx"
+          ? {
+              ...file,
+              // The read is refused; the Theme catches it, so Start reports
+              // the page as built — with defaults in place of content.
+              content: `import { createFileRoute } from '@tanstack/react-router';
+import { createServerFn } from '@tanstack/react-start';
+import { morph } from '@morph/sdk/start';
+
+const readOther = createServerFn().handler(async () => {
+  try {
+    const page = await morph.pages.get('/not-prerendered');
+    return String(page.hero?.title ?? 'DEFAULT_TITLE');
+  } catch {
+    return 'CAUGHT_DEFAULT';
+  }
+});
+
+export const Route = createFileRoute('/landing')({
+  loader: () => readOther(),
+  component: () => <h1>{Route.useLoaderData()}</h1>,
+});
+`,
+            }
+          : file,
+      ),
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect("artifacts" in result).toBe(false);
+    expect(result.errorMessage).toMatch(
+      /^PLATFORM_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: \/not-prerendered \(PLATFORM_PRERENDER_PATH_NOT_SEALED: /,
+    );
+    expect(result.diagnosticsJson?.stage).toBe("compiler");
+    expect(result.diagnosticsJson?.errors?.[0]?.code).toBe(
+      "PLATFORM_PRERENDER_CONTENT_UNAVAILABLE",
+    );
+    expect(result.diagnosticsJson?.refusedReads).toEqual([
+      {
+        path: "/not-prerendered",
+        reason: expect.stringMatching(/^PLATFORM_PRERENDER_PATH_NOT_SEALED: /),
+      },
+    ]);
+  },
+);
