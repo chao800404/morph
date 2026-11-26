@@ -16,6 +16,7 @@ import {
   previewContentDigest,
   type ThemePreviewContentSnapshot,
 } from "./theme-preview-content";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 
 /**
  * A start whose plan differs from the running server's only in its draft
@@ -57,15 +58,14 @@ async function snapshot(
   marker: string,
   contentTicket: number,
 ): Promise<ThemePreviewContentSnapshot> {
-  const body = {
+  const body = previewContentAsCoreWrites({
     templates: {
       index: {
         slots: { hero: { headline: marker }, isolation: { marker } },
         hiddenSlots: [],
       },
     },
-    pages: {},
-  };
+  });
   return {
     ...body,
     contentTicket,

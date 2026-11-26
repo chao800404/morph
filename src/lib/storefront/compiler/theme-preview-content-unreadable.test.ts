@@ -8,6 +8,7 @@ import {
   themePreviewContentModuleSource,
   themePreviewContentPluginSource,
 } from "./theme-preview-content";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 import {
   THEME_PREVIEW_START_CONTENT_ORIGIN,
   themePreviewStartWorkerSource,
@@ -50,6 +51,12 @@ const VALID = {
 /** What Core writes for a store with no Document at all. */
 const nothingStored = () =>
   createThemePreviewContentSnapshot({ templates: [], pages: [] });
+
+describe("the fixture helper for Core-shaped snapshots", () => {
+  it("gives exactly what Core writes when there is no Document", async () => {
+    expect(previewContentAsCoreWrites()).toEqual(await nothingStored());
+  });
+});
 
 /** Snapshots a reader cannot answer the home page from. */
 const UNREADABLE_SHAPES: readonly (readonly [string, unknown])[] = [

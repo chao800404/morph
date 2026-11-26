@@ -10,6 +10,7 @@ import {
 } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "./theme-preview-dev-server";
+import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
 import {
   PREVIEW_ADDRESS_PROBE_BODY,
   PREVIEW_ADDRESS_PROBE_PATH,
@@ -98,6 +99,7 @@ const start = (
     entry: "src/pages/index.tsx",
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
+    previewContent: previewContentAsCoreWrites(),
     ...overrides,
   });
 
