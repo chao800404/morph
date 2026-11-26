@@ -820,6 +820,25 @@ export const Route = createFileRoute("/sdk")({ loader: () => read() });
     },
   );
 
+  it.each(["build", "preview-server"] as const)(
+    "puts a Start runtime build's prerender server on 127.0.0.1: %s",
+    (mode) => {
+      // Start prerenders by fetching a Vite preview server it starts itself.
+      // On Vite's default "localhost" the build container binds ::1 while
+      // the fetch connects to 127.0.0.1 (ECONNREFUSED; PR #461 CI, a home
+      // set to SSG). The native wrapper pins the same host. Only the runtime
+      // build sets it; nothing else starts a preview server from this config.
+      const config =
+        plan(mode).workspaceFiles.find(
+          (file) => file.path === "/workspace/vite.config.ts",
+        ) ?? null;
+      const source = config && "content" in config ? config.content : "";
+      expect(source).toContain(
+        'preview: isStartRuntimeBuild ? { host: "127.0.0.1" } : undefined,',
+      );
+    },
+  );
+
   it("resolves @morph/sdk and @morph/sdk/start through the generated Vite config, and nothing else under the name", async () => {
     const fs = await import("node:fs");
     const os = await import("node:os");

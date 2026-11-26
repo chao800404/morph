@@ -1126,6 +1126,13 @@ hmr: isLivePreview
   ? { path: ${JSON.stringify(THEME_PREVIEW_SERVER_HMR_PATH)} }
   : undefined,
   },
+  // Start prerenders by fetching a Vite preview server it starts on
+  // "localhost". In the build container that name binds one loopback family
+  // while the fetch connects to the other (ECONNREFUSED), so the runtime
+  // build puts it on one address both sides agree on, as the native wrapper
+  // does (tanstack-start-native-wrapper.ts). Only that build's own prerender
+  // server listens here.
+  preview: isStartRuntimeBuild ? { host: "127.0.0.1" } : undefined,
   build: {
 outDir: isStartRuntimeBuild
   ? ${hostPathLiteral("/dist/runtime")}
