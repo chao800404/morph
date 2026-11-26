@@ -78,7 +78,9 @@ export const RECORD_MODE_SPECS = /** @type {const} */ ([
   "code-controlled-field.spec.ts",
   "spread-override-binding.spec.ts",
   "binding-acceptance-c.spec.ts",
+  "binding-acceptance-c-rest.spec.ts",
   "binding-acceptance-p.spec.ts",
+  "binding-acceptance-p-rest.spec.ts",
 ]);
 
 /**

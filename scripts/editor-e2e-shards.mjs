@@ -14,13 +14,20 @@ import path from "node:path";
 // projected 989 s of test bodies against 447 s for shard 6. Seven whole files
 // moved; the mean per-file seconds of those four runs project 650 / 651 / 657
 // / 647 / 657 / 665 s. A projection from shared runners, not a measured run.
+// Rebalanced again after editor-writes-auth, binding-acceptance-p and
+// binding-acceptance-c were split along their tests/cases (the heaviest files,
+// 353 / 296 / 262 s): from the same four runs' per-file means, which project
+// 674 / 686 / 686 / 616 / 676 / 664 s (the previous plan projected 658 / 609 /
+// 686 / 616 / 769 / 664 s on the same means). Four whole files moved; the
+// split halves stay beside their former file so no shard builds another
+// binding-acceptance fixture. Projections, not a measured run.
 // New tests/files must still pass check-e2e-shards' full-suite ID comparison.
 // The number of shards is this array's length; the CI matrix, the job names
 // and `pnpm ship`'s required checks are checked against it.
 export const EDITOR_SHARDS = [
   [
     "recovery-editor-writes.spec.ts",
-    "preview-error-recovery.spec.ts",
+    "editor.spec.ts",
     "native-compat-preview.spec.ts",
     "starter-shell-content.spec.ts",
     "theme-path-refused.spec.ts",
@@ -42,7 +49,7 @@ export const EDITOR_SHARDS = [
     "object-position.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "selection-field-frame-navigated.spec.ts",
-    "code-controlled-field.spec.ts",
+    "lost-editor-writes.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "preview-document-reload.spec.ts",
     // Added after the duration measurement above; not in its projection.
@@ -51,6 +58,8 @@ export const EDITOR_SHARDS = [
   ],
   [
     "editor-writes-auth.spec.ts",
+    "editor-writes-auth-other-account.spec.ts",
+    "editor-writes-auth-late-response.spec.ts",
     "starter-upgrade.spec.ts",
     "content-module-transform.spec.ts",
     "text-promotion.spec.ts",
@@ -66,11 +75,12 @@ export const EDITOR_SHARDS = [
     "catalog.spec.ts",
     // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
     "binding-acceptance-c.spec.ts",
+    "binding-acceptance-c-rest.spec.ts",
     "public-svg.spec.ts",
   ],
   [
-    "lost-editor-writes.spec.ts",
-    "editor.spec.ts",
+    "preview-error-recovery.spec.ts",
+    "code-controlled-field.spec.ts",
     "accessibility.spec.ts",
     "source-asset.spec.ts",
     "row-component-content.spec.ts",
@@ -153,6 +163,7 @@ export const EDITOR_SHARDS = [
     "auth-failure.spec.ts",
     // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
     "binding-acceptance-p.spec.ts",
+    "binding-acceptance-p-rest.spec.ts",
     "responsive.spec.ts",
     // Added after the duration measurement above; not in its projection.
     // Beside auth-failure.spec.ts, the other cross-origin refusal.
