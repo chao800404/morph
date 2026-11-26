@@ -23,6 +23,7 @@ describe("planFencedWrite", () => {
       ),
     ).toEqual({
       refused: [],
+      held: [],
       writes: [{ path: HERO, content: "hero v3 + edit", fence: 3 }],
       unchanged: [HELLO],
       ledger: { files: { [HERO]: 3, [HELLO]: 5 }, readAt: {}, generation: 0 },
@@ -42,6 +43,7 @@ describe("planFencedWrite", () => {
       ),
     ).toEqual({
       refused: [HERO],
+      held: [],
       writes: [],
       unchanged: [],
       ledger: { files: { [HERO]: 4 }, readAt: {}, generation: 0 },
