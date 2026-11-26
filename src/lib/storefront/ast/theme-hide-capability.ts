@@ -1599,10 +1599,12 @@ export function createHideCapabilityAnalyzer(
         continue;
       }
       const key = element?.key
-        ? (files.find((file) => file.path === path)?.content ?? "").slice(
-            element.key.start,
-            element.key.end,
-          )
+        ? element.key.literal !== undefined
+          ? JSON.stringify(element.key.literal)
+          : (files.find((file) => file.path === path)?.content ?? "").slice(
+              element.key.start,
+              element.key.end,
+            )
         : null;
       const contentSite =
         instance.sourceRoots.length === 1 &&

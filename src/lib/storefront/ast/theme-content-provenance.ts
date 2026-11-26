@@ -2559,7 +2559,13 @@ export type B1SlotUseAnalysis = Readonly<{
        * be evaluated a second time with the same result (a name, a
        * property path of names, or a literal, on one line).
        */
-      key: Readonly<{ start: number; end: number; repeatable: boolean }> | null;
+      key: Readonly<{
+        start: number;
+        end: number;
+        repeatable: boolean;
+        /** A JSX string attribute's value, decoded: its spelling is not JavaScript. */
+        literal?: string;
+      }> | null;
     }>
   >;
   diagnostics: readonly string[];
@@ -2996,7 +3002,12 @@ function elementPositions(ctx: ModuleContext): B1SlotUseAnalysis["elements"] {
       guardSlot: string | null;
       suspends: boolean;
       guard: { start: number; end: number } | null;
-      key: { start: number; end: number; repeatable: boolean } | null;
+      key: {
+        start: number;
+        end: number;
+        repeatable: boolean;
+        literal?: string;
+      } | null;
     }
   >();
   const repeatable = (node: AnyNode): boolean => {
@@ -3047,6 +3058,14 @@ function elementPositions(ctx: ModuleContext): B1SlotUseAnalysis["elements"] {
       typeof expression.end !== "number"
     ) {
       return { start: 0, end: 0, repeatable: false };
+    }
+    if (value?.type === "StringLiteral") {
+      return {
+        start: expression.start as number,
+        end: expression.end as number,
+        repeatable: true,
+        literal: String((expression as { value?: unknown }).value ?? ""),
+      };
     }
     return {
       start: expression.start as number,
