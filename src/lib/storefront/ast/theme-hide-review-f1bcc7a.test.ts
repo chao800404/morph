@@ -346,3 +346,24 @@ function Home() {
     expectRefused(classify(files), "unsupported-shape", ROUTE);
   });
 });
+
+describe("N4 (review of b4e81b2): a string key is repeated as its value, not its spelling", () => {
+  it("writes a JSX string key the way JavaScript reads it", () => {
+    const files = theme(
+      `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+const rows = [1];
+function Home() {
+  return <main>{rows.map(() => <Hero key='a\\' {...content("hero")} />)}</main>;
+}
+`,
+    );
+    expect(classify(files)).toMatchObject({ kind: "supported" });
+    const out = applyHideGuards(files).files.find((file) => file.path === ROUTE)!.content;
+    expect(() => parseRoute(out)).not.toThrow();
+    expect(out).toContain(`<__MorphSectionGate key={${JSON.stringify("a\\")}} slot={"hero"}`);
+  });
+});
+
