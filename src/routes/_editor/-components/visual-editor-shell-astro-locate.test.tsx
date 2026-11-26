@@ -1000,6 +1000,13 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`, ...START_DATA },
       } as never);
       vi.mocked(syncThemePreviewContent).mockReset();
+      // A write's sync, where a case does not say what Core wrote: refused,
+      // so nothing new is recorded as the basis.
+      vi.mocked(syncThemePreviewContent).mockResolvedValue({
+        success: false,
+        error: "PREVIEW_CONTENT_SYNC_FAILED",
+        message: "not synced in this case",
+      } as never);
       vi.mocked(confirmThemePreviewContent).mockReset();
       vi.mocked(confirmThemePreviewContent).mockResolvedValue({
         success: true,
