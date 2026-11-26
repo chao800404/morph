@@ -26,7 +26,8 @@
  *   state instead.
  *
  * `MorphPageSectionGate` is the same gate for a section read from a loader's
- * page object, which carries its own `_hidden` list.
+ * page object, which carries its own `_hidden` list; it honours the root's
+ * list as well, so a Live Preview Hide applies before the page is read again.
  *
  * The file is the platform's, written into every Start workspace beside the
  * SDK copy and resolved from `@morph/sdk/section-gate`
@@ -67,30 +68,46 @@ function MorphSectionBody(props: { render: () => ReactNode }): ReactNode {
   return props.render();
 }
 
-/** A section read through content(): visibility from the root route's snapshot. */
-export function MorphSectionGate(props: { slot: string; render: () => ReactNode }): ReactNode {
+/** The root route's hidden list: the snapshot its beforeLoad loaded. */
+function useRootHiddenList(): readonly string[] {
   const context = useRouteContext({ from: "__root__" } as never) as unknown;
   const morphContent =
     context && typeof context === "object"
       ? (context as { morphContent?: unknown }).morphContent
       : undefined;
-  const hidden = hiddenList(
+  return hiddenList(
     morphContent && typeof morphContent === "object"
       ? (morphContent as { hiddenSlots?: unknown }).hiddenSlots
       : undefined,
     "The page content",
   );
+}
+
+/** A section read through content(): visibility from the root route's snapshot. */
+export function MorphSectionGate(props: { slot: string; render: () => ReactNode }): ReactNode {
+  const hidden = useRootHiddenList();
   if (hidden.includes(props.slot)) return null;
   return createElement(MorphSectionBody, { render: props.render });
 }
 
-/** A section read from a loader's page object: visibility from that page. */
+/**
+ * A section read from a loader's page object. The classifier admits one only
+ * where the route's loader is proven to return the route's own page
+ * (morph.pages.get(route)), the same document the root route loads, so
+ * both lists describe it. Hidden when either says so: the page's own list,
+ * which is what the loader's values were read with, and the root's, which in
+ * the Live Preview already carries the editor's edit while the loader still
+ * holds the saved page. A Hide therefore shows at once; a Show waits until
+ * the page itself is read again with the section's values.
+ */
 export function MorphPageSectionGate(props: {
   slot: string;
   hidden: unknown;
   render: () => ReactNode;
 }): ReactNode {
-  if (hiddenList(props.hidden, "The page").includes(props.slot)) return null;
+  const live = useRootHiddenList();
+  const page = hiddenList(props.hidden, "The page");
+  if (page.includes(props.slot) || live.includes(props.slot)) return null;
   return createElement(MorphSectionBody, { render: props.render });
 }
 `;
