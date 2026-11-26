@@ -27,7 +27,10 @@
  * the root's hidden list too, the Starter's whole check is wrapped rather
  * than the element inside it, and a list item's key is repeated on its gate.
  *
+ * hide-6 (the review of b4e81b2): the gate also records every slot it has
+ * committed in the document, and a JSX string key is repeated as its value.
+ *
  * Kept apart from the transform so the identity can be read without loading
  * the analysis.
  */
-export const THEME_HIDE_GUARD_VERSION = "hide-5";
+export const THEME_HIDE_GUARD_VERSION = "hide-6";
