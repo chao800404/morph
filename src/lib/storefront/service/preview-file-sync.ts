@@ -35,7 +35,15 @@ export type PreviewFileWrite = Readonly<{ path: string; content: string }>;
  * with a newer one — see `preview-write-fence.ts`.
  */
 export type FencedPreviewFileWrite = PreviewFileWrite &
-  Readonly<{ fence: number }>;
+  Readonly<{
+    fence: number;
+    /**
+     * Not sent by the tab: rewritten because another file changed (Morph's
+     * hide guard). Ordered by generation, and held rather than refused
+     * (`planFencedWrite`).
+     */
+    derived?: boolean;
+  }>;
 
 export type PreviewFileSyncResult =
   | Readonly<{
@@ -118,11 +126,17 @@ export async function syncPreviewFiles(args: {
       skipped.push(file.path);
       continue;
     }
-    writable.push({
-      path: file.path,
-      content: String(file.content),
-      fence: fences.get(file.path) ?? snapshotVersions.get(file.path) ?? 0,
-    });
+    const sent = fences.get(file.path);
+    writable.push(
+      sent !== undefined
+        ? { path: file.path, content: String(file.content), fence: sent }
+        : {
+            path: file.path,
+            content: String(file.content),
+            fence: snapshotVersions.get(file.path) ?? 0,
+            derived: true,
+          },
+    );
   }
 
   // The check above is against the database when it was read; the fence is

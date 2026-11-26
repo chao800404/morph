@@ -361,7 +361,7 @@ export async function startLocalPreviewSidecar(
       case "applyFiles": {
         const applyInput = input as {
           previewId: string;
-          files: readonly { path: string; content: string; fence: number }[];
+          files: readonly { path: string; content: string; fence: number; derived?: boolean }[];
           generation?: unknown;
         };
         const written = await previews.writeFiles(

@@ -1634,7 +1634,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    */
   async writeFiles(
     previewId: string,
-    files: readonly { path: string; content: string; fence?: number }[],
+    files: readonly { path: string; content: string; fence?: number; derived?: boolean }[],
     /** The source generation the sync was checked at; see the sandbox's. */
     generation?: number | null,
   ): Promise<{
@@ -1669,7 +1669,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
 
   private async writeFilesNow(
     previewId: string,
-    files: readonly { path: string; content: string; fence?: number }[],
+    files: readonly { path: string; content: string; fence?: number; derived?: boolean }[],
     generation: number | null,
   ): Promise<{
     changed: readonly string[];
@@ -1718,7 +1718,13 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     const changed: string[] = [];
     const unchanged: string[] = [];
     let invalidated = false;
+    // A derived file the fence held is not written; it stays as it is.
+    const held = new Set(plan.held);
     for (const file of files) {
+      if (held.has(file.path)) {
+        unchanged.push(file.path);
+        continue;
+      }
       if (current[file.path] === file.content) {
         unchanged.push(file.path);
         continue;
