@@ -3744,6 +3744,10 @@ export function VisualEditorShell({
     presentationUnconfirmableRef.current
       ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
       : PREVIEW_PRESENTATION_SYNCING_MESSAGE;
+  /** `isSectionPresentationPageReady`, asked now; assigned beside it. */
+  const sectionPresentationPageReadyNowRef = useRef<() => boolean>(
+    () => false,
+  );
   /**
    * M2 PR 3, the presentation proof on an Astro basis frame: only the
    * section's acknowledged **basis** token, and only while the frame's stamp
@@ -3762,6 +3766,11 @@ export function VisualEditorShell({
       ) {
         return !token.basis;
       }
+      // The page as well, asked now (`expectedSectionPresentations`, its
+      // basis branch): another section's unanswered basis, or a copy of the
+      // page's document newer than the page shows, holds this section too,
+      // at input, at release and where the write leaves.
+      if (!sectionPresentationPageReadyNowRef.current()) return false;
       const documentId =
         routeTemplateIdsRef.current.get(token.templateId) ?? token.templateId;
       const sectionKey = sectionPresentationKey(
@@ -15587,6 +15596,64 @@ export function VisualEditorShell({
   const expectedSectionPresentations =
     useCallback((): ExpectedSectionPresentation[] => {
       const current = presentationContextRef.current;
+      // Lead decision (container run inspector-write-run-01 on 226d1de,
+      // option b with Codex, handoff/2026-11-27/astro-pr3-ready-gate-codex.txt):
+      // an Astro basis frame shows no overlay, so a bound section is never
+      // presented as one there, and a page that expected it never became
+      // ready. On such a frame the page is the sections this round issued
+      // a basis token for, each expected at its own token's overlay
+      // revision (0) and at the copy the editor holds of its document now:
+      // a section whose latest basis is unanswered, or whose document the
+      // editor holds newer than the page shows (another section's answered
+      // write), keeps the page from being ready. Every Start frame, and an
+      // Astro frame without the basis path, is expected exactly as before.
+      const frame = previewFrameRecordRef.current;
+      if (
+        frame &&
+        isAstroBasisFrame(frame.capabilities, previewContentRefreshRef.current)
+      ) {
+        const expected: ExpectedSectionPresentation[] = [];
+        for (const token of latestSectionPresentationRef.current.values()) {
+          if (
+            !token.basis ||
+            token.workspaceKey !== current.workspaceKey ||
+            token.routePath !== current.routePath
+          ) {
+            continue;
+          }
+          const documentId =
+            routeTemplateIdsRef.current.get(token.templateId) ??
+            token.templateId;
+          const template =
+            current.templates.find((candidate) => candidate.id === documentId) ??
+            (current.activeTemplate?.id === documentId
+              ? current.activeTemplate
+              : undefined);
+          const draftGeneration = acceptedPresentationGeneration(
+            contentSnapshotsRef.current.get(documentId),
+            template,
+          );
+          expected.push({
+            workspaceKey: current.workspaceKey,
+            templateId: token.templateId,
+            routePath: current.routePath,
+            sectionId: token.sectionId,
+            documentBasis:
+              typeof draftGeneration === "number" &&
+              Number.isSafeInteger(draftGeneration) &&
+              draftGeneration > 0
+                ? { kind: "existing", draftGeneration }
+                : // A route with no Document of its own, as its basis was
+                  // issued (`newRouteDocument`): until this editor's write to
+                  // it is answered.
+                  routePathFromTemplatePlaceholder(token.templateId) !== null
+                  ? { kind: "new-document", createEpoch: token.templateId }
+                  : null,
+            overlayRevision: token.overlayRevision,
+          });
+        }
+        return expected;
+      }
       return [...sectionModelRef.current.bindings].map(
         ([sectionId, binding]) => {
           const templateId = binding.templateId;
@@ -15648,6 +15715,7 @@ export function VisualEditorShell({
       acknowledged: acknowledgedSectionPresentationRef.current,
     });
   }, [expectedSectionPresentations]);
+  sectionPresentationPageReadyNowRef.current = isSectionPresentationPageReady;
   unconfirmedSectionPresentationsRef.current = () =>
     expectedSectionPresentations()
       .filter((expected) => {
