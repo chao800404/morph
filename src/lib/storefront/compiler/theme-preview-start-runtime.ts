@@ -13,6 +13,8 @@ import {
   THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_CONTENT_MODULE_PATH,
   THEME_PREVIEW_CONTENT_PATH,
+  THEME_PREVIEW_CONTENT_UNREADABLE_BODY,
+  THEME_PREVIEW_CONTENT_UNREADABLE_STATUS,
 } from "./theme-preview-content";
 
 /** The address probe's header naming the content snapshot the Worker reads. */
@@ -168,7 +170,9 @@ const CONTENT_ORIGIN = ${JSON.stringify(THEME_PREVIEW_START_CONTENT_ORIGIN)};
 const CONTENT_PATH = ${JSON.stringify(THEME_PREVIEW_CONTENT_PATH)};
 const previewOutboundRefusal = ${previewOutboundRefusal.toString()};
 
-let snapshot = { templates: {}, pages: {} };
+// None until one is read: a path is never answered from a snapshot this
+// Worker has not read (THEME_PREVIEW_CONTENT_UNREADABLE_BODY).
+let snapshot = null;
 ${contentResolverSource()}
 
 async function readSnapshot() {
@@ -177,13 +181,13 @@ async function readSnapshot() {
   // content sync is picked up by the module runner without a restart, and
   // the two readers never disagree about which one is current.
   const module = await import("./${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}");
-  const read = module.default ?? { templates: {}, pages: {} };
+  const read = module.default ?? null;
   // Nothing orders two imports: one started before a sync rewrote the file
   // can settle after one started later. Its older snapshot never replaces a
   // newer one; an equal ticket (the same content, restamped for the server
   // now running) or a higher one does.
   if (snapshotTicket(read) < snapshotTicket(snapshot)) return;
-  snapshot = JSON.parse(JSON.stringify(read));
+  snapshot = read === null ? null : JSON.parse(JSON.stringify(read));
 }
 
 function snapshotTicket(value) {
@@ -199,10 +203,22 @@ globalThis.fetch = async function morphPreviewFetch(input, init) {
     if (url.pathname !== CONTENT_PATH || request.method !== "GET") {
       return new Response("Not Found", { status: 404 });
     }
-    await readSnapshot();
+    // A data file that is missing or not JSON fails its import, and a
+    // snapshot without this path's entry resolves to null: either way the
+    // read is refused, never answered with empty content.
+    let content = null;
+    try {
+      await readSnapshot();
+      content = previewContentForPath(url.searchParams.get("path") || "/");
+    } catch {
+      content = null;
+    }
     return new Response(
-      JSON.stringify(previewContentForPath(url.searchParams.get("path") || "/")),
-      { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } },
+      JSON.stringify(content || ${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}),
+      {
+        status: content ? 200 : ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS},
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      },
     );
   }
   const refusal = previewOutboundRefusal(request.url);
@@ -230,8 +246,8 @@ export default {
       let instance = "";
       try {
         await readSnapshot();
-        ticket = Number.isSafeInteger(snapshot.contentTicket) ? snapshot.contentTicket : 0;
-        instance = typeof snapshot.previewInstance === "string" ? snapshot.previewInstance : "";
+        ticket = snapshot && Number.isSafeInteger(snapshot.contentTicket) ? snapshot.contentTicket : 0;
+        instance = snapshot && typeof snapshot.previewInstance === "string" ? snapshot.previewInstance : "";
       } catch {
         // Unreadable: the probe still answers, naming no snapshot.
       }

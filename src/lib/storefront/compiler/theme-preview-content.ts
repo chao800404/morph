@@ -31,6 +31,24 @@ export { THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH };
 
 const EMPTY_PREVIEW_CONTENT = { templates: {}, pages: {} } as const;
 
+/**
+ * How every Live Preview reader of the snapshot answers a path it cannot
+ * speak for: the snapshot is missing, unreadable, not JSON, or holds no
+ * well-formed entry for that path.
+ *
+ * Never empty content. A route with no Document is written into the snapshot
+ * as its own empty entry, `{ slots: {}, hiddenSlots: [] }`, and is answered
+ * with it; an answer the snapshot does not hold says nothing about the page,
+ * not even which sections the author hid. Answered empty, the Starter 32
+ * reader would accept it and render every hidden section with its defaults;
+ * refused, it rejects and the router shows its error state. The body is the
+ * `{ error }` shape the content endpoints already refuse with.
+ */
+export const THEME_PREVIEW_CONTENT_UNREADABLE_STATUS = 503;
+export const THEME_PREVIEW_CONTENT_UNREADABLE_BODY = {
+  error: "Live Preview content could not be read.",
+} as const;
+
 export type ThemePreviewContentSnapshot = Readonly<{
   templates: Partial<
     Record<Exclude<StorefrontTemplateType, "layout">, StorefrontContentResult>
@@ -312,19 +330,62 @@ function pageHandleForPath(pathname) {
   return handle && !handle.includes("/") ? decodeURIComponent(handle) : null;
 }
 
+function isPreviewContentRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwnPreviewEntry(record, key) {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+/** Whether \`value\` is one path's content as Core writes it. */
+function isReadablePreviewContent(value) {
+  return isPreviewContentRecord(value) &&
+    isPreviewContentRecord(value.slots) &&
+    Array.isArray(value.hiddenSlots) &&
+    value.hiddenSlots.every((id) => typeof id === "string");
+}
+
+/**
+ * The content the snapshot holds for \`pathname\`, or null when it holds
+ * none it can be read for.
+ *
+ * Core writes an entry for every template type and for the shell, empty for
+ * a route with no Document (\`createThemePreviewContentSnapshot\`), so
+ * "nothing stored" is an entry, read as it is. An absent or malformed entry,
+ * or a snapshot that is not one at all, is null and never empty content:
+ * answered empty, a page would render the sections its author hid.
+ */
 export function previewContentForPath(pathname) {
+  if (
+    !isPreviewContentRecord(snapshot) ||
+    !isPreviewContentRecord(snapshot.templates) ||
+    !isPreviewContentRecord(snapshot.pages)
+  ) {
+    return null;
+  }
   const handle = pageHandleForPath(pathname);
-  if (handle && snapshot.pages[handle]) return snapshot.pages[handle];
+  // A page with a draft Document of its own; one without is the page template's.
+  if (handle && hasOwnPreviewEntry(snapshot.pages, handle)) {
+    const page = snapshot.pages[handle];
+    return isReadablePreviewContent(page) ? page : null;
+  }
   const type = templateTypeForPath(pathname);
-  if (type) return snapshot.templates[type] || { slots: {}, hiddenSlots: [] };
+  if (type) {
+    const template = hasOwnPreviewEntry(snapshot.templates, type) ? snapshot.templates[type] : null;
+    return isReadablePreviewContent(template) ? template : null;
+  }
+  if (snapshot.routes !== undefined && !isPreviewContentRecord(snapshot.routes)) return null;
   const routes = snapshot.routes || (snapshot.routes = {});
   const routePath = (pathname || "/").split("?")[0].replace(/\\/+$/, "") || "/";
+  if (hasOwnPreviewEntry(routes, routePath)) {
+    return isReadablePreviewContent(routes[routePath]) ? routes[routePath] : null;
+  }
   // Created per path from the shell, so a live edit on one route never leaks
   // into another that has no document of its own.
-  if (!routes[routePath]) {
-    const shell = snapshot.shell || { slots: {}, hiddenSlots: [] };
-    routes[routePath] = { slots: { ...shell.slots }, hiddenSlots: [...shell.hiddenSlots] };
-  }
+  const shell = snapshot.shell;
+  if (!isReadablePreviewContent(shell)) return null;
+  routes[routePath] = { slots: { ...shell.slots }, hiddenSlots: [...shell.hiddenSlots] };
   return routes[routePath];
 }
 
@@ -353,6 +414,8 @@ export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
     return true;
   }
   const content = currentPreviewContent();
+  // A page whose content could not be read has nothing to apply an edit to.
+  if (!content) return false;
   if (enabled === false) {
     const hadSlot = Object.prototype.hasOwnProperty.call(content.slots, sectionId);
     const wasHidden = content.hiddenSlots.includes(sectionId);
@@ -480,16 +543,28 @@ export function livePreviewContentOverlay(pathname, base) {
 
 /** The values this page's content holds for one slot, as it renders from them. */
 export function previewSlotContent(sectionId) {
-  return currentPreviewContent().slots[sectionId];
+  const content = currentPreviewContent();
+  return content ? content.slots[sectionId] : undefined;
 }
 
 /**
  * Whether this page holds a slot hidden: the list \`updatePreviewContent\`
  * refuses value writes for. Anything else that puts a value on the page asks
- * the same list.
+ * the same list. On a page whose content could not be read every slot counts
+ * as hidden: "not hidden" is the answer that would bring a section back.
  */
 export function previewSlotHidden(sectionId) {
-  return currentPreviewContent().hiddenSlots.includes(sectionId);
+  const content = currentPreviewContent();
+  return content ? content.hiddenSlots.includes(sectionId) : true;
+}
+
+/** The answer to a content read for \`pathname\`: its content, or the refusal. */
+function previewContentResponse(pathname) {
+  const content = previewContentForPath(pathname);
+  return new Response(JSON.stringify(content || ${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}), {
+    status: content ? 200 : ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS},
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
 }
 
 const nativeFetch = window.fetch.bind(window);
@@ -510,10 +585,7 @@ window.fetch = (input, init) => {
   const requestUrl = new URL(input instanceof Request ? input.url : String(input), window.location.href);
   const requestMethod = (init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
   if (requestUrl.origin === window.location.origin && requestUrl.pathname === ${JSON.stringify(THEME_PREVIEW_CONTENT_PATH)}) {
-    return Promise.resolve(new Response(JSON.stringify(previewContentForPath(requestUrl.searchParams.get("path") || "/")), {
-      status: 200,
-      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
-    }));
+    return Promise.resolve(previewContentResponse(requestUrl.searchParams.get("path") || "/"));
   }
   const catalogMatch = requestUrl.origin === window.location.origin
     ? /^\\/api\\/store\\/products(?:\\/([^/]+))?\\/?$/.exec(requestUrl.pathname)
@@ -578,7 +650,7 @@ export function themePreviewContentPluginSource(): string {
   name: "morph-preview-content",
   configureServer(server) {
     const dataPath = path.join(server.config.root, ${JSON.stringify(THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH)});
-    let snapshot = ${JSON.stringify(EMPTY_PREVIEW_CONTENT)};
+    let snapshot = null;
     ${resolver}
     server.middlewares.use((req, res, next) => {
       const url = new URL(req.url || "/", "http://preview.invalid");
@@ -588,15 +660,18 @@ export function themePreviewContentPluginSource(): string {
         res.end("Method Not Allowed");
         return;
       }
+      // Missing, unreadable or not JSON: no snapshot, so every path is
+      // refused rather than answered empty (THEME_PREVIEW_CONTENT_UNREADABLE_BODY).
       try {
         snapshot = JSON.parse(fs.readFileSync(dataPath, "utf8"));
       } catch {
-        snapshot = ${JSON.stringify(EMPTY_PREVIEW_CONTENT)};
+        snapshot = null;
       }
-      res.statusCode = 200;
+      const content = previewContentForPath(url.searchParams.get("path") || "/");
+      res.statusCode = content ? 200 : ${THEME_PREVIEW_CONTENT_UNREADABLE_STATUS};
       res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
-      res.end(JSON.stringify(previewContentForPath(url.searchParams.get("path") || "/")));
+      res.end(JSON.stringify(content || ${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}));
     });
   },
 }`;
