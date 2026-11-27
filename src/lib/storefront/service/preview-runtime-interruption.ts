@@ -6,7 +6,9 @@ import type { PreviewResourceFailure } from "../editor/preview-protocol";
  *
  * The Sandbox SDK answers a request it could not carry to the container —
  * its Durable Object call failed with what it classifies as a platform
- * interruption — with an opaque `500 Proxy routing error`. The proxy retries
+ * interruption — with an opaque `500 Proxy routing error` (and, since SDK
+ * 0.12.12, a failed container-port fetch with `502 Could not reach port <port>
+ * in the container`; preview-proxy-response.ts). The proxy retries
  * module reads a bounded number of times; when the interruption outlasts that,
  * the browser still gets a failure, and a module that fails to load stops its
  * whole graph for that document. The container is healthy again a moment

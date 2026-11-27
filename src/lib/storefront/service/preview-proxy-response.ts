@@ -39,8 +39,28 @@ function withoutModuleRevalidation(request: Request): Request {
 }
 
 /**
- * The SDK catches a runtime interruption and returns this exact, opaque 500.
- * A failed ESM import poisons that document's module graph even if the runtime
+ * The SDK's own answers for a module read it could not carry to the
+ * container, each matched as the whole body of a short plain-text response
+ * with exactly this status:
+ *
+ * - `500 Proxy routing error`: `proxyToSandbox` caught a rejected
+ *   `sandbox.fetch`, a runtime interruption included.
+ * - `502 Could not reach port <port> in the container`: since SDK 0.12.12
+ *   (cloudflare/sandbox-sdk#996) a failed fetch to the container port, such
+ *   as "Container port connection closed unexpectedly.", is answered with
+ *   this inside the Sandbox instead of escaping it as the 500 above. It is the
+ *   same failure the 500 used to carry, so it gets the same bounded retry.
+ */
+const SDK_ROUTING_FAILURES: ReadonlyArray<
+  Readonly<{ status: number; body: RegExp }>
+> = [
+  { status: 500, body: /^Proxy routing error$/ },
+  { status: 502, body: /^Could not reach port \d{1,5} in the container$/ },
+];
+
+/**
+ * The SDK answers a runtime interruption with one of the exact, opaque
+ * refusals above. A failed ESM import poisons that document's module graph even if the runtime
  * is healthy again a moment later. Retry only reads of Vite's module assets,
  * never a page, API, server function or write. An interruption that outlasts
  * the retries still reaches the browser, as the proxy's own interruption
@@ -84,9 +104,12 @@ export async function proxyPreviewModuleRequest(
   const forwarded = moduleRead ? withoutModuleRevalidation(request) : request;
   for (let attempt = 0; ; attempt++) {
     const response = await proxy(forwarded);
-    if (!moduleRead || response?.status !== 500) return response;
+    const failure = moduleRead
+      ? SDK_ROUTING_FAILURES.find(({ status }) => status === response?.status)
+      : undefined;
+    if (!response || !failure) return response;
     // Only inspect a bounded text body. The SDK uses a short plain-text
-    // response, but the container can also return arbitrary 500 bodies.
+    // response, but the container can also return arbitrary 500/502 bodies.
     if (!response.headers.get("content-type")?.startsWith("text/plain"))
       return response;
     const copy = response.clone();
@@ -110,7 +133,7 @@ export async function proxyPreviewModuleRequest(
           bytes.set(chunk, offset);
           offset += chunk.byteLength;
         }
-        return new TextDecoder().decode(bytes) === "Proxy routing error";
+        return failure.body.test(new TextDecoder().decode(bytes));
       })(),
       new Promise<false>((resolve) => {
         timer = setTimeout(() => resolve(false), 250);

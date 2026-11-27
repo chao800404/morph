@@ -155,8 +155,57 @@ describe("bounded recovery of SDK module routing failures", () => {
     expect(pause).not.toHaveBeenCalled();
   });
 
+  // SDK 0.12.12+ (cloudflare/sandbox-sdk#996): a failed container-port fetch
+  // is answered inside the Sandbox with this 502 instead of escaping it as
+  // the 500 above. The same failure, so the same bounded recovery.
+  const portUnreachable = () =>
+    new Response("Could not reach port 5173 in the container", { status: 502 });
+
+  it("retries a module the SDK could not carry to the container port", async () => {
+    const success = new Response("export default {}");
+    const proxy = vi
+      .fn()
+      .mockResolvedValueOnce(portUnreachable())
+      .mockResolvedValueOnce(success);
+    const pause = vi.fn().mockResolvedValue(undefined);
+    expect(await proxyPreviewModuleRequest(request(), proxy, pause)).toBe(
+      success,
+    );
+    expect(pause.mock.calls).toEqual([[100]]);
+  });
+
+  it("answers a port failure past the retries with the interruption status", async () => {
+    const proxy = vi.fn().mockImplementation(async () => portUnreachable());
+    const response = await proxyPreviewModuleRequest(
+      request(),
+      proxy,
+      vi.fn().mockResolvedValue(undefined),
+    );
+    expect(proxy).toHaveBeenCalledTimes(3);
+    expect(response?.status).toBe(PREVIEW_RUNTIME_INTERRUPTED_STATUS);
+  });
+
+  it("never replays a page the SDK could not carry to the container port", async () => {
+    const refused = portUnreachable();
+    const proxy = vi.fn().mockResolvedValue(refused);
+    expect(
+      await proxyPreviewModuleRequest(request("/", "GET"), proxy, vi.fn()),
+    ).toBe(refused);
+    expect(proxy).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     new Response("compiler failed", { status: 500 }),
+    new Response("Could not reach port 5173 in the container", { status: 500 }),
+    new Response("Proxy routing error", { status: 502 }),
+    new Response("Bad gateway", { status: 502 }),
+    new Response("Could not reach port 5173 in the container", {
+      status: 502,
+      headers: { "content-type": "text/html" },
+    }),
+    new Response("Could not reach port 5173 in the container.", {
+      status: 502,
+    }),
     new Response("Proxy routing error", { status: 401 }),
     new Response("Proxy routing error", { status: 403 }),
     new Response("Proxy routing error", {

@@ -4,7 +4,7 @@
 // prettier-ignore
 export const GENERATED_SANDBOX_TOOLCHAINS = [
   {
-    "id": "626d7ceeef0019d0e4d0aa770ee2305d51a22b4c6c61a5bbd56222337115f680",
+    "id": "333ad450c68132f601b8e1995e86a740fe3d3a4d86e971594e2012767c6d2922",
     "framework": "tanstack-start",
     "root": "/opt/morph-toolchain/tanstack-start-1.168",
     "manifestFormat": 1,
@@ -28,9 +28,9 @@ export const GENERATED_SANDBOX_TOOLCHAINS = [
       "vite": "7.3.5",
       "wrangler": "4.146.0"
     },
-    "node": "v22.23.2",
-    "npm": "10.9.8",
-    "baseImage": "docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713aef266e8ae0831a5709c6f2d7b77b4952ac79b549f4f4e380af86fbe",
+    "node": "v22.23.4",
+    "npm": "10.9.9",
+    "baseImage": "docker.io/cloudflare/sandbox:0.12.14@sha256:b8175e89ae5efd83987ffd5056f57c28c390fd5706d42ef70fb669e275248e7b",
     "platform": {
       "arch": "x64",
       "libc": "glibc 2.35",
@@ -38,7 +38,7 @@ export const GENERATED_SANDBOX_TOOLCHAINS = [
     }
   },
   {
-    "id": "d991657b876de72a874dfb84898f2124872db70309c17391a16611c9ca9475ef",
+    "id": "4fcc4dcf91da2bb407a33f21b0d39b43c8f3c0a4b1f6dac3b9a871e59857a509",
     "framework": "astro",
     "root": "/opt/morph-toolchain/astro-7.3",
     "manifestFormat": 1,
@@ -56,9 +56,9 @@ export const GENERATED_SANDBOX_TOOLCHAINS = [
       "vite": "8.3.3",
       "wrangler": "4.147.0"
     },
-    "node": "v22.23.2",
-    "npm": "10.9.8",
-    "baseImage": "docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713aef266e8ae0831a5709c6f2d7b77b4952ac79b549f4f4e380af86fbe",
+    "node": "v22.23.4",
+    "npm": "10.9.9",
+    "baseImage": "docker.io/cloudflare/sandbox:0.12.14@sha256:b8175e89ae5efd83987ffd5056f57c28c390fd5706d42ef70fb669e275248e7b",
     "platform": {
       "arch": "x64",
       "libc": "glibc 2.35",
@@ -68,7 +68,7 @@ export const GENERATED_SANDBOX_TOOLCHAINS = [
 ] as const;
 // prettier-ignore
 export const GENERATED_SANDBOX_PLATFORM_TOOLS = {
-  "id": "b974af814278fd4a932d2a84b5cede558d5abd1375611b309076c92aef4096dc",
+  "id": "149c893bb8219281e51ef60eeb6c078b326be7b9ef0c39b663c70192c6858089",
   "framework": "platform",
   "root": "/opt/morph-platform",
   "manifestFormat": 1,
@@ -78,9 +78,9 @@ export const GENERATED_SANDBOX_PLATFORM_TOOLS = {
   "directDependencies": {
     "wrangler": "4.146.0"
   },
-  "node": "v22.23.2",
-  "npm": "10.9.8",
-  "baseImage": "docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713aef266e8ae0831a5709c6f2d7b77b4952ac79b549f4f4e380af86fbe",
+  "node": "v22.23.4",
+  "npm": "10.9.9",
+  "baseImage": "docker.io/cloudflare/sandbox:0.12.14@sha256:b8175e89ae5efd83987ffd5056f57c28c390fd5706d42ef70fb669e275248e7b",
   "platform": {
     "arch": "x64",
     "libc": "glibc 2.35",
