@@ -473,7 +473,7 @@ const CONTAINER_FAILED_TO_START =
   /^(?:[A-Za-z]*Error: )?Container failed to start\b/;
 
 /**
- * The platform's two admission refusals, as SDK 0.12.7 passes them on
+ * The platform's two admission refusals, as SDK 0.12.7-0.12.14 pass them on
  * verbatim in a ContainerUnavailableError (CONTAINER_UNAVAILABLE_SIGNATURES),
  * with at most that class name folded in front over Durable Object RPC.
  * The whole message, anchored at both ends, case-insensitive (the SDK

@@ -1,7 +1,7 @@
 # Base image pinned by digest: the manifests below record it, and a toolchain's
 # identity depends on it.
-FROM docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713aef266e8ae0831a5709c6f2d7b77b4952ac79b549f4f4e380af86fbe
-ENV MORPH_SANDBOX_BASE_IMAGE=docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713aef266e8ae0831a5709c6f2d7b77b4952ac79b549f4f4e380af86fbe
+FROM docker.io/cloudflare/sandbox:0.12.14@sha256:b8175e89ae5efd83987ffd5056f57c28c390fd5706d42ef70fb669e275248e7b
+ENV MORPH_SANDBOX_BASE_IMAGE=docker.io/cloudflare/sandbox:0.12.14@sha256:b8175e89ae5efd83987ffd5056f57c28c390fd5706d42ef70fb669e275248e7b
 
 # Package installation stays in the image build: Theme source must never be
 # allowed to run npm install during a request. Each toolchain installs from its

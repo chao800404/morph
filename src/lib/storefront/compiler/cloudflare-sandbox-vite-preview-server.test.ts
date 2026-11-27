@@ -4276,7 +4276,7 @@ describe("an interrupted start: one automatic retry (design v2)", () => {
 
     /**
      * The platform's admission refusals (handoff/2026-11-24/
-     * container-unavailable-classification.md). The SDK (0.12.7,
+     * container-unavailable-classification.md). The SDK (0.12.7-0.12.14,
      * CONTAINER_UNAVAILABLE_SIGNATURES) keeps the platform's text verbatim
      * as the message of a ContainerUnavailableError; over Durable Object RPC
      * only the message arrives, with the class name folded in front. Same

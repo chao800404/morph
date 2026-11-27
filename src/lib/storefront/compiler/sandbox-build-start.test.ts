@@ -248,7 +248,7 @@ describe("startBuildSandbox", () => {
 });
 
 /**
- * The shape of @cloudflare/sandbox 0.12.7's `SandboxError`: an own
+ * The shape of @cloudflare/sandbox 0.12.7-0.12.14's `SandboxError`: an own
  * `errorResponse`, with `code` and `context` as prototype getters.
  */
 class SdkShapedError extends Error {
