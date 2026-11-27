@@ -580,7 +580,17 @@ test.describe("Astro D3 shapes Design must not write: literals, an override afte
     page,
   }) => {
     const record = recordEditor(page);
-    await openEditorAt(page, theme!.editorPath(D3_REFUSED_PATH));
+    // An editor address naming the route template still framed the home
+    // page (seen on 07e9158); the page list is how an author opens it.
+    await openEditorAt(page, theme!.editorPath("/"));
+    await expect(
+      (await liveFrame(page)).locator('[data-d3-case="p1"] h1'),
+    ).toHaveText(SALE, { timeout: 180_000 });
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(
+      0,
+      { timeout: 120_000 },
+    );
+    await openPageFromList(page, D3_REFUSED_PATH);
     let frame = await liveFrame(page);
     await expect(frame.locator('[data-d3-case="p4a"] h1')).toHaveText(
       D3_P4A_LITERAL,
