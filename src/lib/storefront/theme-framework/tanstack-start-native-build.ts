@@ -179,7 +179,7 @@ export function planNativeStartBuild(
   workspaceFiles.push({
     path: NATIVE_BUILD_LOADER_PATH,
     content: nativeBuildLoaderSource({
-      adapterOptions: { configFile: viteConfigs[0]! },
+      adapterOptions: { configFile: viteConfigs[0]!, nonce },
     }),
   });
   // The Morph SDK the wrapper resolves `@morph/sdk` and `@morph/sdk/start` to,
@@ -202,6 +202,70 @@ export function planNativeStartBuild(
     },
     command: ["vite", "build", "--config", NATIVE_WRAPPER_CONFIG_PATH],
   };
+}
+
+const UNCHECKED_CALL =
+  'builds the Cloudflare plugin without calling cloudflare() from an import of @cloudflare/vite-plugin, so Morph cannot check its options. Import cloudflare from "@cloudflare/vite-plugin" and call it in the config.';
+
+/** The options a checked call may have passed (the shim's own table). */
+const CHECKED_OPTION_KEYS = new Set([
+  "viteEnvironment",
+  "inspectorPort",
+  "persistState",
+  "remoteBindings",
+  "tunnel",
+]);
+
+/**
+ * Why the shim's record of checked `cloudflare()` calls does not vouch for
+ * this build, or null: written by this pass, at least one call, each with
+ * only options the check accepts, and one of them naming the environment
+ * that built the Worker (or naming none, the plugin's default).
+ */
+export function nativeAdapterCallsRefusal(
+  content: Uint8Array | string | undefined,
+  nonce: string,
+  workerEnvironment: string | null,
+): string | null {
+  if (content === undefined) return UNCHECKED_CALL;
+  let record: unknown;
+  try {
+    record = JSON.parse(
+      typeof content === "string" ? content : new TextDecoder().decode(content),
+    );
+  } catch {
+    return UNCHECKED_CALL;
+  }
+  const calls = (record as { calls?: unknown } | null)?.calls;
+  if (
+    !record ||
+    typeof record !== "object" ||
+    (record as { nonce?: unknown }).nonce !== nonce ||
+    !Array.isArray(calls) ||
+    calls.length === 0
+  ) {
+    return UNCHECKED_CALL;
+  }
+  for (const call of calls as unknown[]) {
+    const keys = (call as { keys?: unknown } | null)?.keys;
+    if (
+      !Array.isArray(keys) ||
+      keys.some((key) => typeof key !== "string" || !CHECKED_OPTION_KEYS.has(key))
+    ) {
+      return UNCHECKED_CALL;
+    }
+  }
+  const names = (calls as Array<{ environment?: unknown }>).map(
+    (call) => call.environment,
+  );
+  if (
+    workerEnvironment !== null &&
+    !names.includes(workerEnvironment) &&
+    !names.includes(null)
+  ) {
+    return `builds its Worker in the "${workerEnvironment}" environment, which no checked cloudflare() call names, so Morph cannot check the options it was built with. Call cloudflare() once, from an import of @cloudflare/vite-plugin.`;
+  }
+  return null;
 }
 
 /**
@@ -275,17 +339,26 @@ export function collectNativeStartArtifact(
   if (adapterRefusal !== undefined) {
     throw new Error(nativeAdapterRefusalMessage(adapterRefusal));
   }
+  const configFile = VITE_CONFIG_FILES.find((path) => outputs.has(path));
   const sdk = verifyNativeStartSdkProof({
     outputs,
     directories: artifact.sourceDirectories,
     nonce,
-    configFile: VITE_CONFIG_FILES.find((path) => outputs.has(path)),
+    configFile,
+    workerEntry: `${artifact.sourceDirectories.server}/${artifact.workerEntry.slice("runtime/server/".length)}`,
   });
-  // The Worker was built, yet no checked cloudflare() call was counted: the
-  // plugin came from somewhere the shim does not see.
-  if (outputs.get(NATIVE_ADAPTER_CALLS_PATH) === undefined) {
+  // The Worker was built by a checked cloudflare() call of this pass, whose
+  // options Morph holds to the table again here, and whose environment is
+  // the one that built the Worker.
+  const unchecked = nativeAdapterCallsRefusal(
+    outputs.get(NATIVE_ADAPTER_CALLS_PATH),
+    nonce,
+    sdk.environments.find((environment) => environment.output === "server")
+      ?.name ?? null,
+  );
+  if (unchecked) {
     throw new Error(
-      `NATIVE_ADAPTER_OPTION: ${VITE_CONFIG_FILES.find((path) => outputs.has(path)) ?? "vite.config.ts"} builds the Cloudflare plugin without calling cloudflare() from an import of @cloudflare/vite-plugin, so Morph cannot check its options. Import cloudflare from "@cloudflare/vite-plugin" and call it in the config.`,
+      `NATIVE_ADAPTER_OPTION: ${configFile ?? "vite.config.ts"} ${unchecked}`,
     );
   }
   const nativeProof: NativeBuildProof = {

@@ -6,6 +6,7 @@ import {
 } from "../compiler/theme-morph-sdk";
 import { THEME_START_TOOLCHAIN } from "../compiler/theme-start-toolchain";
 import {
+  COMPUTED_SPECIFIER,
   NATIVE_PROOF_VERSION,
   nativeHtmlAssets,
   nativeProductionAdmission,
@@ -202,7 +203,12 @@ function build(
 }
 
 const verify = (outputs: Map<string, string>, nonce = NONCE) =>
-  verifyNativeStartSdkProof({ outputs, directories: DIRECTORIES, nonce });
+  verifyNativeStartSdkProof({
+    outputs,
+    directories: DIRECTORIES,
+    nonce,
+    workerEntry: "dist/server/index.js",
+  });
 
 const refusal = (outputs: Map<string, string>) => {
   try {
@@ -282,7 +288,7 @@ describe("a native Start build's SDK resolution proof", () => {
     }
   });
 
-  it("does not mistake a string for an import, nor scan a chunk nothing deployed reaches", () => {
+  it("does not mistake a string for an import", () => {
     expect(
       refusal(
         build({
@@ -293,11 +299,126 @@ describe("a native Start build's SDK resolution proof", () => {
               modules: [],
               isEntry: true,
             },
-            { file: "assets/orphan.js", code: 'import "@morph/sdk";', modules: [] },
           ],
         }),
       ),
     ).toBeNull();
+  });
+
+  it("checks every shipped script, not only those an entry reaches", () => {
+    // A recorded chunk nothing imports can still be loaded: a Worker imports
+    // any module it was deployed with, a browser any file it is served.
+    expect(
+      refusal(
+        build({
+          client: [
+            { file: "assets/main.js", code: "console.log(1);", modules: [], isEntry: true },
+            { file: "assets/orphan.js", code: 'import "@morph/sdk";', modules: [] },
+          ],
+        }),
+      ),
+    ).toMatch(/runtime\/client\/assets\/orphan\.js still imports "@morph\/sdk" at run time/);
+  });
+
+  it("refuses a shipped script the bundler did not emit, and an import of one", () => {
+    // Written into the Worker's output by a plugin, not in the record.
+    expect(
+      refusal(
+        build({ extraOutputs: { "dist/server/assets/extra.js": 'export * from "@morph/sdk";' } }),
+      ),
+    ).toBe(
+      "NATIVE_PROOF_SDK_RESOLUTION: runtime/server/assets/extra.js is not code the bundler emitted for the ssr environment, so Morph cannot vouch for it. A Vite plugin writes it into the output; remove it.",
+    );
+    // The recorded entry imports a file that is not shipped at all.
+    expect(
+      refusal(
+        build({
+          server: [
+            {
+              file: "index.js",
+              code: 'import "./assets/sdk.js";import "./assets/missing.js";export default {};',
+              modules: [CONTENT],
+              isEntry: true,
+            },
+            DEFAULT_SERVER[1]!,
+          ],
+        }),
+      ),
+    ).toMatch(
+      /runtime\/server\/index\.js imports runtime\/server\/assets\/missing\.js, which is not code the bundler emitted/,
+    );
+  });
+
+  it("admits a browser script copied unchanged from the public directory, and still scans it", () => {
+    const copy = "self.addEventListener('install', () => {});";
+    expect(
+      refusal(build({ extraOutputs: { "public/sw.js": copy, "dist/client/sw.js": copy } })),
+    ).toBeNull();
+    expect(
+      refusal(
+        build({
+          extraOutputs: {
+            "public/sw.js": 'import "@morph/sdk";',
+            "dist/client/sw.js": 'import "@morph/sdk";',
+          },
+        }),
+      ),
+    ).toMatch(/runtime\/client\/sw\.js still imports "@morph\/sdk" at run time/);
+    // Changed on the way: not the author's file any more.
+    expect(
+      refusal(
+        build({ extraOutputs: { "public/sw.js": copy, "dist/client/sw.js": `${copy}//x` } }),
+      ),
+    ).toMatch(/runtime\/client\/sw\.js is not code the bundler emitted/);
+  });
+
+  it("requires the deployed Worker entry to be a verified entry chunk", () => {
+    expect(
+      refusal(
+        build({
+          server: [
+            { ...DEFAULT_SERVER[0]!, isEntry: false },
+            { ...DEFAULT_SERVER[1]!, isEntry: true },
+          ],
+        }),
+      ),
+    ).toMatch(
+      /the Worker's entry runtime\/server\/index\.js is not an entry chunk the bundler emitted/,
+    );
+  });
+
+  it("matches the sentinel as Morph's statement, not as text anywhere in the chunk", () => {
+    expect(
+      refusal(
+        build({
+          server: [
+            DEFAULT_SERVER[0]!,
+            {
+              file: "assets/sdk.js",
+              code: `export const morph={};const note=${JSON.stringify(nativeSdkSentinel(NONCE, START))};`,
+              modules: [START_FILE],
+            },
+          ],
+        }),
+      ),
+    ).toMatch(/does not reach Morph's copy of it/);
+  });
+
+  it("refuses a computed SDK specifier left in the shipped code", () => {
+    expect(
+      refusal(
+        build({
+          client: [
+            {
+              file: "assets/main.js",
+              code: "const n='start';import(`@morph/sdk/${n}`);",
+              modules: [],
+              isEntry: true,
+            },
+          ],
+        }),
+      ),
+    ).toMatch(/still imports "<computed>" at run time/);
   });
 
   it("refuses a chunk whose bytes lack the sentinel (a load impostor), or carry another pass's", () => {
@@ -333,7 +454,7 @@ describe("a native Start build's SDK resolution proof", () => {
           ],
         }),
       ),
-    ).toMatch(/is in no chunk the deployed code reaches/);
+    ).toMatch(/does not reach Morph's copy of it/);
   });
 
   it("refuses a chunk rewritten or removed after the bundle was generated (writeBundle)", () => {
@@ -431,7 +552,10 @@ describe("a native Start build's SDK resolution proof", () => {
       /\.morph\/records\/other\.json, which is not one of Morph's records/,
     );
     expect(() => verify(build(), "")).toThrow(/this build pass has no nonce/);
-    expect(refusal(build({ serverBundle: { chunks: [] } }))).toMatch(/has no entry chunk/);
+    // A record that leaves out what was shipped vouches for none of it.
+    expect(refusal(build({ serverBundle: { chunks: [] } }))).toMatch(
+      /runtime\/server\/(index|assets\/sdk)\.js is not code the bundler emitted/,
+    );
   });
 
   it("refuses code it cannot read, a computed SDK specifier, a name that is not an entry, and an uncertified Vite", () => {
@@ -479,6 +603,34 @@ describe("a Theme source's SDK imports, as compiled code keeps them", () => {
     expect(
       sourceSdkImports("src/a.js", 'import { morph } from "@morph/sdk/start";\n'),
     ).toEqual([{ specifier: "@morph/sdk/start", kind: "static" }]);
+  });
+
+  it("drops type-only re-exports, which TypeScript erases, and keeps a re-export with one value", () => {
+    expect(
+      sourceSdkImports(
+        "src/a.ts",
+        [
+          'export { type MorphPage } from "@morph/sdk";',
+          'export type { Morph } from "@morph/sdk/start";',
+          'export type * from "@morph/sdk/astro";',
+        ].join("\n"),
+      ),
+    ).toEqual([]);
+    expect(
+      sourceSdkImports("src/a.ts", 'export { type MorphPage, isMorphError } from "@morph/sdk";'),
+    ).toEqual([{ specifier: "@morph/sdk", kind: "static" }]);
+  });
+
+  it("reads dynamic template specifiers as the shipped-code check does", () => {
+    expect(
+      sourceSdkImports(
+        "src/a.ts",
+        "export const a = () => import(`@morph/sdk/start`);\nconst n = 'start';\nexport const b = () => import(`@morph/sdk/${n}`);\n",
+      ),
+    ).toEqual([
+      { specifier: "@morph/sdk/start", kind: "dynamic" },
+      { specifier: COMPUTED_SPECIFIER, kind: "dynamic" },
+    ]);
   });
 
   it("is null for a file it cannot parse", () => {
@@ -603,6 +755,7 @@ describe("a manifest's nativeProof, read back", () => {
     ],
     ["a name that is not an SDK entry", withServer({ specifiers: ["@morph/sdk/other"] })],
     ["a sentinel file without an entry", withServer({ specifiers: [], edges: 0 })],
+    ["edges without the names they import", withServer({ specifiers: [], edges: 2, sentinelFiles: [] })],
     ["an HTML entry outside the assets", { ...PROOF, html: [{ path: "x.html", source: "public" }] }],
   ])("is null for %s", (_label, value) => {
     expect(readNativeBuildProof(value)).toBeNull();
@@ -656,4 +809,4 @@ describe("the native production admission", () => {
 
 /** sha256 of `nativeResolutionPluginSource()`. */
 const PLUGIN_SHA256 =
-  "c6df6a1bea168fa01d7ee6ede6f6160d26d8e2912bee44a97474481da6dbe1d7";
+  "8ec648ac524d8a438f7d797753fa90d3ef1f553adbef12250e29e2d897d15988";

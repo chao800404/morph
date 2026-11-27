@@ -79,6 +79,9 @@ export function nativeStartProofRecordsForTest(
       false,
     ),
     ".morph/records/bundle.ssr.json": bundle("ssr", directories.server, true),
-    ".morph/records/adapter-calls.json": JSON.stringify({ calls: 1 }),
+    ".morph/records/adapter-calls.json": JSON.stringify({
+      nonce: value,
+      calls: [{ keys: ["viteEnvironment"], environment: "ssr" }],
+    }),
   };
 }

@@ -127,7 +127,7 @@ export const NATIVE_ADAPTER_REFUSAL_PATH =
  * working directory, the workspace root), so the build's result reports the
  * refusal rather than a failed build.
  */
-function adapterOptionCheckSource(configFile: string): string {
+function adapterOptionCheckSource(configFile: string, nonce: string): string {
   return [
     `const MORPH_REFUSALS = ${JSON.stringify(NATIVE_ADAPTER_OPTION_REFUSALS)};`,
     `const MORPH_CONFIG_FILE = ${JSON.stringify(configFile)};`,
@@ -153,12 +153,16 @@ function adapterOptionCheckSource(configFile: string): string {
     "  if (prototype !== Object.prototype && prototype !== null) {",
     '    morphRefuseOption(what + " that are not a plain object", "Morph reads the plugin options as a plain object, not one that inherits settings", "NATIVE_ADAPTER_OPTION");',
     "  }",
+    // Own data properties only, defined (not assigned) on the copy, so no
+    // key can set the copy's prototype; the keys that name prototypes are
+    // refused outright.
     "  const copy = {};",
     "  for (const key of Reflect.ownKeys(value)) {",
     '    if (typeof key !== "string") morphRefuseOption(what + " with a symbol key", "Morph reads the plugin options by name", "NATIVE_ADAPTER_OPTION");',
+    '    if (key === "__proto__" || key === "constructor" || key === "prototype") morphRefuseOption(key + " in " + what, "Morph reads the plugin options as plain settings, not prototypes", "NATIVE_ADAPTER_OPTION");',
     "    const descriptor = Object.getOwnPropertyDescriptor(value, key);",
     '    if (!descriptor || !("value" in descriptor)) morphRefuseOption(key + " as a getter", "Morph reads each plugin option once, as a value", "NATIVE_ADAPTER_OPTION");',
-    "    copy[key] = descriptor.value;",
+    "    Object.defineProperty(copy, key, { value: descriptor.value, enumerable: true, writable: true, configurable: true });",
     "  }",
     "  return copy;",
     "}",
@@ -186,23 +190,37 @@ function adapterOptionCheckSource(configFile: string): string {
     "  }",
     "  return Object.freeze(checked);",
     "}",
-    // Each plugin the checked call returns carries Morph's mark, so the
-    // wrapper can tell a Cloudflare plugin made through this check from one
-    // made some other way; each call is recorded for the collector.
+    // Each plugin object the checked call returns is registered in a WeakSet
+    // only this pass's shim and wrapper can name (the key carries the pass's
+    // nonce), so the wrapper can tell a Cloudflare plugin made through this
+    // check from one made some other way. Each call is recorded, with the
+    // keys it passed and its environment, for the collector to check again.
+    `const MORPH_NONCE = ${JSON.stringify(nonce)};`,
     `const MORPH_CALLS_PATH = ${JSON.stringify(NATIVE_ADAPTER_CALLS_PATH)};`,
-    'const MORPH_CHECKED = Symbol.for("morph.cloudflare.checked");',
-    "function morphMarkCloudflarePlugins(plugins) {",
+    'const MORPH_REGISTRY_KEY = Symbol.for("morph.cloudflare.registry:" + MORPH_NONCE);',
+    "if (!Object.prototype.hasOwnProperty.call(globalThis, MORPH_REGISTRY_KEY)) {",
+    "  Object.defineProperty(globalThis, MORPH_REGISTRY_KEY, { value: new WeakSet(), writable: false, configurable: false, enumerable: false });",
+    "}",
+    "const MORPH_REGISTRY = globalThis[MORPH_REGISTRY_KEY];",
+    "function morphRegisterCloudflarePlugins(plugins, checked) {",
     "  const visit = (value) => {",
     "    if (Array.isArray(value)) { value.forEach(visit); return; }",
-    '    if (value && typeof value === "object") Object.defineProperty(value, MORPH_CHECKED, { value: true });',
+    '    if (value && typeof value === "object") MORPH_REGISTRY.add(value);',
     "  };",
     "  visit(plugins);",
     "  try {",
     '    const fs = process.getBuiltinModule("node:fs");',
     '    fs.mkdirSync(MORPH_CALLS_PATH.slice(0, MORPH_CALLS_PATH.lastIndexOf("/")), { recursive: true });',
-    "    let calls = 0;",
-    "    try { calls = JSON.parse(fs.readFileSync(MORPH_CALLS_PATH, \"utf8\")).calls || 0; } catch {}",
-    "    fs.writeFileSync(MORPH_CALLS_PATH, JSON.stringify({ calls: calls + 1 }));",
+    "    let record = { nonce: MORPH_NONCE, calls: [] };",
+    "    try {",
+    '      const existing = JSON.parse(fs.readFileSync(MORPH_CALLS_PATH, "utf8"));',
+    "      if (existing && existing.nonce === MORPH_NONCE && Array.isArray(existing.calls)) record = existing;",
+    "    } catch {}",
+    "    record.calls.push({",
+    "      keys: Object.keys(checked).sort(),",
+    '      environment: checked.viteEnvironment && typeof checked.viteEnvironment.name === "string" ? checked.viteEnvironment.name : null,',
+    "    });",
+    "    fs.writeFileSync(MORPH_CALLS_PATH, JSON.stringify(record));",
     "  } catch {}",
     "  return plugins;",
     "}",
@@ -220,14 +238,14 @@ export const NATIVE_ADAPTER_CALLS_PATH = ".morph/records/adapter-calls.json";
  */
 function cloudflarePluginMarkCheckSource(configFile: string): string {
   return `
-  const checkedMark = Symbol.for("morph.cloudflare.checked");
+  const checkedRegistry = globalThis[Symbol.for("morph.cloudflare.registry:" + morphBuildNonce)];
   const flatten = async (value) => {
     const resolved = await value;
     if (Array.isArray(resolved)) return (await Promise.all(resolved.map(flatten))).flat();
     return resolved && typeof resolved === "object" ? [resolved] : [];
   };
   for (const plugin of await flatten(own?.plugins ?? [])) {
-    if (typeof plugin.name === "string" && plugin.name.startsWith("vite-plugin-cloudflare") && plugin[checkedMark] !== true) {
+    if (typeof plugin.name === "string" && plugin.name.startsWith("vite-plugin-cloudflare") && !(checkedRegistry instanceof WeakSet && checkedRegistry.has(plugin))) {
       const message = ${JSON.stringify(
         `NATIVE_ADAPTER_OPTION: ${configFile} builds the Cloudflare plugin without calling cloudflare() from an import of @cloudflare/vite-plugin, so Morph cannot check its options. Import cloudflare from "@cloudflare/vite-plugin" and call it in the config.`,
       )};
@@ -248,10 +266,13 @@ function cloudflarePluginMarkCheckSource(configFile: string): string {
  * `NATIVE_ADAPTER_OPTION_REFUSALS`, then also forces `remoteBindings: false`.
  */
 export function nativeBuildLoaderSource(
-  options: Readonly<{ adapterOptions?: Readonly<{ configFile: string }> }> = {},
+  options: Readonly<{ adapterOptions?: Readonly<{ configFile: string; nonce: string }> }> = {},
 ): string {
   if (options.adapterOptions) {
-    return nativeStartBuildLoaderSource(options.adapterOptions.configFile);
+    return nativeStartBuildLoaderSource(
+      options.adapterOptions.configFile,
+      options.adapterOptions.nonce,
+    );
   }
   return `// Written by Morph for this build (tanstack-start-native-wrapper.ts).
 // An import of the Cloudflare Vite plugin from outside it gets the plugin
@@ -289,8 +310,8 @@ export async function resolve(specifier, context, nextResolve) {
  * adapter-option check and `remoteBindings: false` added to the shimmed
  * call. The shim is a data: module, so it carries its own copy of the check.
  */
-function nativeStartBuildLoaderSource(configFile: string): string {
-  const check = adapterOptionCheckSource(configFile);
+function nativeStartBuildLoaderSource(configFile: string, nonce: string): string {
+  const check = adapterOptionCheckSource(configFile, nonce);
   return [
     "// Written by Morph for this build (tanstack-start-native-wrapper.ts).",
     "// An import of the Cloudflare Vite plugin from outside it gets the plugin",
@@ -316,7 +337,7 @@ function nativeStartBuildLoaderSource(configFile: string): string {
     "    CHECK,",
     '    "export function cloudflare(options) {",',
     '    "  const checked = morphCheckCloudflareOptions(options);",',
-    '    "  return morphMarkCloudflarePlugins(projectCloudflare({ ...checked, inspectorPort: false, remoteBindings: false }));",',
+    '    "  return morphRegisterCloudflarePlugins(projectCloudflare({ ...checked, inspectorPort: false, remoteBindings: false }), checked);",',
     '    "}",',
     '  ].join("\\n");',
     "  return {",

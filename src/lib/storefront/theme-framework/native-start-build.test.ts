@@ -656,6 +656,26 @@ describe("a native Start build's SDK resolution proof, against what a Vite confi
     () => {
       const built = buildTampered(tamperedConfig({}), [
         { path: "public/landing.html", content: "<!doctype html><p>static</p>" },
+        // A type-only re-export of the SDK in a module both graphs load:
+        // TypeScript erases it, and no edge is required for it.
+        {
+          path: "src/morph/sdk-types.ts",
+          content:
+            'export { type MorphPage } from "@morph/sdk";\nexport type { Morph } from "@morph/sdk";\nexport const SDK_TYPES_LOADED = true;\n',
+        },
+        {
+          path: "src/routes/sdk-types.tsx",
+          content: `import { createFileRoute } from "@tanstack/react-router";
+import { SDK_TYPES_LOADED, type MorphPage } from "../morph/sdk-types";
+
+export const Route = createFileRoute("/sdk-types")({
+  loader: () => ({ loaded: SDK_TYPES_LOADED, page: null as MorphPage | null }),
+  component: function SdkTypes() {
+    return <p>{String(Route.useLoaderData().loaded)}</p>;
+  },
+});
+`,
+        },
       ]);
       if (!built.ok) throw new Error(`${built.stage}: ${built.message}`);
       const proof = readNativeBuildProof(built.artifact.metadata?.nativeProof)!;
@@ -865,6 +885,25 @@ export const Route = createFileRoute("/both-sdk")({
       expect(built).toMatchObject({ ok: false, stage: "collect" });
       expect((built as { message: string }).message).toMatch(
         /^NATIVE_PROOF_SDK_RESOLUTION: .+\.js in the (client|ssr) output is not the code the bundler emitted\. A Vite plugin rewrites the output after it is generated; remove it\.$/,
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses a script written into the output that the bundler never emitted",
+    () => {
+      // Recorded chunks untouched; one more module beside them, which the
+      // Worker could import at run time.
+      const built = buildTampered(
+        tamperedConfig({
+          plugins: `{ name: "author-extra-module", writeBundle(options) { fs.mkdirSync(path.join(options.dir, "assets"), { recursive: true }); fs.writeFileSync(path.join(options.dir, "assets", "extra.js"), 'export * from "@morph/sdk";'); } },`,
+          head: `import fs from "node:fs";`,
+        }),
+      );
+      expect(built).toMatchObject({ ok: false, stage: "collect" });
+      expect((built as { message: string }).message).toMatch(
+        /^NATIVE_PROOF_SDK_RESOLUTION: runtime\/(client|server)\/assets\/extra\.js is not code the bundler emitted for the (client|ssr) environment, so Morph cannot vouch for it\./,
       );
     },
     BUILD_BUDGET_MS,

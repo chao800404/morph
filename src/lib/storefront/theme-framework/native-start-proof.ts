@@ -201,9 +201,9 @@ function imports(ast) {
     if (source.kind === "string" && RESERVED.test(source.value)) found.push({ specifier: source.value, kind });
     if (source.kind === "computed" && source.head.startsWith(MENTION)) computed.push(kind);
   });
-  const unique = new Map();
-  for (const entry of found) unique.set(entry.kind + " " + entry.specifier, entry);
-  return { found: [...unique.values()], computed };
+  // Every occurrence is kept: a dynamic import resolves per occurrence, so
+  // two imports of one name can resolve apart.
+  return { found, computed };
 }
 
 export default function morphNativeResolution({ workspaceRoot, nonce }) {
@@ -272,18 +272,30 @@ export default function morphNativeResolution({ workspaceRoot, nonce }) {
           }
         }
         const statics = new Set(info.importedIds || []);
-        const dynamics = new Set(info.dynamicallyImportedIds || []);
+        // One entry per dynamic import occurrence, as resolved for that
+        // occurrence (a resolveDynamicImport hook resolves each one).
+        const dynamics = [...(info.dynamicallyImportedIds || [])];
         const found = imports(ast);
         for (const kind of found.computed) computed.push({ importer, kind });
+        const used = new Map();
         for (const { specifier, kind } of found.found) {
           const resolved = await this.resolve(specifier, id);
+          let inGraph = false;
+          if (resolved && kind === "static") inGraph = statics.has(resolved.id);
+          if (resolved && kind === "dynamic") {
+            // The n-th dynamic occurrence of this name needs an n-th
+            // dynamic edge to what it resolves to.
+            const seen = (used.get(resolved.id) || 0) + 1;
+            used.set(resolved.id, seen);
+            inGraph = dynamics.filter((dynamicId) => dynamicId === resolved.id).length >= seen;
+          }
           edges.push({
             importer,
             specifier,
             kind,
             resolved: resolved ? where(resolved.id) : null,
             external: Boolean(resolved && resolved.external),
-            inGraph: Boolean(resolved && (kind === "static" ? statics : dynamics).has(resolved.id)),
+            inGraph,
           });
         }
       }
@@ -522,9 +534,53 @@ const dirname = (path: string) =>
 type ChunkImports = {
   static: string[];
   dynamic: string[];
-  /** Reserved names imported at run time, with the import's kind. */
+  /** Reserved names imported at run time (computed ones as `<computed>`). */
   reserved: string[];
+  /**
+   * The sentinel strings of the chunk's sentinel statements, matched as the
+   * exact statement `Reflect.set(globalThis, Symbol.for("morph.sdk.sentinel"),
+   * "<sentinel>")`, not a substring anywhere in the code.
+   */
+  sentinels: string[];
 };
+
+const isIdentifier = (node: unknown, name: string) =>
+  isRecordObject(node) && node.type === "Identifier" && node.name === name;
+
+const isMember = (node: unknown, object: string, property: string) =>
+  isRecordObject(node) &&
+  node.type === "MemberExpression" &&
+  node.computed !== true &&
+  isIdentifier(node.object, object) &&
+  isIdentifier(node.property, property);
+
+/** The sentinel a call node sets, when it is Morph's sentinel statement. */
+function sentinelOf(node: Record<string, unknown>): string | null {
+  if (node.type !== "CallExpression" || !isMember(node.callee, "Reflect", "set")) {
+    return null;
+  }
+  const args = node.arguments as unknown[];
+  if (!Array.isArray(args) || args.length !== 3) return null;
+  const [target, key, value] = args;
+  if (!isIdentifier(target, "globalThis")) return null;
+  if (
+    !isRecordObject(key) ||
+    key.type !== "CallExpression" ||
+    !isMember(key.callee, "Symbol", "for") ||
+    !Array.isArray(key.arguments) ||
+    key.arguments.length !== 1 ||
+    !isRecordObject(key.arguments[0]) ||
+    key.arguments[0].type !== "StringLiteral" ||
+    key.arguments[0].value !== "morph.sdk.sentinel"
+  ) {
+    return null;
+  }
+  return isRecordObject(value) &&
+    value.type === "StringLiteral" &&
+    typeof value.value === "string"
+    ? value.value
+    : null;
+}
 
 /**
  * The imports a chunk's code makes, read from its bytes with a parser:
@@ -532,7 +588,7 @@ type ChunkImports = {
  * expression-free template). Relative specifiers are resolved against the
  * chunk's own path; others are kept for the reserved-name check.
  */
-function chunkImports(path: string, code: string): ChunkImports {
+function chunkImports(path: string, code: string, root: string): ChunkImports {
   let ast: ReturnType<typeof parse>;
   try {
     ast = parse(code, {
@@ -546,8 +602,27 @@ function chunkImports(path: string, code: string): ChunkImports {
       `${path} is not JavaScript Morph can read. A Vite plugin rewrites the build's output; remove it.`,
     );
   }
-  const result: ChunkImports = { static: [], dynamic: [], reserved: [] };
+  const result: ChunkImports = {
+    static: [],
+    dynamic: [],
+    reserved: [],
+    sentinels: [],
+  };
   const literal = (node: unknown): string | null => {
+    if (
+      isRecordObject(node) &&
+      node.type === "TemplateLiteral" &&
+      Array.isArray(node.expressions) &&
+      node.expressions.length > 0
+    ) {
+      // A specifier computed at run time that starts with a reserved name.
+      const head = (node.quasis as Array<{ value: { cooked: string } }>)[0]
+        ?.value.cooked;
+      if (typeof head === "string" && head.startsWith("@morph/sdk")) {
+        result.reserved.push("<computed>");
+      }
+      return null;
+    }
     if (!isRecordObject(node)) return null;
     if (node.type === "StringLiteral" && typeof node.value === "string") {
       return node.value;
@@ -572,7 +647,7 @@ function chunkImports(path: string, code: string): ChunkImports {
     }
     if (!specifier.startsWith(".") && !specifier.startsWith("/")) return;
     const target = specifier.startsWith("/")
-      ? normalize(specifier)
+      ? normalize(`${root}${specifier}`)
       : normalize(`${dirname(path)}/${specifier}`);
     if (target !== null) result[kind].push(target);
   };
@@ -601,6 +676,8 @@ function chunkImports(path: string, code: string): ChunkImports {
     ) {
       add(literal(node.arguments[0]), "dynamic");
     }
+    const sentinel = sentinelOf(node);
+    if (sentinel !== null) result.sentinels.push(sentinel);
     for (const [key, value] of Object.entries(node)) {
       if (
         key === "loc" ||
@@ -620,6 +697,9 @@ function chunkImports(path: string, code: string): ChunkImports {
   visit(ast.program);
   return result;
 }
+
+/** What `sourceSdkImports` reports for a computed reserved specifier. */
+export const COMPUTED_SPECIFIER = "<computed>";
 
 const TYPE_ONLY_NODES = new Set([
   "TSTypeAnnotation",
@@ -697,9 +777,42 @@ export function sourceSdkImports(
       reserved(source) &&
       node.exportKind !== "type"
     ) {
+      // `export { type A, type B } from` is erased like `export type {…}`;
+      // one value re-export keeps the statement.
+      const specifiers = (node.specifiers as Array<Record<string, unknown>>) ?? [];
+      if (
+        node.type === "ExportNamedDeclaration" &&
+        typescript &&
+        specifiers.length > 0 &&
+        specifiers.every((specifier) => specifier.exportKind === "type")
+      ) {
+        continue;
+      }
       keep(source as string, "static");
     }
   }
+
+  // A dynamic import's specifier as the post-transform check reads it: a
+  // string, an expression-free template (that string), or a template
+  // computed from expressions, which counts when it starts with a reserved
+  // name and is refused.
+  const dynamicSpecifier = (argument: unknown) => {
+    if (!isRecordObject(argument)) return;
+    if (argument.type === "StringLiteral" && reserved(argument.value)) {
+      keep(argument.value as string, "dynamic");
+      return;
+    }
+    if (argument.type === "TemplateLiteral" && Array.isArray(argument.quasis)) {
+      const quasis = argument.quasis as Array<{ value: { cooked: string } }>;
+      const expressions = argument.expressions as unknown[];
+      if (expressions.length === 0) {
+        const text = quasis.map((quasi) => quasi.value.cooked).join("");
+        if (reserved(text)) keep(text, "dynamic");
+      } else if ((quasis[0]?.value.cooked ?? "").startsWith("@morph/sdk")) {
+        keep(COMPUTED_SPECIFIER, "dynamic");
+      }
+    }
+  };
 
   const visit = (node: unknown, parentKey: string | null, parent: Record<string, unknown> | null): void => {
     if (Array.isArray(node)) {
@@ -710,17 +823,14 @@ export function sourceSdkImports(
     const type = node.type as string;
     if (TYPE_ONLY_NODES.has(type)) return;
     if (type === "ImportDeclaration") return;
-    if (type === "ImportExpression" && reserved((node.source as Record<string, unknown>)?.value)) {
-      keep((node.source as Record<string, unknown>).value as string, "dynamic");
-    }
+    if (type === "ImportExpression") dynamicSpecifier(node.source);
     if (
       type === "CallExpression" &&
       isRecordObject(node.callee) &&
       node.callee.type === "Import" &&
-      Array.isArray(node.arguments) &&
-      reserved((node.arguments[0] as Record<string, unknown>)?.value)
+      Array.isArray(node.arguments)
     ) {
-      keep((node.arguments[0] as Record<string, unknown>).value as string, "dynamic");
+      dynamicSpecifier(node.arguments[0]);
     }
     if ((type === "Identifier" || type === "JSXIdentifier") && pending.has(node.name as string)) {
       const isPropertyKey =
@@ -782,6 +892,8 @@ export function verifyNativeStartSdkProof(args: {
   nonce: string;
   /** The Vite config file, for messages. */
   configFile?: string;
+  /** The Worker entry the artifact deploys, workspace-relative. */
+  workerEntry?: string;
 }): NativeBuildProof["sdk"] & { vite: string; publicDir: string | null } {
   const config = args.configFile ?? "vite.config.ts";
   if (!args.nonce) {
@@ -905,6 +1017,11 @@ export function verifyNativeStartSdkProof(args: {
           );
         }
         for (const { specifier, kind } of imported) {
+          if (specifier === COMPUTED_SPECIFIER) {
+            return refuse(
+              `${source} imports @morph/sdk through a specifier computed at run time. Import @morph/sdk or @morph/sdk/start by name.`,
+            );
+          }
           if (!kept.has(`${source} ${kind} ${specifier}`)) {
             return refuse(
               `${source} imports ${specifier}${kind === "dynamic" ? " dynamically" : ""}, but the code the ${name} environment built from it does not. A Vite plugin rewrites that import; remove it.`,
@@ -939,6 +1056,9 @@ export function verifyNativeStartSdkProof(args: {
           nonce: args.nonce,
           config,
           artifactPrefix: output === "server" ? "runtime/server" : "runtime/client",
+          ...(output === "server"
+            ? { entryFile: args.workerEntry }
+            : { publicDir: record.publicDir }),
         })
       : { specifiers: [] as string[], sentinelFiles: [] as string[], edges: 0 };
     if (output) {
@@ -977,6 +1097,10 @@ function proveBundle(args: {
   nonce: string;
   config: string;
   artifactPrefix: string;
+  /** The deployed Worker's entry, workspace-relative (the Worker output only). */
+  entryFile?: string;
+  /** The public directory, workspace-relative (the browser output only). */
+  publicDir?: string | null;
 }): { specifiers: string[]; sentinelFiles: string[]; edges: number } {
   const byFile = new Map<string, BundleChunk>();
   const code = new Map<string, string>();
@@ -999,17 +1123,42 @@ function proveBundle(args: {
     byFile.set(file, chunk);
     code.set(file, decode(content));
   }
-  const graph = new Map<string, ChunkImports>();
-  for (const [file, text] of code) graph.set(file, chunkImports(file, text));
+  // Coverage: every script this output ships is a chunk the bundler emitted
+  // and Morph verified. The only exception is a browser file copied
+  // unchanged from the public directory, which is the author's own static
+  // file, not built code; it is still scanned for SDK imports below.
+  const isScript = (path: string) => /\.(?:m|c)?js$/i.test(path);
+  const publicCopies = new Map<string, string>();
+  for (const [path, content] of args.outputs) {
+    if (!path.startsWith(`${args.outDir}/`) || !isScript(path)) continue;
+    if (byFile.has(path)) continue;
+    const served = path.slice(args.outDir.length + 1);
+    const original =
+      args.publicDir != null
+        ? args.outputs.get(`${args.publicDir}/${served}`)
+        : undefined;
+    if (original !== undefined && sha256(original) === sha256(content)) {
+      publicCopies.set(path, decode(content));
+      continue;
+    }
+    return refuse(
+      `${args.artifactPrefix}/${served} is not code the bundler emitted for the ${args.name} environment, so Morph cannot vouch for it. A Vite plugin writes it into the output; remove it.`,
+    );
+  }
 
-  const entries = [...byFile].filter(([, chunk]) => chunk.isEntry).map(([file]) => file);
-  // The Worker always has its entry; a browser output with no JavaScript at
-  // all has nothing to reach.
-  if (
-    entries.length === 0 &&
-    (args.artifactPrefix === "runtime/server" || byFile.size > 0)
-  ) {
-    return refuse(`the ${args.name} bundle record has no entry chunk. Rebuild the Theme.`);
+  const graph = new Map<string, ChunkImports>();
+  for (const [file, text] of code) graph.set(file, chunkImports(file, text, args.outDir));
+  for (const [file, text] of publicCopies) graph.set(file, chunkImports(file, text, args.outDir));
+
+  // The Worker is deployed from its entry: that file must be a verified
+  // chunk the bundler marked as an entry.
+  if (args.entryFile !== undefined) {
+    const entry = byFile.get(args.entryFile);
+    if (!entry || !entry.isEntry) {
+      return refuse(
+        `the Worker's entry ${args.artifactPrefix}/${args.entryFile.slice(args.outDir.length + 1)} is not an entry chunk the bundler emitted. Rebuild the Theme.`,
+      );
+    }
   }
   const reach = (from: readonly string[], kinds: "static" | "all") => {
     const seen = new Set<string>();
@@ -1025,10 +1174,23 @@ function proveBundle(args: {
     }
     return seen;
   };
-  const reachable = reach(entries, "all");
+  // Every shipped script counts as able to run: a Worker can import any
+  // module it was deployed with, a browser any file it is served. So every
+  // one is checked, not only those an entry reaches.
+  const reachable = new Set(graph.keys());
+  // Relative imports must stay inside what was verified.
+  for (const [file, imports] of graph) {
+    for (const target of [...imports.static, ...imports.dynamic]) {
+      if (isScript(target) && !graph.has(target)) {
+        return refuse(
+          `${args.artifactPrefix}/${file.slice(args.outDir.length + 1)} imports ${target.startsWith(`${args.outDir}/`) ? `${args.artifactPrefix}/${target.slice(args.outDir.length + 1)}` : target}, which is not code the bundler emitted for the ${args.name} environment. A Vite plugin changes the output; remove it.`,
+        );
+      }
+    }
+  }
 
-  // Without the record: no reachable chunk imports a reserved name at run
-  // time (an SDK left external).
+  // Without the record: no shipped script imports a reserved name at run
+  // time (an SDK left external, or a computed SDK specifier).
   for (const file of [...reachable].sort()) {
     const reserved = graph.get(file)?.reserved ?? [];
     if (reserved.length > 0) {
@@ -1061,7 +1223,8 @@ function proveBundle(args: {
     for (const importer of importerChunks) {
       const reached = reach([importer], edge.kind === "static" ? "static" : "all");
       const carrying = targetChunks.filter(
-        (file) => reached.has(file) && code.get(file)!.includes(sentinel),
+        (file) =>
+          reached.has(file) && graph.get(file)!.sentinels.includes(sentinel),
       );
       if (carrying.length === 0) {
         return refuse(
@@ -1150,6 +1313,8 @@ export function readNativeBuildProof(value: unknown): NativeBuildProof | null {
       return null;
     }
     if (entry.edges < entry.specifiers.length) return null;
+    // Edges without the names they import, or names without edges.
+    if ((entry.edges > 0) !== (entry.specifiers.length > 0)) return null;
     if (entry.specifiers.length > 0 && entry.sentinelFiles.length === 0) {
       return null;
     }

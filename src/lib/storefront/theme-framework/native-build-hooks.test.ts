@@ -235,6 +235,18 @@ console.log(JSON.stringify(result));
       '{ [Symbol("x")]: 1 }',
       'NATIVE_ADAPTER_OPTION: vite.config.ts passes options with a symbol key to cloudflare(). Morph reads the plugin options by name. Remove "options with a symbol key"; keep wrangler.jsonc at the project root.',
     ],
+    [
+      // JSON.parse makes "__proto__" an own key; copied by assignment it
+      // would give the snapshot an inherited childEnvironments.
+      "an own __proto__ key",
+      `JSON.parse('{"viteEnvironment":{"__proto__":{"childEnvironments":["rsc"]},"name":"ssr"}}')`,
+      'NATIVE_ADAPTER_OPTION: vite.config.ts passes __proto__ in viteEnvironment options to cloudflare(). Morph reads the plugin options as plain settings, not prototypes. Remove "__proto__ in viteEnvironment options"; keep wrangler.jsonc at the project root.',
+    ],
+    [
+      "a constructor key",
+      '{ viteEnvironment: { name: "ssr" }, ["constructor"]: 1 }',
+      'NATIVE_ADAPTER_OPTION: vite.config.ts passes constructor in options to cloudflare(). Morph reads the plugin options as plain settings, not prototypes. Remove "constructor in options"; keep wrangler.jsonc at the project root.',
+    ],
   ])(
     "refuses options given as %s, which a check of their keys alone would miss",
     async (_name, options, message) => {
@@ -257,7 +269,12 @@ environment.childEnvironments = ["late"];
 console.log(JSON.stringify({
   options: made.options,
   frozen: Object.isFrozen(made.options.viteEnvironment),
-  marked: made[Symbol.for("morph.cloudflare.checked")] === true,
+  // Registered where only this pass's shim and wrapper look (the plan here
+  // has no nonce, so the key ends in ":").
+  marked: globalThis[Symbol.for("morph.cloudflare.registry:")].has(made),
+  // A copy of the plugin object is not registered: the mark is not a
+  // property a config could copy or set.
+  copied: globalThis[Symbol.for("morph.cloudflare.registry:")].has({ ...made }),
 }));
 `,
     );
@@ -270,10 +287,14 @@ console.log(JSON.stringify({
       },
       frozen: true,
       marked: true,
+      copied: false,
     });
     expect(
       JSON.parse(readFileSync(join(root, NATIVE_ADAPTER_CALLS_PATH), "utf8")),
-    ).toEqual({ calls: 1 });
+    ).toEqual({
+      nonce: "",
+      calls: [{ keys: ["viteEnvironment"], environment: "ssr" }],
+    });
   });
 
   it("accepts the guide's options and the local ones, and records nothing", async () => {
