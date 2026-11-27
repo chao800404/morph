@@ -434,6 +434,7 @@ import {
   createPreviewContentSync,
   type PreviewContentSync,
 } from "@/lib/storefront/editor/preview-content-sync";
+import { resolvePreviewSectionLinks } from "@/lib/storefront/editor/preview-section-links";
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
   EDITOR_CAPABILITIES,
@@ -16315,7 +16316,7 @@ export function VisualEditorShell({
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-section-props",
         sectionId,
-        props: hidden ? undefined : resolvedProps,
+        props: hidden ? undefined : resolvePreviewSectionLinks(resolvedProps),
         enabled: hidden ? false : enabled,
         ...(!hidden && resetKeys?.length ? { resetKeys } : {}),
         ...(presentationToken ? { presentationToken } : {}),

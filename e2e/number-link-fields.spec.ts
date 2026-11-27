@@ -26,8 +26,8 @@ import {
  *
  * For each field: a canvas click selects that field, an Inspector edit reaches
  * the canvas, the Document keeps the raw value the contract declares (a
- * number as a number; a link as `{ href, target }`, with `rel` derived when
- * content is published and never stored), and after a reload the canvas, the Inspector and
+ * number as a number; a link as `{ href, target }`, with `rel` derived for
+ * the canvas and never stored), and after a reload the canvas, the Inspector and
  * the Document agree. The link also refuses an address that would run script,
  * and a number outside its declared range is not stored.
  *
@@ -354,12 +354,12 @@ test.describe("the Inspector's number and link fields", () => {
       .toMatchObject({ href: "https://example.com/docs" });
 
     // A new tab to another site: the canvas gets the target; the Document
-    // keeps the address and the target, never the rel. The rel is derived
-    // when published content is resolved (storefront-content-runtime), not in
-    // the editor's preview content, so the canvas is not asked for it here.
+    // keeps the address and the target, never the rel. The canvas gets the
+    // rel derived the way published content derives it.
     await targetSelect(page).click();
     await page.getByRole("option", { name: "New tab", exact: true }).click();
     await expect(guide(page)).toHaveAttribute("target", "_blank");
+    await expect(guide(page)).toHaveAttribute("rel", "noopener noreferrer");
     await expect
       .poll(() => storedProps(page, CTA).then((p) => p.guide))
       .toMatchObject({ href: "https://example.com/docs", target: "_blank" });
@@ -385,6 +385,7 @@ test.describe("the Inspector's number and link fields", () => {
       "https://example.com/docs",
     );
     await expect(guide(page)).toHaveAttribute("target", "_blank");
+    await expect(guide(page)).toHaveAttribute("rel", "noopener noreferrer");
     await selectGuide(page);
     await expect(hrefInput(page)).toHaveValue("https://example.com/docs");
     await expect(targetSelect(page)).toHaveText("New tab");

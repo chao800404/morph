@@ -54,7 +54,7 @@ export const START_PREVIEW_SHARDS = [
   // content-module-restore-start, Start only (LANE_EXCLUSIVE_SPECS in
   // editor-e2e-shards.mjs); the client lane checks the refusal in a file of
   // its own.
-  ["binding-acceptance-p.spec.ts", "binding-acceptance-p-rest.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "content-module-restore.spec.ts", "content-module-restore-start.spec.ts"],
+  ["binding-acceptance-p.spec.ts", "binding-acceptance-p-rest.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "number-link-fields.spec.ts", "content-module-restore.spec.ts", "content-module-restore-start.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
