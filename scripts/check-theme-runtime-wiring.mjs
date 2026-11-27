@@ -14,7 +14,8 @@
  * and answers 503 for every storefront request, so "nothing is configured" is
  * not a state that may report success — a guard that goes green when nothing is
  * wired encodes 未完成 as 已驗證, which is the defect
- * `docs/visual-editor-progress.md` names.
+ * the old Visual Editor progress doc named (since retired; the rule now lives
+ * in ROADMAP "尚未完整閉環").
  *
  * **Deliberately not wired into the required CI job yet.** Adding it to
  * `architecture-guards` today would make the required check red for the very

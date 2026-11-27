@@ -204,6 +204,7 @@ Morph 希望同時具備：
   - 前置準備：草稿 #221 的讀取核心原型與 fixture；L1.5 設計草稿 #191 未合併。
 - 契約文件：綁定契約草稿 #210、讀取契約草稿 #187，設計原則已認可，細節未定，未授權整套實作。
 - 2026-10-12 之前的探測實驗（#187 草稿附錄）只是有限證據，不是正式支援。
+- 渲染模式與部署同樣依各框架官方寫法，見 1.6（2026-11-27 確認）。
 
 ### 1.3 所有框架用同一套內容 API；程式碼管呈現、Document 管內容（2026-10-13 確認方向）
 
@@ -374,6 +375,7 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     - 驗收：用一個從未發布過 Theme 的商店，以真實的外部網站驗收。
 - **M6 其他框架。** 在 `.morph/` wrapper 接線，每個框架完成一個最小正式案例。在 M1、M2 完成後才開始。
 - **R 渲染模式交付線（TanStack Start；2026-11-25 規劃，原則已接受，各步實作另行核准）。** 目標：商家可逐頁選擇 SSR、SSG、ISR 或 CSR，正式網站照選定模式運作，發布、重新載入、回滾後公開端一律讀到生效 release 的內容。產品契約與實作關卡見 [`docs/storefront-render-policy.md`](docs/storefront-render-policy.md)「Confirmed product contract」與「Implementation gates」，本條只排交付順序。
+  - **【已取代】2026-11-27：下方「現況」與「交付順序」（Morph 端的 `renderPolicy` Document 寫入、產生的預先渲染選取、規劃中的 csr／isr 政策對應，以及 3 個 PR 的 SSG 計畫）已由 1.6 的框架原生方向取代；原文保留為歷史紀錄，歷史 release 仍可讀取。** SSG PR1（頁面資格）與 PR2（Core 送出與 release ETag）已合併；PR3～PR5 重新規劃。舊計畫保留的部分：封存內容檢查、release ETag、缺少產物時失敗、回滾驗收。新的順序見本條「交付順序」之後的「新的交付順序」。
   - **現況（以 `c5fc256` 為準，只記有證據的事）：**
 
     | 渲染方式 | 現況 |
@@ -391,6 +393,17 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     4. Cloudflare staging 驗收：SSR 與 SSG 一起驗冷啟動、Sleep→Wake、發布讀回與回滾。需另外核准，token 由使用者發放。
     5. ISR：最後做。背景更新、更新失敗，以及發布或回滾後的快取隔離；背景更新不得把回滾前的頁面放回線上。
     6. 之後再排：動態路由 SSG（如每個商品網址）與全站 SPA 發布。
+  - **新的交付順序（2026-11-27，計畫 v2，handoff `2026-11-27/native-render-plan.md`，不在 repo；各步實作另行核准）：**
+    0. spike：在真實 Sandbox 加 Cloudflare staging 上驗證：發布 A／B／回滾 A；SSG 改回 SSR 時跨網址別名；隱藏標記不出現在輸出；內容讀取失敗時建置失敗；Worker 版本綁定；開啟中頁面所需的 chunk；streaming 與 selective SSR 經 Core 送出。
+    1. 原生建置與部署契約，只做 SSR，一次一個框架：正式環境採用 Theme 自己的設定；以證明取代 Hide 對 `custom-build` 的一律拒絕。
+    2. Core 預設 `private, no-store`。
+    3. 原生 SSG，加 `crawlLinks` 選項 B 的驗證；通過認證的產出才解除發布守衛。
+    4. release 綁定 Worker 版本。
+    5. selective SSR 與 streaming 認證：編輯器 binding、寫入與 Hide 在 `ssr: false`、`'data-only'`、延遲路由上的行為；bridge 等待 30 秒。
+    6. ISR：先做 release 範圍的快取，再做需要 Cache Purge 權限的隨選清除。
+    7. 編輯器開關。
+    8. SPA 稍後。
+  - **2026-11-27 的發現：** 在 Code 模式下，官方的 Start 設定目前不會產生 SSG。原因：Theme 自帶設定的建置在正式環境被拒（`NATIVE_START_BUILD_UNAVAILABLE`）、Hide 拒絕 `custom-build`、平台產生的預先渲染使用 `crawlLinks: false`，且 `assertRenderingModeReady` 拒絕 SSG 發布。
   - **開源參考：** TanStack 官方範例（Cloudflare 的 TanStack Start 範例、static prerendering、selective SSR、SPA mode）可原樣固定為驗收素材，MIT 授權，保留授權聲明。ISR 參考 OpenNext Cloudflare 的 R2 增量快取與 Durable Object 更新佇列的設計（MIT），不直接複製：它綁 Next.js 的快取語意，Morph 的快取與更新工作必須綁在商店、網址與 release 上。
   - **時程：** 只估開發工作量，SSR 雲端驗收加固定網址 SSG 約 1～2 週，逐頁四種模式含發布與回滾驗證約 3～5 週，加上動態路由 SSG 與全站 SPA 約 4～7 週。實際日曆時間預期更長：每個 PR 要完整驗證與 CI，容器驗收一次只能跑一組，staging 要另外核准。
   - **畫布中的 Theme cookie（2026-11-25 決定）：** 編輯器的預覽是跨站 iframe，Theme 以 `SameSite=Lax`／`Strict` 設定的 cookie 在畫布中不會保留，省略 SameSite 時依瀏覽器與隱私設定而定（原生相容 spec 以測試記錄；新分頁開啟的預覽與正式網站一致）。保留編輯器與預覽跨站的設計，不改成同站。
@@ -398,7 +411,7 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     2. 跨商家預覽的 cookie 隔離是正式開放前的必要條件：現在選定正式預覽網域；若沿用共用父網域，把專用的預覽父網域加入 Public Suffix List 的 PRIVATE 區段（各瀏覽器更新時間不同，要預留時間）。正式開放前以兩個商家的測試預覽驗證：任何一方都無法把 Theme cookie 寫到另一方會收到的範圍，原有的預覽授權仍可用。
     3. 平台在預覽中改寫 Theme 的 `Set-Cookie`（`SameSite=None; Secure; Partitioned`）：只作為有明確需求的 Theme 的選用功能。先在真實 HTTPS 預覽測 Chrome、Firefox、Safari，再單獨確認本機 HTTP，驗證設定、更新與刪除；`Partitioned` 依頂層網站分區，同一個編輯器嵌入兩個 Theme 時，跨商家隔離仍由預覽網域提供。
 
-**里程碑進度（2026-11-09，更新至 2026-11-25）。** 只記已合併或已有證據的事；未跑到的驗收不寫成通過。
+**里程碑進度（2026-11-09，更新至 2026-11-27）。** 只記已合併或已有證據的事；未跑到的驗收不寫成通過。
 
 - **M0：列出的四項都已合併。** restore 重新連線（#255）、交付保護機制（#256：CI 必須跑完每一個預期的檢查）、隱藏值資料最小化階段 1（#257，只涵蓋編輯器送往畫布的訊息，不是權限保護）、SDK 工作區化（#254）。同期另外合併的安全與可靠性修正：轉送給 Theme 的請求移除平台憑證與 `x-morph-*` 標頭（#261）、移除 Morph 私密 API key（#265）、正式環境不再信任開發與過期的 origin（#263）、建置後的 Worker 不能自行判斷為非正式環境（#264）、Theme 執行環境未設定時回傳通用訊息（#266）、client bundle 檢查拒絕 source map（#277）、Starter 升級與首頁重設加上 CAS／OCC（#260、#272）。
 - **M1：已完成（2026-11-25，第 4 輪正式驗收 PASS，使用者確認，不需要第 5 輪）。**
@@ -422,11 +435,25 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     - Starter v32 PR3（#461，2026-11-26）：Starter 升到 v32，含 SDK 讀內容來源、完整 Start v32 路線、Lane B 在發布守衛之下的驗收、平台預先渲染 host 修正，以及即時輸入方案 A（完整 Start 的 Live Preview 顯示未儲存的輸入）；main 上的 Starter 現在是 v32。
     - CI 與本機預覽：Playwright Chromium 下載依版本快取（#463）、Vitest 分片以時間加每檔固定開銷建模（#466）、macOS 上本機預覽自己的寫入不再重啟下一個 Vite（#467，只影響本機傳輸，正式環境用輪詢不受影響）。
     - 開啟中（2026-11-26，未合併）：E2E 重負載 spec 拆分與分片重排（#468）、平台預先渲染遇到被拒的內容讀取時建置失敗（#469）、staging 用的 Theme Worker 名稱前綴與佇列名稱（#465，Draft）。
+  - 2026-11-27 已合併（以 GitHub 的合併狀態為準；目前 main `ed9da34`）：
+    - 【已合併】#479（`7fdfa50`）：預覽在無法服務時回 503，fail-closed。
+    - 【已合併】#478（`1227680`）：Astro PR1。
+    - 【已合併】#480（`ec89711`）：M3 編譯器插入的 Hide 守衛，不強制作者採用特定寫法。
+    - 【已合併】#481（`71c4514`）：Astro PR2。
+    - 【已合併】#482（`749d016`）：Astro PR3，即 Astro M2 的 D2：選取加 Inspector。
+    - 【已合併】#483（`ddf24ce`）：文件導航通道與過期 spec 修正。
+    - 【已合併】#484（`0b2f360`）：Cloudflare Email Sending provider。
+    - 【已合併】#485（`5dbd7cf`）：在 `src/cms.config.ts` 把 Cloudflare Email Sending 設為作者端預設。
+    - 【已關閉，未合併】#294：使用者核准關閉，內容已由 main 上相同的 patch 涵蓋。
+    - 【已取代】#273（較早的 email Draft）由 #484 取代，目前仍開啟。
+    - 以上 #465、#468、#469 的狀態未在此重新核對。
+  - **Email（2026-11-27）：** Cloudflare Email Sending 已在子網域 `stg.showtrue.com.tw` 啟用（使用者核准的 DNS：bounce MX／SPF、DKIM、`_dmarc.stg` 為 `p=reject`）。repo 預設 adapter 是 Cloudflare（REST）；不做以環境變數切換 provider。
   - **CI 實測（單次執行，共享 runner，會有雜訊，不是穩定性證據）：**
     - Vitest：原本單一「Validation tests」job 2043 s。#449 之後最慢分片 799 s，整個 run 1973 s（前一次 2060 s，約少 90 s，因為 E2E 分片成為最長路徑）。#462 之後三個分片 545／836／612 s，整個 run 1005 s。#464 之後 824／599／477 s（事前推算 376 s 偏樂觀，小檔案的固定開銷低估）。#466 以各分片的固定開銷擬合後，分片為 601／622／821 s（單次執行）。
     - E2E：#460 之前編輯器分片 589～1111 s；之後 685～994 s，最慢 job 994 s，整個 run 1771 s（先前 1973 s）；合併前再跑一次 1024 s／1561 s。
     - 本機 E2E 規則（2026-11-26 使用者核准）：本機只跑相關的 spec，完整 E2E 由 CI 跑。
     - 驗證機器分工（2026-11-26，使用者核准）：Mac 跑單元驗證與聚焦的 client 路線 E2E（#467 修好 FSEvents 競態之後）；WSL 跑完整 Start、容器路線與正式驗收。兩台可並行。
+    - 2026-11-27：Mac 已裝好 Astro 工具鏈（astro 7.3.5），Astro 的 Vitest 現在在 Mac 上實際執行，不再靜默略過。
   - 下方 11-21 以前的「未完成」與「接下來的順序」保留為歷史紀錄，M1 狀態以本段為準。
   - 接下來的順序（2026-11-25，11-26 更新狀態）：
     1. 窄修正與測試修正：Undo 測試走到正確檢查（#452）與隱藏區塊在安全路由渲染器的修正（#456）已合併；CONTAINER_UNAVAILABLE 與 `/preview` 隱藏區塊的逐項對照未在此重新核對。
@@ -440,7 +467,8 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
        - #461 由主導代理人以合併腳本（含完整檢查，使用者委派的權限）合併，CI 24 項通過。
     4. Starter v33（圖片定位缺口）。
     5. 雲端 staging 驗收（含 Sleep→Wake）：另外核准。規劃 v2 已寫成（handoff，不在 repo），**尚未部署任何東西**。階段 1 用 `stg.showtrue.com.tw`（店面）與 `admin-stg.showtrue.com.tw`（CMS），預覽萬用字元網域不在階段 1。部署前的條件：使用者重新核准 #458 之後的 main SHA、使用者自己發放並保管 token，且每個遠端步驟逐步核准。規劃找到兩個會與正式環境相撞的阻擋項：Theme Worker 名稱（`morph-theme-<店面 id>`，新 D1 的第一個店面固定為預設 id，可能覆蓋同帳號正式環境的 Theme Worker）與庫存匯出佇列路由（以固定名稱比對）。修正在 #465（Draft，未合併；head `5aceb82` 的 CI 24 項通過，輪到時要在最新 main 上刷新）：以變數設定 Theme Worker 名稱前綴與佇列名稱，預設值不變。另有【待決】項目：店面網域的登記方式與 runtime 部署 token 的範圍與期限。
-    6. 渲染模式交付線（見 1.5「R 渲染模式交付線」）：固定網址 SSG → 逐頁 CSR → staging → ISR。
+       - **2026-11-27 更新【進行中】：** 使用者已核准部署，版本為 main `ed9da34`，分兩階段：先部署 Core（不帶 `THEME_WORKER`，店面回 503）；第一次發布會建立 `morph-theme-<storefrontId>`；之後再綁定並重新部署。不需要 Workers for Platforms（`ServiceBindingThemeRuntime`）。runtime token 用 staging token，依使用者選擇無期限，專案結束時移除。階段 1 沒有雲端畫布預覽。目前驗證執行中，**尚未部署任何東西**。部署用拋棄式 worktree，其 `wrangler.jsonc` 換成 staging 設定（Vite plugin、`check-pending-migrations.mjs` 與部署都以固定檔名讀 `wrangler.jsonc`），並有守衛腳本拒絕任何正式環境的資源名稱。
+    6. 渲染模式交付線（見 1.5「R 渲染模式交付線」）：原「固定網址 SSG → 逐頁 CSR → staging → ISR」已於 2026-11-27 由框架原生方向（1.6）取代，新順序見該條。
 - **M1（11-21 以前的紀錄）：部分完成，正式案例尚未驗收。**
   - 已合併：預覽模式提示（#262）、每個 Theme 的預覽模式（#271）、託管 SDK 入口與每次請求的內容來源（#267）、預覽內切頁跟隨（#270），以及 1.2「目前進度」列出的編輯正確性與可靠性修正（#280、#282、#286、#289、#290、#291、#292、#295、#297 等）。
   - 10-27～10-31 另外合併：預覽存取 P1（#310，只有儲存與驗證）；Starter 升級審閱與相容修正（#318、#319、#321、#325、#326、#332）；舊 bridge 驗證（#327）；容器 lifecycle 驗收與傳輸緩解（#302、#305、#334、#336）；結構編輯安全（#309、#312、#315、#316、#335）；Design 元素操作守衛的首次送出（#338，決定 E）。
@@ -580,7 +608,13 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
       - 限制：編輯器尚未送出 `identity`／`componentDigest`，畫面上的 Astro 寫入目前一律安全拒絕。
       - 依 #407 → #408 → #409 的順序合併。
     - 待決：parser 容器綁定（改 CI 規則，需要指紋與容器 E2E）。`verifyOwnership` 不檢查 `storefronts.deleted_at` 的問題已由 #417 修正。
+  - 2026-11-27：
+    - 【已合併】D2（選取加 Inspector）：#482（Astro PR3）；之前的 #478（PR1）、#481（PR2）也已合併。
+    - D3 是與 Start 對等的案例表。範圍於 2026-11-27 與 Codex 討論後決定：批次 1 加批次 2（畫布內嵌編輯並以欄位為單位選取、layout 共用與 pending-layout 的封存）；程式碼預設值與列表、圖片一起暫緩；number 與 link 欄位排在 Start 的 E2E 之後。D3 批次 1【進行中】。
+    - D4（本機容器 E2E）尚未開始。
+    - Start 的 number 欄位與 link 欄位（href／target／rel）E2E 已排入佇列。
 - **M3：2026-11-26 重啟。**
+  - 【已合併，2026-11-27】#480（`ec89711`）：編譯器插入的 Hide 守衛，不強制作者採用特定寫法。
   - 先前寫的 #372（P0a 提示）、#374（P1）、#376（P2）、#377（P3+P4）不是 Draft：它們已在 2026-11-21／22 合併（#372 11-21、#374 11-21、#376 11-21、#377 11-22）。原先「保留、不合併、暫停」的敘述已過時。
   - 合併前要求的「未渲染 → 跳過發布檢查」審查當時沒有做；唯讀審查（2026-11-26）確認這條路徑會讓隱藏區塊漏出，因此重啟。
   - 重啟方向（2026-11-26，與 Codex 討論後決定，細節在 handoff `2026-11-26/m3-restart-plan.md`）：（1）先做 fail-closed 發布守衛：只要無法證明某個隱藏項目被省略，就拒絕發布，涵蓋每個隱藏項目（含 CMS Pages 與非 Start 路線）；（2）以受管理的 Starter 允許清單取代一般靜態分析器（固定的 router／`__root`／`content.ts`、單一受守衛的掛載形式、容許輕量編輯），沿用既有的隱藏 id 執行期修正與回歸案例；（3）之後才做 Morph 擁有的 section 掛載，由它略過隱藏的掛載。Astro 的隱藏是 M3b。
@@ -610,6 +644,41 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
 - M1 因此明確增加完成條件，收尾會更晚。M4 改為「B1 之後的資料流能力擴充（多層傳遞、複雜轉換、C4b 提案等），Astro／其他框架分別對齊 M2／M6」。
 
 **未授權。** 各里程碑的實作、部署、協定變更、npm 發布、遠端遷移。每個里程碑開始前先提出詳細計畫並確認。
+
+### 1.6 渲染模式與部署依照各框架官方寫法（2026-11-27 確認）
+
+**方向（使用者 2026-11-27 確認）。** Theme 是標準的 TanStack Start 或 Astro 專案，設定方式照該框架官方的「部署到 Cloudflare」指南：
+
+- Start：`vite.config` 使用 `@cloudflare/vite-plugin` 與 `tanstackStart({ prerender })`，路由的 `ssr` 與 `headers()`，以及 `wrangler.jsonc`。
+- Astro：`@astrojs/cloudflare`、`output`、`export const prerender`。
+
+渲染模式（SSR、streaming、selective SSR、SPA、SSG、ISR）就是那份官方設定所寫的。Morph 不發明語法，也不另存一個渲染政策欄位當作來源真相。
+
+**編輯器的開關。** 只為不寫程式的作者服務：它們寫入或修改同一份官方設定，經由既有的安全來源寫入路徑（OCC）寫進 Theme 原始碼。Code 模式與開關顯示的是同一件事。
+
+**保留的平台層（作者看不見）：**
+
+- 內容來自封存的 release 快照，靜態 HTML 與 hydration 資料都不得漏出隱藏區塊；
+- 編譯器插入的 Hide 守衛；
+- 每個 release 綁定自己的 Worker 版本，回滾或切換模式時不會送出過期的 HTML；
+- 快取安全；
+- 編輯器預覽 bridge。
+
+**作者設定的處理，三種結果：**
+
+1. 照寫的用；
+2. 部署時合併（Morph 只設定 Worker 名稱、`workers_dev: false`、`preview_urls: false`，以及核准的 bindings 與 secrets）；
+3. 拒絕，並說明檔案、設定項目與改法：宣告 routes／網域、沒有對應的 binding、binding 名稱衝突、遠端建置 binding、會破壞內容 SDK／Hide／Core 路由的外掛。
+
+**使用者 2026-11-27 的決定：**
+
+- `crawlLinks: true` 照寫的用（選項 B）：平台驗證每一個產出的 HTML 頁面，若個人化路由（購物車、帳號、即時價格或庫存、session）被預先渲染，建置失敗，並指出頁面與改法。
+- ISR 完成之前，Core 預設把 Theme 的回應設為 `private, no-store`，並移除 CDN 快取標頭。
+- SPA 模式暫緩；React Server Components 暫緩。
+
+**目標（使用者 2026-11-27）。** 在預覽、發布與編輯器中完整支援 TanStack Start 的所有渲染模式（SSR、streaming、selective SSR、SPA、SSG、ISR）；SPA 與 RSC 依上面暫緩。
+
+交付順序見 1.5「R 渲染模式交付線」。
 
 ---
 
@@ -936,6 +1005,13 @@ Starter bootstrap 與 workspace upgrade 契約：
 - AI Code Agent backend workflow
 - AI patch / diff / repair orchestration
 - production-grade observability / metering / tenant isolation
+
+從已退役的舊 Visual Editor 進度表保留下來、仍然有效的規則與目標（不含歷史紀錄）：
+
+- 規則：未完成前不得把 build artifact 說成已上線的 runtime。真實 Cloudflare Theme Worker、custom domain 與遠端 Publish 未閉環前，「已建置」不等於「已上線」。
+- 規則：什麼都沒接上時不得回報成功。一個在沒有任何設定時仍然全綠的守衛，會把「未完成」編碼成「已驗證」；因此這類檢查要有第三種狀態（`PENDING`），且 `PENDING` 與 `FAIL` 一樣以非零結束。
+- 規則：Publish 是唯一可以更新公開內容的路徑，編輯一律先寫草稿。
+- 目標【未完成】：Inspector 對接目前的 capability registry 與所有基本樣式控制（每個可修補的 Tailwind 屬性家族，都要有明確結果：有控制，或刻意沒有控制），並涵蓋選取、重新載入、切換 section 與過期回應的回歸。
 
 ### Theme `public/` 與 Assets 後續（2026-09-26 排定，依序）
 
