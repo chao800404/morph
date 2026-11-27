@@ -144,6 +144,7 @@ export const EDITOR_SHARDS = [
     "native-compat-published.spec.ts",
     "native-content-dependency.spec.ts",
     "native-publish-acceptance.spec.ts",
+    "native-ssr-publish-acceptance.spec.ts",
     "performance.spec.ts",
     "publish-layout-edit.spec.ts",
     "publish.spec.ts",

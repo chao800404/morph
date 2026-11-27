@@ -39,6 +39,7 @@
     "native-compat-published.spec.ts": 0,
     "native-content-dependency.spec.ts": 0,
     "native-publish-acceptance.spec.ts": 0,
+    "native-ssr-publish-acceptance.spec.ts": 0,
     "navigation-matrix-public.spec.ts": 0,
     "navigation-matrix.spec.ts": 46.8,
     "object-position.spec.ts": 21.2,
