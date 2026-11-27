@@ -426,6 +426,25 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
+          # This install reads only the runner's own Ubuntu sources: every
+          # suite in ubuntu.sources (-security included), each stanza signed by
+          # the Ubuntu archive keyring. An unrelated feed on the image
+          # (packages.microsoft.com, HTTP 403 on 11-27) failed `apt-get update`
+          # with exit 100 three times before any test ran. Playwright runs apt
+          # through sudo, which drops APT_CONFIG, so the scope is a conf file
+          # that this step removes again on its way out.
+          ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+          stanzas=$(grep -c '^Types:' "$ubuntu_sources" || true)
+          signed=$(grep -cx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$ubuntu_sources" || true)
+          if [ "${stanzas:-0}" -lt 1 ] || [ "$stanzas" != "$signed" ] || ! grep -Eq '^Suites:.* [a-z]+-security( |$)' "$ubuntu_sources"; then
+            echo "::error::$ubuntu_sources is not the signed Ubuntu archive with its security suite; not narrowing apt to it."
+            exit 1
+          fi
+          sudo install -d -m 0755 /etc/apt/ci-ubuntu-sources.d
+          sudo install -m 0644 "$ubuntu_sources" /etc/apt/ci-ubuntu-sources.d/ubuntu.sources
+          trap 'sudo rm -f /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only' EXIT
+          printf '%s\n' 'Dir::Etc::SourceList "/dev/null";' 'Dir::Etc::SourceParts "/etc/apt/ci-ubuntu-sources.d";' \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only > /dev/null
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
@@ -677,6 +696,25 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
+          # This install reads only the runner's own Ubuntu sources: every
+          # suite in ubuntu.sources (-security included), each stanza signed by
+          # the Ubuntu archive keyring. An unrelated feed on the image
+          # (packages.microsoft.com, HTTP 403 on 11-27) failed `apt-get update`
+          # with exit 100 three times before any test ran. Playwright runs apt
+          # through sudo, which drops APT_CONFIG, so the scope is a conf file
+          # that this step removes again on its way out.
+          ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+          stanzas=$(grep -c '^Types:' "$ubuntu_sources" || true)
+          signed=$(grep -cx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$ubuntu_sources" || true)
+          if [ "${stanzas:-0}" -lt 1 ] || [ "$stanzas" != "$signed" ] || ! grep -Eq '^Suites:.* [a-z]+-security( |$)' "$ubuntu_sources"; then
+            echo "::error::$ubuntu_sources is not the signed Ubuntu archive with its security suite; not narrowing apt to it."
+            exit 1
+          fi
+          sudo install -d -m 0755 /etc/apt/ci-ubuntu-sources.d
+          sudo install -m 0644 "$ubuntu_sources" /etc/apt/ci-ubuntu-sources.d/ubuntu.sources
+          trap 'sudo rm -f /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only' EXIT
+          printf '%s\n' 'Dir::Etc::SourceList "/dev/null";' 'Dir::Etc::SourceParts "/etc/apt/ci-ubuntu-sources.d";' \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only > /dev/null
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
@@ -889,6 +927,25 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
+          # This install reads only the runner's own Ubuntu sources: every
+          # suite in ubuntu.sources (-security included), each stanza signed by
+          # the Ubuntu archive keyring. An unrelated feed on the image
+          # (packages.microsoft.com, HTTP 403 on 11-27) failed `apt-get update`
+          # with exit 100 three times before any test ran. Playwright runs apt
+          # through sudo, which drops APT_CONFIG, so the scope is a conf file
+          # that this step removes again on its way out.
+          ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+          stanzas=$(grep -c '^Types:' "$ubuntu_sources" || true)
+          signed=$(grep -cx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$ubuntu_sources" || true)
+          if [ "${stanzas:-0}" -lt 1 ] || [ "$stanzas" != "$signed" ] || ! grep -Eq '^Suites:.* [a-z]+-security( |$)' "$ubuntu_sources"; then
+            echo "::error::$ubuntu_sources is not the signed Ubuntu archive with its security suite; not narrowing apt to it."
+            exit 1
+          fi
+          sudo install -d -m 0755 /etc/apt/ci-ubuntu-sources.d
+          sudo install -m 0644 "$ubuntu_sources" /etc/apt/ci-ubuntu-sources.d/ubuntu.sources
+          trap 'sudo rm -f /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only' EXIT
+          printf '%s\n' 'Dir::Etc::SourceList "/dev/null";' 'Dir::Etc::SourceParts "/etc/apt/ci-ubuntu-sources.d";' \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only > /dev/null
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
@@ -1310,6 +1367,25 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
+          # This install reads only the runner's own Ubuntu sources: every
+          # suite in ubuntu.sources (-security included), each stanza signed by
+          # the Ubuntu archive keyring. An unrelated feed on the image
+          # (packages.microsoft.com, HTTP 403 on 11-27) failed `apt-get update`
+          # with exit 100 three times before any test ran. Playwright runs apt
+          # through sudo, which drops APT_CONFIG, so the scope is a conf file
+          # that this step removes again on its way out.
+          ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+          stanzas=$(grep -c '^Types:' "$ubuntu_sources" || true)
+          signed=$(grep -cx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$ubuntu_sources" || true)
+          if [ "${stanzas:-0}" -lt 1 ] || [ "$stanzas" != "$signed" ] || ! grep -Eq '^Suites:.* [a-z]+-security( |$)' "$ubuntu_sources"; then
+            echo "::error::$ubuntu_sources is not the signed Ubuntu archive with its security suite; not narrowing apt to it."
+            exit 1
+          fi
+          sudo install -d -m 0755 /etc/apt/ci-ubuntu-sources.d
+          sudo install -m 0644 "$ubuntu_sources" /etc/apt/ci-ubuntu-sources.d/ubuntu.sources
+          trap 'sudo rm -f /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only' EXIT
+          printf '%s\n' 'Dir::Etc::SourceList "/dev/null";' 'Dir::Etc::SourceParts "/etc/apt/ci-ubuntu-sources.d";' \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only > /dev/null
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
@@ -1572,6 +1648,25 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
+          # This install reads only the runner's own Ubuntu sources: every
+          # suite in ubuntu.sources (-security included), each stanza signed by
+          # the Ubuntu archive keyring. An unrelated feed on the image
+          # (packages.microsoft.com, HTTP 403 on 11-27) failed `apt-get update`
+          # with exit 100 three times before any test ran. Playwright runs apt
+          # through sudo, which drops APT_CONFIG, so the scope is a conf file
+          # that this step removes again on its way out.
+          ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+          stanzas=$(grep -c '^Types:' "$ubuntu_sources" || true)
+          signed=$(grep -cx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$ubuntu_sources" || true)
+          if [ "${stanzas:-0}" -lt 1 ] || [ "$stanzas" != "$signed" ] || ! grep -Eq '^Suites:.* [a-z]+-security( |$)' "$ubuntu_sources"; then
+            echo "::error::$ubuntu_sources is not the signed Ubuntu archive with its security suite; not narrowing apt to it."
+            exit 1
+          fi
+          sudo install -d -m 0755 /etc/apt/ci-ubuntu-sources.d
+          sudo install -m 0644 "$ubuntu_sources" /etc/apt/ci-ubuntu-sources.d/ubuntu.sources
+          trap 'sudo rm -f /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only' EXIT
+          printf '%s\n' 'Dir::Etc::SourceList "/dev/null";' 'Dir::Etc::SourceParts "/etc/apt/ci-ubuntu-sources.d";' \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only > /dev/null
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
@@ -1948,6 +2043,25 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
+          # This install reads only the runner's own Ubuntu sources: every
+          # suite in ubuntu.sources (-security included), each stanza signed by
+          # the Ubuntu archive keyring. An unrelated feed on the image
+          # (packages.microsoft.com, HTTP 403 on 11-27) failed `apt-get update`
+          # with exit 100 three times before any test ran. Playwright runs apt
+          # through sudo, which drops APT_CONFIG, so the scope is a conf file
+          # that this step removes again on its way out.
+          ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+          stanzas=$(grep -c '^Types:' "$ubuntu_sources" || true)
+          signed=$(grep -cx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$ubuntu_sources" || true)
+          if [ "${stanzas:-0}" -lt 1 ] || [ "$stanzas" != "$signed" ] || ! grep -Eq '^Suites:.* [a-z]+-security( |$)' "$ubuntu_sources"; then
+            echo "::error::$ubuntu_sources is not the signed Ubuntu archive with its security suite; not narrowing apt to it."
+            exit 1
+          fi
+          sudo install -d -m 0755 /etc/apt/ci-ubuntu-sources.d
+          sudo install -m 0644 "$ubuntu_sources" /etc/apt/ci-ubuntu-sources.d/ubuntu.sources
+          trap 'sudo rm -f /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only' EXIT
+          printf '%s\n' 'Dir::Etc::SourceList "/dev/null";' 'Dir::Etc::SourceParts "/etc/apt/ci-ubuntu-sources.d";' \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only > /dev/null
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
@@ -2322,6 +2436,25 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
+          # This install reads only the runner's own Ubuntu sources: every
+          # suite in ubuntu.sources (-security included), each stanza signed by
+          # the Ubuntu archive keyring. An unrelated feed on the image
+          # (packages.microsoft.com, HTTP 403 on 11-27) failed `apt-get update`
+          # with exit 100 three times before any test ran. Playwright runs apt
+          # through sudo, which drops APT_CONFIG, so the scope is a conf file
+          # that this step removes again on its way out.
+          ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+          stanzas=$(grep -c '^Types:' "$ubuntu_sources" || true)
+          signed=$(grep -cx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$ubuntu_sources" || true)
+          if [ "${stanzas:-0}" -lt 1 ] || [ "$stanzas" != "$signed" ] || ! grep -Eq '^Suites:.* [a-z]+-security( |$)' "$ubuntu_sources"; then
+            echo "::error::$ubuntu_sources is not the signed Ubuntu archive with its security suite; not narrowing apt to it."
+            exit 1
+          fi
+          sudo install -d -m 0755 /etc/apt/ci-ubuntu-sources.d
+          sudo install -m 0644 "$ubuntu_sources" /etc/apt/ci-ubuntu-sources.d/ubuntu.sources
+          trap 'sudo rm -f /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only' EXIT
+          printf '%s\n' 'Dir::Etc::SourceList "/dev/null";' 'Dir::Etc::SourceParts "/etc/apt/ci-ubuntu-sources.d";' \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only > /dev/null
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'

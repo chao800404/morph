@@ -1198,3 +1198,38 @@ test("the Sandbox prerender smoke is its own job: the repository's launcher, a 1
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.scripts["test:sandbox-prerender"], "node scripts/sandbox-prerender-smoke.mjs");
 });
+
+test("every Chromium install reads only the runner's signed Ubuntu sources, security included, and only for that step", () => {
+  const installers = jobKeys(workflow).filter((key) =>
+    withoutComments(jobBlock(workflow, key)).includes(
+      "- name: Install Chromium for Playwright",
+    ),
+  );
+  assert.equal(installers.length, 7, "every job that installs Chromium");
+  const steps = installers.map((key) => {
+    const block = withoutComments(jobBlock(workflow, key));
+    const install = block.indexOf("- name: Install Chromium for Playwright");
+    return { key, step: block.slice(install, block.indexOf("\n      - name:", install)) };
+  });
+  for (const { key, step } of steps) {
+    const scope = step.indexOf("sudo tee /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only");
+    const install = step.indexOf("playwright install --with-deps chromium");
+    assert.ok(scope > 0 && scope < install, `${key} must scope apt before installing`);
+    // The scope: no main list, and a parts directory holding only ubuntu.sources.
+    assert.ok(step.includes(`'Dir::Etc::SourceList "/dev/null";' 'Dir::Etc::SourceParts "/etc/apt/ci-ubuntu-sources.d";'`), key);
+    assert.ok(step.includes('sudo install -m 0644 "$ubuntu_sources" /etc/apt/ci-ubuntu-sources.d/ubuntu.sources'), key);
+    assert.ok(step.includes("ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources"), key);
+    // Refused, not narrowed, unless every stanza is signed by the Ubuntu
+    // archive keyring and a security suite is among them.
+    assert.ok(step.includes("grep -cx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg'"), key);
+    assert.ok(step.includes("grep -Eq '^Suites:.* [a-z]+-security( |$)'"), key);
+    // Removed again on the way out, whatever the install did.
+    assert.ok(step.indexOf("trap 'sudo rm -f /etc/apt/apt.conf.d/81-ci-ubuntu-sources-only' EXIT") < scope, key);
+    // The retry rule, the timeouts and the install itself are unchanged.
+    assert.ok(step.includes("setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium"), key);
+    assert.ok(step.includes(`printf '%s\\n' 'Acquire::Retries "3";'`), key);
+    assert.match(step, /timeout-minutes: 15\n/);
+  }
+  // One installation, the same in every job.
+  assert.equal(new Set(steps.map(({ step }) => step)).size, 1);
+});
