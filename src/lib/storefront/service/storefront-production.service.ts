@@ -25,6 +25,11 @@ import {
   type ContentRuntimePorts,
 } from "./storefront-content-runtime";
 import {
+  STOREFRONT_CONTENT_INVALID_READ,
+  storefrontContentScopedBody,
+  storefrontContentScopedRead,
+} from "./storefront-content-read";
+import {
   signStorefrontRenderContext,
   STOREFRONT_RENDER_CONTEXT_HEADER,
   verifyStorefrontRenderContext,
@@ -537,7 +542,18 @@ export class StorefrontProductionService {
       return errorResponse(503, "Storefront content is not configured.");
     }
 
-    const requestedPath = url.searchParams.get("path") ?? "/";
+    // A scoped read (page-only or the shared layout) or the legacy merged
+    // read, which keeps its own handling and answer unchanged.
+    const scoped = storefrontContentScopedRead(url.searchParams);
+    if (scoped === "invalid") {
+      return errorResponse(400, STOREFRONT_CONTENT_INVALID_READ);
+    }
+    const requestedPath =
+      scoped?.scope === "page"
+        ? scoped.path
+        : scoped?.scope === "layout"
+          ? "/"
+          : (url.searchParams.get("path") ?? "/");
     if (requestedPath.length > 500 || !requestedPath.startsWith("/")) {
       return errorResponse(400, "Invalid content path.");
     }
@@ -576,25 +592,39 @@ export class StorefrontProductionService {
       publicationId: pinned ? pinned.publicationId : resolved.contentPublicationId,
       pathname: requestedPath,
       ports: this.options.contentPorts,
+      ...(scoped ? { scope: scoped.scope } : {}),
     });
+    const releaseId = pinned ? pinned.releaseId : resolved.releaseId;
 
-    return new Response(JSON.stringify(content), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        // Content is immutable within a release; the release id is the version.
-        // A pinned read answers for one render, not for the URL: it must not
-        // be stored and served to a read naming no release, or another one.
-        "Cache-Control": pinned
-          ? "private, no-store"
-          : "public, max-age=60, must-revalidate",
-        ETag: `"${pinned ? pinned.releaseId : resolved.releaseId}:${requestedPath}"`,
-        // Both answers depend on the render-context header: a cache keyed on
-        // the URL alone must not answer a pinned read with the active one.
-        Vary: STOREFRONT_RENDER_CONTEXT_HEADER,
-        "X-Content-Type-Options": "nosniff",
+    return new Response(
+      JSON.stringify(
+        scoped ? storefrontContentScopedBody(scoped, content) : content,
+      ),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          // Content is immutable within a release; the release id is the version.
+          // A pinned read answers for one render, not for the URL: it must not
+          // be stored and served to a read naming no release, or another one.
+          "Cache-Control": pinned
+            ? "private, no-store"
+            : "public, max-age=60, must-revalidate",
+          // A scoped read is another answer for the same path, so it is
+          // another entity: its tag names the scope. The legacy tag is unchanged.
+          ETag:
+            scoped?.scope === "layout"
+              ? `"${releaseId}:layout:${scoped.layout}"`
+              : scoped?.scope === "page"
+                ? `"${releaseId}:page:${requestedPath}"`
+                : `"${releaseId}:${requestedPath}"`,
+          // Both answers depend on the render-context header: a cache keyed on
+          // the URL alone must not answer a pinned read with the active one.
+          Vary: STOREFRONT_RENDER_CONTEXT_HEADER,
+          "X-Content-Type-Options": "nosniff",
+        },
       },
-    });
+    );
   }
 
   /**

@@ -12,11 +12,45 @@
  * which no slot id can be called because slot ids never start with `_`.
  *
  * The same shape as the Starter's `MorphPage`.
+ *
+ * Which sections it holds depends on the read (`MorphPageReadOptions`): by
+ * default the shared layout's sections and the page's own, in one slot
+ * namespace; with `{ scope: "page" }` the page's own only.
  */
 export type MorphPage = {
   readonly _hidden: readonly string[];
   readonly [slotId: string]: any;
 };
+
+/**
+ * The shared layout's published content (`layouts.get`): the sections every
+ * page renders inside, such as the header and footer, with no page's own.
+ * The same shape as `MorphPage`, so `isHidden` reads it the same way: a
+ * section the author hid in the layout is in `_hidden` and has no values.
+ */
+export type MorphLayout = MorphPage;
+
+/**
+ * Which shared layout to read. One exists today, `"default"`: the store's
+ * single layout Document. Any other name is refused before anything is sent
+ * (`invalid_request`).
+ */
+export type MorphLayoutName = "default";
+
+/** How `pages.get` reads a page. */
+export type MorphPageReadOptions = Readonly<{
+  /**
+   * Omitted: the shared layout's sections and the page's own, merged as
+   * every existing Theme reads them (a page section wins over a layout one
+   * with the same id, and a section either hides stays hidden).
+   *
+   * `"page"`: the page's own Document only, without the layout's sections;
+   * read those with `layouts.get("default")`. A section id the layout hides
+   * stays hidden here too, as in the merged read (one slot namespace). A path with no Document of its
+   * own has no page-only sections: `{ _hidden: [] }`.
+   */
+  scope?: "page";
+}>;
 
 /** The store a catalog answer was scoped to, as the Store API reports it. */
 export type MorphStoreContext = Readonly<{
@@ -131,10 +165,29 @@ export type Morph = Readonly<{
      * Published content for one path. Server side only in v0: called where
      * `window` and `document` exist, it throws `invalid_content_origin`
      * before sending anything.
+     *
+     * Without `options`, the merged read: the shared layout's sections and
+     * the page's own (`MorphPageReadOptions`). With `{ scope: "page" }`, the
+     * page's own only. An option it does not know throws `invalid_request`.
+     * A scoped read is refused (`invalid_response`) by a content source
+     * that does not support it, never answered with merged content.
      */
-    get(path: string): Promise<MorphPage>;
+    get(path: string, options?: MorphPageReadOptions): Promise<MorphPage>;
     /** Whether the author hid this section on the page. */
     isHidden(page: MorphPage, slotId: string): boolean;
+  }>;
+  layouts: Readonly<{
+    /**
+     * The shared layout's published content (`MorphLayout`), from the same
+     * source, release and render context as `pages.get`: a page and its
+     * layout read in one render come from the same publication. Server side
+     * only, read only, failing with the same errors as `pages.get`
+     * (resource `"page"`). A name other than `"default"` throws
+     * `invalid_request`.
+     */
+    get(name: MorphLayoutName): Promise<MorphLayout>;
+    /** Whether the author hid this section in the layout. */
+    isHidden(layout: MorphLayout, slotId: string): boolean;
   }>;
   products: Readonly<{
     list(params?: MorphProductListParams): Promise<MorphProductList>;

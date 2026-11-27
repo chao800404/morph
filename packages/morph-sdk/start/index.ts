@@ -48,7 +48,10 @@ import {
 import { MorphError } from "../src/index";
 import type {
   Morph,
+  MorphLayout,
+  MorphLayoutName,
   MorphPage,
+  MorphPageReadOptions,
   MorphProductList,
   MorphProductListParams,
   MorphProductResult,
@@ -117,11 +120,26 @@ export const morphForRequest = createServerOnlyFn((): Morph => {
  */
 export const morph: Morph = {
   pages: {
-    async get(path: string): Promise<MorphPage> {
-      return morphForRequest().pages.get(path);
+    async get(
+      path: string,
+      options?: MorphPageReadOptions,
+    ): Promise<MorphPage> {
+      // Forwarded only when given, so a legacy call reaches the core exactly
+      // as it did before the option existed.
+      return options === undefined
+        ? morphForRequest().pages.get(path)
+        : morphForRequest().pages.get(path, options);
     },
     isHidden(page: MorphPage, slotId: string): boolean {
       return page._hidden.includes(slotId);
+    },
+  },
+  layouts: {
+    async get(name: MorphLayoutName): Promise<MorphLayout> {
+      return morphForRequest().layouts.get(name);
+    },
+    isHidden(layout: MorphLayout, slotId: string): boolean {
+      return layout._hidden.includes(slotId);
     },
   },
   products: {

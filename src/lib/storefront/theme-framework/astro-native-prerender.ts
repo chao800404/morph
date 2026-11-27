@@ -9,8 +9,13 @@ import {
   NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
   THEME_PRERENDER_CONTENT_FILE,
   answerSealedContentRead,
+  answerSealedScopedRead,
   type NativePrerenderContent,
 } from "../compiler/theme-prerender-content";
+import {
+  storefrontContentScopedBody,
+  storefrontContentScopedRead,
+} from "../service/storefront-content-read";
 import { normalizeRoutePath } from "../theme-template-routes";
 import { nativeImportGuardPluginSource } from "./tanstack-start-native-wrapper";
 
@@ -188,6 +193,10 @@ const VIRTUAL_ENTRY = "\\0morph-astro-prerender-entry";
 // theme-prerender-content.ts), by source.
 const normalizeRoutePath = (${normalizeRoutePath.toString()});
 const answerSealedContentRead = (${answerSealedContentRead.toString()});
+// The SDK's scoped reads (storefront-content-read.ts), answered the same way.
+const storefrontContentScopedRead = (${storefrontContentScopedRead.toString()});
+const storefrontContentScopedBody = (${storefrontContentScopedBody.toString()});
+const answerSealedScopedRead = (${answerSealedScopedRead.toString()});
 
 // A page path as a URL path: Astro names prerendered pages decoded ("/關於")
 // and requests them encoded, as Astro.url.pathname is.
@@ -241,6 +250,24 @@ function startContentServer() {
     if (req.method === "GET" && url.pathname === "/_morph/content") {
       if (CONTENT_SERVER_FAULT === "http-500") {
         res.writeHead(500, { "content-type": "text/plain" }).end("content server fault");
+        return;
+      }
+      const scopedRead = storefrontContentScopedRead(url.searchParams);
+      if (scopedRead !== null) {
+        const read = scopedRead === "invalid" || scopedRead.scope === "layout"
+          ? scopedRead
+          : { scope: "page", path: normalizeRoutePath(scopedRead.path) };
+        const answer = read === "invalid"
+          ? { refused: "PRERENDER_CONTENT_READ_INVALID: this content read cannot be answered" }
+          : answerSealedScopedRead(sealed, read, "NATIVE_PRERENDER_PATH_NOT_SEALED: no static route of this build has this path");
+        if ("refused" in answer) {
+          const recorded = read === "invalid" ? "(invalid read)" : read.scope === "layout" ? "layout:" + read.layout : read.path;
+          record(REFUSED_READS, { path: recorded, reason: answer.refused });
+          res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ refused: answer.refused }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        res.end(JSON.stringify(storefrontContentScopedBody(read, answer.content)));
         return;
       }
       const key = normalizeRoutePath(url.searchParams.get("path") || "/");
@@ -403,7 +430,11 @@ function prerenderWrapper() {
       scope.blocked.push(url.origin);
       throw new Error("morph prerender: a request to " + url.origin + " is not allowed while prerendering");
     }
-    const read = { path: url.searchParams.get("path"), outcome: "pending", status: null };
+    const read = {
+      path: url.searchParams.get("scope") === "layout" ? "layout:" + url.searchParams.get("layout") : url.searchParams.get("path"),
+      outcome: "pending",
+      status: null,
+    };
     scope.reads.push(read);
     let response;
     try {

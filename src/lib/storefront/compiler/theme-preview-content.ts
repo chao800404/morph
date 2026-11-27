@@ -7,7 +7,12 @@ import type {
 import {
   resolveStorefrontContent,
   type StorefrontContentResult,
+  type StorefrontContentScope,
 } from "@/lib/storefront/service/storefront-content-runtime";
+import {
+  storefrontContentScopedBody,
+  storefrontContentScopedRead,
+} from "@/lib/storefront/service/storefront-content-read";
 
 export const THEME_PREVIEW_CONTENT_PATH = "/_morph/content";
 export const THEME_PREVIEW_CONTENT_MODULE_PATH = "src/morph/preview-content.ts";
@@ -65,6 +70,15 @@ export type ThemePreviewContentSnapshot = Readonly<{
    */
   shell?: StorefrontContentResult;
   /**
+   * The same Documents read one at a time, for the SDK's scoped reads
+   * (`storefront-content-read.ts`): the shared layout's content alone, and
+   * each route's own Document's content without the layout, keyed as the
+   * merged entries above are. Absent from a snapshot written before scoped
+   * reads; a scoped read of such a snapshot is refused, never answered with
+   * the merged content.
+   */
+  scoped?: ThemePreviewScopedContent;
+  /**
    * Where this snapshot stands among those written into one preview: the
    * ticket it was built under (`storefrontPreviewContentTicketDal`). A
    * preview keeps the highest it has been given. Absent is 0, every
@@ -87,6 +101,15 @@ export type ThemePreviewContentSnapshot = Readonly<{
    * report about another (docs/astro-theme-plan.md 6.6).
    */
   previewInstance?: string;
+}>;
+
+export type ThemePreviewScopedContent = Readonly<{
+  layout: StorefrontContentResult;
+  templates: Partial<
+    Record<Exclude<StorefrontTemplateType, "layout">, StorefrontContentResult>
+  >;
+  pages: Readonly<Record<string, StorefrontContentResult>>;
+  routes: Readonly<Record<string, StorefrontContentResult>>;
 }>;
 
 /** A snapshot's fields that describe it rather than being content. */
@@ -222,47 +245,55 @@ export async function createThemePreviewContentSnapshot(args: {
     }) => routeDocuments.get(routePath) ?? null,
   };
 
-  const templates = Object.fromEntries(
-    await Promise.all(
-      ROUTE_TEMPLATE_TYPES.map(async (type) => [
-        type,
-        await resolveStorefrontContent({
-          publicationId: "draft-preview",
-          pathname:
+  // The merged entries (`scope` omitted) and the page-only ones
+  // (`"page"`), from the same Documents through the same resolver.
+  const resolveEntries = async (scope?: StorefrontContentScope) => {
+    const read = (pathname: string) =>
+      resolveStorefrontContent({
+        publicationId: "draft-preview",
+        pathname,
+        ports,
+        ...(scope ? { scope } : {}),
+      });
+    const templates = Object.fromEntries(
+      await Promise.all(
+        ROUTE_TEMPLATE_TYPES.map(async (type) => [
+          type,
+          await read(
             type === "index"
               ? "/"
               : `/${type === "collection" ? "collections" : `${type}s`}/preview`,
-          ports,
-        }),
-      ]),
-    ),
-  ) as ThemePreviewContentSnapshot["templates"];
+          ),
+        ]),
+      ),
+    ) as ThemePreviewContentSnapshot["templates"];
+    const pages = Object.fromEntries(
+      await Promise.all(
+        [...pageDocuments.keys()].map(async (handle) => [
+          handle,
+          await read(`/pages/${encodeURIComponent(handle)}`),
+        ]),
+      ),
+    );
+    const routes = Object.fromEntries(
+      await Promise.all(
+        [...routeDocuments.keys()].map(async (routePath) => [
+          routePath,
+          await read(routePath),
+        ]),
+      ),
+    );
+    return { templates, pages, routes };
+  };
 
-  const pages = Object.fromEntries(
-    await Promise.all(
-      [...pageDocuments.keys()].map(async (handle) => [
-        handle,
-        await resolveStorefrontContent({
-          publicationId: "draft-preview",
-          pathname: `/pages/${encodeURIComponent(handle)}`,
-          ports,
-        }),
-      ]),
-    ),
-  );
-
-  const routes = Object.fromEntries(
-    await Promise.all(
-      [...routeDocuments.keys()].map(async (routePath) => [
-        routePath,
-        await resolveStorefrontContent({
-          publicationId: "draft-preview",
-          pathname: routePath,
-          ports,
-        }),
-      ]),
-    ),
-  );
+  const { templates, pages, routes } = await resolveEntries();
+  const pageOnly = await resolveEntries("page");
+  const layout = await resolveStorefrontContent({
+    publicationId: "draft-preview",
+    pathname: "/",
+    ports,
+    scope: "layout",
+  });
 
   // A path no type and no route document describes: what remains is the shell.
   const shell = await resolveStorefrontContent({
@@ -271,7 +302,13 @@ export async function createThemePreviewContentSnapshot(args: {
     ports: { ...ports, getPublishedRouteDocument: async () => null },
   });
 
-  return { templates, pages, routes, shell };
+  return {
+    templates,
+    pages,
+    routes,
+    shell,
+    scoped: { layout, ...pageOnly },
+  };
 }
 
 /** The snapshot module a preview page loads its initial content from. */
@@ -434,6 +471,75 @@ export function previewContentForPath(pathname) {
   const shell = snapshot.shell;
   routes[routePath] = { slots: { ...shell.slots }, hiddenSlots: [...shell.hiddenSlots] };
   return routes[routePath];
+}
+
+// The scoped reads (storefront-content-read.ts): Core's own functions, by
+// source, so this answers them exactly as Core's endpoints do.
+const storefrontContentScopedRead = (${storefrontContentScopedRead.toString()});
+const storefrontContentScopedBody = (${storefrontContentScopedBody.toString()});
+
+/**
+ * Whether the snapshot's \`scoped\` member is whole and well formed, as
+ * Core writes it (\`createThemePreviewContentSnapshot\`). A snapshot from
+ * before scoped reads has none, and no scoped read is answered from it.
+ */
+function isReadableScopedPreviewContent(value) {
+  if (!isPreviewContentRecord(value)) return false;
+  for (const key of ["layout", "templates", "pages", "routes"]) {
+    if (!hasOwnPreviewEntry(value, key)) return false;
+  }
+  if (!isPreviewContentRecord(value.templates)) return false;
+  for (const type of PREVIEW_SNAPSHOT_TEMPLATE_TYPES) {
+    if (!hasOwnPreviewEntry(value.templates, type)) return false;
+  }
+  return isReadablePreviewContent(value.layout) &&
+    isReadablePreviewEntries(value.templates) &&
+    isReadablePreviewEntries(value.pages) &&
+    isReadablePreviewEntries(value.routes);
+}
+
+/**
+ * The content the snapshot holds for one scoped read, or null when it holds
+ * none it can be read for: the shared layout's alone, or the page's own
+ * Document's alone, found as \`previewContentForPath\` finds the merged
+ * entry. A path with no Document of its own has no page-only content: an
+ * empty entry, as the runtime answers it. A copy each time, so nothing a
+ * reader does reaches the snapshot.
+ */
+function previewScopedContentFor(read) {
+  if (!isReadablePreviewSnapshot(snapshot)) return null;
+  if (!hasOwnPreviewEntry(snapshot, "scoped")) return null;
+  const scoped = snapshot.scoped;
+  if (!isReadableScopedPreviewContent(scoped)) return null;
+  let content = null;
+  if (read.scope === "layout") {
+    content = scoped.layout;
+  } else {
+    const pathname = read.path;
+    const handle = pageHandleForPath(pathname);
+    if (handle === false) return null;
+    const type = templateTypeForPath(pathname);
+    const routePath = (pathname || "/").split("?")[0].replace(/\\/+$/, "") || "/";
+    if (handle && hasOwnPreviewEntry(scoped.pages, handle)) content = scoped.pages[handle];
+    else if (type) content = scoped.templates[type];
+    else if (hasOwnPreviewEntry(scoped.routes, routePath)) content = scoped.routes[routePath];
+    else content = { slots: {}, hiddenSlots: [] };
+  }
+  return JSON.parse(JSON.stringify(content));
+}
+
+/**
+ * The answer body for a content read's query: the legacy merged read (no
+ * \`scope\`) exactly as \`previewContentForPath\` gives it, or a scoped
+ * read's body naming its scope. Null when it cannot be answered, which every
+ * reader refuses as it refuses an unreadable merged read.
+ */
+function previewContentForQuery(params) {
+  const read = storefrontContentScopedRead(params);
+  if (read === null) return previewContentForPath(params.get("path") || "/");
+  if (read === "invalid") return null;
+  const content = previewScopedContentFor(read);
+  return content ? storefrontContentScopedBody(read, content) : null;
 }
 
 export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
@@ -609,11 +715,11 @@ export function previewSlotHidden(sectionId) {
   return content ? content.hiddenSlots.includes(sectionId) : true;
 }
 
-/** The answer to a content read for \`pathname\`: its content, or the refusal. */
-function previewContentResponse(pathname) {
+/** The answer to a content read's query: its content, or the refusal. */
+function previewContentResponse(params) {
   let content = null;
   try {
-    content = previewContentForPath(pathname);
+    content = previewContentForQuery(params);
   } catch {
     content = null;
   }
@@ -641,7 +747,7 @@ window.fetch = (input, init) => {
   const requestUrl = new URL(input instanceof Request ? input.url : String(input), window.location.href);
   const requestMethod = (init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
   if (requestUrl.origin === window.location.origin && requestUrl.pathname === ${JSON.stringify(THEME_PREVIEW_CONTENT_PATH)}) {
-    return Promise.resolve(previewContentResponse(requestUrl.searchParams.get("path") || "/"));
+    return Promise.resolve(previewContentResponse(requestUrl.searchParams));
   }
   const catalogMatch = requestUrl.origin === window.location.origin
     ? /^\\/api\\/store\\/products(?:\\/([^/]+))?\\/?$/.exec(requestUrl.pathname)
@@ -725,7 +831,7 @@ export function themePreviewContentPluginSource(): string {
       }
       let content = null;
       try {
-        content = previewContentForPath(url.searchParams.get("path") || "/");
+        content = previewContentForQuery(url.searchParams);
       } catch {
         content = null;
       }

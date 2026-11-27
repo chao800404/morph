@@ -8,8 +8,11 @@ export {
 export type {
   Morph,
   MorphFetch,
+  MorphLayout,
+  MorphLayoutName,
   MorphOptions,
   MorphPage,
+  MorphPageReadOptions,
   MorphPagination,
   MorphProduct,
   MorphProductAsset,

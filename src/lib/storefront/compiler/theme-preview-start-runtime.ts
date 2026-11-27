@@ -378,7 +378,7 @@ async function loadSnapshot() {
     snapshot = read.snapshot;
     let content = null;
     try {
-      content = previewContentForPath(url.searchParams.get("path") || "/");
+      content = previewContentForQuery(url.searchParams);
     } catch {
       content = null;
     } finally {
@@ -398,7 +398,7 @@ async function loadSnapshot() {
     let content = null;
     try {
       await readSnapshot();
-      content = previewContentForPath(url.searchParams.get("path") || "/");
+      content = previewContentForQuery(url.searchParams);
     } catch {
       content = null;
     }
