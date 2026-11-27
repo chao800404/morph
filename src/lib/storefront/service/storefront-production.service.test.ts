@@ -1946,7 +1946,7 @@ describe("Theme Worker responses on the public storefront", () => {
     ]);
   });
 
-  it("leaves status, body and every other header as the Theme sent them", async () => {
+  it("leaves status, body and every other header as the Theme sent them, but no-store", async () => {
     const { service } = serviceAnswering(
       () =>
         new Response("not here", {
@@ -1969,7 +1969,8 @@ describe("Theme Worker responses on the public storefront", () => {
     expect(res.statusText).toBe("Not Found");
     expect(await res.text()).toBe("not here");
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(res.headers.get("cache-control")).toBe("public, max-age=30");
+    // Until ISR, a Theme's own caching never reaches a shared cache.
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
     expect(res.headers.get("x-theme-trace")).toBe("t-1");
     expect(res.headers.get("vary")).toBe("accept-language");
     expect(res.headers.getSetCookie()).toEqual(["cart=abc; Path=/"]);
@@ -2018,6 +2019,111 @@ describe("Theme Worker responses on the public storefront", () => {
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.getSetCookie()).toEqual(["cart=abc"]);
     expect(await res.text()).toBe("<svg/>");
+  });
+
+  describe("caching until ISR ships", () => {
+    const themeCaching: [string, string][] = [
+      ["cache-control", "public, s-maxage=600, max-age=600"],
+      ["cdn-cache-control", "max-age=600"],
+      ["cloudflare-cdn-cache-control", "max-age=600"],
+      ["surrogate-control", "max-age=600"],
+    ];
+
+    it.each(["GET", "HEAD"])(
+      "answers a %s with private, no-store and no CDN cache header, whatever the Theme set",
+      async (method) => {
+        const { service } = serviceAnswering(
+          () =>
+            new Response(method === "HEAD" ? null : "<p>page</p>", {
+              headers: [
+                ["content-type", "text/html; charset=utf-8"],
+                ...themeCaching,
+                ["etag", '"theme-etag"'],
+                ["last-modified", "Wed, 25 Nov 2026 10:00:00 GMT"],
+                ["set-cookie", "cart=abc; Path=/"],
+              ],
+            }),
+        );
+
+        const res = await service.handleRequest(req("/products/1", { method }));
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get("cache-control")).toBe("private, no-store");
+        expect(res.headers.get("cdn-cache-control")).toBeNull();
+        expect(res.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+        expect(res.headers.get("surrogate-control")).toBeNull();
+        // Validators are harmless without a stored copy, and kept.
+        expect(res.headers.get("etag")).toBe('"theme-etag"');
+        expect(res.headers.get("last-modified")).toBe(
+          "Wed, 25 Nov 2026 10:00:00 GMT",
+        );
+        expect(res.headers.getSetCookie()).toEqual(["cart=abc; Path=/"]);
+        expect(await res.text()).toBe(method === "HEAD" ? "" : "<p>page</p>");
+      },
+    );
+
+    it("applies to a Theme's error answers too", async () => {
+      const { service } = serviceAnswering(
+        () =>
+          new Response("down", {
+            status: 503,
+            headers: [["retry-after", "30"], ...themeCaching],
+          }),
+      );
+
+      const res = await service.handleRequest(req("/"));
+
+      expect(res.status).toBe(503);
+      expect(res.headers.get("retry-after")).toBe("30");
+      expect(res.headers.get("cache-control")).toBe("private, no-store");
+      expect(res.headers.get("cdn-cache-control")).toBeNull();
+      expect(await res.text()).toBe("down");
+    });
+
+    it("sets private, no-store when the Theme sent no Cache-Control at all", async () => {
+      const { service } = serviceAnswering(() => new Response("<p>"));
+
+      const res = await service.handleRequest(req("/about"));
+
+      expect(res.headers.get("cache-control")).toBe("private, no-store");
+    });
+
+    it("changes only headers on a streamed render, which stays unbuffered", async () => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      });
+      const { service } = serviceAnswering(
+        () => new Response(body, { headers: themeCaching }),
+      );
+
+      // Resolves while the Theme's stream is still open.
+      const res = await service.handleRequest(req("/stream"));
+      expect(res.bodyUsed).toBe(false);
+      expect(res.headers.get("cache-control")).toBe("private, no-store");
+      expect(res.headers.get("cdn-cache-control")).toBeNull();
+
+      controller.enqueue(new TextEncoder().encode("shell "));
+      controller.enqueue(new TextEncoder().encode("suspense"));
+      controller.close();
+      expect(await res.text()).toBe("shell suspense");
+    });
+
+    it("keeps a declared hashed client asset publicly immutable, never reaching the Theme", async () => {
+      const { service, handle } = serviceAnswering(
+        () => new Response("theme", { headers: themeCaching }),
+      );
+
+      const res = await service.handleRequest(req("/assets/app-abc123.js"));
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toBe(
+        "public, max-age=31536000, immutable",
+      );
+      expect(handle).not.toHaveBeenCalled();
+    });
   });
 
   it("forwards the shopper's cookies to the Theme Worker unchanged", async () => {

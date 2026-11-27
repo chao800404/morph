@@ -119,7 +119,7 @@ export type ThemeArtifactServingPolicy = Readonly<{
   htmlFrameOptions: string | null;
   /** Explicit `Access-Control-Allow-Origin`, or `null` to omit CORS headers. */
   allowOrigin: string | null;
-  /** Emitted for HTML documents that must never be cached. */
+  /** Emitted for HTML documents, which no shared cache may keep. */
   htmlCacheControl: string;
 }>;
 
@@ -136,13 +136,19 @@ export const PREVIEW_ARTIFACT_POLICY: ThemeArtifactServingPolicy = {
  * Production edge policy. Storefront assets are publicly cacheable and must not
  * inherit the editor preview's opaque-origin sandbox CSP, which would stop the
  * released Theme from running as a real site.
+ *
+ * HTML (a registered static page) is `private, no-cache` until ISR ships: no
+ * shared cache keeps a page, as with the Theme Worker's own answers
+ * (storefront-production.service.ts), while the browser may still revalidate
+ * it with the release-bound ETag, which Core checks after resolving the
+ * active release. Hashed bundle assets stay public and immutable.
  */
 export const PRODUCTION_ARTIFACT_POLICY: ThemeArtifactServingPolicy = {
   cacheVisibility: "public",
   htmlContentSecurityPolicy: null,
   htmlFrameOptions: null,
   allowOrigin: null,
-  htmlCacheControl: "public, max-age=0, must-revalidate",
+  htmlCacheControl: "private, no-cache",
 };
 
 export type ThemeArtifactRequest = Readonly<{
@@ -196,7 +202,8 @@ function immutableCacheControl(visibility: "private" | "public"): string {
  * 1. The requested path is sanitized before it can reach an R2 key.
  * 2. Only files declared in the canonical manifest can be served; R2 orphans
  *    are rejected even when the object exists.
- * 3. Hashed bundle assets are immutable; HTML documents are never cached.
+ * 3. Hashed bundle assets are immutable; no shared cache keeps an HTML
+ *    document (policy.htmlCacheControl).
  *
  * Authorization is intentionally NOT handled here. Each plane performs its own
  * authorization before delegating, so this function must only ever be reached

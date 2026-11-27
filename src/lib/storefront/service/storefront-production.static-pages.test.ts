@@ -163,7 +163,7 @@ describe("registered static pages on the production storefront", () => {
     expect(await response.text()).toBe(HOME_HTML);
     expect(response.headers.get("content-type")).toMatch(/^text\/html/);
     expect(response.headers.get("cache-control")).toBe(
-      "public, max-age=0, must-revalidate",
+      "private, no-cache",
     );
     expect(response.headers.get("etag")).toBe(`"ssg:rel_1:${sha(HOME_HTML)}"`);
     expect(response.headers.get("set-cookie")).toBeNull();
@@ -179,7 +179,7 @@ describe("registered static pages on the production storefront", () => {
     expect(fresh.status).toBe(304);
     expect(fresh.headers.get("etag")).toBe(etag);
     expect(fresh.headers.get("cache-control")).toBe(
-      "public, max-age=0, must-revalidate",
+      "private, no-cache",
     );
 
     // The same bytes under another release are another representation.

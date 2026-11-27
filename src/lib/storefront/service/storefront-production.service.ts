@@ -211,6 +211,52 @@ function privateSameOriginResponse(response: Response): Response {
   });
 }
 
+/**
+ * What every Theme Worker response on a storefront host is sent with until
+ * ISR ships: no shared cache, and no browser copy, may keep it.
+ *
+ * Core cannot tell from a Theme's answer whether it was personalised (a
+ * session, a cart, a `Set-Cookie`) or which release it was rendered from, so
+ * a Theme's own `Cache-Control` or CDN header could put one shopper's page,
+ * or an old release's, in Cloudflare's edge for everyone. ISR will allow an
+ * author's TTL again only for public GET and HEAD responses Core has
+ * verified, keyed by storefront and release.
+ */
+export const THEME_RESPONSE_CACHE_CONTROL = "private, no-store";
+
+/** Headers that would let a CDN cache a response beyond `Cache-Control`. */
+const THEME_CDN_CACHE_HEADERS = [
+  "CDN-Cache-Control",
+  "Cloudflare-CDN-Cache-Control",
+  "Surrogate-Control",
+] as const;
+
+/**
+ * Applies THEME_RESPONSE_CACHE_CONTROL to a Theme Worker response, whatever
+ * its status, and drops the CDN cache headers. Only headers change: the body
+ * stream is handed on unread, so a streamed render stays streamed. `ETag` and
+ * `Last-Modified` are kept; with `no-store` nothing stores them.
+ *
+ * A WebSocket upgrade is passed on untouched: it is answered with its socket,
+ * is never cached, and a rebuilt 101 response cannot be constructed.
+ */
+function withThemeResponseCachePolicy(response: Response): Response {
+  if (
+    response.status === 101 ||
+    (response as { webSocket?: unknown }).webSocket
+  ) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  for (const name of THEME_CDN_CACHE_HEADERS) headers.delete(name);
+  headers.set("Cache-Control", THEME_RESPONSE_CACHE_CONTROL);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export type StorefrontProductionServiceOptions = Readonly<{
   runtime: ThemeRuntime;
   r2Bucket?: R2BucketLike;
@@ -436,7 +482,10 @@ export class StorefrontProductionService {
     // credential's name either, as in Live and Build Preview: defence in depth
     // for server-set cookies. Theme code in the browser can still write
     // document.cookie or send Clear-Site-Data; this does not cover that.
-    return withoutPlatformCookies(isolateSvgResponse(runtimeResult.response));
+    // Whatever the Theme said about caching, nothing may store it (until ISR).
+    return withThemeResponseCachePolicy(
+      withoutPlatformCookies(isolateSvgResponse(runtimeResult.response)),
+    );
   }
 
   /**
