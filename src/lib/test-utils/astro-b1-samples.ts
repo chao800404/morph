@@ -516,3 +516,368 @@ export const ASTRO_SAMPLES_ENDING_AT_NESTED_JSX = [
   "F7",
   "U1",
 ] as const;
+
+/**
+ * Destructuring patterns whose local must taint the stored value it can
+ * reach, never its parent's path (a taint at the parent's path would land on
+ * an unrelated field and leave the changed one claimable). Each case renders
+ * `<Hero {...hero} />` after `home` and `{ hero }` are read, so a taint that
+ * reaches `hero.title` leaves Hero with no claims. Expectations are
+ * handwritten: `taint` is the key the case must record (null: none in
+ * particular, only the claims are pinned), `before` the key 51ad77b recorded
+ * at the wrong path. That key is still recorded (the pass is never narrower
+ * than it was), so it is documentation, not an assertion.
+ *
+ * Computed keys and array positions are unknown, so their taints are widened
+ * to "something inside the parent may change" (`in|…`), never narrowed.
+ *
+ * The X cases are review findings on fca14f7 (each claimed a field the code
+ * changes); they render `jsx` instead.
+ */
+export type DestructureTaintCase = Readonly<{
+  id: string;
+  title: string;
+  /** Statements after `home` and `{ hero }` are read. */
+  body: string;
+  /** Rendered after `body`; `<Hero {...hero} />` when absent. */
+  jsx?: string;
+  /** Import statements placed before `home` is read. */
+  imports?: string;
+  /** Other Theme files the route can reach. */
+  extraFiles?: readonly Readonly<{ path: string; content: string }>[];
+  taint: string | null;
+  before: string | null;
+  expected: readonly AstroB1Summary[];
+}>;
+
+export const DESTRUCTURE_HOME =
+  'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
+
+export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
+  {
+    id: "D1",
+    title: "a defaulted property keeps its own key",
+    body: 'const { hero: h = {} } = home;\nh.title = "x";\n',
+    taint: "set|page:hero.title",
+    before: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "D2",
+    title: "a nested defaulted property keeps every key",
+    body: 'const { hero: { title: t = "" } = {} } = home;\nt.length = 0;\n',
+    taint: "set|page:hero.title.length",
+    before: "set|page:length",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "R1",
+    title: "a nested object rest stays at its parent",
+    body: 'const { hero: { desc: _d, ...r } } = home;\nr.title = "x";\n',
+    taint: "set|page:hero.title",
+    before: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "R2",
+    title: "a top-level object rest stays at the root (already right)",
+    body: 'const { card: _c, ...rest } = home;\nrest.hero.title = "x";\n',
+    taint: "set|page:hero.title",
+    before: null,
+    expected: [HERO_NONE],
+  },
+  {
+    id: "C1",
+    title: "a computed top-level key taints the whole root",
+    body: 'const key = "hero";\nconst { [key]: v } = home;\nv.title = "x";\n',
+    taint: "in|page:",
+    before: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "C2",
+    title: "a computed nested key taints its whole parent",
+    body: 'const k = "title";\nconst { hero: { [k]: v } } = home;\nv.x = 1;\n',
+    taint: "in|page:hero",
+    before: "set|page:x",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "A1",
+    title: "a defaulted array element taints its whole array",
+    body: 'const { hero: [first = {}] } = home;\nfirst.title = "x";\n',
+    taint: "in|page:hero",
+    before: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "A2",
+    title: "an array rest taints its whole array",
+    body: 'const { hero: [, ...items] } = home;\nitems.title = "x";\n',
+    taint: "in|page:hero",
+    before: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "K1",
+    title:
+      "a defaulted string handed to a call taints that string, not the root",
+    body: 'const { hero: { title: t = "" } = {} } = home;\nconsole.log(t);\n',
+    taint: "in|page:hero.title",
+    before: "in|page:",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "X0a",
+    title: "control: Card claims card.title when nothing changes it",
+    body: "",
+    jsx: "<Card {...home.card} />",
+    taint: null,
+    before: null,
+    expected: [CARD_BOTH],
+  },
+  {
+    id: "X0b",
+    title: "control: an explicit hero.title prop is claimed",
+    body: "",
+    jsx: "<Hero title={hero.title} />",
+    taint: null,
+    before: null,
+    expected: [{ name: "Hero", section: "hero", claims: ["hero.title"] }],
+  },
+  {
+    id: "X1",
+    title: "both branches of a conditional are traced",
+    body:
+      "const { hero: h = {}, card: c = {} } = home;\n" +
+      "const chosen = Math.random() > 0.5 ? h : c;\n" +
+      'Object.assign(chosen, { title: "override" });\n',
+    jsx: "<Card {...home.card} />",
+    taint: "in|page:card",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "X1b",
+    title: "both branches are traced for plain locals too (51ad77b missed it)",
+    body:
+      "const h = home.hero;\nconst c = home.card;\n" +
+      "const chosen = Math.random() > 0.5 ? h : c;\n" +
+      'Object.assign(chosen, { title: "override" });\n',
+    jsx: "<Card {...home.card} />",
+    taint: "in|page:card",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "X2",
+    title: "a spread fallback can alias a sibling slot",
+    body:
+      "const { missing: { card: c } = { ...home } } = home;\n" +
+      'Object.assign(c, { title: "override" });\n',
+    jsx: "<Card {...home.card} />",
+    taint: "in|page:",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "X3",
+    title: "a replaced prototype taints the whole root",
+    body:
+      "home.__proto__ = { get alternate() { return this.card; } };\n" +
+      "const { alternate: c = {} } = home;\n" +
+      'Object.assign(c, { title: "override" });\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "X3b",
+    title: "a write into a prototype taints the whole root too",
+    body: "Object.assign(Object.prototype, { get alternate() { return 1; } });\n",
+    taint: "page:*",
+    before: null,
+    expected: [HERO_NONE],
+  },
+  {
+    id: "X3c",
+    title: "control: reading a prototype method changes nothing",
+    body: 'const own = Object.prototype.hasOwnProperty.call({}, "x");\n',
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+  {
+    id: "X4",
+    title: "a copy of a copy still shares the nested values",
+    body:
+      "const { ...rest } = home;\n" +
+      "const copy = { ...rest };\n" +
+      'copy.hero.title = "override";\n',
+    jsx: "<Hero {...home.hero} />",
+    taint: "set|page:hero.title",
+    before: null,
+    expected: [HERO_NONE],
+  },
+  {
+    id: "X5",
+    title: "a destructuring assignment target is a write",
+    body: '({ a: hero.title = "override" } = {});\n',
+    jsx: "<Hero title={hero.title} />",
+    taint: "set|page:hero.title",
+    before: "in|page:hero.title",
+    // No claim left, so no section either.
+    expected: [{ name: "Hero", section: null, claims: [] }],
+  },
+  {
+    id: "Y1",
+    title: "defineProperty on getPrototypeOf({}) taints every root",
+    body:
+      'Object.defineProperty(Object.getPrototypeOf({}), "alternate", { get() { return this.card; } });\n' +
+      "const { alternate: q = {} } = home;\n" +
+      'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y2",
+    title: "__defineGetter__ on a prototype taints every root",
+    body:
+      'Object.prototype.__defineGetter__("alternate", function () { return this.card; });\n' +
+      "const { alternate: q = {} } = home;\n" +
+      'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y3",
+    title: "Reflect.defineProperty on Reflect.getPrototypeOf taints every root",
+    body:
+      'Reflect.defineProperty(Reflect.getPrototypeOf({}), "alternate", { get() { return this.card; } });\n' +
+      "const { alternate: q = {} } = home;\n" +
+      'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y4",
+    title: "defineProperties on Object.prototype taints every root",
+    body:
+      "Object.defineProperties(Object.prototype, { alternate: { get() { return this.card; } } });\n" +
+      "const { alternate: q = {} } = home;\n" +
+      'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y5",
+    title: "a kept getPrototypeOf result taints every root",
+    body:
+      "const proto = Object.getPrototypeOf({});\n" + "proto.alternate = 1;\n",
+    taint: "page:*",
+    before: null,
+    expected: [HERO_NONE],
+  },
+  {
+    id: "Y6",
+    title: "a prototype write in an imported helper taints every root",
+    imports: 'import "../lib/proto-helper";\n',
+    extraFiles: [
+      {
+        path: "src/lib/proto-helper.ts",
+        content:
+          'Object.defineProperty(Object.prototype, "alternate", { get() { return this.card; } });\nexport {};\n',
+      },
+    ],
+    body: "const { alternate: q = {} } = home;\n" + 'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y6c",
+    title: "control: the same helper without the prototype write",
+    imports: 'import "../lib/proto-helper";\n',
+    extraFiles: [
+      {
+        path: "src/lib/proto-helper.ts",
+        content: "export const alternate = 1;\n",
+      },
+    ],
+    body: "",
+    jsx: "<Card {...home.card} />",
+    taint: null,
+    before: null,
+    expected: [CARD_BOTH],
+  },
+  {
+    id: "Z1",
+    title: "a plain __proto__ string is not a prototype write",
+    body: 'const note = "__proto__";\n',
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+  {
+    id: "Z2",
+    title: "replacing a copy's own scalar leaves the original's fields",
+    body: "const copy = { ...hero };\ncopy.title = 1;\n",
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+  {
+    id: "Z3",
+    title: "replacing a copy's own slot leaves the original's fields",
+    body: "const copy = { ...home };\ncopy.hero = {};\ndelete copy.card;\n",
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+  {
+    id: "Z4",
+    title: "comparing prototypes is not a prototype write",
+    body: "const plain = Object.getPrototypeOf({}) === Object.prototype;\n",
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+];
+
+/** The Start files for one destructuring case. */
+export function destructureStartFiles(
+  testCase: DestructureTaintCase,
+  routeFile = "src/routes/index.tsx",
+): Readonly<{ path: string; content: string }>[] {
+  return [
+    ...START_FIXTURE,
+    ...(testCase.extraFiles ?? []),
+    {
+      path: routeFile,
+      content:
+        (testCase.imports ?? "") +
+        startTwin(
+          `${DESTRUCTURE_HOME}${testCase.body}`,
+          testCase.jsx ?? "<Hero {...hero} />",
+        ),
+    },
+  ];
+}
+
+/** The `.astro` page for one destructuring case. */
+export function destructureAstroSource(testCase: DestructureTaintCase): string {
+  return astroPage(
+    `${testCase.imports ?? ""}${DESTRUCTURE_HOME}${testCase.body}`,
+    testCase.jsx ?? "<Hero {...hero} />",
+  );
+}
