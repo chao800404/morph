@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { EDITOR_PATH, previewFrame } from "./helpers";
 import { THEMES, publishShowingRelease, serverFn } from "./native-acceptance";
 import { themeScopeFromEditorPath, themeSourceGeneration, type ThemeScope } from "./native-compat";
-import { insertThrowawayTheme } from "./helpers/throwaway-theme";
+import { insertThrowawayTheme, recordedOrSpecPreviewRuntime } from "./helpers/throwaway-theme";
 import { laneStarterVersion } from "./helpers/client-lane-theme";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
@@ -63,7 +63,7 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     themeId: created.themeId,
     storefrontId: created.storefrontId,
     name: `section-visibility-${created.themeId}`,
-    previewRuntime: null,
+    previewRuntime: recordedOrSpecPreviewRuntime(),
   });
   return created;
 }
