@@ -15,10 +15,10 @@ import { readNativeBuildProof } from "../theme-framework/native-start-proof";
 import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
 
 /**
- * The runtime with the runner's `nativeProof`, when it reported one. Only a
- * native Start build carries it, in the shape this Morph writes, naming
- * files the artifact holds; anything else is refused rather than stored.
- * Without one, the runtime is unchanged.
+ * The runtime with the runner's `nativeProof`. A native Start build must
+ * carry one, consistent (`readNativeBuildProof`) and naming files the
+ * artifact holds; no other build may. Anything else is refused rather than
+ * stored. Every other build's runtime is unchanged.
  */
 function withNativeProof<T extends object>(
   runtime: T,
@@ -26,7 +26,17 @@ function withNativeProof<T extends object>(
   compilerId: string,
   artifactPaths: ReadonlySet<string>,
 ): T | (T & { nativeProof: NonNullable<ReturnType<typeof readNativeBuildProof>> }) {
-  if (reported === undefined) return runtime;
+  if (reported === undefined) {
+    // Every native Start build since the proof carries one; a runner that
+    // reports none is not one this Morph runs, and its artifact would only
+    // be refused later, when it is published.
+    if (compilerId === NATIVE_START_COMPILER_ID) {
+      throw new Error(
+        "INVALID_NATIVE_PROOF: The native Start build reported no SDK resolution proof.",
+      );
+    }
+    return runtime;
+  }
   if (compilerId !== NATIVE_START_COMPILER_ID) {
     throw new Error(
       `INVALID_NATIVE_PROOF: A ${compilerId} build reported a native Start proof.`,
@@ -35,7 +45,7 @@ function withNativeProof<T extends object>(
   const proof = readNativeBuildProof(reported);
   if (!proof) {
     throw new Error(
-      "INVALID_NATIVE_PROOF: The runner's native proof is not one this Morph writes.",
+      "INVALID_NATIVE_PROOF: The runner's native proof is not a consistent one this Morph writes.",
     );
   }
   const named = [

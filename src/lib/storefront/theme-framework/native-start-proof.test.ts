@@ -8,282 +8,481 @@ import { THEME_START_TOOLCHAIN } from "../compiler/theme-start-toolchain";
 import {
   NATIVE_PROOF_VERSION,
   nativeHtmlAssets,
+  nativeProductionAdmission,
   nativeResolutionPluginSource,
   nativeSdkSentinel,
   nativeStartSdkFiles,
   readNativeBuildProof,
+  sourceSdkImports,
   verifyNativeStartSdkProof,
 } from "./native-start-proof";
 
 /**
  * Morph's own check of a native Start build's SDK resolution, against the
- * records the build's plugin wrote and the bytes it wrote. Each tamper case
- * is what a Vite config can do to `@morph/sdk`; the real builds are
- * native-start-build.test.ts.
+ * records the build's plugin wrote, the bytes it wrote and the Theme's
+ * sources. Each tamper case is something a Vite config can do to
+ * `@morph/sdk`; the real builds are native-start-build.test.ts.
  */
 const NONCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
 const DIRECTORIES = { server: "dist/server", client: "dist/client" };
 const START = "@morph/sdk/start";
 const START_FILE = THEME_MORPH_SDK_MODULES[START]!;
+const CONTENT = "src/morph/content.ts";
+const sentinelStatement = (specifier: string, nonce = NONCE) =>
+  `Reflect.set(globalThis,Symbol.for("morph.sdk.sentinel"),${JSON.stringify(nativeSdkSentinel(nonce, specifier))});`;
+const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
 type Edge = {
   importer: string;
   specifier: string;
+  kind: "static" | "dynamic";
   resolved: Record<string, unknown> | null;
   external: boolean;
   inGraph: boolean;
 };
 
 const edge = (overrides: Partial<Edge> = {}): Edge => ({
-  importer: "src/morph/content.ts",
+  importer: CONTENT,
   specifier: START,
-  resolved: { path: START_FILE },
+  kind: "static",
+  resolved: { path: START_FILE, query: "" },
   external: false,
   inGraph: true,
   ...overrides,
 });
 
-const record = (
-  environment: string,
-  outDir: string,
-  edges: Edge[],
-  overrides: Record<string, unknown> = {},
-) =>
-  JSON.stringify({
-    nonce: NONCE,
-    environment,
-    consumer: outDir === DIRECTORIES.client ? "client" : "server",
-    outDir,
-    vite: THEME_START_TOOLCHAIN.vite,
-    rollup: "4.59.0",
-    edges,
-    unparsed: [],
-    sdkModules: edges.length > 0 ? [START_FILE] : [],
-    ...overrides,
-  });
+type Chunk = {
+  file: string;
+  code: string;
+  modules: string[];
+  isEntry?: boolean;
+  /** Written on disk instead of `code` (a later rewrite); null: not written. */
+  onDisk?: string | null;
+};
 
-/** What the build left: one record per environment, and the artifact. */
+type RecordName =
+  | "resolution.client"
+  | "resolution.ssr"
+  | "bundle.client"
+  | "bundle.ssr";
+
+const DEFAULT_SERVER: Chunk[] = [
+  {
+    file: "index.js",
+    code: 'import "./assets/sdk.js";export default {};',
+    modules: [CONTENT],
+    isEntry: true,
+  },
+  {
+    file: "assets/sdk.js",
+    code: `export const morph={};${sentinelStatement(START)}`,
+    modules: [START_FILE],
+  },
+];
+
+/**
+ * What the build left. By default the Worker's entry chunk holds the
+ * Theme's content module and statically imports the chunk holding Morph's
+ * `@morph/sdk/start`, which carries its sentinel; the browser has one entry
+ * and no SDK.
+ */
 function build(
   options: {
-    client?: Edge[];
-    server?: Edge[];
-    clientRecord?: Record<string, unknown>;
+    server?: Chunk[];
+    client?: Chunk[];
+    serverEdges?: Edge[];
+    clientEdges?: Edge[];
     serverRecord?: Record<string, unknown>;
-    clientScript?: string;
-    serverScript?: string;
+    clientRecord?: Record<string, unknown>;
+    serverBundle?: Record<string, unknown>;
+    sources?: Record<string, string>;
     extraOutputs?: Record<string, string>;
-    omit?: "client" | "server";
+    omit?: RecordName[];
   } = {},
 ) {
-  const client = options.client ?? [];
-  const server = options.server ?? [edge()];
+  const server = options.server ?? DEFAULT_SERVER;
+  const client = options.client ?? [
+    { file: "assets/main.js", code: "console.log(1);", modules: [], isEntry: true },
+  ];
   const outputs = new Map<string, string>(
-    Object.entries(options.extraOutputs ?? {}),
+    Object.entries({
+      [CONTENT]:
+        'import { morph } from "@morph/sdk/start";\nexport const read = () => morph.pages.get("/");\n',
+      ...options.sources,
+      ...options.extraOutputs,
+    }),
   );
-  if (options.omit !== "client") {
-    outputs.set(
-      ".morph/records/resolution.client.json",
-      record("client", DIRECTORIES.client, client, options.clientRecord),
-    );
+  const resolution = (
+    environment: string,
+    outDir: string,
+    edges: Edge[],
+    modules: string[],
+    overrides: Record<string, unknown> | undefined,
+  ) =>
+    JSON.stringify({
+      nonce: NONCE,
+      environment,
+      consumer: outDir === DIRECTORIES.client ? "client" : "server",
+      outDir,
+      publicDir: outDir === DIRECTORIES.client ? "public" : null,
+      vite: THEME_START_TOOLCHAIN.vite,
+      rollup: "4.59.0",
+      edges,
+      unparsed: [],
+      computed: [],
+      modules,
+      ...overrides,
+    });
+  const bundle = (
+    environment: string,
+    outDir: string,
+    chunks: Chunk[],
+    overrides?: Record<string, unknown>,
+  ) =>
+    JSON.stringify({
+      nonce: NONCE,
+      environment,
+      outDir,
+      chunks: chunks.map((chunk) => ({
+        fileName: chunk.file,
+        isEntry: chunk.isEntry ?? false,
+        isDynamicEntry: false,
+        modules: chunk.modules,
+        sha256: hash(chunk.code),
+      })),
+      ...overrides,
+    });
+  const omit = new Set(options.omit ?? []);
+  const write = (path: string, content: string, name: RecordName) => {
+    if (!omit.has(name)) outputs.set(path, content);
+  };
+  const modulesOf = (chunks: Chunk[]) => chunks.flatMap((chunk) => chunk.modules);
+  write(
+    ".morph/records/resolution.ssr.json",
+    resolution(
+      "ssr",
+      DIRECTORIES.server,
+      options.serverEdges ?? [edge()],
+      [...new Set([...modulesOf(server), CONTENT])],
+      options.serverRecord,
+    ),
+    "resolution.ssr",
+  );
+  write(
+    ".morph/records/resolution.client.json",
+    resolution(
+      "client",
+      DIRECTORIES.client,
+      options.clientEdges ?? [],
+      modulesOf(client),
+      options.clientRecord,
+    ),
+    "resolution.client",
+  );
+  write(
+    ".morph/records/bundle.ssr.json",
+    bundle("ssr", DIRECTORIES.server, server, options.serverBundle),
+    "bundle.ssr",
+  );
+  write(
+    ".morph/records/bundle.client.json",
+    bundle("client", DIRECTORIES.client, client),
+    "bundle.client",
+  );
+  for (const [outDir, chunks] of [
+    [DIRECTORIES.server, server],
+    [DIRECTORIES.client, client],
+  ] as const) {
+    for (const chunk of chunks) {
+      if (chunk.onDisk === null) continue;
+      outputs.set(`${outDir}/${chunk.file}`, chunk.onDisk ?? chunk.code);
+    }
   }
-  if (options.omit !== "server") {
-    outputs.set(
-      ".morph/records/resolution.ssr.json",
-      record("ssr", DIRECTORIES.server, server, options.serverRecord),
-    );
-  }
-  const artifactFiles = new Map<string, string>([
-    [
-      "runtime/server/index.js",
-      options.serverScript ??
-        `export default {};Reflect.set(globalThis,Symbol.for("morph.sdk.sentinel"),${JSON.stringify(nativeSdkSentinel(NONCE, START))});`,
-    ],
-    ["runtime/client/assets/main.js", options.clientScript ?? "console.log(1);"],
-  ]);
-  return { outputs, artifactFiles };
+  return outputs;
 }
 
-const verify = (built: ReturnType<typeof build>, nonce = NONCE) =>
-  verifyNativeStartSdkProof({
-    ...built,
-    directories: DIRECTORIES,
-    nonce,
-  });
+const verify = (outputs: Map<string, string>, nonce = NONCE) =>
+  verifyNativeStartSdkProof({ outputs, directories: DIRECTORIES, nonce });
+
+const refusal = (outputs: Map<string, string>) => {
+  try {
+    verify(outputs);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  return null;
+};
+
+const NO_SDK_SERVER: Chunk[] = [
+  { file: "index.js", code: "export default {};", modules: [CONTENT], isEntry: true },
+];
 
 describe("a native Start build's SDK resolution proof", () => {
-  it("is accepted when every edge resolves to Morph's copy and each environment carries its sentinel", () => {
+  it("is accepted when each edge resolves to Morph's copy and the importing chunk reaches the chunk carrying its sentinel", () => {
     expect(verify(build())).toEqual({
       vite: THEME_START_TOOLCHAIN.vite,
+      publicDir: "public",
       environments: [
-        {
-          name: "client",
-          output: "client",
-          specifiers: [],
-          edges: 0,
-          sentinelFiles: [],
-        },
+        { name: "client", output: "client", specifiers: [], edges: 0, sentinelFiles: [] },
         {
           name: "ssr",
           output: "server",
           specifiers: [START],
           edges: 1,
-          sentinelFiles: ["runtime/server/index.js"],
+          sentinelFiles: ["runtime/server/assets/sdk.js"],
         },
       ],
     });
   });
 
-  it("accepts a browser graph that never imports the SDK, and requires the sentinel where one does", () => {
-    // No client edge: nothing to find there (verified above). One client
-    // edge: its sentinel must be in the client output.
-    expect(() =>
-      verify(build({ client: [edge({ importer: "src/routes/index.tsx" })] })),
-    ).toThrow(
-      /NATIVE_PROOF_SDK_RESOLUTION: the client environment imports @morph\/sdk\/start, but Morph's copy of it is not in the code the build wrote for it/,
-    );
-    const carried = verify(
-      build({
-        client: [edge({ importer: "src/routes/index.tsx" })],
-        clientScript: `x;${JSON.stringify(nativeSdkSentinel(NONCE, START))}`,
-      }),
-    );
-    expect(carried.environments[0]).toMatchObject({
-      name: "client",
-      sentinelFiles: ["runtime/client/assets/main.js"],
-    });
-  });
-
   it("refuses a redirected alias, naming the edge and where it resolved", () => {
-    expect(() =>
-      verify(build({ server: [edge({ resolved: { path: "src/fake-sdk.ts" } })] })),
-    ).toThrow(
-      'NATIVE_PROOF_SDK_RESOLUTION: vite.config.ts changes where @morph/sdk/start resolves (src/morph/content.ts, ssr environment: resolved to src/fake-sdk.ts). Remove the alias or plugin.',
+    expect(
+      refusal(build({ serverEdges: [edge({ resolved: { path: "src/fake-sdk.ts" } })] })),
+    ).toBe(
+      "NATIVE_PROOF_SDK_RESOLUTION: vite.config.ts changes where @morph/sdk/start resolves (src/morph/content.ts, ssr environment: resolved to src/fake-sdk.ts). Remove the alias or plugin.",
     );
-    expect(() =>
-      verify(build({ server: [edge({ resolved: { outside: true } })] })),
-    ).toThrow(/resolved to a file outside the Theme\)/);
-    expect(() =>
-      verify(build({ server: [edge({ resolved: { virtual: true } })] })),
-    ).toThrow(/resolved to a module a plugin made\)/);
-    expect(() => verify(build({ server: [edge({ resolved: null })] }))).toThrow(
-      /resolved to nothing\)/,
+    expect(refusal(build({ serverEdges: [edge({ resolved: { outside: true } })] }))).toMatch(
+      /resolved to a file outside the Theme\)/,
+    );
+    expect(refusal(build({ serverEdges: [edge({ resolved: { virtual: true } })] }))).toMatch(
+      /resolved to a module a plugin made\)/,
     );
   });
 
-  it("refuses an edge that resolves to Morph's copy but is not the module the graph bundled", () => {
-    expect(() => verify(build({ server: [edge({ inGraph: false })] }))).toThrow(
-      /resolved to \.morph\/sdk\/start\/index\.ts, which is not the module the build bundled\)/,
+  it("refuses a dynamic import a resolveDynamicImport hook redirected, even beside a static import of the same name", () => {
+    expect(
+      refusal(
+        build({
+          serverEdges: [edge(), edge({ kind: "dynamic", inGraph: false })],
+        }),
+      ),
+    ).toMatch(
+      /changes where @morph\/sdk\/start resolves \(src\/morph\/content\.ts, ssr environment, dynamic import: resolved to \.morph\/sdk\/start\/index\.ts, which is not the module the build bundled\)/,
     );
   });
 
-  it("refuses an externalised SDK, from the record", () => {
-    expect(() =>
-      verify(
+  it("refuses an SDK left external, from the record and from the bytes of a reachable chunk", () => {
+    expect(
+      refusal(build({ serverEdges: [edge({ external: true, resolved: { bare: START } })] })),
+    ).toMatch(
+      /vite\.config\.ts leaves "@morph\/sdk\/start" external \(src\/morph\/content\.ts, ssr environment\)/,
+    );
+    for (const code of [
+      'import{morph as o}from"@morph/sdk/start";o();',
+      'export * from "@morph/sdk";',
+      "const m=await import(`@morph/sdk/start`);",
+      'import "@morph/sdk/section-gate";',
+    ]) {
+      expect(
+        refusal(build({ client: [{ file: "assets/main.js", code, modules: [], isEntry: true }] })),
+        code,
+      ).toMatch(
+        /^NATIVE_PROOF_SDK_RESOLUTION: runtime\/client\/assets\/main\.js still imports "@morph\/sdk(\/start|\/section-gate)?" at run time/,
+      );
+    }
+  });
+
+  it("does not mistake a string for an import, nor scan a chunk nothing deployed reaches", () => {
+    expect(
+      refusal(
         build({
           client: [
-            edge({ external: true, resolved: { bare: START }, inGraph: true }),
+            {
+              file: "assets/main.js",
+              code: 'const sample = "import { morph } from \\"@morph/sdk/start\\"";console.log(sample);',
+              modules: [],
+              isEntry: true,
+            },
+            { file: "assets/orphan.js", code: 'import "@morph/sdk";', modules: [] },
           ],
         }),
       ),
-    ).toThrow(
-      /NATIVE_PROOF_SDK_RESOLUTION: vite\.config\.ts leaves "@morph\/sdk\/start" external \(src\/morph\/content\.ts, client environment\)/,
-    );
+    ).toBeNull();
   });
 
-  it("refuses an externalised SDK from the bytes alone, whatever the record says", () => {
-    for (const script of [
-      'import{morph as o}from"@morph/sdk/start";o();',
-      'export * from "@morph/sdk";',
-      'const m=await import("@morph/sdk/start");',
-      'import "@morph/sdk/section-gate";',
-      'const m=require("@morph/sdk");',
+  it("refuses a chunk whose bytes lack the sentinel (a load impostor), or carry another pass's", () => {
+    for (const code of [
+      "export const morph={};",
+      `export const morph={};${sentinelStatement(START, "f".repeat(32))}`,
     ]) {
-      expect(() => verify(build({ clientScript: script })), script).toThrow(
-        /NATIVE_PROOF_SDK_RESOLUTION: runtime\/client\/assets\/main\.js still imports "@morph\/sdk(\/start|\/section-gate)?" at run time/,
+      expect(
+        refusal(
+          build({
+            server: [DEFAULT_SERVER[0]!, { file: "assets/sdk.js", code, modules: [START_FILE] }],
+          }),
+        ),
+      ).toMatch(
+        /the ssr environment imports @morph\/sdk\/start \(src\/morph\/content\.ts\), but the code the build wrote for it does not reach Morph's copy of it/,
       );
     }
-    // A string that merely names the SDK is not an import.
-    expect(() =>
-      verify(build({ clientScript: 'console.log("see @morph/sdk docs");' })),
-    ).not.toThrow();
   });
 
-  it("refuses a build whose bytes lack the sentinel the record says they need", () => {
-    // A plugin's load hook served other code for Morph's copy, or dropped it.
-    expect(() =>
-      verify(build({ serverScript: "export default {};" })),
-    ).toThrow(
-      /the ssr environment imports @morph\/sdk\/start, but Morph's copy of it is not in the code the build wrote for it\. A Vite plugin replaces or drops that module; remove it\./,
-    );
-    // Another pass's sentinel does not count.
-    expect(() =>
-      verify(
+  it("refuses a consumer redirected after bundling while Morph's copy sits in an unreached chunk (renderChunk)", () => {
+    expect(
+      refusal(
         build({
-          serverScript: JSON.stringify(nativeSdkSentinel("f".repeat(32), START)),
+          server: [
+            {
+              file: "index.js",
+              code: 'import "./assets/fake.js";export default {};',
+              modules: [CONTENT],
+              isEntry: true,
+            },
+            { file: "assets/fake.js", code: "export const morph={};", modules: [] },
+            DEFAULT_SERVER[1]!,
+          ],
         }),
       ),
-    ).toThrow(/Morph's copy of it is not in the code the build wrote/);
+    ).toMatch(/is in no chunk the deployed code reaches/);
   });
 
-  it("refuses a missing record for either part of the artifact", () => {
-    expect(() => verify(build({ omit: "client" }))).toThrow(
-      /the build wrote no SDK resolution record for its browser output/,
-    );
-    expect(() => verify(build({ omit: "server" }))).toThrow(
-      /the build wrote no SDK resolution record for its Worker output/,
-    );
-    // A record for a directory that is neither part does not stand in.
-    expect(() =>
-      verify(build({ serverRecord: { outDir: "dist/elsewhere" } })),
-    ).toThrow(/no SDK resolution record for its Worker output/);
-  });
-
-  it("refuses a record another pass wrote, a foreign file in the records, and an empty nonce", () => {
-    expect(() =>
-      verify(build({ serverRecord: { nonce: "0".repeat(32) } })),
-    ).toThrow(/resolution\.ssr\.json was not written by this build/);
-    expect(() =>
-      verify(build({ extraOutputs: { ".morph/records/other.json": "{}" } })),
-    ).toThrow(/\.morph\/records\/other\.json, which is not one of Morph's records/);
-    expect(() =>
-      verify(
+  it("refuses a chunk rewritten or removed after the bundle was generated (writeBundle)", () => {
+    expect(
+      refusal(
         build({
-          extraOutputs: { ".morph/records/resolution.extra.json": "not json" },
+          server: [
+            DEFAULT_SERVER[0]!,
+            { ...DEFAULT_SERVER[1]!, onDisk: "export const morph={};" },
+          ],
         }),
       ),
-    ).toThrow(/resolution\.extra\.json is not JSON/);
+    ).toMatch(/assets\/sdk\.js in the ssr output is not the code the bundler emitted/);
+    expect(
+      refusal(build({ server: [DEFAULT_SERVER[0]!, { ...DEFAULT_SERVER[1]!, onDisk: null }] })),
+    ).toMatch(/emitted assets\/sdk\.js, but the build did not write it/);
+  });
+
+  it("follows the import kind: a static edge needs a static path, a dynamic one may be lazy", () => {
+    const lazy: Chunk[] = [
+      {
+        file: "index.js",
+        code: 'const m=()=>import("./assets/sdk.js");export default {m};',
+        modules: [CONTENT],
+        isEntry: true,
+      },
+      DEFAULT_SERVER[1]!,
+    ];
+    const dynamicSource = {
+      [CONTENT]: 'export const read = () => import("@morph/sdk/start");\n',
+    };
+    expect(
+      refusal(
+        build({ server: lazy, serverEdges: [edge({ kind: "dynamic" })], sources: dynamicSource }),
+      ),
+    ).toBeNull();
+    expect(refusal(build({ server: lazy }))).toMatch(/does not reach Morph's copy of it/);
+  });
+
+  it("does not require a dynamic import the bundler removed as dead, and does require a static one", () => {
+    const dynamicSource = {
+      [CONTENT]: 'export const read = () => import("@morph/sdk/start");\n',
+    };
+    expect(
+      refusal(
+        build({
+          server: NO_SDK_SERVER,
+          serverEdges: [edge({ kind: "dynamic" })],
+          sources: dynamicSource,
+        }),
+      ),
+    ).toBeNull();
+    expect(refusal(build({ server: NO_SDK_SERVER }))).toMatch(
+      /imports @morph\/sdk\/start in the ssr environment, but Morph's copy of it is in no chunk the deployed code reaches/,
+    );
+  });
+
+  it("refuses a Theme source whose SDK import a transform removed from the Worker's code", () => {
+    expect(refusal(build({ serverEdges: [], server: NO_SDK_SERVER }))).toBe(
+      "NATIVE_PROOF_SDK_RESOLUTION: src/morph/content.ts imports @morph/sdk/start, but the code the ssr environment built from it does not. A Vite plugin rewrites that import; remove it.",
+    );
+    // Types only: TypeScript drops the import, so no edge is expected.
+    expect(
+      refusal(
+        build({
+          serverEdges: [],
+          server: NO_SDK_SERVER,
+          sources: {
+            [CONTENT]:
+              'import { MorphPage } from "@morph/sdk";\nimport type { Morph } from "@morph/sdk/start";\nexport let page: MorphPage | null = null;\nexport type M = Morph;\n',
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a missing record of either kind, another pass's, a foreign file, an empty nonce and a bundle without entries", () => {
+    for (const omit of [
+      "resolution.client",
+      "resolution.ssr",
+      "bundle.client",
+      "bundle.ssr",
+    ] as const) {
+      expect(refusal(build({ omit: [omit] })), omit).toMatch(
+        /the build wrote no (SDK resolution|bundle) record for its (browser|Worker) output/,
+      );
+    }
+    expect(refusal(build({ serverRecord: { nonce: "0".repeat(32) } }))).toMatch(
+      /resolution\.ssr\.json was not written by this build/,
+    );
+    expect(refusal(build({ serverBundle: { nonce: "0".repeat(32) } }))).toMatch(
+      /bundle\.ssr\.json was not written by this build/,
+    );
+    expect(refusal(build({ extraOutputs: { ".morph/records/other.json": "{}" } }))).toMatch(
+      /\.morph\/records\/other\.json, which is not one of Morph's records/,
+    );
     expect(() => verify(build(), "")).toThrow(/this build pass has no nonce/);
+    expect(refusal(build({ serverBundle: { chunks: [] } }))).toMatch(/has no entry chunk/);
   });
 
-  it("refuses code it cannot read, a name that is not an SDK entry, and an uncertified Vite", () => {
-    expect(() =>
-      verify(build({ serverRecord: { unparsed: ["src/routes/x.tsx"] } })),
-    ).toThrow(
-      /src\/routes\/x\.tsx names @morph\/sdk in code Morph cannot read in the ssr environment/,
+  it("refuses code it cannot read, a computed SDK specifier, a name that is not an entry, and an uncertified Vite", () => {
+    expect(refusal(build({ serverRecord: { unparsed: ["src/routes/x.tsx"] } }))).toMatch(
+      /src\/routes\/x\.tsx names @morph\/sdk in code Morph cannot read/,
     );
-    expect(() =>
-      verify(build({ server: [edge({ specifier: "@morph/sdk/other" })] })),
-    ).toThrow(/imports "@morph\/sdk\/other", which is not a Morph SDK entry/);
-    expect(() => verify(build({ serverRecord: { vite: "8.0.0" } }))).toThrow(
+    expect(
+      refusal(
+        build({ serverRecord: { computed: [{ importer: "src/routes/x.tsx", kind: "dynamic" }] } }),
+      ),
+    ).toMatch(/src\/routes\/x\.tsx imports @morph\/sdk through a specifier computed at run time/);
+    expect(refusal(build({ serverEdges: [edge({ specifier: "@morph/sdk/other" })] }))).toMatch(
+      /imports "@morph\/sdk\/other", which is not a Morph SDK entry/,
+    );
+    expect(refusal(build({ serverRecord: { vite: "8.0.0" } }))).toMatch(
       `ran Vite 8.0.0, not the certified ${THEME_START_TOOLCHAIN.vite}`,
     );
   });
+});
 
-  it("proves the bare @morph/sdk and every subpath against its own file", () => {
-    for (const [specifier, file] of Object.entries(THEME_MORPH_SDK_MODULES)) {
-      const ok = verify(
-        build({
-          server: [edge({ specifier, resolved: { path: file } })],
-          serverScript: JSON.stringify(nativeSdkSentinel(NONCE, specifier)),
-        }),
-      );
-      expect(ok.environments[1]!.specifiers).toEqual([specifier]);
-      // Another entry's file is a redirect.
-      const other = specifier === "@morph/sdk" ? START_FILE : THEME_MORPH_SDK_MODULES["@morph/sdk"]!;
-      expect(() =>
-        verify(build({ server: [edge({ specifier, resolved: { path: other } })] })),
-      ).toThrow(/changes where/);
-    }
+describe("a Theme source's SDK imports, as compiled code keeps them", () => {
+  it("keeps value, side-effect, re-export and dynamic imports, and drops type-only ones in TypeScript", () => {
+    expect(
+      sourceSdkImports(
+        "src/a.tsx",
+        [
+          'import { morph } from "@morph/sdk/start";',
+          'import { MorphPage } from "@morph/sdk";',
+          'import type { Morph } from "@morph/sdk/astro";',
+          'import "@morph/sdk/section-gate";',
+          'export { createMorph } from "@morph/sdk";',
+          "export const a = (p: MorphPage) => <p>{String(morph)}</p>;",
+          'export const b = () => import("@morph/sdk/start");',
+        ].join("\n"),
+      ),
+    ).toEqual([
+      { specifier: "@morph/sdk/section-gate", kind: "static" },
+      { specifier: "@morph/sdk", kind: "static" },
+      { specifier: "@morph/sdk/start", kind: "static" },
+      { specifier: "@morph/sdk/start", kind: "dynamic" },
+    ]);
+  });
+
+  it("keeps an unused value import in JavaScript, which nothing drops", () => {
+    expect(
+      sourceSdkImports("src/a.js", 'import { morph } from "@morph/sdk/start";\n'),
+    ).toEqual([{ specifier: "@morph/sdk/start", kind: "static" }]);
+  });
+
+  it("is null for a file it cannot parse", () => {
+    expect(sourceSdkImports("src/a.ts", "import {")).toBeNull();
   });
 });
 
@@ -291,9 +490,7 @@ describe("the native Start build's SDK copy", () => {
   it("is the platform's copy, with one sentinel statement appended to each reserved entry", () => {
     const platform = themeMorphSdkFiles();
     const native = nativeStartSdkFiles(NONCE);
-    expect(native.map((file) => file.path)).toEqual(
-      platform.map((file) => file.path),
-    );
+    expect(native.map((file) => file.path)).toEqual(platform.map((file) => file.path));
     const entries = new Set(Object.values(THEME_MORPH_SDK_MODULES));
     for (const [index, file] of native.entries()) {
       const original = platform[index]!;
@@ -302,15 +499,13 @@ describe("the native Start build's SDK copy", () => {
         continue;
       }
       expect(file.content.startsWith(original.content)).toBe(true);
-      const added = file.content.slice(original.content.length);
       const specifier = Object.entries(THEME_MORPH_SDK_MODULES).find(
         ([, path]) => path === file.path,
       )![0];
-      expect(added).toContain(
+      expect(file.content.slice(original.content.length)).toContain(
         `Reflect.set(globalThis, Symbol.for("morph.sdk.sentinel"), ${JSON.stringify(nativeSdkSentinel(NONCE, specifier))});`,
       );
     }
-    // Four entries: @morph/sdk, /start, /astro, /section-gate.
     expect(entries.size).toBe(4);
   });
 
@@ -319,12 +514,7 @@ describe("the native Start build's SDK copy", () => {
       nativeSdkSentinel(NONCE, specifier),
     );
     expect(new Set(names).size).toBe(names.length);
-    expect(nativeSdkSentinel(NONCE, START)).toBe(
-      `morph-sdk:start:${NONCE}:start`,
-    );
-    expect(nativeSdkSentinel(NONCE, "@morph/sdk")).toBe(
-      `morph-sdk:start:${NONCE}:sdk`,
-    );
+    expect(nativeSdkSentinel(NONCE, START)).toBe(`morph-sdk:start:${NONCE}:start`);
     expect(nativeSdkSentinel("b".repeat(32), START)).not.toBe(
       nativeSdkSentinel(NONCE, START),
     );
@@ -332,78 +522,138 @@ describe("the native Start build's SDK copy", () => {
 });
 
 describe("the resolution record plugin's identity", () => {
-  it("is pinned to the proof version: change NATIVE_PROOF_VERSION with the plugin", () => {
-    // If this fails, the plugin changed: bump NATIVE_PROOF_VERSION (it joins
-    // the native compiler identity) and record the new hash here.
+  it("is pinned: change NATIVE_PROOF_VERSION with the plugin once released, and record the hash", () => {
     expect({
       version: NATIVE_PROOF_VERSION,
-      sha256: createHash("sha256")
-        .update(nativeResolutionPluginSource())
-        .digest("hex"),
-    }).toEqual({
-      version: "np-1",
-      sha256: PLUGIN_SHA256,
-    });
+      sha256: hash(nativeResolutionPluginSource()),
+    }).toEqual({ version: "np-1", sha256: PLUGIN_SHA256 });
   });
 });
 
 describe("static HTML in a native artifact", () => {
-  it("is listed with where it came from", () => {
+  it("is listed with where it came from, by the public directory the build used", () => {
     const artifactFiles = new Map<string, string>([
       ["runtime/client/about/index.html", "<html>"],
-      ["runtime/client/legal.html", "<html>"],
+      ["runtime/client/legal.HTM", "<html>"],
       ["runtime/client/_shell.html", "<html>"],
       ["runtime/client/assets/app.js", ""],
-      ["runtime/server/index.js", ""],
     ]);
-    const outputs = new Map<string, string>([["public/legal.html", "<html>"]]);
-    expect(nativeHtmlAssets({ artifactFiles, outputs })).toEqual([
+    const outputs = new Map<string, string>([["static/legal.HTM", "<html>"]]);
+    expect(nativeHtmlAssets({ artifactFiles, outputs, publicDir: "static" })).toEqual([
       { path: "runtime/client/_shell.html", source: "spa-shell" },
       { path: "runtime/client/about/index.html", source: "prerender" },
-      { path: "runtime/client/legal.html", source: "public" },
+      { path: "runtime/client/legal.HTM", source: "public" },
     ]);
   });
+});
+
+const PROOF = {
+  version: NATIVE_PROOF_VERSION,
+  sdk: {
+    environments: [
+      { name: "client", output: "client", specifiers: [], edges: 0, sentinelFiles: [] },
+      {
+        name: "ssr",
+        output: "server",
+        specifiers: [START],
+        edges: 1,
+        sentinelFiles: ["runtime/server/assets/sdk.js"],
+      },
+    ],
+  },
+  toolchain: { vite: THEME_START_TOOLCHAIN.vite },
+  html: [],
+};
+const withServer = (patch: Record<string, unknown>) => ({
+  ...PROOF,
+  sdk: {
+    environments: [
+      PROOF.sdk.environments[0],
+      { ...PROOF.sdk.environments[1], ...patch },
+    ],
+  },
 });
 
 describe("a manifest's nativeProof, read back", () => {
-  const proof = {
-    version: NATIVE_PROOF_VERSION,
-    sdk: {
-      environments: [
-        { name: "client", output: "client", specifiers: [], edges: 0, sentinelFiles: [] },
-        {
-          name: "ssr",
-          output: "server",
-          specifiers: [START],
-          edges: 1,
-          sentinelFiles: ["runtime/server/index.js"],
-        },
-      ],
-    },
-    toolchain: { vite: THEME_START_TOOLCHAIN.vite },
-    html: [],
-  };
-
   it("is the proof Morph wrote", () => {
-    expect(readNativeBuildProof(JSON.parse(JSON.stringify(proof)))).toEqual(proof);
+    expect(readNativeBuildProof(JSON.parse(JSON.stringify(PROOF)))).toEqual(PROOF);
   });
 
-  it("is null for anything else: none, another version, a missing part", () => {
-    expect(readNativeBuildProof(undefined)).toBeNull();
-    expect(readNativeBuildProof({ ...proof, version: "np-0" })).toBeNull();
-    expect(
-      readNativeBuildProof({
-        ...proof,
-        sdk: { environments: [proof.sdk.environments[1]] },
-      }),
-    ).toBeNull();
-    expect(readNativeBuildProof({ ...proof, toolchain: {} })).toBeNull();
-    expect(
-      readNativeBuildProof({ ...proof, html: [{ path: "x", source: "other" }] }),
-    ).toBeNull();
+  it.each([
+    ["none", undefined],
+    ["another version", { ...PROOF, version: "np-0" }],
+    ["another Vite", { ...PROOF, toolchain: { vite: "8.0.0" } }],
+    ["no Worker part", { ...PROOF, sdk: { environments: [PROOF.sdk.environments[0]] } }],
+    [
+      "two Worker parts",
+      {
+        ...PROOF,
+        sdk: { environments: [...PROOF.sdk.environments, PROOF.sdk.environments[1]] },
+      },
+    ],
+    ["an SDK edge with no sentinel file", withServer({ sentinelFiles: [] })],
+    ["fewer edges than entries", withServer({ edges: 0 })],
+    [
+      "a sentinel file that is not JavaScript",
+      withServer({ sentinelFiles: ["runtime/server/assets/app.css"] }),
+    ],
+    [
+      "a sentinel file of the other part",
+      withServer({ sentinelFiles: ["runtime/client/assets/sdk.js"] }),
+    ],
+    ["a name that is not an SDK entry", withServer({ specifiers: ["@morph/sdk/other"] })],
+    ["a sentinel file without an entry", withServer({ specifiers: [], edges: 0 })],
+    ["an HTML entry outside the assets", { ...PROOF, html: [{ path: "x.html", source: "public" }] }],
+  ])("is null for %s", (_label, value) => {
+    expect(readNativeBuildProof(value)).toBeNull();
   });
 });
 
-/** sha256 of `nativeResolutionPluginSource()` at NATIVE_PROOF_VERSION np-1. */
+describe("the native production admission", () => {
+  const files = (...extra: string[]) =>
+    [
+      "runtime/server/index.js",
+      "runtime/server/assets/sdk.js",
+      "runtime/client/assets/main.js",
+      ...extra,
+    ].map((path) => ({ path }));
+
+  it("admits a consistent proof with its files and no HTML", () => {
+    expect(
+      nativeProductionAdmission({ runtime: { nativeProof: PROOF }, files: files() }),
+    ).toBeNull();
+  });
+
+  it("refuses a missing or inconsistent proof, or one naming a file the artifact lacks", () => {
+    for (const nativeProof of [undefined, withServer({ sentinelFiles: [] })]) {
+      expect(
+        nativeProductionAdmission({ runtime: { nativeProof }, files: files() })?.code,
+      ).toBe("NATIVE_PROOF_MISSING");
+    }
+    expect(
+      nativeProductionAdmission({
+        runtime: { nativeProof: PROOF },
+        files: [{ path: "runtime/server/index.js" }],
+      })?.message,
+    ).toContain(
+      "it names runtime/server/assets/sdk.js, which the artifact does not hold",
+    );
+  });
+
+  it("refuses static HTML at any depth and case, naming the file and the path it would be served at", () => {
+    expect(
+      nativeProductionAdmission({
+        runtime: { nativeProof: PROOF },
+        files: files("runtime/client/a/B.HTM"),
+      }),
+    ).toEqual({
+      code: "NATIVE_HTML_ASSET_UNAVAILABLE",
+      message:
+        "NATIVE_HTML_ASSET_UNAVAILABLE: The build would serve runtime/client/a/B.HTM as /a/B.HTM. Static HTML is not published yet: the asset layer would answer it before the Theme Worker and Core. Remove the prerender setting, the SPA shell or the file.",
+    });
+  });
+});
+
+/** sha256 of `nativeResolutionPluginSource()`. */
 const PLUGIN_SHA256 =
-  "525da0a19ad9fc3205ecc7c826c968819215387733768302c166c2032902aa52";
+  "c6df6a1bea168fa01d7ee6ede6f6160d26d8e2912bee44a97474481da6dbe1d7";

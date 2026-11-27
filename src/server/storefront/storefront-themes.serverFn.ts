@@ -855,6 +855,13 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
               return fail(described.message, {
                 error: described.error,
                 reason: described.reason,
+                // A plan rule's own sentence names the file and setting to
+                // change (the planner's messages carry no secret values).
+                ...("reason" in deployed &&
+                deployed.reason === "PLAN_REJECTED" &&
+                typeof deployed.message === "string"
+                  ? { detail: deployed.message }
+                  : {}),
               });
             }
 
@@ -931,6 +938,21 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
                 : {}),
             },
           );
+        }
+      }
+      // Render plan v2 step 1: a native Start build refused before anything
+      // was written. Said with the file and the path it would be served at,
+      // or why the proof is missing: the author has to change the Theme or
+      // rebuild it; the live site is unchanged.
+      for (const code of [
+        "NATIVE_PROOF_MISSING",
+        "NATIVE_HTML_ASSET_UNAVAILABLE",
+      ] as const) {
+        if (message.includes(`${code}:`)) {
+          return fail(message.slice(message.indexOf(`${code}:`)).trim(), {
+            error: "PUBLISH_NATIVE_BUILD_REFUSED",
+            reason: code,
+          });
         }
       }
       if (message.includes("PUBLISH_BUILD_CONTENT_MISMATCH")) {

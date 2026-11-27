@@ -28,6 +28,7 @@ import {
   type NativeThemeBuildPlan,
 } from "./cloudflare-native-build";
 import {
+  NATIVE_ADAPTER_CALLS_PATH,
   NATIVE_ADAPTER_REFUSAL_PATH,
   NATIVE_BUILD_HOOKS_PATH,
   NATIVE_BUILD_LOADER_PATH,
@@ -277,15 +278,25 @@ export function collectNativeStartArtifact(
   const sdk = verifyNativeStartSdkProof({
     outputs,
     directories: artifact.sourceDirectories,
-    artifactFiles: artifact.files,
     nonce,
     configFile: VITE_CONFIG_FILES.find((path) => outputs.has(path)),
   });
+  // The Worker was built, yet no checked cloudflare() call was counted: the
+  // plugin came from somewhere the shim does not see.
+  if (outputs.get(NATIVE_ADAPTER_CALLS_PATH) === undefined) {
+    throw new Error(
+      `NATIVE_ADAPTER_OPTION: ${VITE_CONFIG_FILES.find((path) => outputs.has(path)) ?? "vite.config.ts"} builds the Cloudflare plugin without calling cloudflare() from an import of @cloudflare/vite-plugin, so Morph cannot check its options. Import cloudflare from "@cloudflare/vite-plugin" and call it in the config.`,
+    );
+  }
   const nativeProof: NativeBuildProof = {
     version: NATIVE_PROOF_VERSION,
     sdk: { environments: sdk.environments },
     toolchain: { vite: sdk.vite },
-    html: nativeHtmlAssets({ artifactFiles: artifact.files, outputs }),
+    html: nativeHtmlAssets({
+      artifactFiles: artifact.files,
+      outputs,
+      publicDir: sdk.publicDir,
+    }),
   };
   return { ...artifact, metadata: { nativeProof } };
 }

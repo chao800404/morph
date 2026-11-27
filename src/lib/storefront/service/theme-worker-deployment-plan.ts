@@ -5,7 +5,7 @@ import {
   checkNativeWranglerConfig,
 } from "../theme-framework/cloudflare-native-build";
 import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
-import { readNativeBuildProof } from "../theme-framework/native-start-proof";
+import { nativeProductionAdmission } from "../theme-framework/native-start-proof";
 import { themeWorkerScriptNameForStorefront } from "./theme-runtime.types";
 
 /**
@@ -107,67 +107,6 @@ export type ThemeWorkerDeploymentPlanFailureReason =
   | "NATIVE_PROOF_MISSING"
   | "NATIVE_HTML_ASSET_UNAVAILABLE";
 
-const HTML_FILE = /\.html?$/i;
-
-const HTML_SOURCE_LABEL = {
-  public: "copied from public/",
-  "spa-shell": "an SPA shell",
-  prerender: "prerendered",
-} as const;
-
-/**
- * Step 1's production admission of a native Start artifact (design
- * section 1, "Step 1 is SSR only"; section 6): its proof, and no static HTML
- * among the assets it would serve. Assets answer before the Worker, and
- * before Core, so an HTML file there would be served for its path whatever
- * the release and its content say. Build Preview is not production and is
- * not held to this.
- */
-function nativeProductionRefusal(
-  manifest: CanonicalThemeBuildManifest,
-  clientDirectory: string,
-): ThemeWorkerDeploymentPlanResult | null {
-  const proof = readNativeBuildProof(manifest.runtime?.nativeProof);
-  const paths = new Set(
-    (Array.isArray(manifest.files) ? manifest.files : []).map((file) =>
-      file.path.replace(/\\/g, "/"),
-    ),
-  );
-  const unbacked = proof?.sdk.environments
-    .flatMap((environment) => environment.sentinelFiles)
-    .find((path) => !paths.has(path));
-  if (!proof || unbacked) {
-    return fail(
-      "NATIVE_PROOF_MISSING",
-      `NATIVE_PROOF_MISSING: This native build carries no ${
-        proof ? "complete " : ""
-      }SDK resolution proof${unbacked ? ` (it names ${unbacked}, which the artifact does not hold)` : ""}, so Morph cannot tell its Theme reads content through Morph's SDK. Rebuild the Theme.`,
-    );
-  }
-  // From the files themselves, not only the proof's list: the proof names
-  // the source when it knows it.
-  const html = [...paths]
-    .filter(
-      (path) =>
-        clientDirectory !== "" &&
-        path.startsWith(`${clientDirectory}/`) &&
-        HTML_FILE.test(path),
-    )
-    .sort();
-  if (html.length > 0) {
-    const first = html[0]!;
-    const source = proof.html.find((entry) => entry.path === first)?.source;
-    return fail(
-      "NATIVE_HTML_ASSET_UNAVAILABLE",
-      `NATIVE_HTML_ASSET_UNAVAILABLE: The build would serve ${first}${
-        source ? ` (${HTML_SOURCE_LABEL[source]})` : ""
-      } as /${first.slice(clientDirectory.length + 1)}${
-        html.length > 1 ? `, and ${html.length - 1} more HTML file(s)` : ""
-      }. Static HTML is not published yet: the asset layer would answer it before the Theme Worker and Core. Remove the prerender setting, the SPA shell or the file.`,
-    );
-  }
-  return null;
-}
 
 /**
  * Who the Worker is deployed for.
@@ -313,9 +252,15 @@ export function planThemeWorkerDeployment(args: {
       file: NATIVE_EMITTED_WORKER_CONFIG_LABEL,
     });
     if (refused) return fail("INVALID_WORKER_CONFIG", refused.message);
+    // Step 1's production admission: the same check a publish runs before
+    // writing anything (storefront-theme.dal.ts); here it also covers
+    // rollback and reconciliation. Build Preview is not production.
     if (args.target === "production") {
-      const admission = nativeProductionRefusal(args.manifest, clientDirectory);
-      if (admission) return admission;
+      const admission = nativeProductionAdmission({
+        runtime: { ...args.manifest.runtime, clientAssetsDirectory: clientDirectory },
+        files: args.manifest.files,
+      });
+      if (admission) return fail(admission.code, admission.message);
     }
   }
 

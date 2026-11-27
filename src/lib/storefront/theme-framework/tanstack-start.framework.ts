@@ -108,6 +108,10 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
       // on the first, content-less pass's refused read: the build exits
       // non-zero, and the record is what sends it to the sealed pass. A
       // refusal in the sealed pass still fails the build.
+      failedBuildRecordPaths: [
+        NATIVE_ADAPTER_REFUSAL_PATH,
+        NATIVE_PRERENDER_REFUSED_READS_PATH,
+      ],
       failedBuildCause(outputs) {
         // A Cloudflare plugin option the loader shim refused stops the build
         // when the config is loaded; the shim's record says which.

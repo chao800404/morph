@@ -333,9 +333,28 @@ describe("planNativeStartBuild", () => {
 // fixtures/tanstack/start-basic-cloudflare and on the starter built natively).
 const officialOutputs = (
   overrides: Record<string, string | undefined> = {},
-): Map<string, string> =>
-  new Map(
-    Object.entries({
+): Map<string, string> => {
+  const built = Object.fromEntries(
+    Object.entries(officialBuild(overrides)).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+  // Morph's plugins' records, for a build importing no SDK, over the files
+  // as written; an override can still remove or replace one.
+  const records = nativeStartProofRecordsForTest(
+    `const morphBuildNonce = ${JSON.stringify(NONCE)};`,
+    built,
+  );
+  return new Map(
+    Object.entries({ ...records, ...officialBuild(overrides) }).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+};
+
+const officialBuild = (
+  overrides: Record<string, string | undefined>,
+): Record<string, string | undefined> => ({
       [NATIVE_DEPLOY_CONFIG_PATH]: JSON.stringify({
         configPath: "../../dist/server/wrangler.json",
         auxiliaryWorkers: [],
@@ -355,13 +374,8 @@ const officialOutputs = (
       "dist/client/assets/index.js": "console.log(1)",
       "dist/client/favicon.ico": "ico",
       "src/routes/index.tsx": "source, not output",
-      // Morph's resolution plugin's records, for a build importing no SDK.
-      ...nativeStartProofRecordsForTest(
-        `const morphBuildNonce = ${JSON.stringify(NONCE)};`,
-      ),
       ...overrides,
-    }).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
+});
 
 /** The pass's nonce the records above were written under. */
 const NONCE = "5f".repeat(16);

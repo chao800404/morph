@@ -169,6 +169,7 @@ function fakeSandbox(
             for (const [path, content] of Object.entries(
               nativeStartProofRecordsForTest(
                 files.get("/workspace/.morph/vite.config.ts") ?? "",
+                BUILT,
               ),
             )) {
               files.set(`/workspace/${path}`, content);

@@ -151,6 +151,12 @@ export type ThemeFrameworkAdapter = Readonly<{
         nonce: string,
       ): Readonly<{ stage: string; message: string }> | null;
       /**
+       * The workspace files `failedBuildCause` reads, for a runner that
+       * reads only those after a failed build (the Sandbox's); the
+       * prerender's refused reads when absent.
+       */
+      failedBuildRecordPaths?: readonly string[];
+      /**
        * The artifact, from the workspace after the build. `nonce` is the
        * pass's own, for a framework whose records carry one (a native Start
        * build's SDK resolution proof). The artifact's `metadata`, when it

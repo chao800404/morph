@@ -19,6 +19,7 @@ import {
   planNativeStartBuild,
 } from "./tanstack-start-native-build";
 import {
+  NATIVE_ADAPTER_CALLS_PATH,
   NATIVE_ADAPTER_REFUSAL_PATH,
   nativeBuildLoaderSource,
 } from "./tanstack-start-native-wrapper";
@@ -207,6 +208,73 @@ console.log(JSON.stringify(result));
       expect(nativeAdapterRefusalMessage(recorded)).toBe(message);
     },
   );
+
+  it.each([
+    [
+      "a getter",
+      '{ viteEnvironment: { name: "ssr" }, get persistState() { return false; } }',
+      'NATIVE_ADAPTER_OPTION: vite.config.ts passes persistState as a getter to cloudflare(). Morph reads each plugin option once, as a value. Remove "persistState as a getter"; keep wrangler.jsonc at the project root.',
+    ],
+    [
+      "an inherited setting",
+      'Object.assign(Object.create({ configPath: "./x.jsonc" }), { viteEnvironment: { name: "ssr" } })',
+      'NATIVE_ADAPTER_OPTION: vite.config.ts passes options that are not a plain object to cloudflare(). Morph reads the plugin options as a plain object, not one that inherits settings. Remove "options that are not a plain object"; keep wrangler.jsonc at the project root.',
+    ],
+    [
+      "an inherited child environment",
+      '{ viteEnvironment: Object.assign(Object.create({ childEnvironments: ["rsc"] }), { name: "ssr" }) }',
+      'NATIVE_ADAPTER_OPTION: vite.config.ts passes viteEnvironment options that are not a plain object to cloudflare(). Morph reads the plugin options as a plain object, not one that inherits settings. Remove "viteEnvironment options that are not a plain object"; keep wrangler.jsonc at the project root.',
+    ],
+    [
+      "a hidden (non-enumerable) option",
+      'Object.defineProperty({ viteEnvironment: { name: "ssr" } }, "configPath", { value: "./x.jsonc", enumerable: false })',
+      'NATIVE_ADAPTER_OPTION: vite.config.ts passes configPath to cloudflare(). Morph supplies the Wrangler config the plugin reads, from wrangler.jsonc at the project root; a config path would replace it. Remove "configPath"; keep wrangler.jsonc at the project root.',
+    ],
+    [
+      "a symbol key",
+      '{ [Symbol("x")]: 1 }',
+      'NATIVE_ADAPTER_OPTION: vite.config.ts passes options with a symbol key to cloudflare(). Morph reads the plugin options by name. Remove "options with a symbol key"; keep wrangler.jsonc at the project root.',
+    ],
+  ])(
+    "refuses options given as %s, which a check of their keys alone would miss",
+    async (_name, options, message) => {
+      const { root, env } = pluginWorkspace();
+      writeFileSync(join(root, "project-config.mjs"), callWith(options));
+      expect(await run(root, "project-config.mjs", env)).toEqual({
+        refused: message,
+      });
+    },
+  );
+
+  it("gives the plugin the checked snapshot, frozen, marks what it returns and counts the call", async () => {
+    const { root, env } = pluginWorkspace();
+    writeFileSync(
+      join(root, "project-config.mjs"),
+      `import { cloudflare } from "@cloudflare/vite-plugin";
+const environment = { name: "ssr" };
+const made = cloudflare({ viteEnvironment: environment });
+environment.childEnvironments = ["late"];
+console.log(JSON.stringify({
+  options: made.options,
+  frozen: Object.isFrozen(made.options.viteEnvironment),
+  marked: made[Symbol.for("morph.cloudflare.checked")] === true,
+}));
+`,
+    );
+    expect(await run(root, "project-config.mjs", env)).toEqual({
+      // The late change to the project's own object does not reach it.
+      options: {
+        viteEnvironment: { name: "ssr" },
+        inspectorPort: false,
+        remoteBindings: false,
+      },
+      frozen: true,
+      marked: true,
+    });
+    expect(
+      JSON.parse(readFileSync(join(root, NATIVE_ADAPTER_CALLS_PATH), "utf8")),
+    ).toEqual({ calls: 1 });
+  });
 
   it("accepts the guide's options and the local ones, and records nothing", async () => {
     const { root, env } = pluginWorkspace();

@@ -141,29 +141,104 @@ function adapterOptionCheckSource(configFile: string): string {
     "  } catch {}",
     "  throw new Error(message);",
     "}",
-    "function morphCheckCloudflareOptions(options) {",
-    "  if (options === undefined) return;",
-    '  if (options === null || typeof options !== "object" || Array.isArray(options)) {',
-    '    morphRefuseOption("options that are not an object", "Morph reads the plugin options as an object", "NATIVE_ADAPTER_OPTION");',
+    // The options are read once, here, into a fresh frozen object of plain
+    // data: what is checked is exactly what the plugin is given. A getter,
+    // a symbol key, a prototype other than Object's, or a value inherited
+    // rather than owned is refused rather than read twice.
+    "function morphSnapshot(value, what) {",
+    '  if (value === null || typeof value !== "object" || Array.isArray(value)) {',
+    '    morphRefuseOption(what + " that are not an object", "Morph reads the plugin options as a plain object", "NATIVE_ADAPTER_OPTION");',
     "  }",
-    "  for (const key of Object.keys(options)) {",
-    "    const value = options[key];",
+    "  const prototype = Object.getPrototypeOf(value);",
+    "  if (prototype !== Object.prototype && prototype !== null) {",
+    '    morphRefuseOption(what + " that are not a plain object", "Morph reads the plugin options as a plain object, not one that inherits settings", "NATIVE_ADAPTER_OPTION");',
+    "  }",
+    "  const copy = {};",
+    "  for (const key of Reflect.ownKeys(value)) {",
+    '    if (typeof key !== "string") morphRefuseOption(what + " with a symbol key", "Morph reads the plugin options by name", "NATIVE_ADAPTER_OPTION");',
+    "    const descriptor = Object.getOwnPropertyDescriptor(value, key);",
+    '    if (!descriptor || !("value" in descriptor)) morphRefuseOption(key + " as a getter", "Morph reads each plugin option once, as a value", "NATIVE_ADAPTER_OPTION");',
+    "    copy[key] = descriptor.value;",
+    "  }",
+    "  return copy;",
+    "}",
+    "function morphCheckCloudflareOptions(options) {",
+    "  if (options === undefined) return Object.freeze({});",
+    '  const checked = morphSnapshot(options, "options");',
+    "  for (const key of Object.keys(checked)) {",
+    "    const value = checked[key];",
     '    if (key === "inspectorPort" || key === "persistState") continue;',
     '    if ((key === "remoteBindings" || key === "tunnel") && value === false) continue;',
     '    if (key === "viteEnvironment") {',
+    '      const environment = morphSnapshot(value, "viteEnvironment options");',
     "      const ok =",
-    '        value !== null && typeof value === "object" && !Array.isArray(value) &&',
-    '        Object.keys(value).every((name) => name === "name") &&',
-    '        (value.name === undefined || typeof value.name === "string");',
-    "      if (ok) continue;",
+    '        Object.keys(environment).every((name) => name === "name") &&',
+    '        (environment.name === undefined || typeof environment.name === "string");',
+    "      if (ok) {",
+    "        checked.viteEnvironment = Object.freeze(environment);",
+    "        continue;",
+    "      }",
     '      morphRefuseOption("viteEnvironment other than { name }", "Morph builds one Worker environment, named by viteEnvironment.name", "NATIVE_ADAPTER_OPTION");',
     "    }",
     "    const known = Object.prototype.hasOwnProperty.call(MORPH_REFUSALS, key) ? MORPH_REFUSALS[key] : null;",
     "    if (known) morphRefuseOption(key, known[1], known[0]);",
     '    morphRefuseOption(key, "Morph has not certified this option of the Cloudflare plugin", "NATIVE_ADAPTER_OPTION");',
     "  }",
+    "  return Object.freeze(checked);",
+    "}",
+    // Each plugin the checked call returns carries Morph's mark, so the
+    // wrapper can tell a Cloudflare plugin made through this check from one
+    // made some other way; each call is recorded for the collector.
+    `const MORPH_CALLS_PATH = ${JSON.stringify(NATIVE_ADAPTER_CALLS_PATH)};`,
+    'const MORPH_CHECKED = Symbol.for("morph.cloudflare.checked");',
+    "function morphMarkCloudflarePlugins(plugins) {",
+    "  const visit = (value) => {",
+    "    if (Array.isArray(value)) { value.forEach(visit); return; }",
+    '    if (value && typeof value === "object") Object.defineProperty(value, MORPH_CHECKED, { value: true });',
+    "  };",
+    "  visit(plugins);",
+    "  try {",
+    '    const fs = process.getBuiltinModule("node:fs");',
+    '    fs.mkdirSync(MORPH_CALLS_PATH.slice(0, MORPH_CALLS_PATH.lastIndexOf("/")), { recursive: true });',
+    "    let calls = 0;",
+    "    try { calls = JSON.parse(fs.readFileSync(MORPH_CALLS_PATH, \"utf8\")).calls || 0; } catch {}",
+    "    fs.writeFileSync(MORPH_CALLS_PATH, JSON.stringify({ calls: calls + 1 }));",
+    "  } catch {}",
+    "  return plugins;",
     "}",
   ].join("\n");
+}
+
+/** Where the checked `cloudflare()` calls are counted, workspace-relative. */
+export const NATIVE_ADAPTER_CALLS_PATH = ".morph/records/adapter-calls.json";
+
+/**
+ * The wrapper's check, as source: every Cloudflare plugin in the project's
+ * resolved plugin list carries the mark the checked call gives it. One the
+ * project built some other way (a `require`, the plugin's internals) was not
+ * checked, and is refused.
+ */
+function cloudflarePluginMarkCheckSource(configFile: string): string {
+  return `
+  const checkedMark = Symbol.for("morph.cloudflare.checked");
+  const flatten = async (value) => {
+    const resolved = await value;
+    if (Array.isArray(resolved)) return (await Promise.all(resolved.map(flatten))).flat();
+    return resolved && typeof resolved === "object" ? [resolved] : [];
+  };
+  for (const plugin of await flatten(own?.plugins ?? [])) {
+    if (typeof plugin.name === "string" && plugin.name.startsWith("vite-plugin-cloudflare") && plugin[checkedMark] !== true) {
+      const message = ${JSON.stringify(
+        `NATIVE_ADAPTER_OPTION: ${configFile} builds the Cloudflare plugin without calling cloudflare() from an import of @cloudflare/vite-plugin, so Morph cannot check its options. Import cloudflare from "@cloudflare/vite-plugin" and call it in the config.`,
+      )};
+      try {
+        fs.mkdirSync(path.join(workspaceRoot, ".morph", "records"), { recursive: true });
+        fs.writeFileSync(path.join(workspaceRoot, ${JSON.stringify(NATIVE_ADAPTER_REFUSAL_PATH)}), JSON.stringify({ code: "NATIVE_ADAPTER_OPTION", message }));
+      } catch {}
+      throw new Error(message);
+    }
+  }
+`;
 }
 
 /**
@@ -240,8 +315,8 @@ function nativeStartBuildLoaderSource(configFile: string): string {
     '    "export * from " + plugin + ";",',
     "    CHECK,",
     '    "export function cloudflare(options) {",',
-    '    "  morphCheckCloudflareOptions(options);",',
-    '    "  return projectCloudflare({ ...options, inspectorPort: false, remoteBindings: false });",',
+    '    "  const checked = morphCheckCloudflareOptions(options);",',
+    '    "  return morphMarkCloudflarePlugins(projectCloudflare({ ...checked, inspectorPort: false, remoteBindings: false }));",',
     '    "}",',
     '  ].join("\\n");',
     "  return {",
@@ -322,6 +397,12 @@ export function nativeWrapperConfigSource(options: {
     options.resolutionNonce !== undefined
       ? `const morphBuildNonce = ${JSON.stringify(options.resolutionNonce)};\n`
       : "";
+  // With the proof (the native Start build), also the check that every
+  // Cloudflare plugin came through the checked call.
+  const markCheck =
+    options.resolutionNonce !== undefined
+      ? cloudflarePluginMarkCheckSource(options.themeConfigPath)
+      : "";
   return `// Written by Morph for this build. The project's own config is imported
 // unchanged; Morph adds only the plugins below and the prerender server's
 // address.
@@ -335,7 +416,7 @@ const allowedPackages = new Set(${JSON.stringify(allowed)});
 ${resolutionNonce}
 export default async (env) => {
   const own = typeof themeConfig === "function" ? await themeConfig(env) : await themeConfig;
-  return mergeConfig(own ?? {}, {
+${markCheck}  return mergeConfig(own ?? {}, {
     plugins: [
 ${plugins.map((plugin) => `      ${plugin}`).join(",\n")},
     ],

@@ -1224,11 +1224,17 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       // in its records: read that one record (bounded), not the workspace.
       const records = new Map<string, Uint8Array>();
       if (native.failedBuildCause) {
-        const record = await readFailedBuildRecord(
-          sandbox,
-          `${root}/${NATIVE_PRERENDER_REFUSED_READS_PATH}`,
-        );
-        if (record) records.set(NATIVE_PRERENDER_REFUSED_READS_PATH, record);
+        // The framework names the records its cause reads; by default the
+        // prerender's refused reads, the only one there was.
+        for (const recordPath of native.failedBuildRecordPaths ?? [
+          NATIVE_PRERENDER_REFUSED_READS_PATH,
+        ]) {
+          const record = await readFailedBuildRecord(
+            sandbox,
+            `${root}/${recordPath}`,
+          );
+          if (record) records.set(recordPath, record);
+        }
       }
       return nativeBuildResult({
         input,

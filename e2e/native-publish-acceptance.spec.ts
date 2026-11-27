@@ -318,11 +318,12 @@ test.describe("a native Start build that prerenders, from Code to a refused publ
       source: "prerender",
     });
 
-    // 3. Published from the toolbar: the publish reuses build A, and its
-    //    production deployment is refused before anything goes live. Step 1
-    //    of the native build is SSR only: the asset layer would answer the
-    //    prerendered page before the Theme Worker and Core (native SSG is
-    //    step 3). Nothing is activated.
+    // 3. Published from the toolbar: the publish reuses build A, which is
+    //    refused before the publish writes anything. Step 1 of the native
+    //    build is SSR only: the asset layer would answer the prerendered page
+    //    before the Theme Worker and Core (native SSG is step 3). No release,
+    //    no content publication, and the active pointer never moves (the
+    //    DAL test watches the pointer itself: storefront-theme.dal.test.ts).
     const beforePublish = await publishedState();
     const refusedPublish = page.waitForResponse(
       (response) =>
@@ -332,15 +333,20 @@ test.describe("a native Start build that prerenders, from Code to a refused publ
     );
     await openPublish(page);
     const refusal = await (await refusedPublish).text();
-    expect(refusal).toContain("RELEASE_DEPLOYMENT_FAILED");
+    expect(refusal).toContain("PUBLISH_NATIVE_BUILD_REFUSED");
     expect(refusal).toContain("NATIVE_HTML_ASSET_UNAVAILABLE");
+    // The response names the file and the path it would be served at.
+    expect(refusal).toContain(
+      `runtime/client${SSG_ROUTE}/index.html (prerendered) as ${SSG_ROUTE}/index.html`,
+    );
+    expect(refusal).not.toContain("RELEASE_DEPLOYMENT_FAILED");
     expect(posts.build, "publish reuses the previewed build").toBe(1);
     expect(posts.publish).toBe(1);
     await expect(page.locator("[data-editor-save-status]")).not.toHaveAttribute(
       "aria-label",
       "Published",
     );
-    expect((await publishedState()).active).toBe(beforePublish.active);
+    expect(await publishedState()).toEqual(beforePublish);
 
     // 4. Draft B, not built. Build A's preview, opened again, still shows
     //    A: a stale build's preview does not read the newer draft.

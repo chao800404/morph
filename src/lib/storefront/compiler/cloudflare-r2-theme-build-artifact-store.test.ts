@@ -298,20 +298,47 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
       });
     });
 
-    it("leaves a runtime without one exactly as before", async () => {
-      const result = await persist(NATIVE, undefined);
-      expect(result.manifest.runtime).not.toHaveProperty("nativeProof");
+    it("is required of a native Start build, and absent from every other build's runtime", async () => {
+      await expect(persist(NATIVE, undefined)).rejects.toThrow(
+        "INVALID_NATIVE_PROOF: The native Start build reported no SDK resolution proof.",
+      );
+      const platform = await persist("tailwind-v4-build", undefined);
+      expect(platform.manifest.runtime).not.toHaveProperty("nativeProof");
     });
 
-    it("is refused from another compiler, in another shape, or naming a file the artifact lacks", async () => {
+    it("is refused from another compiler, in another shape, inconsistent, or naming a file the artifact lacks", async () => {
       await expect(persist("tailwind-v4-build", proof)).rejects.toThrow(
         "INVALID_NATIVE_PROOF: A tailwind-v4-build build reported a native Start proof.",
       );
-      await expect(
-        persist(NATIVE, { ...proof, version: "np-0" }),
-      ).rejects.toThrow(
-        "INVALID_NATIVE_PROOF: The runner's native proof is not one this Morph writes.",
-      );
+      for (const inconsistent of [
+        { ...proof, version: "np-0" },
+        { ...proof, toolchain: { vite: "8.0.0" } },
+        {
+          ...proof,
+          sdk: {
+            environments: [
+              proof.sdk.environments[0],
+              { ...proof.sdk.environments[1], sentinelFiles: [] },
+            ],
+          },
+        },
+        {
+          ...proof,
+          sdk: {
+            environments: [
+              proof.sdk.environments[0],
+              {
+                ...proof.sdk.environments[1],
+                sentinelFiles: ["runtime/client/assets/app.js"],
+              },
+            ],
+          },
+        },
+      ]) {
+        await expect(persist(NATIVE, inconsistent)).rejects.toThrow(
+          "INVALID_NATIVE_PROOF: The runner's native proof is not a consistent one this Morph writes.",
+        );
+      }
       await expect(
         persist(NATIVE, {
           ...proof,

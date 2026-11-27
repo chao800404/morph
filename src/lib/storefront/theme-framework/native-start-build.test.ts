@@ -234,7 +234,7 @@ describe("a TanStack Start project built with its own configuration", () => {
     nativeProof = artifact.metadata?.nativeProof;
     records = Object.fromEntries(
       [...outputs]
-        .filter(([path]) => path.startsWith(".morph/records/"))
+        .filter(([path]) => path.startsWith(".morph/records/resolution."))
         .map(([path, bytes]) => [path, JSON.parse(bytes.toString("utf8"))]),
     );
 
@@ -694,7 +694,7 @@ describe("a native Start build's SDK resolution proof, against what a Vite confi
         success: false,
         reason: "NATIVE_HTML_ASSET_UNAVAILABLE",
         message: expect.stringContaining(
-          "NATIVE_HTML_ASSET_UNAVAILABLE: The build would serve runtime/client/landing.html (copied from public/) as /landing.html.",
+          "NATIVE_HTML_ASSET_UNAVAILABLE: The build would serve runtime/client/landing.html (copied from the public directory) as /landing.html.",
         ),
       });
       // Build Preview is not production: it serves what the build wrote.
@@ -753,8 +753,160 @@ describe("a native Start build's SDK resolution proof, against what a Vite confi
       );
       expect(built).toMatchObject({ ok: false, stage: "collect" });
       expect((built as { message: string }).message).toMatch(
-        /^NATIVE_PROOF_SDK_RESOLUTION: the (client|ssr) environment imports @morph\/sdk, but Morph's copy of it is not in the code the build wrote for it\./,
+        /^NATIVE_PROOF_SDK_RESOLUTION: the (client|ssr) environment imports @morph\/sdk \(src\/routes\/bare-sdk\.tsx\), but the code the build wrote for it does not reach Morph's copy of it\./,
       );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses a transform that rewrites a Theme source's SDK import away before the graph is recorded",
+    () => {
+      // Relative to the module, so the final code names no reserved name.
+      const built = buildTampered(
+        tamperedConfig({
+          plugins: `{ name: "author-rewrite", enforce: "pre", transform(code, id) { if (id.split("?")[0].replace(/\\\\/g, "/").endsWith("/src/morph/content.ts")) return code.replace(/["']@morph\\/sdk\\/start["']/g, '"../impostor-start.ts"'); } },`,
+        }),
+        [
+          {
+            path: "src/impostor-start.ts",
+            content:
+              "export const morph = { pages: { get: async () => ({}) } }; export const getContentOrigin = () => null;",
+          },
+        ],
+      );
+      expect(built).toMatchObject({ ok: false, stage: "collect" });
+      expect((built as { message: string }).message).toBe(
+        "NATIVE_PROOF_SDK_RESOLUTION: src/morph/content.ts imports @morph/sdk/start, but the code the ssr environment built from it does not. A Vite plugin rewrites that import; remove it.",
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses an expression-free template-literal dynamic import that an alias redirects",
+    () => {
+      const built = buildTampered(
+        tamperedConfig({
+          plugins: `{ name: "author-redirect", config: () => ({ resolve: { alias: [{ find: /^@morph\\/sdk$/, replacement: path.resolve("src/impostor-sdk.ts") }] } }) },`,
+        }),
+        [
+          { path: "src/impostor-sdk.ts", content: IMPOSTOR_SDK },
+          {
+            path: "src/lazy-sdk.js",
+            content: "export const loadSdk = () => import(`@morph/sdk`);\n",
+          },
+          {
+            path: "src/routes/lazy-sdk.tsx",
+            content: `import { createFileRoute } from "@tanstack/react-router";
+import { loadSdk } from "../lazy-sdk.js";
+
+export const Route = createFileRoute("/lazy-sdk")({
+  component: function LazySdk() {
+    return <button onClick={() => void loadSdk()}>load</button>;
+  },
+});
+`,
+          },
+        ],
+      );
+      expect(built).toMatchObject({ ok: false, stage: "collect" });
+      expect((built as { message: string }).message).toMatch(
+        /^NATIVE_PROOF_SDK_RESOLUTION: vite\.config\.ts changes where @morph\/sdk resolves \(src\/(lazy-sdk\.js|routes\/bare-sdk\.tsx), (client|ssr) environment(, dynamic import)?: resolved to src\/impostor-sdk\.ts\)/,
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses a dynamic import a resolveDynamicImport hook redirects beside a static import of the same name",
+    () => {
+      const built = buildTampered(
+        tamperedConfig({
+          plugins: `{ name: "author-dynamic-redirect", enforce: "pre", resolveDynamicImport(specifier) { if (specifier === "@morph/sdk") return path.resolve("src/impostor-sdk.ts"); } },`,
+        }),
+        [
+          { path: "src/impostor-sdk.ts", content: IMPOSTOR_SDK },
+          {
+            path: "src/routes/both-sdk.tsx",
+            content: `import { createFileRoute } from "@tanstack/react-router";
+import { isMorphError } from "@morph/sdk";
+
+export const Route = createFileRoute("/both-sdk")({
+  component: function BothSdk() {
+    return (
+      <button onClick={() => void import("@morph/sdk").then((sdk) => sdk.isMorphError(null))}>
+        {String(isMorphError(null))}
+      </button>
+    );
+  },
+});
+`,
+          },
+        ],
+      );
+      expect(built).toMatchObject({ ok: false, stage: "collect" });
+      expect((built as { message: string }).message).toMatch(
+        /^NATIVE_PROOF_SDK_RESOLUTION: vite\.config\.ts changes where @morph\/sdk resolves \(src\/routes\/both-sdk\.tsx, (client|ssr) environment, dynamic import: resolved to \.morph\/sdk\/src\/index\.ts, which is not the module the build bundled\)/,
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses output rewritten after the bundle was generated (writeBundle)",
+    () => {
+      const built = buildTampered(
+        tamperedConfig({
+          plugins: `{ name: "author-rewrite-output", writeBundle(options, bundle) { for (const file of Object.keys(bundle)) { if (file.endsWith(".js")) fs.appendFileSync(path.join(options.dir, file), "\\n// rewritten\\n"); } } },`,
+          head: `import fs from "node:fs";`,
+        }),
+      );
+      expect(built).toMatchObject({ ok: false, stage: "collect" });
+      expect((built as { message: string }).message).toMatch(
+        /^NATIVE_PROOF_SDK_RESOLUTION: .+\.js in the (client|ssr) output is not the code the bundler emitted\. A Vite plugin rewrites the output after it is generated; remove it\.$/,
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses an option given through a getter, so the value checked is the value used",
+    () => {
+      const built = buildTampered(
+        tamperedConfig({
+          cloudflare: `{ viteEnvironment: { name: "ssr" }, get persistState() { return false; } }`,
+        }),
+      );
+      expect(built).toEqual({
+        ok: false,
+        stage: "build",
+        message:
+          'NATIVE_ADAPTER_OPTION: vite.config.ts passes persistState as a getter to cloudflare(). Morph reads each plugin option once, as a value. Remove "persistState as a getter"; keep wrangler.jsonc at the project root.',
+      });
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses a Cloudflare plugin the config builds without the checked call",
+    () => {
+      // Loaded from a data: module, which the shim leaves alone, and given an
+      // option the check refuses.
+      const built = buildTampered(
+        tamperedConfig({
+          head: `import { pathToFileURL } from "node:url";
+const pluginUrl = pathToFileURL(path.resolve("node_modules/@cloudflare/vite-plugin/dist/index.mjs")).href;
+const unchecked = await import("data:text/javascript," + encodeURIComponent("export * from " + JSON.stringify(pluginUrl) + ";"));`,
+          plugins: `unchecked.cloudflare({ viteEnvironment: { name: "ssr" }, configPath: "./wrangler.jsonc" }),`,
+        }),
+      );
+      expect(built).toEqual({
+        ok: false,
+        stage: "build",
+        message:
+          'NATIVE_ADAPTER_OPTION: vite.config.ts builds the Cloudflare plugin without calling cloudflare() from an import of @cloudflare/vite-plugin, so Morph cannot check its options. Import cloudflare from "@cloudflare/vite-plugin" and call it in the config.',
+      });
     },
     BUILD_BUDGET_MS,
   );

@@ -66,6 +66,8 @@ import {
   isPublishAlreadyLive,
   readDeployedThemeBuildId,
 } from "@/lib/storefront/service/theme-worker-deployment-state";
+import { isNativeWranglerContractArtifact } from "@/lib/storefront/service/theme-worker-deployment-plan";
+import { nativeProductionAdmission } from "@/lib/storefront/theme-framework/native-start-proof";
 import {
   sourceSectionIdentity,
   deriveThemeLayoutSections,
@@ -3232,6 +3234,7 @@ export const storefrontThemeDal = {
         manifestJson: storefrontThemeBuilds.manifestJson,
         contentPublicationId: storefrontThemeBuilds.contentPublicationId,
         contentDependency: storefrontThemeBuilds.contentDependency,
+        compilerId: storefrontThemeBuilds.compilerId,
         compilerVersion: storefrontThemeBuilds.compilerVersion,
       })
       .from(storefrontThemeBuilds)
@@ -3487,6 +3490,28 @@ export const storefrontThemeDal = {
             "PUBLISH_BUILD_CONTENT_MISMATCH: Build is bound to a different content snapshot. Rebuild for the selected content before publishing.",
           );
         }
+      }
+
+      // A native Start build is admitted to production (its SDK resolution
+      // proof, no static HTML) here, before the batch below writes anything,
+      // so a refused build never becomes the active release, not even until
+      // a failed deployment is rolled back. After the content check, so a
+      // stale build is still told it is stale. The same check runs where the
+      // production deployment is planned, which also covers rollback: a
+      // historical native build without a proof is refused by both with the
+      // same code, whether or not its Worker is already deployed (render
+      // plan v2 step 1).
+      if (
+        isNativeWranglerContractArtifact({
+          compilerId: build.compilerId ?? "",
+        })
+      ) {
+        const refused = nativeProductionAdmission(
+          build.manifestJson as Parameters<
+            typeof nativeProductionAdmission
+          >[0],
+        );
+        if (refused) throw new Error(refused.message);
       }
 
       // M3 Hide: every item being sealed that carries a hidden section is
