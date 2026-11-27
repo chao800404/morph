@@ -1,6 +1,7 @@
 // @vitest-environment node
 // Node, not jsdom: jsdom's TextEncoder makes a Uint8Array of another realm,
 // which the runner's byte reader (`instanceof Uint8Array`) does not take.
+import { NATIVE_PROOF_VERSION } from "../theme-framework/native-start-proof";
 import { describe, expect, it, vi } from "vitest";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
 import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
@@ -15,6 +16,7 @@ import {
 import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 import { THEME_START_TOOLCHAIN } from "./theme-start-toolchain";
+import { nativeStartProofRecordsForTest } from "../theme-framework/native-start-proof.test-support";
 
 /**
  * The Sandbox runner's native build against a stand-in container: what it
@@ -39,9 +41,9 @@ const input = (): ThemeBuildRunnerInput =>
     entry: "src/index.tsx",
     inputHash: "c".repeat(64),
     compilerId: NATIVE_START_COMPILER_ID,
-    compilerVersion: withThemeStartBuildIdentity(
+    compilerVersion: `${withThemeStartBuildIdentity(
       THEME_START_TOOLCHAIN.reactStart,
-    ),
+    )}.${NATIVE_PROOF_VERSION}`,
     toolchainId: START_TOOLCHAIN.id,
     buildMode: "native",
     files: [
@@ -122,6 +124,8 @@ function fakeSandbox(
     refusedReads?: string;
     /** Only the first build leaves `refusedReads`, as one given content would not. */
     refusedOnFirstBuildOnly?: boolean;
+    /** The build leaves no SDK resolution record (a plugin stopped Morph's). */
+    noRecords?: boolean;
   } = {},
 ) {
   let builds = 0;
@@ -158,6 +162,17 @@ function fakeSandbox(
           }
           for (const [path, content] of Object.entries(BUILT)) {
             files.set(`/workspace/${path}`, content);
+          }
+          // What Morph's resolution plugin writes for a build importing no
+          // SDK, under the nonce the plan gave the wrapper.
+          if (!options.noRecords) {
+            for (const [path, content] of Object.entries(
+              nativeStartProofRecordsForTest(
+                files.get("/workspace/.morph/vite.config.ts") ?? "",
+              ),
+            )) {
+              files.set(`/workspace/${path}`, content);
+            }
           }
           builds += 1;
           if (
@@ -247,6 +262,30 @@ describe("the Sandbox runner's native build", () => {
     ]);
     expect(result.manifestJson.artifactEntry).toBe("runtime/server/index.js");
     expect(result.manifestJson.metadata).toMatchObject({ build: "native" });
+    // The proof the collector checked against what the build left, under
+    // this pass's nonce.
+    expect(result.manifestJson.metadata?.nativeProof).toMatchObject({
+      version: NATIVE_PROOF_VERSION,
+      sdk: {
+        environments: [
+          { name: "client", output: "client" },
+          { name: "ssr", output: "server" },
+        ],
+      },
+      html: [],
+    });
+  });
+
+  it("refuses an artifact whose build left no SDK resolution record", async () => {
+    const { runner } = fakeSandbox({ noRecords: true });
+    const result = await runner.run(input());
+    expect(result).toMatchObject({
+      success: false,
+      diagnosticsJson: { stage: "output-collection" },
+      errorMessage: expect.stringContaining(
+        "NATIVE_PROOF_SDK_RESOLUTION: the build wrote no SDK resolution record",
+      ),
+    });
   });
 
   it("reports the build's own error when it fails", async () => {

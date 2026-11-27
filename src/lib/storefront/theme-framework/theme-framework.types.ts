@@ -150,8 +150,15 @@ export type ThemeFrameworkAdapter = Readonly<{
         outputs: ReadonlyMap<string, Uint8Array | string>,
         nonce: string,
       ): Readonly<{ stage: string; message: string }> | null;
+      /**
+       * The artifact, from the workspace after the build. `nonce` is the
+       * pass's own, for a framework whose records carry one (a native Start
+       * build's SDK resolution proof). The artifact's `metadata`, when it
+       * has one, joins `manifestMetadata`.
+       */
       collect(
         outputs: ReadonlyMap<string, Uint8Array | string>,
+        nonce?: string,
       ): NativeThemeArtifact;
       artifactEntry: string;
       verifyArtifact(input: {

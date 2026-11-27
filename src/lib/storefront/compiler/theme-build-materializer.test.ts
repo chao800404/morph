@@ -1,3 +1,4 @@
+import { NATIVE_PROOF_VERSION } from "../theme-framework/native-start-proof";
 import Database from "better-sqlite3";
 import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
@@ -749,8 +750,9 @@ export default defineConfig({ plugins: [cloudflare({ viteEnvironment: { name: "s
       expect(input.buildMode).toBe("native");
       expect(input.compilerId).toBe(NATIVE_START_COMPILER_ID);
       // The pinned Start version, with the injected SDK named after it.
+      // ...and the SDK resolution proof it carries (native-start-proof.ts).
       expect(input.compilerVersion).toBe(
-        withThemeStartBuildIdentity(THEME_START_TOOLCHAIN.reactStart),
+        `${withThemeStartBuildIdentity(THEME_START_TOOLCHAIN.reactStart)}.${NATIVE_PROOF_VERSION}`,
       );
       expect(input.compilerVersion.startsWith(
         `${THEME_START_TOOLCHAIN.reactStart}+morph-sdk.`,

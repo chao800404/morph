@@ -3,6 +3,7 @@ import type {
   StorefrontThemeBuildInput,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import type { ThemeBuildArtifactFile } from "./theme-build-runner.types";
+import type { NativeBuildProof } from "../theme-framework/native-start-proof";
 
 /**
  * Manifest file entry representing a single persisted artifact.
@@ -54,6 +55,13 @@ export type CanonicalThemeBuildManifest = {
      * without SSG pages is byte-identical to one written before they existed.
      */
     staticPages?: CanonicalThemeStaticPage[];
+    /**
+     * A native Start build's proof (theme-framework/native-start-proof.ts),
+     * checked by Morph when the build was collected. Absent for every other
+     * build, so their manifests are unchanged; a native Start artifact
+     * without it is refused for production.
+     */
+    nativeProof?: NativeBuildProof;
   };
 
   filesCount: number;

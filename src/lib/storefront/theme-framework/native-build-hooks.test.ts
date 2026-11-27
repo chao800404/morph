@@ -1,8 +1,11 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -11,7 +14,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { planNativeStartBuild } from "./tanstack-start-native-build";
+import {
+  nativeAdapterRefusalMessage,
+  planNativeStartBuild,
+} from "./tanstack-start-native-build";
+import {
+  NATIVE_ADAPTER_REFUSAL_PATH,
+  nativeBuildLoaderSource,
+} from "./tanstack-start-native-wrapper";
+
+/** sha256 of the shim every native build had before the adapter check. */
+const LEGACY_LOADER_SHA256 =
+  "2d4734c0cfd5551e6cd2e02e1f8ec3d2ee97fd84b0e57dba261770d69e662677";
 
 /**
  * The module hook a native build's Node process loads first: the project's
@@ -86,11 +100,16 @@ describe("a native build's module hook", () => {
     const hooked = await run(root, "project-config.mjs", env);
     expect(hooked).toEqual({
       own: {
-        options: { viteEnvironment: { name: "ssr" }, inspectorPort: false },
+        options: {
+          viteEnvironment: { name: "ssr" },
+          inspectorPort: false,
+          // A native Start build is local: forced, whatever the project says.
+          remoteBindings: false,
+        },
         internal: "the plugin's own import",
       },
       none: {
-        options: { inspectorPort: false },
+        options: { inspectorPort: false, remoteBindings: false },
         internal: "the plugin's own import",
       },
       date: "2025-09-02",
@@ -102,6 +121,121 @@ describe("a native build's module hook", () => {
     const unhooked = await run(root, "project-config.mjs", withoutHook);
     expect(unhooked.own.options.inspectorPort).toBe(9229);
     expect(unhooked.none.options).toBeNull();
+  });
+
+  /** A project config that calls the plugin with `options` (source). */
+  const callWith = (options: string) => `import { cloudflare } from "@cloudflare/vite-plugin";
+let result;
+try {
+  result = { options: cloudflare(${options}).options };
+} catch (error) {
+  result = { refused: error.message };
+}
+console.log(JSON.stringify(result));
+`;
+
+  function pluginWorkspace() {
+    const { root, env } = workspace();
+    for (const [path, content] of Object.entries(PLUGIN_FILES)) {
+      const full = join(root, "node_modules/@cloudflare/vite-plugin", path);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    }
+    return { root, env };
+  }
+
+  const remedy = '; keep wrangler.jsonc at the project root.';
+  it.each([
+    [
+      "configPath",
+      '{ configPath: "./other.jsonc" }',
+      `NATIVE_ADAPTER_OPTION: vite.config.ts passes configPath to cloudflare(). Morph supplies the Wrangler config the plugin reads, from wrangler.jsonc at the project root; a config path would replace it. Remove "configPath"${remedy}`,
+    ],
+    [
+      "the config customiser",
+      "{ config: () => ({ vars: { A: 1 } }) }",
+      `NATIVE_ADAPTER_OPTION: vite.config.ts passes config to cloudflare(). A config customiser rewrites the Worker config after Morph has checked it. Remove "config"${remedy}`,
+    ],
+    [
+      "auxiliary Workers",
+      '{ auxiliaryWorkers: [{ configPath: "./aux.jsonc" }] }',
+      `NATIVE_ADAPTER_OPTION: vite.config.ts passes auxiliaryWorkers to cloudflare(). Morph deploys one Theme Worker; auxiliary Workers would be built but never checked or deployed. Remove "auxiliaryWorkers"${remedy}`,
+    ],
+    [
+      "remote bindings",
+      "{ remoteBindings: true }",
+      `NATIVE_REMOTE_BINDING: vite.config.ts passes remoteBindings to cloudflare(). Builds never connect to a Cloudflare account. Remove "remoteBindings"${remedy}`,
+    ],
+    [
+      "a tunnel",
+      '{ tunnel: { name: "x" } }',
+      `NATIVE_ADAPTER_OPTION: vite.config.ts passes tunnel to cloudflare(). Builds never open a tunnel. Remove "tunnel"${remedy}`,
+    ],
+    [
+      "experimental options",
+      '{ experimental: { prerenderWorker: { configPath: "./p.jsonc" } } }',
+      `NATIVE_ADAPTER_OPTION: vite.config.ts passes experimental to cloudflare(). Experimental options change what the build emits, and Morph has not certified them. Remove "experimental"${remedy}`,
+    ],
+    [
+      "an assets-only build",
+      "{ assetsOnly: true }",
+      `NATIVE_ADAPTER_OPTION: vite.config.ts passes assetsOnly to cloudflare(). Morph publishes the Theme Worker; an assets-only build has none. Remove "assetsOnly"${remedy}`,
+    ],
+    [
+      "child environments",
+      '{ viteEnvironment: { name: "ssr", childEnvironments: ["rsc"] } }',
+      `NATIVE_ADAPTER_OPTION: vite.config.ts passes viteEnvironment other than { name } to cloudflare(). Morph builds one Worker environment, named by viteEnvironment.name. Remove "viteEnvironment other than { name }"${remedy}`,
+    ],
+    [
+      "an option Morph does not know",
+      "{ someFutureOption: 1 }",
+      `NATIVE_ADAPTER_OPTION: vite.config.ts passes someFutureOption to cloudflare(). Morph has not certified this option of the Cloudflare plugin. Remove "someFutureOption"${remedy}`,
+    ],
+  ])(
+    "refuses %s where the project calls the plugin, and records why",
+    async (_name, options, message) => {
+      const { root, env } = pluginWorkspace();
+      writeFileSync(join(root, "project-config.mjs"), callWith(options));
+      expect(await run(root, "project-config.mjs", env)).toEqual({
+        refused: message,
+      });
+      const recorded = readFileSync(
+        join(root, NATIVE_ADAPTER_REFUSAL_PATH),
+        "utf8",
+      );
+      expect(JSON.parse(recorded).message).toBe(message);
+      expect(nativeAdapterRefusalMessage(recorded)).toBe(message);
+    },
+  );
+
+  it("accepts the guide's options and the local ones, and records nothing", async () => {
+    const { root, env } = pluginWorkspace();
+    writeFileSync(
+      join(root, "project-config.mjs"),
+      callWith(
+        '{ viteEnvironment: { name: "ssr" }, persistState: false, inspectorPort: 9230, remoteBindings: false, tunnel: false }',
+      ),
+    );
+    expect(await run(root, "project-config.mjs", env)).toEqual({
+      options: {
+        viteEnvironment: { name: "ssr" },
+        persistState: false,
+        inspectorPort: false,
+        remoteBindings: false,
+        tunnel: false,
+      },
+    });
+    expect(existsSync(join(root, NATIVE_ADAPTER_REFUSAL_PATH))).toBe(false);
+  });
+
+  it("leaves every other native build's shim as it was (Astro's)", () => {
+    // sha256 of nativeBuildLoaderSource() on 0a01b30, before the check.
+    expect(
+      createHash("sha256").update(nativeBuildLoaderSource()).digest("hex"),
+    ).toBe(LEGACY_LOADER_SHA256);
+    expect(nativeBuildLoaderSource()).not.toContain(
+      "morphCheckCloudflareOptions",
+    );
   });
 
   it("reaches the plugin the toolchain installs, where pnpm puts it", async () => {

@@ -3,6 +3,7 @@ import {
   themePrerenderContentPluginSource,
 } from "../compiler/theme-prerender-content";
 import { themeMorphSdkAliasesSource } from "../compiler/theme-morph-sdk";
+import { NATIVE_RESOLUTION_PLUGIN_PATH } from "./native-start-proof";
 
 /**
  * The Vite config a native Start build runs with: the project's own, imported
@@ -22,8 +23,16 @@ import { themeMorphSdkAliasesSource } from "../compiler/theme-morph-sdk";
  *   the snapshot cannot speak for — is recorded and fails the build
  *   (theme-prerender-content.ts, `NativePrerenderContent`).
  *
+ * - **The SDK resolution record** (native Start builds, given the pass's
+ *   nonce): `morph:native-resolution`, which records where every reserved
+ *   SDK name resolved in each environment's final module graph. Morph checks
+ *   it, and the SDK sentinels in the output, outside the build
+ *   (native-start-proof.ts).
+ *
  * Beside the config, a module hook the build's Node process loads first turns
- * the Cloudflare plugin's debugger port off (`NATIVE_BUILD_HOOKS_PATH`).
+ * the Cloudflare plugin's debugger port off (`NATIVE_BUILD_HOOKS_PATH`) and,
+ * for a native Start build, holds the plugin's options to the ones Morph
+ * accepts (`NATIVE_ADAPTER_OPTION_REFUSALS`).
  *
  * Nothing here rewrites the project's files; the wrapper sits beside them in
  * `.morph/`, which is Morph's.
@@ -58,7 +67,117 @@ register(${JSON.stringify(`./${NATIVE_BUILD_LOADER_PATH.split("/").pop()}`)}, im
 `;
 }
 
-export function nativeBuildLoaderSource(): string {
+/**
+ * The Cloudflare plugin options a native Start build accepts, and how each
+ * other one is refused (design section 1, "adapter-option check"; section 4,
+ * `NATIVE_ADAPTER_OPTION`). Checked where the project calls `cloudflare(...)`,
+ * so a value computed in the config is seen as the plugin would see it,
+ * which a reading of the config's text cannot do.
+ *
+ * - `viteEnvironment: { name }`: the guide's own option, kept.
+ * - `inspectorPort`, `persistState`: development settings; the build sets
+ *   its own debugger port and keeps no state.
+ * - `remoteBindings: false`, `tunnel: false`: the local behaviour the build
+ *   forces anyway.
+ * - Anything else, including an option this table does not know yet, is
+ *   refused. `configPath` and `config` would replace or rewrite the Wrangler
+ *   config Morph supplies (`CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH`);
+ *   `auxiliaryWorkers` would build Workers Morph never checks or deploys;
+ *   `remoteBindings` and `tunnel` reach a Cloudflare account or the network;
+ *   `experimental` and `assetsOnly` change what the build emits.
+ */
+export const NATIVE_ADAPTER_OPTION_REFUSALS: Readonly<
+  Record<string, readonly [code: string, why: string]>
+> = {
+  configPath: [
+    "NATIVE_ADAPTER_OPTION",
+    "Morph supplies the Wrangler config the plugin reads, from wrangler.jsonc at the project root; a config path would replace it",
+  ],
+  config: [
+    "NATIVE_ADAPTER_OPTION",
+    "A config customiser rewrites the Worker config after Morph has checked it",
+  ],
+  auxiliaryWorkers: [
+    "NATIVE_ADAPTER_OPTION",
+    "Morph deploys one Theme Worker; auxiliary Workers would be built but never checked or deployed",
+  ],
+  remoteBindings: [
+    "NATIVE_REMOTE_BINDING",
+    "Builds never connect to a Cloudflare account",
+  ],
+  tunnel: ["NATIVE_ADAPTER_OPTION", "Builds never open a tunnel"],
+  experimental: [
+    "NATIVE_ADAPTER_OPTION",
+    "Experimental options change what the build emits, and Morph has not certified them",
+  ],
+  assetsOnly: [
+    "NATIVE_ADAPTER_OPTION",
+    "Morph publishes the Theme Worker; an assets-only build has none",
+  ],
+};
+
+/** Where the shim records an adapter-option refusal, workspace-relative. */
+export const NATIVE_ADAPTER_REFUSAL_PATH =
+  ".morph/records/adapter-option-refused.json";
+
+/**
+ * The adapter-option check as module source, for the loader shim: a
+ * function `morphCheckCloudflareOptions(options)` that throws the refusal,
+ * after writing it to `NATIVE_ADAPTER_REFUSAL_PATH` (relative to the build's
+ * working directory, the workspace root), so the build's result reports the
+ * refusal rather than a failed build.
+ */
+function adapterOptionCheckSource(configFile: string): string {
+  return [
+    `const MORPH_REFUSALS = ${JSON.stringify(NATIVE_ADAPTER_OPTION_REFUSALS)};`,
+    `const MORPH_CONFIG_FILE = ${JSON.stringify(configFile)};`,
+    `const MORPH_REFUSAL_PATH = ${JSON.stringify(NATIVE_ADAPTER_REFUSAL_PATH)};`,
+    "function morphRefuseOption(option, why, code) {",
+    '  const message = code + ": " + MORPH_CONFIG_FILE + " passes " + option + " to cloudflare(). " + why + ". Remove " + JSON.stringify(option) + "; keep wrangler.jsonc at the project root.";',
+    "  try {",
+    '    const fs = process.getBuiltinModule("node:fs");',
+    '    fs.mkdirSync(MORPH_REFUSAL_PATH.slice(0, MORPH_REFUSAL_PATH.lastIndexOf("/")), { recursive: true });',
+    "    fs.writeFileSync(MORPH_REFUSAL_PATH, JSON.stringify({ code, message }));",
+    "  } catch {}",
+    "  throw new Error(message);",
+    "}",
+    "function morphCheckCloudflareOptions(options) {",
+    "  if (options === undefined) return;",
+    '  if (options === null || typeof options !== "object" || Array.isArray(options)) {',
+    '    morphRefuseOption("options that are not an object", "Morph reads the plugin options as an object", "NATIVE_ADAPTER_OPTION");',
+    "  }",
+    "  for (const key of Object.keys(options)) {",
+    "    const value = options[key];",
+    '    if (key === "inspectorPort" || key === "persistState") continue;',
+    '    if ((key === "remoteBindings" || key === "tunnel") && value === false) continue;',
+    '    if (key === "viteEnvironment") {',
+    "      const ok =",
+    '        value !== null && typeof value === "object" && !Array.isArray(value) &&',
+    '        Object.keys(value).every((name) => name === "name") &&',
+    '        (value.name === undefined || typeof value.name === "string");',
+    "      if (ok) continue;",
+    '      morphRefuseOption("viteEnvironment other than { name }", "Morph builds one Worker environment, named by viteEnvironment.name", "NATIVE_ADAPTER_OPTION");',
+    "    }",
+    "    const known = Object.prototype.hasOwnProperty.call(MORPH_REFUSALS, key) ? MORPH_REFUSALS[key] : null;",
+    "    if (known) morphRefuseOption(key, known[1], known[0]);",
+    '    morphRefuseOption(key, "Morph has not certified this option of the Cloudflare plugin", "NATIVE_ADAPTER_OPTION");',
+    "  }",
+    "}",
+  ].join("\n");
+}
+
+/**
+ * The loader shim. Without options it is the shim every native build had
+ * (Astro's, byte for byte). With `adapterOptions` (the native Start build),
+ * the shimmed `cloudflare(options)` first holds the options to
+ * `NATIVE_ADAPTER_OPTION_REFUSALS`, then also forces `remoteBindings: false`.
+ */
+export function nativeBuildLoaderSource(
+  options: Readonly<{ adapterOptions?: Readonly<{ configFile: string }> }> = {},
+): string {
+  if (options.adapterOptions) {
+    return nativeStartBuildLoaderSource(options.adapterOptions.configFile);
+  }
   return `// Written by Morph for this build (tanstack-start-native-wrapper.ts).
 // An import of the Cloudflare Vite plugin from outside it gets the plugin
 // with \`cloudflare(options)\` given \`inspectorPort: false\`; everything else
@@ -88,6 +207,50 @@ export async function resolve(specifier, context, nextResolve) {
   };
 }
 `;
+}
+
+/**
+ * The native Start build's loader shim: the one above, with the
+ * adapter-option check and `remoteBindings: false` added to the shimmed
+ * call. The shim is a data: module, so it carries its own copy of the check.
+ */
+function nativeStartBuildLoaderSource(configFile: string): string {
+  const check = adapterOptionCheckSource(configFile);
+  return [
+    "// Written by Morph for this build (tanstack-start-native-wrapper.ts).",
+    "// An import of the Cloudflare Vite plugin from outside it gets the plugin",
+    "// with `cloudflare(options)` held to the options a native Start build",
+    "// accepts, then given `inspectorPort: false` and `remoteBindings: false`;",
+    "// everything else it exports is its own. The plugin's own imports, and",
+    "// the shim's import of the plugin, resolve as they always do.",
+    'const PLUGIN = "/node_modules/@cloudflare/vite-plugin/";',
+    "const isPlugin = (url) =>",
+    '  typeof url === "string" && url.startsWith("file:") && url.includes(PLUGIN);',
+    `const CHECK = ${JSON.stringify(check)};`,
+    "",
+    "export async function resolve(specifier, context, nextResolve) {",
+    "  const resolved = await nextResolve(specifier, context);",
+    "  const parent = context.parentURL;",
+    '  if (!isPlugin(resolved.url) || isPlugin(parent) || parent?.startsWith("data:")) {',
+    "    return resolved;",
+    "  }",
+    "  const plugin = JSON.stringify(resolved.url);",
+    "  const shim = [",
+    '    "import { cloudflare as projectCloudflare } from " + plugin + ";",',
+    '    "export * from " + plugin + ";",',
+    "    CHECK,",
+    '    "export function cloudflare(options) {",',
+    '    "  morphCheckCloudflareOptions(options);",',
+    '    "  return projectCloudflare({ ...options, inspectorPort: false, remoteBindings: false });",',
+    '    "}",',
+    '  ].join("\\n");',
+    "  return {",
+    "    shortCircuit: true,",
+    '    url: "data:text/javascript," + encodeURIComponent(shim),',
+    "  };",
+    "}",
+    "",
+  ].join("\n");
 }
 
 /**
@@ -131,6 +294,12 @@ export function nativeImportGuardPluginSource(): string {
 export function nativeWrapperConfigSource(options: {
   themeConfigPath: string;
   allowedPackages: readonly string[];
+  /**
+   * The build pass's nonce: with it, the wrapper adds Morph's SDK
+   * resolution record plugin (native-start-proof.ts), which writes it into
+   * each record. Without it, the wrapper is the one before the proof.
+   */
+  resolutionNonce?: string;
 }): string {
   const plugins = [
     nativeImportGuardPluginSource(),
@@ -138,19 +307,32 @@ export function nativeWrapperConfigSource(options: {
     themePrerenderContentPluginSource(".", {
       refusedReadsPath: NATIVE_PRERENDER_REFUSED_READS_PATH,
     }),
+    ...(options.resolutionNonce !== undefined
+      ? ["morphNativeResolution({ workspaceRoot, nonce: morphBuildNonce })"]
+      : []),
   ];
   const allowed = [...new Set(options.allowedPackages)].sort();
+  const resolutionImport =
+    options.resolutionNonce !== undefined
+      ? `import morphNativeResolution from ${JSON.stringify(
+          `./${NATIVE_RESOLUTION_PLUGIN_PATH.split("/").pop()}`,
+        )};\n`
+      : "";
+  const resolutionNonce =
+    options.resolutionNonce !== undefined
+      ? `const morphBuildNonce = ${JSON.stringify(options.resolutionNonce)};\n`
+      : "";
   return `// Written by Morph for this build. The project's own config is imported
 // unchanged; Morph adds only the plugins below and the prerender server's
 // address.
 import fs from "node:fs";
 import path from "node:path";
 import { mergeConfig } from "vite";
-import themeConfig from ${JSON.stringify(`../${options.themeConfigPath}`)};
+${resolutionImport}import themeConfig from ${JSON.stringify(`../${options.themeConfigPath}`)};
 
 const workspaceRoot = fs.realpathSync(process.cwd());
 const allowedPackages = new Set(${JSON.stringify(allowed)});
-
+${resolutionNonce}
 export default async (env) => {
   const own = typeof themeConfig === "function" ? await themeConfig(env) : await themeConfig;
   return mergeConfig(own ?? {}, {

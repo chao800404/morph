@@ -20,7 +20,20 @@ import { startCorePublicEntry } from "@/lib/storefront/service/core-public-entry
 import type { PublishedDocument } from "@/lib/storefront/service/storefront-content-runtime";
 import { NATIVE_WRANGLER_CONFIG_PATH } from "./tanstack-start-native-build";
 import { checkNativeWranglerConfig } from "./cloudflare-native-build";
+import {
+  NATIVE_PROOF_VERSION,
+  nativeSdkSentinel,
+  readNativeBuildProof,
+} from "./native-start-proof";
+import { THEME_MORPH_SDK_MODULES } from "@/lib/storefront/compiler/theme-morph-sdk";
+import { THEME_START_TOOLCHAIN } from "@/lib/storefront/compiler/theme-start-toolchain";
 import { themeFramework } from ".";
+import { NATIVE_START_COMPILER_ID } from "./tanstack-start-native-build";
+import { planThemeWorkerDeployment } from "@/lib/storefront/service/theme-worker-deployment-plan";
+import type { CanonicalThemeBuildManifest } from "@/lib/storefront/compiler/theme-build-artifact-store.types";
+
+/** The build pass's nonce, as a runner would give it. */
+const NONCE = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 
 /**
  * Two releases' published content. Release A's author replaced the hero
@@ -162,14 +175,19 @@ describe("a TanStack Start project built with its own configuration", () => {
   let worker: Awaited<ReturnType<typeof unstable_startWorker>> | null = null;
   let serverWranglerConfig: Record<string, unknown> = {};
   let workerSource = "";
+  let nativeProof: unknown;
+  let records: Record<string, Record<string, unknown>> = {};
 
   beforeAll(async () => {
-    const plan = themeFramework().build.native.plan([
-      ...STARTER_THEME_FILES,
-      SDK_ROUTE,
-      { path: "vite.config.ts", content: VITE_CONFIG },
-      { path: "wrangler.jsonc", content: WRANGLER },
-    ]);
+    const plan = themeFramework().build.native.plan(
+      [
+        ...STARTER_THEME_FILES,
+        SDK_ROUTE,
+        { path: "vite.config.ts", content: VITE_CONFIG },
+        { path: "wrangler.jsonc", content: WRANGLER },
+      ],
+      { nonce: NONCE },
+    );
     if (!plan.ok) throw new Error(plan.message);
 
     workspace = mkdtempSync(join(tmpdir(), "native-start-build-"));
@@ -211,6 +229,13 @@ describe("a TanStack Start project built with its own configuration", () => {
       new Map(
         [...outputs].map(([path, bytes]) => [path, new Uint8Array(bytes)]),
       ),
+      NONCE,
+    );
+    nativeProof = artifact.metadata?.nativeProof;
+    records = Object.fromEntries(
+      [...outputs]
+        .filter(([path]) => path.startsWith(".morph/records/"))
+        .map(([path, bytes]) => [path, JSON.parse(bytes.toString("utf8"))]),
     );
 
     artifactDir = mkdtempSync(join(tmpdir(), "native-start-artifact-"));
@@ -264,6 +289,47 @@ describe("a TanStack Start project built with its own configuration", () => {
         file: "runtime/server/wrangler.json",
       }),
     ).toBeNull();
+  });
+
+  it("proves @morph/sdk resolved to Morph's copy in each environment, from the records and the bytes", () => {
+    // One record per environment the build ran, each from this pass.
+    expect(Object.keys(records).sort()).toEqual([
+      ".morph/records/resolution.client.json",
+      ".morph/records/resolution.ssr.json",
+    ]);
+    for (const record of Object.values(records)) {
+      expect(record.nonce).toBe(NONCE);
+      expect(record.vite).toBe(THEME_START_TOOLCHAIN.vite);
+    }
+    const proof = readNativeBuildProof(nativeProof);
+    expect(proof).not.toBeNull();
+    expect(proof!.version).toBe(NATIVE_PROOF_VERSION);
+    expect(proof!.toolchain).toEqual({ vite: THEME_START_TOOLCHAIN.vite });
+    expect(proof!.html).toEqual([]);
+    const ssr = proof!.sdk.environments.find((entry) => entry.output === "server");
+    const client = proof!.sdk.environments.find(
+      (entry) => entry.output === "client",
+    );
+    expect(ssr).toMatchObject({ name: "ssr" });
+    expect(client).toMatchObject({ name: "client" });
+    // The route's `@morph/sdk/start` and the Starter's own content module
+    // reach the Worker through Morph's copy, and its sentinel is in the
+    // Worker's code.
+    expect(ssr!.specifiers).toContain("@morph/sdk/start");
+    expect(ssr!.edges).toBeGreaterThan(0);
+    expect(ssr!.sentinelFiles.length).toBeGreaterThan(0);
+    expect(workerSource).toContain(nativeSdkSentinel(NONCE, "@morph/sdk/start"));
+    // Every edge either graph records resolved to the file its name maps to.
+    for (const record of Object.values(records)) {
+      for (const edge of record.edges as Array<{
+        specifier: string;
+        resolved: { path?: string };
+      }>) {
+        expect(edge.resolved.path).toBe(
+          THEME_MORPH_SDK_MODULES[edge.specifier],
+        );
+      }
+    }
   });
 
   it("ships none of the editor's markers", () => {
@@ -423,4 +489,293 @@ describe("a TanStack Start project built with its own configuration", () => {
     expect(assets.length).toBeGreaterThan(0);
     expect((await request(`/${assets[0]}`)).status).toBe(200);
   });
+});
+
+/**
+ * A route whose component uses the bare `@morph/sdk` (the one entry every
+ * framework imports, owner decision 2026-11-27), so the browser graph has an
+ * SDK edge too, not only the Worker's.
+ */
+const BARE_SDK_ROUTE = {
+  path: "src/routes/bare-sdk.tsx",
+  content: `import { createFileRoute } from "@tanstack/react-router";
+import { isMorphError } from "@morph/sdk";
+
+export const Route = createFileRoute("/bare-sdk")({
+  component: function BareSdk() {
+    return <p data-bare-sdk>{String(isMorphError(new Error("x")))}</p>;
+  },
+});
+`,
+};
+
+/** The guide's config with `extra` plugin entries and top-level settings. */
+const tamperedConfig = (options: {
+  head?: string;
+  plugins?: string;
+  cloudflare?: string;
+  settings?: string;
+}) => `import path from "node:path";
+import { defineConfig } from "vite";
+import { cloudflare } from "@cloudflare/vite-plugin";
+import tailwindcss from "@tailwindcss/vite";
+import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+import viteReact from "@vitejs/plugin-react";
+${options.head ?? ""}
+export default defineConfig({
+  plugins: [
+    ${options.plugins ?? ""}
+    cloudflare(${options.cloudflare ?? '{ viteEnvironment: { name: "ssr" } }'}),
+    tailwindcss(),
+    tanstackStart(),
+    viteReact(),
+  ],
+  ${options.settings ?? ""}
+});
+`;
+
+/** What a plugin could serve in place of the SDK: none of Morph's code. */
+const IMPOSTOR_SDK =
+  "export const isMorphError = () => false; export const createMorph = () => null; export class MorphError extends Error {}";
+
+/**
+ * Builds the Starter plus `BARE_SDK_ROUTE` under `viteConfig`, as a runner
+ * would, and collects it. A build that fails or is refused reports why.
+ */
+function buildTampered(
+  viteConfig: string,
+  extraFiles: ReadonlyArray<{ path: string; content: string }> = [],
+):
+  | {
+      ok: true;
+      artifact: ReturnType<ReturnType<typeof themeFramework>["build"]["native"]["collect"]>;
+    }
+  | { ok: false; stage: "build" | "collect"; message: string } {
+  const framework = themeFramework();
+  const plan = framework.build.native.plan(
+    [
+      ...STARTER_THEME_FILES,
+      BARE_SDK_ROUTE,
+      ...extraFiles,
+      { path: "vite.config.ts", content: viteConfig },
+      { path: "wrangler.jsonc", content: WRANGLER },
+    ],
+    { nonce: NONCE },
+  );
+  if (!plan.ok) return { ok: false, stage: "build", message: plan.message };
+  const root = mkdtempSync(join(tmpdir(), "native-start-tampered-"));
+  try {
+    for (const file of plan.workspaceFiles) {
+      mkdirSync(dirname(join(root, file.path)), { recursive: true });
+      writeFileSync(join(root, file.path), file.content);
+    }
+    symlinkSync(join(process.cwd(), "node_modules"), join(root, "node_modules"));
+    const [, ...args] = plan.command;
+    let failure: string | null = null;
+    try {
+      execFileSync(process.execPath, ["node_modules/vite/bin/vite.js", ...args], {
+        cwd: root,
+        env: { ...process.env, ...plan.env },
+        stdio: "pipe",
+        timeout: BUILD_BUDGET_MS,
+      });
+    } catch (error) {
+      const detail = error as { stderr?: Buffer; stdout?: Buffer };
+      failure = `${detail.stderr?.toString() ?? ""}\n${detail.stdout?.toString() ?? ""}`;
+    }
+    const outputs = new Map(
+      walk(root).map((path) => [path, new Uint8Array(readFileSync(join(root, path)))]),
+    );
+    if (failure !== null) {
+      const cause = framework.build.native.failedBuildCause?.(outputs, NONCE);
+      return { ok: false, stage: "build", message: cause?.message ?? failure };
+    }
+    try {
+      return { ok: true, artifact: framework.build.native.collect(outputs, NONCE) };
+    } catch (error) {
+      return {
+        ok: false,
+        stage: "collect",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** A canonical manifest for a collected native artifact, as the store keeps it. */
+function manifestFor(
+  artifact: Extract<ReturnType<typeof buildTampered>, { ok: true }>["artifact"],
+): CanonicalThemeBuildManifest {
+  return {
+    buildId: "bld_native_proof",
+    storefrontId: "sf_native_proof",
+    themeId: "th_native_proof",
+    sourceRevisionId: "rev",
+    revisionNumber: 1,
+    inputHash: "0".repeat(64),
+    compilerId: NATIVE_START_COMPILER_ID,
+    compilerVersion: themeFramework().build.native.compilerIdentity().version,
+    sourceEntry: "src/router.tsx",
+    artifactEntry: artifact.workerEntry,
+    runtime: {
+      kind: "cloudflare-worker",
+      workerEntry: artifact.workerEntry,
+      clientAssetsDirectory: artifact.clientAssetsDirectory,
+      nativeProof: readNativeBuildProof(artifact.metadata?.nativeProof)!,
+    },
+    filesCount: artifact.files.size,
+    totalSizeBytes: 0,
+    files: [...artifact.files.keys()].map((path) => ({
+      path,
+      contentType: path.endsWith(".js")
+        ? "application/javascript"
+        : "application/octet-stream",
+      sizeBytes: 1,
+      sha256: "0".repeat(64),
+    })),
+    cssChunks: [],
+    jsChunks: [],
+    createdAt: "2026-11-27T00:00:00.000Z",
+  };
+}
+
+const workerConfigOf = (
+  artifact: Extract<ReturnType<typeof buildTampered>, { ok: true }>["artifact"],
+) => {
+  const config = artifact.files.get("runtime/server/wrangler.json")!;
+  return JSON.parse(
+    typeof config === "string" ? config : new TextDecoder().decode(config),
+  );
+};
+
+describe("a native Start build's SDK resolution proof, against what a Vite config can do", () => {
+  it(
+    "proves the bare @morph/sdk in both the browser and the Worker, and a production deployment refuses the build's static HTML",
+    () => {
+      const built = buildTampered(tamperedConfig({}), [
+        { path: "public/landing.html", content: "<!doctype html><p>static</p>" },
+      ]);
+      if (!built.ok) throw new Error(`${built.stage}: ${built.message}`);
+      const proof = readNativeBuildProof(built.artifact.metadata?.nativeProof)!;
+      const client = proof.sdk.environments.find((entry) => entry.output === "client")!;
+      const ssr = proof.sdk.environments.find((entry) => entry.output === "server")!;
+      expect(client.specifiers).toContain("@morph/sdk");
+      expect(ssr.specifiers).toContain("@morph/sdk");
+      for (const environment of [client, ssr]) {
+        const carrying = environment.sentinelFiles.map((path) => {
+          const content = built.artifact.files.get(path)!;
+          return typeof content === "string"
+            ? content
+            : new TextDecoder().decode(content);
+        });
+        expect(
+          carrying.some((code) =>
+            code.includes(nativeSdkSentinel(NONCE, "@morph/sdk")),
+          ),
+          environment.name,
+        ).toBe(true);
+      }
+      // The public/ file is static HTML the asset layer would answer.
+      expect(proof.html).toEqual([
+        { path: "runtime/client/landing.html", source: "public" },
+      ]);
+      const manifest = manifestFor(built.artifact);
+      const workerConfig = workerConfigOf(built.artifact);
+      expect(
+        planThemeWorkerDeployment({
+          target: "production",
+          storefrontId: "sf_native_proof",
+          manifest,
+          workerConfig,
+        }),
+      ).toMatchObject({
+        success: false,
+        reason: "NATIVE_HTML_ASSET_UNAVAILABLE",
+        message: expect.stringContaining(
+          "NATIVE_HTML_ASSET_UNAVAILABLE: The build would serve runtime/client/landing.html (copied from public/) as /landing.html.",
+        ),
+      });
+      // Build Preview is not production: it serves what the build wrote.
+      expect(
+        planThemeWorkerDeployment({
+          target: "build-preview",
+          storefrontId: "sf_native_proof",
+          manifest,
+          workerConfig,
+        }),
+      ).toMatchObject({ success: true });
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses a plugin that redirects @morph/sdk with an alias of its own",
+    () => {
+      const built = buildTampered(
+        tamperedConfig({
+          plugins: `{ name: "author-redirect", config: () => ({ resolve: { alias: [{ find: /^@morph\\/sdk$/, replacement: path.resolve("src/impostor-sdk.ts") }] } }) },`,
+        }),
+        [{ path: "src/impostor-sdk.ts", content: IMPOSTOR_SDK }],
+      );
+      expect(built).toMatchObject({ ok: false, stage: "collect" });
+      expect((built as { message: string }).message).toMatch(
+        /^NATIVE_PROOF_SDK_RESOLUTION: vite\.config\.ts changes where @morph\/sdk resolves \(src\/routes\/bare-sdk\.tsx, (client|ssr) environment: resolved to src\/impostor-sdk\.ts\)\. Remove the alias or plugin\.$/,
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses an SDK left external in the browser build",
+    () => {
+      const built = buildTampered(
+        tamperedConfig({
+          settings: `environments: { client: { build: { rollupOptions: { external: ["@morph/sdk"] } } } },`,
+        }),
+      );
+      expect(built).toMatchObject({ ok: false, stage: "collect" });
+      expect((built as { message: string }).message).toMatch(
+        /^NATIVE_PROOF_SDK_RESOLUTION: vite\.config\.ts leaves "@morph\/sdk" external \(src\/routes\/bare-sdk\.tsx, client environment\)/,
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses a plugin that serves other code for Morph's copy: its sentinel is missing",
+    () => {
+      const built = buildTampered(
+        tamperedConfig({
+          plugins: `{ name: "author-impostor", enforce: "pre", load(id) { if (id.split("?")[0].replace(/\\\\/g, "/").endsWith(".morph/sdk/src/index.ts")) return ${JSON.stringify(IMPOSTOR_SDK)}; } },`,
+        }),
+      );
+      expect(built).toMatchObject({ ok: false, stage: "collect" });
+      expect((built as { message: string }).message).toMatch(
+        /^NATIVE_PROOF_SDK_RESOLUTION: the (client|ssr) environment imports @morph\/sdk, but Morph's copy of it is not in the code the build wrote for it\./,
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
+    "refuses a Cloudflare plugin option at the call, computed or not",
+    () => {
+      // Not a literal `configPath:` a text check would find.
+      const built = buildTampered(
+        tamperedConfig({
+          head: `const option = ["config", "Path"].join("");`,
+          cloudflare: `{ viteEnvironment: { name: "ssr" }, [option]: "./wrangler.jsonc" }`,
+        }),
+      );
+      expect(built).toEqual({
+        ok: false,
+        stage: "build",
+        message:
+          'NATIVE_ADAPTER_OPTION: vite.config.ts passes configPath to cloudflare(). Morph supplies the Wrangler config the plugin reads, from wrangler.jsonc at the project root; a config path would replace it. Remove "configPath"; keep wrangler.jsonc at the project root.',
+      });
+    },
+    BUILD_BUDGET_MS,
+  );
 });

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { NATIVE_PROOF_VERSION } from "../theme-framework/native-start-proof";
 import { THEME_HIDE_GUARD_VERSION } from "../ast/theme-hide-guard-version";
 import { describe, expect, it, vi } from "vitest";
 
@@ -128,7 +129,7 @@ describe("a Theme build's identity names the Morph SDK it injects", () => {
       tanstackStartFramework.build.native!.compilerIdentity(),
     );
     expect(a.version).toBe(
-      `${THEME_START_TOOLCHAIN.reactStart}+morph-sdk.${"a".repeat(16)}.${THEME_HIDE_GUARD_VERSION}`,
+      `${THEME_START_TOOLCHAIN.reactStart}+morph-sdk.${"a".repeat(16)}.${THEME_HIDE_GUARD_VERSION}.${NATIVE_PROOF_VERSION}`,
     );
     expect(b.version).not.toBe(a.version);
     expect(b.id).toBe(a.id);
