@@ -84,7 +84,8 @@ describe("a native build's source", () => {
       {
         path: "wrangler.jsonc",
         content:
-          '{ "name": "x", "main": "@tanstack/react-start/server-entry" }',
+          // A compatibility date: the Wrangler key contract requires one.
+          '{ "name": "x", "main": "@tanstack/react-start/server-entry", "compatibility_date": "2025-09-02" }',
       },
     ];
     expect(planNativeStartBuild(start).ok).toBe(true);

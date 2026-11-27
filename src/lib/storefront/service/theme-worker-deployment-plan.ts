@@ -1,5 +1,10 @@
 import type { CanonicalThemeBuildManifest } from "../compiler/theme-build-artifact-store.types";
 import { readRegisteredStaticPages } from "../compiler/theme-static-page-reader";
+import {
+  NATIVE_EMITTED_WORKER_CONFIG_LABEL,
+  checkNativeWranglerConfig,
+} from "../theme-framework/cloudflare-native-build";
+import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
 import { themeWorkerScriptNameForStorefront } from "./theme-runtime.types";
 
 /**
@@ -65,7 +70,31 @@ export type ThemeWorkerDeploymentPlan = Readonly<{
    * reaches the Worker's own assets only, nothing of the platform's.
    */
   assetsBinding?: string;
+  /**
+   * What the Wrangler key contract keeps from a native Start build's Worker
+   * config (cloudflare-native-build.ts), present only for an artifact whose
+   * immutable `manifest.compilerId` is the native Start build's. Every other
+   * artifact's plan has none, so its deploy config is the one it had before
+   * the contract, byte for byte.
+   */
+  native?: Readonly<{
+    /** The build's `vars`, validated by the contract; non-secret. */
+    vars: Readonly<Record<string, unknown>>;
+    /** `observability.enabled` as the build set it; `false` when unset. */
+    observabilityEnabled: boolean;
+  }>;
 }>;
+
+/**
+ * Whether an artifact is held to the Wrangler key contract: decided by the
+ * compiler identity its immutable manifest records, never by what the
+ * artifact or the current Morph would otherwise build.
+ */
+export function isNativeWranglerContractArtifact(
+  manifest: Pick<CanonicalThemeBuildManifest, "compilerId"> | null | undefined,
+): boolean {
+  return manifest?.compilerId === NATIVE_START_COMPILER_ID;
+}
 
 export type ThemeWorkerDeploymentPlanFailureReason =
   | "MISSING_WORKER_ENTRY"
@@ -123,6 +152,19 @@ function fail(
   message: string,
 ): ThemeWorkerDeploymentPlanResult {
   return { success: false, reason, message };
+}
+
+/** The settings the contract keeps, from a config it accepted. */
+function nativeSettings(
+  workerConfig: Record<string, unknown>,
+): NonNullable<ThemeWorkerDeploymentPlan["native"]> {
+  const vars = isRecord(workerConfig.vars) ? { ...workerConfig.vars } : {};
+  const observability = workerConfig.observability;
+  return {
+    vars,
+    observabilityEnabled:
+      isRecord(observability) && observability.enabled === true,
+  };
 }
 
 function normalizeDirectory(value: string): string {
@@ -194,6 +236,18 @@ export function planThemeWorkerDeployment(args: {
       "INVALID_WORKER_CONFIG",
       "Generated Worker config is missing or is not a JSON object.",
     );
+  }
+
+  // The contract's admission boundary. A native Start artifact is checked in
+  // the emitted shape, a second line behind the check its build ran; every
+  // other artifact goes on exactly as before.
+  const contract = isNativeWranglerContractArtifact(args.manifest);
+  if (contract) {
+    const refused = checkNativeWranglerConfig(args.workerConfig, {
+      shape: "emitted",
+      file: NATIVE_EMITTED_WORKER_CONFIG_LABEL,
+    });
+    if (refused) return fail("INVALID_WORKER_CONFIG", refused.message);
   }
 
   for (const key of FORBIDDEN_BINDING_KEYS) {
@@ -319,6 +373,7 @@ export function planThemeWorkerDeployment(args: {
       compatibilityDate,
       compatibilityFlags,
       ...(assetsBinding ? { assetsBinding } : {}),
+      ...(contract ? { native: nativeSettings(args.workerConfig) } : {}),
     },
   };
 }

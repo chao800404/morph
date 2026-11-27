@@ -8,10 +8,13 @@ import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "../compiler/theme-sandbox
 import { prepareSourcesForBuild } from "../source-language/tsx-source-language";
 import { themeMorphSdkFiles } from "../compiler/theme-morph-sdk";
 import {
+  NATIVE_EMITTED_WORKER_CONFIG_LABEL,
   NATIVE_WRANGLER_CONFIG_PATH,
+  checkNativeWranglerConfig,
   collectNativeCloudflareArtifact,
   planNativeWranglerConfig,
   refuseNativeBuild,
+  refuseNativeProjectFiles,
   refuseNativeReservedPaths,
   type NativeThemeArtifact,
   type NativeThemeBuildPlan,
@@ -26,7 +29,15 @@ import {
   nativeWrapperConfigSource,
 } from "./tanstack-start-native-wrapper";
 
-/** The compiler identity of a native Start build: the pinned Start version. */
+/**
+ * The compiler identity of a native Start build: the pinned Start version.
+ *
+ * Also the admission boundary of the Wrangler key contract
+ * (cloudflare-native-build.ts): an artifact whose immutable
+ * `manifest.compilerId` is this one is held to the contract when it is
+ * collected and deployed; every other artifact keeps the checks it was built
+ * under (theme-worker-deployment-plan.ts).
+ */
 export const NATIVE_START_COMPILER_ID = "tanstack-start-native";
 
 export {
@@ -114,11 +125,23 @@ export function planNativeStartBuild(
       `${viteConfigs[0]} passes configPath to the Cloudflare plugin; Morph cannot supply its deployment config to that build yet.`,
     );
   }
+  // The plugin's switch for bindings that reach a real Cloudflare account.
+  // No binding is mapped, so no build connects to one. The same lexical check
+  // as configPath's, until the adapter-option check at the plugin call
+  // (design PR 2) replaces both.
+  if (/\bremoteBindings\s*:/.test(byPath.get(viteConfigs[0]!)!)) {
+    return refuseNativeBuild(
+      "NATIVE_REMOTE_BINDING",
+      `${viteConfigs[0]} sets remoteBindings on the Cloudflare plugin. Builds never connect to a Cloudflare account. Remove "remoteBindings".`,
+    );
+  }
 
   const reserved = refuseNativeReservedPaths(files);
   if (reserved) return reserved;
 
-  const wrangler = planNativeWranglerConfig(byPath);
+  // The Wrangler key contract, author shape. The copy the plugin reads
+  // carries only what the contract keeps (no `dev`), its paths rebased.
+  const wrangler = planNativeWranglerConfig(byPath, { contract: "start-ssr" });
   if (!wrangler.ok) return wrangler;
 
   const stripped = prepareSourcesForBuild(files);
@@ -174,5 +197,38 @@ export function planNativeStartBuild(
 /** A native Start build's artifact, collected by the shared Cloudflare rule. */
 export type NativeStartArtifact = NativeThemeArtifact;
 
-/** Start's artifact is wherever the Cloudflare plugin put it; nothing Start-specific. */
-export const collectNativeStartArtifact = collectNativeCloudflareArtifact;
+/**
+ * Start's artifact is wherever the Cloudflare plugin put it, collected by the
+ * shared rule, then held to the Wrangler key contract in its emitted shape:
+ * the Worker config the plugin wrote declares nothing the contract does not
+ * keep, and no local variables file was written beside the Worker. The same
+ * check runs again at deploy (theme-worker-deployment-plan.ts).
+ */
+export function collectNativeStartArtifact(
+  outputs: ReadonlyMap<string, Uint8Array | string>,
+): NativeStartArtifact {
+  const artifact = collectNativeCloudflareArtifact(outputs);
+  const config = artifact.files.get("runtime/server/wrangler.json");
+  let worker: unknown = null;
+  try {
+    worker = JSON.parse(
+      typeof config === "string"
+        ? config
+        : new TextDecoder().decode(config ?? new Uint8Array()),
+    );
+  } catch {
+    // Refused below as not a JSON object.
+  }
+  const refused = checkNativeWranglerConfig(worker, {
+    shape: "emitted",
+    file: NATIVE_EMITTED_WORKER_CONFIG_LABEL,
+  });
+  if (refused) throw new Error(refused.message);
+  const leaked = refuseNativeProjectFiles([...artifact.files.keys()]);
+  if (leaked) {
+    throw new Error(
+      `${leaked.message} (The build wrote it into the artifact.)`,
+    );
+  }
+  return artifact;
+}

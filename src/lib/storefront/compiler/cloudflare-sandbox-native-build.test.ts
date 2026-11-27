@@ -102,9 +102,12 @@ const BUILT: Record<string, string> = {
   ".wrangler/deploy/config.json": JSON.stringify({
     configPath: "../../dist/server/wrangler.json",
   }),
+  // The pinned plugin always writes the author's compatibility date, which
+  // the Wrangler key contract requires.
   "dist/server/wrangler.json": JSON.stringify({
     name: "native",
     main: "index.js",
+    compatibility_date: "2025-09-02",
     assets: { directory: "../client" },
   }),
   "dist/server/index.js":

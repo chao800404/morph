@@ -50,7 +50,11 @@ afterEach(() => {
 function workspace(): { root: string; env: Record<string, string> } {
   const plan = planNativeStartBuild([
     { path: "vite.config.ts", content: "export default {};\n" },
-    { path: "wrangler.jsonc", content: '{ "name": "hooks" }' },
+    // The Wrangler key contract requires a compatibility date.
+    {
+      path: "wrangler.jsonc",
+      content: '{ "name": "hooks", "compatibility_date": "2025-09-02" }',
+    },
   ]);
   if (!plan.ok) throw new Error(plan.message);
   const root = mkdtempSync(join(tmpdir(), "native-build-hooks-"));

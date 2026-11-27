@@ -113,7 +113,40 @@ export function wranglerDeployConfig(
     // turning it off does not by itself turn preview URLs off.
     workers_dev: false,
     preview_urls: false,
+    // A native Start build's settings the Wrangler key contract keeps
+    // (cloudflare-native-build.ts), taken from the plan, never copied from
+    // the build's config. Every other plan has none, so its config is the
+    // one it had before the contract, byte for byte.
+    //
+    // Written out in full every time: `wrangler deploy` replaces the
+    // Worker's variables with the config's unless `keep_vars` is set, so a
+    // variable a later build removed is removed from the Worker too, and an
+    // observability setting a later build dropped does not stay on.
+    ...(plan.native
+      ? {
+          vars: { ...plan.native.vars },
+          keep_vars: false,
+          observability: { enabled: plan.native.observabilityEnabled },
+        }
+      : {}),
   };
+}
+
+/**
+ * The string forms of a plan's variable values, to keep out of anything a
+ * failed deployment surfaces: Wrangler prints the Worker's bindings, values
+ * included. Values shorter than 4 characters are left, since replacing them
+ * would garble the rest of the output.
+ */
+function deploymentVarValues(
+  plan: ThemeWorkerDeploymentRequest["plan"],
+): string[] {
+  return Object.values(plan.native?.vars ?? {})
+    .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.length >= 4,
+    );
 }
 
 export type ThemeDeploymentCredentials = Readonly<{
@@ -220,8 +253,12 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
     }
 
     let sandbox: CloudflareSandboxSession | null = null;
+    const varValues = deploymentVarValues(request.plan);
     const scrub = (text: string) =>
-      scrubDeploymentSecrets(text, [apiToken, accountId]);
+      varValues.reduce(
+        (scrubbed, value) => scrubbed.split(value).join("[var]"),
+        scrubDeploymentSecrets(text, [apiToken, accountId]),
+      );
 
     try {
       const sessionId = deploymentSandboxSessionId(

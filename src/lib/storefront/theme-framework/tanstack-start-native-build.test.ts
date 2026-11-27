@@ -228,9 +228,72 @@ describe("planNativeStartBuild", () => {
       },
       "NATIVE_BINDINGS_UNMAPPED",
     ],
+    [
+      "the Cloudflare plugin's remoteBindings option",
+      {
+        "vite.config.ts": VITE_CONFIG.replace(
+          'name: "ssr" }',
+          'name: "ssr" }, remoteBindings: true',
+        ),
+      },
+      "NATIVE_REMOTE_BINDING",
+    ],
+    [
+      "a Wrangler setting the contract refuses",
+      {
+        "wrangler.jsonc": WRANGLER.replace(
+          '"name": "shop",',
+          '"name": "shop", "placement": { "mode": "smart" },',
+        ),
+      },
+      "NATIVE_WRANGLER_SETTING_UNSUPPORTED",
+    ],
+    [
+      "a Wrangler setting the contract does not know",
+      {
+        "wrangler.jsonc": WRANGLER.replace(
+          '"name": "shop",',
+          '"name": "shop", "some_future_key": {},',
+        ),
+      },
+      "NATIVE_WRANGLER_SETTING_UNKNOWN",
+    ],
+    ["a wrangler.toml beside the .jsonc", { "wrangler.toml": 'name = "x"' }, "NATIVE_WRANGLER_CONFIG"],
+    [".dev.vars", { ".dev.vars": "SECRET=1" }, "NATIVE_SECRET_UNMAPPED"],
+    [".env", { ".env": "VITE_KEY=1" }, "NATIVE_SECRET_UNMAPPED"],
+    [".env.production", { ".env.production": "VITE_KEY=1" }, "NATIVE_SECRET_UNMAPPED"],
   ])("refuses %s", (_label, overrides, code) => {
     const plan = planNativeStartBuild(project(overrides));
     expect(plan).toMatchObject({ ok: false, code });
+  });
+
+  it("gives the build a copy without dev or the author's other ignored keys", () => {
+    const plan = planNativeStartBuild(
+      project({
+        "wrangler.jsonc": WRANGLER.replace(
+          '"name": "shop",',
+          '"name": "shop", "$schema": "node_modules/wrangler/config-schema.json", "dev": { "port": 9999 }, "vars": { "STORE_LABEL": "probe" }, "observability": { "enabled": true },',
+        ),
+      }),
+    );
+    if (!plan.ok) throw new Error(plan.message);
+    const copy = JSON.parse(
+      plan.workspaceFiles.find((f) => f.path === NATIVE_WRANGLER_CONFIG_PATH)!
+        .content,
+    );
+    expect(copy).toEqual({
+      name: "shop",
+      vars: { STORE_LABEL: "probe" },
+      observability: { enabled: true },
+      compatibility_date: "2025-09-02",
+      compatibility_flags: ["nodejs_compat"],
+      main: "@tanstack/react-start/server-entry",
+    });
+    // The author's file itself is in the workspace as written; the plugin
+    // never reads it (CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH names the copy).
+    expect(
+      plan.workspaceFiles.find((f) => f.path === "wrangler.jsonc")!.content,
+    ).toContain('"dev": { "port": 9999 }');
   });
 });
 
@@ -245,9 +308,11 @@ const officialOutputs = (
         configPath: "../../dist/server/wrangler.json",
         auxiliaryWorkers: [],
       }),
+      // The pinned plugin always writes the author's compatibility date.
       "dist/server/wrangler.json": JSON.stringify({
         name: "shop",
         main: "index.js",
+        compatibility_date: "2025-09-02",
         assets: { directory: "../client" },
         no_bundle: true,
       }),
@@ -316,5 +381,35 @@ describe("collectNativeStartArtifact", () => {
     expect(() =>
       collectNativeStartArtifact(officialOutputs(overrides)),
     ).toThrow("NATIVE_ARTIFACT_INCOMPLETE");
+  });
+
+  it.each([
+    ["a binding the plugin wrote", { ai: { binding: "AI" } }, "NATIVE_BINDINGS_UNMAPPED"],
+    ["a route", { routes: ["shop.example.com/*"] }, "NATIVE_ROUTE_CLAIM"],
+    ["a setting the contract does not know", { future: true }, "NATIVE_WRANGLER_SETTING_UNKNOWN"],
+    ["a reserved variable name", { vars: { MORPH_X: "1" } }, "NATIVE_BINDING_NAME_CLASH"],
+    ["no compatibility date", { compatibility_date: undefined }, "NATIVE_WRANGLER_CONFIG"],
+  ])("refuses a Worker config carrying %s, in the emitted shape", (_label, extra, code) => {
+    const outputs = officialOutputs({
+      "dist/server/wrangler.json": JSON.stringify({
+        name: "shop",
+        main: "index.js",
+        compatibility_date: "2025-09-02",
+        assets: { directory: "../client" },
+        no_bundle: true,
+        ...extra,
+      }),
+    });
+    expect(() => collectNativeStartArtifact(outputs)).toThrow(
+      new RegExp(`^${code}: runtime/server/wrangler\\.json`),
+    );
+  });
+
+  it("refuses a local variables file the build wrote beside the Worker", () => {
+    expect(() =>
+      collectNativeStartArtifact(
+        officialOutputs({ "dist/server/.dev.vars": "SECRET=1" }),
+      ),
+    ).toThrow("NATIVE_SECRET_UNMAPPED");
   });
 });

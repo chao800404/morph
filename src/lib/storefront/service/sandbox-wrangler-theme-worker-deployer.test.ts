@@ -221,6 +221,54 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     });
   });
 
+  it("writes a native Start plan's kept settings, in full, and nothing for any other plan", () => {
+    // No other plan gains a key: a platform or Astro deploy config is the
+    // one it was before the Wrangler key contract.
+    expect(Object.keys(wranglerDeployConfig(request.plan))).not.toEqual(
+      expect.arrayContaining(["vars", "keep_vars", "observability"]),
+    );
+    const native = wranglerDeployConfig({
+      ...request.plan,
+      native: { vars: { STORE_LABEL: "probe" }, observabilityEnabled: true },
+    });
+    expect(native).toMatchObject({
+      vars: { STORE_LABEL: "probe" },
+      keep_vars: false,
+      observability: { enabled: true },
+      workers_dev: false,
+      preview_urls: false,
+    });
+    // Nothing the contract keeps can switch the overrides back on.
+    expect(native.routes).toBeUndefined();
+    expect(native.account_id).toBeUndefined();
+  });
+
+  it("keeps a native plan's variable values out of failure output", async () => {
+    const exec = vi.fn(async () => ({
+      exitCode: 1,
+      success: false,
+      stdout: 'env.STORE_LABEL ("store-label-value")  Environment Variable',
+      stderr: 'env.FEATURES ({"flag":true})',
+    }));
+    const { session } = sandboxStub(exec);
+    const result = await deployer(session).deploy({
+      ...request,
+      plan: {
+        ...request.plan,
+        native: {
+          vars: { STORE_LABEL: "store-label-value", FEATURES: { flag: true } },
+          observabilityEnabled: false,
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    const surfaced = `${result.message}${result.diagnostics?.join("") ?? ""}`;
+    expect(surfaced).not.toContain("store-label-value");
+    expect(surfaced).not.toContain('{"flag":true}');
+    expect(surfaced).toContain("env.FEATURES");
+  });
+
   it("passes credentials only through the exec environment, never into the workspace", async () => {
     let execEnv: Record<string, string> = {};
     const exec = vi.fn(async (_command: string, options?: any) => {
