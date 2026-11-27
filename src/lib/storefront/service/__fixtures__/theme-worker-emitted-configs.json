@@ -1,0 +1,1317 @@
+{
+  "starter-v11": {
+    "id": "starter-v11",
+    "description": "Starter v11 source (__fixtures__/starter-history/v11.json) built by LocalViteThemeBuildRunner on 76efa42, 2026-11-27",
+    "compilerId": "tailwind-v4-build",
+    "compilerVersion": "platform",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\"configPath\":\"/workspace/wrangler.json\",\"userConfigPath\":\"/workspace/wrangler.json\",\"topLevelName\":\"morph-theme-bld-starter-v11\",\"definedEnvironments\":[],\"compatibility_date\":\"2025-09-02\",\"compatibility_flags\":[\"nodejs_compat\"],\"jsx_factory\":\"React.createElement\",\"jsx_fragment\":\"React.Fragment\",\"rules\":[{\"type\":\"ESModule\",\"globs\":[\"**/*.js\",\"**/*.mjs\"]}],\"name\":\"morph-theme-bld-starter-v11\",\"main\":\"index.js\",\"triggers\":{},\"assets\":{\"directory\":\"../client\"},\"vars\":{},\"durable_objects\":{\"bindings\":[]},\"workflows\":[],\"migrations\":[],\"exports\":{},\"kv_namespaces\":[],\"cloudchamber\":{},\"send_email\":[],\"queues\":{\"producers\":[],\"consumers\":[]},\"connect\":[],\"r2_buckets\":[],\"d1_databases\":[],\"vectorize\":[],\"ai_search_namespaces\":[],\"ai_search\":[],\"agent_memory\":[],\"hyperdrive\":[],\"services\":[],\"analytics_engine_datasets\":[],\"dispatch_namespaces\":[],\"mtls_certificates\":[],\"pipelines\":[],\"k2\":[],\"secrets_store_secrets\":[],\"artifacts\":[],\"unsafe_hello_world\":[],\"flagship\":[],\"worker_loaders\":[],\"ratelimits\":[],\"vpc_services\":[],\"vpc_networks\":[],\"logfwdr\":{\"bindings\":[]},\"python_modules\":{\"exclude\":[\"**/*.pyc\"]},\"dev\":{\"ip\":\"localhost\",\"local_protocol\":\"http\",\"upstream_protocol\":\"http\",\"enable_containers\":true,\"generate_types\":false},\"no_bundle\":true}",
+    "files": [
+      [
+        "preview/assets/index-CNoiAVQE.js",
+        "application/javascript",
+        20204
+      ],
+      [
+        "preview/assets/index-CQ0Bkxep.js",
+        "application/javascript",
+        510807
+      ],
+      [
+        "preview/assets/index-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "preview/index.html",
+        "text/html",
+        403
+      ],
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/index-CdOMpFz-.js",
+        "application/javascript",
+        20204
+      ],
+      [
+        "runtime/client/assets/index-DGKHurDe.js",
+        "application/javascript",
+        547389
+      ],
+      [
+        "runtime/client/assets/index-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        2703
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-oK07FCGE.js",
+        "application/javascript",
+        507
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-C3Q1xu4u.js",
+        "application/javascript",
+        79
+      ],
+      [
+        "runtime/server/assets/index-DlgTcIoh.js",
+        "application/javascript",
+        20334
+      ],
+      [
+        "runtime/server/assets/router-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "runtime/server/assets/router-q9jPiljr.js",
+        "application/javascript",
+        33164
+      ],
+      [
+        "runtime/server/assets/start-BClswEUm.js",
+        "application/javascript",
+        43
+      ],
+      [
+        "runtime/server/assets/worker-entry-mlyHoX43.js",
+        "application/javascript",
+        543958
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        195
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1386
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "db5d4486ffb76df171d62d635c3a0d45648ad26c5831b2b9b89a9a2d9d079c4d",
+        "moduleCount": 8,
+        "assetCount": 3
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "db5d4486ffb76df171d62d635c3a0d45648ad26c5831b2b9b89a9a2d9d079c4d",
+        "moduleCount": 8,
+        "assetCount": 3
+      }
+    }
+  },
+  "starter-v15": {
+    "id": "starter-v15",
+    "description": "Starter v15 source (__fixtures__/starter-history/v15.json) built by LocalViteThemeBuildRunner on 76efa42, 2026-11-27",
+    "compilerId": "tailwind-v4-build",
+    "compilerVersion": "platform",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\"configPath\":\"/workspace/wrangler.json\",\"userConfigPath\":\"/workspace/wrangler.json\",\"topLevelName\":\"morph-theme-bld-starter-v15\",\"definedEnvironments\":[],\"compatibility_date\":\"2025-09-02\",\"compatibility_flags\":[\"nodejs_compat\"],\"jsx_factory\":\"React.createElement\",\"jsx_fragment\":\"React.Fragment\",\"rules\":[{\"type\":\"ESModule\",\"globs\":[\"**/*.js\",\"**/*.mjs\"]}],\"name\":\"morph-theme-bld-starter-v15\",\"main\":\"index.js\",\"triggers\":{},\"assets\":{\"directory\":\"../client\"},\"vars\":{},\"durable_objects\":{\"bindings\":[]},\"workflows\":[],\"migrations\":[],\"exports\":{},\"kv_namespaces\":[],\"cloudchamber\":{},\"send_email\":[],\"queues\":{\"producers\":[],\"consumers\":[]},\"connect\":[],\"r2_buckets\":[],\"d1_databases\":[],\"vectorize\":[],\"ai_search_namespaces\":[],\"ai_search\":[],\"agent_memory\":[],\"hyperdrive\":[],\"services\":[],\"analytics_engine_datasets\":[],\"dispatch_namespaces\":[],\"mtls_certificates\":[],\"pipelines\":[],\"k2\":[],\"secrets_store_secrets\":[],\"artifacts\":[],\"unsafe_hello_world\":[],\"flagship\":[],\"worker_loaders\":[],\"ratelimits\":[],\"vpc_services\":[],\"vpc_networks\":[],\"logfwdr\":{\"bindings\":[]},\"python_modules\":{\"exclude\":[\"**/*.pyc\"]},\"dev\":{\"ip\":\"localhost\",\"local_protocol\":\"http\",\"upstream_protocol\":\"http\",\"enable_containers\":true,\"generate_types\":false},\"no_bundle\":true}",
+    "files": [
+      [
+        "preview/assets/index-CmbpnPCN.js",
+        "application/javascript",
+        18214
+      ],
+      [
+        "preview/assets/index-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "preview/assets/index-u4nnqLR1.js",
+        "application/javascript",
+        510459
+      ],
+      [
+        "preview/index.html",
+        "text/html",
+        403
+      ],
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/index-D9iqUEqx.js",
+        "application/javascript",
+        18214
+      ],
+      [
+        "runtime/client/assets/index-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "runtime/client/assets/index-e4yOSEl5.js",
+        "application/javascript",
+        547043
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        2703
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-DwC8xPFf.js",
+        "application/javascript",
+        507
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-C3Q1xu4u.js",
+        "application/javascript",
+        79
+      ],
+      [
+        "runtime/server/assets/index-LMvyBPIZ.js",
+        "application/javascript",
+        18339
+      ],
+      [
+        "runtime/server/assets/router-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "runtime/server/assets/router-uUbC9lvv.js",
+        "application/javascript",
+        32601
+      ],
+      [
+        "runtime/server/assets/start-BClswEUm.js",
+        "application/javascript",
+        43
+      ],
+      [
+        "runtime/server/assets/worker-entry-CERsaCbT.js",
+        "application/javascript",
+        543996
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        195
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1386
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "68c9696f695baa40d8736f7a45d0ab317b5cb5fc0533e48eabcb2c2a6f0c2d8f",
+        "moduleCount": 8,
+        "assetCount": 3
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "68c9696f695baa40d8736f7a45d0ab317b5cb5fc0533e48eabcb2c2a6f0c2d8f",
+        "moduleCount": 8,
+        "assetCount": 3
+      }
+    }
+  },
+  "starter-v20": {
+    "id": "starter-v20",
+    "description": "Starter v20 source (__fixtures__/starter-history/v20.json) built by LocalViteThemeBuildRunner on 76efa42, 2026-11-27",
+    "compilerId": "tailwind-v4-build",
+    "compilerVersion": "platform",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\"configPath\":\"/workspace/wrangler.json\",\"userConfigPath\":\"/workspace/wrangler.json\",\"topLevelName\":\"morph-theme-bld-starter-v20\",\"definedEnvironments\":[],\"compatibility_date\":\"2025-09-02\",\"compatibility_flags\":[\"nodejs_compat\"],\"jsx_factory\":\"React.createElement\",\"jsx_fragment\":\"React.Fragment\",\"rules\":[{\"type\":\"ESModule\",\"globs\":[\"**/*.js\",\"**/*.mjs\"]}],\"name\":\"morph-theme-bld-starter-v20\",\"main\":\"index.js\",\"triggers\":{},\"assets\":{\"directory\":\"../client\"},\"vars\":{},\"durable_objects\":{\"bindings\":[]},\"workflows\":[],\"migrations\":[],\"exports\":{},\"kv_namespaces\":[],\"cloudchamber\":{},\"send_email\":[],\"queues\":{\"producers\":[],\"consumers\":[]},\"connect\":[],\"r2_buckets\":[],\"d1_databases\":[],\"vectorize\":[],\"ai_search_namespaces\":[],\"ai_search\":[],\"agent_memory\":[],\"hyperdrive\":[],\"services\":[],\"analytics_engine_datasets\":[],\"dispatch_namespaces\":[],\"mtls_certificates\":[],\"pipelines\":[],\"k2\":[],\"secrets_store_secrets\":[],\"artifacts\":[],\"unsafe_hello_world\":[],\"flagship\":[],\"worker_loaders\":[],\"ratelimits\":[],\"vpc_services\":[],\"vpc_networks\":[],\"logfwdr\":{\"bindings\":[]},\"python_modules\":{\"exclude\":[\"**/*.pyc\"]},\"dev\":{\"ip\":\"localhost\",\"local_protocol\":\"http\",\"upstream_protocol\":\"http\",\"enable_containers\":true,\"generate_types\":false},\"no_bundle\":true}",
+    "files": [
+      [
+        "preview/assets/index-BlUDRgvc.js",
+        "application/javascript",
+        511056
+      ],
+      [
+        "preview/assets/index-Bmabyyhm.js",
+        "application/javascript",
+        18039
+      ],
+      [
+        "preview/assets/index-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "preview/index.html",
+        "text/html",
+        403
+      ],
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/index-DCG80aRs.js",
+        "application/javascript",
+        547640
+      ],
+      [
+        "runtime/client/assets/index-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "runtime/client/assets/index-b16LbIiv.js",
+        "application/javascript",
+        18039
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        2703
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-BrTX-yOe.js",
+        "application/javascript",
+        507
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-C3Q1xu4u.js",
+        "application/javascript",
+        79
+      ],
+      [
+        "runtime/server/assets/index-BqUSHQNP.js",
+        "application/javascript",
+        18164
+      ],
+      [
+        "runtime/server/assets/router-DlO8C37K.js",
+        "application/javascript",
+        33195
+      ],
+      [
+        "runtime/server/assets/router-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "runtime/server/assets/start-BClswEUm.js",
+        "application/javascript",
+        43
+      ],
+      [
+        "runtime/server/assets/worker-entry-bJiJZhKV.js",
+        "application/javascript",
+        543996
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        195
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1386
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "4addc15b5ba50251b362fc2275f6376219b82cccd1710de6f20d40a4aed2b638",
+        "moduleCount": 8,
+        "assetCount": 3
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "4addc15b5ba50251b362fc2275f6376219b82cccd1710de6f20d40a4aed2b638",
+        "moduleCount": 8,
+        "assetCount": 3
+      }
+    }
+  },
+  "starter-v26": {
+    "id": "starter-v26",
+    "description": "Starter v26 source (__fixtures__/starter-history/v26.json) built by LocalViteThemeBuildRunner on 76efa42, 2026-11-27",
+    "compilerId": "tailwind-v4-build",
+    "compilerVersion": "platform",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\"configPath\":\"/workspace/wrangler.json\",\"userConfigPath\":\"/workspace/wrangler.json\",\"topLevelName\":\"morph-theme-bld-starter-v26\",\"definedEnvironments\":[],\"compatibility_date\":\"2025-09-02\",\"compatibility_flags\":[\"nodejs_compat\"],\"jsx_factory\":\"React.createElement\",\"jsx_fragment\":\"React.Fragment\",\"rules\":[{\"type\":\"ESModule\",\"globs\":[\"**/*.js\",\"**/*.mjs\"]}],\"name\":\"morph-theme-bld-starter-v26\",\"main\":\"index.js\",\"triggers\":{},\"assets\":{\"directory\":\"../client\"},\"vars\":{},\"durable_objects\":{\"bindings\":[]},\"workflows\":[],\"migrations\":[],\"exports\":{},\"kv_namespaces\":[],\"cloudchamber\":{},\"send_email\":[],\"queues\":{\"producers\":[],\"consumers\":[]},\"connect\":[],\"r2_buckets\":[],\"d1_databases\":[],\"vectorize\":[],\"ai_search_namespaces\":[],\"ai_search\":[],\"agent_memory\":[],\"hyperdrive\":[],\"services\":[],\"analytics_engine_datasets\":[],\"dispatch_namespaces\":[],\"mtls_certificates\":[],\"pipelines\":[],\"k2\":[],\"secrets_store_secrets\":[],\"artifacts\":[],\"unsafe_hello_world\":[],\"flagship\":[],\"worker_loaders\":[],\"ratelimits\":[],\"vpc_services\":[],\"vpc_networks\":[],\"logfwdr\":{\"bindings\":[]},\"python_modules\":{\"exclude\":[\"**/*.pyc\"]},\"dev\":{\"ip\":\"localhost\",\"local_protocol\":\"http\",\"upstream_protocol\":\"http\",\"enable_containers\":true,\"generate_types\":false},\"no_bundle\":true}",
+    "files": [
+      [
+        "preview/assets/index-BpK-eQ3-.js",
+        "application/javascript",
+        511094
+      ],
+      [
+        "preview/assets/index-DRvFVb5f.js",
+        "application/javascript",
+        17246
+      ],
+      [
+        "preview/assets/index-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "preview/index.html",
+        "text/html",
+        403
+      ],
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/index-D025TJPI.js",
+        "application/javascript",
+        547678
+      ],
+      [
+        "runtime/client/assets/index-DqRaLvTE.js",
+        "application/javascript",
+        17246
+      ],
+      [
+        "runtime/client/assets/index-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        2703
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-CUvoIHmF.js",
+        "application/javascript",
+        507
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-C3Q1xu4u.js",
+        "application/javascript",
+        79
+      ],
+      [
+        "runtime/server/assets/index-Csa9KnqX.js",
+        "application/javascript",
+        17371
+      ],
+      [
+        "runtime/server/assets/router-BNpuvtes.js",
+        "application/javascript",
+        33234
+      ],
+      [
+        "runtime/server/assets/router-QzvV8UTC.css",
+        "text/css",
+        15286
+      ],
+      [
+        "runtime/server/assets/start-BClswEUm.js",
+        "application/javascript",
+        43
+      ],
+      [
+        "runtime/server/assets/worker-entry-DvIqrj2G.js",
+        "application/javascript",
+        543996
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        195
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1386
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "978f27b2b24ea68e2094e83d9901b71b283b0e89b05ecb0874cf822d9aaba698",
+        "moduleCount": 8,
+        "assetCount": 3
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "978f27b2b24ea68e2094e83d9901b71b283b0e89b05ecb0874cf822d9aaba698",
+        "moduleCount": 8,
+        "assetCount": 3
+      }
+    }
+  },
+  "starter-v28": {
+    "id": "starter-v28",
+    "description": "Starter v28 source (__fixtures__/starter-history/v28.json) built by LocalViteThemeBuildRunner on 76efa42, 2026-11-27",
+    "compilerId": "tailwind-v4-build",
+    "compilerVersion": "platform",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\"configPath\":\"/workspace/wrangler.json\",\"userConfigPath\":\"/workspace/wrangler.json\",\"topLevelName\":\"morph-theme-bld-starter-v28\",\"definedEnvironments\":[],\"compatibility_date\":\"2025-09-02\",\"compatibility_flags\":[\"nodejs_compat\"],\"jsx_factory\":\"React.createElement\",\"jsx_fragment\":\"React.Fragment\",\"rules\":[{\"type\":\"ESModule\",\"globs\":[\"**/*.js\",\"**/*.mjs\"]}],\"name\":\"morph-theme-bld-starter-v28\",\"main\":\"index.js\",\"triggers\":{},\"assets\":{\"directory\":\"../client\"},\"vars\":{},\"durable_objects\":{\"bindings\":[]},\"workflows\":[],\"migrations\":[],\"exports\":{},\"kv_namespaces\":[],\"cloudchamber\":{},\"send_email\":[],\"queues\":{\"producers\":[],\"consumers\":[]},\"connect\":[],\"r2_buckets\":[],\"d1_databases\":[],\"vectorize\":[],\"ai_search_namespaces\":[],\"ai_search\":[],\"agent_memory\":[],\"hyperdrive\":[],\"services\":[],\"analytics_engine_datasets\":[],\"dispatch_namespaces\":[],\"mtls_certificates\":[],\"pipelines\":[],\"k2\":[],\"secrets_store_secrets\":[],\"artifacts\":[],\"unsafe_hello_world\":[],\"flagship\":[],\"worker_loaders\":[],\"ratelimits\":[],\"vpc_services\":[],\"vpc_networks\":[],\"logfwdr\":{\"bindings\":[]},\"python_modules\":{\"exclude\":[\"**/*.pyc\"]},\"dev\":{\"ip\":\"localhost\",\"local_protocol\":\"http\",\"upstream_protocol\":\"http\",\"enable_containers\":true,\"generate_types\":false},\"no_bundle\":true}",
+    "files": [
+      [
+        "preview/assets/account-BmrfjHgP.js",
+        "application/javascript",
+        62012
+      ],
+      [
+        "preview/assets/index-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "preview/assets/index-tMXtXyuu.js",
+        "application/javascript",
+        18891
+      ],
+      [
+        "preview/assets/index-vZ5fmJ99.js",
+        "application/javascript",
+        512167
+      ],
+      [
+        "preview/assets/order-transfer-BPmTIkZR.js",
+        "application/javascript",
+        7553
+      ],
+      [
+        "preview/index.html",
+        "text/html",
+        403
+      ],
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/account-DRExY5eX.js",
+        "application/javascript",
+        62012
+      ],
+      [
+        "runtime/client/assets/index-BdEYkf8_.js",
+        "application/javascript",
+        548751
+      ],
+      [
+        "runtime/client/assets/index-BsZuBDB0.js",
+        "application/javascript",
+        18891
+      ],
+      [
+        "runtime/client/assets/index-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "runtime/client/assets/order-transfer-ATIdowpp.js",
+        "application/javascript",
+        7553
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        3424
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-BP3UdZO7.js",
+        "application/javascript",
+        915
+      ],
+      [
+        "runtime/server/assets/account-aPsmr1qz.js",
+        "application/javascript",
+        62142
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-C3Q1xu4u.js",
+        "application/javascript",
+        79
+      ],
+      [
+        "runtime/server/assets/index-BIqd0p-n.js",
+        "application/javascript",
+        19016
+      ],
+      [
+        "runtime/server/assets/order-transfer-B16zoMiN.js",
+        "application/javascript",
+        7683
+      ],
+      [
+        "runtime/server/assets/router-DfhuVdfE.js",
+        "application/javascript",
+        34275
+      ],
+      [
+        "runtime/server/assets/router-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "runtime/server/assets/start-BClswEUm.js",
+        "application/javascript",
+        43
+      ],
+      [
+        "runtime/server/assets/worker-entry-DKWCM-gw.js",
+        "application/javascript",
+        543996
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        195
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1386
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "ec1b00a0af385ba83d412f843b9ee6b7fc5581350c2144776f6b0335cc9debda",
+        "moduleCount": 10,
+        "assetCount": 5
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "ec1b00a0af385ba83d412f843b9ee6b7fc5581350c2144776f6b0335cc9debda",
+        "moduleCount": 10,
+        "assetCount": 5
+      }
+    }
+  },
+  "starter-v29": {
+    "id": "starter-v29",
+    "description": "Starter v29 source (__fixtures__/starter-history/v29.json) built by LocalViteThemeBuildRunner on 76efa42, 2026-11-27",
+    "compilerId": "tailwind-v4-build",
+    "compilerVersion": "platform",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\"configPath\":\"/workspace/wrangler.json\",\"userConfigPath\":\"/workspace/wrangler.json\",\"topLevelName\":\"morph-theme-bld-starter-v29\",\"definedEnvironments\":[],\"compatibility_date\":\"2025-09-02\",\"compatibility_flags\":[\"nodejs_compat\"],\"jsx_factory\":\"React.createElement\",\"jsx_fragment\":\"React.Fragment\",\"rules\":[{\"type\":\"ESModule\",\"globs\":[\"**/*.js\",\"**/*.mjs\"]}],\"name\":\"morph-theme-bld-starter-v29\",\"main\":\"index.js\",\"triggers\":{},\"assets\":{\"directory\":\"../client\"},\"vars\":{},\"durable_objects\":{\"bindings\":[]},\"workflows\":[],\"migrations\":[],\"exports\":{},\"kv_namespaces\":[],\"cloudchamber\":{},\"send_email\":[],\"queues\":{\"producers\":[],\"consumers\":[]},\"connect\":[],\"r2_buckets\":[],\"d1_databases\":[],\"vectorize\":[],\"ai_search_namespaces\":[],\"ai_search\":[],\"agent_memory\":[],\"hyperdrive\":[],\"services\":[],\"analytics_engine_datasets\":[],\"dispatch_namespaces\":[],\"mtls_certificates\":[],\"pipelines\":[],\"k2\":[],\"secrets_store_secrets\":[],\"artifacts\":[],\"unsafe_hello_world\":[],\"flagship\":[],\"worker_loaders\":[],\"ratelimits\":[],\"vpc_services\":[],\"vpc_networks\":[],\"logfwdr\":{\"bindings\":[]},\"python_modules\":{\"exclude\":[\"**/*.pyc\"]},\"dev\":{\"ip\":\"localhost\",\"local_protocol\":\"http\",\"upstream_protocol\":\"http\",\"enable_containers\":true,\"generate_types\":false},\"no_bundle\":true}",
+    "files": [
+      [
+        "preview/assets/account-Dk-le0Vy.js",
+        "application/javascript",
+        62012
+      ],
+      [
+        "preview/assets/index-BKrvvyfI.js",
+        "application/javascript",
+        512213
+      ],
+      [
+        "preview/assets/index-C-bgjXML.js",
+        "application/javascript",
+        18891
+      ],
+      [
+        "preview/assets/index-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "preview/assets/order-transfer-CUA3l0Nt.js",
+        "application/javascript",
+        7553
+      ],
+      [
+        "preview/index.html",
+        "text/html",
+        403
+      ],
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/account-C_PcZSqf.js",
+        "application/javascript",
+        62012
+      ],
+      [
+        "runtime/client/assets/index-2GUeuEPb.js",
+        "application/javascript",
+        548797
+      ],
+      [
+        "runtime/client/assets/index-kAiL7HZf.js",
+        "application/javascript",
+        18891
+      ],
+      [
+        "runtime/client/assets/index-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "runtime/client/assets/order-transfer-B3PRWeIe.js",
+        "application/javascript",
+        7553
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        3424
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-BVE9Zx3N.js",
+        "application/javascript",
+        915
+      ],
+      [
+        "runtime/server/assets/account-ChMxCno7.js",
+        "application/javascript",
+        62142
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-C3Q1xu4u.js",
+        "application/javascript",
+        79
+      ],
+      [
+        "runtime/server/assets/index-O25mwydj.js",
+        "application/javascript",
+        19016
+      ],
+      [
+        "runtime/server/assets/order-transfer-C4o7hQLK.js",
+        "application/javascript",
+        7683
+      ],
+      [
+        "runtime/server/assets/router-BSxGOJTB.js",
+        "application/javascript",
+        34321
+      ],
+      [
+        "runtime/server/assets/router-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "runtime/server/assets/start-BClswEUm.js",
+        "application/javascript",
+        43
+      ],
+      [
+        "runtime/server/assets/worker-entry-DYTF6rT8.js",
+        "application/javascript",
+        543996
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        195
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1386
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "1701d76167f857ed2e05c7101db4f248d067a4d346972651fce3dc96269c8e6d",
+        "moduleCount": 10,
+        "assetCount": 5
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "1701d76167f857ed2e05c7101db4f248d067a4d346972651fce3dc96269c8e6d",
+        "moduleCount": 10,
+        "assetCount": 5
+      }
+    }
+  },
+  "starter-v32": {
+    "id": "starter-v32",
+    "description": "Starter v32 (STARTER_THEME_FILES on 76efa42) built by LocalViteThemeBuildRunner, 2026-11-27",
+    "compilerId": "tailwind-v4-build",
+    "compilerVersion": "platform",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\"configPath\":\"/workspace/wrangler.json\",\"userConfigPath\":\"/workspace/wrangler.json\",\"topLevelName\":\"morph-theme-bld-starter-v32\",\"definedEnvironments\":[],\"compatibility_date\":\"2025-09-02\",\"compatibility_flags\":[\"nodejs_compat\"],\"jsx_factory\":\"React.createElement\",\"jsx_fragment\":\"React.Fragment\",\"rules\":[{\"type\":\"ESModule\",\"globs\":[\"**/*.js\",\"**/*.mjs\"]}],\"name\":\"morph-theme-bld-starter-v32\",\"main\":\"index.js\",\"triggers\":{},\"assets\":{\"directory\":\"../client\"},\"vars\":{},\"durable_objects\":{\"bindings\":[]},\"workflows\":[],\"migrations\":[],\"exports\":{},\"kv_namespaces\":[],\"cloudchamber\":{},\"send_email\":[],\"queues\":{\"producers\":[],\"consumers\":[]},\"connect\":[],\"r2_buckets\":[],\"d1_databases\":[],\"vectorize\":[],\"ai_search_namespaces\":[],\"ai_search\":[],\"agent_memory\":[],\"hyperdrive\":[],\"services\":[],\"analytics_engine_datasets\":[],\"dispatch_namespaces\":[],\"mtls_certificates\":[],\"pipelines\":[],\"k2\":[],\"secrets_store_secrets\":[],\"artifacts\":[],\"unsafe_hello_world\":[],\"flagship\":[],\"worker_loaders\":[],\"ratelimits\":[],\"vpc_services\":[],\"vpc_networks\":[],\"logfwdr\":{\"bindings\":[]},\"python_modules\":{\"exclude\":[\"**/*.pyc\"]},\"dev\":{\"ip\":\"localhost\",\"local_protocol\":\"http\",\"upstream_protocol\":\"http\",\"enable_containers\":true,\"generate_types\":false},\"no_bundle\":true}",
+    "files": [
+      [
+        "preview/assets/account-DS8cjm_5.js",
+        "application/javascript",
+        62012
+      ],
+      [
+        "preview/assets/index-BmZ_OavE.js",
+        "application/javascript",
+        17246
+      ],
+      [
+        "preview/assets/index-CbzwN9Ot.js",
+        "application/javascript",
+        550773
+      ],
+      [
+        "preview/assets/index-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "preview/assets/order-transfer-Dkh3Z1I4.js",
+        "application/javascript",
+        7553
+      ],
+      [
+        "preview/index.html",
+        "text/html",
+        403
+      ],
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/account-BrmJ_yZ1.js",
+        "application/javascript",
+        62012
+      ],
+      [
+        "runtime/client/assets/index-CURzLeEC.js",
+        "application/javascript",
+        17246
+      ],
+      [
+        "runtime/client/assets/index-CwPpQ2b4.js",
+        "application/javascript",
+        554721
+      ],
+      [
+        "runtime/client/assets/index-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "runtime/client/assets/order-transfer-B4SUktlY.js",
+        "application/javascript",
+        7553
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        3729
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-0B-3ZEgl.js",
+        "application/javascript",
+        915
+      ],
+      [
+        "runtime/server/assets/account-CUwU6MpJ.js",
+        "application/javascript",
+        62142
+      ],
+      [
+        "runtime/server/assets/content-B5HTOD6O.js",
+        "application/javascript",
+        6910
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-C3Q1xu4u.js",
+        "application/javascript",
+        79
+      ],
+      [
+        "runtime/server/assets/index-B6rG0jLN.js",
+        "application/javascript",
+        17371
+      ],
+      [
+        "runtime/server/assets/order-transfer-BuKLCmc6.js",
+        "application/javascript",
+        7683
+      ],
+      [
+        "runtime/server/assets/router-C_L54gkL.js",
+        "application/javascript",
+        35730
+      ],
+      [
+        "runtime/server/assets/router-nP-8uZ4M.css",
+        "text/css",
+        23951
+      ],
+      [
+        "runtime/server/assets/start-BClswEUm.js",
+        "application/javascript",
+        43
+      ],
+      [
+        "runtime/server/assets/worker-entry-DHCDQl2w.js",
+        "application/javascript",
+        547202
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        195
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1386
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "625bc4fec8fbcd64d1fd998cb66404a279f0f613648dfe4a313a42b3fa16dccb",
+        "moduleCount": 11,
+        "assetCount": 5
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "625bc4fec8fbcd64d1fd998cb66404a279f0f613648dfe4a313a42b3fa16dccb",
+        "moduleCount": 11,
+        "assetCount": 5
+      }
+    }
+  },
+  "platform-saved-2026-09-28": {
+    "id": "platform-saved-2026-09-28",
+    "description": "Platform Start build output saved on 2026-09-28 (.morph-builds/test-build-1-RqRX0e), older @cloudflare/vite-plugin",
+    "compilerId": "tailwind-v4-build",
+    "compilerVersion": "platform",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\"configPath\":\"/workspace/wrangler.json\",\"userConfigPath\":\"/workspace/wrangler.json\",\"topLevelName\":\"morph-theme-test-build-1\",\"definedEnvironments\":[],\"compatibility_date\":\"2025-09-02\",\"compatibility_flags\":[\"nodejs_compat\"],\"jsx_factory\":\"React.createElement\",\"jsx_fragment\":\"React.Fragment\",\"rules\":[{\"type\":\"ESModule\",\"globs\":[\"**/*.js\",\"**/*.mjs\"]}],\"name\":\"morph-theme-test-build-1\",\"main\":\"index.js\",\"triggers\":{},\"assets\":{\"directory\":\"../client\"},\"vars\":{},\"durable_objects\":{\"bindings\":[]},\"workflows\":[],\"migrations\":[],\"exports\":{},\"kv_namespaces\":[],\"cloudchamber\":{},\"send_email\":[],\"queues\":{\"producers\":[],\"consumers\":[]},\"r2_buckets\":[],\"d1_databases\":[],\"vectorize\":[],\"ai_search_namespaces\":[],\"ai_search\":[],\"agent_memory\":[],\"hyperdrive\":[],\"services\":[],\"analytics_engine_datasets\":[],\"dispatch_namespaces\":[],\"mtls_certificates\":[],\"pipelines\":[],\"secrets_store_secrets\":[],\"artifacts\":[],\"unsafe_hello_world\":[],\"flagship\":[],\"worker_loaders\":[],\"ratelimits\":[],\"vpc_services\":[],\"vpc_networks\":[],\"logfwdr\":{\"bindings\":[]},\"python_modules\":{\"exclude\":[\"**/*.pyc\"]},\"dev\":{\"ip\":\"localhost\",\"local_protocol\":\"http\",\"upstream_protocol\":\"http\",\"enable_containers\":true,\"generate_types\":false},\"no_bundle\":true}",
+    "files": [
+      [
+        "runtime/client/assets/account-DozMQcPP.js",
+        "application/javascript",
+        54082
+      ],
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/index-D0QHT5Ia.css",
+        "text/css",
+        25127
+      ],
+      [
+        "runtime/client/assets/index-KQqEg3a5.js",
+        "application/javascript",
+        553203
+      ],
+      [
+        "runtime/client/assets/index-zSuTm_4R.js",
+        "application/javascript",
+        16406
+      ],
+      [
+        "runtime/client/assets/order-transfer-SEN9xSKM.js",
+        "application/javascript",
+        7296
+      ],
+      [
+        "runtime/client/assets/products.index-D2uQJ8_3.js",
+        "application/javascript",
+        396
+      ],
+      [
+        "runtime/client/assets/products.index-MN5GU6NR.js",
+        "application/javascript",
+        4585
+      ],
+      [
+        "runtime/client/assets/products._slug-B7X82eng.js",
+        "application/javascript",
+        6597
+      ],
+      [
+        "runtime/client/assets/products._slug-CFK2WQh5.js",
+        "application/javascript",
+        399
+      ],
+      [
+        "runtime/client/assets/products._slug-RGBqM5dT.js",
+        "application/javascript",
+        864
+      ],
+      [
+        "runtime/server/assets/account-C-HZxfvA.js",
+        "application/javascript",
+        54212
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-C3Q1xu4u.js",
+        "application/javascript",
+        79
+      ],
+      [
+        "runtime/server/assets/index-W5f-zujL.js",
+        "application/javascript",
+        16531
+      ],
+      [
+        "runtime/server/assets/order-transfer-DnAfazls.js",
+        "application/javascript",
+        7431
+      ],
+      [
+        "runtime/server/assets/products.index-Dn130ooG.js",
+        "application/javascript",
+        521
+      ],
+      [
+        "runtime/server/assets/products.index-DW3McVl6.js",
+        "application/javascript",
+        4710
+      ],
+      [
+        "runtime/server/assets/products._slug-BHcLp0mu.js",
+        "application/javascript",
+        6722
+      ],
+      [
+        "runtime/server/assets/products._slug-DMNrruGK.js",
+        "application/javascript",
+        524
+      ],
+      [
+        "runtime/server/assets/products._slug-DS0NdVva.js",
+        "application/javascript",
+        989
+      ],
+      [
+        "runtime/server/assets/router-C7g03zZZ.js",
+        "application/javascript",
+        38892
+      ],
+      [
+        "runtime/server/assets/router-D0QHT5Ia.css",
+        "text/css",
+        25127
+      ],
+      [
+        "runtime/server/assets/start-BClswEUm.js",
+        "application/javascript",
+        43
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-D8n46jdE.js",
+        "application/javascript",
+        1368
+      ],
+      [
+        "runtime/server/assets/worker-entry-DrEE7lWz.js",
+        "application/javascript",
+        544066
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        195
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        5368
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1331
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "61f0e5455e67b4c631c9527cb586fd4b688914442d599f31666eb0bb2982daca",
+        "moduleCount": 15,
+        "assetCount": 10
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "61f0e5455e67b4c631c9527cb586fd4b688914442d599f31666eb0bb2982daca",
+        "moduleCount": 15,
+        "assetCount": 10
+      }
+    }
+  },
+  "astro-native": {
+    "id": "astro-native",
+    "description": "Astro native build (astro-native-prerender.fixtures astroThemeFiles plain, sealed /about) by LocalViteThemeBuildRunner on 76efa42, 2026-11-27",
+    "compilerId": "astro-native",
+    "compilerVersion": "7.3.5+morph-sdk.a262c1272c6303b4",
+    "workerEntry": "runtime/server/entry.mjs",
+    "config": "{\n  \"configPath\": \"/workspace/.morph/wrangler.json\",\n  \"userConfigPath\": \"/workspace/.morph/wrangler.json\",\n  \"topLevelName\": \"morph-astro-a3\",\n  \"definedEnvironments\": [],\n  \"compatibility_date\": \"2026-09-01\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"jsx_factory\": \"React.createElement\",\n  \"jsx_fragment\": \"React.Fragment\",\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"name\": \"morph-astro-a3\",\n  \"main\": \"entry.mjs\",\n  \"triggers\": {},\n  \"assets\": {\n    \"binding\": \"ASSETS\",\n    \"directory\": \"../client\"\n  },\n  \"vars\": {},\n  \"durable_objects\": {\n    \"bindings\": []\n  },\n  \"workflows\": [],\n  \"migrations\": [],\n  \"exports\": {},\n  \"kv_namespaces\": [],\n  \"cloudchamber\": {},\n  \"send_email\": [],\n  \"queues\": {\n    \"producers\": [],\n    \"consumers\": []\n  },\n  \"connect\": [],\n  \"r2_buckets\": [],\n  \"d1_databases\": [],\n  \"vectorize\": [],\n  \"ai_search_namespaces\": [],\n  \"ai_search\": [],\n  \"agent_memory\": [],\n  \"hyperdrive\": [],\n  \"services\": [],\n  \"analytics_engine_datasets\": [],\n  \"dispatch_namespaces\": [],\n  \"mtls_certificates\": [],\n  \"pipelines\": [],\n  \"k2\": [],\n  \"secrets_store_secrets\": [],\n  \"artifacts\": [],\n  \"unsafe_hello_world\": [],\n  \"flagship\": [],\n  \"worker_loaders\": [],\n  \"ratelimits\": [],\n  \"vpc_services\": [],\n  \"vpc_networks\": [],\n  \"logfwdr\": {\n    \"bindings\": []\n  },\n  \"python_modules\": {\n    \"exclude\": [\n      \"**/*.pyc\"\n    ]\n  },\n  \"previews\": {},\n  \"dev\": {\n    \"ip\": \"localhost\",\n    \"local_protocol\": \"http\",\n    \"upstream_protocol\": \"http\",\n    \"enable_containers\": true,\n    \"generate_types\": false\n  },\n  \"no_bundle\": true\n}\n",
+    "files": [
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/_headers",
+        "application/octet-stream",
+        63
+      ],
+      [
+        "runtime/client/about/index.html",
+        "text/html",
+        71
+      ],
+      [
+        "runtime/client/index.html",
+        "text/html",
+        71
+      ],
+      [
+        "runtime/client/plain/index.html",
+        "text/html",
+        61
+      ],
+      [
+        "runtime/server/chunks/_virtual_astro_server-island-manifest_q0HM18kM.mjs",
+        "application/javascript",
+        275
+      ],
+      [
+        "runtime/server/chunks/_virtual_astro_session-driver_DIk1nzQP.mjs",
+        "application/javascript",
+        223
+      ],
+      [
+        "runtime/server/chunks/compiler_C_ecEEQn.mjs",
+        "application/javascript",
+        1249
+      ],
+      [
+        "runtime/server/chunks/console_B9AseomN.mjs",
+        "application/javascript",
+        298027
+      ],
+      [
+        "runtime/server/chunks/entrypoints_DeQgkL-R.mjs",
+        "application/javascript",
+        171523
+      ],
+      [
+        "runtime/server/chunks/image-passthrough-endpoint_BwfxA32s.mjs",
+        "application/javascript",
+        2322
+      ],
+      [
+        "runtime/server/chunks/noop-entrypoint_BYLrzUxc.mjs",
+        "application/javascript",
+        157
+      ],
+      [
+        "runtime/server/chunks/noop_C2PfR4R3.mjs",
+        "application/javascript",
+        706
+      ],
+      [
+        "runtime/server/chunks/path_CpAWtld7.mjs",
+        "application/javascript",
+        17146
+      ],
+      [
+        "runtime/server/chunks/remote_DmSznVVE.mjs",
+        "application/javascript",
+        24650
+      ],
+      [
+        "runtime/server/chunks/rolldown-runtime_D7vh-g_o.mjs",
+        "application/javascript",
+        418
+      ],
+      [
+        "runtime/server/chunks/sequence_D_o2vW8q.mjs",
+        "application/javascript",
+        45964
+      ],
+      [
+        "runtime/server/chunks/service_C6gE_WRd.mjs",
+        "application/javascript",
+        43827
+      ],
+      [
+        "runtime/server/chunks/ssr_CnE5nRuy.mjs",
+        "application/javascript",
+        2155
+      ],
+      [
+        "runtime/server/chunks/static-image-collection_CWk4d89h.mjs",
+        "application/javascript",
+        2572
+      ],
+      [
+        "runtime/server/entry.mjs",
+        "application/javascript",
+        5097
+      ],
+      [
+        "runtime/server/virtual_astro_middleware.mjs",
+        "application/javascript",
+        473
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1782
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"entry.mjs\",\n  \"compatibility_date\": \"2026-09-01\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\",\n    \"binding\": \"ASSETS\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "9b34e27082fac4b1215b5722676793cd3387b2de1addbad2752deff32f1da7fa",
+        "moduleCount": 17,
+        "assetCount": 3
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"entry.mjs\",\n  \"compatibility_date\": \"2026-09-01\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\",\n    \"binding\": \"ASSETS\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "9b34e27082fac4b1215b5722676793cd3387b2de1addbad2752deff32f1da7fa",
+        "moduleCount": 17,
+        "assetCount": 3
+      }
+    }
+  },
+  "start-native-guide": {
+    "id": "start-native-guide",
+    "description": "Native Start build (Starter v32 + the guide's vite.config.ts and a wrangler.jsonc with vars and observability.enabled), collected by collectNativeStartArtifact on 76efa42, 2026-11-27",
+    "compilerId": "tanstack-start-native",
+    "compilerVersion": "native",
+    "workerEntry": "runtime/server/index.js",
+    "config": "{\n  \"configPath\": \"/workspace/.morph/wrangler.json\",\n  \"userConfigPath\": \"/workspace/.morph/wrangler.json\",\n  \"topLevelName\": \"native-starter\",\n  \"definedEnvironments\": [],\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"jsx_factory\": \"React.createElement\",\n  \"jsx_fragment\": \"React.Fragment\",\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"name\": \"native-starter\",\n  \"main\": \"index.js\",\n  \"triggers\": {},\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"vars\": {\n    \"STORE_LABEL\": \"probe\",\n    \"FEATURES\": {\n      \"a\": 1\n    }\n  },\n  \"durable_objects\": {\n    \"bindings\": []\n  },\n  \"workflows\": [],\n  \"migrations\": [],\n  \"exports\": {},\n  \"kv_namespaces\": [],\n  \"cloudchamber\": {},\n  \"send_email\": [],\n  \"queues\": {\n    \"producers\": [],\n    \"consumers\": []\n  },\n  \"connect\": [],\n  \"r2_buckets\": [],\n  \"d1_databases\": [],\n  \"vectorize\": [],\n  \"ai_search_namespaces\": [],\n  \"ai_search\": [],\n  \"agent_memory\": [],\n  \"hyperdrive\": [],\n  \"services\": [],\n  \"analytics_engine_datasets\": [],\n  \"dispatch_namespaces\": [],\n  \"mtls_certificates\": [],\n  \"pipelines\": [],\n  \"k2\": [],\n  \"secrets_store_secrets\": [],\n  \"artifacts\": [],\n  \"unsafe_hello_world\": [],\n  \"flagship\": [],\n  \"worker_loaders\": [],\n  \"ratelimits\": [],\n  \"vpc_services\": [],\n  \"vpc_networks\": [],\n  \"logfwdr\": {\n    \"bindings\": []\n  },\n  \"observability\": {\n    \"enabled\": true\n  },\n  \"python_modules\": {\n    \"exclude\": [\n      \"**/*.pyc\"\n    ]\n  },\n  \"dev\": {\n    \"ip\": \"localhost\",\n    \"local_protocol\": \"http\",\n    \"upstream_protocol\": \"http\",\n    \"enable_containers\": true,\n    \"generate_types\": false\n  },\n  \"no_bundle\": true\n}\n",
+    "files": [
+      [
+        "runtime/client/.assetsignore",
+        "application/octet-stream",
+        24
+      ],
+      [
+        "runtime/client/assets/account-h0aRKsA-.js",
+        "application/javascript",
+        54047
+      ],
+      [
+        "runtime/client/assets/index-C2S2Rbjf.js",
+        "application/javascript",
+        14551
+      ],
+      [
+        "runtime/client/assets/index-CuJmbQCu.js",
+        "application/javascript",
+        552745
+      ],
+      [
+        "runtime/client/assets/index-DhYfyxpR.css",
+        "text/css",
+        23975
+      ],
+      [
+        "runtime/client/assets/order-transfer-BRFnQ-nL.js",
+        "application/javascript",
+        6738
+      ],
+      [
+        "runtime/server/.vite/manifest.json",
+        "application/json",
+        3921
+      ],
+      [
+        "runtime/server/assets/_tanstack-start-manifest_v-KPOtfWMe.js",
+        "application/javascript",
+        813
+      ],
+      [
+        "runtime/server/assets/account-DDImKmHa.js",
+        "application/javascript",
+        91826
+      ],
+      [
+        "runtime/server/assets/content-CZ0rTsbM.js",
+        "application/javascript",
+        12640
+      ],
+      [
+        "runtime/server/assets/empty-plugin-adapters-BFgPZ6_d.js",
+        "application/javascript",
+        132
+      ],
+      [
+        "runtime/server/assets/index-BO_VgSzM.js",
+        "application/javascript",
+        27527
+      ],
+      [
+        "runtime/server/assets/order-transfer-C8vqwVFy.js",
+        "application/javascript",
+        9782
+      ],
+      [
+        "runtime/server/assets/router-8WGz_xCJ.css",
+        "text/css",
+        26446
+      ],
+      [
+        "runtime/server/assets/router-BRhX66AZ.js",
+        "application/javascript",
+        69645
+      ],
+      [
+        "runtime/server/assets/start-HYkvq4Ni.js",
+        "application/javascript",
+        58
+      ],
+      [
+        "runtime/server/assets/worker-entry-Diy7LHvf.js",
+        "application/javascript",
+        1248308
+      ],
+      [
+        "runtime/server/index.js",
+        "application/javascript",
+        208
+      ],
+      [
+        "runtime/server/wrangler.json",
+        "application/json",
+        1750
+      ]
+    ],
+    "mainAt76efa42": {
+      "production": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "1136a0c87daf40f5beb954ba1a00f44e8b7d9bab31817ccb7db570c8bfb627b4",
+        "moduleCount": 11,
+        "assetCount": 5
+      },
+      "build-preview": {
+        "deployConfig": "{\n  \"name\": \"morph-theme-sf-fixture\",\n  \"main\": \"index.js\",\n  \"compatibility_date\": \"2025-09-02\",\n  \"compatibility_flags\": [\n    \"nodejs_compat\"\n  ],\n  \"assets\": {\n    \"directory\": \"../client\"\n  },\n  \"no_bundle\": true,\n  \"rules\": [\n    {\n      \"type\": \"ESModule\",\n      \"globs\": [\n        \"**/*.js\",\n        \"**/*.mjs\"\n      ]\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}",
+        "planSha256": "1136a0c87daf40f5beb954ba1a00f44e8b7d9bab31817ccb7db570c8bfb627b4",
+        "moduleCount": 11,
+        "assetCount": 5
+      }
+    }
+  }
+}

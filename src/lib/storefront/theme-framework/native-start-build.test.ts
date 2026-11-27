@@ -19,6 +19,7 @@ import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { startCorePublicEntry } from "@/lib/storefront/service/core-public-entry.test-support";
 import type { PublishedDocument } from "@/lib/storefront/service/storefront-content-runtime";
 import { NATIVE_WRANGLER_CONFIG_PATH } from "./tanstack-start-native-build";
+import { checkNativeWranglerConfig } from "./cloudflare-native-build";
 import { themeFramework } from ".";
 
 /**
@@ -78,6 +79,9 @@ const WRANGLER = `{
   "compatibility_date": "2025-09-02",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
+  "observability": { "enabled": true },
+  // Local-only settings: stripped from the copy the build reads.
+  "dev": { "port": 8788 },
 }
 `;
 const BUILD_BUDGET_MS = 180_000;
@@ -176,7 +180,7 @@ describe("a TanStack Start project built with its own configuration", () => {
         file.path === NATIVE_WRANGLER_CONFIG_PATH
           ? JSON.stringify({
               ...JSON.parse(file.content),
-              vars: { MORPH_CONFIG: "used" },
+              vars: { CONFIG_PROBE: "used" },
             })
           : file.content;
       mkdirSync(dirname(join(workspace, file.path)), { recursive: true });
@@ -246,10 +250,20 @@ describe("a TanStack Start project built with its own configuration", () => {
   it("built with Morph's copy of the Wrangler config", () => {
     expect(serverWranglerConfig).toMatchObject({
       name: "native-starter",
-      vars: { MORPH_CONFIG: "used" },
+      vars: { CONFIG_PROBE: "used" },
       main: "index.js",
       assets: { directory: "../client" },
+      // Kept by the Wrangler key contract, as the plugin wrote it.
+      observability: { enabled: true },
     });
+    // The collector held the plugin's output to the contract's emitted
+    // shape; the deploy plan checks it again.
+    expect(
+      checkNativeWranglerConfig(serverWranglerConfig, {
+        shape: "emitted",
+        file: "runtime/server/wrangler.json",
+      }),
+    ).toBeNull();
   });
 
   it("ships none of the editor's markers", () => {

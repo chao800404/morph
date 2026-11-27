@@ -1,6 +1,16 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { planThemeWorkerDeployment } from "./theme-worker-deployment-plan";
+import {
+  planThemeWorkerDeployment,
+  type ThemeWorkerDeploymentTarget,
+} from "./theme-worker-deployment-plan";
+import { wranglerDeployConfig } from "./sandbox-wrangler-theme-worker-deployer";
+import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
 import type { CanonicalThemeBuildManifest } from "../compiler/theme-build-artifact-store.types";
+import emittedConfigs from "./__fixtures__/theme-worker-emitted-configs.json";
+
+const sha256 = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
 
 /**
  * File set and Worker config taken from a real starter-theme build produced by
@@ -664,5 +674,251 @@ describe("registered static pages in the Theme Worker manifest", () => {
         workerConfig: REAL_WORKER_CONFIG,
       }),
     ).toMatchObject({ success: false, reason: "INVALID_STATIC_PAGES" });
+  });
+});
+
+/**
+ * The Wrangler key contract's admission boundary (render plan v2 step 1):
+ * the strict contract applies only to an artifact whose immutable
+ * `manifest.compilerId` is the native Start build's. Every other artifact —
+ * the platform's Starter builds, old and new, and Astro's — deploys with the
+ * config it deployed with before the contract, byte for byte.
+ *
+ * The inputs are real outputs of the Cloudflare plugin
+ * (`__fixtures__/theme-worker-emitted-configs.json`; each entry says how it
+ * was made, machine paths replaced by `/workspace/`). `mainAt76efa42` is
+ * what this function and `wranglerDeployConfig` produced for them on main
+ * 76efa42, before the contract, recorded by running that code unchanged.
+ */
+describe("the Wrangler key contract's admission boundary", () => {
+  type Fixture = {
+    compilerId: string;
+    compilerVersion: string;
+    workerEntry: string;
+    config: string;
+    files: Array<[string, string, number]>;
+    mainAt76efa42: Record<
+      ThemeWorkerDeploymentTarget,
+      {
+        deployConfig: string;
+        planSha256: string;
+        moduleCount: number;
+        assetCount: number;
+      }
+    >;
+  };
+  const fixtures = emittedConfigs as unknown as Record<string, Fixture>;
+
+  const fixtureManifest = (fixture: Fixture): CanonicalThemeBuildManifest =>
+    manifest({
+      buildId: "bld_fixture",
+      storefrontId: "sf_fixture",
+      themeId: "th_fixture",
+      sourceRevisionId: "rev_fixture",
+      compilerId: fixture.compilerId,
+      compilerVersion: fixture.compilerVersion,
+      artifactEntry: fixture.workerEntry,
+      runtime: {
+        kind: "cloudflare-worker",
+        workerEntry: fixture.workerEntry,
+        clientAssetsDirectory: "runtime/client",
+      },
+      filesCount: fixture.files.length,
+      files: fixture.files.map(([path, contentType, sizeBytes]) => ({
+        path,
+        contentType,
+        sizeBytes,
+        sha256: "0".repeat(64),
+      })),
+    });
+
+  const planFor = (
+    fixture: Fixture,
+    target: ThemeWorkerDeploymentTarget,
+    workerConfig: unknown = JSON.parse(fixture.config),
+  ) =>
+    planThemeWorkerDeployment({
+      target,
+      storefrontId: "sf_fixture",
+      manifest: fixtureManifest(fixture),
+      workerConfig,
+    });
+
+  const LEGACY = [
+    "starter-v11",
+    "starter-v15",
+    "starter-v20",
+    "starter-v26",
+    "starter-v28",
+    "starter-v29",
+    "starter-v32",
+    "platform-saved-2026-09-28",
+    "astro-native",
+  ];
+  const TARGETS = ["production", "build-preview"] as const;
+
+  it.each(LEGACY.flatMap((id) => TARGETS.map((target) => [id, target] as const)))(
+    "%s (%s) deploys with exactly the config it had before the contract",
+    (id, target) => {
+      const fixture = fixtures[id]!;
+      expect(fixture.compilerId).not.toBe(NATIVE_START_COMPILER_ID);
+      const result = planFor(fixture, target);
+      if (!result.success) throw new Error(result.message);
+      const expected = fixture.mainAt76efa42[target];
+      expect(JSON.stringify(wranglerDeployConfig(result.plan), null, 2)).toBe(
+        expected.deployConfig,
+      );
+      expect(sha256(JSON.stringify(result.plan))).toBe(expected.planSha256);
+      expect(result.plan.modules).toHaveLength(expected.moduleCount);
+      expect(result.plan.assets).toHaveLength(expected.assetCount);
+      expect(result.plan.native).toBeUndefined();
+    },
+  );
+
+  it("keeps the old checks, and only those, for an artifact outside the boundary", () => {
+    // A platform artifact carrying what the contract refuses deploys as it
+    // did: the contract does not reach back into artifacts it did not admit.
+    const fixture = fixtures["starter-v32"]!;
+    const config = {
+      ...JSON.parse(fixture.config),
+      vars: { MORPH_X: "1" },
+      observability: { enabled: true, head_sampling_rate: 0.5 },
+      placement: { mode: "smart" },
+      some_future_key: true,
+    };
+    const result = planFor(fixture, "production", config);
+    if (!result.success) throw new Error(result.message);
+    expect(JSON.stringify(wranglerDeployConfig(result.plan), null, 2)).toBe(
+      fixture.mainAt76efa42.production.deployConfig,
+    );
+    // ...and is refused for what it was refused for before.
+    expect(
+      planFor(fixture, "production", {
+        ...config,
+        kv_namespaces: [{ binding: "KV", id: "x" }],
+      }),
+    ).toMatchObject({ success: false, reason: "FORBIDDEN_BINDING" });
+  });
+
+  it("is decided by the manifest's compiler identity, not by the config", () => {
+    const native = fixtures["start-native-guide"]!;
+    const result = planFor(
+      { ...native, compilerId: "tailwind-v4-build" },
+      "production",
+    );
+    if (!result.success) throw new Error(result.message);
+    expect(result.plan.native).toBeUndefined();
+    expect(JSON.stringify(wranglerDeployConfig(result.plan), null, 2)).toBe(
+      native.mainAt76efa42.production.deployConfig,
+    );
+  });
+
+  describe("a native Start artifact", () => {
+    const fixture = fixtures["start-native-guide"]!;
+
+    it("deploys the author's vars and observability.enabled, and nothing else of the build's config", () => {
+      expect(fixture.compilerId).toBe(NATIVE_START_COMPILER_ID);
+      for (const target of TARGETS) {
+        const result = planFor(fixture, target);
+        if (!result.success) throw new Error(result.message);
+        expect(result.plan.native).toEqual({
+          vars: { STORE_LABEL: "probe", FEATURES: { a: 1 } },
+          observabilityEnabled: true,
+        });
+        // The modules and assets are what they were before the contract;
+        // the deploy config gains exactly the kept settings.
+        const { native: _native, ...withoutNative } = result.plan;
+        expect(sha256(JSON.stringify(withoutNative))).toBe(
+          fixture.mainAt76efa42[target].planSha256,
+        );
+        expect(wranglerDeployConfig(result.plan)).toEqual({
+          ...JSON.parse(fixture.mainAt76efa42[target].deployConfig),
+          vars: { STORE_LABEL: "probe", FEATURES: { a: 1 } },
+          keep_vars: false,
+          observability: { enabled: true },
+        });
+      }
+    });
+
+    it("writes empty vars and observability off when the build has none, so a removed var is removed", () => {
+      const config = JSON.parse(fixture.config);
+      config.vars = {};
+      delete config.observability;
+      const result = planFor(fixture, "production", config);
+      if (!result.success) throw new Error(result.message);
+      expect(wranglerDeployConfig(result.plan)).toMatchObject({
+        vars: {},
+        keep_vars: false,
+        observability: { enabled: false },
+      });
+    });
+
+    it("never copies the build's other settings into the deploy config", () => {
+      const result = planFor(fixture, "production", {
+        ...JSON.parse(fixture.config),
+        dev: { ip: "0.0.0.0", port: 1 },
+        workers_dev: true,
+        preview_urls: true,
+        name: "authors-own-name",
+      });
+      if (!result.success) throw new Error(result.message);
+      const config = wranglerDeployConfig(result.plan);
+      expect(Object.keys(config)).toEqual([
+        "name",
+        "main",
+        "compatibility_date",
+        "compatibility_flags",
+        "assets",
+        "no_bundle",
+        "rules",
+        "workers_dev",
+        "preview_urls",
+        "vars",
+        "keep_vars",
+        "observability",
+      ]);
+      expect(config).toMatchObject({
+        name: "morph-theme-sf-fixture",
+        workers_dev: false,
+        preview_urls: false,
+      });
+    });
+
+    it.each([
+      ["a route", { routes: ["shop.example.com/*"] }, "NATIVE_ROUTE_CLAIM"],
+      [
+        "a queue producer",
+        { queues: { producers: [{ binding: "Q", queue: "q" }], consumers: [] } },
+        "NATIVE_BINDINGS_UNMAPPED",
+      ],
+      ["an AI binding", { ai: { binding: "AI" } }, "NATIVE_BINDINGS_UNMAPPED"],
+      [
+        "version metadata",
+        { version_metadata: { binding: "V" } },
+        "NATIVE_BINDINGS_UNMAPPED",
+      ],
+      [
+        "observability sampling",
+        { observability: { enabled: true, head_sampling_rate: 0.1 } },
+        "NATIVE_WRANGLER_SETTING_UNSUPPORTED",
+      ],
+      ["placement", { placement: { mode: "smart" } }, "NATIVE_WRANGLER_SETTING_UNSUPPORTED"],
+      ["limits", { limits: { cpu_ms: 10 } }, "NATIVE_WRANGLER_SETTING_UNSUPPORTED"],
+      ["a reserved var", { vars: { MORPH_BUILD_ID: "x" } }, "NATIVE_BINDING_NAME_CLASH"],
+      ["an unknown key", { some_future_key: [] }, "NATIVE_WRANGLER_SETTING_UNKNOWN"],
+      ["a changed adapter default", { rules: [] }, "NATIVE_WRANGLER_SETTING_UNSUPPORTED"],
+    ])("is refused at deploy when its Worker config carries %s", (_label, override, code) => {
+      const result = planFor(fixture, "production", {
+        ...JSON.parse(fixture.config),
+        ...override,
+      });
+      expect(result).toMatchObject({
+        success: false,
+        reason: "INVALID_WORKER_CONFIG",
+        message: expect.stringMatching(
+          new RegExp(`^${code}: runtime/server/wrangler\\.json`),
+        ),
+      });
+    });
   });
 });
