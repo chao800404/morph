@@ -237,3 +237,38 @@ describe("an empty route document", () => {
     expect(resolve("/aboutus")).toEqual(resolve("/contact"));
   });
 });
+
+describe("Live Preview link content", () => {
+  const document = {
+    version: 1 as const,
+    sections: [
+      {
+        id: "cta",
+        type: "cta",
+        enabled: true,
+        props: {
+          guide: {
+            href: "https://example.com/docs",
+            target: "_blank",
+            nofollow: false,
+            download: false,
+          },
+        },
+      },
+    ],
+  };
+
+  it("derives rel for a new-tab link like the published content does, and never stores it", async () => {
+    const snapshot = await createThemePreviewContentSnapshot({
+      templates: [{ type: "index", routePath: "/links", document }],
+    });
+
+    expect(snapshot.routes!["/links"]!.slots.cta!.guide).toMatchObject({
+      href: "https://example.com/docs",
+      target: "_blank",
+      rel: "noopener noreferrer",
+    });
+    // The draft Document itself still holds the author's value, no rel.
+    expect(document.sections[0]!.props.guide).not.toHaveProperty("rel");
+  });
+});
