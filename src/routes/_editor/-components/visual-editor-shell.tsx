@@ -536,6 +536,7 @@ import {
   planPageSectionRemoval,
 } from "@/lib/storefront/editor/page-section-copy";
 import {
+  LOCAL_DRAFT_FILE_ID_PREFIX,
   toWorkspaceKey,
   themeFileWritePrecondition,
   sourceConflictPaths,
@@ -6873,7 +6874,7 @@ export function VisualEditorShell({
             !serverPaths.has(file.path) && !isThemePublicPath(file.path),
         )
         .map((file) => ({
-          id: `local:${file.path}`,
+          id: `${LOCAL_DRAFT_FILE_ID_PREFIX}${file.path}`,
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
           path: file.path,
