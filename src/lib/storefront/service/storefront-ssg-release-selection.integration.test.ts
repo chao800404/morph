@@ -350,7 +350,7 @@ describe.sequential("the public URL serves the active release's static HTML", ()
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(HTML_A);
     expect(response.headers.get("cache-control")).toBe(
-      "public, max-age=0, must-revalidate",
+      "private, no-cache",
     );
     etagA = response.headers.get("etag")!;
     expect(etagA).toMatch(/^"ssg:rel_a:[0-9a-f]{64}"$/);
