@@ -231,16 +231,14 @@ export function storefrontDeclaredSectionIds(
 }
 
 /**
- * A route's scoped content (`storefrontScopedContent`), from the Documents it
- * resolved to: cut from `buildStorefrontContent(layout, page)` and, for a
- * layout section the page shows under its own id, the layout's own values
- * (`buildStorefrontContent(layout, null)`).
+ * A route's scoped content (`storefrontScopedContent`): its merged content,
+ * `buildStorefrontContent(layout, page)`, restricted to the ids one Document
+ * declares, with every id the merged read hides.
  *
- * Narrowed from what the merged read and the layout alone emit, never built
- * from a Document on its own, so a section either Document hides stays
- * hidden (one slot namespace, PR-1 review item 6) and public media
- * authorisation, which is derived from those two (`collectVisitorMediaKeys`),
- * covers it unchanged.
+ * Never built from a Document on its own, so a section either Document
+ * hides stays hidden (one slot namespace, PR-1 review item 6), and public
+ * media authorisation, derived from the merged read
+ * (`collectVisitorMediaKeys`), covers it unchanged.
  */
 export function buildStorefrontScopedContent(
   scope: StorefrontContentScope,
@@ -250,7 +248,6 @@ export function buildStorefrontScopedContent(
   const content = storefrontScopedContent(
     scope,
     buildStorefrontContent(layoutDocument, document),
-    buildStorefrontContent(layoutDocument, null),
     storefrontDeclaredSectionIds(document),
     storefrontDeclaredSectionIds(layoutDocument),
   );

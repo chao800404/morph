@@ -59,20 +59,21 @@ if (!morph.layouts.isHidden(layout, "header")) render(layout.header);
 ### `layouts.get(name, { path })`
 
 - **What it returns.** A `MorphLayout`, which has the same shape as `MorphPage`. It holds the sections the layout Document declares, as the page at `path` renders them.
-- **Hidden sections.** A section the layout hides, or that this page hides under the same id, is in `_hidden` and carries no values. Layout and page share one slot namespace, so a page can hide a layout section on itself. That is why the layout read is per page.
+- **Hidden sections.** `_hidden` lists every id the merged read hides on that page, whichever Document hid it. A hidden section carries no values. Layout and page share one slot namespace, so a page can hide a layout section on itself. That is why the layout read is per page.
+  - The list also covers a section the layout component renders from its own defaults without declaring it: if the page hides that id, the layout read hides it too, as the merged read does.
   - A path with no Document of its own reads the layout as the author left it.
   - `layouts.isHidden` (or `pages.isHidden`) reads `_hidden` the same way as on a page.
 - **Name.** One layout exists today, `"default"`. Any other name throws `invalid_request` before anything is sent.
 - **Path.** `path` is required, because the page cannot be derived. A Start loader runs on a server-function request on client navigation, so the request URL is not the page.
   - A missing or bad path throws `invalid_path`.
   - Any option other than `path` throws `invalid_request`.
-- **Collisions.** If the page shows its own section under a layout id, the layout read has the layout's values for that id. The page read and the merged read have the page's.
+- **Collisions.** If the page shows its own section under a layout id, every read has the page's values for that id, because that is what the page renders. So a layout component reading it shows what the merged read shows.
 
 ### `pages.get(path, { scope: "page" })`
 
 - **What it returns.** The sections declared by the Document that `path` resolves to, without the layout's.
-- **Hidden sections.** A section either Document hides is hidden here too, as in the merged read.
-- **No Document.** A path with no Document of its own answers `{ _hidden: [] }`.
+- **Hidden sections.** `_hidden` lists every id the merged read hides on that page, as for the layout read.
+- **No Document.** A path with no Document of its own has no sections of its own: `_hidden` alone, with whatever the layout hides.
 - **Options.** Any other option or `scope` value throws `invalid_request` before anything is sent. `{}` and `{ scope: undefined }` give the merged read.
 
 ### What both reads share
@@ -89,7 +90,9 @@ if (!morph.layouts.isHidden(layout, "header")) render(layout.header);
 - **Every source answers them.** All of them answer from the same Documents through Core's own resolver (`resolveStorefrontContent` with a `scope`):
   - the public site, from the pinned or active publication;
   - Build Preview, from the build's publication;
-  - the Live Preview, from the confirmed draft snapshot. This covers the Start and Astro Workers, the dev server and the in-page fetch shim, including the page's live edits. Both Workers pin one snapshot per request, so one render's reads never mix two drafts.
+  - the Live Preview, from the confirmed draft snapshot. This covers the Start and Astro Workers, the dev server and the in-page fetch shim.
+    - **Live edits.** The page's live edits are included, and an unsaved edit stays on the path it was made on.
+    - **One snapshot per request.** Both Workers pin one snapshot per request, including reads made while a response body streams. So one render's reads never mix two drafts.
   - a build's prerender, from the sealed snapshot. This covers Start and Astro, native and platform builds.
 
 ### Wire format
@@ -104,7 +107,9 @@ if (!morph.layouts.isHidden(layout, "header")) render(layout.header);
   - Old SDK copies in existing builds never send `scope`, so they get the legacy answer.
 - **One rule for the query.** One function holds it, `storefrontContentScopedRead` (`src/lib/storefront/service/storefront-content-read.ts`). The preview and prerender servers embed it by source.
   - It takes exactly one `path`, which starts with `/`, is at most 500 characters, and has well-formed percent-escapes.
-  - It normalises the path as Core keys routes: no query, no trailing `/`.
+  - It normalises the path to one canonical key, so `/關於` and `/%E9%97%9C%E6%96%BC` are one page:
+    - the URL pathname spelling, with non-ASCII percent-encoded, as `Astro.url.pathname` and a browser's `location.pathname` spell it;
+    - no query and no trailing `/`.
 - **Unusable queries.** Core refuses them with 400. Examples: an unknown scope, a missing or repeated path, a malformed escape, another layout name. The preview and prerender servers refuse them as they refuse an unreadable read.
 - **Caching on the public site.** A scoped answer has its own `ETag`, with the path percent-encoded: `"<release>:page:<path>"` or `"<release>:layout:default:<path>"`. The merged one keeps `"<release>:<path>"`.
   - Both use the merged read's cache policy. A read with no render context is `public, max-age=60, must-revalidate`, so a cache may serve the previous release's answer for up to 60 seconds after a publish or rollback, exactly as for the merged read.

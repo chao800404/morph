@@ -18,8 +18,11 @@ import {
   PREVIEW_CONTENT_TICKET_HEADER,
   THEME_PREVIEW_START_CONTENT_ORIGIN,
   THEME_PREVIEW_START_WORKER_PATH,
+  holdPinnedRender,
+  pinnedRenderForRead,
   pinnedSnapshotForRead,
   previewServedContentTiming,
+  releasePinWithBody,
   runWithPinnedSnapshot,
   themePreviewStartWorkerSource,
 } from "./theme-preview-start-runtime";
@@ -66,6 +69,58 @@ describe("the Start preview Worker with the option off", () => {
     // stamp is the Server-Timing metric.
     expect(source).not.toContain("Server-Timing");
     expect(source).not.toContain(`${PREVIEW_SERVED_CONTENT_TIMING};desc`);
+  });
+});
+
+describe("the explicit pin (reads outside the request's async context)", () => {
+  it("answers a read by the token its request holds, and refuses any other", () => {
+    const pins = new Map<string, { pinned: unknown; at: number }>();
+    const token = holdPinnedRender(pins, { ok: true, snapshot: "one" }, 0);
+    expect(token).toMatch(/^morph-preview-pin./);
+    expect(pinnedRenderForRead(pins, token)).toEqual({ snapshot: "one" });
+    for (const other of [null, "", "morph-preview-pin.unknown", "v1.release.sig"]) {
+      expect(pinnedRenderForRead(pins, other)).toEqual({
+        refusal: "no-request-snapshot",
+      });
+    }
+    const failed = holdPinnedRender(pins, { ok: false, snapshot: null }, 0);
+    expect(pinnedRenderForRead(pins, failed)).toEqual({
+      refusal: "snapshot-unreadable",
+    });
+  });
+
+  it("holds at most 256, none older than ten minutes", () => {
+    const pins = new Map<string, { pinned: unknown; at: number }>();
+    const first = holdPinnedRender(pins, { ok: true, snapshot: 1 }, 0);
+    for (let i = 0; i < 300; i += 1) holdPinnedRender(pins, { ok: true }, 1);
+    expect(pins.size).toBeLessThanOrEqual(256);
+    expect(pins.has(first)).toBe(false);
+    holdPinnedRender(pins, { ok: true }, 700_000);
+    expect(pins.size).toBe(1);
+  });
+
+  it("releases the pin once the body is read to its end, or cancelled, and not before", async () => {
+    const pins = new Map<string, unknown>();
+    pins.set("a", 1);
+    const read = releasePinWithBody(pins, "a", new Response("body"));
+    expect(pins.has("a")).toBe(true);
+    expect(await read.text()).toBe("body");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pins.has("a")).toBe(false);
+
+    pins.set("b", 1);
+    const cancelled = releasePinWithBody(
+      pins,
+      "b",
+      new Response(new ReadableStream({ pull() {} })),
+    );
+    await cancelled.body!.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pins.has("b")).toBe(false);
+
+    pins.set("c", 1);
+    releasePinWithBody(pins, "c", new Response(null, { status: 204 }));
+    expect(pins.has("c")).toBe(false);
   });
 });
 
@@ -227,6 +282,9 @@ describe("the pinned Worker", () => {
   ) {
     const sandbox = {
       AsyncLocalStorage,
+      TransformStream,
+      crypto: globalThis.crypto,
+      Date,
       Request,
       Response,
       URL,

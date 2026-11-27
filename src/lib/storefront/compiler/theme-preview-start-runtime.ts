@@ -200,6 +200,87 @@ export function pinnedSnapshotForRead(storage: {
   return { snapshot: pinned.snapshot };
 }
 
+/**
+ * The header a pinned request's snapshot travels in, explicitly, beside the
+ * AsyncLocalStorage: the platform's render-context header, which the SDK's
+ * hosted entries already send back on every content read
+ * (`MORPH_RENDER_CONTEXT_HEADER`). In a Live Preview it names the request's
+ * pin (`morph-preview-pin.<uuid>`), never a release.
+ */
+export const PREVIEW_PIN_HEADER = "x-morph-render-context";
+
+/**
+ * Holds a request's pinned snapshot under a fresh token for as long as its
+ * response is being produced, so a content read the AsyncLocalStorage does
+ * not reach (workerd runs a response stream's `pull()` outside the
+ * request's async context) still finds it by the token the read carries.
+ * Bounded: at most 256 held, none older than ten minutes.
+ *
+ * Self-contained: embedded in the generated Worker entry through `toString()`.
+ */
+export function holdPinnedRender(
+  pins: Map<string, { pinned: unknown; at: number }>,
+  pinned: unknown,
+  now: number,
+): string {
+  for (const [key, held] of pins) {
+    if (pins.size < 256 && now - held.at < 600_000) break;
+    pins.delete(key);
+  }
+  const token = "morph-preview-pin." + crypto.randomUUID();
+  pins.set(token, { pinned, at: now });
+  return token;
+}
+
+/**
+ * The pinned snapshot a content read names by its token, or why it is
+ * refused (`pinnedSnapshotForRead`'s refusals). Only a token this Worker
+ * issued and still holds is honoured.
+ *
+ * Self-contained: embedded in the generated Worker entry through `toString()`.
+ */
+export function pinnedRenderForRead(
+  pins: Map<string, { pinned: unknown; at: number }>,
+  token: string | null,
+): { snapshot: unknown } | { refusal: string } {
+  if (typeof token !== "string" || !token.startsWith("morph-preview-pin.")) {
+    return { refusal: "no-request-snapshot" };
+  }
+  const held = pins.get(token);
+  if (!held) return { refusal: "no-request-snapshot" };
+  const pinned = held.pinned as { ok?: unknown; snapshot?: unknown };
+  if (!pinned || pinned.ok !== true) return { refusal: "snapshot-unreadable" };
+  return { snapshot: pinned.snapshot };
+}
+
+/**
+ * The response, with its pin released once its body has been produced,
+ * read to the end or cancelled: until then every read made for it, from a
+ * streamed body included, is answered from the request's snapshot.
+ *
+ * Self-contained: embedded in the generated Worker entry through `toString()`.
+ */
+export function releasePinWithBody(
+  pins: Map<string, unknown>,
+  token: string | null,
+  response: Response,
+): Response {
+  if (token === null) return response;
+  if (!response.body) {
+    pins.delete(token);
+    return response;
+  }
+  const { readable, writable } = new TransformStream({
+    flush() {
+      pins.delete(token);
+    },
+  });
+  response.body.pipeTo(writable).catch(() => {
+    pins.delete(token);
+  });
+  return new Response(readable, response);
+}
+
 /** Options of `themePreviewStartWorkerSource`. Off unless named. */
 export type ThemePreviewWorkerOptions = Readonly<{
   /**
@@ -210,6 +291,14 @@ export type ThemePreviewWorkerOptions = Readonly<{
    * the one before the option, byte for byte (the frozen copy's test).
    */
   pinRequestSnapshot?: boolean;
+  /**
+   * With `pinRequestSnapshot`: whether the page names its snapshot in
+   * `Server-Timing` (`previewServedContentTiming`). On unless `false`. The
+   * Astro basis acknowledgement reads it; a Start preview reads none, and a
+   * Worker `Server-Timing` replaces the dev server's `morph-instance`, so the
+   * Start preview leaves it off.
+   */
+  stampServedContent?: boolean;
 }>;
 
 /** The page path of a Start preview, exactly as it was before the option. */
@@ -247,12 +336,27 @@ const START_PAGE_BLOCK = `    const headers = new Headers(request.headers);
  * rewriting, run inside one pinned snapshot, and the page response stamped
  * with it beside whatever Server-Timing the response already names.
  */
-const PINNED_PAGE_BLOCK = `    return runWithPinnedSnapshot(requestSnapshots, loadSnapshot, async (pinned) => {
+function pinnedPageBlock(stamp: boolean): string {
+  return `    return runWithPinnedSnapshot(requestSnapshots, loadSnapshot, async (pinned) => {
       const headers = new Headers(request.headers);
       headers.set("x-morph-content-origin", CONTENT_ORIGIN);
-      const response = await startEntry.fetch(new Request(request, { headers }), env, ctx);
+      // The pin, explicitly, for reads the AsyncLocalStorage does not reach:
+      // a forged one from the browser is replaced, and none is sent for a
+      // request whose snapshot could not be read.
+      headers.delete(PREVIEW_PIN_HEADER);
+      const token = pinned.ok ? holdPinnedRender(pinnedRenders, pinned, Date.now()) : null;
+      if (token) headers.set(PREVIEW_PIN_HEADER, token);
+      let response;
+      try {
+        response = await startEntry.fetch(new Request(request, { headers }), env, ctx);
+      } catch (error) {
+        if (token) pinnedRenders.delete(token);
+        throw error;
+      }
       const type = response.headers.get("content-type") || "";
-      if (!type.toLowerCase().startsWith("text/html")) return response;
+      if (!type.toLowerCase().startsWith("text/html")) {
+        return releasePinWithBody(pinnedRenders, token, response);
+      }
       // First in <head>; a document written without one (Astro adds none)
       // gets them first in <body>, and one with neither at its end. Once per
       // response either way.
@@ -275,16 +379,18 @@ const PINNED_PAGE_BLOCK = `    return runWithPinnedSnapshot(requestSnapshots, lo
           },
         })
         .transform(response);
-      // The snapshot every content read of this request was answered from,
+${stamp ? `      // The snapshot every content read of this request was answered from,
       // fixed before the page started rendering: a header sent before the
       // body streams still names what the whole page read.
       const stamp = pinned.ok ? previewServedContentTiming(pinned.snapshot) : null;
-      if (!stamp) return rewritten;
+      if (!stamp) return releasePinWithBody(pinnedRenders, token, rewritten);
       const stamped = new Response(rewritten.body, rewritten);
       stamped.headers.append("Server-Timing", stamp);
-      return stamped;
-    });
+      return releasePinWithBody(pinnedRenders, token, stamped);
+` : `      return releasePinWithBody(pinnedRenders, token, rewritten);
+`}    });
 `;
+}
 
 /**
  * The resolver the content endpoint uses, lifted out of the browser module so
@@ -350,22 +456,36 @@ const requestSnapshots = (globalThis[Symbol.for("morph.preview.requestSnapshots"
 const runWithPinnedSnapshot = ${runWithPinnedSnapshot.toString()};
 const pinnedSnapshotForRead = ${pinnedSnapshotForRead.toString()};
 const previewServedContentTiming = ${previewServedContentTiming.toString()};
+// The same pins by token, for reads the storage does not reach (a streamed
+// body's pull() in workerd), held until the response's body is done.
+const PREVIEW_PIN_HEADER = ${JSON.stringify(PREVIEW_PIN_HEADER)};
+const pinnedRenders = (globalThis[Symbol.for("morph.preview.pinnedRenders")] ??= new Map());
+const holdPinnedRender = ${holdPinnedRender.toString()};
+const pinnedRenderForRead = ${pinnedRenderForRead.toString()};
+const releasePinWithBody = ${releasePinWithBody.toString()};
 
 // Through readSnapshot, so a request pins the newest snapshot this Worker
 // has read: an import settling with an older module never becomes one, and
 // a page loaded after the probe named a ticket renders at least that one.
+// Pinned as it is, not copied: readSnapshot keeps a fresh copy of each file
+// it accepts and never changes one it has kept, so the pinned value stays
+// what the request entered with (one copy per request, not two).
 async function loadSnapshot() {
   await readSnapshot();
   // Nothing readable kept: none is pinned, and every content read of the
   // request is refused as an unreadable live read is.
-  return snapshot === null ? null : JSON.parse(JSON.stringify(snapshot));
+  return snapshot;
 }
 `
     : "";
   const contentRead = pin
     ? `    // Refused exactly as an unreadable live read is: no request pinned one
-    // around it, or its entry read found nothing readable.
-    const read = pinnedSnapshotForRead(requestSnapshots);
+    // around it, or its entry read found nothing readable. Outside the
+    // request's async context, the pin the read names by its token.
+    let read = pinnedSnapshotForRead(requestSnapshots);
+    if (read.refusal === "no-request-snapshot") {
+      read = pinnedRenderForRead(pinnedRenders, request.headers.get(PREVIEW_PIN_HEADER));
+    }
     if (read.refusal) {
       console.warn("[morph-preview] content read refused (" + read.refusal + ")");
       return new Response(JSON.stringify(${JSON.stringify(THEME_PREVIEW_CONTENT_UNREADABLE_BODY)}), {
@@ -520,7 +640,7 @@ export default {
         },
       });
     }
-${pin ? PINNED_PAGE_BLOCK : START_PAGE_BLOCK}  },
+${pin ? pinnedPageBlock(options.stampServedContent !== false) : START_PAGE_BLOCK}  },
 };
 `;
 }

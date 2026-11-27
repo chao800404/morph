@@ -237,7 +237,10 @@ describe("frozen prerender content", () => {
           "/": { slots: { hero: { title: "Frozen" } }, hiddenSlots: ["hidden"] },
         },
         layout: {
-          "/": { slots: { header: { title: "Frozen shell" } }, hiddenSlots: [] },
+          "/": {
+            slots: { header: { title: "Frozen shell" } },
+            hiddenSlots: ["hidden"],
+          },
         },
       },
     });
@@ -395,7 +398,10 @@ describe("frozen prerender content", () => {
           },
         },
         layout: {
-          "/landing": { slots: { header: { title: "Shell" } }, hiddenSlots: [] },
+          "/landing": {
+            slots: { header: { title: "Shell" } },
+            hiddenSlots: ["hidden"],
+          },
         },
       },
     });

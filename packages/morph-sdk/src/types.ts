@@ -26,8 +26,10 @@ export type MorphPage = {
  * The shared layout's published content as one page renders it
  * (`layouts.get`): the sections the layout declares, such as the header and
  * footer, with no section of the page's own. The same shape as `MorphPage`,
- * so `isHidden` reads it the same way: a section hidden on that page, by the
- * layout or by the page itself, is in `_hidden` and has no values.
+ * so `isHidden` reads it the same way: `_hidden` lists every id the merged
+ * read hides on that page (by the layout or by the page itself), and a hidden
+ * section has no values. An id both Documents declare carries the page's
+ * values, the ones that page renders.
  */
 export type MorphLayout = MorphPage;
 
@@ -56,10 +58,10 @@ export type MorphPageReadOptions = Readonly<{
    * every existing Theme reads them (a page section wins over a layout one
    * with the same id, and a section either hides stays hidden).
    *
-   * `"page"`: the page's own Document only, without the layout's sections;
-   * read those with `layouts.get("default", { path })`. A section id the layout hides
-   * stays hidden here too, as in the merged read (one slot namespace). A path with no Document of its
-   * own has no page-only sections: `{ _hidden: [] }`.
+   * `"page"`: the sections the page's own Document declares, without the
+   * layout's; read those with `layouts.get("default", { path })`. `_hidden`
+   * lists every id the merged read hides on that page (one slot namespace).
+   * A path with no Document of its own has no sections of its own.
    */
   scope?: "page";
 }>;

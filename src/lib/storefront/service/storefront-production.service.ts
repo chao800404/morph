@@ -608,14 +608,14 @@ export class StorefrontProductionService {
             ? "private, no-store"
             : "public, max-age=60, must-revalidate",
           // A scoped read is another answer for the same path, so it is
-          // another entity: its tag names the scope, and its path is
-          // percent-encoded, as a header value must be ASCII. The legacy tag
-          // is unchanged.
+          // another entity: its tag names the scope. Its path is the
+          // canonical URL pathname spelling (storefrontContentScopedRead),
+          // ASCII as a header value must be. The legacy tag is unchanged.
           ETag:
             scoped?.scope === "layout"
-              ? `"${releaseId}:layout:${scoped.layout}:${encodeURIComponent(requestedPath)}"`
+              ? `"${releaseId}:layout:${scoped.layout}:${requestedPath}"`
               : scoped?.scope === "page"
-                ? `"${releaseId}:page:${encodeURIComponent(requestedPath)}"`
+                ? `"${releaseId}:page:${requestedPath}"`
                 : `"${releaseId}:${requestedPath}"`,
           // Both answers depend on the render-context header: a cache keyed on
           // the URL alone must not answer a pinned read with the active one.

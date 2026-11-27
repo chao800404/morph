@@ -407,6 +407,9 @@ function hasOwnPreviewEntry(record, key) {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
+/** Per snapshot, the per-path copies of template entries (\`previewContentForPath\`). */
+const previewTemplatePathEntries = new WeakMap();
+
 /**
  * Whether \`value\` is one path's content as Core writes it
  * (\`resolveStorefrontContent\`): its own \`slots\`, every value an object of
@@ -484,9 +487,24 @@ export function previewContentForPath(pathname) {
     return snapshot.pages[handle];
   }
   const type = templateTypeForPath(pathname);
-  if (type) return snapshot.templates[type];
-  const routes = snapshot.routes;
   const routePath = (pathname || "/").split("?")[0].replace(/\\/+$/, "") || "/";
+  if (type) {
+    // One copy of the template's entry per path, made on first read: every
+    // product (or Page without a Document) shares the template's saved
+    // content, but an unsaved edit applied on one path never shows on
+    // another through that shared entry.
+    let entries = previewTemplatePathEntries.get(snapshot);
+    if (!entries) {
+      entries = new Map();
+      previewTemplatePathEntries.set(snapshot, entries);
+    }
+    if (!entries.has(routePath)) {
+      const template = snapshot.templates[type];
+      entries.set(routePath, { slots: { ...template.slots }, hiddenSlots: [...template.hiddenSlots] });
+    }
+    return entries.get(routePath);
+  }
+  const routes = snapshot.routes;
   if (hasOwnPreviewEntry(routes, routePath)) return routes[routePath];
   // Created per path from the shell, so a live edit on one route never leaks
   // into another that has no document of its own.
@@ -562,7 +580,7 @@ function previewScopedContentFor(read) {
   if (!pageIds) return null;
   const merged = previewContentForPath(read.path);
   if (!merged) return null;
-  const content = storefrontScopedContent(read.scope, merged, snapshot.shell, pageIds, ids.layout);
+  const content = storefrontScopedContent(read.scope, merged, pageIds, ids.layout);
   return JSON.parse(JSON.stringify(content));
 }
 

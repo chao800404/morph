@@ -630,7 +630,9 @@ export function planThemeSandboxWorkspace({
       themePreviewStartWorkerSource(
         buildId,
         resolveThemeStartServerEntry(files),
-        { pinRequestSnapshot: true },
+        // No stamp: the Start editor reads none, and the Worker's own
+        // Server-Timing would replace the dev server's morph-instance.
+        { pinRequestSnapshot: true, stampServedContent: false },
       ),
     );
     queueWorkspaceFile(

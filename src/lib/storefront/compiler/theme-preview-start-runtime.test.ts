@@ -76,6 +76,7 @@ describe("a Start Live Preview workspace (prototype)", () => {
       // Pinned, one snapshot per request, as every Live Preview Worker.
       themePreviewStartWorkerSource("start-preview-test", "./src/server.ts", {
         pinRequestSnapshot: true,
+        stampServedContent: false,
       }),
     );
     expect(preview.has(`/workspace/${THEME_PREVIEW_START_CLIENT_PATH}`)).toBe(
@@ -280,6 +281,7 @@ describe("a Start Live Preview workspace (prototype)", () => {
     expect(files.get(`/workspace/${THEME_PREVIEW_START_WORKER_PATH}`)).toBe(
       themePreviewStartWorkerSource("start-preview-test", undefined, {
         pinRequestSnapshot: true,
+        stampServedContent: false,
       }),
     );
     expect(files.get(`/workspace/${THEME_PREVIEW_START_CLIENT_PATH}`)).toBe(
@@ -491,7 +493,7 @@ describe("a stale platform file in Theme source", () => {
       themePreviewStartWorkerSource(
         "start-preview-test",
         "@tanstack/react-start/server-entry",
-        { pinRequestSnapshot: true },
+        { pinRequestSnapshot: true, stampServedContent: false },
       ),
     );
     expect(files.get(`/workspace/${THEME_PREVIEW_START_CLIENT_PATH}`)).toBe(

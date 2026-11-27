@@ -41,8 +41,11 @@ export type StorefrontContentScopedRead =
  * a scoped read, or `"invalid"` for a scoped read that cannot be answered.
  *
  * The one path rule for every scoped reader: one `path`, starting with `/`,
- * at most 500 characters, whose percent escapes all decode; then normalised
- * as Core keys routes (`normalizeRoutePath`: no query, no trailing `/`).
+ * at most 500 characters, whose percent escapes all decode; then one
+ * canonical key: the URL pathname spelling (non-ASCII percent-encoded, as
+ * `Astro.url.pathname`, a browser's `location.pathname` and the Astro route
+ * registry spell it), with no query and no trailing `/`
+ * (`normalizeRoutePath`). `/關於` and `/%E9%97%9C%E6%96%BC` are one key.
  */
 export function storefrontContentScopedRead(
   params: URLSearchParams,
@@ -62,7 +65,14 @@ export function storefrontContentScopedRead(
   } catch {
     return "invalid";
   }
-  const path = raw.split("?")[0]!.replace(/\/+$/, "") || "/";
+  let canonical: string;
+  try {
+    // Prefixed, never resolved against a base: `//x` stays a path.
+    canonical = new URL("http://morph.invalid" + raw.split("?")[0]).pathname;
+  } catch {
+    return "invalid";
+  }
+  const path = canonical.replace(/\/+$/, "") || "/";
   if (scope === "page") {
     if (params.has("layout")) return "invalid";
     return { scope: "page", path };
@@ -74,23 +84,19 @@ export function storefrontContentScopedRead(
 }
 
 /**
- * A scoped read's content, cut from the merged content of the same path.
+ * A scoped read's content: the merged content of the same path, restricted.
  *
- * - `merged`: that path's merged read; `shell`: the layout's content alone
- *   (the merged read of a path with no Document of its own).
- * - `pageIds`, `layoutIds`: the section ids each Document declares, in order.
+ * - `slots`: the merged values of the ids the scope's Document declares
+ *   (`pageIds` for the page, `layoutIds` for the layout), in that order.
+ *   Where both Documents declare an id, both reads carry the merged value,
+ *   the one this page renders.
+ * - `hiddenSlots`: every id the merged read hides on this path, whichever
+ *   Document hid it or declares it. A layout component that renders an id
+ *   its Document never declared (its defaults) is still hidden where the
+ *   page hides that id, exactly as under the merged read.
  *
- * Page: each id the page declares, hidden if the merged read hides it, else
- * the merged values (the page's, which win in the merged read).
- *
- * Layout: each id the layout declares, hidden if the merged read hides it
- * (the layout or this page hid it); for an id the page also declares and
- * shows, the layout's own values (the merged read has the page's there);
- * otherwise the merged values, so a live edit of a layout section on this
- * page reads back here.
- *
- * Neither ever carries a value the merged read hides on that path, nor a
- * value outside what the merged read or the layout alone emits.
+ * A pure restriction of the merged read, so it can never disagree with it,
+ * carry a value it does not, or keep a value an edit to it replaced.
  */
 export function storefrontScopedContent(
   scope: "page" | "layout",
@@ -98,36 +104,20 @@ export function storefrontScopedContent(
     slots: Readonly<Record<string, unknown>>;
     hiddenSlots: readonly string[];
   }>,
-  shell: Readonly<{
-    slots: Readonly<Record<string, unknown>>;
-    hiddenSlots: readonly string[];
-  }>,
   pageIds: readonly string[],
   layoutIds: readonly string[],
 ): { slots: Record<string, unknown>; hiddenSlots: string[] } {
   const slots: Record<string, unknown> = {};
-  const hiddenSlots: string[] = [];
   const ids = scope === "page" ? pageIds : layoutIds;
   for (const id of ids) {
     if (typeof id !== "string" || id === "__proto__") continue;
-    if (
-      hiddenSlots.includes(id) ||
-      Object.prototype.hasOwnProperty.call(slots, id)
-    ) {
-      continue;
-    }
-    if (merged.hiddenSlots.includes(id)) {
-      hiddenSlots.push(id);
-    } else if (scope === "layout" && pageIds.includes(id)) {
-      if (shell.hiddenSlots.includes(id)) hiddenSlots.push(id);
-      else if (Object.prototype.hasOwnProperty.call(shell.slots, id)) {
-        slots[id] = shell.slots[id];
-      }
-    } else if (Object.prototype.hasOwnProperty.call(merged.slots, id)) {
+    if (Object.prototype.hasOwnProperty.call(slots, id)) continue;
+    if (merged.hiddenSlots.includes(id)) continue;
+    if (Object.prototype.hasOwnProperty.call(merged.slots, id)) {
       slots[id] = merged.slots[id];
     }
   }
-  return { slots, hiddenSlots };
+  return { slots, hiddenSlots: [...merged.hiddenSlots] };
 }
 
 /** A scoped read's answer body: its content, naming the read it answers. */

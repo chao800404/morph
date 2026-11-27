@@ -130,11 +130,14 @@ function expected(id: PublicationId) {
       ...buildStorefrontScopedContent("layout", L, D),
     },
     contactMerged: buildStorefrontContent(L, null),
-    contactPage: { scope: "page", slots: {}, hiddenSlots: [] },
+    contactPage: {
+      scope: "page",
+      ...buildStorefrontScopedContent("page", L, null),
+    },
     contactLayout: {
       scope: "layout",
       layout: "default",
-      ...buildStorefrontContent(L, null),
+      ...buildStorefrontScopedContent("layout", L, null),
     },
   };
 }
@@ -220,7 +223,8 @@ describe("the scoped read query: one path rule for every reader (P2-6)", () => {
     ["?path=/&scope=page", { scope: "page", path: "/" }],
     [
       `?path=${encodeURIComponent("/關於/")}&scope=page`,
-      { scope: "page", path: "/關於" },
+      // One canonical key: the URL pathname spelling.
+      { scope: "page", path: encodeURI("/關於") },
     ],
     [
       "?scope=layout&layout=default&path=/about/",
@@ -265,17 +269,16 @@ describe("scoped content: cut from the same path's merged read", () => {
     ];
     expect(own).toEqual({
       slots: { hero: { heading: "Home A" } },
-      hiddenSlots: ["newsletter", "footer"],
+      hiddenSlots: merged.hiddenSlots,
     });
     expect(layout).toEqual({
       slots: { header: { title: "Shop A" } },
-      // The page hides the layout's footer on this page (P1-1).
-      hiddenSlots: ["footer", "announcement"],
+      // Every id the merged read hides on this page: the page hides the
+      // layout's footer here (P1-1).
+      hiddenSlots: merged.hiddenSlots,
     });
+    expect(merged.hiddenSlots).toEqual(["announcement", "newsletter", "footer"]);
     expect(merged.slots).toEqual({ ...layout.slots, ...own.slots });
-    expect([...merged.hiddenSlots].sort()).toEqual(
-      [...new Set([...layout.hiddenSlots, ...own.hiddenSlots])].sort(),
-    );
     for (const result of [merged, layout, own]) {
       expect(JSON.stringify(result)).not.toContain("Hidden sale");
       expect(JSON.stringify(result)).not.toContain("Footer A");
@@ -300,7 +303,7 @@ describe("scoped content: cut from the same path's merged read", () => {
     expect(elsewhere.hiddenSlots).not.toContain("footer");
   });
 
-  it("a page showing its own section under a layout id: the page read has the page's values, the layout read the layout's", () => {
+  it("a page showing its own section under a layout id: both reads carry the value the page renders", () => {
     const layout = {
       sections: [{ id: "header", enabled: true, props: { title: "Shell" } }],
     } satisfies PublishedDocument;
@@ -314,8 +317,64 @@ describe("scoped content: cut from the same path's merged read", () => {
       header: { title: "Own" },
     });
     expect(buildStorefrontScopedContent("layout", layout, page).slots).toEqual(
-      { header: { title: "Shell" } },
+      { header: { title: "Own" } },
     );
+  });
+
+  it("hides, in the layout read, a slot the layout renders from defaults when the page hides it (round 2)", () => {
+    // The layout Document never declares `promo`; its component renders the
+    // defaults. The page hides `promo`: the merged read hides it, so must the
+    // layout read the layout component reads.
+    const layout = {
+      sections: [{ id: "header", enabled: true, props: { title: "Shell" } }],
+    } satisfies PublishedDocument;
+    const page = {
+      sections: [{ id: "promo", enabled: false, props: {} }],
+    } satisfies PublishedDocument;
+    expect(buildStorefrontContent(layout, page).hiddenSlots).toEqual(["promo"]);
+    expect(
+      buildStorefrontScopedContent("layout", layout, page).hiddenSlots,
+    ).toEqual(["promo"]);
+  });
+
+  it("reads one canonical path key: decoded and encoded spellings name one route (round 2)", async () => {
+    const encoded = encodeURI("/關於");
+    const route = {
+      sections: [{ id: "footer", enabled: false, props: {} }],
+    } satisfies PublishedDocument;
+    const ports: ContentRuntimePorts = {
+      getPublishedDocument: async ({ templateType }) =>
+        templateType === "layout"
+          ? (PUBLICATIONS.pub_a.layout as PublishedDocument)
+          : null,
+      // Keyed as the Astro route registry keys it: the URL pathname spelling.
+      getPublishedRouteDocument: async ({ routePath }) =>
+        routePath === encoded ? route : null,
+    };
+    const answers = [];
+    for (const spelling of ["/關於", encoded, "/關於/", encoded + "/"]) {
+      const read = storefrontContentScopedRead(
+        new URLSearchParams({
+          scope: "layout",
+          layout: "default",
+          path: spelling,
+        }),
+      );
+      expect(read).toEqual({ scope: "layout", layout: "default", path: encoded });
+      answers.push(
+        await resolveStorefrontContent({
+          publicationId: "p",
+          pathname: (read as { path: string }).path,
+          ports,
+          scope: "layout",
+        }),
+      );
+    }
+    for (const answer of answers) {
+      // The route's hide holds for every spelling.
+      expect(answer.hiddenSlots).toContain("footer");
+      expect(answer.slots).not.toHaveProperty("footer");
+    }
   });
 
   it("never emits what the merged read hides, so media authorisation covers it unchanged", () => {
@@ -362,10 +421,10 @@ describe("public /_morph/content", () => {
     const site = publicSite();
     const layout = await site.raw("?" + QUERIES.layout);
     expect(JSON.parse(layout.text)).toEqual(expected("pub_a").layout);
-    expect(layout.etag).toBe('"rel_pub_a:layout:default:%2F"');
+    expect(layout.etag).toBe('"rel_pub_a:layout:default:/"');
     const page = await site.raw("?" + QUERIES.page);
     expect(JSON.parse(page.text)).toEqual(expected("pub_a").page);
-    expect(page.etag).toBe('"rel_pub_a:page:%2F"');
+    expect(page.etag).toBe('"rel_pub_a:page:/"');
     // The same window as the merged read: no new cache policy.
     for (const answer of [layout, page]) {
       expect(answer.cache).toBe("public, max-age=60, must-revalidate");
@@ -384,7 +443,7 @@ describe("public /_morph/content", () => {
     );
     expect(unicode.status).toBe(200);
     expect(unicode.etag).toBe(
-      `"rel_pub_a:page:${encodeURIComponent("/關於")}"`,
+      `"rel_pub_a:page:${encodeURI("/關於")}"`,
     );
   });
 
@@ -565,6 +624,93 @@ describe("Live Preview: the confirmed snapshot", () => {
       slots: Record<string, unknown>;
     };
     expect(contact.slots.footer).toEqual({ note: "Edited footer" });
+  });
+
+  it("keeps an unsaved edit on the path it was made on: no bleed through a shared template (round 2)", async () => {
+    const generic = {
+      version: 1,
+      sections: [section("page-hero", { heading: "Generic" })],
+    } as unknown as Doc;
+    const snapshot = await createThemePreviewContentSnapshot({
+      templates: [
+        { type: "layout", document: PUBLICATIONS.pub_a.layout },
+        { type: "page", document: generic },
+      ],
+    });
+    const page = previewPage(snapshot);
+    page.at("/pages/a");
+    page.edit("header", { title: "Unsaved on a" });
+    page.edit("page-hero", { heading: "Unsaved on a" });
+    const read = (query: string) =>
+      page.read(new URLSearchParams(query)) as {
+        slots: Record<string, { title?: string; heading?: string }>;
+      };
+    expect(read("path=/pages/a").slots.header?.title).toBe("Unsaved on a");
+    expect(
+      read("scope=layout&layout=default&path=/pages/a").slots.header?.title,
+    ).toBe("Unsaved on a");
+    for (const query of [
+      "path=/pages/b",
+      "path=/pages/b&scope=page",
+      "scope=layout&layout=default&path=/pages/b",
+    ]) {
+      const slots = read(query).slots;
+      expect(slots.header?.title ?? "Shop A", query).toBe("Shop A");
+      expect(slots["page-hero"]?.heading ?? "Generic", query).toBe("Generic");
+    }
+  });
+
+  it("reads back an edit of an id both Documents declare in both scopes, never a stale layout value (round 2)", async () => {
+    const index = {
+      version: 1,
+      sections: [section("header", { title: "Page header" })],
+    } as unknown as Doc;
+    const page = previewPage(
+      await createThemePreviewContentSnapshot({
+        templates: [
+          { type: "layout", document: PUBLICATIONS.pub_a.layout },
+          { type: "index", document: index },
+        ],
+      }),
+    );
+    page.at("/");
+    page.edit("header", { title: "Edited" });
+    for (const query of [QUERIES.merged, QUERIES.page, QUERIES.layout]) {
+      expect(
+        (page.read(new URLSearchParams(query)) as {
+          slots: Record<string, { title: string }>;
+        }).slots.header,
+        query,
+      ).toEqual({ title: "Edited" });
+    }
+  });
+
+  it("answers decoded and encoded spellings of a route from one entry (round 2)", async () => {
+    const encoded = encodeURI("/關於");
+    const snapshot = await createThemePreviewContentSnapshot({
+      templates: [
+        { type: "layout", document: PUBLICATIONS.pub_a.layout },
+        {
+          type: "page",
+          routePath: encoded,
+          document: {
+            version: 1,
+            sections: [section("footer", { note: "x" }, false)],
+          } as unknown as Doc,
+        },
+      ],
+    });
+    const read = previewRead(snapshot);
+    const decodedAnswer = read(
+      new URLSearchParams({ scope: "layout", layout: "default", path: "/關於" }),
+    );
+    const encodedAnswer = read(
+      new URLSearchParams({ scope: "layout", layout: "default", path: encoded }),
+    );
+    expect(decodedAnswer).toEqual(encodedAnswer);
+    expect((decodedAnswer as { hiddenSlots: string[] }).hiddenSlots).toContain(
+      "footer",
+    );
   });
 
   it("never answers a Page without a Document from the CMS Page `preview` (P1-2)", async () => {
@@ -949,13 +1095,7 @@ describe("one body for every resolver", () => {
       `return (${storefrontScopedContent.toString()});`,
     )() as typeof storefrontScopedContent;
     expect(
-      copy(
-        "layout",
-        { slots: { h: { t: 1 } }, hiddenSlots: [] },
-        { slots: { h: { t: 0 } }, hiddenSlots: [] },
-        ["h"],
-        ["h"],
-      ),
-    ).toEqual({ slots: { h: { t: 0 } }, hiddenSlots: [] });
+      copy("layout", { slots: { h: { t: 1 } }, hiddenSlots: ["x"] }, ["h"], ["h"]),
+    ).toEqual({ slots: { h: { t: 1 } }, hiddenSlots: ["x"] });
   });
 });
