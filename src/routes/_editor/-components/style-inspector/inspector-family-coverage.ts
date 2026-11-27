@@ -1,7 +1,8 @@
 /**
  * Which Inspector module owns each patchable Tailwind property family.
  *
- * `docs/visual-editor-progress.md` Stage C says "對接目前 capability registry 與
+ * The Stage C target in ROADMAP "尚未完整閉環" (carried over from the retired
+ * Visual Editor progress doc) says "對接目前 capability registry 與
  * 所有基本樣式控制", which cannot be answered today because nothing states which
  * families exist, which have a control, and which are deliberately without one.
  * The engine's `TailwindPropertyFamily` union is the authority for the first of

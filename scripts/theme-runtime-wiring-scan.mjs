@@ -6,7 +6,8 @@
  * that goes green because nothing is configured encodes "not done" as
  * "verified" — the same defect as `required.every(passed)` over an empty status
  * rollup, which reported a mergeable pull request for the seconds before the
- * required check existed. `docs/visual-editor-progress.md` states the rule this
+ * required check existed. The rule this (stated in ROADMAP "尚未完整閉環",
+ * formerly in the retired Visual Editor progress doc)
  * makes checkable: 未完成前不得把 build artifact 說成已上線 runtime.
  *
  * The config is read as JSONC, not as text, and the reason is measured rather

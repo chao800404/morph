@@ -1006,6 +1006,13 @@ Starter bootstrap 與 workspace upgrade 契約：
 - AI patch / diff / repair orchestration
 - production-grade observability / metering / tenant isolation
 
+從已退役的舊 Visual Editor 進度表保留下來、仍然有效的規則與目標（不含歷史紀錄）：
+
+- 規則：未完成前不得把 build artifact 說成已上線的 runtime。真實 Cloudflare Theme Worker、custom domain 與遠端 Publish 未閉環前，「已建置」不等於「已上線」。
+- 規則：什麼都沒接上時不得回報成功。一個在沒有任何設定時仍然全綠的守衛，會把「未完成」編碼成「已驗證」；因此這類檢查要有第三種狀態（`PENDING`），且 `PENDING` 與 `FAIL` 一樣以非零結束。
+- 規則：Publish 是唯一可以更新公開內容的路徑，編輯一律先寫草稿。
+- 目標【未完成】：Inspector 對接目前的 capability registry 與所有基本樣式控制（每個可修補的 Tailwind 屬性家族，都要有明確結果：有控制，或刻意沒有控制），並涵蓋選取、重新載入、切換 section 與過期回應的回歸。
+
 ### Theme `public/` 與 Assets 後續（2026-09-26 排定，依序）
 
 先修正確性，再補編輯操作，最後才是介面整合與新功能；匯入明確排在最後。
