@@ -868,3 +868,46 @@ describe("production deployments and registered static pages", () => {
     expect(result.success).toBe(true);
   });
 });
+
+/**
+ * The release/Worker build match (theme-worker-build-match.ts) keeps no
+ * state in D1: activation, publish and rollback make exactly the calls they
+ * made before it, whichever way the switch is set, so a deploy that
+ * succeeded can never be reported as failed by a new read or write.
+ */
+describe("activation and the release/Worker build match", () => {
+  it("touches exactly the ports it touched before the check", async () => {
+    const touched: string[] = [];
+    const base = ports({
+      recordDeployedThemeBuild: async () => ({}),
+      deploymentLease: {
+        acquire: async () => true,
+        release: async () => true,
+      } as never,
+    });
+    const recording = new Proxy(base, {
+      get(target, key, receiver) {
+        const value = Reflect.get(target, key, receiver);
+        if (typeof value === "function" || (value && typeof value === "object")) {
+          touched.push(String(key));
+        }
+        return value;
+      },
+    });
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: null,
+      deployer: okDeployer(),
+      r2Bucket: r2(),
+      ports: recording,
+    });
+    expect(result.success).toBe(true);
+    expect([...new Set(touched)].sort()).toEqual([
+      "activateRelease",
+      "deploymentLease",
+      "getBuild",
+      "getRelease",
+      "recordDeployedThemeBuild",
+    ]);
+  });
+});

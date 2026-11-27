@@ -6,6 +6,11 @@ import {
   wranglerDeployConfig,
 } from "./sandbox-wrangler-theme-worker-deployer";
 import type { ThemeWorkerDeploymentRequest } from "./theme-worker-deployer.types";
+import {
+  THEME_BUILD_ID_VAR,
+  THEME_BUILD_MATCH_MODULE,
+  themeBuildMatchModuleSource,
+} from "./theme-worker-build-match";
 
 const TOKEN = "cf_live_token_abcdef0123456789";
 const ACCOUNT = "acct_0123456789abcdef";
@@ -456,5 +461,145 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     });
     expect(config.main).toBe("index.js");
     expect(session.exec).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * The release/Worker build match (theme-worker-build-match.ts). Off by
+ * default: the deployment is what it was, byte for byte. On: Morph's module
+ * becomes the Worker's main and the build id a var.
+ */
+describe("SandboxWranglerThemeWorkerDeployer with the release/Worker build match", () => {
+  function recordingSession() {
+    const written = new Map<string, string>();
+    const session = {
+      mkdir: vi.fn(async () => {}),
+      writeFile: vi.fn(async (path: string, content: any) => {
+        written.set(path, String(content));
+      }),
+      readFile: vi.fn(),
+      exec: vi.fn(async () => ({
+        exitCode: 0,
+        success: true,
+        stdout: "Current Version ID: 1a2b3c4d-5e6f",
+        stderr: "",
+      })),
+      destroy: vi.fn(async () => {}),
+    };
+    return { session, written };
+  }
+  const configOf = (written: Map<string, string>) =>
+    written.get("/workspace/deploy/server/wrangler.json");
+
+  it("off (the default): writes no module and the same config as before", async () => {
+    for (const overrides of [{}, { releaseWorkerMatch: false }]) {
+      const { session, written } = recordingSession();
+      const result = await deployer(session, overrides).deploy(request);
+      expect(result).toEqual({
+        success: true,
+        scriptName: "morph-theme-sf-1",
+        deploymentId: "1a2b3c4d-5e6f",
+        durationMs: expect.any(Number),
+      });
+      expect(
+        [...written.keys()].some((path) => path.endsWith(THEME_BUILD_MATCH_MODULE)),
+      ).toBe(false);
+      expect(configOf(written)).toBe(
+        JSON.stringify(wranglerDeployConfig(request.plan), null, 2),
+      );
+    }
+  });
+
+  it("on: makes Morph's module the main over the build's entry, adds the build id var and routes requests through the Worker first", async () => {
+    const { session, written } = recordingSession();
+    const result = await deployer(session, { releaseWorkerMatch: true }).deploy(
+      request,
+    );
+    expect(result).toEqual({
+      success: true,
+      scriptName: "morph-theme-sf-1",
+      deploymentId: "1a2b3c4d-5e6f",
+      durationMs: expect.any(Number),
+    });
+    expect(written.get(`/workspace/deploy/server/${THEME_BUILD_MATCH_MODULE}`)).toBe(
+      themeBuildMatchModuleSource("index.js"),
+    );
+    // The build's own entry is still written, as before, for the module to import.
+    expect(written.has("/workspace/deploy/server/index.js")).toBe(true);
+    const config = JSON.parse(configOf(written) ?? "null");
+    expect(config).toEqual({
+      ...wranglerDeployConfig(request.plan),
+      main: THEME_BUILD_MATCH_MODULE,
+      assets: { directory: "../client", run_worker_first: true },
+      vars: { [THEME_BUILD_ID_VAR]: "bld_1" },
+      keep_vars: false,
+    });
+    // ESModule rules cover the module, so no_bundle can resolve it.
+    expect(config.rules).toEqual([
+      { type: "ESModule", globs: ["**/*.js", "**/*.mjs"] },
+    ]);
+  });
+
+  it("on: refuses, before any container starts, a build that wrote the module's path", async () => {
+    const { session } = recordingSession();
+    const getSandbox = vi.fn(async () => session);
+    const result = await new SandboxWranglerThemeWorkerDeployer({
+      sandboxProvider: { getSandbox },
+      sandboxBinding: {},
+      r2Bucket: r2(),
+      credentials: { apiToken: TOKEN, accountId: ACCOUNT },
+      releaseWorkerMatch: true,
+    }).deploy({
+      ...request,
+      plan: {
+        ...request.plan,
+        modules: [
+          ...request.plan.modules,
+          {
+            modulePath: THEME_BUILD_MATCH_MODULE,
+            artifactPath: `runtime/server/${THEME_BUILD_MATCH_MODULE}`,
+            contentType: "application/javascript",
+          },
+        ],
+      },
+    });
+    expect(result).toMatchObject({ success: false, reason: "DEPLOY_ERROR" });
+    expect(getSandbox).not.toHaveBeenCalled();
+  });
+
+  it("on: refuses a deployment that names no build id", async () => {
+    const { session } = recordingSession();
+    const result = await deployer(session, { releaseWorkerMatch: true }).deploy({
+      ...request,
+      themeBuildId: " ",
+    });
+    expect(result).toMatchObject({ success: false, reason: "DEPLOY_ERROR" });
+    expect(session.exec).not.toHaveBeenCalled();
+  });
+});
+
+describe("wranglerDeployConfig with the release/Worker build match", () => {
+  it("is unchanged without it", () => {
+    expect(wranglerDeployConfig(request.plan, undefined)).toEqual(
+      wranglerDeployConfig(request.plan),
+    );
+  });
+
+  it("adds the build id beside a native build's own vars and keeps its observability", () => {
+    const plan = {
+      ...request.plan,
+      native: { vars: { STORE_LABEL: "probe" }, observabilityEnabled: true },
+    };
+    expect(
+      wranglerDeployConfig(
+        { ...plan, assetsBinding: "ASSETS" },
+        { themeBuildId: "bld_9" },
+      ),
+    ).toEqual({
+      ...wranglerDeployConfig({ ...plan, assetsBinding: "ASSETS" }),
+      main: THEME_BUILD_MATCH_MODULE,
+      assets: { directory: "../client", binding: "ASSETS", run_worker_first: true },
+      vars: { STORE_LABEL: "probe", [THEME_BUILD_ID_VAR]: "bld_9" },
+    });
   });
 });

@@ -11,6 +11,11 @@ import type {
   ThemeWorkerDeploymentRequest,
   ThemeWorkerDeploymentResult,
 } from "./theme-worker-deployer.types";
+import {
+  THEME_BUILD_ID_VAR,
+  THEME_BUILD_MATCH_MODULE,
+  themeBuildMatchModuleSource,
+} from "./theme-worker-build-match";
 
 const DEPLOY_ROOT = "/workspace/deploy";
 const SERVER_DIR = `${DEPLOY_ROOT}/server`;
@@ -87,21 +92,45 @@ export function wranglerDeployInvocation(args: {
   };
 }
 
-/** The wrangler configuration for a deployment plan; paths are relative to it. */
+/**
+ * What the release/Worker build match adds to one deployment
+ * (`theme-worker-build-match.ts`): the build id the Worker is deployed with.
+ */
+export type WranglerDeployBuildMatch = Readonly<{ themeBuildId: string }>;
+
+/**
+ * The wrangler configuration for a deployment plan; paths are relative to it.
+ *
+ * Without `buildMatch` (the switch off, and every Build Preview) the config
+ * is the one it was before the check, byte for byte. With it, `main` is
+ * Morph's match module, which imports the build's own entry, the build id
+ * is written as a var beside any the plan keeps, and every request reaches
+ * the module before the Worker's static assets (`run_worker_first`).
+ *
+ * Without that last setting the asset layer answers a path that is one of
+ * the deployed build's assets before any Worker code runs, so an old build's
+ * asset could answer another release's request. Core serves every client
+ * asset of the active release itself (`tryServeClientAsset`), so what reaches
+ * the Worker is never one of that release's assets; routing it through the
+ * Worker first loses nothing the release serves. A Theme that reads its own
+ * assets through its assets binding still can.
+ */
 export function wranglerDeployConfig(
   plan: ThemeWorkerDeploymentRequest["plan"],
+  buildMatch?: WranglerDeployBuildMatch,
 ): Record<string, unknown> {
   // `no_bundle` keeps the built chunks intact, but then the entry only
   // imports them by path — without module `rules` workerd cannot resolve
   // them and the deployment fails with "No such module".
   return {
     name: plan.scriptName,
-    main: plan.mainModule,
+    main: buildMatch ? THEME_BUILD_MATCH_MODULE : plan.mainModule,
     compatibility_date: plan.compatibilityDate,
     compatibility_flags: [...plan.compatibilityFlags],
     assets: {
       directory: "../client",
       ...(plan.assetsBinding ? { binding: plan.assetsBinding } : {}),
+      ...(buildMatch ? { run_worker_first: true } : {}),
     },
     no_bundle: true,
     rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }],
@@ -122,13 +151,26 @@ export function wranglerDeployConfig(
     // Worker's variables with the config's unless `keep_vars` is set, so a
     // variable a later build removed is removed from the Worker too, and an
     // observability setting a later build dropped does not stay on.
+    //
+    // The build id var joins the build's own; the contract refuses any
+    // author var named MORPH_*, so it cannot clash.
     ...(plan.native
       ? {
-          vars: { ...plan.native.vars },
+          vars: {
+            ...plan.native.vars,
+            ...(buildMatch
+              ? { [THEME_BUILD_ID_VAR]: buildMatch.themeBuildId }
+              : {}),
+          },
           keep_vars: false,
           observability: { enabled: plan.native.observabilityEnabled },
         }
-      : {}),
+      : buildMatch
+        ? {
+            vars: { [THEME_BUILD_ID_VAR]: buildMatch.themeBuildId },
+            keep_vars: false,
+          }
+        : {}),
   };
 }
 
@@ -160,6 +202,12 @@ export type SandboxWranglerDeployerOptions = Readonly<{
   r2Bucket?: R2BucketLike;
   credentials?: ThemeDeploymentCredentials;
   maxDurationMs?: number;
+  /**
+   * Install Morph's release/Worker build match module
+   * (`theme-worker-build-match.ts`). Off unless the server sets
+   * `MORPH_RELEASE_WORKER_MATCH=1`; off, every deployment is what it was.
+   */
+  releaseWorkerMatch?: boolean;
 }>;
 
 /**
@@ -252,6 +300,36 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
       };
     }
 
+    // The release/Worker build match, when on. Refused before any container
+    // starts if the build id is unusable or the build's own output holds the
+    // module's path: Morph's module never replaces a file a build wrote.
+    let buildMatch: WranglerDeployBuildMatch | undefined;
+    if (this.options.releaseWorkerMatch) {
+      if (
+        typeof request.themeBuildId !== "string" ||
+        request.themeBuildId.trim() === ""
+      ) {
+        return {
+          success: false,
+          reason: "DEPLOY_ERROR",
+          message:
+            "Theme Worker deployment names no build id for the release/Worker build match.",
+        };
+      }
+      if (
+        request.plan.modules.some(
+          (module) => module.modulePath === THEME_BUILD_MATCH_MODULE,
+        )
+      ) {
+        return {
+          success: false,
+          reason: "DEPLOY_ERROR",
+          message: `The build wrote "${THEME_BUILD_MATCH_MODULE}", a path Morph reserves for its own Worker entry.`,
+        };
+      }
+      buildMatch = { themeBuildId: request.themeBuildId };
+    }
+
     let sandbox: CloudflareSandboxSession | null = null;
     const varValues = deploymentVarValues(request.plan);
     const scrub = (text: string) =>
@@ -336,9 +414,16 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
         svgIsolationHeadersFile(),
       );
 
+      if (buildMatch) {
+        await sandbox.writeFile(
+          `${SERVER_DIR}/${THEME_BUILD_MATCH_MODULE}`,
+          themeBuildMatchModuleSource(request.plan.mainModule),
+        );
+      }
+
       await sandbox.writeFile(
         `${SERVER_DIR}/wrangler.json`,
-        JSON.stringify(wranglerDeployConfig(request.plan), null, 2),
+        JSON.stringify(wranglerDeployConfig(request.plan, buildMatch), null, 2),
       );
       await sandbox.mkdir(WORKING_DIR, { recursive: true });
 
