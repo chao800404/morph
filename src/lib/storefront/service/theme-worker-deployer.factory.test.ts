@@ -94,3 +94,29 @@ describe("createServerThemeWorkerDeployer", () => {
     expect(result.message).toContain("CLOUDFLARE_API_TOKEN");
   });
 });
+
+describe("the release/Worker build match switch in the deployer", () => {
+  const optionOf = () =>
+    (
+      createServerThemeWorkerDeployer() as unknown as {
+        options: { releaseWorkerMatch?: boolean };
+      }
+    ).options.releaseWorkerMatch;
+
+  it("is off unless MORPH_RELEASE_WORKER_MATCH=1", () => {
+    setEnv(FULL);
+    expect(optionOf()).toBe(false);
+    setEnv({ ...FULL, MORPH_RELEASE_WORKER_MATCH: "1" });
+    expect(optionOf()).toBe(true);
+  });
+
+  it("is ignored in production until PR 6", () => {
+    setEnv({
+      ...FULL,
+      ENVIRONMENT: "production",
+      MORPH_RELEASE_WORKER_MATCH: "1",
+    });
+    expect(createServerThemeWorkerDeployer().kind).toBe("sandbox-wrangler");
+    expect(optionOf()).toBe(false);
+  });
+});

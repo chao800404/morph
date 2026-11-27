@@ -135,6 +135,56 @@ describe("releaseWorkerMatchEnabled", () => {
       true,
     );
   });
+
+  it("is ignored in production until the native build is enabled there (PR 6)", () => {
+    for (const production of [
+      { ENVIRONMENT: "production" },
+      { CF_PAGES: "1" },
+    ]) {
+      expect(
+        releaseWorkerMatchEnabled({
+          ...production,
+          [RELEASE_WORKER_MATCH_ENV]: "1",
+        }),
+      ).toBe(false);
+    }
+    expect(
+      releaseWorkerMatchEnabled({
+        ENVIRONMENT: "staging",
+        [RELEASE_WORKER_MATCH_ENV]: "1",
+      }),
+    ).toBe(true);
+  });
+
+  it("in production, neither Core nor the deployer turns the check on", async () => {
+    const binding = { fetch: vi.fn(async () => new Response("ok")) };
+    const runtime = createThemeRuntime({
+      THEME_WORKER: binding,
+      ENVIRONMENT: "production",
+      [RELEASE_WORKER_MATCH_ENV]: "1",
+    });
+    const result = await runtime.handle({
+      request: new Request("https://shop.example.com/"),
+      resolved: {
+        hostname: "shop.example.com",
+        domainId: "dom_1",
+        storefrontId: "sf_1",
+        releaseId: "rel_1",
+        themeId: "th_1",
+        sourceRevisionId: "rev_1",
+        themeBuildId: "bld_1",
+        contentPublicationId: null,
+        artifactPrefix: "p",
+        manifest: {} as never,
+        themeWorkerBuildMatch: true,
+      },
+    });
+    // No expectation sent, and an unconfirmed answer on a marked release
+    // passes: the switch is ignored.
+    expect(result.success).toBe(true);
+    const sent = (binding.fetch.mock.calls[0] as unknown as [Request])[0];
+    expect(sent.headers.get(EXPECTED_THEME_BUILD_HEADER)).toBeNull();
+  });
 });
 
 describe("the Worker's build match module", () => {

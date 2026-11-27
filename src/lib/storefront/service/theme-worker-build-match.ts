@@ -27,6 +27,8 @@
  * the module passes every request through unchanged.
  */
 
+import { isProductionEnvironment } from "./storefront-domain-provider";
+
 /** The Worker var holding the build id the Worker was deployed with. */
 export const THEME_BUILD_ID_VAR = "MORPH_THEME_BUILD_ID";
 
@@ -53,13 +55,18 @@ export const RELEASE_WORKER_MATCH_ENV = "MORPH_RELEASE_WORKER_MATCH";
 
 /**
  * Whether the check is on: only when the server sets
- * `MORPH_RELEASE_WORKER_MATCH=1`. Deployer and Core read the same value, so
- * one switch decides both halves.
+ * `MORPH_RELEASE_WORKER_MATCH=1`, and never in production until the native
+ * build is enabled there (render plan v2 step 1, PR 6), the same rule as
+ * `MORPH_NATIVE_START_BUILD` (`nativeStartBuildEnabled`). Deployer and Core
+ * read the same value, so one switch decides both halves.
  */
 export function releaseWorkerMatchEnabled(
   bindings: Record<string, unknown> | undefined,
 ): boolean {
-  return bindings?.[RELEASE_WORKER_MATCH_ENV] === "1";
+  return (
+    bindings?.[RELEASE_WORKER_MATCH_ENV] === "1" &&
+    !isProductionEnvironment(bindings)
+  );
 }
 
 /**
