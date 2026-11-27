@@ -1,5 +1,11 @@
 # Storefront rendering policy implementation
 
+> Status note (2026-11-27): the Morph-owned render policy direction described
+> in this file is superseded by the framework-native direction in ROADMAP
+> section 1.6 (rendering mode and deployment follow each framework's official
+> Cloudflare configuration). The existing contract text is kept for history
+> and for historical releases.
+
 Status: versioned draft persistence and immutable-publication policy resolution
 implemented, with optional sealed-publication build binding; native rendering
 integration remains incomplete. A new authorized
