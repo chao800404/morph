@@ -6,8 +6,14 @@ if (!existsSync(artifactDir) || !statSync(artifactDir).isDirectory()) {
   throw new Error(`DEPLOY_ARTIFACT_NOT_FOUND: ${artifactDir}`);
 }
 
-const forbiddenNames = new Set([".dev.vars", ".env", ".env.local", "wrangler.json"]);
-const secretKey = /\b(?:BETTER_AUTH_SECRET|RESEND_API_KEY|DATABASE_URL)\b/;
+const forbiddenNames = new Set([
+  ".dev.vars",
+  ".env",
+  ".env.local",
+  "wrangler.json",
+]);
+const secretKey =
+  /\b(?:BETTER_AUTH_SECRET|RESEND_API_KEY|CLOUDFLARE_EMAIL_API_TOKEN|CLOUDFLARE_EMAIL_ACCOUNT_ID|DATABASE_URL)\b/;
 const violations = [];
 
 function walk(directory) {
@@ -18,12 +24,16 @@ function walk(directory) {
       continue;
     }
     if (forbiddenNames.has(entry.name)) {
-      violations.push(`${path.relative(artifactDir, filePath)}: forbidden secret/config file`);
+      violations.push(
+        `${path.relative(artifactDir, filePath)}: forbidden secret/config file`,
+      );
       continue;
     }
     const contents = readFileSync(filePath, "utf8");
     if (secretKey.test(contents)) {
-      violations.push(`${path.relative(artifactDir, filePath)}: embedded secret key`);
+      violations.push(
+        `${path.relative(artifactDir, filePath)}: embedded secret key`,
+      );
     }
   }
 }

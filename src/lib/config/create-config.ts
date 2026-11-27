@@ -322,6 +322,7 @@ export interface CMSConfigInput {
     };
   };
   email?: EmailAdapter;
+  emailSupportAddress?: string;
   cloudflare?: CloudflareDeployment;
   theme?: ThemeConfig;
   trustedOrigins: string[];
@@ -330,9 +331,9 @@ export interface CMSConfigInput {
 /**
  * The shape a user authors in `src/cms.config.ts`.
  *
- * Everything here is declarative and safe in both builds. Secrets go in
- * `server`, which is wrapped in `createServerOnlyFn` so the compiler removes
- * its body from the client bundle.
+ * Everything outside `server` is declarative and safe in both builds.
+ * Wrap that callback in `createServerOnlyFn` so the compiler removes adapter
+ * construction and credentials from the client bundle.
  */
 export interface CMSUserConfig {
   appName: string;
@@ -348,18 +349,16 @@ export interface CMSUserConfig {
   cloudflare?: CloudflareDeployment;
   theme?: ThemeConfig;
   trustedOrigins: string[];
-  email: {
-    defaultFromAddress: string;
-    defaultFromName?: string;
-  };
+  /** Email is configured only inside the server callback. */
+  email?: never;
   /** Server-only values. Wrap with `createServerOnlyFn`. */
   server: () => {
     database?: {
       connectionString: string | undefined;
     };
-    email?: {
-      apiKey: string;
-    };
+    /** Construct any EmailAdapter here with its sender, support and credentials. */
+    email?: EmailAdapter;
+    emailSupportAddress?: never;
     /** Server-bundled provider implementations. Never expose provider secrets to the client. */
     fulfillmentProviders?: FulfillmentProvider[];
     shippingRateProviders?: ShippingRateProvider[];

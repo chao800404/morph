@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getConfig } from "@/server/get-config";
 import {
+  sendEmail,
+  sendBatchEmails,
   sendAuthVerificationEmail,
   sendOrderClaimCreatedEmail,
   sendOrderExchangeCreatedEmail,
@@ -8,6 +10,7 @@ import {
   sendPasswordResetEmail,
   retryOrderPlacedEmail,
 } from "./index";
+import type { EmailAdapter } from "./types";
 import { sendEmailNotification } from "@/lib/notification/service/email-notification.service";
 
 vi.mock("@/server/get-config", () => ({
@@ -21,6 +24,80 @@ vi.mock("@/lib/notification/service/email-notification.service", () => ({
     }) => input.adapter.send(input.params),
   ),
 }));
+
+describe("custom adapter through the public mail helpers", () => {
+  const message = {
+    to: "recipient@example.com",
+    subject: "Hello",
+    html: "Hello",
+  };
+
+  it("keeps the adapter as receiver for both single and batch sends", async () => {
+    const single = vi
+      .fn()
+      .mockResolvedValue({ success: true, messageId: "single" });
+    const batch = vi
+      .fn()
+      .mockResolvedValue([{ success: true, messageId: "batch" }]);
+    const adapter: EmailAdapter = {
+      id: "custom",
+      async send(params) {
+        expect(this).toBe(adapter);
+        return single(params);
+      },
+      async sendBatch(params) {
+        expect(this).toBe(adapter);
+        return batch(params);
+      },
+    };
+    vi.mocked(getConfig).mockReturnValue({
+      server: { email: adapter },
+    } as ReturnType<typeof getConfig>);
+    await expect(sendEmail(message)).resolves.toEqual({
+      success: true,
+      messageId: "single",
+    });
+    await expect(sendBatchEmails([message])).resolves.toEqual([
+      { success: true, messageId: "batch" },
+    ]);
+    expect(single).toHaveBeenCalledExactlyOnceWith(message);
+    expect(batch).toHaveBeenCalledExactlyOnceWith([message]);
+  });
+
+  it("uses the same custom adapter for every item when it has no batch method", async () => {
+    const single = vi
+      .fn()
+      .mockResolvedValueOnce({ success: true, messageId: "1" })
+      .mockResolvedValueOnce({ success: false, error: "CUSTOM_FAILED" });
+    const adapter: EmailAdapter = {
+      async send(params) {
+        expect(this).toBe(adapter);
+        return single(params);
+      },
+    };
+    vi.mocked(getConfig).mockReturnValue({
+      server: { email: adapter },
+    } as ReturnType<typeof getConfig>);
+    const second = { ...message, to: "second@example.com" };
+    await expect(sendBatchEmails([message, second])).resolves.toEqual([
+      { success: true, messageId: "1" },
+      { success: false, error: "CUSTOM_FAILED" },
+    ]);
+    expect(single).toHaveBeenCalledTimes(2);
+    expect(single).toHaveBeenNthCalledWith(1, message);
+    expect(single).toHaveBeenNthCalledWith(2, second);
+  });
+
+  it("propagates a custom adapter rejection without retrying or switching providers", async () => {
+    const failure = new Error("custom transport unavailable");
+    const adapter: EmailAdapter = { send: vi.fn().mockRejectedValue(failure) };
+    vi.mocked(getConfig).mockReturnValue({
+      server: { email: adapter },
+    } as ReturnType<typeof getConfig>);
+    await expect(sendEmail(message)).rejects.toBe(failure);
+    expect(adapter.send).toHaveBeenCalledExactlyOnceWith(message);
+  });
+});
 
 describe("authentication email delivery", () => {
   const send = vi.fn();
@@ -101,6 +178,42 @@ describe("authentication email delivery", () => {
         otp: "123456",
       }),
     ).rejects.toThrow("Password reset email could not be sent.");
+  });
+
+  it("uses the configured support mailbox in the password-reset template", async () => {
+    send.mockResolvedValue({ success: true });
+    vi.mocked(getConfig).mockReturnValue({
+      server: {
+        appName: "Morph",
+        email: { send },
+        emailSupportAddress: "help@example.com",
+      },
+    } as never);
+    await sendPasswordResetEmail({
+      email: "member@example.com",
+      otp: "123456",
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining("mailto:help@example.com"),
+      }),
+    );
+    expect(send.mock.calls[0][0].html).not.toContain(
+      "mailto:support@morph.com",
+    );
+  });
+
+  it("keeps the legacy support line when no support mailbox is configured", async () => {
+    send.mockResolvedValue({ success: true });
+    await sendPasswordResetEmail({
+      email: "member@example.com",
+      otp: "123456",
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining("mailto:support@morph.com"),
+      }),
+    );
   });
 });
 
