@@ -1,3 +1,4 @@
+import type { ThemeWorkerBuildMismatchCode } from "./theme-worker-build-match";
 import type { ResolvedStorefrontHost } from "./storefront-host-resolver";
 
 function toScriptNameSegment(value: string, label: string): string {
@@ -35,7 +36,12 @@ export function themeWorkerScriptName(themeBuildId: string): string {
 export type ThemeRuntimeFailureReason =
   | "RUNTIME_NOT_CONFIGURED"
   | "SCRIPT_NOT_DEPLOYED"
-  | "RUNTIME_ERROR";
+  | "RUNTIME_ERROR"
+  /**
+   * The Theme Worker that answered runs another build than the release Core
+   * resolved (`theme-worker-build-match.ts`). Only while the check is on.
+   */
+  | "RUNTIME_MISMATCH";
 
 /**
  * Why a service binding could not be resolved for a storefront. A fixed code,
@@ -68,7 +74,18 @@ export type ThemeRuntimeFailure =
     }
   | {
       success: false;
-      reason: Exclude<ThemeRuntimeFailureReason, "RUNTIME_NOT_CONFIGURED">;
+      reason: "RUNTIME_MISMATCH";
+      status: 503;
+      message: string;
+      /** A fixed code, safe to log as it is. */
+      mismatch: ThemeWorkerBuildMismatchCode;
+    }
+  | {
+      success: false;
+      reason: Exclude<
+        ThemeRuntimeFailureReason,
+        "RUNTIME_NOT_CONFIGURED" | "RUNTIME_MISMATCH"
+      >;
       status: number;
       message: string;
     };

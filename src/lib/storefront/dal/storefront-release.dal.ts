@@ -2,7 +2,10 @@ import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
 import { paginationOf, type Pagination } from "@/lib/db/server-result";
 import { withReleaseNote } from "@/lib/storefront/release-note";
-import { withDeployedThemeBuildId } from "../service/theme-worker-deployment-state";
+import {
+  withDeployedThemeBuildId,
+  withDeployedThemeBuildMatch,
+} from "../service/theme-worker-deployment-state";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 import {
   storefrontReleases,
@@ -92,6 +95,12 @@ export const storefrontReleaseDal = {
     storefrontId: string;
     releaseId: string;
     themeBuildId: string;
+    /**
+     * The release/Worker build match mark (`theme-worker-build-match.ts`):
+     * the build when the Worker carries the match module, `null` to remove
+     * the mark. Left as it is when omitted.
+     */
+    buildMatchId?: string | null;
   }): Promise<boolean> {
     const db = await getDb();
     const [row] = await db
@@ -115,9 +124,62 @@ export const storefrontReleaseDal = {
       .update(storefrontReleases)
       .set({
         metadata: withDeployedThemeBuildId(
-          row.metadata ?? null,
+          data.buildMatchId === undefined
+            ? (row.metadata ?? null)
+            : (withDeployedThemeBuildMatch(
+                row.metadata ?? null,
+                data.buildMatchId,
+              ) ?? null),
           data.themeBuildId,
         ),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(
+        and(
+          eq(storefrontReleases.id, data.releaseId),
+          eq(storefrontReleases.storefrontId, data.storefrontId),
+          isNull(storefrontReleases.deletedAt),
+        ),
+      );
+    return true;
+  },
+
+  /**
+   * Records whether the Worker just deployed for this release carries the
+   * release/Worker build match module (`theme-worker-build-match.ts`), and
+   * nothing else. Used by activation (rollback), which does not record the
+   * deployed build itself.
+   *
+   * Writes only when the mark changes, so a deployment with the switch off
+   * leaves a release that never had a mark exactly as it was. Like
+   * `recordDeployedThemeBuild`, it runs after a deployment succeeded and
+   * reads no driver-specific result.
+   */
+  async recordDeployedThemeBuildMatch(data: {
+    storefrontId: string;
+    releaseId: string;
+    buildMatchId: string | null;
+  }): Promise<boolean> {
+    const db = await getDb();
+    const [row] = await db
+      .select({ metadata: storefrontReleases.metadata })
+      .from(storefrontReleases)
+      .where(
+        and(
+          eq(storefrontReleases.id, data.releaseId),
+          eq(storefrontReleases.storefrontId, data.storefrontId),
+          isNull(storefrontReleases.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!row) return false;
+    const current = row.metadata ?? null;
+    const next = withDeployedThemeBuildMatch(current, data.buildMatchId);
+    if (next === current) return true;
+    await db
+      .update(storefrontReleases)
+      .set({
+        metadata: next ?? null,
         updatedAt: new Date().toISOString(),
       })
       .where(

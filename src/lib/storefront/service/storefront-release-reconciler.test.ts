@@ -868,3 +868,73 @@ describe("production deployments and registered static pages", () => {
     expect(result.success).toBe(true);
   });
 });
+
+/**
+ * The release/Worker build match mark (theme-worker-build-match.ts): after
+ * every successful deployment, the release records whether its Worker now
+ * carries Morph's match module, so a mark never outlives that Worker.
+ */
+describe("recording the release/Worker build match mark", () => {
+  const markedDeployer = () => ({
+    kind: "sandbox-wrangler" as const,
+    deploy: vi.fn(async () => ({
+      success: true as const,
+      scriptName: "morph-theme-sf-1",
+      deploymentId: "dep_1",
+      durationMs: 10,
+      buildMatchMarked: true,
+    })),
+  });
+
+  it.each([
+    ["with the module", markedDeployer, "bld_1"],
+    ["without it (switch off), removing any earlier mark", okDeployer, null],
+  ] as const)(
+    "marks an activation deployed %s",
+    async (_case, makeDeployer, buildMatchId) => {
+      const recordDeployedThemeBuildMatch = vi.fn(async () => ({}));
+      const result = await activateReleaseWithDeployment({
+        releaseId: "rel_1",
+        expectedActiveReleaseId: null,
+        deployer: makeDeployer(),
+        r2Bucket: r2(),
+        ports: ports({ recordDeployedThemeBuildMatch }),
+      });
+      expect(result.success).toBe(true);
+      expect(recordDeployedThemeBuildMatch).toHaveBeenCalledWith({
+        storefrontId: "sf_1",
+        releaseId: "rel_1",
+        buildMatchId,
+      });
+    },
+  );
+
+  it("records no mark when the deployment failed", async () => {
+    const recordDeployedThemeBuildMatch = vi.fn(async () => ({}));
+    const result = await activateReleaseWithDeployment({
+      releaseId: "rel_1",
+      expectedActiveReleaseId: null,
+      deployer: new UnavailableThemeWorkerDeployer(),
+      r2Bucket: r2(),
+      ports: ports({ recordDeployedThemeBuildMatch }),
+    });
+    expect(result.success).toBe(false);
+    expect(recordDeployedThemeBuildMatch).not.toHaveBeenCalled();
+  });
+
+  it("reports the mark to the publish path", async () => {
+    const basePorts = ports();
+    for (const [makeDeployer, marked] of [
+      [markedDeployer, true],
+      [okDeployer, false],
+    ] as const) {
+      const result = await deployReleaseArtifact({
+        releaseId: "rel_1",
+        deployer: makeDeployer(),
+        r2Bucket: r2(),
+        ports: { getRelease: basePorts.getRelease, getBuild: basePorts.getBuild },
+      });
+      expect(result).toMatchObject({ success: true, buildMatchMarked: marked });
+    }
+  });
+});

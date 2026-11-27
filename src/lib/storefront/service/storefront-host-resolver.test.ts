@@ -210,3 +210,40 @@ describe("resolveStorefrontHost fail-closed boundaries", () => {
     expect(result.reason).toBe("RELEASE_BUILD_UNAVAILABLE");
   });
 });
+
+describe("the release/Worker build match mark", () => {
+  const release = (metadata: unknown) => ({
+    id: "rel_1",
+    storefrontId: "sf_1",
+    themeId: "th_1",
+    sourceRevisionId: "rev_1",
+    themeBuildId: "bld_1",
+    contentPublicationId: "pub_1",
+    metadata,
+  });
+
+  it("is carried only for a release whose last deploy installed the module for its own build", async () => {
+    const marked = await resolveStorefrontHost(
+      HOST,
+      deps({ release: release({ deployedThemeBuildMatchId: "bld_1" }) }),
+    );
+    expect(marked.success && marked.value.themeWorkerBuildMatch).toBe(true);
+
+    for (const metadata of [
+      undefined,
+      null,
+      {},
+      { deployedThemeBuildId: "bld_1" },
+      { deployedThemeBuildMatchId: "bld_0" },
+      { deployedThemeBuildMatchId: "" },
+    ]) {
+      const result = await resolveStorefrontHost(
+        HOST,
+        deps({ release: release(metadata) }),
+      );
+      expect(result.success).toBe(true);
+      if (!result.success) continue;
+      expect("themeWorkerBuildMatch" in result.value).toBe(false);
+    }
+  });
+});

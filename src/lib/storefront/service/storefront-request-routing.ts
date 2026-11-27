@@ -8,6 +8,7 @@ import {
   type ThemeServiceBinding,
 } from "./theme-runtimes";
 import type { ThemeRuntime } from "./theme-runtime.types";
+import { releaseWorkerMatchEnabled } from "./theme-worker-build-match";
 
 /** The Worker vars `collectPlatformHostnames` reads, and no others. */
 const PLATFORM_HOSTNAME_ENV_KEYS = [
@@ -294,14 +295,20 @@ export function createThemeRuntime(
       environment.MORPH_THEME_SERVICE_BINDINGS.trim() !== "");
 
   if (hasServiceBinding) {
-    return new ServiceBindingThemeRuntime((resolved) => {
-      const target = resolveThemeServiceBindingTarget(
-        environment,
-        resolved.storefrontId,
-      );
-      if (!("name" in target)) return target;
-      return readServiceBinding(target.name) ?? { unmapped: "BINDING_ABSENT" };
-    });
+    return new ServiceBindingThemeRuntime(
+      (resolved) => {
+        const target = resolveThemeServiceBindingTarget(
+          environment,
+          resolved.storefrontId,
+        );
+        if (!("name" in target)) return target;
+        return (
+          readServiceBinding(target.name) ?? { unmapped: "BINDING_ABSENT" }
+        );
+      },
+      // The same switch the deployer reads (theme-worker-deployer.factory.ts).
+      { releaseWorkerMatch: releaseWorkerMatchEnabled(environment) },
+    );
   }
 
   const dispatcher = environment?.THEME_DISPATCHER as

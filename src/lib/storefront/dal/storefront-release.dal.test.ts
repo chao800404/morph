@@ -433,3 +433,98 @@ describe("renameRelease", () => {
     expect(readMetadata(targetReleaseId)).toBeNull();
   });
 });
+
+/**
+ * The release/Worker build match mark (theme-worker-build-match.ts), kept in
+ * release metadata beside the deployed build.
+ */
+describe("recording the release/Worker build match mark", () => {
+  const RELEASE = "11111111-1111-4111-8111-111111111111";
+  const row = () =>
+    sqlite
+      .prepare(
+        "SELECT metadata, updated_at AS updatedAt FROM storefront_releases WHERE id = ?",
+      )
+      .get(RELEASE) as { metadata: string | null; updatedAt: string };
+  const metadata = () => {
+    const value = row().metadata;
+    return value === null ? null : JSON.parse(value);
+  };
+
+  it("writes nothing for a release that never had a mark when the Worker carries none (switch off)", async () => {
+    expect(
+      await storefrontReleaseDal.recordDeployedThemeBuildMatch({
+        storefrontId: "storefront-a",
+        releaseId: RELEASE,
+        buildMatchId: null,
+      }),
+    ).toBe(true);
+    expect(row()).toEqual({ metadata: null, updatedAt: "2026-01-01" });
+  });
+
+  it("sets the mark, keeps other metadata, and removes it on a later deploy without the module", async () => {
+    sqlite
+      .prepare("UPDATE storefront_releases SET metadata = ? WHERE id = ?")
+      .run(JSON.stringify({ note: "Spring", deployedThemeBuildId: "build-a" }), RELEASE);
+    await storefrontReleaseDal.recordDeployedThemeBuildMatch({
+      storefrontId: "storefront-a",
+      releaseId: RELEASE,
+      buildMatchId: "build-a",
+    });
+    expect(metadata()).toEqual({
+      note: "Spring",
+      deployedThemeBuildId: "build-a",
+      deployedThemeBuildMatchId: "build-a",
+    });
+    await storefrontReleaseDal.recordDeployedThemeBuildMatch({
+      storefrontId: "storefront-a",
+      releaseId: RELEASE,
+      buildMatchId: null,
+    });
+    expect(metadata()).toEqual({
+      note: "Spring",
+      deployedThemeBuildId: "build-a",
+    });
+  });
+
+  it("records the mark with the deployed build in one write, and leaves it when not given", async () => {
+    await storefrontReleaseDal.recordDeployedThemeBuild({
+      storefrontId: "storefront-a",
+      releaseId: RELEASE,
+      themeBuildId: "build-a",
+      buildMatchId: "build-a",
+    });
+    expect(metadata()).toEqual({
+      deployedThemeBuildId: "build-a",
+      deployedThemeBuildMatchId: "build-a",
+    });
+    // An older caller that does not know the mark leaves it as it is.
+    await storefrontReleaseDal.recordDeployedThemeBuild({
+      storefrontId: "storefront-a",
+      releaseId: RELEASE,
+      themeBuildId: "build-a",
+    });
+    expect(metadata()).toEqual({
+      deployedThemeBuildId: "build-a",
+      deployedThemeBuildMatchId: "build-a",
+    });
+    await storefrontReleaseDal.recordDeployedThemeBuild({
+      storefrontId: "storefront-a",
+      releaseId: RELEASE,
+      themeBuildId: "build-a",
+      buildMatchId: null,
+    });
+    expect(metadata()).toEqual({ deployedThemeBuildId: "build-a" });
+  });
+
+  it("refuses a release of another storefront", async () => {
+    expect(
+      await storefrontReleaseDal.recordDeployedThemeBuildMatch({
+        storefrontId: "storefront-other",
+        releaseId: RELEASE,
+        buildMatchId: "build-a",
+      }),
+    ).toBe(false);
+    expect(metadata()).toBeNull();
+  });
+});

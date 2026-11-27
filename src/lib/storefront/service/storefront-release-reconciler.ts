@@ -140,6 +140,20 @@ export type ReleaseReconcilerPorts = Readonly<{
     releaseId: string;
     themeBuildId: string;
   }): Promise<unknown>;
+  /**
+   * Records whether the Worker just deployed for this release carries
+   * Morph's release/Worker build match module (`theme-worker-build-match.ts`):
+   * `buildMatchId` is the build when it does, `null` when it does not (the
+   * mark is removed). Called after every successful deployment, so a mark
+   * never outlives the Worker it describes.
+   *
+   * Optional so a caller that never reads the mark is not forced to write it.
+   */
+  recordDeployedThemeBuildMatch?(args: {
+    storefrontId: string;
+    releaseId: string;
+    buildMatchId: string | null;
+  }): Promise<unknown>;
 }>;
 
 /**
@@ -209,7 +223,13 @@ export async function readGeneratedWorkerConfig(
 }
 
 export type ReleaseDeploymentOutcome =
-  | { success: true; scriptName: string; deploymentId: string | null }
+  | {
+      success: true;
+      scriptName: string;
+      deploymentId: string | null;
+      /** The deployed Worker carries the build match module. */
+      buildMatchMarked: boolean;
+    }
   | {
       success: false;
       reason: Exclude<ReleaseActivationFailureReason, "ACTIVATION_CONFLICT">;
@@ -318,6 +338,7 @@ export async function deployReleaseArtifact(args: {
     success: true,
     scriptName: planned.plan.scriptName,
     deploymentId: deployed.deploymentId,
+    buildMatchMarked: deployed.buildMatchMarked === true,
   };
 }
 
@@ -522,6 +543,11 @@ async function activateReleaseWithDeploymentUnsynchronised(args: {
     storefrontId: release.storefrontId,
     releaseId: release.id,
     themeBuildId: build.id,
+  });
+  await args.ports.recordDeployedThemeBuildMatch?.({
+    storefrontId: release.storefrontId,
+    releaseId: release.id,
+    buildMatchId: deployed.buildMatchMarked === true ? build.id : null,
   });
 
   return {

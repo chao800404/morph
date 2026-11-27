@@ -8,6 +8,10 @@ import { wranglerDeployConfig } from "./sandbox-wrangler-theme-worker-deployer";
 import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
 import type { CanonicalThemeBuildManifest } from "../compiler/theme-build-artifact-store.types";
 import emittedConfigs from "./__fixtures__/theme-worker-emitted-configs.json";
+import {
+  THEME_BUILD_ID_VAR,
+  THEME_BUILD_MATCH_MODULE,
+} from "./theme-worker-build-match";
 
 const sha256 = (text: string) =>
   createHash("sha256").update(text).digest("hex");
@@ -772,6 +776,31 @@ describe("the Wrangler key contract's admission boundary", () => {
       expect(result.plan.modules).toHaveLength(expected.moduleCount);
       expect(result.plan.assets).toHaveLength(expected.assetCount);
       expect(result.plan.native).toBeUndefined();
+    },
+  );
+
+  // The release/Worker build match (theme-worker-build-match.ts): with it
+  // on, a historical artifact's deploy config differs from the one above in
+  // exactly two places, the main (Morph's module, which imports the build's
+  // entry) and the build id var. With it off, the test above holds.
+  it.each([...LEGACY, "start-native-guide"])(
+    "%s with the build match on changes only main and the build id var",
+    (id) => {
+      const fixture = fixtures[id]!;
+      const result = planFor(fixture, "production");
+      if (!result.success) throw new Error(result.message);
+      const without = wranglerDeployConfig(result.plan);
+      const withMatch = wranglerDeployConfig(result.plan, {
+        themeBuildId: "bld_fixture",
+      });
+      const ownVars = (without.vars ?? {}) as Record<string, unknown>;
+      expect(withMatch).toEqual({
+        ...without,
+        main: THEME_BUILD_MATCH_MODULE,
+        vars: { ...ownVars, [THEME_BUILD_ID_VAR]: "bld_fixture" },
+        keep_vars: false,
+      });
+      expect(without.main).toBe(result.plan.mainModule);
     },
   );
 

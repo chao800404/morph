@@ -36,6 +36,7 @@ import type {
 } from "./theme-runtime.types";
 import { isolateSvgResponse, isSvgContentType } from "../theme-svg-isolation";
 import { withoutPlatformCookies } from "./preview-proxy-credentials";
+import { THEME_BUILD_MISMATCH_RETRY_AFTER_SECONDS } from "./theme-worker-build-match";
 import { carriesPlatformCredentialCookie } from "@/lib/auth/platform-cookies";
 import { refuseCrossOriginWrite } from "@/server/same-origin-write";
 
@@ -134,6 +135,13 @@ export const THEME_RUNTIME_FAILURE_LOG_LABEL =
   "[storefront] Theme runtime failure";
 
 /**
+ * Logged when the Theme Worker that answered runs another build than the
+ * release Core resolved (`theme-worker-build-match.ts`).
+ */
+export const THEME_RUNTIME_MISMATCH_LOG_LABEL =
+  "[storefront] Theme Worker build mismatch";
+
+/**
  * The one place a failed Theme runtime result becomes a public response.
  *
  * A not-configured failure keeps the runtime's status and the standard error
@@ -150,6 +158,28 @@ function themeRuntimeFailureResponse(
   runtimeKind: ThemeRuntime["kind"],
   resolved: ResolvedStorefrontHost,
 ): Response {
+  if (failure.reason === "RUNTIME_MISMATCH") {
+    // Expected during a deploy swap; logged as fixed fields (ids Core
+    // resolved, never anything the Worker sent), and answered with fixed
+    // copy that no cache may keep and a client may retry shortly.
+    console.error(THEME_RUNTIME_MISMATCH_LOG_LABEL, {
+      code: failure.mismatch,
+      runtime: runtimeKind,
+      status: failure.status,
+      storefrontId: resolved.storefrontId,
+      releaseId: resolved.releaseId,
+      themeBuildId: resolved.themeBuildId,
+    });
+    const response = errorResponse(
+      failure.status,
+      THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE,
+    );
+    response.headers.set(
+      "Retry-After",
+      String(THEME_BUILD_MISMATCH_RETRY_AFTER_SECONDS),
+    );
+    return response;
+  }
   if (failure.reason !== "RUNTIME_NOT_CONFIGURED") {
     return errorResponse(failure.status, failure.message);
   }

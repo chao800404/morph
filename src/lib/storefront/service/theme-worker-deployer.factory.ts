@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { SandboxWranglerThemeWorkerDeployer } from "./sandbox-wrangler-theme-worker-deployer";
 import { isProductionEnvironment } from "./storefront-domain-provider";
+import { releaseWorkerMatchEnabled } from "./theme-worker-build-match";
 import {
   OperatorManagedThemeWorkerDeployer,
   UnavailableThemeWorkerDeployer,
@@ -63,5 +64,8 @@ export function createServerThemeWorkerDeployer(): ThemeWorkerDeployer {
     sandboxBinding,
     r2Bucket: r2Bucket as never,
     credentials: { apiToken, accountId },
+    // Off unless MORPH_RELEASE_WORKER_MATCH=1; the same switch Core reads
+    // (storefront-request-routing.ts), so both halves of the check agree.
+    releaseWorkerMatch: releaseWorkerMatchEnabled(bindings),
   });
 }

@@ -3,6 +3,7 @@ import { storefrontDomainDal } from "../dal/storefront-domain.dal";
 import { storefrontReleaseDal } from "../dal/storefront-release.dal";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
 import { storefrontDal } from "../dal/storefront.dal";
+import { isThemeBuildMatchMarked } from "./theme-worker-deployment-state";
 
 /**
  * Every reason production hostname resolution can refuse to serve.
@@ -30,6 +31,13 @@ export type ResolvedStorefrontHost = Readonly<{
   contentPublicationId: string | null;
   artifactPrefix: string;
   manifest: CanonicalThemeBuildManifest;
+  /**
+   * Present (true) when the release's last successful deploy installed the
+   * release/Worker build match module (`theme-worker-build-match.ts`) for
+   * this build, so its Worker must confirm the build it serves. Absent for
+   * every release deployed before the check or with the switch off.
+   */
+  themeWorkerBuildMatch?: true;
 }>;
 
 export type StorefrontHostResolution =
@@ -100,6 +108,8 @@ export type HostResolverReleasePort = Readonly<{
     sourceRevisionId: string;
     themeBuildId: string;
     contentPublicationId: string | null;
+    /** Read for the release/Worker build match mark only. */
+    metadata?: Record<string, unknown> | null;
   } | null>;
 }>;
 
@@ -236,6 +246,9 @@ export async function resolveStorefrontHost(
       contentPublicationId: release.contentPublicationId ?? null,
       artifactPrefix: build.artifactPrefix,
       manifest: build.manifestJson as CanonicalThemeBuildManifest,
+      ...(isThemeBuildMatchMarked(release.metadata, release.themeBuildId)
+        ? { themeWorkerBuildMatch: true as const }
+        : {}),
     },
   };
 }

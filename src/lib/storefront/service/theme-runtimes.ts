@@ -8,6 +8,10 @@ import {
   type ThemeRuntimeResult,
   type ThemeServiceBindingUnmappedSubcode,
 } from "./theme-runtime.types";
+import {
+  EXPECTED_THEME_BUILD_HEADER,
+  verifyThemeWorkerBuild,
+} from "./theme-worker-build-match";
 
 /** Minimal shape of a Worker-to-Worker service binding. */
 export type ThemeServiceBinding = Readonly<{
@@ -103,7 +107,15 @@ function applyStorefrontContext(
 export class ServiceBindingThemeRuntime implements ThemeRuntime {
   readonly kind = "service-binding" as const;
 
-  constructor(private readonly resolveBinding: ThemeServiceBindingResolver) {}
+  constructor(
+    private readonly resolveBinding: ThemeServiceBindingResolver,
+    /**
+     * The release/Worker build match (`theme-worker-build-match.ts`). Off
+     * unless the server sets `MORPH_RELEASE_WORKER_MATCH=1`; off, requests
+     * and answers pass exactly as before.
+     */
+    private readonly options: Readonly<{ releaseWorkerMatch?: boolean }> = {},
+  ) {}
 
   async handle(invocation: ThemeRuntimeInvocation): Promise<ThemeRuntimeResult> {
     const binding = this.resolveBinding(invocation.resolved);
@@ -128,15 +140,41 @@ export class ServiceBindingThemeRuntime implements ThemeRuntime {
     }
 
     try {
-      const response = await binding.fetch(
-        applyStorefrontContext(
-          invocation.request,
-          invocation.resolved,
-          new URL(invocation.request.url).origin,
-          invocation.renderContext,
-        ),
+      const forwarded = applyStorefrontContext(
+        invocation.request,
+        invocation.resolved,
+        new URL(invocation.request.url).origin,
+        invocation.renderContext,
       );
-      return { success: true, response };
+      const matching = this.options.releaseWorkerMatch === true;
+      // Set after the inbound filter, which drops every x-morph-* header a
+      // browser sent, so only Core can ask a Worker to check its build.
+      if (matching) {
+        forwarded.headers.set(
+          EXPECTED_THEME_BUILD_HEADER,
+          invocation.resolved.themeBuildId,
+        );
+      }
+      const response = await binding.fetch(forwarded);
+      if (!matching) return { success: true, response };
+
+      const verdict = verifyThemeWorkerBuild({
+        response,
+        expectedThemeBuildId: invocation.resolved.themeBuildId,
+        releaseMarked: invocation.resolved.themeWorkerBuildMatch === true,
+      });
+      if (verdict.ok) return { success: true, response: verdict.response };
+      // The answer is not this release's; nothing of it reaches the shopper.
+      try {
+        await response.body?.cancel();
+      } catch {}
+      return {
+        success: false,
+        reason: "RUNTIME_MISMATCH",
+        status: 503,
+        message: `The Theme Worker for storefront "${invocation.resolved.storefrontId}" does not run release "${invocation.resolved.releaseId}"'s build.`,
+        mismatch: verdict.code,
+      };
     } catch (error) {
       return {
         success: false,
