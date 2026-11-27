@@ -140,10 +140,20 @@ export async function openEditorAt(page: Page, path: string) {
   await expectHydrated(publish);
 }
 
+/**
+ * The page list's name for a page: its path, and "Home /" for the home
+ * page (editor-sections-panel.tsx; Start and Astro alike). Batch 1 asked
+ * for "/" and found no such entry.
+ */
+export const pageListName = (routePath: string) =>
+  routePath === "/" ? "Home /" : routePath;
+
 /** Switches the editor to another page from the Theme's page list. */
 export async function openPageFromList(page: Page, routePath: string) {
   const pages = page.getByRole("list", { name: "Theme pages" });
-  await pages.getByRole("button", { name: routePath, exact: true }).click();
+  await pages
+    .getByRole("button", { name: pageListName(routePath), exact: true })
+    .click();
   await expect
     .poll(async () => new URL((await liveFrame(page)).url()).pathname, {
       timeout: 120_000,
@@ -320,12 +330,52 @@ export function astroCaseTheme(options: {
     ).toBe(1);
   }
 
+  /**
+   * A template no route ensure makes (the shared `layout`), inserted by the
+   * harness under `key` with an empty document; its first draft comes from
+   * `seedDraft(key, ...)`. No product entry makes one for an Astro Theme.
+   */
+  async function seedTemplate(key: string, type: string, name: string) {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    expect(
+      await harness.writeD1(
+        `INSERT INTO storefront_theme_templates
+           (id, theme_id, type, name, document, draft_generation, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, '{"version":1,"sections":[]}', 1, ?5, ?5)`,
+        id,
+        scope.themeId,
+        type,
+        name,
+        now,
+      ),
+    ).toBe(1);
+    templates.set(key, id);
+    return id;
+  }
+
+  /** A template's row as stored: its draft and published revisions. */
+  const templateRow = (key: string) => {
+    const rows = queryLifecycleD1(
+      stateDir,
+      `SELECT draft_revision_id AS draft, published_revision_id AS published
+         FROM storefront_theme_templates
+        WHERE id = ?1 AND theme_id = ?2 AND deleted_at IS NULL`,
+      templateOf(key),
+      scope.themeId,
+    ) as Array<{ draft: string | null; published: string | null }>;
+    expect(rows, `${key} has one row`).toHaveLength(1);
+    return rows[0]!;
+  };
+
   return {
     scope,
     harness,
     templateOf,
     draft,
     seedDraft,
+    seedTemplate,
+    templateRow,
     editorPath: (routePath = "/") =>
       `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${templateOf(routePath)}`,
 

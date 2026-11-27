@@ -241,16 +241,12 @@ test.describe("Astro Design edits published and rolled back (D3 rows 21-24)", ()
     await frameShowing(page, '[data-d3-case="team"] h1', pending);
 
     // The home title again: a draft, not yet on the public site.
-    // The page list names the home page otherwise, so the editor is opened
-    // on it again (the page publish below is the home page's own).
-    await openEditorAt(page, theme!.editorPath("/"));
+    // Back from the page list, which names the home page "Home /" (the
+    // page publish below is the home page's own).
+    await openPageFromList(page, "/");
     await expect(
       (await liveFrame(page)).locator('[data-d3-case="hero"] h1'),
     ).toHaveText(r1, { timeout: 180_000 });
-    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(
-      0,
-      { timeout: 120_000 },
-    );
     const hero = await selectCase(page, record, "hero", "hero");
     await writeField(page, record, astroField(hero, "Title"), r2);
     const homeDraft = withProps(home, "hero", { title: r2 });
