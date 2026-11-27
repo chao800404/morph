@@ -229,8 +229,17 @@ export async function readAstroRoute(args: {
   };
 }
 
-/** One field an instance's call site proves comes from its section. */
-export type AstroRouteBindingClaim = Readonly<{ slot: string; field: string }>;
+/**
+ * One field an instance's call site proves comes from its section.
+ * `requiresOwnKey` is set when the claim holds only while the stored section
+ * has its own value for the field (a literal before the spread: the literal
+ * shows otherwise, and Core refuses the write as `source-key-absent`).
+ */
+export type AstroRouteBindingClaim = Readonly<{
+  slot: string;
+  field: string;
+  requiresOwnKey?: true;
+}>;
 
 /** One component instance Core confirmed on the page (plan v2 §2.1 step 5). */
 export type AstroRouteBindingInstance = Readonly<{
@@ -359,7 +368,11 @@ export async function astroRouteBindingsView(args: {
     const claims: AstroRouteBindingClaim[] = [];
     for (const claim of Object.values(instance.claims)) {
       if (claim.kind !== "claim" || claim.slot !== instance.section) continue;
-      claims.push({ slot: claim.slot, field: claim.field });
+      claims.push(
+        claim.conditional?.requiresOwnKey
+          ? { slot: claim.slot, field: claim.field, requiresOwnKey: true }
+          : { slot: claim.slot, field: claim.field },
+      );
     }
     claims.sort((a, b) => a.field.localeCompare(b.field));
     instances.push({

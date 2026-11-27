@@ -132,6 +132,18 @@ function AstroContentInputs({ content }: { content: EditorAstroContent }) {
     <div className="space-y-3">
       {content.fields.map((field) => {
         const id = `${baseId}-${field.key}`;
+        if (field.codeOnly === "controlled-by-code") {
+          return (
+            <p
+              key={field.key}
+              data-astro-field-code-controlled={field.key}
+              className="text-xs text-muted-foreground"
+            >
+              {field.label} is controlled by code on this page. Edit it in
+              Code mode.
+            </p>
+          );
+        }
         if (field.input === null) {
           return (
             <p key={field.key} className="text-xs text-muted-foreground">

@@ -118,8 +118,15 @@ export function astroWriteIdentityForProof(args: {
 export type AstroInspectorField = Readonly<{
   key: string;
   label: string;
-  /** The input it gets; null when Design does not edit this type yet. */
+  /** The input it gets; null when `codeOnly` says why there is none. */
   input: "text" | "textarea" | null;
+  /**
+   * Why the field has no input: the page's code decides its value here
+   * (`controlled-by-code`: Core proves no CMS write for this call site), or
+   * Design does not edit this type yet (`unsupported-type`). Null with an
+   * input.
+   */
+  codeOnly: "controlled-by-code" | "unsupported-type" | null;
 }>;
 
 type FieldDeclaration = Readonly<
@@ -127,29 +134,50 @@ type FieldDeclaration = Readonly<
 >;
 
 /**
- * The fields the Inspector offers for a confirmed Astro selection, in the
- * `.fields.ts` declaration's order: declared there **and** proven by Core
- * for this call site (`selection.fields`, the declared fields the B1 claims
- * pass from the section). A field missing from either gets nothing. Only
- * plain text gets an input for now; any other declared type is listed with
- * none, for Code mode.
+ * The fields the Inspector lists for a confirmed Astro selection, in the
+ * `.fields.ts` declaration's order. A field gets an input only when it is
+ * declared there **and** proven by Core for this call site
+ * (`selection.fields`, the declared fields the B1 claims pass from the
+ * section), and, for a claim that holds only while the stored section has
+ * the key (`selection.ownKeyFields`, a literal before the spread), only when
+ * `storedProps` (the section's accepted props) has its own defined value:
+ * Core refuses the write otherwise (`source-key-absent`).
+ *
+ * A declared field without that proof (a literal, a literal after the
+ * spread, a value through author code, a value the page passes itself) is
+ * listed as controlled by code, with no input: rule 02 section 5.3.1 asks
+ * the Inspector to say so rather than hide it. A proven field the
+ * declaration does not name gets nothing. Only plain text gets an input for
+ * now; any other declared type is listed with none, for Code mode.
  */
 export function astroInspectorFields(
   selection: ConfirmedAstroDesignSelection,
   declaration: FieldDeclaration | null | undefined,
+  storedProps?: Readonly<Record<string, unknown>> | null,
 ): AstroInspectorField[] {
   if (!declaration) return [];
   const proven = new Set(selection.fields);
+  const ownKey = new Set(selection.ownKeyFields);
   const fields: AstroInspectorField[] = [];
   for (const [key, definition] of Object.entries(declaration)) {
-    if (!proven.has(key)) continue;
+    const label = definition.label ?? key;
+    const stored =
+      !!storedProps &&
+      Object.prototype.hasOwnProperty.call(storedProps, key) &&
+      storedProps[key] !== undefined;
+    if (!proven.has(key) || (ownKey.has(key) && !stored)) {
+      fields.push({ key, label, input: null, codeOnly: "controlled-by-code" });
+      continue;
+    }
+    const input =
+      definition.type === "text" || definition.type === "textarea"
+        ? definition.type
+        : null;
     fields.push({
       key,
-      label: definition.label ?? key,
-      input:
-        definition.type === "text" || definition.type === "textarea"
-          ? definition.type
-          : null,
+      label,
+      input,
+      codeOnly: input ? null : "unsupported-type",
     });
   }
   return fields;

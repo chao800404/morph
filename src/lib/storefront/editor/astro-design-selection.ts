@@ -232,6 +232,12 @@ export type AstroDesignSelection =
       declaredFields: readonly string[];
       /** Declared fields this call site proves come from the section. */
       fields: readonly string[];
+      /**
+       * Those of `fields` proven only while the stored section has its own
+       * value for them (a literal before the spread); Core refuses a write
+       * of one the stored section lacks.
+       */
+      ownKeyFields: readonly string[];
     }>
   | Readonly<{ status: "checking" }>
   | Readonly<{ status: "refused"; hint: AstroDesignHint }>;
@@ -290,10 +296,12 @@ export function resolveAstroDesignSelection(
     };
   }
   const declared = new Set(instance.declaredFields);
-  const fields = instance.claims
-    .filter(
-      (claim) => claim.slot === instance.section && declared.has(claim.field),
-    )
+  const proven = instance.claims.filter(
+    (claim) => claim.slot === instance.section && declared.has(claim.field),
+  );
+  const fields = proven.map((claim) => claim.field);
+  const ownKeyFields = proven
+    .filter((claim) => claim.requiresOwnKey === true)
     .map((claim) => claim.field);
   if (fields.length === 0) {
     return {
@@ -310,6 +318,7 @@ export function resolveAstroDesignSelection(
     sectionType: instance.sectionType,
     declaredFields: [...instance.declaredFields],
     fields,
+    ownKeyFields,
   };
 }
 
