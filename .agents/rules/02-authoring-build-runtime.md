@@ -122,7 +122,8 @@ compatibility fallback，不得成為新的唯一宣告來源。
   markdown 維護；規則只負責說明邊界，清單交給型別。
 - 需要 asset／commerce reference picker 時應擴充正式 reference field contract，不得先用任意
   字串假裝完成關聯能力。
-- 連結欄位一律宣告為 `type: "link"`，並由共用的 `ThemeLink` 渲染。連結有 href、target 與 rel
+- 連結欄位一律宣告為 `type: "link"`；Starter 建議用共用的 `ThemeLink` 渲染，純 `<a href target rel>`
+  與 router `<Link>`（由該連結欄位綁定）編輯器也認得（見 `theme-link-binding.ts`）。連結有 href、target 與 rel
   三個一起被編輯的部分，拆成 `actionHref` 這類平坦字串鍵，會讓重複列無法各自帶一個完整連結，
   也逼每個元件自己決定該用 `<a>` 還是 router `<Link>`。該判斷屬於值而不是 markup，只寫一次。
 - Inspector 不得為特定欄位名稱寫死控制項而蓋過元件的宣告。硬編碼的 `actionHref` 卡片曾經攔截
