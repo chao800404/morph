@@ -7,26 +7,39 @@
  * deploy swap, or after a failed deploy, release B's request can reach build
  * A's code: stale HTML, or a POST run by the wrong Theme.
  *
- * The check has two halves, one contract:
+ * The check is a refusal that happens before any Theme code handles the
+ * request, and nothing else:
  *
  * - **Worker.** When the switch is on, the deployer makes a Morph-owned
- *   module the Worker's `main` (`themeBuildMatchModuleSource`). It reads the
- *   build id the deployer wrote into the Worker's own vars and compares it
- *   with the id Core expects, before any Theme handler runs. A mismatch is a
- *   non-cacheable 503 and the Theme is never invoked. A request without
- *   Core's expectation passes through untouched, so the module enforces only
- *   while Core asks it to.
+ *   module the Worker's `main` (`themeBuildMatchModuleSource`), writes the
+ *   build id into the Worker's vars, and routes every request through the
+ *   Worker first (`assets.run_worker_first`), so the old build's static
+ *   assets cannot answer either. The module compares the deployed build id
+ *   with the one Core expects and, on a mismatch, answers a non-cacheable 503
+ *   without loading or invoking the Theme. A request without Core's
+ *   expectation passes through untouched.
  * - **Core.** When the switch is on, Core sends its expectation on every
- *   request, reads the Worker's refusal as a runtime mismatch (logged, never
- *   cached), and, for a release whose last deploy installed the module,
- *   refuses an answer that does not confirm the build: such an answer came
- *   from a Worker without the module, which cannot have checked.
+ *   request and reads the module's refusal as a runtime mismatch (logged,
+ *   never cached).
  *
- * Off (the default), the deployer writes the deploy config byte for byte as
- * before, Core sends and reads nothing new, and a Worker that already carries
- * the module passes every request through unchanged.
+ * Threat model. The module runs in the same isolate as Theme code, so it
+ * holds only against what Theme code can do *after* the module has read what
+ * it needs. It therefore reads the build id and captures every intrinsic it
+ * uses before the Theme's entry is first imported (lazily, on the first
+ * request it lets through), and never trusts anything the Theme can write
+ * afterwards. It sends no positive confirmation back: anything the module
+ * could send, Theme code in the same isolate could send too, so Core never
+ * accepts an answer *because* of a header. What Core learns is only the
+ * refusal, which a Theme could at most forge against itself. A Worker
+ * deployed without the module (before the check, or with the switch off)
+ * cannot be told apart and is served as before; see the PR body's
+ * transition table.
+ *
+ * Off (the default, and always in production until PR 6), the deployer
+ * writes the deploy config byte for byte as before, Core sends and reads
+ * nothing new, and a Worker that already carries the module passes every
+ * request through.
  */
-
 import { isProductionEnvironment } from "./storefront-domain-provider";
 
 /** The Worker var holding the build id the Worker was deployed with. */
@@ -34,9 +47,6 @@ export const THEME_BUILD_ID_VAR = "MORPH_THEME_BUILD_ID";
 
 /** Core to Worker: the build id Core resolved for this request. */
 export const EXPECTED_THEME_BUILD_HEADER = "x-morph-expected-theme-build-id";
-
-/** Worker to Core: the build id that checked and served this request. */
-export const SERVED_THEME_BUILD_HEADER = "x-morph-served-theme-build-id";
 
 /** Worker to Core: set only on the module's own refusal. */
 export const THEME_BUILD_MISMATCH_HEADER = "x-morph-theme-build-mismatch";
@@ -70,136 +80,102 @@ export function releaseWorkerMatchEnabled(
 }
 
 /**
- * Source of the Morph-owned Worker entry wrapping the build's own entry.
+ * Source of the Morph-owned Worker entry in front of the build's own entry.
  *
  * Platform code, constant but for the entry's path; never Theme code. It
- * re-exports everything the build's entry exports, and its default export is
- * the build's handler with `fetch` wrapped.
+ * has no static import of the build, so its own top level runs first: it
+ * captures the intrinsics it uses before any Theme module is evaluated, and
+ * reads the deployed build id on the first request, before it imports the
+ * build. The build's entry is imported once, on the first request the module
+ * lets through. Its default export may be an object with `fetch` (Start's
+ * and Astro's entries) or a `WorkerEntrypoint`-style class.
+ *
+ * Only `fetch` is forwarded. The deploy config this module is written for
+ * declares no cron triggers, queue consumers, Durable Objects or named
+ * entrypoints (the Wrangler key contract refuses them), so the runtime never
+ * calls any other handler or named export.
  */
 export function themeBuildMatchModuleSource(mainModule: string): string {
   const entry = JSON.stringify(`./${mainModule}`);
   const expected = JSON.stringify(EXPECTED_THEME_BUILD_HEADER);
-  const served = JSON.stringify(SERVED_THEME_BUILD_HEADER);
   const mismatch = JSON.stringify(THEME_BUILD_MISMATCH_HEADER);
   const variable = JSON.stringify(THEME_BUILD_ID_VAR);
   const retryAfter = JSON.stringify(
     String(THEME_BUILD_MISMATCH_RETRY_AFTER_SECONDS),
   );
   return `// Morph release/Worker build match. Written by Morph's deployer; not Theme code.
-import * as themeEntry from ${entry};
-export * from ${entry};
+// Everything below is captured before the Theme's entry is imported.
+const apply = Reflect.apply;
+const HeadersC = Headers;
+const RequestC = Request;
+const ResponseC = Response;
+const getHeader = Headers.prototype.get;
+const deleteHeader = Headers.prototype.delete;
+const requestHeaders = Object.getOwnPropertyDescriptor(Request.prototype, "headers").get;
+const EXPECTED = ${expected};
 
-const theme = themeEntry.default;
+let deployed = null;
+let theme = null;
 
 function refuse() {
-  return new Response("Theme Worker build mismatch.", {
+  return new ResponseC("Theme Worker build mismatch.", {
     status: 503,
-    headers: {
+    headers: new HeadersC({
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store",
       "Retry-After": ${retryAfter},
       "X-Content-Type-Options": "nosniff",
       [${mismatch}]: "1",
-    },
+    }),
   });
 }
 
-function confirm(response, deployed) {
-  if (!(response instanceof Response)) return response;
-  try {
-    response.headers.set(${served}, deployed);
-    return response;
-  } catch {}
-  if (response.status === 101 || response.webSocket) return response;
-  const headers = new Headers(response.headers);
-  headers.set(${served}, deployed);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+async function invoke(request, env, ctx) {
+  if (theme === null) theme = import(${entry});
+  const handler = (await theme).default;
+  if (
+    typeof handler === "function" &&
+    handler.prototype &&
+    typeof handler.prototype.fetch === "function"
+  ) {
+    return new handler(ctx, env).fetch(request);
+  }
+  return handler.fetch(request, env, ctx);
 }
 
 export default {
-  ...theme,
   async fetch(request, env, ctx) {
-    const expected = request.headers.get(${expected});
-    if (expected === null) return theme.fetch(request, env, ctx);
-    const deployed =
-      env && typeof env[${variable}] === "string" ? env[${variable}] : "";
-    if (deployed === "" || expected !== deployed) return refuse();
-    const headers = new Headers(request.headers);
-    headers.delete(${expected});
-    return confirm(
-      await theme.fetch(new Request(request, { headers }), env, ctx),
-      deployed,
-    );
+    // Read once, before the Theme is ever imported, and kept: nothing the
+    // Theme later does to env changes the build this Worker was deployed with.
+    if (deployed === null) {
+      const value = env ? env[${variable}] : undefined;
+      deployed = typeof value === "string" ? value : "";
+    }
+    const headers = apply(requestHeaders, request, []);
+    const want = apply(getHeader, headers, [EXPECTED]);
+    if (want === null) return invoke(request, env, ctx);
+    if (deployed === "" || want !== deployed) return refuse();
+    const forwarded = new HeadersC(headers);
+    apply(deleteHeader, forwarded, [EXPECTED]);
+    return invoke(new RequestC(request, { headers: forwarded }), env, ctx);
   },
 };
 `;
 }
 
-export type ThemeWorkerBuildMismatchCode =
-  /** The Worker's module refused: it carries another build. Theme not run. */
-  | "WORKER_BUILD_MISMATCH"
-  /** The Worker confirmed another build than Core expected. */
-  | "WORKER_BUILD_CONFIRMED_OTHER"
-  /**
-   * The release's last deploy installed the module, but the answer carries
-   * no confirmation: a Worker without the module answered, and the Theme ran.
-   */
-  | "WORKER_BUILD_UNCONFIRMED";
-
-export type ThemeWorkerBuildVerdict =
-  | { ok: true; response: Response }
-  | { ok: false; code: ThemeWorkerBuildMismatchCode };
+/** The module refused: the Worker carries another build. Theme not run. */
+export type ThemeWorkerBuildMismatchCode = "WORKER_BUILD_MISMATCH";
 
 /**
- * Core's reading of a Theme Worker's answer while the check is on.
- *
- * `releaseMarked` says the release's last successful deploy installed the
- * module (`readDeployedThemeBuildMatchId`). An unmarked release accepts an
- * answer without confirmation: it was deployed before the check, or with the
- * switch off, so its Worker may legitimately lack the module.
- *
- * A passing answer has the confirmation header removed; nothing else changes.
+ * Core's reading of a Theme Worker's answer while the check is on: the
+ * module's refusal is a mismatch, every other answer is the Theme's and
+ * passes exactly as it came.
  */
-export function verifyThemeWorkerBuild(args: {
-  response: Response;
-  expectedThemeBuildId: string;
-  releaseMarked: boolean;
-}): ThemeWorkerBuildVerdict {
-  const { response } = args;
-  if (
-    response.status === 503 &&
+export function themeWorkerBuildMismatch(
+  response: Response,
+): ThemeWorkerBuildMismatchCode | null {
+  return response.status === 503 &&
     response.headers.get(THEME_BUILD_MISMATCH_HEADER) !== null
-  ) {
-    return { ok: false, code: "WORKER_BUILD_MISMATCH" };
-  }
-  const served = response.headers.get(SERVED_THEME_BUILD_HEADER);
-  if (served !== null && served !== args.expectedThemeBuildId) {
-    return { ok: false, code: "WORKER_BUILD_CONFIRMED_OTHER" };
-  }
-  if (served === null) {
-    if (args.releaseMarked) return { ok: false, code: "WORKER_BUILD_UNCONFIRMED" };
-    return { ok: true, response };
-  }
-  return { ok: true, response: withoutServedBuildHeader(response) };
-}
-
-function withoutServedBuildHeader(response: Response): Response {
-  // A WebSocket upgrade cannot be rebuilt; its confirmation is left on.
-  if (
-    response.status === 101 ||
-    (response as { webSocket?: unknown }).webSocket
-  ) {
-    return response;
-  }
-  const headers = new Headers(response.headers);
-  headers.delete(SERVED_THEME_BUILD_HEADER);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+    ? "WORKER_BUILD_MISMATCH"
+    : null;
 }

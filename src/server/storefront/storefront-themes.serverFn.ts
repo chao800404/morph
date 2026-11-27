@@ -780,13 +780,6 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
                 storefrontId: data.storefrontId,
                 releaseId: result.releaseId,
                 themeBuildId: result.themeBuildId,
-                // The Worker is kept, so its release/Worker build match mark
-                // carries over from the release it was deployed for.
-                buildMatchId:
-                  result.previousDeployedThemeBuildMatchId ===
-                  result.themeBuildId
-                    ? result.themeBuildId
-                    : null,
               });
               await queueReleasePreviewCapture(
                 data.storefrontId,
@@ -871,9 +864,6 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
               storefrontId: data.storefrontId,
               releaseId: result.releaseId,
               themeBuildId: result.themeBuildId,
-              buildMatchId: deployed.buildMatchMarked
-                ? result.themeBuildId
-                : null,
             });
             await queueReleasePreviewCapture(
               data.storefrontId,

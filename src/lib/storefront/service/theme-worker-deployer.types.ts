@@ -24,12 +24,6 @@ export type ThemeWorkerDeploymentResult =
       /** Provider-side identity of what was deployed, when available. */
       deploymentId: string | null;
       durationMs: number;
-      /**
-       * True when the deployed Worker carries Morph's release/Worker build
-       * match module (`theme-worker-build-match.ts`). Absent or false: it
-       * does not, as every deployment before the check.
-       */
-      buildMatchMarked?: boolean;
     }
   | {
       success: false;

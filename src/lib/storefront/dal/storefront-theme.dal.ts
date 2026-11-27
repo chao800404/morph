@@ -65,7 +65,6 @@ import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-r
 import {
   isPublishAlreadyLive,
   readDeployedThemeBuildId,
-  readDeployedThemeBuildMatchId,
 } from "@/lib/storefront/service/theme-worker-deployment-state";
 import {
   sourceSectionIdentity,
@@ -3901,14 +3900,6 @@ export const storefrontThemeDal = {
        * as evidence that a deployment landed.
        */
       previousDeployedThemeBuildId: readDeployedThemeBuildId(
-        activeRelease?.metadata ?? null,
-      ),
-      /**
-       * Whether that Worker carries the release/Worker build match module
-       * (`theme-worker-build-match.ts`), as the same release records it. A
-       * publish that skips the redeploy keeps the Worker, so it keeps this.
-       */
-      previousDeployedThemeBuildMatchId: readDeployedThemeBuildMatchId(
         activeRelease?.metadata ?? null,
       ),
     };

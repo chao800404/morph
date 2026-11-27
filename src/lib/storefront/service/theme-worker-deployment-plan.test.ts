@@ -781,10 +781,10 @@ describe("the Wrangler key contract's admission boundary", () => {
 
   // The release/Worker build match (theme-worker-build-match.ts): with it
   // on, a historical artifact's deploy config differs from the one above in
-  // exactly two places, the main (Morph's module, which imports the build's
-  // entry) and the build id var. With it off, the test above holds.
+  // exactly three places: the main (Morph's module, which imports the
+  // build's entry), assets.run_worker_first, and the build id var. With it off, the test above holds.
   it.each([...LEGACY, "start-native-guide"])(
-    "%s with the build match on changes only main and the build id var",
+    "%s with the build match on changes only main, run_worker_first and the build id var",
     (id) => {
       const fixture = fixtures[id]!;
       const result = planFor(fixture, "production");
@@ -797,6 +797,10 @@ describe("the Wrangler key contract's admission boundary", () => {
       expect(withMatch).toEqual({
         ...without,
         main: THEME_BUILD_MATCH_MODULE,
+        assets: {
+          ...(without.assets as Record<string, unknown>),
+          run_worker_first: true,
+        },
         vars: { ...ownVars, [THEME_BUILD_ID_VAR]: "bld_fixture" },
         keep_vars: false,
       });

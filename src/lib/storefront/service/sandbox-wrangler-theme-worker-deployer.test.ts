@@ -491,7 +491,7 @@ describe("SandboxWranglerThemeWorkerDeployer with the release/Worker build match
   const configOf = (written: Map<string, string>) =>
     written.get("/workspace/deploy/server/wrangler.json");
 
-  it("off (the default): writes no module, the same config as before, and reports no mark", async () => {
+  it("off (the default): writes no module and the same config as before", async () => {
     for (const overrides of [{}, { releaseWorkerMatch: false }]) {
       const { session, written } = recordingSession();
       const result = await deployer(session, overrides).deploy(request);
@@ -510,12 +510,17 @@ describe("SandboxWranglerThemeWorkerDeployer with the release/Worker build match
     }
   });
 
-  it("on: makes Morph's module the main over the build's entry, adds the build id var, and reports the mark", async () => {
+  it("on: makes Morph's module the main over the build's entry, adds the build id var and routes requests through the Worker first", async () => {
     const { session, written } = recordingSession();
     const result = await deployer(session, { releaseWorkerMatch: true }).deploy(
       request,
     );
-    expect(result).toMatchObject({ success: true, buildMatchMarked: true });
+    expect(result).toEqual({
+      success: true,
+      scriptName: "morph-theme-sf-1",
+      deploymentId: "1a2b3c4d-5e6f",
+      durationMs: expect.any(Number),
+    });
     expect(written.get(`/workspace/deploy/server/${THEME_BUILD_MATCH_MODULE}`)).toBe(
       themeBuildMatchModuleSource("index.js"),
     );
@@ -525,6 +530,7 @@ describe("SandboxWranglerThemeWorkerDeployer with the release/Worker build match
     expect(config).toEqual({
       ...wranglerDeployConfig(request.plan),
       main: THEME_BUILD_MATCH_MODULE,
+      assets: { directory: "../client", run_worker_first: true },
       vars: { [THEME_BUILD_ID_VAR]: "bld_1" },
       keep_vars: false,
     });
@@ -584,9 +590,15 @@ describe("wranglerDeployConfig with the release/Worker build match", () => {
       ...request.plan,
       native: { vars: { STORE_LABEL: "probe" }, observabilityEnabled: true },
     };
-    expect(wranglerDeployConfig(plan, { themeBuildId: "bld_9" })).toEqual({
-      ...wranglerDeployConfig(plan),
+    expect(
+      wranglerDeployConfig(
+        { ...plan, assetsBinding: "ASSETS" },
+        { themeBuildId: "bld_9" },
+      ),
+    ).toEqual({
+      ...wranglerDeployConfig({ ...plan, assetsBinding: "ASSETS" }),
       main: THEME_BUILD_MATCH_MODULE,
+      assets: { directory: "../client", binding: "ASSETS", run_worker_first: true },
       vars: { STORE_LABEL: "probe", [THEME_BUILD_ID_VAR]: "bld_9" },
     });
   });

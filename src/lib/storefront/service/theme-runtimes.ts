@@ -10,7 +10,7 @@ import {
 } from "./theme-runtime.types";
 import {
   EXPECTED_THEME_BUILD_HEADER,
-  verifyThemeWorkerBuild,
+  themeWorkerBuildMismatch,
 } from "./theme-worker-build-match";
 
 /** Minimal shape of a Worker-to-Worker service binding. */
@@ -158,13 +158,11 @@ export class ServiceBindingThemeRuntime implements ThemeRuntime {
       const response = await binding.fetch(forwarded);
       if (!matching) return { success: true, response };
 
-      const verdict = verifyThemeWorkerBuild({
-        response,
-        expectedThemeBuildId: invocation.resolved.themeBuildId,
-        releaseMarked: invocation.resolved.themeWorkerBuildMatch === true,
-      });
-      if (verdict.ok) return { success: true, response: verdict.response };
-      // The answer is not this release's; nothing of it reaches the shopper.
+      // Only the module's refusal is read; every other answer is the
+      // Theme's and passes exactly as it came (theme-worker-build-match.ts,
+      // threat model).
+      const mismatch = themeWorkerBuildMismatch(response);
+      if (mismatch === null) return { success: true, response };
       try {
         await response.body?.cancel();
       } catch {}
@@ -173,7 +171,7 @@ export class ServiceBindingThemeRuntime implements ThemeRuntime {
         reason: "RUNTIME_MISMATCH",
         status: 503,
         message: `The Theme Worker for storefront "${invocation.resolved.storefrontId}" does not run release "${invocation.resolved.releaseId}"'s build.`,
-        mismatch: verdict.code,
+        mismatch,
       };
     } catch (error) {
       return {

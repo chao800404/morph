@@ -103,8 +103,17 @@ export type WranglerDeployBuildMatch = Readonly<{ themeBuildId: string }>;
  *
  * Without `buildMatch` (the switch off, and every Build Preview) the config
  * is the one it was before the check, byte for byte. With it, `main` is
- * Morph's match module, which imports the build's own entry, and the build
- * id is written as a var beside any the plan keeps.
+ * Morph's match module, which imports the build's own entry, the build id
+ * is written as a var beside any the plan keeps, and every request reaches
+ * the module before the Worker's static assets (`run_worker_first`).
+ *
+ * Without that last setting the asset layer answers a path that is one of
+ * the deployed build's assets before any Worker code runs, so an old build's
+ * asset could answer another release's request. Core serves every client
+ * asset of the active release itself (`tryServeClientAsset`), so what reaches
+ * the Worker is never one of that release's assets; routing it through the
+ * Worker first loses nothing the release serves. A Theme that reads its own
+ * assets through its assets binding still can.
  */
 export function wranglerDeployConfig(
   plan: ThemeWorkerDeploymentRequest["plan"],
@@ -121,6 +130,7 @@ export function wranglerDeployConfig(
     assets: {
       directory: "../client",
       ...(plan.assetsBinding ? { binding: plan.assetsBinding } : {}),
+      ...(buildMatch ? { run_worker_first: true } : {}),
     },
     no_bundle: true,
     rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }],
@@ -454,7 +464,6 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
         scriptName: request.plan.scriptName,
         deploymentId: versionMatch?.[1] ?? null,
         durationMs: Date.now() - startedAt,
-        ...(buildMatch ? { buildMatchMarked: true } : {}),
       };
     } catch (error) {
       const message = scrub(

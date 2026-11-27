@@ -120,10 +120,6 @@ export const activateStorefrontRelease = createServerFn({ method: "POST" })
           },
           getBuild: (buildId) => storefrontThemeBuildDal.getBuildById(buildId),
           activateRelease: (args) => storefrontReleaseDal.activateRelease(args),
-          // Whether the Worker now deployed carries the release/Worker build
-          // match module; written only when the mark changes.
-          recordDeployedThemeBuildMatch: (args) =>
-            storefrontReleaseDal.recordDeployedThemeBuildMatch(args),
           // Serialises the whole activate-and-deploy sequence for this
           // storefront, which the activation CAS alone does not cover.
           deploymentLease: {
