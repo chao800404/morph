@@ -302,6 +302,9 @@ test.describe("an SSR-only native Start build, from Code to a rolled-back storef
     //    so B is built and published. The storefront shows v2 and B, with
     //    nothing of A.
     await editHero(page, contentB);
+    // Saved before the code changes and the editor is opened again, as the
+    // prerendering spec's draft B is: a pending edit is not carried across.
+    await savedField(page, scope!, contentB);
     const saved2 = await writeThemeFiles(page, scope!, [
       { path: `src/routes${ROUTE}.tsx`, content: nativeRoute(v2) },
     ]);

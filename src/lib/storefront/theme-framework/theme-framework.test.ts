@@ -66,6 +66,10 @@ describe("the framework adapter boundary", () => {
               "verifyArtifact",
               "prerenderRecordsFailure",
               "failedBuildCause",
+              // Which of its own build records that cause reads (the
+              // adapter-option refusal, for native Start): still the
+              // framework's build, not the shared core.
+              "failedBuildRecordPaths",
             ].includes(key),
         ),
       ).toEqual([]);
