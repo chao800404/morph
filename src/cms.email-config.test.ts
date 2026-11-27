@@ -10,7 +10,7 @@ import {
 import { createServerOnlyFn } from "@tanstack/react-start";
 import { cmsConfig } from "./cms.config";
 import { defineConfig, type CMSUserConfig } from "./lib/config/create-config";
-import { cloudflareAdapter } from "./lib/email/adapters";
+import { cloudflareAdapter, resendAdapter } from "./lib/email/adapters";
 import type { EmailAdapter } from "./lib/email/types";
 
 const resend = vi.hoisted(() => ({ construct: vi.fn(), send: vi.fn() }));
@@ -42,6 +42,22 @@ const message = {
 const fakeFetch = vi.fn<typeof fetch>();
 
 // The public configuration API: select the adapter inside the server callback.
+// Replacing only the adapter call is how an owner switches back to Resend.
+function resendConfig() {
+  return defineConfig({
+    ...cmsConfig,
+    server: createServerOnlyFn(() => ({
+      email: resendAdapter({
+        defaultFromAddress:
+          process.env.EMAIL_FROM_ADDRESS ?? "mail@example.com",
+        defaultFromName: process.env.EMAIL_FROM_NAME ?? "Example",
+        supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "help@example.com",
+        apiKey: process.env.RESEND_API_KEY ?? "",
+      }),
+    })),
+  });
+}
+
 function cloudflareConfig() {
   return defineConfig({
     ...cmsConfig,
@@ -57,6 +73,13 @@ function cloudflareConfig() {
     })),
   });
 }
+
+const okResponse = () =>
+  Response.json({
+    success: true,
+    errors: [],
+    result: { delivered: [message.to], queued: [], permanent_bounces: [] },
+  });
 
 function emailFrom(config: CMSUserConfig = cmsConfig): EmailAdapter {
   const adapter = config.server().email;
@@ -89,43 +112,105 @@ afterEach(() => {
 
 describe("single server-only email configuration", () => {
   it("constructs no adapter or credentials at config module load", async () => {
-    vi.stubEnv("RESEND_API_KEY", "fake-import-token");
+    vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-import-token");
+    vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
+    fakeFetch.mockImplementation(async () => okResponse());
     vi.resetModules();
     const loaded = await import("./cms.config");
     expect(typeof loaded.cmsConfig.server).toBe("function");
     expect(loaded.cmsConfig).not.toHaveProperty("email");
-    expect(resend.construct).not.toHaveBeenCalled();
+    expect(fakeFetch).not.toHaveBeenCalled();
     expect(JSON.stringify(loaded.cmsConfig)).not.toContain("fake-import-token");
-    emailFrom(loaded.cmsConfig);
-    expect(resend.construct).toHaveBeenCalledExactlyOnceWith(
-      "fake-import-token",
-    );
+    const adapter = emailFrom(loaded.cmsConfig);
+    expect(fakeFetch).not.toHaveBeenCalled();
+    await adapter.send(message);
+    expect(fakeFetch.mock.calls[0]?.[1]?.headers).toMatchObject({
+      Authorization: "Bearer fake-import-token",
+    });
   });
 
-  it("keeps Resend as the authored default, not a credential or environment-name heuristic", async () => {
+  it("keeps Cloudflare as the authored default, not a credential or environment-name heuristic", async () => {
     vi.stubEnv("RESEND_API_KEY", "fake-resend-key");
     vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
     vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-cf-token");
     // The former convenience selector is no longer a selection API.
-    vi.stubEnv("EMAIL_PROVIDER", "cloudflare");
+    vi.stubEnv("EMAIL_PROVIDER", "resend");
+    fakeFetch.mockImplementation(async () => okResponse());
     const adapter = emailFrom();
-    expect(adapter.id).toBe("resend");
+    expect(adapter.id).toBe("cloudflare");
     expect(adapter.supportAddress).toBe("support@morph.com");
     await expect(adapter.send(message)).resolves.toMatchObject({
       success: true,
     });
-    expect(resend.send).toHaveBeenCalledWith(
-      expect.objectContaining({
-        from: "medusa <medusa@mail.cmsapp.org>",
-      }),
-    );
-    expect(fakeFetch).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(String(fakeFetch.mock.calls[0]?.[1]?.body)),
+    ).toMatchObject({
+      from: { address: "medusa@mail.cmsapp.org", name: "medusa" },
+    });
+    expect(resend.construct).not.toHaveBeenCalled();
+    expect(resend.send).not.toHaveBeenCalled();
     expect(cmsConfig).not.toHaveProperty("email");
     expect(cmsConfig.server()).not.toHaveProperty("emailSupportAddress");
   });
 
-  it("preserves missing-Resend-key failure without network calls", async () => {
+  it("ignores the presence of RESEND_API_KEY when Cloudflare is unconfigured, without network or fallback", async () => {
+    vi.stubEnv("RESEND_API_KEY", "fake-resend-key");
+    vi.stubEnv("EMAIL_PROVIDER", "resend");
     const adapter = emailFrom();
+    expect(adapter.id).toBe("cloudflare");
+    await expect(adapter.send(message)).resolves.toMatchObject({
+      success: false,
+    });
+    expect(resend.construct).not.toHaveBeenCalled();
+    expect(resend.send).not.toHaveBeenCalled();
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves missing-Cloudflare-credentials failure without network calls", async () => {
+    const adapter = emailFrom();
+    expect(adapter.id).toBe("cloudflare");
+    await expect(adapter.send(message)).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("NOT_CONFIGURED"),
+    });
+    expect(resend.construct).not.toHaveBeenCalled();
+    expect(resend.send).not.toHaveBeenCalled();
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not retry or fall back to Resend when the default Cloudflare adapter rejects a send", async () => {
+    vi.stubEnv("RESEND_API_KEY", "fake-key");
+    vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
+    vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-token");
+    fakeFetch.mockResolvedValue(new Response("unavailable", { status: 503 }));
+    await expect(emailFrom().send(message)).resolves.toMatchObject({
+      success: false,
+    });
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+    expect(resend.construct).not.toHaveBeenCalled();
+    expect(resend.send).not.toHaveBeenCalled();
+  });
+
+  it("still works with Resend when it is chosen explicitly in the server callback", async () => {
+    vi.stubEnv("RESEND_API_KEY", "fake-resend-key");
+    vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
+    vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-cf-token");
+    const adapter = emailFrom(resendConfig());
+    expect(adapter.id).toBe("resend");
+    await expect(adapter.send(message)).resolves.toMatchObject({
+      success: true,
+    });
+    expect(resend.construct).toHaveBeenCalledExactlyOnceWith(
+      "fake-resend-key",
+    );
+    expect(resend.send).toHaveBeenCalledWith(
+      expect.objectContaining({ from: "Example <mail@example.com>" }),
+    );
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the explicit Resend missing-key failure without network calls", async () => {
+    const adapter = emailFrom(resendConfig());
     expect(adapter.id).toBe("resend");
     await expect(adapter.send(message)).resolves.toMatchObject({
       success: false,
@@ -137,86 +222,78 @@ describe("single server-only email configuration", () => {
   });
 
   it("reads identity, credentials and support from the server callback at call time", async () => {
-    vi.stubEnv("RESEND_API_KEY", "fake-first-key");
+    vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
+    vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-first-token");
     vi.stubEnv("EMAIL_FROM_ADDRESS", "override@example.com");
     vi.stubEnv("EMAIL_FROM_NAME", "Override");
     vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "support@example.com");
+    fakeFetch.mockImplementation(async () => okResponse());
     const first = emailFrom();
     expect(first.supportAddress).toBe("support@example.com");
     await first.send(message);
-    expect(resend.send).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        from: "Override <override@example.com>",
-      }),
-    );
-    vi.stubEnv("RESEND_API_KEY", "fake-next-key");
-    vi.stubEnv("EMAIL_FROM_ADDRESS", "next@example.com");
-    vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "next-help@example.com");
-    const next = emailFrom();
-    expect(next.supportAddress).toBe("next-help@example.com");
-    await next.send(message);
-    expect(resend.construct).toHaveBeenLastCalledWith("fake-next-key");
-    expect(resend.send).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        from: "Override <next@example.com>",
-      }),
-    );
-    expect(JSON.stringify(cmsConfig)).not.toContain("fake-next-key");
-  });
-
-  it("allows an explicitly empty display name", async () => {
-    vi.stubEnv("RESEND_API_KEY", "fake-key");
-    vi.stubEnv("EMAIL_FROM_NAME", "");
-    await emailFrom().send(message);
-    expect(resend.send).toHaveBeenCalledWith(
-      expect.objectContaining({
-        from: "medusa@mail.cmsapp.org",
-      }),
-    );
-  });
-
-  it("changes provider by replacing only the server email adapter, without duplicating identity", async () => {
-    vi.stubEnv("RESEND_API_KEY", "fake-resend-key");
-    vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
-    vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-first-token");
-    vi.stubEnv("EMAIL_FROM_ADDRESS", "mail@example.com");
-    vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "first-help@example.com");
-    fakeFetch.mockImplementation(async () =>
-      Response.json({
-        success: true,
-        errors: [],
-        result: { delivered: [message.to], queued: [], permanent_bounces: [] },
-      }),
-    );
-    const configured = cloudflareConfig();
-    const first = emailFrom(configured);
-    expect(first.id).toBe("cloudflare");
-    expect(first.supportAddress).toBe("first-help@example.com");
-    await expect(first.send(message)).resolves.toMatchObject({ success: true });
     expect(fakeFetch.mock.calls[0]?.[1]?.headers).toMatchObject({
       Authorization: "Bearer fake-first-token",
     });
     expect(
       JSON.parse(String(fakeFetch.mock.calls[0]?.[1]?.body)),
     ).toMatchObject({
-      from: { address: "mail@example.com", name: "Example" },
+      from: { address: "override@example.com", name: "Override" },
     });
     vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-next-token");
     vi.stubEnv("EMAIL_FROM_ADDRESS", "next@example.com");
     vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "next-help@example.com");
-    const next = emailFrom(configured);
+    const next = emailFrom();
     expect(next.supportAddress).toBe("next-help@example.com");
-    await expect(next.send(message)).resolves.toMatchObject({ success: true });
+    await next.send(message);
     expect(fakeFetch.mock.calls[1]?.[1]?.headers).toMatchObject({
       Authorization: "Bearer fake-next-token",
     });
     expect(
       JSON.parse(String(fakeFetch.mock.calls[1]?.[1]?.body)),
     ).toMatchObject({
-      from: { address: "next@example.com" },
+      from: { address: "next@example.com", name: "Override" },
     });
-    expect(resend.construct).not.toHaveBeenCalled();
-    expect(JSON.stringify(configured)).not.toContain("fake-next-token");
+    expect(JSON.stringify(cmsConfig)).not.toContain("fake-next-token");
+  });
+
+  it("allows an explicitly empty display name", async () => {
+    vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
+    vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-token");
+    vi.stubEnv("EMAIL_FROM_NAME", "");
+    fakeFetch.mockImplementation(async () => okResponse());
+    await emailFrom().send(message);
+    const from = JSON.parse(String(fakeFetch.mock.calls[0]?.[1]?.body)).from;
+    expect(from).toMatchObject({ address: "medusa@mail.cmsapp.org" });
+    expect(from.name || undefined).toBeUndefined();
+  });
+
+  it("changes provider by replacing only the server email adapter, without duplicating identity", async () => {
+    vi.stubEnv("RESEND_API_KEY", "fake-first-key");
+    vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
+    vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-cf-token");
+    vi.stubEnv("EMAIL_FROM_ADDRESS", "mail@example.com");
+    vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "first-help@example.com");
+    const configured = resendConfig();
+    const first = emailFrom(configured);
+    expect(first.id).toBe("resend");
+    expect(first.supportAddress).toBe("first-help@example.com");
+    await expect(first.send(message)).resolves.toMatchObject({ success: true });
+    expect(resend.construct).toHaveBeenLastCalledWith("fake-first-key");
+    expect(resend.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "Example <mail@example.com>" }),
+    );
+    vi.stubEnv("RESEND_API_KEY", "fake-next-key");
+    vi.stubEnv("EMAIL_FROM_ADDRESS", "next@example.com");
+    vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "next-help@example.com");
+    const next = emailFrom(configured);
+    expect(next.supportAddress).toBe("next-help@example.com");
+    await expect(next.send(message)).resolves.toMatchObject({ success: true });
+    expect(resend.construct).toHaveBeenLastCalledWith("fake-next-key");
+    expect(resend.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "Example <next@example.com>" }),
+    );
+    expect(fakeFetch).not.toHaveBeenCalled();
+    expect(JSON.stringify(configured)).not.toContain("fake-next-key");
   });
 
   it("never falls back to Resend when the chosen Cloudflare adapter is unconfigured", async () => {

@@ -74,9 +74,9 @@ cp .env.example .env.development
 | `PUBLIC_URL`                  | Canonical CMS URL; use `http://localhost:3000` locally and the CMS custom domain in production |
 | `MORPH_PLATFORM_HOSTNAMES`    | Optional comma-separated CMS/staging hostnames kept on the platform router                     |
 | `MORPH_CMS_HOSTNAME`          | Optional single CMS hostname shortcut (hostname or full origin)                                |
-| `RESEND_API_KEY`              | Resend credential for transactional email                                                      |
-| `CLOUDFLARE_EMAIL_ACCOUNT_ID` | Account for the Cloudflare Email Sending REST API                                              |
-| `CLOUDFLARE_EMAIL_API_TOKEN`  | Server-only token with Email Sending permission; not the deployment token                      |
+| `CLOUDFLARE_EMAIL_ACCOUNT_ID` | Account for the Cloudflare Email Sending REST API (default email adapter)                      |
+| `CLOUDFLARE_EMAIL_API_TOKEN`  | Server-only token with Email Sending: Edit; not the deployment token                           |
+| `RESEND_API_KEY`              | Only when the server callback is switched to `resendAdapter`                                   |
 | `EMAIL_FROM_ADDRESS`          | Sender mailbox on your verified domain                                                         |
 | `EMAIL_FROM_NAME`             | Sender display name; an empty value omits the name                                             |
 | `EMAIL_SUPPORT_ADDRESS`       | Support mailbox shown in password-reset emails                                                 |
@@ -98,44 +98,44 @@ optional `readonly supportAddress?: string` for existing mail templates; there i
 no separate authored support setting. Built-in helpers retain this option as
 adapter metadata. The client view never invokes the server callback.
 
-The default is Resend. Keep the existing CMS fields in `src/cms.config.ts` and
-configure its server block as follows:
+The default is Cloudflare Email Sending. Keep the existing CMS fields in
+`src/cms.config.ts` and configure its server block as follows:
 
 ```ts
 import { createServerOnlyFn } from "@tanstack/react-start";
 import { defineConfig } from "@/lib/config/create-config";
-import { resendAdapter } from "@/lib/email/adapters";
+import { cloudflareAdapter } from "@/lib/email/adapters";
 
 export const cmsConfig = defineConfig({
   // Keep the existing appName, collections and other CMS configuration here.
   server: createServerOnlyFn(() => ({
     database: { connectionString: process.env.DATABASE_URL },
-    email: resendAdapter({
+    email: cloudflareAdapter({
       // Compatibility placeholders; replace with owner-approved identities before sending.
       defaultFromAddress:
         process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
       defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
       supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
-      apiKey: process.env.RESEND_API_KEY ?? "",
+      accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+      apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
     }),
   })),
 });
 ```
 
-To use Cloudflare instead, import `cloudflareAdapter` from
-`@/lib/email/adapters` and replace only the adapter construction inside that same
-server callback, keeping the same identity fields and other server settings:
+To use Resend instead, import `resendAdapter` from `@/lib/email/adapters` and
+replace only the adapter construction inside that same server callback, keeping
+the same identity fields and other server settings:
 
 ```ts
 server: createServerOnlyFn(() => ({
   database: { connectionString: process.env.DATABASE_URL },
-  email: cloudflareAdapter({
+  email: resendAdapter({
     defaultFromAddress:
       process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
     defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
     supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
-    accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
-    apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+    apiKey: process.env.RESEND_API_KEY ?? "",
   }),
 })),
 ```
@@ -150,7 +150,7 @@ registering a provider name or editing `getConfig`; see
 
 The old `EMAIL_PROVIDER` convenience option has been replaced by server adapter
 configuration and is no longer used; setting it cannot switch providers.
-Cloudflare credentials alone do not change the default Resend adapter. No
+A `RESEND_API_KEY` alone does not change the default Cloudflare adapter. No
 `send_email` binding or new dependency is needed for the built-in Cloudflare
 adapter. Omitting `server().email` leaves email unconfigured; core does not choose
 a provider. Missing/invalid credentials for the configured service fail delivery
