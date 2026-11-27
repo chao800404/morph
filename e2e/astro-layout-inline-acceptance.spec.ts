@@ -260,21 +260,24 @@ test.describe("Astro layout-shared sections and canvas editing (D3 rows 14, 18, 
     const frame = await liveFrame(page);
     await ensureSelection(page, frame);
     await frame.locator(selector).click();
-    // Two refusals, neither a Design selection: a click inside a section
-    // boundary Core does not confirm says why in Design; a click outside
-    // every boundary of the page's own template (the layout's markup) is
-    // located in Code (L1.5a), as OUTSIDE_SECTION_HINT says
-    // (astro-design-selection.ts). Which one is recorded with the run.
+    // Not a Design selection: the click is located in Code (L1.5a), and a
+    // click inside a section boundary Core does not confirm also says why
+    // (run on ca9cd25: both for the slot's section; Code alone for the
+    // layout's markup, outside every boundary of the page's own template,
+    // as OUTSIDE_SECTION_HINT in astro-design-selection.ts says). What was
+    // shown is recorded with the run.
     const hint = page.getByText(REFUSED_HINT).first();
     const code = page.getByRole("textbox", { name: "Editor content" });
     await expect(
-      hint.or(code),
+      hint.or(code).first(),
       `a click on ${sectionId} is refused as a Design selection`,
     ).toBeVisible({ timeout: 60_000 });
+    await page.waitForTimeout(1_000);
     const locatedInCode = await code.isVisible();
+    const said = await hint.isVisible();
     test.info().annotations.push({
       type: "refusal",
-      description: `${sectionId}: ${locatedInCode ? "located in Code" : "said in Design"}`,
+      description: `${sectionId}: located in Code ${locatedInCode}, said ${said}`,
     });
     await expect(astroContent(page, sectionId)).toHaveCount(0);
     await page.waitForTimeout(3_000);
