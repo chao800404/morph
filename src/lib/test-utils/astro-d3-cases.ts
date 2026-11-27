@@ -199,3 +199,48 @@ export const d3Row = (id: string, props: Record<string, unknown>) => ({
   enabled: true,
   props,
 });
+
+/**
+ * Batch 2 (D3 rows 14, 18, 24's layout half): an Astro layout every page
+ * renders inside, as an Astro author writes one. The layout reads the
+ * request's page with `morph.pages.get(Astro.url.pathname)`; Core answers a
+ * path with the layout Document's sections and the page's own, so the
+ * layout's `banner` comes from the layout Document on every page. Each page
+ * keeps one section of its own inside the layout's slot.
+ */
+export const D3_SHELL_PATH = "src/layouts/Shell.astro";
+
+export const d3Shell = () => `---
+import { morph } from "@morph/sdk/astro";
+import Hero from "../components/Hero.astro";
+
+const shell = await morph.pages.get(Astro.url.pathname);
+const { banner } = shell;
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>D3 layout</title>
+  </head>
+  <body>
+    <header data-d3-case="banner"><Hero {...banner} /></header>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>
+`;
+
+/** A page inside the layout, with its own section `section` spread. */
+export const d3ShellPage = (path: string, section: string) => `---
+import { morph } from "@morph/sdk/astro";
+import Hero from "../components/Hero.astro";
+import Shell from "../layouts/Shell.astro";
+
+const content = await morph.pages.get(${JSON.stringify(path)});
+const { ${section} } = content;
+---
+<Shell>
+  <div data-d3-case="${section}"><Hero {...${section}} /></div>
+</Shell>
+`;

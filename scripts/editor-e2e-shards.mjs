@@ -117,6 +117,10 @@ export const EDITOR_SHARDS = [
     // same file gates, so it skips on every shard too. Its exact tests are
     // listed in scripts/container-acceptance-targets/astro-inspector-write.mjs.
     "astro-inspector-write.spec.ts",
+    // M2 D3 batch 2, Astro layout-shared sections and canvas editing: the
+    // same file gates, so it skips on every shard. Its exact tests are
+    // listed in scripts/container-acceptance-targets/astro-layout-inline.mjs.
+    "astro-layout-inline-acceptance.spec.ts",
     "astro-preview-container.spec.ts",
     "astro-publish-acceptance.spec.ts",
     "authored-content.spec.ts",
