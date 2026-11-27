@@ -2573,6 +2573,37 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         expect(updateSectionProps).toHaveBeenCalledTimes(1);
       });
 
+      // Rebase checkpoint (#479): a Live Preview whose content snapshot
+      // cannot be read answers its content reads 503 and stamps no
+      // `morph-content` on the page. Such a page is unreadable, never empty
+      // content: a confirmed click gets no basis token, an input is held,
+      // and nothing is written.
+      it("a page with no content stamp (an unreadable snapshot) is no basis: a confirmed click writes nothing", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "On no stamp"));
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: WRITE_CONTEXT,
+        });
+        readRouteBindings.mockResolvedValue(bindingView());
+        modelCurrentBridge();
+        await settled(WRITE_CONTEXT, HOME, BASIS_READY, {
+          serverData: START_DATA,
+        });
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(0);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "On no stamp" },
+        });
+        await pastDebounce();
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+      });
+
       // Re-review N2: a sibling's basis the frame answered not-applied is
       // answered, not awaited. It stays the sibling's latest token, but it is
       // not part of the page the hero's input waits for; a click on the
