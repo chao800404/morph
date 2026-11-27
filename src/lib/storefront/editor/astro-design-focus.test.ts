@@ -65,6 +65,7 @@ const SELECTION: ConfirmedAstroDesignSelection = {
   sectionType: "hero",
   declaredFields: ["title"],
   fields: ["title"],
+  ownKeyFields: [],
 };
 
 /** The focus a confirmed click starts; a `selected` step always gives one. */

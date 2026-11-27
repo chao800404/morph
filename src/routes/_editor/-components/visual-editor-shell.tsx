@@ -18423,7 +18423,12 @@ export function VisualEditorShell({
     return {
       sectionId,
       resetKey: `${pageTemplateId ?? ""}:${sectionId}:${selection.identity}`,
-      fields: astroInspectorFields(selection, capability?.fields ?? null),
+      // The accepted copy, not held input: Core checks the stored section.
+      fields: astroInspectorFields(
+        selection,
+        capability?.fields ?? null,
+        acceptedSectionProps(sectionId),
+      ),
       values: () => ({
         ...acceptedSectionProps(sectionId),
         ...heldContentForSection(sectionId),
