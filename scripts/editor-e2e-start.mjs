@@ -38,7 +38,7 @@ export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 export const START_PREVIEW_SHARDS = [
   // navigation-matrix: its Start preview cells took ~2.6 min locally (the
   // spec was added to the then-shortest shard).
-  ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "spread-override-binding.spec.ts", "navigation-matrix.spec.ts"],
+  ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "spread-override-binding.spec.ts", "navigation-matrix.spec.ts", "number-link-fields.spec.ts"],
   // starter-upgrade-start: the Starter upgrades that apply the current
   // Starter (D, B, Q, R, and an unrecorded Starter 31 Theme switched to Full
   // Start then upgraded), Start only (LANE_EXCLUSIVE_SPECS in
@@ -54,7 +54,7 @@ export const START_PREVIEW_SHARDS = [
   // content-module-restore-start, Start only (LANE_EXCLUSIVE_SPECS in
   // editor-e2e-shards.mjs); the client lane checks the refusal in a file of
   // its own.
-  ["binding-acceptance-p.spec.ts", "binding-acceptance-p-rest.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "number-link-fields.spec.ts", "content-module-restore.spec.ts", "content-module-restore-start.spec.ts"],
+  ["binding-acceptance-p.spec.ts", "binding-acceptance-p-rest.spec.ts", "selection-field-frame-navigated.spec.ts", "author-pick-supersedes-follow.spec.ts", "content-module-restore.spec.ts", "content-module-restore-start.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
