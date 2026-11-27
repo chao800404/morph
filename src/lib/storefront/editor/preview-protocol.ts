@@ -664,6 +664,7 @@ export type PreviewToEditorMessage =
        * evidence for the basis ack only; absent everywhere else.
        */
       servedContent?: PreviewServedContent;
+      /**
        * Said by a document that got its channel from the editor's verified
        * offer (preview-channel-bootstrap.ts), once, in its first ready. The
        * editor takes such a ready only for a nonce it offered.
