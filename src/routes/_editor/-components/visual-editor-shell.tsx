@@ -148,6 +148,7 @@ import {
   SECTION_HIDE_UNSUPPORTED,
   SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
+  parseSectionSourceRefusal,
 } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
 import {
@@ -453,7 +454,14 @@ import {
   stepAstroDesignFocus,
   type AstroDesignFocus,
   type AstroDesignFocusEvent,
+  type ConfirmedAstroDesignSelection,
 } from "@/lib/storefront/editor/astro-design-focus";
+import {
+  astroBasisProofCurrent,
+  astroInspectorFields,
+  astroWriteIdentityForProof,
+} from "@/lib/storefront/editor/astro-inspector-write";
+import type { EditorAstroContent } from "./editor-astro-content-fields";
 import {
   acceptAstroBasisAck,
   astroBasisConfirmKey,
@@ -3485,8 +3493,63 @@ export function VisualEditorShell({
   );
   /** Issues and posts a basis token for a confirmed Astro selection. */
   const issueAstroBasisPresentationRef = useRef<
-    (sectionId: string, identity: string) => void
+    (selection: ConfirmedAstroDesignSelection) => void
   >(() => {});
+  /**
+   * M2 PR 3: the confirmed selection each basis token was issued for, by its
+   * operation id, in the frame round it was issued in. A write proven by a
+   * token sends that selection's identity and Core's digest
+   * (`astroWriteIdentityForProof`), never the frame's. Only this round's
+   * entries are kept: a proof of an earlier round is never current.
+   */
+  const astroBasisIssuedRef = useRef(
+    new Map<
+      string,
+      {
+        selection: ConfirmedAstroDesignSelection;
+        previewKey: string;
+        readyRound: number;
+      }
+    >(),
+  );
+  /**
+   * M2 PR 3: the Astro sections Core confirmed on each page, by route path.
+   * Their values are this page's document's (`templateIdForSection`); a page
+   * has no other section structure on Astro.
+   */
+  const astroSectionsOnPageRef = useRef(new Map<string, Set<string>>());
+  /**
+   * What a confirmed Astro selection makes of the section, at a Design click
+   * and again at its re-derive (Codex review P2): the source generation of
+   * the Core view that confirmed it is what the section's input is staged
+   * and sent at, and the section is one of the page's own.
+   */
+  const rememberAstroSelectionRef = useRef(
+    (
+      selection: ConfirmedAstroDesignSelection,
+      sourceGeneration: number | null,
+      routePath: string,
+    ) => {
+      if (sourceGeneration !== null) {
+        const baselineKey = fieldSelectionKey(selection.sectionId, "", routePath);
+        selectionSourceBaselinesRef.current.set(
+          baselineKey,
+          captureSelectionSourceBaseline(baselineKey, sourceGeneration),
+        );
+      }
+      const onPage =
+        astroSectionsOnPageRef.current.get(routePath) ?? new Set<string>();
+      onPage.add(selection.sectionId);
+      astroSectionsOnPageRef.current.set(routePath, onPage);
+    },
+  );
+  /** Where the confirmed selection's click was located; "Open in Code" (D2). */
+  const astroCodeTargetRef = useRef<{
+    identity: string;
+    filePath: string;
+    line?: number;
+    column?: number;
+  } | null>(null);
   /**
    * On Core's answer to a ready-time confirm: the selected section's basis
    * hint is evaluated again, by issuing its token once more.
@@ -3707,6 +3770,56 @@ export function VisualEditorShell({
     presentationUnconfirmableRef.current
       ? PREVIEW_PRESENTATION_UNCONFIRMABLE_MESSAGE
       : PREVIEW_PRESENTATION_SYNCING_MESSAGE;
+  /** `isSectionPresentationPageReady`, asked now; assigned beside it. */
+  const sectionPresentationPageReadyNowRef = useRef<() => boolean>(
+    () => false,
+  );
+  /**
+   * M2 PR 3, the presentation proof on an Astro basis frame: only the
+   * section's acknowledged **basis** token, and only while the frame's stamp
+   * and Core's record still name its snapshot and the editor holds no newer
+   * copy of its document (`astroBasisProofCurrent`). An overlay token is
+   * never one there. On any other frame (every Start frame) a basis token is
+   * never a proof, and an overlay token is judged exactly as before.
+   */
+  const astroBasisProofHolds = useCallback(
+    (
+      frame: { capabilities: ReadonlySet<PreviewCapability>; servedContent?: PreviewServedContent | null },
+      token: SectionPresentationToken,
+    ): boolean => {
+      if (
+        !isAstroBasisFrame(frame.capabilities, previewContentRefreshRef.current)
+      ) {
+        return !token.basis;
+      }
+      // The page as well, asked now (`expectedSectionPresentations`, its
+      // basis branch): another section's unanswered basis, or a copy of the
+      // page's document newer than the page shows, holds this section too,
+      // at input, at release and where the write leaves.
+      if (!sectionPresentationPageReadyNowRef.current()) return false;
+      const createdId = routeTemplateIdsRef.current.get(token.templateId);
+      const documentId = createdId ?? token.templateId;
+      const sectionKey = sectionPresentationKey(
+        token.templateId,
+        token.sectionId,
+      );
+      return astroBasisProofCurrent({
+        token,
+        servedContent: frame.servedContent ?? null,
+        basis: astroContentBasisRef.current,
+        acceptedDraftGeneration:
+          contentSnapshotsRef.current.get(documentId)?.draftGeneration,
+        routeDocumentCreatedElsewhere:
+          createdId !== undefined &&
+          !routeDocumentsCreatedHereRef.current.has(createdId),
+        // Codex review P1: only while it is still the section's latest
+        // token and the one whose `applied` was taken for it.
+        latest: latestSectionPresentationRef.current.get(sectionKey),
+        acknowledged: acknowledgedSectionPresentationRef.current.get(sectionKey),
+      });
+    },
+    [],
+  );
   const isSectionPresentationProofCurrent = useCallback(
     (
       proof: SectionPresentationProof | undefined,
@@ -3733,10 +3846,11 @@ export function VisualEditorShell({
           `${context.storefront.id}:${context.theme.id}` &&
         proof.token.routePath === (currentSearchRoutePathRef.current ?? "/") &&
         sameTemplate &&
-        (sectionId === undefined || proof.token.sectionId === sectionId),
+        (sectionId === undefined || proof.token.sectionId === sectionId) &&
+        astroBasisProofHolds(frame, proof.token),
       );
     },
-    [context.storefront.id, context.theme.id],
+    [astroBasisProofHolds, context.storefront.id, context.theme.id],
   );
   const captureCurrentSectionPresentationProof = useCallback(
     (
@@ -3771,7 +3885,7 @@ export function VisualEditorShell({
               acknowledged: acknowledgedSectionPresentationRef.current,
             })
           : null);
-      return token
+      return token && astroBasisProofHolds(frame, token)
         ? {
             token,
             previewKey: frame.previewKey,
@@ -3780,7 +3894,7 @@ export function VisualEditorShell({
           }
         : null;
     },
-    [],
+    [astroBasisProofHolds],
   );
 
   const commitSectionPending = useCallback(
@@ -4047,11 +4161,68 @@ export function VisualEditorShell({
                   });
                   throw draftConflictFailure();
                 }
+                // Codex review P1: an Astro basis proof is checked again
+                // here, where the write leaves, after the queue it waited in
+                // and the snapshot read above. A write answered meanwhile (a
+                // newer accepted copy than the page shows), a newer token or
+                // a dropped ack for the section, another frame, round or
+                // document, or a Core record that moved: the proof no longer
+                // shows the copy this write is composed on, and it is refused
+                // as a proof older than the write's basis is, the draft kept.
+                // A Start proof carries no basis and is not asked again.
+                if (
+                  !replay?.resend &&
+                  presentationGated &&
+                  presentationProof?.token.basis &&
+                  !isSectionPresentationProofCurrent(
+                    presentationProof,
+                    templateId,
+                    entry.sectionId,
+                  )
+                ) {
+                  toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+                    id: "preview-presentation-basis",
+                  });
+                  throw draftConflictFailure();
+                }
+                // M2 PR 3: a write proven by an Astro basis token is sent
+                // with the identity that token named and Core's digest, as
+                // Core confirmed them for the selection it was issued for
+                // (`astroBasisIssuedRef`), never read from the frame. With
+                // no such selection it is refused before anything is sent,
+                // as a proof that does not show the write's basis is. A
+                // Start proof carries no basis: its write is sent as before.
+                let astroIdentity: Readonly<{
+                  identity: string;
+                  componentDigest: string;
+                }> | null = null;
+                if (!replay?.resend && presentationProof?.token.basis) {
+                  astroIdentity = astroWriteIdentityForProof({
+                    token: presentationProof.token,
+                    issued: astroBasisIssuedRef.current.get(
+                      presentationProof.token.operationId,
+                    )?.selection,
+                    sectionId: entry.sectionId,
+                  });
+                  if (!astroIdentity) {
+                    toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+                      id: "preview-presentation-basis",
+                    });
+                    throw draftConflictFailure();
+                  }
+                }
+                // Re-review N1: the sent entry keeps the identity it was sent
+                // with, so a resend of it (unanswered) goes exactly as first
+                // sent, identity and digest included, and Core answers it
+                // as any write: landed, or refused by its CAS.
+                if (replay?.resend) astroIdentity = entry.astroIdentity ?? null;
                 sentDraftGeneration =
                   entry.expectedDraftGeneration ?? generation;
                 reportSent(sentDraftGeneration);
                 sentTemplateId = templateId;
-                sentEntry = entry;
+                sentEntry = astroIdentity
+                  ? { ...entry, astroIdentity }
+                  : entry;
                 return updatePropsMutation.mutateAsync({
                   templateId,
                   sectionId: entry.sectionId,
@@ -4062,6 +4233,7 @@ export function VisualEditorShell({
                   // Missing bookkeeping fails validation, never borrows a later
                   // selection's generation when this queue eventually runs.
                   expectedSourceGeneration: entry.expectedSourceGeneration!,
+                  ...(astroIdentity ?? {}),
                   ...(replay?.resend ? { quietConflict: true } : {}),
                 });
               },
@@ -4769,6 +4941,8 @@ export function VisualEditorShell({
       link: ContentResetLink | null,
       record: ((answeredDraftGeneration: unknown) => void) | undefined,
       code: string | undefined,
+      /** The refusal's message, where a section-source reason is read. */
+      message?: string,
     ) => {
       if (unconfirmedContentRef.current.has(key)) return;
       // A run's or a reset's own write is not the section's input: input
@@ -4777,6 +4951,30 @@ export function VisualEditorShell({
         link !== null ||
         Object.prototype.hasOwnProperty.call(sent, "resetProps");
       if (!isRun) refused.set(key, sent.sectionId);
+      // A resend goes exactly as first sent, an Astro write's identity and
+      // digest included (`astroIdentity`, re-review N1). Should Core still
+      // refuse one as preview-identity-legacy (a write held from before its
+      // identity was kept), that answers the resend only: the first write
+      // may have landed. It is read back once, as a resend refused out of
+      // date is (`refusedAt`): landed is confirmed; anything else is
+      // released as moved, so it is never sent again on its own and no
+      // later write is held behind it. Never a loop.
+      if (
+        parseSectionSourceRefusal(message ?? "")?.reason ===
+        "preview-identity-legacy"
+      ) {
+        setDraftSaveState("error");
+        unconfirmedContentRef.current.set(key, sent);
+        if (link) unconfirmedResetLinksRef.current.set(key, link);
+        if (record) unconfirmedRecordersRef.current.set(key, record);
+        syncUnconfirmedContentCount();
+        await settleUnconfirmedContent({ refusedAt: new Set([key]) }).catch(
+          () => {
+            // No answer to the read: still unknown, so still held.
+          },
+        );
+        return;
+      }
       const templateId =
         templateIdOfPendingContentKey(key, sent.sectionId) ?? key;
       // Every outcome below but the one that holds it again for a read-back
@@ -4898,11 +5096,13 @@ export function VisualEditorShell({
             link,
             record,
             (error as { code?: string }).code,
+            error instanceof Error ? error.message : undefined,
           ),
         );
         continue;
       }
       let resetCode: string | undefined;
+      let resetMessage: string | undefined;
       let resetRefused = false;
       await resetContentFieldsRef
         .current?.(sent.sectionId, [...(sent.resetProps ?? [])], {
@@ -4915,14 +5115,16 @@ export function VisualEditorShell({
           if (!answer.success) {
             resetRefused = true;
             resetCode = answer.error;
+            resetMessage = answer.message;
           }
         })
         .catch((error: unknown) => {
           resetRefused = true;
           resetCode = (error as { code?: string }).code;
+          resetMessage = error instanceof Error ? error.message : undefined;
         });
       if (resetRefused) {
-        await settleRefused(key, sent, link, record, resetCode);
+        await settleRefused(key, sent, link, record, resetCode, resetMessage);
       }
     }
     return refused;
@@ -7070,10 +7272,19 @@ export function VisualEditorShell({
               result.status === "confirmed" &&
               astroDesignFocusRef.current?.selection === result
             ) {
-              issueAstroBasisPresentationRef.current(
-                result.sectionId,
-                result.identity,
-              );
+              // Codex review P2: confirmed again in the view of the source
+              // the workspace holds now, so the section's input is staged
+              // at that view's source generation, as a click's is. An
+              // unrelated source save keeps identity and digest but moves
+              // the generation; the old baseline would refuse every input.
+              if (view) {
+                rememberAstroSelectionRef.current(
+                  result,
+                  view.sourceGeneration,
+                  currentSearchRoutePathRef.current ?? "/",
+                );
+              }
+              issueAstroBasisPresentationRef.current(result);
             }
           },
         };
@@ -7262,8 +7473,16 @@ export function VisualEditorShell({
    */
   const templateIdForSection = useCallback(
     (sectionId: string): string | null =>
-      sectionModel.bindings.get(sectionId)?.templateId ?? null,
-    [sectionModel],
+      sectionModel.bindings.get(sectionId)?.templateId ??
+      // M2 PR 3: an Astro page has no Start section structure; a section
+      // Core confirmed on it stores its values in the page's own document.
+      (sectionsUnavailableForFramework &&
+      astroSectionsOnPageRef.current
+        .get(currentSearchRoutePathRef.current ?? "/")
+        ?.has(sectionId)
+        ? pageTemplateId
+        : null),
+    [pageTemplateId, sectionModel, sectionsUnavailableForFramework],
   );
   /**
    * The key one section's content is kept under in a document. A section has
@@ -14184,13 +14403,7 @@ export function VisualEditorShell({
           } as EditorSelectionDescriptor,
           themeFiles: effectiveThemeFilesRef.current,
         });
-        if (target) {
-          handleJumpToCodeRef.current(
-            target.filePath,
-            target.line,
-            target.column,
-          );
-        } else {
+        if (!target) {
           toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
             id: "source-location-stale",
           });
@@ -14198,11 +14411,8 @@ export function VisualEditorShell({
           dispatchAstroDesignFocus({ kind: "deselected" });
           return;
         }
-        // M2 PR-F: what Core's binding view says of the clicked instance,
-        // shown beside the locate (plan v2 §6.2, display 1). Still no Design
-        // selection and nothing written: Astro content writes wait for an
-        // Astro presentation acknowledgement (#399), which the bridge does
-        // not give yet. A click on no section says nothing new.
+        // M2 PR-F: what Core's binding view says of the clicked instance
+        // (plan v2 §6.2, display 1). A click on no section says nothing new.
         const astroSelection = resolveAstroDesignSelection({
           request: astroDesignSelectionRequest(
             message,
@@ -14224,22 +14434,66 @@ export function VisualEditorShell({
             id: "astro-design-status",
           });
         }
+        // Owner decision D2 (M2 PR 3): in Design, a click Core confirmed on
+        // a frame that takes the basis path selects the section and opens
+        // its declared fields in the Inspector, as on TanStack Start; "Open
+        // in Code" is then the selection's explicit action. Every other
+        // click still locates (L1.5a): a refused one, any click in Code, and
+        // a click on a frame whose basis can never be acknowledged, whose
+        // input could never be sent.
+        const frameRecord = previewFrameRecordRef.current;
+        const selectsInDesign =
+          astroSelection.status === "confirmed" &&
+          editorModeRef.current === "design" &&
+          frameRecord !== null &&
+          frameRecord.previewKey === previewKey &&
+          frameRecord.readyRound === previewReadyRoundRef.current &&
+          isAstroBasisFrame(
+            frameRecord.capabilities,
+            previewContentRefreshRef.current,
+          );
+        if (!selectsInDesign) {
+          handleJumpToCodeRef.current(
+            target.filePath,
+            target.line,
+            target.column,
+          );
+        }
         // Option B: a confirmed instance asks this document to acknowledge
-        // it as the basis a write would be made on. Still nothing written;
-        // the Astro Inspector input path is later work. The selection is
-        // kept (Q2/Q3) so its basis status can be said on the section and
-        // matched again after a reload; any other click selects nothing.
+        // it as the basis a write would be made on; the click itself writes
+        // nothing. The selection is kept (Q2/Q3) so its basis status can be
+        // said on the section and matched again after a reload; any other
+        // click selects nothing.
         if (astroSelection.status !== "confirmed") {
           dispatchAstroDesignFocus({ kind: "deselected" });
+        } else if (!selectsInDesign) {
+          // Codex review P3: a locate only (a click in Code, or on a frame
+          // whose basis can never be acknowledged) stores no selection, so
+          // Design never shows inputs no qualifying Design click made. Like
+          // any other click it clears the status of the one before.
+          dispatchAstroDesignFocus({ kind: "deselected" });
         } else {
+          // The source generation Core's view confirmed the instance at,
+          // which `resolveAstroDesignSelection` matched to the workspace's:
+          // what the section's input is staged and sent at.
+          const view = astroBindingViewRef.current;
+          const routePath = currentSearchRoutePathRef.current ?? "/";
+          rememberAstroSelectionRef.current(
+            astroSelection,
+            view?.sourceGeneration ?? null,
+            routePath,
+          );
+          astroCodeTargetRef.current = {
+            identity: astroSelection.identity,
+            filePath: target.filePath,
+            line: target.line,
+            column: target.column,
+          };
           dispatchAstroDesignFocus({
             kind: "selected",
             selection: astroSelection,
           });
-          issueAstroBasisPresentationRef.current(
-            astroSelection.sectionId,
-            astroSelection.identity,
-          );
+          issueAstroBasisPresentationRef.current(astroSelection);
         }
         return;
       }
@@ -15413,6 +15667,82 @@ export function VisualEditorShell({
   const expectedSectionPresentations =
     useCallback((): ExpectedSectionPresentation[] => {
       const current = presentationContextRef.current;
+      // Lead decision (container run inspector-write-run-01 on 226d1de,
+      // option b with Codex, handoff/2026-11-27/astro-pr3-ready-gate-codex.txt):
+      // an Astro basis frame shows no overlay, so a bound section is never
+      // presented as one there, and a page that expected it never became
+      // ready. On such a frame the page is the sections this round issued
+      // a basis token for, each expected at its own token's overlay
+      // revision (0) and at the copy the editor holds of its document now:
+      // a section whose latest basis is unanswered, or whose document the
+      // editor holds newer than the page shows (another section's answered
+      // write), keeps the page from being ready. Every Start frame, and an
+      // Astro frame without the basis path, is expected exactly as before.
+      const frame = previewFrameRecordRef.current;
+      if (
+        frame &&
+        isAstroBasisFrame(frame.capabilities, previewContentRefreshRef.current)
+      ) {
+        const expected: ExpectedSectionPresentation[] = [];
+        for (const token of latestSectionPresentationRef.current.values()) {
+          if (
+            !token.basis ||
+            token.workspaceKey !== current.workspaceKey ||
+            token.routePath !== current.routePath
+          ) {
+            continue;
+          }
+          // Re-review N2: only a token still awaiting the frame's answer, or
+          // the one acknowledged, is part of the page. One answered
+          // not-applied, or whose `applied` was held (`basis-unconfirmed`),
+          // is answered: it is no proof for its own section (its proof
+          // needs the latest token acknowledged), and it does not hold the
+          // others. A click on that section issues a new token as before.
+          const awaited = pendingSectionPresentationRef.current.has(
+            token.operationId,
+          );
+          const acknowledged = acknowledgedSectionPresentationRef.current.get(
+            sectionPresentationKey(token.templateId, token.sectionId),
+          );
+          if (
+            !awaited &&
+            !(acknowledged && sameSectionPresentationToken(acknowledged, token))
+          ) {
+            continue;
+          }
+          const documentId =
+            routeTemplateIdsRef.current.get(token.templateId) ??
+            token.templateId;
+          const template =
+            current.templates.find((candidate) => candidate.id === documentId) ??
+            (current.activeTemplate?.id === documentId
+              ? current.activeTemplate
+              : undefined);
+          const draftGeneration = acceptedPresentationGeneration(
+            contentSnapshotsRef.current.get(documentId),
+            template,
+          );
+          expected.push({
+            workspaceKey: current.workspaceKey,
+            templateId: token.templateId,
+            routePath: current.routePath,
+            sectionId: token.sectionId,
+            documentBasis:
+              typeof draftGeneration === "number" &&
+              Number.isSafeInteger(draftGeneration) &&
+              draftGeneration > 0
+                ? { kind: "existing", draftGeneration }
+                : // A route with no Document of its own, as its basis was
+                  // issued (`newRouteDocument`): until this editor's write to
+                  // it is answered.
+                  routePathFromTemplatePlaceholder(token.templateId) !== null
+                  ? { kind: "new-document", createEpoch: token.templateId }
+                  : null,
+            overlayRevision: token.overlayRevision,
+          });
+        }
+        return expected;
+      }
       return [...sectionModelRef.current.bindings].map(
         ([sectionId, binding]) => {
           const templateId = binding.templateId;
@@ -15474,6 +15804,7 @@ export function VisualEditorShell({
       acknowledged: acknowledgedSectionPresentationRef.current,
     });
   }, [expectedSectionPresentations]);
+  sectionPresentationPageReadyNowRef.current = isSectionPresentationPageReady;
   unconfirmedSectionPresentationsRef.current = () =>
     expectedSectionPresentations()
       .filter((expected) => {
@@ -15979,7 +16310,8 @@ export function VisualEditorShell({
   // never as an overlay. The token is registered as the section's latest,
   // like an overlay token, so the ordinary ack intake and readiness apply;
   // `acceptAstroBasisAck` is checked on top of them. Nothing is written.
-  issueAstroBasisPresentationRef.current = (sectionId, identity) => {
+  issueAstroBasisPresentationRef.current = (selection) => {
+    const { sectionId, identity } = selection;
     const frame = previewFrameRecordRef.current;
     if (
       !frame ||
@@ -15989,10 +16321,28 @@ export function VisualEditorShell({
     ) {
       return;
     }
+    // Codex review P2: the basis is the document this page's sections are
+    // stored in (`pageTemplateId`, as `templateIdForSection` names it), never
+    // a template the editor borrowed to load the route. A static route with
+    // no Document of its own is presented under its placeholder, as a new
+    // document; its first write creates it through the route ensure.
+    if (pageTemplateId === null) {
+      presentationTraceRef.current.anomaly(
+        presentationTraceScope(),
+        `basis not issued section=${sectionId} reason=no-page-document`,
+      );
+      dispatchAstroDesignFocus({
+        kind: "basis-unconfirmed",
+        sectionId,
+        reason: "no-core-generation",
+      });
+      return;
+    }
     const templateId =
-      routeTemplateIdsRef.current.get(activeTemplate.id) ?? activeTemplate.id;
+      routeTemplateIdsRef.current.get(pageTemplateId) ?? pageTemplateId;
     const presentationRevision = presentationRevisionRef.current + 1;
     const issued = astroBasisTokenFor({
+      newRouteDocument: routePathFromTemplatePlaceholder(templateId) !== null,
       capabilities: frame.capabilities,
       contentRefresh: previewContentRefreshRef.current,
       servedContent: frame.servedContent ?? null,
@@ -16023,6 +16373,20 @@ export function VisualEditorShell({
     }
     presentationRevisionRef.current = presentationRevision;
     const token = issued.token;
+    const issuedFor = astroBasisIssuedRef.current;
+    for (const [operationId, entry] of issuedFor) {
+      if (
+        entry.previewKey !== frame.previewKey ||
+        entry.readyRound !== frame.readyRound
+      ) {
+        issuedFor.delete(operationId);
+      }
+    }
+    issuedFor.set(token.operationId, {
+      selection,
+      previewKey: frame.previewKey,
+      readyRound: frame.readyRound,
+    });
     const sectionKey = sectionPresentationKey(templateId, sectionId);
     for (const [operationId, pending] of pendingSectionPresentationRef.current) {
       if (pending.sectionKey === sectionKey) {
@@ -16069,10 +16433,7 @@ export function VisualEditorShell({
     if (documentNavigationRef.current && !frameShowsEditorPageRef.current()) {
       return;
     }
-    issueAstroBasisPresentationRef.current(
-      focus.selection.sectionId,
-      focus.selection.identity,
-    );
+    issueAstroBasisPresentationRef.current(focus.selection);
   };
   const syncPreviewSectionProps = useCallback(
     (
@@ -17122,6 +17483,41 @@ export function VisualEditorShell({
             // at whatever generation the queue holds now.
             throw missingBasisFailure();
           }
+          // Codex review P2 (global Undo): a removal on an Astro section is
+          // a write like any other there. Its basis proof is asked again
+          // here, after the queue and the snapshot read, and the write
+          // carries the identity that proof's token named and Core's digest
+          // (`astroWriteIdentityForProof`); with neither it is refused before
+          // anything is sent, never sent identity-free. A resend goes as
+          // first sent; a Start proof carries no basis.
+          let astroIdentity: Readonly<{
+            identity: string;
+            componentDigest: string;
+          }> | null = null;
+          if (presentationGated && presentationProof?.token.basis) {
+            astroIdentity = isSectionPresentationProofCurrent(
+              presentationProof,
+              resolvedTemplateId,
+              sectionId,
+            )
+              ? astroWriteIdentityForProof({
+                  token: presentationProof.token,
+                  issued: astroBasisIssuedRef.current.get(
+                    presentationProof.token.operationId,
+                  )?.selection,
+                  sectionId,
+                })
+              : null;
+            if (!astroIdentity) {
+              toast.error(PREVIEW_PRESENTATION_BASIS_MESSAGE, {
+                id: "preview-presentation-basis",
+              });
+              throw draftConflictFailure();
+            }
+          }
+          // Re-review N1: a resend goes as first sent, the identity it was
+          // sent with included.
+          if (resend) astroIdentity = resend.sent.astroIdentity ?? null;
           reportSent(expectedDraftGeneration);
           const sent =
             resend?.sent ??
@@ -17132,6 +17528,7 @@ export function VisualEditorShell({
               routePath: routePathForTemplate(templateId),
               expectedSourceGeneration: sourceGeneration,
               expectedDraftGeneration,
+              ...(astroIdentity ? { astroIdentity } : {}),
             });
           sentEntry = sent;
           return updatePropsMutation.mutateAsync({
@@ -17142,6 +17539,7 @@ export function VisualEditorShell({
             expectedDraftGeneration,
             expectedSourceGeneration: sourceGeneration,
             ...(sent.routePath ? { routePath: sent.routePath } : {}),
+            ...(astroIdentity ?? {}),
             ...(resend ? { quietConflict: true } : {}),
           });
         },
@@ -17501,6 +17899,21 @@ export function VisualEditorShell({
         frameRecord.capabilities.has("section-presentation-ack-v1"),
       );
       const shownWhileHeld = !presentationReadyAtInput && frameCanAcknowledge;
+      // M2 PR 3: an Astro section's input is never shown as an overlay; its
+      // proof is the basis the page was rendered from. Held while no current
+      // basis proves it (the page is reloading onto the editor's own write,
+      // or Core wrote a newer snapshot), it is released by the next
+      // acknowledged basis, which is checked again against the input's own
+      // basis (`presentationShowsWriteBasis`) and Core's record before it is
+      // sent, exactly as a shown Start draft is.
+      const heldForAstroBasis =
+        !presentationReadyAtInput &&
+        sectionsUnavailableForFramework &&
+        Boolean(
+          astroSectionsOnPageRef.current
+            .get(currentSearchRoutePathRef.current ?? "/")
+            ?.has(sectionId),
+        );
       const awaitingSignedBefore = awaitingSignedPostRef.current.has(sectionId);
       if (!presentationReadyAtInput && !frameCanAcknowledge) {
         cancelAwaitingSignedPost(sectionId);
@@ -17653,7 +18066,7 @@ export function VisualEditorShell({
           : {
               ...staged,
               presentationBlocked: true,
-              ...(shownWhileHeld &&
+              ...((shownWhileHeld || heldForAstroBasis) &&
               (routePathFromTemplatePlaceholder(keyTemplateId) === null ||
                 (staged.fields !== undefined &&
                   Object.values(staged.fields).every(
@@ -17714,6 +18127,7 @@ export function VisualEditorShell({
       captureCurrentSectionPresentationProof,
       provenFieldGeneration,
       replaySectionProps,
+      sectionsUnavailableForFramework,
       unnamedCopyBasis,
     ],
   );
@@ -17929,6 +18343,89 @@ export function VisualEditorShell({
     },
     [sendCommittedHeldDraft],
   );
+  /**
+   * Owner decision D2 (M2 PR 3): the Content tab of an Astro section Core
+   * confirmed. Its fields are those `.fields.ts` declares and Core proves
+   * for the call site (`astroInspectorFields`); an input goes through the
+   * same content write path as a Start Inspector edit
+   * (`handleSectionPropsChange`), so the #399 gate holds it until the
+   * section's basis is acknowledged and sends it with Core's identity.
+   */
+  // Codex review P2: the generation of the copy the Astro inputs show, read
+  // on every render as `acceptedSectionProps` reads the copy itself (the
+  // context's when it is as new, else this editor's snapshot).
+  const astroShownDocumentId =
+    sectionsUnavailableForFramework && pageTemplateId
+      ? (routeTemplateIdsRef.current.get(pageTemplateId) ?? pageTemplateId)
+      : null;
+  const astroShownGeneration = astroShownDocumentId
+    ? acceptedPresentationGeneration(
+        contentSnapshotsRef.current.get(astroShownDocumentId),
+        context.templates.find(
+          (template) => template.id === astroShownDocumentId,
+        ),
+      )
+    : undefined;
+  const astroInspectorContent = useMemo<EditorAstroContent | null>(() => {
+    const selection = astroDesignFocus?.selection;
+    if (!sectionsUnavailableForFramework || !selection) return null;
+    const componentPath = selection.componentRef.split("#")[0] || null;
+    const { capability } = resolveSectionContentDeclaration(
+      effectiveThemeFiles,
+      {
+        componentRef: selection.componentRef,
+        componentPath,
+        sectionComponentPath: componentPath,
+      },
+    );
+    const sectionId = selection.sectionId;
+    return {
+      sectionId,
+      resetKey: `${pageTemplateId ?? ""}:${sectionId}:${selection.identity}`,
+      fields: astroInspectorFields(selection, capability?.fields ?? null),
+      values: () => ({
+        ...acceptedSectionProps(sectionId),
+        ...heldContentForSection(sectionId),
+      }),
+      shown: { generation: astroShownGeneration, selection },
+      heldFields: () =>
+        new Set(Object.keys(heldContentForSection(sectionId) ?? {})),
+      // Staged as made on the copy the field showed: an input over a value
+      // older than the copy now held is composed as out of date, never over
+      // the newer Document (`earlierBasis`, `selectCurrentContentFields`).
+      onChange: (fieldKey, value, shownGeneration) =>
+        handleSectionPropsChange(
+          sectionId,
+          { [fieldKey]: value },
+          {
+            inputFieldPath: fieldKey,
+            ...(shownGeneration !== undefined
+              ? { basisDraftGeneration: shownGeneration }
+              : {}),
+          },
+        ),
+      onBlur: () => handleSectionContentBlur(sectionId),
+      onOpenInCode: () => {
+        const target = astroCodeTargetRef.current;
+        if (target && target.identity === selection.identity) {
+          handleJumpToCode(target.filePath, target.line, target.column);
+          return;
+        }
+        handleJumpToCode(componentPath ?? undefined, 1, 1);
+      },
+    };
+  }, [
+    acceptedSectionProps,
+    astroDesignFocus,
+    astroShownGeneration,
+    effectiveThemeFiles,
+    handleJumpToCode,
+    handleSectionContentBlur,
+    handleSectionPropsChange,
+    heldContentForSection,
+    pageTemplateId,
+    sectionsUnavailableForFramework,
+  ]);
   /**
    * A commit held back when the author left the field goes on once the
    * page's presentation is acknowledged again: taken first, so a repeated
@@ -22294,6 +22791,7 @@ export function VisualEditorShell({
           }
           inspectorDocumentKey={inspectorDocumentKey}
           astroDesignNotice={astroDesignNotice}
+          astroContent={astroInspectorContent}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}

@@ -28,6 +28,7 @@ import {
   confirmThemePreviewContent,
   probeThemePreviewAddress,
   startThemePreviewServer,
+  syncThemePreviewContent,
   touchThemePreviewServer,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import { ASTRO_BASIS_UNCONFIRMED_MESSAGE } from "@/lib/storefront/editor/astro-basis-presentation";
@@ -39,6 +40,7 @@ import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.q
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
   CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
+  PREVIEW_PRESENTATION_BASIS_MESSAGE,
   SOURCE_LOCATION_STALE_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
@@ -70,6 +72,7 @@ const saveThemeFile = vi.hoisted(() => vi.fn());
 const getThemeFile = vi.hoisted(() => vi.fn());
 const getSession = vi.hoisted(() => vi.fn());
 const readRouteBindings = vi.hoisted(() => vi.fn());
+const ensureRouteTemplate = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "@/server/storefront/storefront-themes.serverFn",
@@ -78,6 +81,7 @@ vi.mock(
     updateStorefrontThemeSectionProps: updateSectionProps,
     getStorefrontThemeEditor: getThemeEditor,
     readThemeRouteBindings: readRouteBindings,
+    ensureStorefrontThemeRouteTemplate: ensureRouteTemplate,
   }),
 );
 vi.mock(
@@ -131,26 +135,39 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 // Code mode, as visual-editor-shell-source-conflict-retry.test.tsx mounts it:
 // Monaco is a textarea; language services and formatting are inert.
+// Keyed by the model path, as Monaco shows another model when the file
+// changes: a jump while Code is already open shows the new file.
+function MockMonaco({
+  defaultValue,
+  onChange,
+}: {
+  defaultValue?: string;
+  onChange?: (value?: string) => void;
+}) {
+  const [value, setValue] = useState(defaultValue ?? "");
+  return (
+    <textarea
+      aria-label="Code editor"
+      value={value}
+      onChange={(event) => {
+        setValue(event.currentTarget.value);
+        onChange?.(event.currentTarget.value);
+      }}
+    />
+  );
+}
 vi.mock("@monaco-editor/react", () => ({
   default: ({
+    path,
     defaultValue,
     onChange,
   }: {
+    path?: string;
     defaultValue?: string;
     onChange?: (value?: string) => void;
-  }) => {
-    const [value, setValue] = useState(defaultValue ?? "");
-    return (
-      <textarea
-        aria-label="Code editor"
-        value={value}
-        onChange={(event) => {
-          setValue(event.currentTarget.value);
-          onChange?.(event.currentTarget.value);
-        }}
-      />
-    );
-  },
+  }) => (
+    <MockMonaco key={path} defaultValue={defaultValue} onChange={onChange} />
+  ),
 }));
 vi.mock("./editor-code-language-support", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./editor-code-language-support")>()),
@@ -251,6 +268,19 @@ const FILES = [
   ),
   file(ROUTE_FILE, SOURCE),
   file(ASTRO_PAGE, ASTRO_SOURCE),
+  // A static page no template type covers: its content is its own Document,
+  // which does not exist until the first write (M2 PR 3, Codex review P2).
+  file("src/pages/about.astro", ASTRO_SOURCE),
+  // The Astro section component and its `.fields.ts` declaration (M2 PR 3):
+  // the Inspector's field types and labels come from the declaration only.
+  file(
+    "src/components/Hero.astro",
+    "---\nconst { title, subtitle } = Astro.props;\n---\n<section><h1>{title}</h1><p>{subtitle}</p></section>\n",
+  ),
+  file(
+    "src/components/Hero.fields.ts",
+    'export const contentFields = {\n  title: { type: "text", label: "Hero title" },\n  subtitle: { type: "textarea", label: "Hero subtitle" },\n} as const;\n',
+  ),
 ];
 const treeAt = (sourceGeneration: number) => ({
   files: FILES,
@@ -336,8 +366,12 @@ const flush = () =>
 let showEditorPage: (page: {
   template: "index" | "page";
   templateId: string;
-  routePath: string;
+  routePath: string | undefined;
 }) => void = () => {
+  throw new Error("settled() has not rendered the shell");
+};
+/** The editor was given a newer read of the Theme (another tab wrote). */
+let showEditorContext: (context: StorefrontThemeEditorDTO) => void = () => {
   throw new Error("settled() has not rendered the shell");
 };
 
@@ -347,7 +381,8 @@ async function settled(
   page: {
     template: "index" | "page";
     templateId: string;
-    routePath: string;
+    /** Absent as the editor URL leaves Home's (no `routePath` at all). */
+    routePath: string | undefined;
   } = { template: "page", templateId: TEMPLATE_ID, routePath: ROUTE_PATH },
   capabilities?: string[],
   /** Basis-ack cases only: more start data, and the ready's stamp. */
@@ -375,10 +410,12 @@ async function settled(
     treeAt(3) as never,
   );
   const onSearchChange = vi.fn();
+  let shownPage = page;
+  let shownContext = themeContext;
   const shellOn = (shown: typeof page) => (
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={themeContext}
+        context={shownContext}
         search={
           {
             template: shown.template,
@@ -394,7 +431,14 @@ async function settled(
     </QueryClientProvider>
   );
   const { rerender } = render(shellOn(page));
-  showEditorPage = (next) => rerender(shellOn(next));
+  showEditorPage = (next) => {
+    shownPage = next;
+    rerender(shellOn(next));
+  };
+  showEditorContext = (next) => {
+    shownContext = next;
+    rerender(shellOn(shownPage));
+  };
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
   fromPreview({
     type: "morph:storefront-preview-ready",
@@ -412,12 +456,12 @@ async function settled(
   fromPreview({
     type: "morph:storefront-preview-route-applied",
     routeRequestId: request?.routeRequestId,
-    routePath: page.routePath,
+    routePath: page.routePath ?? "/",
   });
   fromPreview({
     type: "morph:storefront-preview-structure",
     nodes: [],
-    routePath: page.routePath,
+    routePath: page.routePath ?? "/",
   });
   await flush();
   // For a case that changes what Core answered after the page came up.
@@ -454,6 +498,7 @@ beforeEach(() => {
   getThemeFile.mockReset();
   getThemeFile.mockResolvedValue(stored());
   updateSectionProps.mockReset();
+  ensureRouteTemplate.mockReset();
   readRouteBindings.mockReset();
   readRouteBindings.mockResolvedValue({
     success: false,
@@ -715,6 +760,8 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     sourceDigest = DIGEST,
     /** The file version the frame located in; another one is stale. */
     sourceVersion = astroPreviewSourceHash(ASTRO_SOURCE),
+    /** The v2 boundary the click lands in; another instance's for a sibling. */
+    marker = MARKER,
   ) {
     fromPreview({
       type: "morph:storefront-preview-select-section",
@@ -724,7 +771,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       sourceFilePath: ASTRO_PAGE,
       sourceLocation: `${ASTRO_PAGE}:5:3`,
       sourceVersion,
-      previewBoundary: { marker: MARKER, selectable: true, reason: null },
+      previewBoundary: { marker, selectable: true, reason: null },
       sourceDigest,
       locatedAt: null,
       elementKey: null,
@@ -773,7 +820,11 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     });
   });
 
-  it("a click on an instance Core confirmed still only locates, writes nothing, and says nothing more", async () => {
+  // M2 PR 3 (D2): on a frame without the basis path (no astro-basis-ack-v1,
+  // an older preview) a confirmed click cannot be presented as a write
+  // basis, so it still only locates, as L1.5a did. The Design selection of
+  // a basis frame is "the basis acknowledgement" › "D2" below.
+  it("on a frame without the basis path, a click on an instance Core confirmed still only locates, writes nothing, and says nothing more", async () => {
     readRouteBindings.mockResolvedValue(bindingView());
     await settled(context, HOME, V2_READY);
     await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
@@ -970,6 +1021,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         success: true,
         message: "Live Preview server ready",
         data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`, ...START_DATA },
+      } as never);
+      vi.mocked(syncThemePreviewContent).mockReset();
+      // A write's sync, where a case does not say what Core wrote: refused,
+      // so nothing new is recorded as the basis.
+      vi.mocked(syncThemePreviewContent).mockResolvedValue({
+        success: false,
+        error: "PREVIEW_CONTENT_SYNC_FAILED",
+        message: "not synced in this case",
       } as never);
       vi.mocked(confirmThemePreviewContent).mockReset();
       vi.mocked(confirmThemePreviewContent).mockResolvedValue({
@@ -1368,9 +1427,11 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     });
 
     /** Comes up on the start's confirmed snapshot; clicks the hero once. */
-    const selectHero = async () => {
+    const selectHero = async (
+      themeContext: StorefrontThemeEditorDTO = context,
+    ) => {
       modelCurrentBridge();
-      await settled(context, HOME, BASIS_READY, {
+      await settled(themeContext, HOME, BASIS_READY, {
         serverData: START_DATA,
         servedContent: { ticket: 7, instance: INSTANCE },
       });
@@ -1450,6 +1511,1241 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(unconfirmedHint()).toBe(false);
       expect(inspectorNotice()).toBeNull();
       expect(sectionStatus()).toBeNull();
+    });
+
+    // Owner decision D2 (2026-11-26), M2 PR 3: in Design, a click on a
+    // section Core confirmed selects it and opens the Inspector, as on
+    // TanStack Start. It no longer jumps to Code; "open in Code" is an
+    // explicit action. Nothing is written by the click itself.
+    it("D2: a confirmed click in Design selects the section and opens its declared field in the Inspector, not Code", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+
+      expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+      openInspectorContent();
+      const field = await within(inspectorPanel()).findByRole(
+        "textbox",
+        { name: /title/i },
+        { timeout: 15_000 },
+      );
+      expect(field).toBeTruthy();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    /** The frame answers `applied` for `token`. */
+    const ackBasis = async (token: { operationId: string }) => {
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+    };
+    const astroContent = () =>
+      inspectorPanel().querySelector<HTMLElement>(
+        "[data-astro-inspector-content]",
+      );
+    const heroTitleField = async () => {
+      openInspectorContent();
+      return (await within(inspectorPanel()).findByRole(
+        "textbox",
+        { name: "Hero title" },
+        { timeout: 15_000 },
+      )) as HTMLInputElement;
+    };
+    const switchToCode = () =>
+      fireEvent.click(
+        within(document.querySelector("header")!).getByRole("button", {
+          name: "Code",
+        }),
+      );
+    const switchToDesign = () =>
+      fireEvent.click(
+        within(document.querySelector("header")!).getByRole("button", {
+          name: "Design",
+        }),
+      );
+
+    it("D2: in Code mode a confirmed click stays a locate (L1.5a): Code stays shown and nothing is written", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+      switchToCode();
+      await flush();
+
+      boundaryClick(1);
+      // Code stays shown (the click is not a Design selection there); which
+      // file it opens is the L1.5a case above, from Design. The canvas
+      // is not on screen in Code, so no basis is asked of it here.
+      await flush();
+      expect(
+        screen.getByRole("textbox", { name: "Code editor" }),
+      ).toBeTruthy();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+      // Codex review P3: the locate stored no selection, so back in Design
+      // the Inspector offers no input for the section.
+      switchToDesign();
+      await flush();
+      openInspectorContent();
+      expect(astroContent()).toBeNull();
+      expect(basisPosts()).toHaveLength(0);
+    });
+
+    // Codex review P3: on a frame without the basis path (an older preview)
+    // a confirmed click only locates; Design then has no selection whose
+    // inputs could never be sent.
+    it("D2: a locate-only click on a frame without the basis path leaves no selection for Design to show inputs for", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      await settled(context, HOME, V2_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      boundaryClick(1);
+      expect(
+        await screen.findByRole(
+          "textbox",
+          { name: "Code editor" },
+          { timeout: 15_000 },
+        ),
+      ).toBeTruthy();
+      switchToDesign();
+      await flush();
+      openInspectorContent();
+      expect(astroContent()).toBeNull();
+      expect(
+        within(inspectorPanel()).queryByRole("textbox", { name: "Hero title" }),
+      ).toBeNull();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("D2: the selection opens the Inspector on its Content tab", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      await selectHero();
+
+      const contentTab = within(inspectorPanel()).getByRole("button", {
+        name: "Content",
+        hidden: true,
+      });
+      await waitFor(() =>
+        expect(contentTab.getAttribute("aria-pressed")).toBe("true"),
+      );
+      expect(astroContent()).not.toBeNull();
+    });
+
+    it("D2: Open in Code is an explicit action of the selected section", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      await ackBasis(token);
+      openInspectorContent();
+      expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+
+      fireEvent.click(
+        within(astroContent()!).getByRole("button", { name: "Open in Code" }),
+      );
+
+      const editor = await screen.findByRole(
+        "textbox",
+        { name: "Code editor" },
+        { timeout: 15_000 },
+      );
+      expect((editor as HTMLTextAreaElement).value).toBe(ASTRO_SOURCE);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("D2: a declared field Core does not prove, or a proven one .fields.ts does not declare, gets no input", async () => {
+      readRouteBindings.mockResolvedValue(
+        bindingView({
+          instances: [
+            heroInstance({
+              declaredFields: ["title", "subtitle"],
+              // subtitle declared but not proven here; eyebrow proven but
+              // declared nowhere.
+              claims: [
+                { slot: "hero", field: "title" },
+                { slot: "hero", field: "eyebrow" },
+              ],
+            }),
+          ],
+        }),
+      );
+      const token = await selectHero();
+      await ackBasis(token);
+
+      expect(await heroTitleField()).toBeTruthy();
+      const content = within(astroContent()!);
+      expect(content.queryByRole("textbox", { name: "Hero subtitle" })).toBeNull();
+      expect(content.queryByRole("textbox", { name: /eyebrow/i })).toBeNull();
+      // Structure stays off: the sections panel still offers none of it.
+      expect(screen.queryByRole("button", { name: "Add section" })).toBeNull();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    /**
+     * M2 PR 3, the first Astro write: the Inspector input goes through the
+     * #399 gate, whose proof on an Astro frame is the section's acknowledged
+     * basis token, and is sent with the identity the token named and Core's
+     * component digest. Core verifies both and both CASes again.
+     */
+    describe("an Inspector write of a confirmed Astro section", () => {
+      const WRITE_CONTEXT = {
+        ...context,
+        templates: context.templates.map((template) =>
+          template.id === "template-1"
+            ? {
+                ...template,
+                draftGeneration: 4,
+                document: {
+                  version: 1,
+                  sections: [
+                    {
+                      id: "hero",
+                      type: "hero",
+                      enabled: true,
+                      props: {
+                        title: "Stored title",
+                        subtitle: "Stored subtitle",
+                      },
+                    },
+                  ],
+                },
+              }
+            : template,
+        ),
+      } as unknown as StorefrontThemeEditorDTO;
+      const answered = (draftGeneration: number, title: string) => ({
+        success: true,
+        message: "Section updated",
+        data: {
+          draftGeneration,
+          droppedProps: [],
+          document: {
+            version: 1,
+            sections: [
+              {
+                id: "hero",
+                type: "hero",
+                enabled: true,
+                props: { title, subtitle: "Stored subtitle" },
+              },
+            ],
+          },
+        },
+      });
+      /** Long enough for the input's debounce to have sent it, if it may. */
+      const pastDebounce = () =>
+        act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 450));
+        });
+      const sentData = (call: number) =>
+        (updateSectionProps.mock.calls[call]![0] as { data: unknown }).data;
+      const writeSelected = async () => {
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: WRITE_CONTEXT,
+        });
+        readRouteBindings.mockResolvedValue(bindingView());
+        return selectHero(WRITE_CONTEXT);
+      };
+
+      it("an input before the basis is acknowledged is held; the frame's applied releases it", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "New title"));
+        const token = await writeSelected();
+
+        const field = await heroTitleField();
+        fireEvent.change(field, { target: { value: "New title" } });
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+        expect(field.value).toBe("New title");
+
+        await ackBasis(token);
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      });
+
+      it("with the basis acknowledged, it is sent once with the token's identity and Core's digest, at the generations it was made on", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "New title"));
+        const token = await writeSelected();
+        await ackBasis(token);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "New title" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toEqual({
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          templateId: "template-1",
+          sectionId: "hero",
+          props: { title: "New title" },
+          expectedDraftGeneration: 4,
+          expectedSourceGeneration: 3,
+          routePath: "/",
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
+
+      it("Core writing a newer snapshot after the ack holds the input, and the draft is kept", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "New title"));
+        const client = await settledThenAcked();
+        act(() => {
+          client.setQueryData(
+            themePreviewServerQueries.forTheme("storefront-1", "theme-1")
+              .queryKey,
+            {
+              success: true,
+              message: "Live Preview server ready",
+              data: {
+                url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+                ...START_DATA,
+                contentTicket: 8,
+                draftGenerations: { "template-1": 5 },
+              },
+            } as never,
+          );
+        });
+        await flush();
+
+        const field = await heroTitleField();
+        fireEvent.change(field, { target: { value: "Typed on a stale page" } });
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+        expect(field.value).toBe("Typed on a stale page");
+      });
+
+      /** The write context up, the hero selected and its basis acknowledged. */
+      async function settledThenAcked() {
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: WRITE_CONTEXT,
+        });
+        readRouteBindings.mockResolvedValue(bindingView());
+        modelCurrentBridge();
+        const client = await settled(WRITE_CONTEXT, HOME, BASIS_READY, {
+          serverData: START_DATA,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        });
+        await waitFor(() =>
+          expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(1);
+        await ackBasis(basisPosts()[0]!.presentationToken);
+        return client;
+      }
+
+      it("a write Core refuses keeps the draft and is not sent again on its own", async () => {
+        updateSectionProps.mockResolvedValue({
+          success: false,
+          error: "SECTION_SOURCE_UNCONFIRMABLE",
+          message:
+            "SECTION_SOURCE_UNCONFIRMABLE: this section can't be confirmed right now",
+        });
+        await settledThenAcked();
+
+        const field = await heroTitleField();
+        fireEvent.change(field, { target: { value: "Refused title" } });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        await pastDebounce();
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+        expect(field.value).toBe("Refused title");
+      });
+
+      it("after a write the next input waits for the reloaded page's new ack; only that ack releases it", async () => {
+        updateSectionProps.mockResolvedValueOnce(answered(5, "First"));
+        updateSectionProps.mockResolvedValueOnce(answered(6, "Second"));
+        // Core's answer to the sync the first write asks for: it wrote the
+        // snapshot holding it (ticket 8, generation 5), read by INSTANCE.
+        vi.mocked(syncThemePreviewContent).mockResolvedValue({
+          success: true,
+          message: "Live Preview content synced",
+          data: {
+            ticket: 8,
+            sentTicket: 8,
+            draftGenerations: { "template-1": 5 },
+            instance: INSTANCE,
+          },
+        } as never);
+        await settledThenAcked();
+
+        const field = await heroTitleField();
+        fireEvent.change(field, { target: { value: "First" } });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        await flush();
+
+        // Typed again before the page shows the first write.
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Second" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+        // Core wrote and confirmed the first write's snapshot (the sync
+        // above); the page reloads onto it.
+        await waitFor(() =>
+          expect(vi.mocked(syncThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await flush();
+        await reloadWith({ ticket: 8, instance: INSTANCE });
+        await waitFor(() =>
+          expect(basisPosts().length).toBeGreaterThanOrEqual(2),
+        );
+        await flush();
+        // The latest token is the one the frame's answer is taken for.
+        const reissued = basisPosts().at(-1)!.presentationToken;
+        expect(reissued).toMatchObject({
+          documentBasis: { kind: "existing", draftGeneration: 5 },
+          basis: { servedContent: { ticket: 8, instance: INSTANCE } },
+        });
+        await pastDebounce();
+        // The new token alone is not the proof; its applied is.
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+        await ackBasis(reissued);
+        const trace = () =>
+          [
+            ...vi.mocked(console.info).mock.calls,
+            ...vi.mocked(console.warn).mock.calls,
+          ]
+            .map((call) => call.filter((part) => typeof part === "string").join(" "))
+            .filter((line) => line.includes("[preview-presentation]"))
+            .slice(-25)
+            .concat(
+              [
+                ...vi.mocked(toast.error).mock.calls,
+                ...vi.mocked(toast.warning).mock.calls,
+              ].map((call) => `toast: ${String(call[0])}`),
+            )
+            .join(" | ");
+        await waitFor(() =>
+          expect(updateSectionProps, trace()).toHaveBeenCalledTimes(2),
+        );
+        expect(sentData(1)).toMatchObject({
+          sectionId: "hero",
+          props: { title: "Second" },
+          expectedDraftGeneration: 5,
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
+
+      /** WRITE_CONTEXT with the hero holding `props` at `draftGeneration`. */
+      const contextWithHero = (
+        draftGeneration: number,
+        props: Record<string, unknown>,
+      ) =>
+        ({
+          ...WRITE_CONTEXT,
+          templates: WRITE_CONTEXT.templates.map((template) =>
+            template.id === "template-1"
+              ? {
+                  ...template,
+                  draftGeneration,
+                  document: {
+                    version: 1,
+                    sections: [
+                      { id: "hero", type: "hero", enabled: true, props },
+                    ],
+                  },
+                }
+              : template,
+          ),
+        }) as unknown as StorefrontThemeEditorDTO;
+      /** Comes up on `themeContext` at `page`, selects the hero, acks it. */
+      async function upAndAcked(
+        themeContext: StorefrontThemeEditorDTO = WRITE_CONTEXT,
+        page: Parameters<typeof settled>[1] = HOME,
+        view: ReturnType<typeof bindingView> = bindingView(),
+      ) {
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: themeContext,
+        });
+        readRouteBindings.mockResolvedValue(view);
+        modelCurrentBridge();
+        const client = await settled(themeContext, page, BASIS_READY, {
+          serverData: START_DATA,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        });
+        await waitFor(() =>
+          expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(1);
+        await ackBasis(basisPosts()[0]!.presentationToken);
+        return client;
+      }
+
+      // Codex review P1 (superseded proof): a click again on the same
+      // section in the same round issues a new latest token and drops the
+      // section's acknowledgement. The token the input was staged with is
+      // then no proof, whatever the frame and Core still say of it.
+      it("a re-click in the same round makes the input's proof stale: held through the new token's not-applied, sent on a later applied", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "Re-clicked"));
+        await upAndAcked();
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Re-clicked" },
+        });
+        // Within the input's debounce: a new token, not answered yet.
+        boundaryClick(2);
+        await flush();
+        expect(basisPosts()).toHaveLength(2);
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+
+        const second = basisPosts()[1]!.presentationToken;
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: second.operationId,
+          token: second,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+        await flush();
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+        expect((await heroTitleField()).value).toBe("Re-clicked");
+
+        // Only the section's latest token, applied, proves it again.
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts()[2]!.presentationToken);
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          props: { title: "Re-clicked" },
+          expectedDraftGeneration: 4,
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
+
+      // Codex review P1 (proof at dispatch): an input proven at generation 4
+      // and queued behind a write still out must not go on that write's
+      // generation (5) before the page shows it. Checked where it is sent,
+      // after the queue and the snapshot read; refused with the basis
+      // message, the draft kept.
+      it("a second input queued behind an unanswered write is not sent on that write's generation before the page shows it", async () => {
+        let answerFirst: (value: unknown) => void = () => {};
+        updateSectionProps.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answerFirst = resolve;
+            }),
+        );
+        updateSectionProps.mockResolvedValue(answered(6, "Second"));
+        await upAndAcked();
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "First" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        // Typed while the first write is out; the page still shows 4.
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Second" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          answerFirst(answered(5, "First"));
+        });
+        await flush();
+        await pastDebounce();
+
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_BASIS_MESSAGE,
+          expect.anything(),
+        );
+        expect((await heroTitleField()).value).toBe("Second");
+      });
+
+      /** Core proves both declared fields of the hero. */
+      const bothFieldsView = () =>
+        bindingView({
+          instances: [
+            heroInstance({
+              declaredFields: ["title", "subtitle"],
+              claims: [
+                { slot: "hero", field: "title" },
+                { slot: "hero", field: "subtitle" },
+              ],
+            }),
+          ],
+        });
+      const heroSubtitleField = () =>
+        within(inspectorPanel()).getByRole("textbox", {
+          name: "Hero subtitle",
+        }) as HTMLTextAreaElement;
+
+      // Codex review P2 (two tabs): another tab saved the title and this
+      // editor accepted that Document. An input the author has not touched
+      // shows the accepted value before it can be typed into, so nothing is
+      // staged over B's title at the new generation; one being typed keeps
+      // what the author typed.
+      it("an untouched input shows the newer Document the editor accepted; a held one keeps what is typed", async () => {
+        await upAndAcked(WRITE_CONTEXT, HOME, bothFieldsView());
+        openInspectorContent();
+        expect((await heroTitleField()).value).toBe("Stored title");
+
+        // Held here: typed, still on its debounce.
+        fireEvent.change(heroSubtitleField(), { target: { value: "Mine" } });
+        const fromB = contextWithHero(5, {
+          title: "Title from B",
+          subtitle: "Stored subtitle",
+        });
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: fromB,
+        });
+        act(() => showEditorContext(fromB));
+        await flush();
+
+        expect((await heroTitleField()).value).toBe("Title from B");
+        expect(heroSubtitleField().value).toBe("Mine");
+        // The page still shows generation 4: nothing goes yet.
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+      });
+
+      // Codex review P2 (static route without its own Document): the
+      // editor borrowed Home's template to load /about, whose content is
+      // /about's own Document, not created yet. The basis is the route's
+      // own (a new document, as Core's snapshot holds none for it), and the
+      // first write goes through the route ensure the Start path uses, onto
+      // the document as this editor created it.
+      it("a static route without its own Document: the basis is the route's own, and the first write creates it through the route ensure", async () => {
+        const ABOUT = {
+          template: "page" as const,
+          templateId: "template-1",
+          routePath: "/about",
+        };
+        ensureRouteTemplate.mockResolvedValue({
+          success: true,
+          message: "Route template ready",
+          data: {
+            id: "template-about",
+            draftGeneration: 1,
+            createdByThisCall: true,
+          },
+        });
+        updateSectionProps.mockResolvedValue({
+          success: true,
+          message: "Section updated",
+          data: {
+            draftGeneration: 2,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  enabled: true,
+                  props: { title: "About title" },
+                },
+              ],
+            },
+          },
+        });
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: context,
+        });
+        readRouteBindings.mockResolvedValue(
+          bindingView({ routePath: "/about", routeFile: "src/pages/about.astro" }),
+        );
+        modelCurrentBridge();
+        await settled(context, ABOUT, BASIS_READY, {
+          serverData: START_DATA,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        });
+        await waitFor(() =>
+          expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(1);
+        const token = basisPosts()[0]!.presentationToken;
+        expect(token).toMatchObject({
+          routePath: "/about",
+          documentBasis: { kind: "new-document" },
+        });
+        expect(token.templateId).not.toBe("template-1");
+        await ackBasis(token);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "About title" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(ensureRouteTemplate).toHaveBeenCalledWith({
+          data: {
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            routePath: "/about",
+          },
+        });
+        expect(sentData(0)).toMatchObject({
+          templateId: "template-about",
+          sectionId: "hero",
+          props: { title: "About title" },
+          expectedDraftGeneration: 1,
+          expectedSourceGeneration: 3,
+          routePath: "/about",
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
+
+      // Codex review P2 (global Undo): the first value of a field the hero
+      // did not store is undone by a reset. That reset is a write of an
+      // Astro section like any other: sent under a current basis proof with
+      // its identity and Core's digest, never identity-free.
+      it("Undo of the first value of an unset field resets it with the identity and digest of a current basis", async () => {
+        const unset = contextWithHero(4, { subtitle: "Stored subtitle" });
+        updateSectionProps.mockResolvedValueOnce(answered(5, "First"));
+        updateSectionProps.mockResolvedValueOnce({
+          success: true,
+          message: "Section updated",
+          data: {
+            draftGeneration: 6,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  enabled: true,
+                  props: { subtitle: "Stored subtitle" },
+                },
+              ],
+            },
+          },
+        });
+        vi.mocked(syncThemePreviewContent).mockResolvedValue({
+          success: true,
+          message: "Live Preview content synced",
+          data: {
+            ticket: 8,
+            sentTicket: 8,
+            draftGenerations: { "template-1": 5 },
+            instance: INSTANCE,
+          },
+        } as never);
+        await upAndAcked(unset);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "First" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        await waitFor(() =>
+          expect(vi.mocked(syncThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await flush();
+        await reloadWith({ ticket: 8, instance: INSTANCE });
+        await waitFor(() =>
+          expect(basisPosts().length).toBeGreaterThanOrEqual(2),
+        );
+        await ackBasis(basisPosts().at(-1)!.presentationToken);
+
+        await waitFor(() =>
+          expect(
+            screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+          ).toBe(false),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+        expect(sentData(1)).toMatchObject({
+          sectionId: "hero",
+          resetProps: ["title"],
+          expectedDraftGeneration: 5,
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
+
+      // Codex review P2 (re-derive keeps the old source baseline): an
+      // unrelated source save moves the workspace to generation 4 while the
+      // instance and its digest stay. The selection is confirmed again in
+      // Core's view of 4; an input after the new ack is staged at 4.
+      it("an input after a re-derive on an unrelated source save is staged at the new source generation", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "After save"));
+        await upAndAcked();
+
+        readRouteBindings.mockResolvedValue(bindingView({ sourceGeneration: 4 }));
+        act(() => {
+          useThemeWorkspaceStore.getState().setBaseSourceGeneration(4, scope);
+        });
+        await waitFor(() => expect(basisPosts()).toHaveLength(2));
+        await ackBasis(basisPosts()[1]!.presentationToken);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "After save" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          props: { title: "After save" },
+          expectedSourceGeneration: 4,
+          identity: MARKER,
+        });
+      });
+
+      const unconfirmedCount = () =>
+        document
+          .querySelector("[data-editor-unconfirmed-saves]")
+          ?.getAttribute("data-editor-unconfirmed-saves") ?? null;
+      const LEGACY_REFUSAL = {
+        success: false,
+        error: "SECTION_SOURCE_UNCONFIRMABLE",
+        message:
+          "SECTION_SOURCE_UNCONFIRMABLE: preview-identity-legacy: the write carries no v2 instance identity; reload the preview",
+      };
+      /** Typed, sent, and its answer lost: held as unanswered. */
+      const lostWrite = async () => {
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Lost answer" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        await waitFor(() =>
+          expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy(),
+        );
+        expect(unconfirmedCount()).not.toBeNull();
+      };
+
+      // Re-review N1: the resend of an unanswered Astro write is exactly the
+      // write first sent, identity and Core's digest included, so Core
+      // answers it as any write (landed, or refused by its CAS), never as an
+      // identity-free legacy write.
+      it("the resend of an unanswered Astro write carries the identity and digest it was first sent with", async () => {
+        updateSectionProps
+          .mockRejectedValueOnce(new Error("offline"))
+          .mockResolvedValueOnce(answered(5, "Lost answer"));
+        await upAndAcked();
+        await lostWrite();
+
+        // The read-back shows nothing landed: sent once more, as first sent.
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+        expect(sentData(1)).toEqual(sentData(0));
+        expect(sentData(1)).toMatchObject({
+          identity: MARKER,
+          componentDigest: DIGEST,
+          expectedDraftGeneration: 4,
+        });
+        await waitFor(() => expect(unconfirmedCount()).toBeNull());
+      });
+
+      // Re-review N1, the backstop: should Core still refuse a resend as
+      // preview-identity-legacy, that answers the resend only. It is read
+      // back once (as a resend refused out of date is): landed is taken as
+      // landed; not landed ends the unanswered hold, so no later press sends
+      // it again and other writes are not held behind it.
+      it("a resend refused as legacy whose write did not land is settled once: a second press sends nothing more", async () => {
+        updateSectionProps
+          .mockRejectedValueOnce(new Error("offline"))
+          .mockResolvedValueOnce(LEGACY_REFUSAL);
+        await upAndAcked();
+        await lostWrite();
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(unconfirmedCount()).toBeNull());
+
+        // A second press, if offered, sends nothing again.
+        const again = screen.queryByRole("button", { name: "Try again" });
+        if (again) fireEvent.click(again);
+        await pastDebounce();
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(2);
+        expect(unconfirmedCount()).toBeNull();
+      });
+
+      it("a resend refused as legacy whose write did land is taken as landed by that one read-back", async () => {
+        const landed = contextWithHero(5, {
+          title: "Lost answer",
+          subtitle: "Stored subtitle",
+        });
+        updateSectionProps
+          .mockRejectedValueOnce(new Error("offline"))
+          .mockImplementationOnce(async () => {
+            // The first write had landed after all; the read after this
+            // refusal shows it.
+            getThemeEditor.mockResolvedValue({
+              success: true,
+              message: "ok",
+              data: landed,
+            });
+            return LEGACY_REFUSAL;
+          });
+        await upAndAcked();
+        await lostWrite();
+
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(unconfirmedCount()).toBeNull());
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(2);
+        expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+      });
+
+      /**
+       * Container run inspector-write-run-01 on 226d1de: Home as its editor
+       * URL names it (no routePath), so the page's Document lists the hero
+       * as a bound section, and the page-level readiness (#399) expected it
+       * presented as an overlay, at the props revision the frame was last
+       * posted. An Astro frame never gets an overlay token, so the page
+       * stayed "waiting" and the input was held for ever. Lead decision
+       * (option b, with Codex): on an Astro basis frame the page is the
+       * sections with basis tokens, each counted by its own latest token.
+       */
+      const HOME_URL = {
+        template: "index" as const,
+        templateId: "template-1",
+        routePath: undefined,
+      };
+      const BANNER_MARKER = `${NONCE}:2:${SRC}:70:100`;
+      const heroAndBanner = () =>
+        bindingView({
+          instances: [
+            heroInstance(),
+            heroInstance({
+              identity: { rule: 2, src: SRC, start: 70, end: 100 },
+              section: "banner",
+              claims: [{ slot: "banner", field: "title" }],
+            }),
+          ],
+        });
+
+      it("on an Astro frame the page's bound hero needs no overlay: an input held before the ack is sent once the basis is applied", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "Held then sent"));
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: WRITE_CONTEXT,
+        });
+        readRouteBindings.mockResolvedValue(bindingView());
+        modelCurrentBridge();
+        await settled(WRITE_CONTEXT, HOME_URL, BASIS_READY, {
+          serverData: START_DATA,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        });
+        await waitFor(() =>
+          expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+        );
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(1);
+        const token = basisPosts()[0]!.presentationToken;
+
+        // Typed before the ack: held, and posted to the frame, which moves
+        // the hero's props revision past the token's 0.
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Held then sent" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+
+        await ackBasis(token);
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          sectionId: "hero",
+          props: { title: "Held then sent" },
+          expectedDraftGeneration: 4,
+          identity: MARKER,
+          componentDigest: DIGEST,
+        });
+      });
+
+      it("on an Astro frame an input waits while another section's newer basis on the page is unacknowledged", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "Waits for banner"));
+        await upAndAcked(WRITE_CONTEXT, HOME_URL, heroAndBanner());
+
+        boundaryClick(2, DIGEST, undefined, BANNER_MARKER);
+        await flush();
+        expect(basisPosts()).toHaveLength(2);
+        const banner = basisPosts()[1]!.presentationToken;
+        expect(banner).toMatchObject({ sectionId: "banner" });
+        // Back on the hero, acknowledged; the banner's basis still is not.
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts()[2]!.presentationToken);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Waits for banner" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+
+        await ackBasis(banner);
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          sectionId: "hero",
+          props: { title: "Waits for banner" },
+          identity: MARKER,
+        });
+      });
+
+      it("on an Astro frame another section's answered write holds the input until the page shows it", async () => {
+        updateSectionProps.mockResolvedValueOnce({
+          success: true,
+          message: "Section updated",
+          data: {
+            draftGeneration: 5,
+            droppedProps: [],
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  enabled: true,
+                  props: { title: "Stored title", subtitle: "Stored subtitle" },
+                },
+                {
+                  id: "banner",
+                  type: "hero",
+                  enabled: true,
+                  props: { title: "Banner title" },
+                },
+              ],
+            },
+          },
+        });
+        await upAndAcked(WRITE_CONTEXT, HOME_URL, heroAndBanner());
+
+        boundaryClick(2, DIGEST, undefined, BANNER_MARKER);
+        await flush();
+        await ackBasis(basisPosts()[1]!.presentationToken);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Banner title" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({ sectionId: "banner" });
+        await flush();
+
+        // The page still shows generation 4; the banner's write made 5.
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts().at(-1)!.presentationToken);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Hero on a stale page" },
+        });
+        await pastDebounce();
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+      });
+
+      // Rebase checkpoint (#479): a Live Preview whose content snapshot
+      // cannot be read answers its content reads 503 and stamps no
+      // `morph-content` on the page. Such a page is unreadable, never empty
+      // content: a confirmed click gets no basis token, an input is held,
+      // and nothing is written.
+      it("a page with no content stamp (an unreadable snapshot) is no basis: a confirmed click writes nothing", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "On no stamp"));
+        getThemeEditor.mockResolvedValue({
+          success: true,
+          message: "ok",
+          data: WRITE_CONTEXT,
+        });
+        readRouteBindings.mockResolvedValue(bindingView());
+        modelCurrentBridge();
+        await settled(WRITE_CONTEXT, HOME, BASIS_READY, {
+          serverData: START_DATA,
+        });
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+
+        boundaryClick(1);
+        await flush();
+        expect(basisPosts()).toHaveLength(0);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "On no stamp" },
+        });
+        await pastDebounce();
+        await pastDebounce();
+        expect(updateSectionProps).not.toHaveBeenCalled();
+      });
+
+      // Re-review N2: a sibling's basis the frame answered not-applied is
+      // answered, not awaited. It stays the sibling's latest token, but it is
+      // not part of the page the hero's input waits for; a click on the
+      // sibling issues a new token as before.
+      it("on an Astro frame a sibling's not-applied basis does not hold the hero's input", async () => {
+        updateSectionProps.mockResolvedValue(answered(5, "Not held by banner"));
+        await upAndAcked(WRITE_CONTEXT, HOME_URL, heroAndBanner());
+
+        boundaryClick(2, DIGEST, undefined, BANNER_MARKER);
+        await flush();
+        const banner = basisPosts()[1]!.presentationToken;
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: banner.operationId,
+          token: banner,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+        await flush();
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts()[2]!.presentationToken);
+
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Not held by banner" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        expect(sentData(0)).toMatchObject({
+          sectionId: "hero",
+          props: { title: "Not held by banner" },
+          identity: MARKER,
+        });
+      });
+
+      /**
+       * The dispatch-time recheck (Codex review P1), one cause at a time:
+       * the hero's input is proven and queued behind the banner's write,
+       * which is still out; then the cause happens; then the banner's write
+       * is refused (an answer that moves no generation), and the hero's
+       * write reaches its dispatch. It must not leave.
+       */
+      const heroQueuedBehindBanner = async () => {
+        let answerBanner: (value: unknown) => void = () => {};
+        updateSectionProps.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answerBanner = resolve;
+            }),
+        );
+        updateSectionProps.mockResolvedValue(answered(5, "Queued hero"));
+        const client = await upAndAcked(WRITE_CONTEXT, HOME_URL, heroAndBanner());
+        boundaryClick(2, DIGEST, undefined, BANNER_MARKER);
+        await flush();
+        await ackBasis(basisPosts()[1]!.presentationToken);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Banner out" },
+        });
+        await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+        boundaryClick(3);
+        await flush();
+        await ackBasis(basisPosts().at(-1)!.presentationToken);
+        fireEvent.change(await heroTitleField(), {
+          target: { value: "Queued hero" },
+        });
+        await pastDebounce();
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+        return {
+          client,
+          answerBanner: async () => {
+            await act(async () => {
+              answerBanner({
+                success: false,
+                error: "SECTION_SOURCE_UNCONFIRMABLE",
+                message:
+                  "SECTION_SOURCE_UNCONFIRMABLE: parser-unavailable: not this time",
+              });
+            });
+            await flush();
+            await pastDebounce();
+          },
+        };
+      };
+      const notSentAtDispatch = () => {
+        expect(updateSectionProps).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+          PREVIEW_PRESENTATION_BASIS_MESSAGE,
+          expect.anything(),
+        );
+      };
+
+      it("dispatch recheck: a re-click on the section while its write is queued", async () => {
+        const queued = await heroQueuedBehindBanner();
+        boundaryClick(4);
+        await flush();
+        await queued.answerBanner();
+        notSentAtDispatch();
+      });
+
+      it("dispatch recheck: the section's ack withdrawn while its write is queued", async () => {
+        const queued = await heroQueuedBehindBanner();
+        const hero = basisPosts().at(-1)!.presentationToken;
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: hero.operationId,
+          token: hero,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+        await flush();
+        await queued.answerBanner();
+        notSentAtDispatch();
+      });
+
+      it("dispatch recheck: a frame reload while the write is queued", async () => {
+        const queued = await heroQueuedBehindBanner();
+        await reloadWith({ ticket: 7, instance: INSTANCE });
+        await queued.answerBanner();
+        notSentAtDispatch();
+      });
+
+      it("dispatch recheck: Core's record moving while the write is queued", async () => {
+        const queued = await heroQueuedBehindBanner();
+        act(() => {
+          queued.client.setQueryData(
+            themePreviewServerQueries.forTheme("storefront-1", "theme-1")
+              .queryKey,
+            {
+              success: true,
+              message: "Live Preview server ready",
+              data: {
+                url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview`,
+                ...START_DATA,
+                contentTicket: 8,
+                draftGenerations: { "template-1": 4 },
+              },
+            } as never,
+          );
+        });
+        await flush();
+        await queued.answerBanner();
+        notSentAtDispatch();
+      });
     });
 
     // Lead decision Q3: after a frame reload the selection is not kept from
@@ -1604,6 +2900,11 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
       expect(basisPosts()).toHaveLength(1);
       expect(updateSectionProps).not.toHaveBeenCalled();
+      // That refused click only located, in Code. Codex review P3: a click
+      // in Code selects nothing, so the next click is made back in Design,
+      // where a confirmed click selects.
+      switchToDesign();
+      await flush();
 
       // Only a read that succeeds, for the next document, confirms a click
       // again.
@@ -1880,11 +3181,30 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
      * jsdom ignores `inert`, so a query cannot prove the author sees it; the
      * cases check that no ancestor of the bar is inert or aria-hidden.
      */
-    describe("in Code mode, where an Astro click lands", () => {
+    // M2 PR 3 (D2): a confirmed click in Design no longer lands in Code; a
+    // refused one still does. The cases that select the hero open Code
+    // through the selection's explicit "Open in Code" action instead.
+    describe("in Code mode, where a refused Astro click or Open in Code lands", () => {
       const statusBar = () =>
         document.querySelector<HTMLElement>("[data-astro-design-status-bar]");
       const outsideHiddenSurfaces = (element: Element) =>
         element.closest('[inert], [aria-hidden="true"]') === null;
+      /** The selection's explicit action (D2): Code is shown after it. */
+      const openInCode = async () => {
+        openInspectorContent();
+        fireEvent.click(
+          within(
+            inspectorPanel().querySelector<HTMLElement>(
+              "[data-astro-inspector-content]",
+            )!,
+          ).getByRole("button", { name: "Open in Code" }),
+        );
+        await screen.findByRole(
+          "textbox",
+          { name: "Code editor" },
+          { timeout: 15_000 },
+        );
+      };
 
       it("a hint said at the click is in the status bar, in the node mounted before it, outside the hidden Design surface", async () => {
         modelCurrentBridge();
@@ -1904,14 +3224,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         expect(bar!.getAttribute("aria-live")).toBe("polite");
         expect(bar!.textContent).toBe("");
 
+        // D2: the instance is confirmed, so the click selects it in Design
+        // (its basis is what is refused, said in the Inspector); Code is
+        // reached through the selection's "Open in Code".
         boundaryClick(1);
-        expect(
-          await screen.findByRole(
-            "textbox",
-            { name: "Code editor" },
-            { timeout: 15_000 },
-          ),
-        ).toBeTruthy();
+        await flush();
+        expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+        expect(bar!.textContent).toBe("");
+        await openInCode();
 
         expect(statusBar()).toBe(bar);
         expect(bar!.getAttribute("data-astro-design-status-bar")).toBe(
@@ -1931,6 +3251,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       it("a not-applied answer that arrives in Code is said in the bar as an update", async () => {
         readRouteBindings.mockResolvedValue(bindingView());
         const token = await selectHero();
+        await openInCode();
         const bar = statusBar()!;
         expect(bar.textContent).toBe("");
 
@@ -1955,6 +3276,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         let answerView: (value: unknown) => void = () => {};
         readRouteBindings.mockResolvedValue(bindingView());
         await selectHero();
+        await openInCode();
         readRouteBindings.mockImplementation(
           () =>
             new Promise((resolve) => {
@@ -1983,16 +3305,20 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
         expect(bar.textContent).toBe("");
       });
 
-      it("a new selection clears the old hint from the bar", async () => {
+      // Codex review P3: a click in Code is a locate only, so it no longer
+      // selects the section again (it used to, with a second basis token).
+      // Like any other click it clears the old hint, and selects nothing.
+      it("a click in Code is a locate only: it clears the old hint from the bar and selects nothing", async () => {
         await heroWithHint();
+        await openInCode();
         const bar = statusBar()!;
         expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
 
-        // A confirmed click on the section again: a new selection.
+        // A confirmed click on the section, in Code: located, not selected.
         boundaryClick(2);
         await flush();
 
-        expect(basisPosts()).toHaveLength(2);
+        expect(basisPosts()).toHaveLength(1);
         expect(statusBar()).toBe(bar);
         expect(bar.getAttribute("data-astro-design-status-bar")).toBe("none");
         expect(bar.textContent).toBe("");
@@ -2000,6 +3326,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
       it("a page change clears the old hint from the bar", async () => {
         await heroWithHint();
+        await openInCode();
         const bar = statusBar()!;
         expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
 
@@ -2019,6 +3346,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
 
       it("back in Design the bar is quiet, and the Inspector and section row say it", async () => {
         await heroWithHint();
+        await openInCode();
         const bar = statusBar()!;
         expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
 

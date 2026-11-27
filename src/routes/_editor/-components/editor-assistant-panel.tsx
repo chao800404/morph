@@ -22,6 +22,10 @@ import {
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { AstroDesignNotice } from "@/lib/storefront/editor/astro-design-focus";
 import { EditorAstroDesignNotice } from "./editor-astro-design-notice";
+import {
+  EditorAstroContentFields,
+  type EditorAstroContent,
+} from "./editor-astro-content-fields";
 import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
@@ -187,6 +191,11 @@ type EditorAssistantPanelProps = {
    * nothing to say, and always null on TanStack Start.
    */
   astroDesignNotice?: AstroDesignNotice | null;
+  /**
+   * An Astro section Core confirmed (D2, M2 PR 3): its declared content
+   * fields, shown in the Content tab instead of the Start Inspector.
+   */
+  astroContent?: EditorAstroContent | null;
 };
 
 export type EditorAssistantPanelTab =
@@ -327,6 +336,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   inspectorDocumentKey,
   selectionSourceCurrent = false,
   astroDesignNotice = null,
+  astroContent = null,
 }: EditorAssistantPanelProps) {
   // Seeded from the value the server already resolved, so both renders agree.
   const [tab, setTab] = useState<EditorAssistantPanelTab>(() =>
@@ -506,6 +516,15 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
     onTabChange?.(tab);
   }, [onTabChange, tab]);
 
+  // D2 (M2 PR 3): a confirmed Astro selection opens the Inspector on its
+  // content, once per selection; the author's own tab choice after that
+  // stands. Comment mode keeps its own tab.
+  const astroContentKey = astroContent?.resetKey ?? null;
+  useEffect(() => {
+    if (astroContentKey === null) return;
+    setTab((current) => (current === "comments" ? current : "content"));
+  }, [astroContentKey]);
+
   useEffect(() => {
     persistEditorAssistantPanelTab(tab);
   }, [tab]);
@@ -667,6 +686,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               className="mx-3 mt-3 w-auto"
             />
           ) : null}
+          {tab === "content" && astroContent ? (
+            <EditorAstroContentFields content={astroContent} />
+          ) : null}
           {inspectorSection && !(contentRefused && tab === "content") ? (
             <InspectorCodeDefaultContext.Provider
               value={
@@ -728,7 +750,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
                 selectionSourceCurrent={selectionSourceCurrent}
               />
             </InspectorCodeDefaultContext.Provider>
-          ) : astroDesignNotice ? null : (
+          ) : astroDesignNotice || astroContent ? null : (
             <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">
               <div className="flex size-10 items-center justify-center rounded-lg border bg-background shadow-xs">
                 <Layers3 className="size-4 text-muted-foreground" />
