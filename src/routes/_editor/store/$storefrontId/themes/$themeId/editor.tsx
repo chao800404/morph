@@ -221,6 +221,7 @@ function ReadyVisualEditorRoute({
   const shouldNormalizeSearch = normalizedSearch !== search;
   const normalizedTemplateId = normalizedSearch.templateId;
   const normalizedTemplateType = normalizedSearch.template;
+  const normalizedRoutePath = normalizedSearch.routePath;
   const didCanonicalizeSearch = useRef(false);
 
   useEffect(() => {
@@ -228,8 +229,13 @@ function ReadyVisualEditorRoute({
     onSearchChange({
       template: normalizedTemplateType,
       templateId: normalizedTemplateId,
+      // Only ever added (a route document's own page), never cleared.
+      ...(normalizedRoutePath !== undefined
+        ? { routePath: normalizedRoutePath }
+        : {}),
     });
   }, [
+    normalizedRoutePath,
     normalizedTemplateId,
     normalizedTemplateType,
     onSearchChange,
