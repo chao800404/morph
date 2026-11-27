@@ -35,6 +35,12 @@ import {
   astroPage,
   type AstroB1Summary,
 } from "@/lib/test-utils/astro-b1-samples";
+import {
+  astroDifferentialFixtures,
+  differentialResult,
+  narrowerThanBase,
+} from "@/lib/test-utils/provenance-differential";
+import { PROVENANCE_TAINT_BASELINE_51AD77B } from "@/lib/test-utils/provenance-taint-baseline-51ad77b";
 
 import {
   analyzeB1AstroRoute,
@@ -685,11 +691,33 @@ describe("destructuring taints the stored value the local can reach (Astro)", ()
     it(`${testCase.id}: ${testCase.title}`, async () => {
       const analysis = await analyzeAstro(
         "src/pages/index.astro",
-        astroPage(`${DESTRUCTURE_HOME}${testCase.body}`, "<Hero {...hero} />"),
+        astroPage(
+          `${DESTRUCTURE_HOME}${testCase.body}`,
+          testCase.jsx ?? "<Hero {...hero} />",
+        ),
       );
-      expect(analysis.taints).toContain(testCase.taint);
-      if (testCase.wrong) expect(analysis.taints).not.toContain(testCase.wrong);
+      if (testCase.taint) expect(analysis.taints).toContain(testCase.taint);
       expect(summarize(analysis)).toEqual(testCase.expected);
+    });
+  }
+});
+
+describe("the taint pass is never narrower than 51ad77b (Astro)", () => {
+  const baseline = PROVENANCE_TAINT_BASELINE_51AD77B;
+  const fixtures = astroDifferentialFixtures();
+
+  it("the baseline covers every shared fixture", () => {
+    expect(Object.keys(baseline.astro).sort()).toEqual(
+      fixtures.map((fixture) => fixture.id).sort(),
+    );
+  });
+
+  for (const fixture of fixtures) {
+    it(fixture.id, async () => {
+      const head = differentialResult(
+        await analyzeAstro(fixture.routeFile, fixture.source),
+      );
+      expect(narrowerThanBase(head, baseline.astro[fixture.id]!)).toBeNull();
     });
   }
 });

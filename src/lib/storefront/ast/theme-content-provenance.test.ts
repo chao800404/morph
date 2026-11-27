@@ -17,6 +17,12 @@ import {
   startTwin,
 } from "@/lib/test-utils/astro-b1-samples";
 import {
+  differentialResult,
+  narrowerThanBase,
+  startDifferentialFixtures,
+} from "@/lib/test-utils/provenance-differential";
+import { PROVENANCE_TAINT_BASELINE_51AD77B } from "@/lib/test-utils/provenance-taint-baseline-51ad77b";
+import {
   findB1WriteProvenanceFailure,
   analyzeB1Route,
   type B1Claim,
@@ -591,14 +597,13 @@ describe("destructuring taints the stored value the local can reach (Start)", ()
             path: routeFile,
             content: startTwin(
               `${DESTRUCTURE_HOME}${testCase.body}`,
-              "<Hero {...hero} />",
+              testCase.jsx ?? "<Hero {...hero} />",
             ),
           },
         ],
         routeFile,
       );
-      expect(analysis.taints).toContain(testCase.taint);
-      if (testCase.wrong) expect(analysis.taints).not.toContain(testCase.wrong);
+      if (testCase.taint) expect(analysis.taints).toContain(testCase.taint);
       expect(
         analysis.instances.map((instance) => ({
           name: instance.componentName,
@@ -606,6 +611,26 @@ describe("destructuring taints the stored value the local can reach (Start)", ()
           claims: claimedFields(instance.claims),
         })),
       ).toEqual(testCase.expected);
+    });
+  }
+});
+
+describe("the taint pass is never narrower than 51ad77b (Start)", () => {
+  const baseline = PROVENANCE_TAINT_BASELINE_51AD77B;
+  const fixtures = startDifferentialFixtures();
+
+  it("the baseline covers every shared fixture", () => {
+    expect(Object.keys(baseline.start).sort()).toEqual(
+      fixtures.map((fixture) => fixture.id).sort(),
+    );
+  });
+
+  for (const fixture of fixtures) {
+    it(fixture.id, () => {
+      const head = differentialResult(
+        analyzeB1Route(fixture.files, fixture.routeFile),
+      );
+      expect(narrowerThanBase(head, baseline.start[fixture.id]!)).toBeNull();
     });
   }
 });

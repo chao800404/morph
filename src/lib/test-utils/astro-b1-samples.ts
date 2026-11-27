@@ -523,19 +523,26 @@ export const ASTRO_SAMPLES_ENDING_AT_NESTED_JSX = [
  * an unrelated field and leave the changed one claimable). Each case renders
  * `<Hero {...hero} />` after `home` and `{ hero }` are read, so a taint that
  * reaches `hero.title` leaves Hero with no claims. Expectations are
- * handwritten: `taint` is the key the case must record, `wrong` the key the
- * old analysis recorded instead (asserted absent where it differs).
+ * handwritten: `taint` is the key the case must record (null: none in
+ * particular, only the claims are pinned), `before` the key 51ad77b recorded
+ * at the wrong path. That key is still recorded (the pass is never narrower
+ * than it was), so it is documentation, not an assertion.
  *
  * Computed keys and array positions are unknown, so their taints are widened
  * to "something inside the parent may change" (`in|…`), never narrowed.
+ *
+ * The X cases are review findings on fca14f7 (each claimed a field the code
+ * changes); they render `jsx` instead.
  */
 export type DestructureTaintCase = Readonly<{
   id: string;
   title: string;
   /** Statements after `home` and `{ hero }` are read. */
   body: string;
-  taint: string;
-  wrong: string | null;
+  /** Rendered after `body`; `<Hero {...hero} />` when absent. */
+  jsx?: string;
+  taint: string | null;
+  before: string | null;
   expected: readonly AstroB1Summary[];
 }>;
 
@@ -548,7 +555,7 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     title: "a defaulted property keeps its own key",
     body: 'const { hero: h = {} } = home;\nh.title = "x";\n',
     taint: "set|page:hero.title",
-    wrong: "set|page:title",
+    before: "set|page:title",
     expected: [HERO_NONE],
   },
   {
@@ -556,7 +563,7 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     title: "a nested defaulted property keeps every key",
     body: 'const { hero: { title: t = "" } = {} } = home;\nt.length = 0;\n',
     taint: "set|page:hero.title.length",
-    wrong: "set|page:length",
+    before: "set|page:length",
     expected: [HERO_NONE],
   },
   {
@@ -564,7 +571,7 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     title: "a nested object rest stays at its parent",
     body: 'const { hero: { desc: _d, ...r } } = home;\nr.title = "x";\n',
     taint: "set|page:hero.title",
-    wrong: "set|page:title",
+    before: "set|page:title",
     expected: [HERO_NONE],
   },
   {
@@ -572,7 +579,7 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     title: "a top-level object rest stays at the root (already right)",
     body: 'const { card: _c, ...rest } = home;\nrest.hero.title = "x";\n',
     taint: "set|page:hero.title",
-    wrong: null,
+    before: null,
     expected: [HERO_NONE],
   },
   {
@@ -580,7 +587,7 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     title: "a computed top-level key taints the whole root",
     body: 'const key = "hero";\nconst { [key]: v } = home;\nv.title = "x";\n',
     taint: "in|page:",
-    wrong: "set|page:title",
+    before: "set|page:title",
     expected: [HERO_NONE],
   },
   {
@@ -588,7 +595,7 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     title: "a computed nested key taints its whole parent",
     body: 'const k = "title";\nconst { hero: { [k]: v } } = home;\nv.x = 1;\n',
     taint: "in|page:hero",
-    wrong: "set|page:x",
+    before: "set|page:x",
     expected: [HERO_NONE],
   },
   {
@@ -596,7 +603,7 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     title: "a defaulted array element taints its whole array",
     body: 'const { hero: [first = {}] } = home;\nfirst.title = "x";\n',
     taint: "in|page:hero",
-    wrong: "set|page:title",
+    before: "set|page:title",
     expected: [HERO_NONE],
   },
   {
@@ -604,7 +611,7 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     title: "an array rest taints its whole array",
     body: 'const { hero: [, ...items] } = home;\nitems.title = "x";\n',
     taint: "in|page:hero",
-    wrong: "set|page:title",
+    before: "set|page:title",
     expected: [HERO_NONE],
   },
   {
@@ -613,7 +620,110 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
       "a defaulted string handed to a call taints that string, not the root",
     body: 'const { hero: { title: t = "" } = {} } = home;\nconsole.log(t);\n',
     taint: "in|page:hero.title",
-    wrong: "in|page:",
+    before: "in|page:",
     expected: [HERO_NONE],
+  },
+  {
+    id: "X0a",
+    title: "control: Card claims card.title when nothing changes it",
+    body: "",
+    jsx: "<Card {...home.card} />",
+    taint: null,
+    before: null,
+    expected: [CARD_BOTH],
+  },
+  {
+    id: "X0b",
+    title: "control: an explicit hero.title prop is claimed",
+    body: "",
+    jsx: "<Hero title={hero.title} />",
+    taint: null,
+    before: null,
+    expected: [{ name: "Hero", section: "hero", claims: ["hero.title"] }],
+  },
+  {
+    id: "X1",
+    title: "both branches of a conditional are traced",
+    body:
+      "const { hero: h = {}, card: c = {} } = home;\n" +
+      "const chosen = Math.random() > 0.5 ? h : c;\n" +
+      'Object.assign(chosen, { title: "override" });\n',
+    jsx: "<Card {...home.card} />",
+    taint: "in|page:card",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "X1b",
+    title: "both branches are traced for plain locals too (51ad77b missed it)",
+    body:
+      "const h = home.hero;\nconst c = home.card;\n" +
+      "const chosen = Math.random() > 0.5 ? h : c;\n" +
+      'Object.assign(chosen, { title: "override" });\n',
+    jsx: "<Card {...home.card} />",
+    taint: "in|page:card",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "X2",
+    title: "a spread fallback can alias a sibling slot",
+    body:
+      "const { missing: { card: c } = { ...home } } = home;\n" +
+      'Object.assign(c, { title: "override" });\n',
+    jsx: "<Card {...home.card} />",
+    taint: "in|page:",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "X3",
+    title: "a replaced prototype taints the whole root",
+    body:
+      "home.__proto__ = { get alternate() { return this.card; } };\n" +
+      "const { alternate: c = {} } = home;\n" +
+      'Object.assign(c, { title: "override" });\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "X3b",
+    title: "a write into a prototype taints the whole root too",
+    body: "Object.assign(Object.prototype, { get alternate() { return 1; } });\n",
+    taint: "page:*",
+    before: null,
+    expected: [HERO_NONE],
+  },
+  {
+    id: "X3c",
+    title: "control: reading a prototype method changes nothing",
+    body: 'const own = Object.prototype.hasOwnProperty.call({}, "x");\n',
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+  {
+    id: "X4",
+    title: "a copy of a copy still shares the nested values",
+    body:
+      "const { ...rest } = home;\n" +
+      "const copy = { ...rest };\n" +
+      'copy.hero.title = "override";\n',
+    jsx: "<Hero {...home.hero} />",
+    taint: "set|page:hero.title",
+    before: null,
+    expected: [HERO_NONE],
+  },
+  {
+    id: "X5",
+    title: "a destructuring assignment target is a write",
+    body: '({ a: hero.title = "override" } = {});\n',
+    jsx: "<Hero title={hero.title} />",
+    taint: "set|page:hero.title",
+    before: "in|page:hero.title",
+    // No claim left, so no section either.
+    expected: [{ name: "Hero", section: null, claims: [] }],
   },
 ];

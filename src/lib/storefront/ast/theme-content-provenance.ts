@@ -471,18 +471,137 @@ function destructuringKey(property: AnyNode): string | null {
 }
 
 /**
+ * A default that creates a value no one else holds: a primitive literal, an
+ * expression-free template, or an object or array literal made only of those
+ * (no spread, shorthand, method, getter, computed key or `__proto__`).
+ */
+function isFreshLiteral(node: AnyNode | null | undefined): boolean {
+  if (!node) return false;
+  const value = unwrapTs(node);
+  switch (value.type) {
+    case "StringLiteral":
+    case "NumericLiteral":
+    case "BooleanLiteral":
+    case "NullLiteral":
+    case "BigIntLiteral":
+      return true;
+    case "Identifier":
+      return value.name === "undefined";
+    case "TemplateLiteral":
+      return (value.expressions ?? []).length === 0;
+    case "ArrayExpression":
+      return (value.elements ?? []).every(
+        (element) => element === null || isFreshLiteral(element),
+      );
+    case "ObjectExpression":
+      return (value.properties ?? []).every(
+        (property) =>
+          property.type === "ObjectProperty" &&
+          !property.computed &&
+          !property.shorthand &&
+          destructuringKey(property) !== null &&
+          !UNSAFE_OBJECT_KEYS.has(destructuringKey(property) ?? "") &&
+          isFreshLiteral(property.value),
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Keys through which one stored value can stand for another (an inherited
+ * getter, a replaced prototype). A taint on a path through one of them can
+ * land anywhere under its root.
+ */
+const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
+/**
+ * Whether a module can change what a property read returns without writing
+ * through a traced path (an inherited getter, a replaced prototype):
+ * `__proto__` anywhere, a `setPrototypeOf` call, or a write into a
+ * `.prototype` (`X.prototype.y = …`, or `X.prototype` handed to a call such
+ * as `Object.assign` or `Object.defineProperty`). Reads such as
+ * `Object.prototype.hasOwnProperty.call(…)` do not count. Such a module
+ * taints every root it reads (fail closed).
+ */
+function changesPrototypes(
+  ast: ParsedThemeAst,
+  oracle: B1ScopeOracle,
+): boolean {
+  const writesThrough = (member: AnyNode): boolean => {
+    // Climb `X.prototype.a.b` to its outermost member, then ask how it is used.
+    let cursor = member;
+    let parent = oracle.parentOf(cursor);
+    while (isMember(parent) && parent.object === cursor) {
+      cursor = parent;
+      parent = oracle.parentOf(cursor);
+    }
+    if (!parent) return false;
+    if (cursor === member && isCall(parent) && parent.callee !== cursor) {
+      return true; // `f(X.prototype)`: the call may change it.
+    }
+    if (cursor === member) {
+      // `X.prototype` used as a value elsewhere (assigned, returned, …).
+      return !(isMember(parent) || parent.type === "ExpressionStatement");
+    }
+    return (
+      (parent.type === "AssignmentExpression" && parent.left === cursor) ||
+      parent.type === "UpdateExpression" ||
+      (parent.type === "UnaryExpression" && parent.operator === "delete") ||
+      ((parent.type === "ForInStatement" || parent.type === "ForOfStatement") &&
+        parent.left === cursor) ||
+      parent.type === "AssignmentPattern" ||
+      parent.type === "ArrayPattern" ||
+      parent.type === "RestElement" ||
+      (parent.type === "ObjectProperty" &&
+        oracle.parentOf(parent)?.type === "ObjectPattern") ||
+      (isCall(parent) && parent.callee !== cursor)
+    );
+  };
+  const visit = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(visit);
+    if (!value || typeof value !== "object") return false;
+    const node = value as AnyNode;
+    if (typeof node.type !== "string") return false;
+    if (node.type === "Identifier" && node.name === "__proto__") return true;
+    if (node.type === "StringLiteral" && node.value === "__proto__")
+      return true;
+    if (isMember(node)) {
+      const key = staticKey(node);
+      if (key === "setPrototypeOf") return true;
+      if (key === "prototype" && writesThrough(node)) return true;
+    }
+    return Object.entries(node).some(
+      ([key, child]) =>
+        key !== "loc" &&
+        key !== "leadingComments" &&
+        key !== "trailingComments" &&
+        key !== "innerComments" &&
+        visit(child),
+    );
+  };
+  return visit(ast.program);
+}
+
+/**
  * Where a destructured local sits under its initializer, for the taint pass
  * only (the resolver refuses these patterns through `patternPathTo`). A taint
- * must land on the stored value the local can reach, never on its parent's
- * path, or the changed field stays claimable:
+ * must reach the stored value the local can reach; one recorded only at the
+ * initializer's path lands on an unrelated field and leaves the changed one
+ * claimable:
  *
- * - A default (`{ a: b = d }`) keeps `a`: when `a` exists the local is that
- *   stored value; otherwise it is the default, which is not stored.
+ * - A default (`{ a: b = d }`) keeps `a` only when `d` is a fresh literal
+ *   (see `isFreshLiteral`): the local is then the stored value at `a` or a
+ *   new value nobody else holds. Any other default could alias another
+ *   stored value, so the local is widened to the object it was taken from.
  * - An object rest (`{ a, ...rest }`) is a shallow copy with the same keys
  *   below it, so it stays at its parent's path.
  * - A computed key (`{ [k]: v }`) or an array position (`[x]`, `[x = d]`,
  *   `[...r]`) is not known: `exact` is false, and whatever the local reaches
  *   is somewhere inside `keys`, so its taints are widened to all of `keys`.
+ *
+ * The caller also keeps the taints the local caused before this function
+ * existed (at its initializer's path), so the result is never narrower.
  */
 function taintPathTo(
   pattern: AnyNode | null | undefined,
@@ -503,10 +622,14 @@ function taintPathTo(
         if (inner) return inner;
         continue;
       }
-      const inner = taintPathTo(property.value, target);
+      const value = property.type === "ObjectProperty" ? property.value : null;
+      const inner = taintPathTo(value, target);
       if (!inner) continue;
       const key = destructuringKey(property);
       if (key === null) return { keys: [], exact: false };
+      if (value?.type === "AssignmentPattern" && !isFreshLiteral(value.right)) {
+        return { keys: [], exact: false };
+      }
       return { keys: [key, ...inner.keys], exact: inner.exact };
     }
     return null;
@@ -901,16 +1024,76 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
     return { node: cursor, parent };
   };
 
-  const visited = new Set<AnyNode>();
+  /** Whether a member expression is written by a destructuring pattern. */
+  const isPatternTarget = (member: AnyNode): boolean => {
+    const holder = oracle.parentOf(member);
+    if (!holder) return false;
+    switch (holder.type) {
+      case "AssignmentPattern":
+        return holder.left === member;
+      case "ObjectProperty":
+        return (
+          holder.value === member &&
+          oracle.parentOf(holder)?.type === "ObjectPattern"
+        );
+      case "ArrayPattern":
+        return true;
+      case "RestElement":
+        return holder.argument === member;
+      default:
+        return false;
+    }
+  };
+  // A module that can change what a property read returns (an inherited
+  // getter, a replaced prototype) can make any traced path stand for any
+  // other under the same root: every root this module reads is tainted.
+  if (changesPrototypes(ctx.ast, oracle)) {
+    if (ctx.contentBinding) taints.add(taintKey("content", null));
+    if (ctx.morphBinding) taints.add(taintKey("page", null));
+    if (ctx.routeBinding) taints.add(taintKey("loader", null));
+  }
+
+  /**
+   * Visits per node, keyed by root, path and the widening in effect: the
+   * same expression reached as two different values (`c ? a : b`) is traced
+   * once for each. Past `MAX_VISITS_PER_NODE` keys the node taints its whole
+   * root instead (a path that keeps growing through a cycle).
+   */
+  const MAX_VISITS_PER_NODE = 32;
+  const visited = new Map<AnyNode, Set<string>>();
   let record = (key: string): void => {
     taints.add(key);
   };
+  /** Bindings whose widening is in effect, innermost last. */
+  const widening: AnyNode[] = [];
+  const wideningIds = new Map<AnyNode, number>();
+  const wideningKey = () =>
+    widening
+      .map((id) => {
+        let n = wideningIds.get(id);
+        if (n === undefined) {
+          n = wideningIds.size;
+          wideningIds.set(id, n);
+        }
+        return n;
+      })
+      .join(",");
   /**
-   * Runs `check` for a local whose place under `root` is known only to be
-   * somewhere inside `at`: any taint it records, other than one on the whole
-   * root, becomes "something inside `at` may change".
+   * Runs `check` for the local `id` whose place under `root` is known only to
+   * be somewhere inside `at`: any taint it records, other than one on the
+   * whole root, becomes "something inside `at` may change".
    */
-  const widenedTo = (root: B1Root, at: string[], check: () => void): void => {
+  const widenedTo = (
+    id: AnyNode,
+    root: B1Root,
+    at: string[],
+    check: () => void,
+  ): void => {
+    if (widening.includes(id)) {
+      // The local flows back into its own initializer: give up on it.
+      record(taintKey(root, null));
+      return;
+    }
     const outer = record;
     const wholeRoot = taintKey(root, null);
     let reached = false;
@@ -918,9 +1101,11 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
       if (key === wholeRoot) outer(key);
       else reached = true;
     };
+    widening.push(id);
     try {
       check();
     } finally {
+      widening.pop();
       record = outer;
     }
     if (reached) outer(taintKey(root, at, "in"));
@@ -931,15 +1116,31 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
     root: B1Root,
     path: readonly string[] | null,
   ): void => {
-    if (visited.has(start)) return;
-    visited.add(start);
-    const { node, parent } = parentSkippingTs(start);
     const taint = (at: readonly string[] | null): void => {
-      record(taintKey(root, at, "in"));
+      record(
+        taintKey(
+          root,
+          at?.some((key) => UNSAFE_OBJECT_KEYS.has(key)) ? null : at,
+          "in",
+        ),
+      );
     };
     const replaced = (at: readonly string[] | null): void => {
-      record(taintKey(root, at, "set"));
+      record(
+        taintKey(
+          root,
+          at?.some((key) => UNSAFE_OBJECT_KEYS.has(key)) ? null : at,
+          "set",
+        ),
+      );
     };
+    const visitKey = `${root}|${wideningKey()}|${path === null ? "*" : JSON.stringify(path)}`;
+    const seen = visited.get(start) ?? new Set<string>();
+    if (seen.has(visitKey)) return;
+    if (seen.size >= MAX_VISITS_PER_NODE) return taint(null);
+    seen.add(visitKey);
+    visited.set(start, seen);
+    const { node, parent } = parentSkippingTs(start);
     if (!parent) return taint(path);
     switch (parent.type) {
       case "MemberExpression":
@@ -954,9 +1155,10 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
           (grand?.type === "UnaryExpression" && grand.operator === "delete") ||
           ((grand?.type === "ForInStatement" ||
             grand?.type === "ForOfStatement") &&
-            grand.left === parent)
+            grand.left === parent) ||
+          isPatternTarget(parent)
         ) {
-          // `x.key = …`: this object's property changes.
+          // `x.key = …` (or `({ a: x.key } = …)`): this property changes.
           return replaced(child ?? path);
         }
         if (isCall(grand) && grand.callee === parent) {
@@ -993,14 +1195,28 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
             exact: false,
           };
           const idPath = path ? [...path, ...located.keys] : null;
-          const check = () => {
+          const checkAt = (at: readonly string[] | null) => () => {
             for (const reference of binding.references) {
               if (binding.violations.includes(reference)) continue;
-              checkUse(reference, root, idPath);
+              checkUse(reference, root, at);
             }
           };
-          if (located.exact || idPath === null) check();
-          else widenedTo(root, idPath, check);
+          if (located.exact || idPath === null) checkAt(idPath)();
+          else widenedTo(id, root, idPath, checkAt(idPath));
+          // The taints this local caused before `taintPathTo` (at its
+          // initializer's path when `patternPathTo` refuses the pattern) are
+          // kept, so this pass is never narrower than it was.
+          const before = patternPathTo(idPattern, id);
+          const beforePath =
+            path && before && "keys" in before
+              ? [...path, ...before.keys]
+              : path;
+          if (
+            JSON.stringify(beforePath) !== JSON.stringify(idPath) ||
+            !located.exact
+          ) {
+            checkAt(beforePath)();
+          }
         }
         return;
       }
@@ -1009,10 +1225,15 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
         if (parent.type === "SpreadElement") {
           const container = oracle.parentOf(parent);
           if (container?.type !== "ObjectExpression") return taint(path);
+          // `{ ...x }`: a shallow copy whose nested values are x's own, so
+          // `copy.hero.title = …` changes x. Follow the copy as x (replacing
+          // one of its own properties is then over-reported, never missed).
+          return checkUse(container, root, path);
         }
-        // A shallow copy. The copy's own properties are new; values nested
-        // inside them are shared and can still be changed by whoever gets the
-        // copy, so claims are limited to `slot.field` leaves (see claims).
+        // A component's props: a shallow copy. Its own properties are new;
+        // values nested inside them are shared and can still be changed by
+        // the component, so claims are limited to `slot.field` leaves (see
+        // claims).
         return;
       }
       case "JSXExpressionContainer": {
