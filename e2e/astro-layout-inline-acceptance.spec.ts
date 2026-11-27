@@ -68,7 +68,8 @@ import {
  *    (the frame names a section, not a field);
  * 3. row 18, safely refused: the layout's section shows the layout
  *    Document's values on every page that uses the layout, a click on it is
- *    refused and writes nothing (Core claims fields only for call sites in
+ *    refused (located in Code, or said in Design) and writes nothing, with
+ *    no Inspector input (Core claims fields only for call sites in
  *    the page's own template, and refuses an Astro `layout` write as
  *    `template-kind-unsupported`). A page's own section inside the layout's
  *    slot is refused as well (no proven field). The home page is reopened
@@ -259,15 +260,35 @@ test.describe("Astro layout-shared sections and canvas editing (D3 rows 14, 18, 
     const frame = await liveFrame(page);
     await ensureSelection(page, frame);
     await frame.locator(selector).click();
+    // Two refusals, neither a Design selection: a click inside a section
+    // boundary Core does not confirm says why in Design; a click outside
+    // every boundary of the page's own template (the layout's markup) is
+    // located in Code (L1.5a), as OUTSIDE_SECTION_HINT says
+    // (astro-design-selection.ts). Which one is recorded with the run.
+    const hint = page.getByText(REFUSED_HINT).first();
+    const code = page.getByRole("textbox", { name: "Editor content" });
     await expect(
-      page.getByText(REFUSED_HINT).first(),
-      `a click on ${sectionId} says why it is not a Design selection`,
+      hint.or(code),
+      `a click on ${sectionId} is refused as a Design selection`,
     ).toBeVisible({ timeout: 60_000 });
+    const locatedInCode = await code.isVisible();
+    test.info().annotations.push({
+      type: "refusal",
+      description: `${sectionId}: ${locatedInCode ? "located in Code" : "said in Design"}`,
+    });
     await expect(astroContent(page, sectionId)).toHaveCount(0);
     await page.waitForTimeout(3_000);
     expect(record.writes.length, `a click on ${sectionId} writes nothing`).toBe(
       sent,
     );
+    if (locatedInCode) {
+      await page.getByRole("button", { name: "Design", exact: true }).click();
+      await expect(code).toBeHidden({ timeout: 60_000 });
+      await expect((await liveFrame(page)).locator(selector)).toBeVisible({
+        timeout: 120_000,
+      });
+    }
+    return locatedInCode ? "code" : "design";
   }
 
   test("an editor address naming /about's own Document opens /about, and its section edits", async ({
