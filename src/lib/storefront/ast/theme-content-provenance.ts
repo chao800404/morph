@@ -456,6 +456,71 @@ function isCall(node: AnyNode | null | undefined): node is CallNode {
   );
 }
 
+/** A destructuring property's key when it is static, else null. */
+function destructuringKey(property: AnyNode): string | null {
+  if (property.type !== "ObjectProperty") return null;
+  return property.computed
+    ? property.key?.type === "StringLiteral"
+      ? property.key.value
+      : null
+    : property.key?.type === "Identifier"
+      ? property.key.name
+      : property.key?.type === "StringLiteral"
+        ? property.key.value
+        : null;
+}
+
+/**
+ * Where a destructured local sits under its initializer, for the taint pass
+ * only (the resolver refuses these patterns through `patternPathTo`). A taint
+ * must land on the stored value the local can reach, never on its parent's
+ * path, or the changed field stays claimable:
+ *
+ * - A default (`{ a: b = d }`) keeps `a`: when `a` exists the local is that
+ *   stored value; otherwise it is the default, which is not stored.
+ * - An object rest (`{ a, ...rest }`) is a shallow copy with the same keys
+ *   below it, so it stays at its parent's path.
+ * - A computed key (`{ [k]: v }`) or an array position (`[x]`, `[x = d]`,
+ *   `[...r]`) is not known: `exact` is false, and whatever the local reaches
+ *   is somewhere inside `keys`, so its taints are widened to all of `keys`.
+ */
+function taintPathTo(
+  pattern: AnyNode | null | undefined,
+  target: AnyNode,
+): { keys: string[]; exact: boolean } | null {
+  if (pattern === target) return { keys: [], exact: true };
+  if (pattern?.type === "AssignmentPattern") {
+    return taintPathTo(pattern.left, target);
+  }
+  if (pattern?.type === "RestElement") {
+    // Reached only from an array: an object rest is handled below.
+    return taintPathTo(pattern.argument, target);
+  }
+  if (pattern?.type === "ObjectPattern") {
+    for (const property of pattern.properties ?? []) {
+      if (property.type === "RestElement") {
+        const inner = taintPathTo(property.argument, target);
+        if (inner) return inner;
+        continue;
+      }
+      const inner = taintPathTo(property.value, target);
+      if (!inner) continue;
+      const key = destructuringKey(property);
+      if (key === null) return { keys: [], exact: false };
+      return { keys: [key, ...inner.keys], exact: inner.exact };
+    }
+    return null;
+  }
+  if (pattern?.type === "ArrayPattern") {
+    for (const element of pattern.elements ?? []) {
+      if (element && taintPathTo(element, target)) {
+        return { keys: [], exact: false };
+      }
+    }
+  }
+  return null;
+}
+
 /** The keys from a declarator's pattern down to one identifier, or why not. */
 function patternPathTo(
   pattern: AnyNode | null | undefined,
@@ -479,15 +544,7 @@ function patternPathTo(
       const inner = patternPathTo(property.value, target);
       if (!inner) continue;
       if ("reason" in inner) return inner;
-      const key = property.computed
-        ? property.key?.type === "StringLiteral"
-          ? property.key.value
-          : null
-        : property.key?.type === "Identifier"
-          ? property.key.name
-          : property.key?.type === "StringLiteral"
-            ? property.key.value
-            : null;
+      const key = destructuringKey(property);
       if (key === null) return { reason: "a computed destructuring key" };
       return { keys: [key, ...inner.keys] };
     }
@@ -845,6 +902,29 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
   };
 
   const visited = new Set<AnyNode>();
+  let record = (key: string): void => {
+    taints.add(key);
+  };
+  /**
+   * Runs `check` for a local whose place under `root` is known only to be
+   * somewhere inside `at`: any taint it records, other than one on the whole
+   * root, becomes "something inside `at` may change".
+   */
+  const widenedTo = (root: B1Root, at: string[], check: () => void): void => {
+    const outer = record;
+    const wholeRoot = taintKey(root, null);
+    let reached = false;
+    record = (key) => {
+      if (key === wholeRoot) outer(key);
+      else reached = true;
+    };
+    try {
+      check();
+    } finally {
+      record = outer;
+    }
+    if (reached) outer(taintKey(root, at, "in"));
+  };
   /** Checks every use of the value `node` evaluates to (a traced object). */
   const checkUse = (
     start: AnyNode,
@@ -855,10 +935,10 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
     visited.add(start);
     const { node, parent } = parentSkippingTs(start);
     const taint = (at: readonly string[] | null): void => {
-      taints.add(taintKey(root, at, "in"));
+      record(taintKey(root, at, "in"));
     };
     const replaced = (at: readonly string[] | null): void => {
-      taints.add(taintKey(root, at, "set"));
+      record(taintKey(root, at, "set"));
     };
     if (!parent) return taint(path);
     switch (parent.type) {
@@ -903,20 +983,24 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
         };
         collect(idPattern);
         for (const id of ids) {
-          const located = patternPathTo(idPattern, id);
-          const idPath =
-            path && located && "keys" in located
-              ? [...path, ...located.keys]
-              : path;
           const binding = oracle.bindingOf(id);
           if (!binding) {
             taint(path);
             continue;
           }
-          for (const reference of binding.references) {
-            if (binding.violations.includes(reference)) continue;
-            checkUse(reference, root, idPath);
-          }
+          const located = taintPathTo(idPattern, id) ?? {
+            keys: [],
+            exact: false,
+          };
+          const idPath = path ? [...path, ...located.keys] : null;
+          const check = () => {
+            for (const reference of binding.references) {
+              if (binding.violations.includes(reference)) continue;
+              checkUse(reference, root, idPath);
+            }
+          };
+          if (located.exact || idPath === null) check();
+          else widenedTo(root, idPath, check);
         }
         return;
       }

@@ -11,6 +11,12 @@ import {
 } from "@/lib/test-utils/binding-acceptance-cases";
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
+  DESTRUCTURE_HOME,
+  DESTRUCTURE_TAINT_CASES,
+  START_FIXTURE,
+  startTwin,
+} from "@/lib/test-utils/astro-b1-samples";
+import {
   findB1WriteProvenanceFailure,
   analyzeB1Route,
   type B1Claim,
@@ -572,4 +578,34 @@ describe("server-side B1 write proof", () => {
       }),
     ).toBeNull();
   });
+});
+
+describe("destructuring taints the stored value the local can reach (Start)", () => {
+  const routeFile = "src/routes/index.tsx";
+  for (const testCase of DESTRUCTURE_TAINT_CASES) {
+    it(`${testCase.id}: ${testCase.title}`, () => {
+      const analysis = analyzeB1Route(
+        [
+          ...START_FIXTURE,
+          {
+            path: routeFile,
+            content: startTwin(
+              `${DESTRUCTURE_HOME}${testCase.body}`,
+              "<Hero {...hero} />",
+            ),
+          },
+        ],
+        routeFile,
+      );
+      expect(analysis.taints).toContain(testCase.taint);
+      if (testCase.wrong) expect(analysis.taints).not.toContain(testCase.wrong);
+      expect(
+        analysis.instances.map((instance) => ({
+          name: instance.componentName,
+          section: instance.section,
+          claims: claimedFields(instance.claims),
+        })),
+      ).toEqual(testCase.expected);
+    });
+  }
 });

@@ -516,3 +516,104 @@ export const ASTRO_SAMPLES_ENDING_AT_NESTED_JSX = [
   "F7",
   "U1",
 ] as const;
+
+/**
+ * Destructuring patterns whose local must taint the stored value it can
+ * reach, never its parent's path (a taint at the parent's path would land on
+ * an unrelated field and leave the changed one claimable). Each case renders
+ * `<Hero {...hero} />` after `home` and `{ hero }` are read, so a taint that
+ * reaches `hero.title` leaves Hero with no claims. Expectations are
+ * handwritten: `taint` is the key the case must record, `wrong` the key the
+ * old analysis recorded instead (asserted absent where it differs).
+ *
+ * Computed keys and array positions are unknown, so their taints are widened
+ * to "something inside the parent may change" (`in|…`), never narrowed.
+ */
+export type DestructureTaintCase = Readonly<{
+  id: string;
+  title: string;
+  /** Statements after `home` and `{ hero }` are read. */
+  body: string;
+  taint: string;
+  wrong: string | null;
+  expected: readonly AstroB1Summary[];
+}>;
+
+export const DESTRUCTURE_HOME =
+  'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
+
+export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
+  {
+    id: "D1",
+    title: "a defaulted property keeps its own key",
+    body: 'const { hero: h = {} } = home;\nh.title = "x";\n',
+    taint: "set|page:hero.title",
+    wrong: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "D2",
+    title: "a nested defaulted property keeps every key",
+    body: 'const { hero: { title: t = "" } = {} } = home;\nt.length = 0;\n',
+    taint: "set|page:hero.title.length",
+    wrong: "set|page:length",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "R1",
+    title: "a nested object rest stays at its parent",
+    body: 'const { hero: { desc: _d, ...r } } = home;\nr.title = "x";\n',
+    taint: "set|page:hero.title",
+    wrong: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "R2",
+    title: "a top-level object rest stays at the root (already right)",
+    body: 'const { card: _c, ...rest } = home;\nrest.hero.title = "x";\n',
+    taint: "set|page:hero.title",
+    wrong: null,
+    expected: [HERO_NONE],
+  },
+  {
+    id: "C1",
+    title: "a computed top-level key taints the whole root",
+    body: 'const key = "hero";\nconst { [key]: v } = home;\nv.title = "x";\n',
+    taint: "in|page:",
+    wrong: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "C2",
+    title: "a computed nested key taints its whole parent",
+    body: 'const k = "title";\nconst { hero: { [k]: v } } = home;\nv.x = 1;\n',
+    taint: "in|page:hero",
+    wrong: "set|page:x",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "A1",
+    title: "a defaulted array element taints its whole array",
+    body: 'const { hero: [first = {}] } = home;\nfirst.title = "x";\n',
+    taint: "in|page:hero",
+    wrong: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "A2",
+    title: "an array rest taints its whole array",
+    body: 'const { hero: [, ...items] } = home;\nitems.title = "x";\n',
+    taint: "in|page:hero",
+    wrong: "set|page:title",
+    expected: [HERO_NONE],
+  },
+  {
+    id: "K1",
+    title:
+      "a defaulted string handed to a call taints that string, not the root",
+    body: 'const { hero: { title: t = "" } = {} } = home;\nconsole.log(t);\n',
+    taint: "in|page:hero.title",
+    wrong: "in|page:",
+    expected: [HERO_NONE],
+  },
+];

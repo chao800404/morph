@@ -28,6 +28,8 @@ import {
   ASTRO_B1_SAMPLES,
   ASTRO_FIXTURE,
   ASTRO_STRICTER_THAN_START,
+  DESTRUCTURE_HOME,
+  DESTRUCTURE_TAINT_CASES,
   HERO_BOTH,
   START_FIXTURE,
   astroPage,
@@ -676,4 +678,18 @@ describe("reachability follows .astro imports", () => {
     );
     expect(summarize(analysis)).toEqual([HERO_BOTH]);
   });
+});
+
+describe("destructuring taints the stored value the local can reach (Astro)", () => {
+  for (const testCase of DESTRUCTURE_TAINT_CASES) {
+    it(`${testCase.id}: ${testCase.title}`, async () => {
+      const analysis = await analyzeAstro(
+        "src/pages/index.astro",
+        astroPage(`${DESTRUCTURE_HOME}${testCase.body}`, "<Hero {...hero} />"),
+      );
+      expect(analysis.taints).toContain(testCase.taint);
+      if (testCase.wrong) expect(analysis.taints).not.toContain(testCase.wrong);
+      expect(summarize(analysis)).toEqual(testCase.expected);
+    });
+  }
 });
