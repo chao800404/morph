@@ -4,7 +4,7 @@ import { createMorph, MorphError, type MorphFetch } from "./index";
 import { createMorphReader } from "./client";
 
 /**
- * The scoped reads: `layouts.get("default")` and
+ * The scoped reads: `layouts.get("default", { path: "/" })` and
  * `pages.get(path, { scope: "page" })`, beside the unchanged merged read.
  * The wire format is the server's (`storefront-content-read.ts`).
  */
@@ -63,7 +63,7 @@ describe("layouts.get", () => {
     const { fetch, calls } = fakeFetch(core);
     const morph = createMorph({ baseUrl: BASE, fetch });
 
-    const layout = await morph.layouts.get("default");
+    const layout = await morph.layouts.get("default", { path: "/" });
 
     expect(layout).toEqual({
       header: { title: "Shop" },
@@ -76,7 +76,7 @@ describe("layouts.get", () => {
     expect(morph.pages.isHidden(layout, "announcement")).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(
-      BASE + "/_morph/content?scope=layout&layout=default",
+      BASE + "/_morph/content?scope=layout&layout=default&path=%2F",
     );
     expect(calls[0]!.init).toMatchObject({
       method: "GET",
@@ -89,9 +89,40 @@ describe("layouts.get", () => {
     const { fetch, calls } = fakeFetch(core);
     const morph = createMorph({ baseUrl: BASE, fetch });
     for (const name of ["main", "", "Default", undefined, null, 1]) {
-      const error = await failure(morph.layouts.get(name as never));
+      const error = await failure(morph.layouts.get(name as never, { path: "/" }));
       expect(error).toMatchObject({ code: "invalid_request", resource: "page" });
     }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("reads the layout for the page being rendered, by its path", async () => {
+    const { fetch, calls } = fakeFetch(core);
+    await createMorph({ baseUrl: BASE, fetch }).layouts.get("default", {
+      path: "/pages/about us",
+    });
+    expect(calls[0]!.url).toBe(
+      BASE +
+        "/_morph/content?scope=layout&layout=default&path=%2Fpages%2Fabout%20us",
+    );
+  });
+
+  it.each([
+    ["no options", undefined, "invalid_path"],
+    ["no path", {}, "invalid_path"],
+    ["a relative path", { path: "about" }, "invalid_path"],
+    ["a long path", { path: "/" + "a".repeat(500) }, "invalid_path"],
+    ["a non-string path", { path: 1 }, "invalid_path"],
+    ["an unknown option", { path: "/", scope: "page" }, "invalid_request"],
+    ["a non-object", "/", "invalid_request"],
+  ])("refuses %s before sending anything", async (_, options, code) => {
+    const { fetch, calls } = fakeFetch(core);
+    const error = await failure(
+      createMorph({ baseUrl: BASE, fetch }).layouts.get(
+        "default",
+        options as never,
+      ),
+    );
+    expect(error).toMatchObject({ code, resource: "page" });
     expect(calls).toHaveLength(0);
   });
 
@@ -100,7 +131,7 @@ describe("layouts.get", () => {
     vi.stubGlobal("document", {});
     const { fetch, calls } = fakeFetch(core);
     const error = await failure(
-      createMorph({ baseUrl: BASE, fetch }).layouts.get("default"),
+      createMorph({ baseUrl: BASE, fetch }).layouts.get("default", { path: "/" }),
     );
     expect(error).toMatchObject({
       code: "invalid_content_origin",
@@ -129,7 +160,7 @@ describe("layouts.get", () => {
   ])("refuses %s, never reading it as the layout", async (_, body) => {
     const { fetch } = fakeFetch(() => json(body));
     const error = await failure(
-      createMorph({ baseUrl: BASE, fetch }).layouts.get("default"),
+      createMorph({ baseUrl: BASE, fetch }).layouts.get("default", { path: "/" }),
     );
     expect(error).toMatchObject({
       code: "invalid_response",
@@ -142,17 +173,13 @@ describe("layouts.get", () => {
     const notFound = fakeFetch(() => new Response("no store", { status: 404 }));
     expect(
       await failure(
-        createMorph({ baseUrl: BASE, fetch: notFound.fetch }).layouts.get(
-          "default",
-        ),
+        createMorph({ baseUrl: BASE, fetch: notFound.fetch }).layouts.get("default", { path: "/" }),
       ),
     ).toMatchObject({ code: "content_not_found", resource: "page" });
     const broken = fakeFetch(() => json({ error: "x" }, 500));
     expect(
       await failure(
-        createMorph({ baseUrl: BASE, fetch: broken.fetch }).layouts.get(
-          "default",
-        ),
+        createMorph({ baseUrl: BASE, fetch: broken.fetch }).layouts.get("default", { path: "/" }),
       ),
     ).toMatchObject({ code: "store_error", resource: "page", status: 500 });
     const reserved = fakeFetch(() =>
@@ -165,9 +192,7 @@ describe("layouts.get", () => {
     );
     expect(
       await failure(
-        createMorph({ baseUrl: BASE, fetch: reserved.fetch }).layouts.get(
-          "default",
-        ),
+        createMorph({ baseUrl: BASE, fetch: reserved.fetch }).layouts.get("default", { path: "/" }),
       ),
     ).toMatchObject({ code: "reserved_slot", resource: "page" });
   });
@@ -184,12 +209,12 @@ describe("layouts.get", () => {
     const external = await createMorph({
       baseUrl: BASE,
       fetch: fakeFetch(answer).fetch,
-    }).layouts.get("default");
+    }).layouts.get("default", { path: "/" });
     expect(external.header.logo).toBe(BASE + media);
     const hosted = await createMorphReader(
       { baseUrl: BASE, fetch: fakeFetch(answer).fetch },
       { mediaUrls: "relative" },
-    ).layouts.get("default");
+    ).layouts.get("default", { path: "/" });
     expect(hosted.header.logo).toBe(media);
   });
 
@@ -199,7 +224,7 @@ describe("layouts.get", () => {
       { baseUrl: BASE, fetch },
       { mediaUrls: "relative", renderContext: "ctx-1" },
     );
-    await reader.layouts.get("default");
+    await reader.layouts.get("default", { path: "/" });
     await reader.pages.get("/", { scope: "page" });
     await reader.pages.get("/");
     for (const call of calls) {
@@ -211,6 +236,7 @@ describe("layouts.get", () => {
     const external = fakeFetch(core);
     await createMorph({ baseUrl: BASE, fetch: external.fetch }).layouts.get(
       "default",
+      { path: "/" },
     );
     expect(
       new Headers(external.calls[0]!.init.headers).get(
@@ -261,7 +287,7 @@ describe("pages.get with { scope: \"page\" }", () => {
     const morph = createMorph({ baseUrl: BASE, fetch });
     const [merged, layout, own] = await Promise.all([
       morph.pages.get("/"),
-      morph.layouts.get("default"),
+      morph.layouts.get("default", { path: "/" }),
       morph.pages.get("/", { scope: "page" }),
     ]);
     const { _hidden: _m, ...mergedSlots } = merged;

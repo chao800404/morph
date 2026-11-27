@@ -54,14 +54,14 @@ describe("@morph/sdk/astro scoped reads", () => {
           "x-morph-render-context": "v1.pinned.sig",
         },
         async () => ({
-          layout: await morph.layouts.get("default"),
+          layout: await morph.layouts.get("default", { path: "/" }),
           own: await morph.pages.get("/about", { scope: "page" }),
           merged: await morph.pages.get("/about"),
         }),
       ),
       render(
         { "x-morph-content-origin": "http://morph-preview-content.invalid" },
-        async () => morph.layouts.get("default"),
+        async () => morph.layouts.get("default", { path: "/" }),
       ),
     ]);
 
@@ -76,7 +76,7 @@ describe("@morph/sdk/astro scoped reads", () => {
     expect(service.sent).toEqual(
       expect.arrayContaining([
         {
-          url: "https://published.example/_morph/content?scope=layout&layout=default",
+          url: "https://published.example/_morph/content?scope=layout&layout=default&path=%2F",
           context: "v1.pinned.sig",
         },
         {
@@ -88,7 +88,7 @@ describe("@morph/sdk/astro scoped reads", () => {
           context: "v1.pinned.sig",
         },
         {
-          url: "http://morph-preview-content.invalid/_morph/content?scope=layout&layout=default",
+          url: "http://morph-preview-content.invalid/_morph/content?scope=layout&layout=default&path=%2F",
           context: null,
         },
       ]),
@@ -99,7 +99,7 @@ describe("@morph/sdk/astro scoped reads", () => {
     vi.stubGlobal("fetch", contentService().fetch);
     useMorphRenders(renders);
     const error = await morph.layouts
-      .get("default")
+      .get("default", { path: "/" })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(MorphError);
     expect(error).toMatchObject({ code: "no_content_source" });

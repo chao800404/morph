@@ -10,6 +10,7 @@ export type {
   MorphFetch,
   MorphLayout,
   MorphLayoutName,
+  MorphLayoutReadOptions,
   MorphOptions,
   MorphPage,
   MorphPageReadOptions,

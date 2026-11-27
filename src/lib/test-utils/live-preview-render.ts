@@ -231,7 +231,8 @@ const morphForPreview: typeof previewReader = {
   },
   layouts: {
     ...previewReader.layouts,
-    get: (name) => asServerRead(() => previewReader.layouts.get(name)),
+    get: (name, options) =>
+      asServerRead(() => previewReader.layouts.get(name, options)),
   },
   products: {
     list: (params) => asServerRead(() => previewReader.products.list(params)),

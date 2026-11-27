@@ -233,9 +233,11 @@ describe("frozen prerender content", () => {
       },
       // The scoped reads' content, from the same documents.
       scoped: {
-        layout: { slots: { header: { title: "Frozen shell" } }, hiddenSlots: [] },
-        pages: {
+        page: {
           "/": { slots: { hero: { title: "Frozen" } }, hiddenSlots: ["hidden"] },
+        },
+        layout: {
+          "/": { slots: { header: { title: "Frozen shell" } }, hiddenSlots: [] },
         },
       },
     });
@@ -262,8 +264,8 @@ describe("frozen prerender content", () => {
     expect(await createThemePrerenderContent(data, products)).toEqual({
       content: { "/products/featured": { slots: {}, hiddenSlots: [] } },
       scoped: {
-        layout: { slots: {}, hiddenSlots: [] },
-        pages: { "/products/featured": { slots: {}, hiddenSlots: [] } },
+        page: { "/products/featured": { slots: {}, hiddenSlots: [] } },
+        layout: { "/products/featured": { slots: {}, hiddenSlots: [] } },
       },
     });
   });
@@ -386,12 +388,14 @@ describe("frozen prerender content", () => {
         },
       },
       scoped: {
-        layout: { slots: { header: { title: "Shell" } }, hiddenSlots: [] },
-        pages: {
+        page: {
           "/landing": {
             slots: { hero: { title: "Frozen" } },
             hiddenSlots: ["hidden"],
           },
+        },
+        layout: {
+          "/landing": { slots: { header: { title: "Shell" } }, hiddenSlots: [] },
         },
       },
     });
@@ -451,7 +455,7 @@ describe("a platform build's refused prerender content reads", () => {
         readFileSync: () =>
           JSON.stringify({
             content,
-            scoped: { layout: { slots: {}, hiddenSlots: [] }, pages: {} },
+            scoped: { page: {}, layout: {} },
           }),
         rmSync: (file: string) => files.delete(file),
         mkdirSync: () => undefined,

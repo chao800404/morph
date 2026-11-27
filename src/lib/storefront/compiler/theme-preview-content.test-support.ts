@@ -18,7 +18,7 @@ export function previewContentAsCoreWrites(
     pages: Record<string, unknown>;
     routes: Record<string, unknown>;
     shell: unknown;
-    scoped: unknown;
+    scopedIds: unknown;
   }> = {},
 ): ThemePreviewContentSnapshot {
   return {
@@ -33,18 +33,11 @@ export function previewContentAsCoreWrites(
     pages: { ...content.pages },
     routes: { ...content.routes },
     shell: (content.shell ?? empty()) as StorefrontContentResult,
-    // The scoped reads' entries, as Core writes them for no Document. Not
-    // derived from the merged entries above: a fixture that reads scoped
-    // content names it.
-    scoped: content.scoped ?? {
-      layout: empty(),
-      templates: {
-        index: empty(),
-        product: empty(),
-        collection: empty(),
-        page: empty(),
-        blog: empty(),
-      },
+    // The scoped reads' ids, as Core writes them for no Document. A fixture
+    // that reads scoped content names its own.
+    scopedIds: content.scopedIds ?? {
+      layout: [],
+      templates: { index: [], product: [], collection: [], page: [], blog: [] },
       pages: {},
       routes: {},
     },

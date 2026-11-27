@@ -67,13 +67,13 @@ describe("@morph/sdk/start scoped reads", () => {
           "x-morph-render-context": "v1.pinned.sig",
         },
         async () => ({
-          layout: await morph.layouts.get("default"),
+          layout: await morph.layouts.get("default", { path: "/" }),
           own: await morph.pages.get("/about", { scope: "page" }),
         }),
       ),
       serve(
         { "x-morph-content-origin": "http://morph-preview-content.invalid" },
-        async () => morph.layouts.get("default"),
+        async () => morph.layouts.get("default", { path: "/" }),
       ),
     ]);
 
@@ -90,7 +90,7 @@ describe("@morph/sdk/start scoped reads", () => {
     expect(service.sent).toEqual(
       expect.arrayContaining([
         {
-          url: "https://published.example/_morph/content?scope=layout&layout=default",
+          url: "https://published.example/_morph/content?scope=layout&layout=default&path=%2F",
           context: "v1.pinned.sig",
         },
         {
@@ -98,7 +98,7 @@ describe("@morph/sdk/start scoped reads", () => {
           context: "v1.pinned.sig",
         },
         {
-          url: "http://morph-preview-content.invalid/_morph/content?scope=layout&layout=default",
+          url: "http://morph-preview-content.invalid/_morph/content?scope=layout&layout=default&path=%2F",
           context: null,
         },
       ]),
@@ -119,7 +119,7 @@ describe("@morph/sdk/start scoped reads", () => {
 
   it("fails without the platform's source, as a page read does", async () => {
     vi.stubGlobal("fetch", contentService().fetch);
-    const error = await serve({}, () => morph.layouts.get("default")).catch(
+    const error = await serve({}, () => morph.layouts.get("default", { path: "/" })).catch(
       (e: unknown) => e,
     );
     expect(error).toBeInstanceOf(MorphError);

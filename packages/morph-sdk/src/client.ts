@@ -4,6 +4,7 @@ import type {
   MorphFetch,
   MorphLayout,
   MorphLayoutName,
+  MorphLayoutReadOptions,
   MorphOptions,
   MorphPage,
   MorphPageReadOptions,
@@ -339,6 +340,17 @@ export function createMorphReader(
       : { [MORPH_RENDER_CONTEXT_HEADER]: renderContext };
   }
 
+  /** A page path as every content read takes it. */
+  function checkPath(path: unknown): asserts path is string {
+    if (
+      typeof path !== "string" ||
+      !path.startsWith("/") ||
+      path.length > MAX_PATH_LENGTH
+    ) {
+      throw new MorphError("invalid_path", "page");
+    }
+  }
+
   /** Only `{}`, `{ scope: undefined }` and `{ scope: "page" }` are read. */
   function pageScope(options: unknown): "page" | null {
     if (options === undefined) return null;
@@ -386,11 +398,25 @@ export function createMorphReader(
       },
     },
     layouts: {
-      async get(name: MorphLayoutName): Promise<MorphLayout> {
+      async get(
+        name: MorphLayoutName,
+        options: MorphLayoutReadOptions,
+      ): Promise<MorphLayout> {
         if (name !== "default") throw new MorphError("invalid_request", "page");
+        if (options === undefined) throw new MorphError("invalid_path", "page");
+        if (!isRecord(options)) throw new MorphError("invalid_request", "page");
+        for (const key of Object.keys(options)) {
+          if (key !== "path") throw new MorphError("invalid_request", "page");
+        }
+        const path = (options as { path?: unknown }).path;
+        checkPath(path);
         if (inBrowser()) throw new MorphError("invalid_content_origin", "page");
+        // Per page: the layout as this path renders it
+        // (storefront-content-read.ts on the server).
         const answer = await request(
-          origin + "/_morph/content?scope=layout&layout=default",
+          origin +
+            "/_morph/content?scope=layout&layout=default&path=" +
+            encodeURIComponent(path),
           "page",
           contentHeaders(),
         );

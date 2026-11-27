@@ -50,6 +50,7 @@ import type {
   Morph,
   MorphLayout,
   MorphLayoutName,
+  MorphLayoutReadOptions,
   MorphPage,
   MorphPageReadOptions,
   MorphProductList,
@@ -135,8 +136,11 @@ export const morph: Morph = {
     },
   },
   layouts: {
-    async get(name: MorphLayoutName): Promise<MorphLayout> {
-      return morphForRequest().layouts.get(name);
+    async get(
+      name: MorphLayoutName,
+      options: MorphLayoutReadOptions,
+    ): Promise<MorphLayout> {
+      return morphForRequest().layouts.get(name, options);
     },
     isHidden(layout: MorphLayout, slotId: string): boolean {
       return layout._hidden.includes(slotId);

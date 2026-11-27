@@ -46,12 +46,7 @@ export async function serveBuildPreviewContent(input: {
       { status: 400, headers },
     );
   }
-  const requestedPath =
-    scoped?.scope === "page"
-      ? scoped.path
-      : scoped?.scope === "layout"
-        ? "/"
-        : (params.get("path") ?? "/");
+  const requestedPath = scoped ? scoped.path : (params.get("path") ?? "/");
   if (requestedPath.length > 500 || !requestedPath.startsWith("/")) {
     return new Response(JSON.stringify({ error: "Invalid content path." }), {
       status: 400,

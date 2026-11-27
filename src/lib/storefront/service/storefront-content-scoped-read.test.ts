@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * The SDK's scoped reads (`layouts.get("default")`,
+ * The SDK's scoped reads (`layouts.get("default", { path })`,
  * `pages.get(path, { scope: "page" })`) through every content resolver:
  *
  * - public: `StorefrontProductionService` (`/_morph/content` on the merchant
@@ -8,13 +8,15 @@
  *   publish and rollback;
  * - Build Preview: `serveBuildPreviewContent`;
  * - Live Preview: the snapshot Core writes (`createThemePreviewContentSnapshot`)
- *   answered by the resolver the preview Worker and dev server embed;
+ *   answered by the resolver the preview Worker, dev server and in-page
+ *   fetch shim embed, live edits included;
  * - prerender: the sealed content of a native and a platform build
  *   (`createNativePrerenderContent`, `createThemePrerenderContent`) answered
  *   by the generated content server and `answerSealedScopedRead`.
  *
- * Each answers the same Documents with the same body, and the legacy merged
- * read is byte for byte what it was.
+ * Each answers the same Documents with the same body, both scoped reads are
+ * cut from the same path's merged read (one slot namespace), and the legacy
+ * merged read is byte for byte what it was.
  */
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -39,7 +41,7 @@ import {
 } from "../compiler/theme-preview-content";
 import {
   buildStorefrontContent,
-  buildStorefrontPageContent,
+  buildStorefrontScopedContent,
   resolveStorefrontContent,
   type ContentRuntimePorts,
   type PublishedDocument,
@@ -47,6 +49,7 @@ import {
 import {
   storefrontContentScopedBody,
   storefrontContentScopedRead,
+  storefrontScopedContent,
 } from "./storefront-content-read";
 import { collectVisitorMediaKeys } from "./published-media-authorization";
 import { serveBuildPreviewContent } from "./build-preview/build-preview-content";
@@ -58,43 +61,36 @@ vi.mock("cloudflare:workers", () => ({ env: {} }));
 const HOST = "shop.example.com";
 const BASE = `https://${HOST}`;
 
-/** One publication's Documents: the shared layout and the home page. */
+type Doc = StorefrontPageDocument;
+const section = (
+  id: string,
+  props: Record<string, unknown>,
+  enabled = true,
+) => ({ id, type: id, enabled, props });
+
+/**
+ * One publication's Documents: the shared layout and the home page. The
+ * home page hides the layout's `footer` (one slot namespace): hidden on `/`
+ * in every read, shown on a page with no Document of its own.
+ */
 function documents(tag: string) {
   const layout = {
     version: 1,
     sections: [
-      {
-        id: "header",
-        type: "header",
-        enabled: true,
-        props: { title: `Shop ${tag}` },
-      },
+      section("header", { title: `Shop ${tag}` }),
+      section("footer", { note: `Footer ${tag}` }),
       // Hidden in the layout: never in any read's output.
-      {
-        id: "announcement",
-        type: "banner",
-        enabled: false,
-        props: { text: `Hidden sale ${tag}` },
-      },
+      section("announcement", { text: `Hidden sale ${tag}` }, false),
     ],
-  } as unknown as StorefrontPageDocument;
+  } as unknown as Doc;
   const index = {
     version: 1,
     sections: [
-      {
-        id: "hero",
-        type: "hero",
-        enabled: true,
-        props: { heading: `Home ${tag}` },
-      },
-      {
-        id: "newsletter",
-        type: "newsletter",
-        enabled: false,
-        props: { title: "x" },
-      },
+      section("hero", { heading: `Home ${tag}` }),
+      section("newsletter", { title: "x" }, false),
+      section("footer", { note: `Page footer ${tag}` }, false),
     ],
-  } as unknown as StorefrontPageDocument;
+  } as unknown as Doc;
   return { layout, index };
 }
 
@@ -111,30 +107,35 @@ const contentPorts: ContentRuntimePorts = {
   },
 };
 
-/** What each read must answer for one publication, from the runtime itself. */
+const QUERIES = {
+  merged: "path=%2F",
+  page: "path=%2F&scope=page",
+  layout: "scope=layout&layout=default&path=%2F",
+  contactPage: "path=%2Fcontact&scope=page",
+  contactLayout: "scope=layout&layout=default&path=%2Fcontact",
+  contactMerged: "path=%2Fcontact",
+} as const;
+
+/** What each read must answer for one publication. */
 function expected(id: PublicationId) {
   const { layout, index } = PUBLICATIONS[id];
-  const merged = buildStorefrontContent(
-    layout as PublishedDocument,
-    index as PublishedDocument,
-  );
+  const L = layout as PublishedDocument;
+  const D = index as PublishedDocument;
   return {
-    merged,
+    merged: buildStorefrontContent(L, D),
+    page: { scope: "page", ...buildStorefrontScopedContent("page", L, D) },
     layout: {
       scope: "layout",
       layout: "default",
-      ...buildStorefrontContent(layout as PublishedDocument, null),
+      ...buildStorefrontScopedContent("layout", L, D),
     },
-    page: {
-      scope: "page",
-      ...buildStorefrontPageContent(
-        layout as PublishedDocument,
-        index as PublishedDocument,
-      ),
-    },
-    // A path no Document describes: the shell alone merged, nothing of its own.
-    contactMerged: buildStorefrontContent(layout as PublishedDocument, null),
+    contactMerged: buildStorefrontContent(L, null),
     contactPage: { scope: "page", slots: {}, hiddenSlots: [] },
+    contactLayout: {
+      scope: "layout",
+      layout: "default",
+      ...buildStorefrontContent(L, null),
+    },
   };
 }
 
@@ -188,6 +189,7 @@ function publicSite() {
       status: response.status,
       text: await response.text(),
       etag: response.headers.get("etag"),
+      cache: response.headers.get("cache-control"),
     };
   };
   const morph = createMorph({
@@ -209,11 +211,21 @@ function wire(page: Record<string, unknown> & { _hidden: readonly string[] }) {
   return { slots, hiddenSlots: [..._hidden] };
 }
 
-describe("the scoped read query (storefront-content-read.ts)", () => {
+describe("the scoped read query: one path rule for every reader (P2-6)", () => {
   it.each([
     ["?path=/", null],
     ["?path=/about&scope=page", { scope: "page", path: "/about" }],
-    ["?scope=layout&layout=default", { scope: "layout", layout: "default" }],
+    ["?path=/about/&scope=page", { scope: "page", path: "/about" }],
+    ["?path=/about//&scope=page", { scope: "page", path: "/about" }],
+    ["?path=/&scope=page", { scope: "page", path: "/" }],
+    [
+      `?path=${encodeURIComponent("/關於/")}&scope=page`,
+      { scope: "page", path: "/關於" },
+    ],
+    [
+      "?scope=layout&layout=default&path=/about/",
+      { scope: "layout", layout: "default", path: "/about" },
+    ],
     ["?scope=merged&path=/", "invalid"],
     ["?scope=page", "invalid"],
     ["?scope=page&path=about", "invalid"],
@@ -221,9 +233,15 @@ describe("the scoped read query (storefront-content-read.ts)", () => {
     ["?scope=page&path=/&path=/x", "invalid"],
     ["?scope=page&path=/&layout=default", "invalid"],
     ["?scope=page&scope=page&path=/", "invalid"],
-    ["?scope=layout", "invalid"],
-    ["?scope=layout&layout=main", "invalid"],
-    ["?scope=layout&layout=default&path=/", "invalid"],
+    // Malformed percent-encoding in the decoded path: refused, not thrown.
+    [`?scope=page&path=${encodeURIComponent("/pages/%ZZ")}`, "invalid"],
+    [
+      `?scope=layout&layout=default&path=${encodeURIComponent("/pages/%E0%A4%A")}`,
+      "invalid",
+    ],
+    ["?scope=layout&layout=default", "invalid"],
+    ["?scope=layout&path=/", "invalid"],
+    ["?scope=layout&layout=main&path=/", "invalid"],
   ])("%s", (query, read) => {
     expect(storefrontContentScopedRead(new URLSearchParams(query))).toEqual(
       read,
@@ -231,8 +249,8 @@ describe("the scoped read query (storefront-content-read.ts)", () => {
   });
 });
 
-describe("the content runtime's scopes", () => {
-  it("splits the merged read into the layout's and the page's own, with the same keys", async () => {
+describe("scoped content: cut from the same path's merged read", () => {
+  it("splits the merged read into the layout's and the page's own sections", async () => {
     const read = (scope?: "page" | "layout") =>
       resolveStorefrontContent({
         publicationId: "pub_a",
@@ -245,46 +263,65 @@ describe("the content runtime's scopes", () => {
       await read("layout"),
       await read("page"),
     ];
-    expect(layout).toEqual({
-      slots: { header: { title: "Shop A" } },
-      hiddenSlots: ["announcement"],
-    });
     expect(own).toEqual({
       slots: { hero: { heading: "Home A" } },
-      hiddenSlots: ["newsletter"],
+      hiddenSlots: ["newsletter", "footer"],
+    });
+    expect(layout).toEqual({
+      slots: { header: { title: "Shop A" } },
+      // The page hides the layout's footer on this page (P1-1).
+      hiddenSlots: ["footer", "announcement"],
     });
     expect(merged.slots).toEqual({ ...layout.slots, ...own.slots });
     expect([...merged.hiddenSlots].sort()).toEqual(
-      [...layout.hiddenSlots, ...own.hiddenSlots].sort(),
+      [...new Set([...layout.hiddenSlots, ...own.hiddenSlots])].sort(),
     );
-    // The hidden layout section's values reach no read.
     for (const result of [merged, layout, own]) {
       expect(JSON.stringify(result)).not.toContain("Hidden sale");
+      expect(JSON.stringify(result)).not.toContain("Footer A");
     }
   });
 
-  it("reads only the layout Document for a layout read", async () => {
-    const getPublishedDocument = vi.fn(contentPorts.getPublishedDocument);
-    const getPublishedRouteDocument = vi.fn(async () => null);
-    await resolveStorefrontContent({
-      publicationId: "pub_a",
-      pathname: "/aboutus",
-      ports: { getPublishedDocument, getPublishedRouteDocument },
-      scope: "layout",
-    });
-    expect(getPublishedDocument.mock.calls).toEqual([
-      [{ publicationId: "pub_a", templateType: "layout" }],
-    ]);
-    expect(getPublishedRouteDocument).not.toHaveBeenCalled();
+  it("a page hiding a layout section hides it in the layout read of that page only (P1-1)", () => {
+    const { layout, index } = PUBLICATIONS.pub_a;
+    const onHome = buildStorefrontScopedContent(
+      "layout",
+      layout as PublishedDocument,
+      index as PublishedDocument,
+    );
+    const elsewhere = buildStorefrontScopedContent(
+      "layout",
+      layout as PublishedDocument,
+      null,
+    );
+    expect(onHome.slots).not.toHaveProperty("footer");
+    expect(onHome.hiddenSlots).toContain("footer");
+    expect(elsewhere.slots.footer).toEqual({ note: "Footer A" });
+    expect(elsewhere.hiddenSlots).not.toContain("footer");
   });
 
-  it("never emits in the page-only read what the merged read hides: one slot namespace", () => {
+  it("a page showing its own section under a layout id: the page read has the page's values, the layout read the layout's", () => {
+    const layout = {
+      sections: [{ id: "header", enabled: true, props: { title: "Shell" } }],
+    } satisfies PublishedDocument;
+    const page = {
+      sections: [{ id: "header", enabled: true, props: { title: "Own" } }],
+    } satisfies PublishedDocument;
+    expect(buildStorefrontContent(layout, page).slots).toEqual({
+      header: { title: "Own" },
+    });
+    expect(buildStorefrontScopedContent("page", layout, page).slots).toEqual({
+      header: { title: "Own" },
+    });
+    expect(buildStorefrontScopedContent("layout", layout, page).slots).toEqual(
+      { header: { title: "Shell" } },
+    );
+  });
+
+  it("never emits what the merged read hides, so media authorisation covers it unchanged", () => {
     const asset = "0f8fad5b-d9cb-469f-a165-70867728950e";
     const layout = {
-      sections: [
-        { id: "hero", enabled: false, props: {} },
-        { id: "header", enabled: true, props: { title: "Shell" } },
-      ],
+      sections: [{ id: "hero", enabled: false, props: {} }],
     } satisfies PublishedDocument;
     const page = {
       sections: [
@@ -293,20 +330,14 @@ describe("the content runtime's scopes", () => {
           enabled: true,
           props: { image: `/_storefront-media/${asset}?version=v1` },
         },
-        { id: "header", enabled: true, props: { title: "Own" } },
-        { id: "story", enabled: true, props: { body: "Text" } },
       ],
     } satisfies PublishedDocument;
-    // The layout hides hero: hidden in both reads. The page's header wins
-    // over the layout's in both.
-    const expectedOwn = {
-      slots: { header: { title: "Own" }, story: { body: "Text" } },
-      hiddenSlots: ["hero"],
-    };
-    expect(buildStorefrontContent(layout, page)).toEqual(expectedOwn);
-    expect(buildStorefrontPageContent(layout, page)).toEqual(expectedOwn);
-    // So media authorisation, derived from the merged read, covers it:
-    // the hidden hero's asset stays unpublished.
+    for (const scope of ["page", "layout"] as const) {
+      expect(buildStorefrontScopedContent(scope, layout, page)).toEqual({
+        slots: {},
+        hiddenSlots: ["hero"],
+      });
+    }
     const keys = collectVisitorMediaKeys({
       layoutDocument: layout,
       documents: [page],
@@ -317,33 +348,53 @@ describe("the content runtime's scopes", () => {
 });
 
 describe("public /_morph/content", () => {
-  it("answers the legacy merged read byte for byte as before, with the same tag", async () => {
+  it("answers the legacy merged read byte for byte as before, with the same tag and cache policy", async () => {
     const site = publicSite();
-    const answer = await site.raw("?path=%2F");
+    const answer = await site.raw("?" + QUERIES.merged);
     expect(answer.status).toBe(200);
     expect(answer.text).toBe(JSON.stringify(expected("pub_a").merged));
     expect(answer.etag).toBe('"rel_pub_a:/"');
+    expect(answer.cache).toBe("public, max-age=60, must-revalidate");
     expect(JSON.parse(answer.text)).not.toHaveProperty("scope");
   });
 
-  it("answers each scoped read naming its scope, with its own tag", async () => {
+  it("answers each scoped read naming its scope, with its own tag and the legacy cache policy (P2-7)", async () => {
     const site = publicSite();
-    const layout = await site.raw("?scope=layout&layout=default");
+    const layout = await site.raw("?" + QUERIES.layout);
     expect(JSON.parse(layout.text)).toEqual(expected("pub_a").layout);
-    expect(layout.etag).toBe('"rel_pub_a:layout:default"');
-    const page = await site.raw("?path=%2F&scope=page");
+    expect(layout.etag).toBe('"rel_pub_a:layout:default:%2F"');
+    const page = await site.raw("?" + QUERIES.page);
     expect(JSON.parse(page.text)).toEqual(expected("pub_a").page);
-    expect(page.etag).toBe('"rel_pub_a:page:/"');
-    expect(JSON.parse((await site.raw("?path=%2Fcontact&scope=page")).text))
-      .toEqual(expected("pub_a").contactPage);
+    expect(page.etag).toBe('"rel_pub_a:page:%2F"');
+    // The same window as the merged read: no new cache policy.
+    for (const answer of [layout, page]) {
+      expect(answer.cache).toBe("public, max-age=60, must-revalidate");
+    }
+    expect(JSON.parse((await site.raw("?" + QUERIES.contactLayout)).text)).toEqual(
+      expected("pub_a").contactLayout,
+    );
+  });
+
+  it("keys a scoped read by the normalised path, with an ASCII tag for any path (P2-6)", async () => {
+    const site = publicSite();
+    const slash = await site.raw("?path=%2F%2F&scope=page");
+    expect(JSON.parse(slash.text)).toEqual(expected("pub_a").page);
+    const unicode = await site.raw(
+      `?path=${encodeURIComponent("/關於/")}&scope=page`,
+    );
+    expect(unicode.status).toBe(200);
+    expect(unicode.etag).toBe(
+      `"rel_pub_a:page:${encodeURIComponent("/關於")}"`,
+    );
   });
 
   it.each([
     "?scope=unknown&path=/",
-    "?scope=layout&layout=main",
+    "?scope=layout&layout=main&path=/",
+    "?scope=layout&layout=default",
     "?scope=page",
-    "?scope=layout&layout=default&path=/",
-  ])("refuses an unusable scoped read: %s", async (query) => {
+    `?scope=page&path=${encodeURIComponent("/pages/%ZZ")}`,
+  ])("refuses an unusable scoped read with 400, never a throw: %s", async (query) => {
     const answer = await publicSite().raw(query);
     expect(answer.status).toBe(400);
     // As the endpoint's other refusals ("Invalid content path."): plain text.
@@ -354,7 +405,7 @@ describe("public /_morph/content", () => {
     const site = publicSite();
     const readAll = async () => ({
       merged: wire(await site.morph.pages.get("/")),
-      layout: wire(await site.morph.layouts.get("default")),
+      layout: wire(await site.morph.layouts.get("default", { path: "/" })),
       page: wire(await site.morph.pages.get("/", { scope: "page" })),
     });
     const strip = ({ scope: _s, layout: _l, ...rest }: Record<string, unknown>) =>
@@ -371,9 +422,13 @@ describe("public /_morph/content", () => {
     site.activate("pub_a"); // rollback
     expect(await readAll()).toEqual(forPublication("pub_a"));
 
-    const layout = await site.morph.layouts.get("default");
+    const layout = await site.morph.layouts.get("default", { path: "/" });
     expect(site.morph.layouts.isHidden(layout, "announcement")).toBe(true);
-    expect(layout).not.toHaveProperty("announcement");
+    expect(site.morph.layouts.isHidden(layout, "footer")).toBe(true);
+    const contact = await site.morph.layouts.get("default", {
+      path: "/contact",
+    });
+    expect(site.morph.layouts.isHidden(contact, "footer")).toBe(false);
   });
 });
 
@@ -388,39 +443,68 @@ describe("Build Preview /_morph/content", () => {
     });
 
   it("answers the build's publication with the public endpoint's bodies", async () => {
-    expect(await (await serve("?path=%2F")).text()).toBe(
-      JSON.stringify(expected("pub_b").merged),
+    const want = expected("pub_b");
+    expect(await (await serve("?" + QUERIES.merged)).text()).toBe(
+      JSON.stringify(want.merged),
     );
-    expect(await (await serve("?scope=layout&layout=default")).json()).toEqual(
-      expected("pub_b").layout,
+    expect(await (await serve("?" + QUERIES.layout)).json()).toEqual(
+      want.layout,
     );
-    expect(await (await serve("?path=%2F&scope=page")).json()).toEqual(
-      expected("pub_b").page,
+    expect(await (await serve("?" + QUERIES.page)).json()).toEqual(want.page);
+    expect(await (await serve("?path=%2F%2F&scope=page")).json()).toEqual(
+      want.page,
     );
-    const refused = await serve("?scope=layout");
-    expect(refused.status).toBe(400);
-    expect((await serve("?scope=layout&layout=default", "HEAD")).status).toBe(
-      200,
-    );
+    expect((await serve("?scope=layout&layout=default")).status).toBe(400);
+    expect(
+      (await serve(`?scope=page&path=${encodeURIComponent("/pages/%ZZ")}`))
+        .status,
+    ).toBe(400);
+    expect((await serve("?" + QUERIES.layout, "HEAD")).status).toBe(200);
   });
 });
 
-/** The resolver a preview Worker and dev server embed, over one snapshot. */
-function previewResolver(snapshot: unknown) {
+/** The resolver the preview embeds, over one snapshot, with its live edits. */
+function previewPage(snapshot: unknown) {
   const source = themePreviewContentModuleSource();
   const body = source
     .slice(
       source.indexOf("function templateTypeForPath"),
-      source.indexOf("export function updatePreviewContent"),
+      source.indexOf("// Below `updatePreviewContent`"),
     )
     .replace(
       "export function previewContentForPath",
       "function previewContentForPath",
+    )
+    .replace(
+      "export function updatePreviewContent",
+      "function updatePreviewContent",
     );
-  return new Function("snapshot", `${body}; return previewContentForQuery;`)(
-    JSON.parse(JSON.stringify(snapshot)),
-  ) as (params: URLSearchParams) => unknown;
+  // As the page holds it: edits apply to the current path's content.
+  return new Function(
+    "snapshot",
+    `let current = "/";
+    function currentPreviewContent() { return previewContentForPath(current); }
+    ${body};
+    return {
+      read: previewContentForQuery,
+      edit: updatePreviewContent,
+      at(path) { current = path; },
+    };`,
+  )(JSON.parse(JSON.stringify(snapshot))) as {
+    read(params: URLSearchParams): unknown;
+    edit(
+      sectionId: string,
+      props?: Record<string, unknown>,
+      enabled?: boolean,
+    ): boolean;
+    at(path: string): void;
+  };
 }
+
+const previewRead = (snapshot: unknown) => {
+  const page = previewPage(snapshot);
+  return (params: URLSearchParams) => page.read(params);
+};
 
 async function previewSnapshot(id: PublicationId) {
   const { layout, index } = PUBLICATIONS[id];
@@ -434,35 +518,120 @@ async function previewSnapshot(id: PublicationId) {
 
 describe("Live Preview: the confirmed snapshot", () => {
   it("answers every read with the public endpoint's body for the same Documents", async () => {
-    const read = previewResolver(await previewSnapshot("pub_a"));
+    const read = previewRead(await previewSnapshot("pub_a"));
     const want = expected("pub_a");
-    expect(read(new URLSearchParams("path=/"))).toEqual(want.merged);
-    expect(
-      JSON.stringify(read(new URLSearchParams("path=/"))),
-    ).toBe(JSON.stringify(want.merged));
-    expect(read(new URLSearchParams("scope=layout&layout=default"))).toEqual(
-      want.layout,
-    );
-    expect(read(new URLSearchParams("path=/&scope=page"))).toEqual(want.page);
-    expect(read(new URLSearchParams("path=/contact"))).toEqual(
-      want.contactMerged,
-    );
-    expect(read(new URLSearchParams("path=/contact&scope=page"))).toEqual(
-      want.contactPage,
-    );
-    expect(read(new URLSearchParams("scope=layout"))).toBeNull();
+    for (const key of Object.keys(QUERIES) as (keyof typeof QUERIES)[]) {
+      expect(
+        JSON.stringify(read(new URLSearchParams(QUERIES[key]))),
+        key,
+      ).toBe(JSON.stringify(want[key]));
+    }
+    expect(read(new URLSearchParams("scope=layout&layout=default"))).toBeNull();
   });
 
   it("refuses a scoped read of a snapshot written before scoped reads, and still answers its merged reads", async () => {
-    const { scoped: _scoped, ...old } = (await previewSnapshot(
+    const { scopedIds: _ids, ...old } = (await previewSnapshot(
       "pub_a",
     )) as ThemePreviewContentSnapshot;
-    const read = previewResolver(old);
-    expect(read(new URLSearchParams("path=/"))).toEqual(
+    const read = previewRead(old);
+    expect(read(new URLSearchParams(QUERIES.merged))).toEqual(
       expected("pub_a").merged,
     );
-    expect(read(new URLSearchParams("scope=layout&layout=default"))).toBeNull();
-    expect(read(new URLSearchParams("path=/&scope=page"))).toBeNull();
+    expect(read(new URLSearchParams(QUERIES.layout))).toBeNull();
+    expect(read(new URLSearchParams(QUERIES.page))).toBeNull();
+  });
+
+  it("reads back a hide and a value edit the page applied, in both scopes (P1-3)", async () => {
+    const page = previewPage(await previewSnapshot("pub_a"));
+    page.at("/");
+    page.edit("hero", undefined, false); // hide a page section
+    page.edit("header", undefined, false); // hide a layout section on this page
+    page.at("/contact");
+    page.edit("footer", { note: "Edited footer" });
+
+    const own = page.read(new URLSearchParams(QUERIES.page)) as {
+      slots: Record<string, unknown>;
+      hiddenSlots: string[];
+    };
+    expect(own.slots).not.toHaveProperty("hero");
+    expect(own.hiddenSlots).toContain("hero");
+    const layout = page.read(new URLSearchParams(QUERIES.layout)) as {
+      slots: Record<string, unknown>;
+      hiddenSlots: string[];
+    };
+    expect(layout.slots).not.toHaveProperty("header");
+    expect(layout.hiddenSlots).toContain("header");
+    const contact = page.read(new URLSearchParams(QUERIES.contactLayout)) as {
+      slots: Record<string, unknown>;
+    };
+    expect(contact.slots.footer).toEqual({ note: "Edited footer" });
+  });
+
+  it("never answers a Page without a Document from the CMS Page `preview` (P1-2)", async () => {
+    const generic = {
+      version: 1,
+      sections: [section("page-hero", { heading: "Generic" })],
+    } as unknown as Doc;
+    const previewPageDoc = {
+      version: 1,
+      sections: [
+        section("page-hero", { heading: "Draft of /pages/preview" }),
+        section("secret", { text: "only on /pages/preview" }),
+      ],
+    } as unknown as Doc;
+    const { layout } = PUBLICATIONS.pub_a;
+    const snapshot = await createThemePreviewContentSnapshot({
+      templates: [
+        { type: "layout", document: layout },
+        { type: "page", document: generic },
+      ],
+      pages: [{ handle: "preview", document: previewPageDoc }],
+    });
+    const read = previewRead(snapshot);
+    const merged = read(new URLSearchParams("path=/pages/other")) as {
+      slots: Record<string, unknown>;
+    };
+    expect(merged.slots["page-hero"]).toEqual({ heading: "Generic" });
+    expect(merged.slots).not.toHaveProperty("secret");
+    const own = read(new URLSearchParams("path=/pages/other&scope=page")) as {
+      slots: Record<string, unknown>;
+    };
+    expect(own.slots).toEqual({ "page-hero": { heading: "Generic" } });
+    // The Page itself still reads its own draft.
+    expect(
+      (read(new URLSearchParams("path=/pages/preview&scope=page")) as {
+        slots: Record<string, unknown>;
+      }).slots.secret,
+    ).toEqual({ text: "only on /pages/preview" });
+    // As public and Build Preview answer a Page without a Document.
+    const ports: ContentRuntimePorts = {
+      getPublishedDocument: async ({ templateType }) =>
+        (templateType === "page"
+          ? generic
+          : templateType === "layout"
+            ? layout
+            : null) as PublishedDocument | null,
+      getPublishedPageDocument: async ({ handle }) =>
+        (handle === "preview" ? previewPageDoc : null) as PublishedDocument | null,
+    };
+    for (const scope of [undefined, "page", "layout"] as const) {
+      const query =
+        scope === "layout"
+          ? "scope=layout&layout=default&path=/pages/other"
+          : scope === "page"
+            ? "path=/pages/other&scope=page"
+            : "path=/pages/other";
+      const runtime = await resolveStorefrontContent({
+        publicationId: "p",
+        pathname: "/pages/other",
+        ports,
+        ...(scope ? { scope } : {}),
+      });
+      const answer = read(new URLSearchParams(query)) as Record<string, unknown>;
+      expect({ slots: answer.slots, hiddenSlots: answer.hiddenSlots }).toEqual(
+        runtime,
+      );
+    }
   });
 
   it("is what the dev server's endpoint answers, refusing an unanswerable read", async () => {
@@ -496,13 +665,13 @@ describe("Live Preview: the confirmed snapshot", () => {
       });
       return { status: res.statusCode, body: JSON.parse(res.body) };
     };
-    expect(get("scope=layout&layout=default")).toEqual({
+    expect(get(QUERIES.layout)).toEqual({
       status: 200,
       body: expected("pub_b").layout,
     });
-    expect(get("path=%2F&scope=page").body).toEqual(expected("pub_b").page);
-    expect(get("path=%2F").body).toEqual(expected("pub_b").merged);
-    expect(get("scope=layout&layout=other").status).toBe(503);
+    expect(get(QUERIES.page).body).toEqual(expected("pub_b").page);
+    expect(get(QUERIES.merged).body).toEqual(expected("pub_b").merged);
+    expect(get("scope=layout&layout=other&path=%2F").status).toBe(503);
   });
 });
 
@@ -636,18 +805,26 @@ describe("prerender: the sealed snapshot", () => {
       );
       const server = prerenderServer(sealed, false);
       const want = expected(id);
-      expect(server.get("path=%2F").text).toBe(JSON.stringify(want.merged));
-      expect(server.get("scope=layout&layout=default").body).toEqual(
-        want.layout,
-      );
-      expect(server.get("path=%2F&scope=page").body).toEqual(want.page);
-      expect(server.get("path=%2Fcontact&scope=page").body).toEqual(
+      for (const key of Object.keys(QUERIES) as (keyof typeof QUERIES)[]) {
+        expect(server.get(QUERIES[key]).text, key).toBe(
+          JSON.stringify(want[key]),
+        );
+      }
+      // A trailing slash reads the same sealed path (P2-6).
+      expect(server.get("path=%2Fcontact%2F&scope=page").body).toEqual(
         want.contactPage,
       );
-      expect(server.get("path=%2Fcontact").body).toEqual(want.contactMerged);
       // Not sealed: refused and recorded, never answered.
       expect(server.get("path=%2Fmissing&scope=page").status).toBe(404);
+      expect(
+        server.get("scope=layout&layout=default&path=%2Fmissing").status,
+      ).toBe(404);
       expect(server.records()).toEqual([
+        {
+          path: "/missing",
+          reason:
+            "NATIVE_PRERENDER_PATH_NOT_SEALED: no static route of this build has this path",
+        },
         {
           path: "/missing",
           reason:
@@ -665,20 +842,32 @@ describe("prerender: the sealed snapshot", () => {
     expect(sealed).toBeDefined();
     const server = prerenderServer(sealed, true);
     const want = expected("pub_b");
-    expect(server.get("path=%2F").text).toBe(JSON.stringify(want.merged));
-    expect(server.get("scope=layout&layout=default").body).toEqual(
-      want.layout,
-    );
-    expect(server.get("path=%2F&scope=page").body).toEqual(want.page);
-    expect(server.get("scope=layout&layout=x").status).toBe(404);
+    expect(server.get(QUERIES.merged).text).toBe(JSON.stringify(want.merged));
+    expect(server.get(QUERIES.layout).body).toEqual(want.layout);
+    expect(server.get(QUERIES.page).body).toEqual(want.page);
+    expect(server.get("path=%2F%2F&scope=page").body).toEqual(want.page);
+    expect(server.get("scope=layout&layout=x&path=%2F").status).toBe(404);
     expect(server.records()[0]).toMatchObject({ path: "(invalid read)" });
   });
 
+  it("a platform build still answers the merged reads of a file sealed before scoped reads (P2-5)", async () => {
+    const sealed = await createThemePrerenderContent(
+      sealedSnapshot("pub_a"),
+      registry,
+    );
+    // The old shape: the bare path map.
+    const server = prerenderServer(sealed!.content, true);
+    expect(server.get(QUERIES.merged).text).toBe(
+      JSON.stringify(expected("pub_a").merged),
+    );
+    expect(server.get("path=%2Fnot-sealed").status).toBe(404);
+    expect(server.get(QUERIES.page).status).toBe(404);
+    expect(server.records().map((r) => r.path)).toEqual(["/not-sealed", "/"]);
+  });
+
   it("refuses every scoped read of content sealed before scoped reads, or with none", () => {
-    const read = { scope: "layout", layout: "default" } as const;
-    expect(
-      answerSealedScopedRead({}, read, "NOT_SEALED"),
-    ).toEqual({
+    const read = { scope: "layout", layout: "default", path: "/" } as const;
+    expect(answerSealedScopedRead({}, read, "NOT_SEALED")).toEqual({
       refused:
         "PRERENDER_SCOPED_CONTENT_NOT_SEALED: this build sealed no layout or page-only content",
     });
@@ -687,10 +876,7 @@ describe("prerender: the sealed snapshot", () => {
     ).toEqual({ refused: "NO_SNAPSHOT" });
     expect(
       answerSealedScopedRead(
-        {
-          scoped: { layout: { slots: {}, hiddenSlots: [] }, pages: {} },
-          unavailable: { "/x": "WHY" },
-        },
+        { scoped: { page: {}, layout: {} }, unavailable: { "/x": "WHY" } },
         { scope: "page", path: "/x" },
         "NOT_SEALED",
       ),
@@ -699,39 +885,38 @@ describe("prerender: the sealed snapshot", () => {
 });
 
 describe("one body for every resolver", () => {
-  it("preview, prerender and public agree on each read, across publish and rollback", async () => {
+  it("preview, prerender, Build Preview and public agree on each read, across publish and rollback", async () => {
     const site = publicSite();
     for (const id of ["pub_a", "pub_b", "pub_a"] as const) {
       site.activate(id);
-      const preview = previewResolver(await previewSnapshot(id));
+      const preview = previewRead(await previewSnapshot(id));
       const prerender = prerenderServer(
         await createNativePrerenderContent(sealedSnapshot(id), registry),
         false,
       );
-      for (const query of [
-        "path=%2F",
-        "path=%2F&scope=page",
-        "scope=layout&layout=default",
-        "path=%2Fcontact&scope=page",
-      ]) {
+      for (const query of Object.values(QUERIES)) {
         const publicText = (await site.raw("?" + query)).text;
         expect(JSON.stringify(preview(new URLSearchParams(query))), query).toBe(
           publicText,
         );
         expect(prerender.get(query).text, query).toBe(publicText);
+        const buildPreview = await serveBuildPreviewContent({
+          request: new Request(`https://p.invalid/_morph/content?${query}`),
+          capability: { contentPublicationId: id } as never,
+          ports: contentPorts,
+        });
+        expect(await buildPreview.text(), query).toBe(publicText);
       }
     }
   });
 
   it("the SDK refuses an old content source that ignores the scope", async () => {
-    // A source from before scoped reads answers every read merged.
     const old = createMorph({
       baseUrl: BASE,
-      fetch: async () =>
-        new Response(JSON.stringify(expected("pub_a").merged)),
+      fetch: async () => new Response(JSON.stringify(expected("pub_a").merged)),
     });
     for (const read of [
-      old.layouts.get("default"),
+      old.layouts.get("default", { path: "/" }),
       old.pages.get("/", { scope: "page" }),
     ]) {
       await expect(read).rejects.toBeInstanceOf(MorphError);
@@ -740,13 +925,37 @@ describe("one body for every resolver", () => {
     expect(wire(await old.pages.get("/"))).toEqual(expected("pub_a").merged);
   });
 
-  it("scoped bodies are the shared function's", () => {
+  it("scoped bodies and content are the shared functions'", () => {
     const content = { slots: { a: {} }, hiddenSlots: ["b"] };
     expect(
-      storefrontContentScopedBody({ scope: "layout", layout: "default" }, content),
+      storefrontContentScopedBody(
+        { scope: "layout", layout: "default", path: "/" },
+        content,
+      ),
     ).toEqual({ scope: "layout", layout: "default", ...content });
     expect(
       storefrontContentScopedBody({ scope: "page", path: "/" }, content),
     ).toEqual({ scope: "page", ...content });
+    // Self-contained: the preview and prerender servers carry them as source.
+    for (const fn of [
+      storefrontContentScopedRead,
+      storefrontContentScopedBody,
+      storefrontScopedContent,
+    ]) {
+      const copy = new Function(`return (${fn.toString()});`)();
+      expect(typeof copy).toBe("function");
+    }
+    const copy = new Function(
+      `return (${storefrontScopedContent.toString()});`,
+    )() as typeof storefrontScopedContent;
+    expect(
+      copy(
+        "layout",
+        { slots: { h: { t: 1 } }, hiddenSlots: [] },
+        { slots: { h: { t: 0 } }, hiddenSlots: [] },
+        ["h"],
+        ["h"],
+      ),
+    ).toEqual({ slots: { h: { t: 0 } }, hiddenSlots: [] });
   });
 });

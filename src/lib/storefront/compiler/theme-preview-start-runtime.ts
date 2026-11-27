@@ -203,9 +203,11 @@ export function pinnedSnapshotForRead(storage: {
 /** Options of `themePreviewStartWorkerSource`. Off unless named. */
 export type ThemePreviewWorkerOptions = Readonly<{
   /**
-   * Astro Live Preview only: pin one content snapshot per request and stamp
-   * it on the page (`runWithPinnedSnapshot`, `previewServedContentTiming`).
-   * A Start preview never sets it; its Worker is unchanged byte for byte.
+   * Pin one content snapshot per request and stamp it on the page
+   * (`runWithPinnedSnapshot`, `previewServedContentTiming`). Every Live
+   * Preview Worker sets it, Astro's and Start's, so the reads of one render
+   * (merged, page-only, layout) come from one snapshot. Off, the Worker is
+   * the one before the option, byte for byte (the frozen copy's test).
    */
   pinRequestSnapshot?: boolean;
 }>;
@@ -321,7 +323,7 @@ function contentResolverSource(): string {
  *
  * The Worker is given no bindings: there is nothing in `env` to reach.
  *
- * `options.pinRequestSnapshot` (Astro only) answers every content read of a
+ * `options.pinRequestSnapshot` (every Live Preview) answers every content read of a
  * request from one snapshot read at its entry, and stamps that snapshot on
  * the page (`ThemePreviewWorkerOptions`). Without it the output is exactly
  * what it was before the option existed (tested against a frozen copy).

@@ -625,9 +625,12 @@ export function planThemeSandboxWorkspace({
   if (startPreview) {
     queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_START_WORKER_PATH}`,
+      // One content snapshot per request, as the Astro preview pins it: a
+      // render's reads (merged, page-only, layout) never mix two snapshots.
       themePreviewStartWorkerSource(
         buildId,
         resolveThemeStartServerEntry(files),
+        { pinRequestSnapshot: true },
       ),
     );
     queueWorkspaceFile(

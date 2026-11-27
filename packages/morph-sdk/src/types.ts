@@ -23,12 +23,24 @@ export type MorphPage = {
 };
 
 /**
- * The shared layout's published content (`layouts.get`): the sections every
- * page renders inside, such as the header and footer, with no page's own.
- * The same shape as `MorphPage`, so `isHidden` reads it the same way: a
- * section the author hid in the layout is in `_hidden` and has no values.
+ * The shared layout's published content as one page renders it
+ * (`layouts.get`): the sections the layout declares, such as the header and
+ * footer, with no section of the page's own. The same shape as `MorphPage`,
+ * so `isHidden` reads it the same way: a section hidden on that page, by the
+ * layout or by the page itself, is in `_hidden` and has no values.
  */
 export type MorphLayout = MorphPage;
+
+/** How `layouts.get` reads the layout. */
+export type MorphLayoutReadOptions = Readonly<{
+  /**
+   * The page being rendered, as `pages.get` takes it. Required: layout and
+   * page share one slot namespace, so a page can hide a layout section, and
+   * only the page's own read can say so. A path with no Document of its own
+   * reads the layout as the author left it.
+   */
+  path: string;
+}>;
 
 /**
  * Which shared layout to read. One exists today, `"default"`: the store's
@@ -45,7 +57,7 @@ export type MorphPageReadOptions = Readonly<{
    * with the same id, and a section either hides stays hidden).
    *
    * `"page"`: the page's own Document only, without the layout's sections;
-   * read those with `layouts.get("default")`. A section id the layout hides
+   * read those with `layouts.get("default", { path })`. A section id the layout hides
    * stays hidden here too, as in the merged read (one slot namespace). A path with no Document of its
    * own has no page-only sections: `{ _hidden: [] }`.
    */
@@ -178,14 +190,17 @@ export type Morph = Readonly<{
   }>;
   layouts: Readonly<{
     /**
-     * The shared layout's published content (`MorphLayout`), from the same
-     * source, release and render context as `pages.get`: a page and its
-     * layout read in one render come from the same publication. Server side
-     * only, read only, failing with the same errors as `pages.get`
-     * (resource `"page"`). A name other than `"default"` throws
-     * `invalid_request`.
+     * The shared layout's published content as the page at `options.path`
+     * renders it (`MorphLayout`), from the same source, release and render
+     * context as `pages.get`. Server side only, read only, failing with the
+     * same errors as `pages.get` (resource `"page"`): a missing or bad path
+     * throws `invalid_path`; a name other than `"default"`, or options that
+     * are not `{ path }`, throw `invalid_request`.
      */
-    get(name: MorphLayoutName): Promise<MorphLayout>;
+    get(
+      name: MorphLayoutName,
+      options: MorphLayoutReadOptions,
+    ): Promise<MorphLayout>;
     /** Whether the author hid this section in the layout. */
     isHidden(layout: MorphLayout, slotId: string): boolean;
   }>;

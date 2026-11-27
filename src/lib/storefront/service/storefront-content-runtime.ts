@@ -10,6 +10,7 @@ import {
   resolvePublishedThemeMediaUrl,
   resolveThemeMediaInSlotValues,
 } from "../theme-media";
+import { storefrontScopedContent } from "./storefront-content-read";
 import {
   routeTemplatePathForRequest,
   templateTypeForRoutePath,
@@ -189,18 +190,17 @@ export async function resolvePublishedStorefrontRenderPolicy(args: {
 }
 
 /**
- * Which Documents a read returns (`storefront-content-read.ts`).
+ * Which part of a route's content a read returns (`storefront-content-read.ts`).
  *
  * - omitted: the shared layout's content with the route's laid over it, the
  *   legacy merged read every existing Theme makes;
- * - `"page"`: the merged read narrowed to the sections the route's own
- *   Document declares (`buildStorefrontPageContent`);
- * - `"layout"`: the shared layout Document alone, as a route with no Document
- *   of its own sees it. `pathname` does not change it.
+ * - `"page"`: the sections the route's own Document declares;
+ * - `"layout"`: the sections the shared layout Document declares, as this
+ *   route renders them.
  *
- * Each is derived from `buildStorefrontContent` over the same Documents the
- * merged read resolves, so they never disagree about a section's values or
- * whether it is hidden.
+ * Both scoped reads are cut from the route's merged read
+ * (`buildStorefrontScopedContent`), so they never disagree with it about a
+ * section's values or whether it is hidden.
  */
 export type StorefrontContentScope = "page" | "layout";
 
@@ -210,50 +210,51 @@ export async function resolveStorefrontContent(args: {
   ports: ContentRuntimePorts;
   scope?: StorefrontContentScope;
 }): Promise<StorefrontContentResult> {
-  if (args.scope === "layout") {
-    // The shell's Document alone: the route's is not read at all.
-    const layoutDocument = args.publicationId
-      ? await args.ports.getPublishedDocument({
-          publicationId: args.publicationId,
-          templateType: "layout",
-        })
-      : null;
-    return buildStorefrontContent(layoutDocument, null);
-  }
   const { document, layoutDocument } = await readPublishedRouteDocuments(args);
-  if (args.scope === "page") {
-    return buildStorefrontPageContent(layoutDocument, document);
+  if (args.scope) {
+    return buildStorefrontScopedContent(args.scope, layoutDocument, document);
   }
   return buildStorefrontContent(layoutDocument, document);
 }
 
+/** The section ids a Document declares, in order: what a scoped read keys. */
+export function storefrontDeclaredSectionIds(
+  document: PublishedDocument | null,
+): string[] {
+  const ids: string[] = [];
+  for (const section of document?.sections ?? []) {
+    if (typeof section?.id === "string" && section.id.length > 0) {
+      ids.push(section.id);
+    }
+  }
+  return ids;
+}
+
 /**
- * A route's page-only content: the merged content (`buildStorefrontContent`)
- * kept to the section ids the route's own Document declares.
+ * A route's scoped content (`storefrontScopedContent`), from the Documents it
+ * resolved to: cut from `buildStorefrontContent(layout, page)` and, for a
+ * layout section the page shows under its own id, the layout's own values
+ * (`buildStorefrontContent(layout, null)`).
  *
- * Narrowed from the merged read, not built from the page Document alone, so
- * it never emits what the merged read does not: layout and page share one
- * slot namespace, and a section either Document hides stays hidden here too
- * (PR-1 review item 6). Public media authorisation, which is derived from the
- * merged read (`collectVisitorMediaKeys`), therefore covers it unchanged.
+ * Narrowed from what the merged read and the layout alone emit, never built
+ * from a Document on its own, so a section either Document hides stays
+ * hidden (one slot namespace, PR-1 review item 6) and public media
+ * authorisation, which is derived from those two (`collectVisitorMediaKeys`),
+ * covers it unchanged.
  */
-export function buildStorefrontPageContent(
+export function buildStorefrontScopedContent(
+  scope: StorefrontContentScope,
   layoutDocument: PublishedDocument | null,
   document: PublishedDocument | null,
 ): StorefrontContentResult {
-  const merged = buildStorefrontContent(layoutDocument, document);
-  const own = new Set<string>();
-  for (const section of document?.sections ?? []) {
-    if (typeof section?.id === "string") own.add(section.id);
-  }
-  const slots: Record<string, Record<string, unknown>> = {};
-  for (const [id, values] of Object.entries(merged.slots)) {
-    if (own.has(id)) slots[id] = values as Record<string, unknown>;
-  }
-  return {
-    slots,
-    hiddenSlots: merged.hiddenSlots.filter((id) => own.has(id)),
-  };
+  const content = storefrontScopedContent(
+    scope,
+    buildStorefrontContent(layoutDocument, document),
+    buildStorefrontContent(layoutDocument, null),
+    storefrontDeclaredSectionIds(document),
+    storefrontDeclaredSectionIds(layoutDocument),
+  );
+  return content as StorefrontContentResult;
 }
 
 /**

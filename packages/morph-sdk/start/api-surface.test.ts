@@ -46,6 +46,7 @@ import type {
   MorphFetch,
   MorphLayout,
   MorphLayoutName,
+  MorphLayoutReadOptions,
   MorphOptions,
   MorphPage,
   MorphPageReadOptions,
@@ -148,7 +149,13 @@ describe("@morph/sdk public surface", () => {
       (page: MorphPage, slotId: string) => boolean
     >();
     expectTypeOf<Morph["layouts"]["get"]>().toEqualTypeOf<
-      (name: MorphLayoutName) => Promise<MorphLayout>
+      (
+        name: MorphLayoutName,
+        options: MorphLayoutReadOptions,
+      ) => Promise<MorphLayout>
+    >();
+    expectTypeOf<MorphLayoutReadOptions>().toEqualTypeOf<
+      Readonly<{ path: string }>
     >();
     expectTypeOf<Morph["layouts"]["isHidden"]>().toEqualTypeOf<
       (layout: MorphLayout, slotId: string) => boolean

@@ -29,8 +29,11 @@ import { legacyStartWorkerSource } from "./theme-preview-start-worker-legacy.tes
  * Option 1 of the Astro basis ack (handoff/2026-11-24/astro-basis-ack-prereq.md):
  * an Astro Live Preview's Worker reads ONE content snapshot per request, at
  * entry, answers every content read of that request from it, and names that
- * snapshot's ticket and instance on the page response. A Start preview's
- * Worker is unchanged, byte for byte.
+ * snapshot's ticket and instance on the page response. Since the SDK's
+ * scoped reads, a Start Live Preview's Worker pins the same way (a render's
+ * merged, page-only and layout reads never mix two snapshots); with the
+ * option off, the generator still writes the Worker before it, byte for byte
+ * (the Start workspace's Worker: theme-preview-start-runtime.test.ts).
  */
 
 describe("the Start preview Worker with the option off", () => {

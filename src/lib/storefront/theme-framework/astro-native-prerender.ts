@@ -254,14 +254,16 @@ function startContentServer() {
       }
       const scopedRead = storefrontContentScopedRead(url.searchParams);
       if (scopedRead !== null) {
-        const read = scopedRead === "invalid" || scopedRead.scope === "layout"
+        // The path as the merged read keys it (already normalised by the
+        // shared parser; normalised again here exactly as that read is).
+        const read = scopedRead === "invalid"
           ? scopedRead
-          : { scope: "page", path: normalizeRoutePath(scopedRead.path) };
+          : { ...scopedRead, path: normalizeRoutePath(scopedRead.path) };
         const answer = read === "invalid"
           ? { refused: "PRERENDER_CONTENT_READ_INVALID: this content read cannot be answered" }
           : answerSealedScopedRead(sealed, read, "NATIVE_PRERENDER_PATH_NOT_SEALED: no static route of this build has this path");
         if ("refused" in answer) {
-          const recorded = read === "invalid" ? "(invalid read)" : read.scope === "layout" ? "layout:" + read.layout : read.path;
+          const recorded = read === "invalid" ? "(invalid read)" : read.path;
           record(REFUSED_READS, { path: recorded, reason: answer.refused });
           res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ refused: answer.refused }));
           return;
@@ -430,11 +432,7 @@ function prerenderWrapper() {
       scope.blocked.push(url.origin);
       throw new Error("morph prerender: a request to " + url.origin + " is not allowed while prerendering");
     }
-    const read = {
-      path: url.searchParams.get("scope") === "layout" ? "layout:" + url.searchParams.get("layout") : url.searchParams.get("path"),
-      outcome: "pending",
-      status: null,
-    };
+    const read = { path: url.searchParams.get("path"), outcome: "pending", status: null };
     scope.reads.push(read);
     let response;
     try {

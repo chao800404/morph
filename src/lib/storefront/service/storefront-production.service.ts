@@ -548,12 +548,9 @@ export class StorefrontProductionService {
     if (scoped === "invalid") {
       return errorResponse(400, STOREFRONT_CONTENT_INVALID_READ);
     }
-    const requestedPath =
-      scoped?.scope === "page"
-        ? scoped.path
-        : scoped?.scope === "layout"
-          ? "/"
-          : (url.searchParams.get("path") ?? "/");
+    const requestedPath = scoped
+      ? scoped.path
+      : (url.searchParams.get("path") ?? "/");
     if (requestedPath.length > 500 || !requestedPath.startsWith("/")) {
       return errorResponse(400, "Invalid content path.");
     }
@@ -611,12 +608,14 @@ export class StorefrontProductionService {
             ? "private, no-store"
             : "public, max-age=60, must-revalidate",
           // A scoped read is another answer for the same path, so it is
-          // another entity: its tag names the scope. The legacy tag is unchanged.
+          // another entity: its tag names the scope, and its path is
+          // percent-encoded, as a header value must be ASCII. The legacy tag
+          // is unchanged.
           ETag:
             scoped?.scope === "layout"
-              ? `"${releaseId}:layout:${scoped.layout}"`
+              ? `"${releaseId}:layout:${scoped.layout}:${encodeURIComponent(requestedPath)}"`
               : scoped?.scope === "page"
-                ? `"${releaseId}:page:${requestedPath}"`
+                ? `"${releaseId}:page:${encodeURIComponent(requestedPath)}"`
                 : `"${releaseId}:${requestedPath}"`,
           // Both answers depend on the render-context header: a cache keyed on
           // the URL alone must not answer a pinned read with the active one.
