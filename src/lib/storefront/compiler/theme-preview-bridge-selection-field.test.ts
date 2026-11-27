@@ -32,9 +32,15 @@ if (typeof globalThis.CSS?.escape !== "function") {
 }
 
 const BRIDGE = themePreviewBridgeEntrySource();
-type Node = { type?: string; start?: number; end?: number } & Record<string, unknown>;
+type Node = { type?: string; start?: number; end?: number } & Record<
+  string,
+  unknown
+>;
 
-function cut(match: (node: Node) => boolean, pick: (node: Node) => Node): string {
+function cut(
+  match: (node: Node) => boolean,
+  pick: (node: Node) => Node,
+): string {
   const ast = parse(BRIDGE, { sourceType: "module", plugins: ["typescript"] });
   let found: string | null = null;
   const visit = (value: unknown) => {
@@ -99,7 +105,12 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-type Selected = { sectionId: string; section: Element; element: Element; fieldKey: string };
+type Selected = {
+  sectionId: string;
+  section: Element;
+  element: Element;
+  fieldKey: string;
+};
 
 function frame(selected: Selected | null, hiddenSlots: string[] = []) {
   const content = { slots: {} as Record<string, unknown>, hiddenSlots };
@@ -130,13 +141,21 @@ function frame(selected: Selected | null, hiddenSlots: string[] = []) {
     drawOverlays,
     updatePreviewContent,
     () => ({}),
-    (slot: Record<string, unknown>, path: string, value: unknown) => ({ ...slot, [path]: value }),
+    (slot: Record<string, unknown>, path: string, value: unknown) => ({
+      ...slot,
+      [path]: value,
+    }),
     vi.fn(),
     selectionFieldRefusal,
     previewSectionSelector,
     refused,
   ) as (message: Record<string, unknown>) => void;
-  const post = (sectionId: string, fieldKey: string, fieldPath: string, value: string) =>
+  const post = (
+    sectionId: string,
+    fieldKey: string,
+    fieldPath: string,
+    value: string,
+  ) =>
     handle({
       type: "morph:storefront-preview-update-selection-field",
       sectionId,
@@ -224,7 +243,9 @@ describe("the bridge applies a selection-field post to the section it names", ()
     post("hero", "imageSrc", "image", "/posted.jpg");
     post("hero", "heading", "heading", "Typed");
     expect(heroImage().getAttribute("src")).toBe("/stored.jpg");
-    expect(replacement.querySelector("img")!.getAttribute("src")).toBe("/stored.jpg");
+    expect(replacement.querySelector("img")!.getAttribute("src")).toBe(
+      "/stored.jpg",
+    );
     expect(updatePreviewContent).not.toHaveBeenCalled();
     expect(refused).toHaveBeenCalledTimes(2);
   });
@@ -239,7 +260,9 @@ describe("the bridge applies a selection-field post to the section it names", ()
   it("B5: writes typed text under the section the message names", () => {
     const { post, updatePreviewContent } = frame(heroSelected());
     post("hero", "heading", "heading", "Typed");
-    expect(updatePreviewContent).toHaveBeenCalledWith("hero", { heading: "Typed" });
+    expect(updatePreviewContent).toHaveBeenCalledWith("hero", {
+      heading: "Typed",
+    });
   });
 });
 
@@ -259,7 +282,7 @@ describe("the bridge says on ready that it reads the section a selection-field p
       "reportStructure",
       "window",
       "BRIDGE_CAPABILITIES",
-      `${reportReady}; reportReady();`,
+      `let bootstrapNonce = null; ${reportReady}; reportReady();`,
     )(
       { targetOrigin: "http://localhost:3000", previewSession: "s" },
       () => null,

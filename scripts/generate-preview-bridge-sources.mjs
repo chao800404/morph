@@ -55,6 +55,7 @@ const ENTRY_INPUTS = [
 const MODULES = [
   "spacing-overlay",
   "selection-taxonomy",
+  "preview-channel-bootstrap",
   "preview-protocol",
   "preview-sizing-css",
   "preview-height-reporter",

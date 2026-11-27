@@ -410,6 +410,11 @@ import {
   type LivePreviewAccessFlow,
   type LivePreviewAccessTab,
 } from "@/lib/storefront/editor/live-preview-access";
+import {
+  channelOfferMessage,
+  createPreviewChannelOffers,
+  previewSessionHash,
+} from "@/lib/storefront/editor/preview-channel-bootstrap";
 import { issueThemePreviewAccess } from "@/server/storefront/storefront-theme-preview-access.serverFn";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { EditorPreviewRuntimeMenu } from "./editor-preview-runtime-menu";
@@ -5611,15 +5616,30 @@ export function VisualEditorShell({
   const previewAccessFlowRef = useRef<{
     key: string;
     flow: LivePreviewAccessFlow;
+    /** The frame's code was issued, bound to this editor and session. */
+    issued: boolean;
+    /** The flow failed or its access ended: a late answer is for nobody. */
+    cancelled: boolean;
   } | null>(null);
+  // The offers made to the frame's documents (preview-channel-bootstrap.ts);
+  // a replaced frame, or a new session, leaves none alive.
+  const previewChannelOffersRef = useRef(createPreviewChannelOffers());
+  const previewSessionRef = useRef(stablePreviewSession);
+  if (previewSessionRef.current !== stablePreviewSession) {
+    previewSessionRef.current = stablePreviewSession;
+    previewChannelOffersRef.current.clear();
+  }
   if (
     previewAccessMode === "pv-exchange" &&
     previewKey &&
     previewAccessFlowRef.current?.key !== previewKey
   ) {
+    previewChannelOffersRef.current.clear();
     previewAccessFlowRef.current = {
       key: previewKey,
       flow: startLivePreviewAccessFlow(Date.now()),
+      issued: false,
+      cancelled: false,
     };
   }
   const framedPreviewSrc =
@@ -6000,11 +6020,17 @@ export function VisualEditorShell({
       };
       if (isLivePreviewAccessFailure(entry.flow, event, expected)) {
         entry.flow.ended = true;
+        entry.issued = false;
+        entry.cancelled = true;
+        previewChannelOffersRef.current.clear();
         failed();
         return;
       }
       if (isLivePreviewAccessEnded(event, expected)) {
         entry.flow.ended = true;
+        entry.issued = false;
+        entry.cancelled = true;
+        previewChannelOffersRef.current.clear();
         dispatchPreviewLifecycle({
           type: "server-failed",
           message: LIVE_PREVIEW_ACCESS_ENDED_NOTICE,
@@ -6018,28 +6044,37 @@ export function VisualEditorShell({
         Date.now(),
       );
       if (!binderHash) return;
-      void issueThemePreviewAccess({
-        data: {
-          storefrontId,
-          themeId,
-          flowId: entry.flow.flowId,
-          binderHash,
-        },
-      }).then(
+      void previewSessionHash(previewSessionRef.current)
+        .then((sessionHash) =>
+          issueThemePreviewAccess({
+            data: {
+              storefrontId,
+              themeId,
+              flowId: entry.flow.flowId,
+              binderHash,
+              previewSessionHash: sessionHash,
+            },
+          }),
+        )
+        .then(
         (result) => {
-          // A newer frame has its own flow; this answer is for nobody.
-          if (previewAccessFlowRef.current !== entry) return;
+          // A newer frame has its own flow; this answer is for nobody. Nor is
+          // it for a flow that failed or whose access ended meanwhile.
+          if (previewAccessFlowRef.current !== entry || entry.cancelled) return;
           if (!result.success) {
             failed();
             return;
           }
+          entry.issued = true;
           frame?.postMessage(
             livePreviewAccessCodeMessage(entry.flow, result.data.code),
             expected.origin,
           );
         },
         () => {
-          if (previewAccessFlowRef.current === entry) failed();
+          if (previewAccessFlowRef.current === entry && !entry.cancelled) {
+            failed();
+          }
         },
       );
     };
@@ -8112,6 +8147,12 @@ export function VisualEditorShell({
     () => previewKeyRef.current,
     {
       onUnconfirmableReady: () => setOlderBridgeReloaded(previewKeyRef.current),
+      acceptBootstrapNonce: (nonce) =>
+        previewChannelOffersRef.current.consume(
+          previewKeyRef.current,
+          nonce,
+          Date.now(),
+        ),
     },
   );
 
@@ -22371,6 +22412,32 @@ export function VisualEditorShell({
                     className="block size-full border-0 bg-stone-50"
                     onLoad={() => {
                       if (!previewKey) return;
+                      // A document with no channel in its URL (a link, a
+                      // form or a redirect brought it here) is offered one:
+                      // it takes it only after the preview host agrees this
+                      // editor and session opened the frame.
+                      const accessEntry = previewAccessFlowRef.current;
+                      const offeredWindow = previewIframeRef.current?.contentWindow;
+                      const offeredOrigin = previewSourceOriginRef.current;
+                      if (
+                        previewAccessMode === "pv-exchange" &&
+                        accessEntry?.issued &&
+                        accessEntry.key === previewKey &&
+                        offeredWindow &&
+                        offeredOrigin
+                      ) {
+                        offeredWindow.postMessage(
+                          channelOfferMessage({
+                            flowId: accessEntry.flow.flowId,
+                            previewSession: previewSessionRef.current,
+                            bootstrapNonce: previewChannelOffersRef.current.issue(
+                              previewKey,
+                              Date.now(),
+                            ),
+                          }),
+                          offeredOrigin,
+                        );
+                      }
                       syncPreviewViewportHeight();
                       syncPreviewSection();
                       syncPreviewSelectionMode();

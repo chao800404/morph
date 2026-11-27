@@ -65,7 +65,7 @@ describe("the bridge's basis ack", () => {
         "BRIDGE_CAPABILITIES",
         "documentNavigation",
         "servedContentReport",
-        `let editorSupportsCodeDefault = false; let editorSupportsAstroIdentity = false;
+        `let editorSupportsCodeDefault = false; let editorSupportsAstroIdentity = false; let bootstrapNonce = null;
         ${cutFunction("readyCapabilities")}
 ${cutFunction("readyServedContent")}\n${cutFunction("reportReady")}\nreportReady();`,
       )(

@@ -55,6 +55,124 @@ describe("useLivePreviewMessageBridge", () => {
   });
 });
 
+describe("a ready that carries a channel bootstrap nonce", () => {
+  const NONCE = "b".repeat(32);
+  const DOC_A = "a".repeat(32);
+  const DOC_B = "c".repeat(32);
+
+  function setup(accept: ((nonce: string) => boolean) | undefined) {
+    const previewWindow = { postMessage: vi.fn() } as unknown as Window;
+    const iframeRef = {
+      current: { contentWindow: previewWindow } as HTMLIFrameElement,
+    };
+    const rendered = renderHook(() =>
+      useLivePreviewMessageBridge(
+        firstChannel,
+        iframeRef,
+        () => "frame-1",
+        accept ? { acceptBootstrapNonce: accept } : {},
+      ),
+    );
+    const ready = (extra: Record<string, unknown>) =>
+      ({
+        origin: firstChannel.targetOrigin,
+        source: previewWindow,
+        data: {
+          type: "morph:storefront-preview-ready",
+          previewSession: firstChannel.previewSession,
+          ...extra,
+        },
+      }) as MessageEvent<unknown>;
+    return { ...rendered, ready, previewWindow };
+  }
+
+  it("is asked of the editor once, for the nonce it names", () => {
+    const accept = vi.fn(() => true);
+    const { result, ready } = setup(accept);
+    const event = ready({ previewDocument: DOC_A, bootstrapNonce: NONCE });
+    result.current.parseMessage(event);
+    // The same event read again is decided once, not asked again.
+    result.current.parseMessage(event);
+    expect(accept).toHaveBeenCalledTimes(1);
+    expect(accept).toHaveBeenCalledWith(NONCE);
+  });
+
+  it("is not taken when it names no document: it could never be confirmed", () => {
+    const accept = vi.fn(() => true);
+    const { result, ready } = setup(accept);
+    expect(
+      result.current.parseMessage(ready({ bootstrapNonce: NONCE })),
+    ).toBeNull();
+    expect(accept).not.toHaveBeenCalled();
+  });
+
+  it("is not taken when the editor made no such offer, or it expired or was used", () => {
+    const { result, ready } = setup(() => false);
+    expect(
+      result.current.parseMessage(
+        ready({ previewDocument: DOC_A, bootstrapNonce: NONCE }),
+      ),
+    ).toBeNull();
+  });
+
+  it("is not taken when the editor can accept none", () => {
+    const { result, ready } = setup(undefined);
+    expect(
+      result.current.parseMessage(
+        ready({ previewDocument: DOC_A, bootstrapNonce: NONCE }),
+      ),
+    ).toBeNull();
+  });
+
+  it("is not taken with a nonce of the wrong shape, and does not ask the editor", () => {
+    const accept = vi.fn(() => true);
+    const { result, ready } = setup(accept);
+    expect(
+      result.current.parseMessage(ready({ bootstrapNonce: "short" })),
+    ).toBeNull();
+    expect(accept).not.toHaveBeenCalled();
+  });
+
+  it("still goes through the document confirmation: an unconfirmed document is a candidate", () => {
+    const { result, ready, previewWindow } = setup(() => true);
+    // A first, id-less ready makes a verified document current later.
+    expect(
+      result.current.parseMessage(
+        ready({ previewDocument: DOC_A, bootstrapNonce: NONCE }),
+      ),
+    ).toBeNull();
+    expect(
+      (previewWindow as unknown as { postMessage: ReturnType<typeof vi.fn> })
+        .postMessage,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "morph:storefront-preview-ping" }),
+      firstChannel.targetOrigin,
+    );
+    // The ping is answered by the active document: B, not the candidate.
+    expect(
+      result.current.parseMessage({
+        origin: firstChannel.targetOrigin,
+        source: previewWindow,
+        data: {
+          type: "morph:storefront-preview-pong",
+          previewSession: firstChannel.previewSession,
+          previewDocument: DOC_B,
+          heartbeatId: 2 ** 40 + 1,
+        },
+      } as MessageEvent<unknown>),
+    ).toBeNull();
+  });
+
+  it("is a ready without one, as before, when the document had its channel in its URL", () => {
+    const accept = vi.fn(() => false);
+    const { result, ready } = setup(accept);
+    expect(result.current.parseMessage(ready({}))).toEqual({
+      type: "morph:storefront-preview-ready",
+    });
+    expect(accept).not.toHaveBeenCalled();
+  });
+});
+
 describe("useStableLivePreviewSession", () => {
   it("keeps the iframe session stable across background context refetches", () => {
     const { result, rerender } = renderHook(

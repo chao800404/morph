@@ -42,6 +42,13 @@ type ReadEvent = Readonly<{
 export type LivePreviewDocumentEvents = Readonly<{
   /** A ready from a frame on an older bridge that cannot be confirmed was not taken. */
   onUnconfirmableReady?: () => void;
+  /**
+   * Whether a nonce a ready carries is one the editor offered this frame, and
+   * is still good (preview-channel-bootstrap.ts). A document that got its
+   * channel from the editor's verified offer says it in its first ready; a
+   * ready naming any other nonce, or any when this is absent, is not taken.
+   */
+  acceptBootstrapNonce?: (nonce: string) => boolean;
 }>;
 
 /**
@@ -115,9 +122,34 @@ export function useLivePreviewMessageBridge(
         previewSession: channelRef.current.previewSession,
       });
       let read: ReadEvent = null;
+      if (
+        envelope &&
+        envelope.message.type === "morph:storefront-preview-ready" &&
+        envelope.message.bootstrapNonce !== undefined &&
+        // A bootstrap ready names its document: it is confirmed with the
+        // ping like any other, never taken as an older bridge's first ready.
+        (envelope.previewDocument === null ||
+          !eventsRef.current.acceptBootstrapNonce?.(
+            envelope.message.bootstrapNonce,
+          ))
+      ) {
+        // A document claiming a channel the editor never offered it, one
+        // whose offer ran out or was used, or one with no identity: not
+        // taken, and no document decision is made.
+        const id = `${currentKeyRef.current() ?? ""}|bootstrap-nonce`;
+        if (!loggedRef.current.has(id)) {
+          loggedRef.current.add(id);
+          console.info(
+            "[preview-document] a ready named a channel offer the editor did not make; not taken",
+          );
+        }
+        decidedRef.current.set(event, null);
+        return null;
+      }
       if (envelope) {
         const previewKey = currentKeyRef.current();
-        const isReady = envelope.message.type === "morph:storefront-preview-ready";
+        const isReady =
+          envelope.message.type === "morph:storefront-preview-ready";
         const step = classifyPreviewDocument(documentsRef.current, {
           previewKey,
           type: envelope.message.type,
@@ -172,12 +204,19 @@ export function useLivePreviewMessageBridge(
         if (verdict.kind === "candidate") {
           // Who is active in the frame? Only that document can answer.
           nextProbeRef.current = verdict.probe;
-          candidateReadyRef.current = { probe: verdict.probe, message: envelope.message };
-          if (expiryTimerRef.current !== null) clearTimeout(expiryTimerRef.current);
+          candidateReadyRef.current = {
+            probe: verdict.probe,
+            message: envelope.message,
+          };
+          if (expiryTimerRef.current !== null)
+            clearTimeout(expiryTimerRef.current);
           expiryTimerRef.current = setTimeout(() => {
             expiryTimerRef.current = null;
             const before = documentsRef.current;
-            documentsRef.current = expirePreviewDocumentCandidate(before, verdict.probe);
+            documentsRef.current = expirePreviewDocumentCandidate(
+              before,
+              verdict.probe,
+            );
             if (documentsRef.current !== before) {
               candidateReadyRef.current = null;
               console.info(
@@ -187,7 +226,10 @@ export function useLivePreviewMessageBridge(
           }, PREVIEW_DOCUMENT_CONFIRM_TIMEOUT_MS);
           postEditorToPreviewMessage(
             previewIframeRef.current?.contentWindow,
-            { type: "morph:storefront-preview-ping", heartbeatId: verdict.probe },
+            {
+              type: "morph:storefront-preview-ping",
+              heartbeatId: verdict.probe,
+            },
             channelRef.current,
           );
         }
@@ -202,7 +244,9 @@ export function useLivePreviewMessageBridge(
             clearTimeout(expiryTimerRef.current);
             expiryTimerRef.current = null;
           }
-          read = candidate ? { message: candidate.message, document: verdict } : null;
+          read = candidate
+            ? { message: candidate.message, document: verdict }
+            : null;
           frameTraceRef.current.say(
             `ready confirmed doc=${shortPresentationDocumentId(verdict.documentId)} candidate=${candidate ? "kept" : "missing"}`,
           );

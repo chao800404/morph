@@ -139,7 +139,7 @@ test.describe("an Astro island edited in Code", () => {
       await harness!.writeD1(
         `INSERT INTO storefront_themes
            (id, storefront_id, name, metadata, framework, preview_runtime, created_at, updated_at)
-         VALUES (?1, ?2, ?3, '{"starterTemplateVersion":1}', 'astro', ${previewRuntimeSql(null)}, ?4, ?4)`,
+         VALUES (?1, ?2, ?3, '{"starterTemplateVersion":1}', NULL, ${previewRuntimeSql("start")}, ?4, ?4)`,
         scope.themeId,
         scope.storefrontId,
         `astro-island-hmr-${scope.themeId}`,
@@ -148,7 +148,14 @@ test.describe("an Astro island edited in Code", () => {
     ).toBe(1);
     // Opening the Theme gives it the Start Starter's files and its templates
     // (as preview-error-recovery.spec.ts does); the Astro files then replace
-    // every Starter file.
+    // every Starter file. Two rules make the Theme start as a Start one:
+    // opening a Theme that records Astro never puts Start Starter files into
+    // it (ensureStoredStarterPreview, 87b4975), and a Starter write that needs
+    // Start is held to a Theme that records `start` (755953b). So it records
+    // Start and no framework until the editor has opened it, and is then
+    // recorded as an Astro Theme with no runtime (an Astro Theme does not
+    // record `start`, themeFrameworkAllowsPreviewRuntime), as
+    // astro-preview-container.spec.ts records its own.
     const editor = (await serverFn(page, THEMES, "getStorefrontThemeEditor", scope)) as {
       success: boolean;
       data?: { templates: Array<{ id: string; type: string }> };
@@ -156,6 +163,13 @@ test.describe("an Astro island edited in Code", () => {
     expect(editor.success, JSON.stringify(editor)).toBe(true);
     const home = editor.data!.templates.find((template) => template.type === "index");
     expect(home).toBeDefined();
+    expect(
+      await harness!.writeD1(
+        "UPDATE storefront_themes SET framework = 'astro', preview_runtime = NULL WHERE id = ?1 AND storefront_id = ?2",
+        scope.themeId,
+        scope.storefrontId,
+      ),
+    ).toBe(1);
     editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home!.id}`;
     const saved = await writeThemeFiles(page, scope, FILES);
     expect(saved.success, JSON.stringify(saved)).toBe(true);

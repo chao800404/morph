@@ -31,8 +31,38 @@ describe("documentPreviewRuntimeChannel", () => {
     expect(documentPreviewRuntimeChannel()).toEqual(first);
   });
 
+  it("starts listening for the editor's offer when the page has no channel, once", async () => {
+    const add = vi.spyOn(window, "addEventListener");
+    const { documentPreviewRuntimeChannel } =
+      await import("./preview-protocol");
+    expect(documentPreviewRuntimeChannel()).toBeNull();
+    expect(documentPreviewRuntimeChannel()).toBeNull();
+    const listened = (name: string) =>
+      add.mock.calls.filter((call) => String(call[0]) === name);
+    expect(listened("message")).toHaveLength(1);
+    expect(listened("pageshow")).toHaveLength(1);
+    add.mockRestore();
+  });
+
+  it("listens for no offer when the page was loaded with its channel", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      `/?editorOrigin=${encodeURIComponent("http://localhost:3000")}&previewSession=${SESSION}`,
+    );
+    const add = vi.spyOn(window, "addEventListener");
+    const { documentPreviewRuntimeChannel } =
+      await import("./preview-protocol");
+    expect(documentPreviewRuntimeChannel()).not.toBeNull();
+    expect(
+      add.mock.calls.filter((call) => String(call[0]) === "message"),
+    ).toHaveLength(0);
+    add.mockRestore();
+  });
+
   it("has none for a page opened without an editor", async () => {
-    const { documentPreviewRuntimeChannel } = await import("./preview-protocol");
+    const { documentPreviewRuntimeChannel } =
+      await import("./preview-protocol");
     expect(documentPreviewRuntimeChannel()).toBeNull();
   });
 });

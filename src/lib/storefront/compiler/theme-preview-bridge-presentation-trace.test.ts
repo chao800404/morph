@@ -217,7 +217,7 @@ describe("the bridge's [preview-frame] lines", () => {
       "window",
       "BRIDGE_CAPABILITIES",
       "documentPreviewIdentity",
-      `let editorSupportsCodeDefault = false; let editorSupportsAstroIdentity = false;
+      `let editorSupportsCodeDefault = false; let editorSupportsAstroIdentity = false; let bootstrapNonce = null;
       ${cutFunction("traceFrame")}\n${cutFunction("reportReady")}\nreportReady();`,
     )(
       { info: (line: string) => lines.push(line) },

@@ -766,11 +766,24 @@ export const storefrontPreviewAccessExchanges = sqliteTable(
     consumedAt: text("consumed_at"),
     /**
      * The grant this exchange ended in: the one redeem created, or an
-     * existing one it reused (addendum A4.1). For tracing only; no request
-     * is ever authorised by it. Null for exchanges that ended in none, and
-     * for every exchange recorded before this column existed.
+     * existing one it reused (addendum A4.1). It authorises no request. The
+     * one thing it answers is the channel binding below, and only together
+     * with a live check of that very grant. Null for exchanges that ended in
+     * none, and for every exchange recorded before this column existed.
      */
     resolvedGrantId: text("resolved_grant_id"),
+    /**
+     * The editor a frame's flow was opened by, and the session it framed the
+     * preview with, as the editor's own request named them (the origin) and
+     * hashed them (SHA-256 of the preview session). A preview document that
+     * has no channel in its URL asks the preview host whether an editor
+     * offering a channel is this one (preview-access.ts,
+     * `verifyPreviewAccessChannel`). Null for a tab's flow and for every
+     * exchange recorded before these columns existed: none of those binds a
+     * channel.
+     */
+    editorOrigin: text("editor_origin"),
+    sessionHash: text("session_hash"),
     ...timestamps,
   },
   (table) => [

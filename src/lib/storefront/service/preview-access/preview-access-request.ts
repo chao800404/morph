@@ -3,8 +3,12 @@ import { normalizeStorefrontHostname } from "../storefront-host-resolver";
 import { readPreviewAccessCandidates } from "./preview-access-cookies";
 import {
   PREVIEW_ACCESS_BEGIN_PATH,
+  PREVIEW_ACCESS_ACTIVATE_PATH,
+  PREVIEW_ACCESS_CHANNEL_PATH,
   PREVIEW_ACCESS_REDEEM_PATH,
+  previewAccessActivate,
   previewAccessBegin,
+  previewAccessChannel,
   previewAccessRedeem,
 } from "./preview-access-pages";
 import {
@@ -251,6 +255,12 @@ export async function handlePreviewAccessRequest(
       }
       if (url.pathname === PREVIEW_ACCESS_REDEEM_PATH) {
         return await previewAccessRedeem(request, pages);
+      }
+      if (url.pathname === PREVIEW_ACCESS_ACTIVATE_PATH) {
+        return await previewAccessActivate(request, pages);
+      }
+      if (url.pathname === PREVIEW_ACCESS_CHANNEL_PATH) {
+        return await previewAccessChannel(request, pages);
       }
     } catch {
       return plainResponse(503, "Preview access cannot be checked right now.", {

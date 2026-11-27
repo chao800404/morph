@@ -23,6 +23,8 @@ function bridgeRouting(page: {
   router?: { navigate: (options: unknown) => unknown; state?: unknown };
   /** What the document before this one recorded on its way out. */
   recorded?: string;
+  /** The page the document before this one said it left. */
+  left?: string;
   storageThrows?: boolean;
   selectionEnabled?: boolean;
 }) {
@@ -39,6 +41,7 @@ function bridgeRouting(page: {
   const channel = { previewSession: "s1" };
   const key = "morph:preview-document-navigation:s1";
   if (page.recorded !== undefined) stored.set(key, page.recorded);
+  if (page.left !== undefined) stored.set(`${key}:left`, page.left);
   const sessionStorage = {
     getItem: (name: string) => {
       if (page.storageThrows) throw new Error("denied");
@@ -309,6 +312,141 @@ describe("a page that navigates as documents (Astro)", () => {
     // Only that first request: one the editor sends after it is followed.
     page.applyEditorRoute(setRoute("/contact", 12));
     expect(page.assigned).toEqual([`${ORIGIN}/contact${QUERY}`]);
+  });
+
+  it("stays on a page the browser loaded again for Back or Forward, which no record precedes", () => {
+    vi.stubGlobal("performance", {
+      getEntriesByType: () => [{ type: "back_forward" }],
+    });
+    try {
+      const page = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+      });
+      page.applyEditorRoute(setRoute("/", 11));
+      expect(page.assigned).toEqual([]);
+      expect(page.posted[0]).toEqual({
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: 11,
+        routePath: "/about",
+      });
+      // The editor's own newer request still wins.
+      page.applyEditorRoute(setRoute("/contact", 12));
+      expect(page.assigned).toEqual([`${ORIGIN}/contact${QUERY}`]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("loads the page the editor picked when that is the first request after Back, and swallows only the resync", () => {
+    vi.stubGlobal("performance", {
+      getEntriesByType: () => [{ type: "back_forward" }],
+    });
+    try {
+      // The author left /contact for /about by Back; the editor still names /contact.
+      const resync = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+        left: "/contact",
+      });
+      resync.applyEditorRoute(setRoute("/contact", 11));
+      expect(resync.assigned).toEqual([]);
+      expect(resync.posted[0]).toMatchObject({
+        type: "morph:storefront-preview-route-applied",
+        routePath: "/about",
+      });
+      // An explicit pick of another page, settled before the document was ready.
+      const pick = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+        left: "/contact",
+      });
+      pick.applyEditorRoute(setRoute("/pricing", 12));
+      expect(pick.assigned).toEqual([`${ORIGIN}/pricing${QUERY}`]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps following links across a page the editor does not list: the resync is swallowed whatever page the author left", () => {
+    // /  ->  /products/123 (unlisted)  ->  /about, by links. The editor still
+    // has / selected, and its ready-time resync names /.
+    const page = bridgeRouting({
+      pathname: "/about",
+      navigation: "document",
+      recorded: "frame",
+      left: "/products/123",
+    });
+    page.applyEditorRoute(setRoute("/", 11));
+    expect(page.assigned).toEqual([]);
+    expect(page.posted[0]).toMatchObject({
+      type: "morph:storefront-preview-route-applied",
+      routePath: "/about",
+    });
+  });
+
+  it("swallows the resync of a restored document that names the page just left, and loads any other", () => {
+    for (const [asked, assigned] of [
+      ["/contact", []],
+      ["/pricing", [`${ORIGIN}/pricing${QUERY}`]],
+    ] as const) {
+      const page = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+        recorded: "history",
+        left: "/contact",
+      });
+      page.applyEditorRoute(setRoute(asked, 11));
+      expect(page.assigned).toEqual(assigned);
+    }
+  });
+
+  it("keeps the history record a restored document's own reload leaves behind, after a click it took long ago", () => {
+    const page = bridgeRouting({
+      pathname: "/about",
+      navigation: "document",
+      recorded: "frame",
+    });
+    page.fire("click", {
+      button: 0,
+      target: { closest: () => ({ target: "", hasAttribute: () => false }) },
+    });
+    // The restore guard, on pageshow, then the reload's pagehide.
+    page.stored.set(page.key, "history");
+    page.fire("pagehide");
+    expect(page.stored.get(page.key)).toBe("history");
+  });
+
+  it("says the page it leaves, once, for the next document, and keeps one already said", () => {
+    const page = bridgeRouting({ pathname: "/about", navigation: "document" });
+    page.fire("pagehide");
+    expect(page.stored.get(`${page.key}:left`)).toBe("/about");
+    const again = bridgeRouting({
+      pathname: "/other",
+      navigation: "document",
+      left: "/first",
+    });
+    // The record is read and taken at load; a restored document leaving again
+    // finds none of its own to overwrite.
+    expect(again.stored.has(`${again.key}:left`)).toBe(false);
+    again.fire("pagehide");
+    expect(again.stored.get(`${again.key}:left`)).toBe("/other");
+  });
+
+  it("does not take a plain load or a reload for a move of the frame's own", () => {
+    vi.stubGlobal("performance", {
+      getEntriesByType: () => [{ type: "reload" }],
+    });
+    try {
+      const page = bridgeRouting({
+        pathname: "/about",
+        navigation: "document",
+      });
+      page.applyEditorRoute(setRoute("/", 11));
+      expect(page.assigned).toEqual([`${ORIGIN}/${QUERY}`]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("the frame the editor loaded, or a reload of it, is sent to the editor's page", () => {

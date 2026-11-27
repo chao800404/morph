@@ -13,6 +13,10 @@ import {
   isPreviewSpacingOverlayMode,
   type PreviewSpacingOverlayMode,
 } from "./spacing-overlay";
+import {
+  installPreviewChannelBootstrap,
+  installPreviewDocumentRestoreGuard,
+} from "./preview-channel-bootstrap";
 
 export type { PreviewSpacingOverlayMode } from "./spacing-overlay";
 
@@ -660,6 +664,12 @@ export type PreviewToEditorMessage =
        * evidence for the basis ack only; absent everywhere else.
        */
       servedContent?: PreviewServedContent;
+      /**
+       * Said by a document that got its channel from the editor's verified
+       * offer (preview-channel-bootstrap.ts), once, in its first ready. The
+       * editor takes such a ready only for a nonce it offered.
+       */
+      bootstrapNonce?: string;
     }
   | {
       type: "morph:storefront-preview-section-presentation-ack";
@@ -1767,11 +1777,23 @@ export function parsePreviewToEditorMessage(
         value.servedContent === undefined
           ? null
           : parsePreviewServedContent(value.servedContent);
+      if (
+        value.bootstrapNonce !== undefined &&
+        !(
+          typeof value.bootstrapNonce === "string" &&
+          /^[0-9a-f]{32}$/.test(value.bootstrapNonce)
+        )
+      ) {
+        return null;
+      }
       return {
         type: value.type,
         ...(report ? { servedInstance: report } : {}),
         ...(capabilities.length > 0 ? { capabilities } : {}),
         ...(servedContent ? { servedContent } : {}),
+        ...(value.bootstrapNonce !== undefined
+          ? { bootstrapNonce: value.bootstrapNonce }
+          : {}),
       };
     }
     case "morph:storefront-preview-section-presentation-ack": {
@@ -1848,7 +1870,9 @@ export function parsePreviewToEditorMessage(
       return {
         type: value.type,
         nodes,
-        ...(value.routePath === undefined ? {} : { routePath: value.routePath }),
+        ...(value.routePath === undefined
+          ? {}
+          : { routePath: value.routePath }),
         ...(value.frameNavigationEpoch === undefined
           ? {}
           : { frameNavigationEpoch: value.frameNavigationEpoch }),
@@ -2284,8 +2308,21 @@ let documentChannel: PreviewMessageChannel | null = null;
 export function documentPreviewRuntimeChannel(): PreviewMessageChannel | null {
   if (documentChannel) return documentChannel;
   documentChannel = readPreviewRuntimeChannel(window.location.href);
+  if (!channelBootstrapStarted) {
+    channelBootstrapStarted = true;
+    // A document with no channel in its URL waits for the editor's verified
+    // offer (preview-channel-bootstrap.ts); one restored from the
+    // back-forward cache is loaded again.
+    installPreviewDocumentRestoreGuard(window);
+    installPreviewChannelBootstrap({
+      window,
+      fetch: window.fetch.bind(window) as never,
+    });
+  }
   return documentChannel;
 }
+
+let channelBootstrapStarted = false;
 
 export function parseEditorToPreviewWindowEvent(
   event: MessageEvent<unknown>,

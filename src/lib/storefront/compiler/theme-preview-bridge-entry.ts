@@ -40,6 +40,7 @@ export function themePreviewBridgeEntrySource(): string {
   PREVIEW_SERVED_CONTENT_TIMING,
   previewServedContentFromEntries,
 } from "./preview/preview-protocol";
+import { takeBootstrapNonce } from "./preview/preview-channel-bootstrap";
 import {
   astroBasisAckVerdict,
   previewBoundaryNonce,
@@ -93,6 +94,10 @@ import {
 const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = ${JSON.stringify(THEME_PREVIEW_BRIDGE_CAPABILITIES, null, 2)};
 
 const channel = documentPreviewRuntimeChannel();
+// Set only on a document the editor's verified offer gave its channel to
+// (preview-channel-bootstrap.ts): said once, in its first ready, and removed
+// from the address so a reload of this document carries none.
+let bootstrapNonce = channel ? takeBootstrapNonce(window as never) : null;
 // A refused selection-field post is said here, in the page, and nowhere else.
 const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
 
@@ -581,21 +586,43 @@ const documentNavigation = window.__morphPreviewNavigation === "document";
  */
 const DOCUMENT_NAVIGATION_KEY =
   "morph:preview-document-navigation:" + (channel?.previewSession ?? "");
+const DOCUMENT_NAVIGATION_LEFT_KEY = DOCUMENT_NAVIGATION_KEY + ":left";
 let arrivedBy = null;
 /** Set once this document sends the frame somewhere itself. */
 let leavingForEditor = false;
 /** When the author last clicked a link or sent a form here. */
 let frameNavigationIntentAt = 0;
 if (documentNavigation) {
+  let leftBefore;
   try {
     const recorded = sessionStorage.getItem(DOCUMENT_NAVIGATION_KEY);
     sessionStorage.removeItem(DOCUMENT_NAVIGATION_KEY);
+    // The page the frame showed before this one, said by that document as it
+    // left: the page the editor's resync will still name.
+    const left = sessionStorage.getItem(DOCUMENT_NAVIGATION_LEFT_KEY);
+    sessionStorage.removeItem(DOCUMENT_NAVIGATION_LEFT_KEY);
+    if (typeof left === "string" && left.startsWith("/")) leftBefore = left;
     if (recorded === "frame") arrivedBy = { kind: "frame" };
-    else if (typeof recorded === "string" && recorded.startsWith("editor:")) {
+    else if (recorded === "history") {
+      arrivedBy = { kind: "history", left: leftBefore };
+    } else if (typeof recorded === "string" && recorded.startsWith("editor:")) {
       arrivedBy = { kind: "editor", target: recorded.slice("editor:".length) };
     }
   } catch {
     arrivedBy = null;
+  }
+  // Back and Forward are the frame's own moves too: a document the browser
+  // loaded again for them (no cache) has no record from the one before it, and
+  // the editor's first route request still names the page the author left.
+  if (arrivedBy === null) {
+    try {
+      const navigation = performance.getEntriesByType("navigation")[0];
+      if (navigation && navigation.type === "back_forward") {
+        arrivedBy = { kind: "history", left: leftBefore };
+      }
+    } catch {
+      // No navigation timing: nothing is known of how this document arrived.
+    }
   }
   // Interact mode only: in select mode the click belongs to the editor and
   // no link is followed.
@@ -621,8 +648,20 @@ if (documentNavigation) {
   // Said by the document that leaves, for the one that comes: only right
   // after the author's own click, never when the editor replaced the frame.
   window.addEventListener("pagehide", () => {
-    if (leavingForEditor || Date.now() - frameNavigationIntentAt > 10000) return;
+    if (leavingForEditor) return;
+    // The page left, for the next document: kept when one is already there (a
+    // document restored from the cache leaves again by reloading itself).
     try {
+      if (sessionStorage.getItem(DOCUMENT_NAVIGATION_LEFT_KEY) === null) {
+        sessionStorage.setItem(DOCUMENT_NAVIGATION_LEFT_KEY, location.pathname);
+      }
+    } catch {}
+    if (Date.now() - frameNavigationIntentAt > 10000) return;
+    try {
+      // A restored document reloading itself leaves with the "history" record
+      // the restore guard wrote for the document that loads next: a click it
+      // took long ago must not turn that into a link arrival.
+      if (sessionStorage.getItem(DOCUMENT_NAVIGATION_KEY) === "history") return;
       sessionStorage.setItem(DOCUMENT_NAVIGATION_KEY, "frame");
     } catch {}
   });
@@ -701,7 +740,16 @@ function applyDocumentRoute(message) {
   }
   if (
     arrival !== null &&
-    (arrival.kind === "frame" || sameDocumentPath(arrival.target, target))
+    // A link or form the author followed: the first request is the editor
+    // still naming the page it had, whatever page that is. Back and Forward
+    // (history): the editor's resync names the page just left, and only that
+    // request is swallowed; an explicit pick of any other page is the
+    // editor's own move and is loaded. Without a page recorded as left, every
+    // first request is taken as the resync.
+    (arrival.kind === "frame" ||
+      (arrival.kind === "history" &&
+        (arrival.left === undefined || sameDocumentPath(arrival.left, target))) ||
+      (arrival.kind === "editor" && sameDocumentPath(arrival.target, target)))
   ) {
     // Answered first, then reported: the report after the answer is the one
     // the editor follows.
@@ -1702,6 +1750,8 @@ function reportReady() {
       : BRIDGE_CAPABILITIES;
   const servedContent =
     typeof readyServedContent === "function" ? readyServedContent() : null;
+  const readyNonce = bootstrapNonce;
+  bootstrapNonce = null;
   // The capabilities say what this bridge reads: an editor posts a
   // selection field only to a page that says it reads the section it names.
   postPreviewToEditorMessage(
@@ -1711,11 +1761,13 @@ function reportReady() {
           servedInstance,
           capabilities: [...capabilities],
           ...(servedContent ? { servedContent } : {}),
+          ...(readyNonce ? { bootstrapNonce: readyNonce } : {}),
         }
       : {
           type: "morph:storefront-preview-ready",
           capabilities: [...capabilities],
           ...(servedContent ? { servedContent } : {}),
+          ...(readyNonce ? { bootstrapNonce: readyNonce } : {}),
         },
     channel,
   );

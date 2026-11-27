@@ -31,6 +31,15 @@ export type PreviewAccessExchangeRecord = Readonly<{
   previewHost: string;
 }>;
 
+/** What a flow's exchange bound at issue, and the grant it ended in. */
+export type PreviewAccessChannelBindingRecord = Readonly<{
+  kind: StorefrontPreviewAccessKind;
+  previewHost: string;
+  resolvedGrantId: string;
+  editorOrigin: string | null;
+  sessionHash: string | null;
+}>;
+
 /** Who and what a grant or a consumed code still answers to, read together. */
 export type PreviewAccessAuthorityRecord = Readonly<{
   /** The session row, or null once it is gone (signed out, revoked). */
@@ -159,6 +168,9 @@ export const storefrontPreviewAccessDal = {
     themeId: string;
     previewId: string;
     previewHost: string;
+    /** The channel binding (a frame's flow only): who framed it, and with what session hash. */
+    editorOrigin?: string;
+    sessionHash?: string;
     expiresAt: string;
     now: string;
   }): Promise<boolean> {
@@ -166,6 +178,8 @@ export const storefrontPreviewAccessDal = {
     const inserted = await db
       .insert(storefrontPreviewAccessExchanges)
       .values({
+        editorOrigin: data.editorOrigin ?? null,
+        sessionHash: data.sessionHash ?? null,
         id: data.id,
         flowId: data.flowId,
         codeHash: data.codeHash,
@@ -246,6 +260,38 @@ export const storefrontPreviewAccessDal = {
       )
       .returning({ id: storefrontPreviewAccessExchanges.id });
     return rows.length === 1;
+  },
+
+  /**
+   * What one flow's exchange bound and ended in, for the channel check. Only
+   * an exchange that was consumed and recorded the grant it ended in answers;
+   * none other has a grant to check the request against.
+   */
+  async findChannelBinding(
+    flowId: string,
+  ): Promise<PreviewAccessChannelBindingRecord | null> {
+    const db = await getDb();
+    const [row] = await db
+      .select({
+        kind: storefrontPreviewAccessExchanges.kind,
+        previewHost: storefrontPreviewAccessExchanges.previewHost,
+        resolvedGrantId: storefrontPreviewAccessExchanges.resolvedGrantId,
+        editorOrigin: storefrontPreviewAccessExchanges.editorOrigin,
+        sessionHash: storefrontPreviewAccessExchanges.sessionHash,
+      })
+      .from(storefrontPreviewAccessExchanges)
+      .where(
+        and(
+          eq(storefrontPreviewAccessExchanges.flowId, flowId),
+          isNotNull(storefrontPreviewAccessExchanges.consumedAt),
+          isNotNull(storefrontPreviewAccessExchanges.resolvedGrantId),
+          isNull(storefrontPreviewAccessExchanges.deletedAt),
+        ),
+      )
+      .limit(1);
+    return row?.resolvedGrantId
+      ? { ...row, resolvedGrantId: row.resolvedGrantId }
+      : null;
   },
 
   /** The session, user and Theme a consumed code answers to, as they are now. */
