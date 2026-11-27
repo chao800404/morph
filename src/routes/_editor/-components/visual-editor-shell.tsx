@@ -447,8 +447,15 @@ import {
   type PreviewSpacingOverlayMode,
 } from "@/lib/storefront/editor/preview-protocol";
 import {
+  ASTRO_SELECTION_RECHECK_TIMEOUT_MS,
+  astroDesignNoticeOf,
+  rederiveAstroDesignSelection,
+  stepAstroDesignFocus,
+  type AstroDesignFocus,
+  type AstroDesignFocusEvent,
+} from "@/lib/storefront/editor/astro-design-focus";
+import {
   acceptAstroBasisAck,
-  ASTRO_BASIS_UNCONFIRMED_MESSAGE,
   astroBasisConfirmKey,
   astroBasisInstanceToConfirm,
   astroBasisTokenFor,
@@ -619,6 +626,7 @@ import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
 import { EditorSourceConflictNotice } from "./editor-source-conflict-notice";
+import { EditorAstroDesignStatusBar } from "./editor-astro-design-notice";
 import {
   EditorUnconfirmedSavesNotice,
   UNCONFIRMED_SAVE_HOLD,
@@ -3467,10 +3475,23 @@ export function VisualEditorShell({
    * ready (`astroBasisConfirmKey`): each is asked once, never on every ready.
    */
   const astroBasisConfirmAskedRef = useRef<Set<string>>(new Set());
+  /**
+   * The ready-time confirms Core has not answered yet, by
+   * `astroBasisConfirmKey`: a later ready for the same key is not asked
+   * again, and waits for this answer instead. Removed once settled.
+   */
+  const astroBasisConfirmInFlightRef = useRef<Map<string, Promise<void>>>(
+    new Map(),
+  );
   /** Issues and posts a basis token for a confirmed Astro selection. */
   const issueAstroBasisPresentationRef = useRef<
     (sectionId: string, identity: string) => void
   >(() => {});
+  /**
+   * On Core's answer to a ready-time confirm: the selected section's basis
+   * hint is evaluated again, by issuing its token once more.
+   */
+  const reissueAstroBasisAfterConfirmRef = useRef<() => void>(() => {});
   const noteAstroContentBasisEvent = useCallback(
     (event: AstroContentBasisEvent) => {
       astroContentBasisRef.current = noteAstroContentBasis(
@@ -3480,6 +3501,47 @@ export function VisualEditorShell({
     },
     [],
   );
+  /**
+   * The Astro section selected on the canvas and what Design says about it
+   * (Q2/Q3, `stepAstroDesignFocus`). Shown at the Inspector top and on the
+   * section's row instead of a toast. Set only from the Astro click path, so
+   * it stays null on TanStack Start. Display state only: nothing is written
+   * from it, and Core verifies every write again.
+   */
+  const [astroDesignFocus, setAstroDesignFocus] =
+    useState<AstroDesignFocus | null>(null);
+  const astroDesignFocusRef = useRef<AstroDesignFocus | null>(null);
+  const dispatchAstroDesignFocus = useCallback(
+    (event: AstroDesignFocusEvent) => {
+      const next = stepAstroDesignFocus(astroDesignFocusRef.current, event);
+      if (next === astroDesignFocusRef.current) return;
+      astroDesignFocusRef.current = next;
+      setAstroDesignFocus(next);
+    },
+    [],
+  );
+  const astroDesignNotice = useMemo(
+    () => astroDesignNoticeOf(astroDesignFocus),
+    [astroDesignFocus],
+  );
+  // Another page: its sections are not this one's, and Core's view for it
+  // would never match the kept identity (that is not a reason to reload).
+  const astroDesignFocusRoutePath = search.routePath;
+  useEffect(() => {
+    dispatchAstroDesignFocus({ kind: "deselected" });
+  }, [astroDesignFocusRoutePath, dispatchAstroDesignFocus]);
+  /**
+   * Q3: after a new document's ready, the kept selection is matched again in
+   * Core's binding view read for that document; set where the view's query
+   * is in scope.
+   */
+  const rederiveAstroDesignFocusRef = useRef<
+    (
+      previewKey: string,
+      readyRound: number,
+      basisConfirming: Promise<void> | null,
+    ) => void
+  >(() => {});
   const [sectionPresentationReady, setSectionPresentationReady] =
     useState(false);
   const sectionPresentationReadyRef = useRef(false);
@@ -5566,6 +5628,11 @@ export function VisualEditorShell({
    */
   const frameShowsEditorPageRef = useRef<() => boolean>(() => false);
   const frameOnAnotherRouteRef = useRef<() => boolean>(() => false);
+  /**
+   * Whether the frame on screen answered the editor's latest route request
+   * in this round (`latestRouteRequestAnswered`); assigned with the two above.
+   */
+  const frameAnsweredRouteRequestRef = useRef<() => boolean>(() => false);
   // The editor's own page can change too (and a ready ends the round the
   // frame's report was for): the paused notice is read again then.
   useEffect(() => {
@@ -6648,9 +6715,10 @@ export function VisualEditorShell({
    * one the editor does not know. Its frame names no page and its preview is
    * not proven one document, so what the canvas sends is never taken.
    */
-  const canvasUnavailableForFrameworkRef = useRef(false);
-  canvasUnavailableForFrameworkRef.current =
+  const canvasUnavailableForFramework =
     (context.theme.framework ?? "tanstack-start") !== "tanstack-start";
+  const canvasUnavailableForFrameworkRef = useRef(false);
+  canvasUnavailableForFrameworkRef.current = canvasUnavailableForFramework;
   /**
    * Pages and sections are TanStack Start structure: route files and their
    * `content()` slots. On another framework the stored Document sections are
@@ -6830,10 +6898,17 @@ export function VisualEditorShell({
       Number.isSafeInteger(astroBindingSourceGeneration) &&
       astroBindingSourceGeneration >= 1,
   });
-  /** For the preview message handler, which is not rebuilt for it. */
+  /**
+   * For the preview message handler, which is not rebuilt for it. Only a
+   * read that succeeded is a view: a re-read that failed keeps the last
+   * view as its data (hints review finding 4), and that view was read for
+   * another document, so it is no view until a read succeeds again.
+   */
   const astroBindingViewRef = useRef<AstroRouteBindingsView | null>(null);
   astroBindingViewRef.current =
-    astroBindingRoutePath !== null && astroBindingsQuery.data?.success === true
+    astroBindingRoutePath !== null &&
+    astroBindingsQuery.status === "success" &&
+    astroBindingsQuery.data?.success === true
       ? astroBindingsQuery.data.data
       : null;
   /**
@@ -6853,6 +6928,182 @@ export function VisualEditorShell({
     }
     void astroBindingsQuery.refetch();
   };
+  /**
+   * Review finding 3: a re-derive answered before the frame said which page
+   * it shows waits here, as the click path does not take a click then
+   * either (`frameShowsEditorPage`). One at a time: a newer ready drops it.
+   */
+  const astroRederiveAwaitingPageRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+    identity: string;
+    settle: () => void;
+  } | null>(null);
+  /**
+   * Settles the waiting re-derive once the page is known: on the editor's
+   * page it is matched; answered from another page, the kept selection is
+   * cleared without a hint (a section not on screen is not "uneditable").
+   * Unknown keeps waiting. Run after every preview message.
+   */
+  const resumeAstroRederiveOnPageRef = useRef<() => void>(() => {});
+  resumeAstroRederiveOnPageRef.current = () => {
+    const parked = astroRederiveAwaitingPageRef.current;
+    if (!parked) return;
+    if (
+      parked.previewKey !== previewKeyRef.current ||
+      parked.readyRound !== previewReadyRoundRef.current
+    ) {
+      astroRederiveAwaitingPageRef.current = null;
+      return;
+    }
+    if (!documentNavigationRef.current || frameShowsEditorPageRef.current()) {
+      astroRederiveAwaitingPageRef.current = null;
+      parked.settle();
+      return;
+    }
+    if (!frameAnsweredRouteRequestRef.current()) return;
+    astroRederiveAwaitingPageRef.current = null;
+    const focus = astroDesignFocusRef.current;
+    if (focus?.rederiving && focus.selection?.identity === parked.identity) {
+      dispatchAstroDesignFocus({ kind: "deselected" });
+    }
+  };
+  /**
+   * Review finding 6: the bound on "Checking…" for the latest re-derive
+   * (`ASTRO_SELECTION_RECHECK_TIMEOUT_MS`). A newer ready replaces it.
+   */
+  const astroRederiveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  useEffect(
+    () => () => {
+      if (astroRederiveTimerRef.current !== null) {
+        clearTimeout(astroRederiveTimerRef.current);
+        astroRederiveTimerRef.current = null;
+      }
+    },
+    [],
+  );
+  rederiveAstroDesignFocusRef.current = (
+    readyPreviewKey,
+    readyRound,
+    basisConfirming,
+  ) => {
+    astroRederiveAwaitingPageRef.current = null;
+    if (astroRederiveTimerRef.current !== null) {
+      clearTimeout(astroRederiveTimerRef.current);
+      astroRederiveTimerRef.current = null;
+    }
+    const selection = astroDesignFocusRef.current?.selection ?? null;
+    dispatchAstroDesignFocus({ kind: "document-replaced" });
+    if (!selection) return;
+    // Not answered in time (a read or confirm that never settles, a frame
+    // that never says its page, or an answer dropped for a frame that never
+    // became ready): fail closed as for no view. The reducer ignores this
+    // once the focus is no longer this selection's re-derive.
+    astroRederiveTimerRef.current = setTimeout(() => {
+      astroRederiveTimerRef.current = null;
+      if (astroRederiveAwaitingPageRef.current?.readyRound === readyRound) {
+        astroRederiveAwaitingPageRef.current = null;
+      }
+      dispatchAstroDesignFocus({
+        kind: "rederived",
+        identity: selection.identity,
+        result: { status: "checking" },
+      });
+    }, ASTRO_SELECTION_RECHECK_TIMEOUT_MS);
+    // The view read for this document: the refetch the ready just started,
+    // or the read already in flight (`cancelRefetch: false` joins it and
+    // never starts a second one). A page with no view to read has none. A
+    // read that failed is none either, whatever data it kept from an earlier
+    // read (finding 4): that view is not this document's.
+    const viewRead: Promise<AstroRouteBindingsView | null> =
+      astroBindingRoutePath === null ||
+      !Number.isSafeInteger(astroBindingSourceGeneration) ||
+      astroBindingSourceGeneration < 1
+        ? Promise.resolve(null)
+        : astroBindingsQuery
+            .refetch({ cancelRefetch: false })
+            .then((result) =>
+              result.status === "success" && result.data?.success === true
+                ? result.data.data
+                : null,
+            );
+    // A basis the ready asked Core to confirm is waited for, so the token is
+    // issued on Core's answer rather than refused before it arrives.
+    void Promise.all([viewRead, basisConfirming ?? Promise.resolve()])
+      .then(([view]) => view)
+      .catch(() => null)
+      .then((view) => {
+        // A later document asks again for itself.
+        if (
+          previewKeyRef.current !== readyPreviewKey ||
+          previewReadyRoundRef.current !== readyRound
+        ) {
+          return;
+        }
+        // Matched, and its basis asked for, only on a frame that shows the
+        // editor's page; until the frame says so this waits (finding 3).
+        astroRederiveAwaitingPageRef.current = {
+          previewKey: readyPreviewKey,
+          readyRound,
+          identity: selection.identity,
+          settle: () => {
+            if (astroRederiveTimerRef.current !== null) {
+              clearTimeout(astroRederiveTimerRef.current);
+              astroRederiveTimerRef.current = null;
+            }
+            const result = rederiveAstroDesignSelection({
+              selection,
+              view,
+              workspaceSourceGeneration: currentContentSourceGeneration(),
+              routePath: currentSearchRoutePathRef.current ?? "/",
+            });
+            dispatchAstroDesignFocus({
+              kind: "rederived",
+              identity: selection.identity,
+              result,
+            });
+            // Only when the focus took it: a click meanwhile has its own
+            // token, which this must not replace.
+            if (
+              result.status === "confirmed" &&
+              astroDesignFocusRef.current?.selection === result
+            ) {
+              issueAstroBasisPresentationRef.current(
+                result.sectionId,
+                result.identity,
+              );
+            }
+          },
+        };
+        resumeAstroRederiveOnPageRef.current();
+      });
+  };
+  /**
+   * Hints review finding 5: the workspace's source generation can move on
+   * after the frame's ready was answered (the store sees it later than the
+   * frame). A kept selection was then matched against the old source's view
+   * and nothing matched it again in the new one. Any change of generation
+   * matches it again, in the view read for the source the workspace now
+   * holds, on the frame shown now.
+   */
+  const astroRederivedSourceGenerationRef = useRef(
+    astroBindingSourceGeneration,
+  );
+  useEffect(() => {
+    const previous = astroRederivedSourceGenerationRef.current;
+    astroRederivedSourceGenerationRef.current = astroBindingSourceGeneration;
+    if (previous === astroBindingSourceGeneration) return;
+    if (!astroDesignFocusRef.current?.selection) return;
+    const previewKey = previewKeyRef.current;
+    if (!previewKey) return;
+    rederiveAstroDesignFocusRef.current(
+      previewKey,
+      previewReadyRoundRef.current,
+      null,
+    );
+  }, [astroBindingSourceGeneration]);
   const routeStructurePending = Boolean(
     (pendingRoutePath !== null &&
       !editorRoutePathsMatch(pendingRoutePath, search.routePath) &&
@@ -13241,10 +13492,39 @@ export function VisualEditorShell({
               presentationTraceScope(),
               `basis ack held op=${message.token.operationId} reason=${basisAck.reason}`,
             );
-            toast.info(ASTRO_BASIS_UNCONFIRMED_MESSAGE, {
-              id: "astro-basis-unconfirmed",
+            dispatchAstroDesignFocus({
+              kind: "basis-unconfirmed",
+              sectionId: message.token.sectionId,
+              reason: basisAck.reason,
             });
             return;
+          }
+        }
+        // Option B, Q2: what the frame answered about a basis is said on the
+        // section. `not-applied` (the frame does not hold the boundary once,
+        // or names another snapshot) was silent before; a newer token
+        // superseding this one says nothing, as that token is answered next.
+        if (message.token.basis) {
+          if (message.status === "applied") {
+            dispatchAstroDesignFocus({
+              kind: "basis-acknowledged",
+              sectionId: message.token.sectionId,
+            });
+          } else if (
+            message.reason !== "superseded" &&
+            // A frame on another page has no such section on screen: that
+            // is not "can't be edited" (finding 3; the applied map below
+            // sets the same case aside).
+            !(
+              message.reason === "section-missing" &&
+              !frameShowsEditorPageRef.current()
+            )
+          ) {
+            dispatchAstroDesignFocus({
+              kind: "basis-unconfirmed",
+              sectionId: message.token.sectionId,
+              reason: `not-applied-${message.reason ?? "unknown"}`,
+            });
           }
         }
         pendingSectionPresentationRef.current.delete(message.operationId);
@@ -13505,6 +13785,7 @@ export function VisualEditorShell({
               astroBasisConfirmAskedRef.current,
             )
           : null;
+        let basisConfirming: Promise<void> | null = null;
         if (instanceToConfirm !== null && readyServedContent) {
           const asked = astroBasisConfirmAskedRef.current;
           // Only this ticket's asks are kept: an older ticket is never
@@ -13512,8 +13793,10 @@ export function VisualEditorShell({
           for (const key of asked) {
             if (!key.startsWith(`${instanceToConfirm}:`)) asked.delete(key);
           }
-          asked.add(astroBasisConfirmKey(readyServedContent));
-          void Promise.resolve()
+          const confirmKey = astroBasisConfirmKey(readyServedContent);
+          asked.add(confirmKey);
+          const inFlight = astroBasisConfirmInFlightRef.current;
+          const confirming: Promise<void> = Promise.resolve()
             .then(() =>
               confirmThemePreviewContent({
                 data: {
@@ -13531,10 +13814,45 @@ export function VisualEditorShell({
               )) {
                 noteAstroContentBasisEvent(event);
               }
+              // A selection whose basis was refused while Core had not
+              // answered yet is asked about again on the answer (review
+              // finding 2); never left saying "reload" on a confirmed basis.
+              reissueAstroBasisAfterConfirmRef.current();
             })
             .catch(() => {
               // Unanswered: the basis stays unconfirmed and Design says so.
+            })
+            .finally(() => {
+              if (inFlight.get(confirmKey) === confirming) {
+                inFlight.delete(confirmKey);
+              }
             });
+          inFlight.set(confirmKey, confirming);
+          basisConfirming = confirming;
+        } else if (
+          readyServedContent &&
+          isAstroBasisFrame(
+            new Set(message.capabilities ?? []),
+            previewContentRefreshRef.current,
+          )
+        ) {
+          // Not asked again, because an earlier ready already asked about
+          // this (ticket, page instance) and Core has not answered it yet:
+          // this document waits for that same answer (review finding 2).
+          basisConfirming =
+            astroBasisConfirmInFlightRef.current.get(
+              astroBasisConfirmKey(readyServedContent),
+            ) ?? null;
+        }
+        // Q3: an Astro selection is not kept from the old document; it is
+        // matched again in Core's view read for this one. Never on TanStack
+        // Start, whose canvas selection is not this path.
+        if (canvasUnavailableForFrameworkRef.current) {
+          rederiveAstroDesignFocusRef.current(
+            previewKey,
+            previewReadyRoundRef.current,
+            basisConfirming,
+          );
         }
         // Tell this document what the editor can read back, only when this
         // ready carries a document id and the bridge said it reads the token.
@@ -13834,6 +14152,9 @@ export function VisualEditorShell({
         canvasUnavailableForFrameworkRef.current &&
         message.sectionId.startsWith(PREVIEW_SOURCE_SECTION_PREFIX)
       ) {
+        // The frame's answer to a request of the editor's own is not a click
+        // by the author, so it neither selects nor deselects (finding 7
+        // deliberately leaves this return as it is).
         if (!previewSelection.isNewCanvasIntent(message)) return;
         // Paused while a document-navigating frame has not answered for the
         // editor's page (D3): the click may be on the page it is leaving.
@@ -13849,6 +14170,9 @@ export function VisualEditorShell({
               id: "preview-page-opening",
             });
           }
+          // The author clicked something other than the selected section
+          // (finding 7): its status is not left behind.
+          dispatchAstroDesignFocus({ kind: "deselected" });
           return;
         }
         const target = resolveSourceLocatedTarget({
@@ -13870,6 +14194,8 @@ export function VisualEditorShell({
           toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
             id: "source-location-stale",
           });
+          // A click on something else all the same (finding 7).
+          dispatchAstroDesignFocus({ kind: "deselected" });
           return;
         }
         // M2 PR-F: what Core's binding view says of the clicked instance,
@@ -13900,8 +14226,16 @@ export function VisualEditorShell({
         }
         // Option B: a confirmed instance asks this document to acknowledge
         // it as the basis a write would be made on. Still nothing written;
-        // the Astro Inspector input path is later work.
-        if (astroSelection.status === "confirmed") {
+        // the Astro Inspector input path is later work. The selection is
+        // kept (Q2/Q3) so its basis status can be said on the section and
+        // matched again after a reload; any other click selects nothing.
+        if (astroSelection.status !== "confirmed") {
+          dispatchAstroDesignFocus({ kind: "deselected" });
+        } else {
+          dispatchAstroDesignFocus({
+            kind: "selected",
+            selection: astroSelection,
+          });
           issueAstroBasisPresentationRef.current(
             astroSelection.sectionId,
             astroSelection.identity,
@@ -14054,21 +14388,35 @@ export function VisualEditorShell({
     // The same predicate, for the Inspector's live typing.
     frameShowsEditorPageRef.current = frameShowsEditorPage;
     frameOnAnotherRouteRef.current = frameOnAnotherRoute;
+    const frameAnsweredRouteRequest = () =>
+      latestRouteRequestAnswered(previewReadyRoundRef.current);
+    frameAnsweredRouteRequestRef.current = frameAnsweredRouteRequest;
     // After each message is handled: whether the frame now names another
     // page, for the paused notice only.
     const noteFrameShowsOtherPage = () =>
       setFrameShowsOtherPage(frameOnAnotherRoute());
+    // And an Astro re-derive waiting for the frame to say which page it
+    // shows (review finding 3) is settled once it has.
+    const resumeAstroRederiveOnPage = () =>
+      resumeAstroRederiveOnPageRef.current();
     window.addEventListener("message", handlePreviewSelection);
     window.addEventListener("message", noteFrameShowsOtherPage);
+    window.addEventListener("message", resumeAstroRederiveOnPage);
     noteFrameShowsOtherPage();
     return () => {
       window.removeEventListener("message", handlePreviewSelection);
       window.removeEventListener("message", noteFrameShowsOtherPage);
+      window.removeEventListener("message", resumeAstroRederiveOnPage);
       if (frameShowsEditorPageRef.current === frameShowsEditorPage) {
         frameShowsEditorPageRef.current = () => false;
       }
       if (frameOnAnotherRouteRef.current === frameOnAnotherRoute) {
         frameOnAnotherRouteRef.current = () => false;
+      }
+      if (
+        frameAnsweredRouteRequestRef.current === frameAnsweredRouteRequest
+      ) {
+        frameAnsweredRouteRequestRef.current = () => false;
       }
     };
   }, [
@@ -15662,10 +16010,13 @@ export function VisualEditorShell({
         `basis not issued section=${sectionId} reason=${issued.reason}`,
       );
       // A frame without the basis path says nothing new: the click hint
-      // already did. Any other refusal is class A, "reload preview".
+      // already did. Any other refusal is class A, "reload preview", said on
+      // the section (Inspector top and its row), not in a toast.
       if (issued.reason !== "not-basis-frame") {
-        toast.info(ASTRO_BASIS_UNCONFIRMED_MESSAGE, {
-          id: "astro-basis-unconfirmed",
+        dispatchAstroDesignFocus({
+          kind: "basis-unconfirmed",
+          sectionId,
+          reason: issued.reason,
         });
       }
       return;
@@ -15698,6 +16049,30 @@ export function VisualEditorShell({
       type: "morph:storefront-preview-confirm-section-basis",
       presentationToken: token,
     });
+  };
+  // Review finding 2: a click while the ready-time confirm is in flight is
+  // refused for want of Core's answer, and the hint would outlive it. When
+  // Core answers, the selected section's token is issued again: refused
+  // again (the hint stays, with the new reason), or posted, and then the
+  // frame's `applied` clears the hint (`basis-acknowledged`). A focus still
+  // being re-derived is left to the re-derive, which waits for the confirm.
+  reissueAstroBasisAfterConfirmRef.current = () => {
+    const focus = astroDesignFocusRef.current;
+    if (
+      !focus?.selection ||
+      focus.rederiving ||
+      focus.hint === null ||
+      !focus.hint.reason.startsWith("basis-")
+    ) {
+      return;
+    }
+    if (documentNavigationRef.current && !frameShowsEditorPageRef.current()) {
+      return;
+    }
+    issueAstroBasisPresentationRef.current(
+      focus.selection.sectionId,
+      focus.selection.identity,
+    );
   };
   const syncPreviewSectionProps = useCallback(
     (
@@ -20933,6 +21308,22 @@ export function VisualEditorShell({
           onRetry={onRetryThemeRead}
         />
         <div inert={editorLock !== null} className="flex flex-col">
+          {/* Review finding 1: an Astro click opens Code, which hides the
+              Design surface holding the Inspector and the section row. The
+              same notice (one focus state) is said here, outside both mode
+              surfaces, while Code is shown; in Design those two say it.
+              Mounted for the whole Theme, empty while nothing is said, so
+              its text is announced when it arrives. Never on TanStack
+              Start, whose focus is always null. */}
+          {canvasUnavailableForFramework ? (
+            <EditorAstroDesignStatusBar
+              notice={
+                editorMode === "code" && editorLock === null
+                  ? astroDesignNotice
+                  : null
+              }
+            />
+          ) : null}
           {refusedInlineText ? (
             <div
               role="alert"
@@ -21356,6 +21747,7 @@ export function VisualEditorShell({
           onOpenThemeRoute={handleOpenThemeRoute}
           onOpenThemeRouteCode={handleOpenThemeRouteCode}
           sectionsUnavailableForFramework={sectionsUnavailableForFramework}
+          astroSectionNotice={astroDesignNotice}
           onAddPage={
             sectionsUnavailableForFramework ? undefined : handleAddPage
           }
@@ -21901,6 +22293,7 @@ export function VisualEditorShell({
                 : null
           }
           inspectorDocumentKey={inspectorDocumentKey}
+          astroDesignNotice={astroDesignNotice}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}

@@ -1,4 +1,6 @@
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import type { AstroDesignNotice } from "@/lib/storefront/editor/astro-design-focus";
 import { missingSectionComponentPath } from "@/lib/storefront/editor/preview-compile-failure";
 import {
   Collapsible,
@@ -209,6 +211,13 @@ export type EditorSectionsPanelProps = {
    * page or section structure control is offered, whatever is passed.
    */
   sectionsUnavailableForFramework?: boolean;
+  /**
+   * The Astro Design status of the section selected on the canvas (lead
+   * decision Q2): a row for that section, badged with it, beside the
+   * unavailable state. Shown only while the structure is off for the
+   * framework, and only for a notice about a section.
+   */
+  astroSectionNotice?: AstroDesignNotice | null;
   /**
    * The preview opens a page by its address (a document-navigating preview,
    * D3). A dynamic route is a pattern with no address of its own, so it is
@@ -888,6 +897,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onOpenThemeRoute,
   onOpenThemeRouteCode,
   sectionsUnavailableForFramework = false,
+  astroSectionNotice = null,
   dynamicRoutesNotOpenable = false,
   onAddPage: onAddPageProp,
   onDeletePage: onDeletePageProp,
@@ -1658,12 +1668,42 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
             ) : null}
             <SidebarGroup className="border-0 p-2" aria-label="Theme structure">
               {structureOff ? (
-                <div
-                  className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground"
-                  role="status"
-                >
-                  {SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE}
-                </div>
+                <>
+                  <div
+                    className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground"
+                    role="status"
+                  >
+                    {SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE}
+                  </div>
+                  {astroSectionNotice?.sectionId ? (
+                    <SidebarMenu aria-label="Selected section">
+                      <SidebarMenuItem>
+                        <div
+                          className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs"
+                          data-astro-section-status={astroSectionNotice.tone}
+                          title={astroSectionNotice.message}
+                        >
+                          <Layers3
+                            className="size-3.5 shrink-0 text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                          <span className="min-w-0 truncate">
+                            {astroSectionNotice.sectionId}
+                          </span>
+                          <Badge variant="neutral" className="ml-auto">
+                            {astroSectionNotice.badge}
+                          </Badge>
+                          {/* Review finding 9: the full message for
+                              assistive tech and touch, which do not
+                              reliably expose `title`. */}
+                          <span className="sr-only">
+                            {astroSectionNotice.message}
+                          </span>
+                        </div>
+                      </SidebarMenuItem>
+                    </SidebarMenu>
+                  ) : null}
+                </>
               ) : routeStructurePending ? (
                 <div
                   className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground"

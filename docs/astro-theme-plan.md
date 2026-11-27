@@ -1338,9 +1338,16 @@ G0 的五項：
 
 `.astro` 修改或內容更新後，選取、捲動位置與 island 狀態都會重設。
 
-- bridge 在送出 `applied` 之前，先把「要恢復的選取」寫進以 preview session 為鍵的 `sessionStorage`：
-  記錄來源位置與實例識別，不記錄 DOM 參照，捲動位置也一起記錄。新文件載入的 bridge 讀回並恢復，
-  恢復完才回報結構。
+- **選取由編輯器依核心的 binding view 重新推導，不從舊文件或 `sessionStorage` 恢復**（2026-11-24，
+  lead 決定 Q3）。編輯器只保留核心確認過的實例識別（v2 id 與核心的 component digest）；新文件的
+  `preview-ready` 之後，等核心為這份文件重新讀出的 binding view，用與點擊相同的規則逐欄精確比對。
+  比對成功就沿用核心這次給的 section，並重新送出 basis token；比對失敗（例如來源修改移動了範圍）或
+  讀不到 view，就清除選取，在 Inspector 頂端顯示 class A 提示（重新載入預覽後再選一次）。
+  `sessionStorage` 由執行作者程式碼的頁面寫入，讀回的內容本來就要重新確認，所以最多只用來恢復捲動
+  位置（外觀用途，不被信任）。
+- Astro basis 無法確認時（token 未發出、`applied` 被擱置、frame 回 `not-applied`），提示不再用 toast，
+  而是顯示在 Inspector 頂端（所選 section）與 Sections 面板中該 section 列的 badge（lead 決定 Q2）。
+  重新載入期間該 section 顯示「Checking」。
 - 編輯器把「`applied` 之後收到 `preview-ready`」視為同一次修改的延續，不當作預覽重啟。真實編輯器
   （`preview.tsx`）能不能正確處理這個順序未驗證，列為 A6 閘門。
 - island 狀態（例如購物車數量）會歸零，在介面上說明，不嘗試保存。

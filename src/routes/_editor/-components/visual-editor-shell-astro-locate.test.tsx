@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -30,6 +31,10 @@ import {
   touchThemePreviewServer,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import { ASTRO_BASIS_UNCONFIRMED_MESSAGE } from "@/lib/storefront/editor/astro-basis-presentation";
+import {
+  ASTRO_SELECTION_RECHECK_TIMEOUT_MS,
+  ASTRO_SELECTION_RECHECKING_MESSAGE,
+} from "@/lib/storefront/editor/astro-design-focus";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
@@ -327,6 +332,15 @@ const flush = () =>
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
+/** The editor moved to another of its pages (search changed), as the router does. */
+let showEditorPage: (page: {
+  template: "index" | "page";
+  templateId: string;
+  routePath: string;
+}) => void = () => {
+  throw new Error("settled() has not rendered the shell");
+};
+
 /** Renders the route's page, signed in as OWNER, and brings the frame up. */
 async function settled(
   themeContext: StorefrontThemeEditorDTO = context,
@@ -360,24 +374,27 @@ async function settled(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
     treeAt(3) as never,
   );
-  render(
+  const onSearchChange = vi.fn();
+  const shellOn = (shown: typeof page) => (
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={themeContext}
         search={
           {
-            template: page.template,
-            templateId: page.templateId,
-            routePath: page.routePath,
+            template: shown.template,
+            templateId: shown.templateId,
+            routePath: shown.routePath,
             viewport: "desktop",
           } as StorefrontThemeEditorSearch
         }
-        onSearchChange={vi.fn()}
-        navigatingRoutePath={page.routePath}
+        onSearchChange={onSearchChange}
+        navigatingRoutePath={shown.routePath}
         currentUser={OWNER}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const { rerender } = render(shellOn(page));
+  showEditorPage = (next) => rerender(shellOn(next));
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
   fromPreview({
     type: "morph:storefront-preview-ready",
@@ -693,7 +710,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
   });
 
   /** A located click on the page's <h1> that names a v2 boundary instance. */
-  function boundaryClick(selectionRevision: number, sourceDigest = DIGEST) {
+  function boundaryClick(
+    selectionRevision: number,
+    sourceDigest = DIGEST,
+    /** The file version the frame located in; another one is stale. */
+    sourceVersion = astroPreviewSourceHash(ASTRO_SOURCE),
+  ) {
     fromPreview({
       type: "morph:storefront-preview-select-section",
       sectionId: `source:${ASTRO_PAGE}`,
@@ -701,7 +723,7 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       kind: "heading",
       sourceFilePath: ASTRO_PAGE,
       sourceLocation: `${ASTRO_PAGE}:5:3`,
-      sourceVersion: astroPreviewSourceHash(ASTRO_SOURCE),
+      sourceVersion,
       previewBoundary: { marker: MARKER, selectable: true, reason: null },
       sourceDigest,
       locatedAt: null,
@@ -851,6 +873,10 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     await flush();
 
     expect(readRouteBindings).not.toHaveBeenCalled();
+    // Nor shows any Astro Design status (Q2).
+    expect(document.querySelector("[data-astro-design-notice]")).toBeNull();
+    expect(document.querySelector("[data-astro-section-status]")).toBeNull();
+    expect(document.querySelector("[data-astro-design-status-bar]")).toBeNull();
   });
 
   /**
@@ -884,15 +910,59 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     /** The intake took an `applied` answer for `op` (its trace line). */
     const acceptedLine = (op: string) =>
       consoleSaid(new RegExp(` ack accepted op=${op} .*status=applied`));
-    const unconfirmedHint = () =>
+    /**
+     * The hint moved out of a toast (lead decision Q2): it is said at the top
+     * of the Inspector and as a badge on the section's row. A toast with this
+     * text is the old surface, which no case may see any more.
+     */
+    const toastedBasisHint = () =>
       vi
         .mocked(toast.info)
-        .mock.calls.some(
-          ([text, options]) =>
-            text === ASTRO_BASIS_UNCONFIRMED_MESSAGE &&
-            (options as { id?: string } | undefined)?.id ===
-              "astro-basis-unconfirmed",
-        );
+        .mock.calls.some(([text]) => text === ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+    const inspectorPanel = () =>
+      document.querySelector<HTMLElement>("[data-editor-inspector-panel]")!;
+    /** The Inspector's Content tab, whose top holds the Astro notice. */
+    const openInspectorContent = () =>
+      fireEvent.click(
+        within(inspectorPanel()).getByRole("button", {
+          name: "Content",
+          hidden: true,
+        }),
+      );
+    const inspectorNotice = () => {
+      openInspectorContent();
+      return inspectorPanel().querySelector("[data-astro-design-notice]");
+    };
+    const sectionStatus = () =>
+      document.querySelector("[data-astro-section-status]");
+    /** The basis hint, on the selected section, in both places (Q2). */
+    const unconfirmedHint = () => {
+      const notice = inspectorNotice();
+      const row = sectionStatus();
+      return (
+        notice?.getAttribute("data-astro-design-notice") === "unconfirmed" &&
+        (notice.textContent ?? "").includes(ASTRO_BASIS_UNCONFIRMED_MESSAGE) &&
+        row?.getAttribute("data-astro-section-status") === "unconfirmed" &&
+        (row.textContent ?? "").includes("Reload preview")
+      );
+    };
+    /** One instance of Core's view; `bindingView` overrides whole arrays. */
+    const heroInstance = (overrides: Record<string, unknown> = {}) => ({
+      identity: { rule: 2, src: SRC, start: 30, end: 60 },
+      componentDigest: DIGEST,
+      componentPath: "src/components/Hero.astro",
+      componentName: "Hero",
+      section: "hero",
+      componentRef: "src/components/Hero.astro#default",
+      sectionType: "hero",
+      declaredFields: ["title"],
+      claims: [{ slot: "hero", field: "title" }],
+      ...overrides,
+    });
+    afterEach(() => {
+      // Every case: the hint is never a toast any more.
+      expect(toastedBasisHint()).toBe(false);
+    });
 
     beforeEach(() => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1067,10 +1137,14 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
     });
 
     /** A new document of the same frame (a reload), stamped `servedContent`. */
-    const reloadWith = async (servedContent: {
-      ticket: number;
-      instance: string;
-    }) => {
+    const reloadWith = async (
+      servedContent: {
+        ticket: number;
+        instance: string;
+      },
+      /** The page the new document shows; another one after a followed link. */
+      framePath = "/",
+    ) => {
       reloadFrameDocument();
       fromPreview({
         type: "morph:storefront-preview-ready",
@@ -1090,12 +1164,12 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       fromPreview({
         type: "morph:storefront-preview-route-applied",
         routeRequestId: request?.routeRequestId,
-        routePath: "/",
+        routePath: framePath,
       });
       fromPreview({
         type: "morph:storefront-preview-structure",
         nodes: [],
-        routePath: "/",
+        routePath: framePath,
       });
       await flush();
     };
@@ -1180,6 +1254,99 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(unconfirmedHint()).toBe(true);
     });
 
+    /** Core's answer to the ready-time confirm waits for `answer()`. */
+    const confirmHeldUntilAnswered = () => {
+      const held = { answer: (_value: unknown) => {} };
+      vi.mocked(confirmThemePreviewContent).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            held.answer = resolve;
+          }) as never,
+      );
+      return held;
+    };
+
+    // Review finding 2: the click comes while the ready-time confirm is in
+    // flight, so its token is refused for want of Core's answer. The hint
+    // must not outlive that answer.
+    it("a click refused while Core's confirm is in flight is asked about again on Core's answer", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      const confirm = confirmHeldUntilAnswered();
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+
+      // Core has not said yet which instance reads the start's snapshot.
+      boundaryClick(1);
+      await flush();
+      expect(basisPosts()).toHaveLength(0);
+      expect(unconfirmedHint()).toBe(true);
+
+      await act(async () => {
+        confirm.answer(confirmedBy(INSTANCE));
+      });
+      await waitFor(() => expect(basisPosts()).toHaveLength(1));
+      expect(basisPosts()[0]!.presentationToken).toMatchObject({
+        sectionId: "hero",
+        basis: {
+          kind: "astro-boundary",
+          identity: MARKER,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        },
+      });
+      expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    // Review finding 2, second case: the page reloads with the same stamp
+    // before Core answers. The (ticket, instance) was already asked, so the
+    // new document asks nothing; it waits for that same answer instead of
+    // being refused before it.
+    it("a reload while that confirm is still unanswered waits for it, then asks for the basis", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      const confirm = confirmHeldUntilAnswered();
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(1));
+      await flush();
+      boundaryClick(1);
+      await flush();
+      expect(basisPosts()).toHaveLength(0);
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalledTimes(2));
+      await flush();
+      expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1);
+      expect(sectionStatus()?.getAttribute("data-astro-section-status")).toBe(
+        "checking",
+      );
+      expect(basisPosts()).toHaveLength(0);
+
+      await act(async () => {
+        confirm.answer(confirmedBy(INSTANCE));
+      });
+      await waitFor(() => expect(basisPosts()).toHaveLength(1));
+      expect(basisPosts()[0]!.presentationToken).toMatchObject({
+        sectionId: "hero",
+        basis: { servedContent: { ticket: 7, instance: INSTANCE } },
+      });
+      expect(unconfirmedHint()).toBe(false);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
     it("a frame without the basis capability (every Start frame) is never sent one", async () => {
       modelCurrentBridge();
       readRouteBindings.mockResolvedValue(bindingView());
@@ -1196,6 +1363,675 @@ describe("an Astro click is checked against Core's binding view (M2 PR-F)", () =
       expect(vi.mocked(confirmThemePreviewContent)).not.toHaveBeenCalled();
       expect(basisPosts()).toHaveLength(0);
       expect(unconfirmedHint()).toBe(false);
+      expect(inspectorNotice()).toBeNull();
+      expect(sectionStatus()).toBeNull();
+    });
+
+    /** Comes up on the start's confirmed snapshot; clicks the hero once. */
+    const selectHero = async () => {
+      modelCurrentBridge();
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalled(),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+      boundaryClick(1);
+      await flush();
+      const posts = basisPosts();
+      expect(posts).toHaveLength(1);
+      return posts[0]!.presentationToken;
+    };
+
+    // Review finding 8 ("silent not-applied"): the frame answering that it
+    // does not hold the boundary is said like every other unconfirmed basis.
+    it("a not-applied basis answer is said on the section, not left silent", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      expect(unconfirmedHint()).toBe(false);
+
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "section-missing",
+      });
+      await flush();
+
+      expect(unconfirmedHint()).toBe(true);
+      expect(sectionStatus()?.textContent).toContain("hero");
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    // Review finding 8: the hint must be cleared by the frame's accepted
+    // `applied` itself (`basis-acknowledged`), not by a new click, which
+    // resets the hint on its own. Reachable without a click: the token
+    // issued again on Core's confirm answer (finding 2) is posted while the
+    // section still says it can't be edited, and only its `applied` may
+    // clear that.
+    it("the accepted applied answer to a token issued again on Core's answer is what clears the hint", async () => {
+      modelCurrentBridge();
+      readRouteBindings.mockResolvedValue(bindingView());
+      const confirm = confirmHeldUntilAnswered();
+      await settled(context, HOME, BASIS_READY, {
+        serverData: START_DATA,
+        servedContent: { ticket: 7, instance: INSTANCE },
+      });
+      await waitFor(() =>
+        expect(vi.mocked(confirmThemePreviewContent)).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+      await flush();
+      boundaryClick(1);
+      await flush();
+      expect(unconfirmedHint()).toBe(true);
+
+      await act(async () => {
+        confirm.answer(confirmedBy(INSTANCE));
+      });
+      await waitFor(() => expect(basisPosts()).toHaveLength(1));
+      // Posted, not yet acknowledged: still said, and no click follows.
+      expect(unconfirmedHint()).toBe(true);
+      const token = basisPosts()[0]!.presentationToken;
+
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+
+      expect(acceptedLine(token.operationId)).toBe(true);
+      expect(unconfirmedHint()).toBe(false);
+      expect(inspectorNotice()).toBeNull();
+      expect(sectionStatus()).toBeNull();
+    });
+
+    // Lead decision Q3: after a frame reload the selection is not kept from
+    // the old document; it is matched again, exactly, in Core's view read
+    // for the new one.
+    it("after a reload the selection is re-derived from Core's new view, and its basis asked again", async () => {
+      // Review finding 10: the second view is set only once the click was
+      // answered, so the case does not depend on how many reads the first
+      // settle makes.
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      expect(token).toMatchObject({ sectionId: "hero" });
+      // The view read for the new document binds the same instance to
+      // another slot: the selection follows Core, not the old frame.
+      readRouteBindings.mockResolvedValue(
+        bindingView({
+          instances: [
+            heroInstance({
+              section: "hero-2",
+              claims: [{ slot: "hero-2", field: "title" }],
+            }),
+          ],
+        }),
+      );
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+      expect(acceptedLine(token.operationId)).toBe(true);
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() => expect(basisPosts()).toHaveLength(2));
+
+      const reissued = basisPosts()[1]!.presentationToken;
+      expect(reissued).toMatchObject({
+        sectionId: "hero-2",
+        routePath: "/",
+        documentBasis: { kind: "existing", draftGeneration: 4 },
+        basis: {
+          kind: "astro-boundary",
+          identity: MARKER,
+          servedContent: { ticket: 7, instance: INSTANCE },
+        },
+      });
+      expect(readRouteBindings.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(unconfirmedHint()).toBe(false);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("after a reload whose view no longer has the instance, the selection clears with the hint", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      // The source edit that caused the reload moved the instance.
+      readRouteBindings.mockResolvedValue(
+        bindingView({
+          instances: [
+            heroInstance({
+              identity: { rule: 2, src: SRC, start: 31, end: 61 },
+            }),
+          ],
+        }),
+      );
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(inspectorNotice()?.textContent ?? "").toContain(
+          "Couldn't restore your selection. Select the section again.",
+        ),
+      );
+
+      const notice = inspectorNotice()!;
+      expect(notice.getAttribute("data-astro-design-notice")).toBe(
+        "unconfirmed",
+      );
+      expect(notice.textContent).toContain("Reload the preview");
+      // No section is selected, so no row carries a badge, and nothing is
+      // asked of the new document.
+      expect(sectionStatus()).toBeNull();
+      expect(basisPosts()).toHaveLength(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    // Hints review finding 4: a re-read that fails keeps the query's last
+    // view as its data (TanStack Query keeps data on a failed refetch). That
+    // view was read for the old document, so it must never be taken as the
+    // new document's: the re-derive fails closed as for no view.
+    it("after a reload whose view re-read fails, the selection clears and no basis is asked of the new document", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      readRouteBindings.mockRejectedValue(new Error("binding view read failed"));
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+      expect(acceptedLine(token.operationId)).toBe(true);
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(readRouteBindings.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      await waitFor(() =>
+        expect(inspectorNotice()?.textContent ?? "").toContain(
+          "Couldn't restore your selection. Select the section again.",
+        ),
+      );
+
+      expect(inspectorNotice()!.getAttribute("data-astro-design-notice")).toBe(
+        "unconfirmed",
+      );
+      expect(sectionStatus()).toBeNull();
+      expect(basisPosts()).toHaveLength(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    // Finding 4, the click path: after a failed re-read the kept data is not
+    // a view either, so a new click is not matched against it. It is
+    // confirmed again only by a view read that succeeds.
+    it("a click after a failed view re-read is not matched against the earlier view", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      readRouteBindings.mockRejectedValue(new Error("binding view read failed"));
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(readRouteBindings.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      await flush();
+
+      // A revision well past any the editor minted: an author click.
+      boundaryClick(100);
+      await flush();
+
+      expect(basisPosts()).toHaveLength(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+
+      // Only a read that succeeds, for the next document, confirms a click
+      // again.
+      readRouteBindings.mockResolvedValue(bindingView());
+      const reads = readRouteBindings.mock.calls.length;
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(readRouteBindings.mock.calls.length).toBeGreaterThan(reads),
+      );
+      await flush();
+      boundaryClick(101);
+      await waitFor(() => expect(basisPosts()).toHaveLength(2));
+      expect(basisPosts()[1]!.presentationToken).toMatchObject({
+        sectionId: "hero",
+        basis: { servedContent: { ticket: 7, instance: INSTANCE } },
+      });
+    });
+
+    // Hints review finding 5: the workspace's source generation moves on
+    // after the frame's ready was answered (the store saw the new
+    // generation later than the frame). The kept selection was matched
+    // against the old source's view; it is matched again in the view of the
+    // source the workspace now holds, not kept as it was.
+    describe("when the workspace's source generation moves on without a new ready", () => {
+      const selectedThenNewGeneration = async (
+        viewOfNewSource: ReturnType<typeof bindingView>,
+      ) => {
+        readRouteBindings.mockResolvedValue(bindingView());
+        const token = await selectHero();
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: token.operationId,
+          token,
+          status: "applied",
+        });
+        await flush();
+        expect(acceptedLine(token.operationId)).toBe(true);
+        readRouteBindings.mockResolvedValue(viewOfNewSource);
+        act(() => {
+          useThemeWorkspaceStore.getState().setBaseSourceGeneration(4, scope);
+        });
+        await waitFor(() =>
+          expect(readRouteBindings).toHaveBeenCalledWith(
+            expect.objectContaining({
+              data: expect.objectContaining({ expectedSourceGeneration: 4 }),
+            }),
+          ),
+        );
+        await flush();
+      };
+
+      it("a selection the new source no longer has clears with the hint", async () => {
+        await selectedThenNewGeneration(
+          bindingView({
+            sourceGeneration: 4,
+            instances: [
+              heroInstance({ identity: { rule: 2, src: SRC, start: 31, end: 61 } }),
+            ],
+          }),
+        );
+
+        await waitFor(() =>
+          expect(inspectorNotice()?.textContent ?? "").toContain(
+            "Couldn't restore your selection. Select the section again.",
+          ),
+        );
+        expect(basisPosts()).toHaveLength(1);
+        expect(updateSectionProps).not.toHaveBeenCalled();
+      });
+
+      it("a selection the new source still has is confirmed again and its basis asked again", async () => {
+        await selectedThenNewGeneration(bindingView({ sourceGeneration: 4 }));
+
+        await waitFor(() => expect(basisPosts()).toHaveLength(2));
+        expect(basisPosts()[1]!.presentationToken).toMatchObject({
+          sectionId: "hero",
+          basis: { servedContent: { ticket: 7, instance: INSTANCE } },
+        });
+        expect(unconfirmedHint()).toBe(false);
+        expect(updateSectionProps).not.toHaveBeenCalled();
+      });
+    });
+
+    // Review finding 3: the author followed a link in the frame. The new
+    // document is another page (the editor's page is unchanged, so the
+    // route effect does not deselect), and Core's view of the editor's page
+    // would still match the kept identity.
+    it("after a reload onto another page, the selection clears and nothing says it can't be edited", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "applied",
+      });
+      await flush();
+
+      await reloadWith({ ticket: 7, instance: INSTANCE }, "/about");
+      await waitFor(() =>
+        expect(readRouteBindings.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      await flush();
+
+      // No basis asked of a frame that does not show the section.
+      expect(basisPosts()).toHaveLength(1);
+      expect(sectionStatus()).toBeNull();
+      expect(inspectorNotice()).toBeNull();
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("a section-missing answer from a frame on another page is not said as can't be edited", async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      // In this round the frame now names another page.
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/about",
+      });
+      await flush();
+
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "section-missing",
+      });
+      await flush();
+
+      expect(unconfirmedHint()).toBe(false);
+      expect(sectionStatus()).toBeNull();
+    });
+
+    // Review finding 7: every author click other than a confirmed one
+    // deselects, including the clicks the locate path stops early.
+    /** The hero selected, with the not-applied hint on it. */
+    const heroWithHint = async () => {
+      readRouteBindings.mockResolvedValue(bindingView());
+      const token = await selectHero();
+      fromPreview({
+        type: "morph:storefront-preview-section-presentation-ack",
+        operationId: token.operationId,
+        token,
+        status: "not-applied",
+        reason: "section-missing",
+      });
+      await flush();
+      expect(unconfirmedHint()).toBe(true);
+    };
+
+    it("a click while the frame shows another page leaves no status behind", async () => {
+      await heroWithHint();
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/about",
+      });
+      await flush();
+
+      // A revision well past any the editor minted: an author click.
+      boundaryClick(100);
+      await flush();
+
+      expect(inspectorNotice()).toBeNull();
+      expect(sectionStatus()).toBeNull();
+      expect(basisPosts()).toHaveLength(1);
+    });
+
+    it("a click whose location is from another file version leaves no status behind", async () => {
+      await heroWithHint();
+
+      boundaryClick(100, DIGEST, "00000000");
+      await flush();
+
+      expect(vi.mocked(toast.info)).toHaveBeenCalledWith(
+        SOURCE_LOCATION_STALE_MESSAGE,
+        expect.anything(),
+      );
+      expect(inspectorNotice()).toBeNull();
+      expect(sectionStatus()).toBeNull();
+      expect(basisPosts()).toHaveLength(1);
+    });
+
+    it("the frame's answer to the editor's own request is not a click and keeps the status", async () => {
+      await heroWithHint();
+
+      // Revision 0 is never newer than the editor's own.
+      boundaryClick(0);
+      await flush();
+
+      expect(unconfirmedHint()).toBe(true);
+    });
+
+    // Review finding 6: "Checking…" is bounded. A view read for the new
+    // document that never answers clears the selection, with the hint, once
+    // the bound has passed.
+    it("a view read that never answers stops saying Checking after the bound, and clears the selection", async () => {
+      // Every timer the shell starts is on the faked clock, which also moves
+      // with real time, so the frame's message pump and the waits run.
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "setInterval",
+          "clearInterval",
+          "Date",
+        ],
+        shouldAdvanceTime: true,
+      });
+      readRouteBindings.mockResolvedValue(bindingView());
+      await selectHero();
+      readRouteBindings.mockImplementation(() => new Promise(() => {}));
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(sectionStatus()?.getAttribute("data-astro-section-status")).toBe(
+          "checking",
+        ),
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ASTRO_SELECTION_RECHECK_TIMEOUT_MS);
+      });
+
+      expect(sectionStatus()).toBeNull();
+      const notice = inspectorNotice();
+      expect(notice?.getAttribute("data-astro-design-notice")).toBe(
+        "unconfirmed",
+      );
+      expect(notice?.textContent ?? "").toContain(
+        "Couldn't restore your selection. Select the section again.",
+      );
+      expect(basisPosts()).toHaveLength(1);
+      expect(updateSectionProps).not.toHaveBeenCalled();
+    });
+
+    it("while Core's view is read again for the new document, the section says it is checking", async () => {
+      let answerView: (value: unknown) => void = () => {};
+      readRouteBindings.mockResolvedValue(bindingView());
+      await selectHero();
+      readRouteBindings.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answerView = resolve;
+          }),
+      );
+
+      await reloadWith({ ticket: 7, instance: INSTANCE });
+      await waitFor(() =>
+        expect(sectionStatus()?.getAttribute("data-astro-section-status")).toBe(
+          "checking",
+        ),
+      );
+      expect(inspectorNotice()?.getAttribute("data-astro-design-notice")).toBe(
+        "checking",
+      );
+      expect(basisPosts()).toHaveLength(1);
+
+      await act(async () => {
+        answerView(bindingView());
+      });
+      await waitFor(() => expect(basisPosts()).toHaveLength(2));
+      expect(sectionStatus()).toBeNull();
+    });
+
+    /**
+     * Review finding 1: every Astro click opens Code, and the Inspector and
+     * the sections panel are inside the Design surface, which Code makes
+     * aria-hidden, inert and invisible. The same notice (one focus state) is
+     * said in a status bar outside both mode surfaces while Code is shown.
+     *
+     * jsdom ignores `inert`, so a query cannot prove the author sees it; the
+     * cases check that no ancestor of the bar is inert or aria-hidden.
+     */
+    describe("in Code mode, where an Astro click lands", () => {
+      const statusBar = () =>
+        document.querySelector<HTMLElement>("[data-astro-design-status-bar]");
+      const outsideHiddenSurfaces = (element: Element) =>
+        element.closest('[inert], [aria-hidden="true"]') === null;
+
+      it("a hint said at the click is in the status bar, in the node mounted before it, outside the hidden Design surface", async () => {
+        modelCurrentBridge();
+        readRouteBindings.mockResolvedValue(bindingView());
+        await settled(context, HOME, BASIS_READY, {
+          serverData: START_DATA,
+          // Rendered before the start's snapshot: the click is refused.
+          servedContent: { ticket: 6, instance: INSTANCE },
+        });
+        await waitFor(() => expect(readRouteBindings).toHaveBeenCalled());
+        await flush();
+
+        // Mounted, and empty, before anything is said.
+        const bar = statusBar();
+        expect(bar).not.toBeNull();
+        expect(bar!.getAttribute("role")).toBe("status");
+        expect(bar!.getAttribute("aria-live")).toBe("polite");
+        expect(bar!.textContent).toBe("");
+
+        boundaryClick(1);
+        expect(
+          await screen.findByRole(
+            "textbox",
+            { name: "Code editor" },
+            { timeout: 15_000 },
+          ),
+        ).toBeTruthy();
+
+        expect(statusBar()).toBe(bar);
+        expect(bar!.getAttribute("data-astro-design-status-bar")).toBe(
+          "unconfirmed",
+        );
+        expect(bar!.textContent).toContain(
+          "This section can't be edited in Design right now.",
+        );
+        expect(bar!.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+        expect(bar!.textContent).toContain("hero");
+        expect(outsideHiddenSurfaces(bar!)).toBe(true);
+        // The Design copy is still kept, under the surface Code hides.
+        expect(inspectorPanel().closest("[inert]")).not.toBeNull();
+        expect(basisPosts()).toHaveLength(0);
+      });
+
+      it("a not-applied answer that arrives in Code is said in the bar as an update", async () => {
+        readRouteBindings.mockResolvedValue(bindingView());
+        const token = await selectHero();
+        const bar = statusBar()!;
+        expect(bar.textContent).toBe("");
+
+        fromPreview({
+          type: "morph:storefront-preview-section-presentation-ack",
+          operationId: token.operationId,
+          token,
+          status: "not-applied",
+          reason: "section-missing",
+        });
+        await flush();
+
+        expect(statusBar()).toBe(bar);
+        expect(bar.getAttribute("data-astro-design-status-bar")).toBe(
+          "unconfirmed",
+        );
+        expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+        expect(outsideHiddenSurfaces(bar)).toBe(true);
+      });
+
+      it("Checking… after a reload is said in the bar while Code is shown", async () => {
+        let answerView: (value: unknown) => void = () => {};
+        readRouteBindings.mockResolvedValue(bindingView());
+        await selectHero();
+        readRouteBindings.mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              answerView = resolve;
+            }),
+        );
+        const bar = statusBar()!;
+
+        await reloadWith({ ticket: 7, instance: INSTANCE });
+        await waitFor(() =>
+          expect(bar.getAttribute("data-astro-design-status-bar")).toBe(
+            "checking",
+          ),
+        );
+        expect(bar.textContent).toContain(
+          "Checking whether this section can be edited in Design…",
+        );
+        expect(bar.textContent).toContain(ASTRO_SELECTION_RECHECKING_MESSAGE);
+        expect(outsideHiddenSurfaces(bar)).toBe(true);
+
+        await act(async () => {
+          answerView(bindingView());
+        });
+        await waitFor(() => expect(basisPosts()).toHaveLength(2));
+        expect(statusBar()).toBe(bar);
+        expect(bar.textContent).toBe("");
+      });
+
+      it("a new selection clears the old hint from the bar", async () => {
+        await heroWithHint();
+        const bar = statusBar()!;
+        expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+
+        // A confirmed click on the section again: a new selection.
+        boundaryClick(2);
+        await flush();
+
+        expect(basisPosts()).toHaveLength(2);
+        expect(statusBar()).toBe(bar);
+        expect(bar.getAttribute("data-astro-design-status-bar")).toBe("none");
+        expect(bar.textContent).toBe("");
+      });
+
+      it("a page change clears the old hint from the bar", async () => {
+        await heroWithHint();
+        const bar = statusBar()!;
+        expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+
+        act(() =>
+          showEditorPage({
+            template: "page",
+            templateId: TEMPLATE_ID,
+            routePath: ROUTE_PATH,
+          }),
+        );
+        await flush();
+
+        expect(statusBar()).toBe(bar);
+        expect(bar.textContent).toBe("");
+        expect(sectionStatus()).toBeNull();
+      });
+
+      it("back in Design the bar is quiet, and the Inspector and section row say it", async () => {
+        await heroWithHint();
+        const bar = statusBar()!;
+        expect(bar.textContent).toContain(ASTRO_BASIS_UNCONFIRMED_MESSAGE);
+
+        fireEvent.click(
+          within(document.querySelector("header")!).getByRole("button", {
+            name: "Design",
+          }),
+        );
+        await waitFor(() => expect(bar.textContent).toBe(""));
+
+        expect(unconfirmedHint()).toBe(true);
+        expect(inspectorPanel().closest("[inert]")).toBeNull();
+      });
     });
   });
 });
