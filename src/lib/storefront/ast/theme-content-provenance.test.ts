@@ -11,10 +11,8 @@ import {
 } from "@/lib/test-utils/binding-acceptance-cases";
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
-  DESTRUCTURE_HOME,
   DESTRUCTURE_TAINT_CASES,
-  START_FIXTURE,
-  startTwin,
+  destructureStartFiles,
 } from "@/lib/test-utils/astro-b1-samples";
 import {
   differentialResult,
@@ -591,16 +589,7 @@ describe("destructuring taints the stored value the local can reach (Start)", ()
   for (const testCase of DESTRUCTURE_TAINT_CASES) {
     it(`${testCase.id}: ${testCase.title}`, () => {
       const analysis = analyzeB1Route(
-        [
-          ...START_FIXTURE,
-          {
-            path: routeFile,
-            content: startTwin(
-              `${DESTRUCTURE_HOME}${testCase.body}`,
-              testCase.jsx ?? "<Hero {...hero} />",
-            ),
-          },
-        ],
+        destructureStartFiles(testCase, routeFile),
         routeFile,
       );
       if (testCase.taint) expect(analysis.taints).toContain(testCase.taint);

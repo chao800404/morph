@@ -541,6 +541,10 @@ export type DestructureTaintCase = Readonly<{
   body: string;
   /** Rendered after `body`; `<Hero {...hero} />` when absent. */
   jsx?: string;
+  /** Import statements placed before `home` is read. */
+  imports?: string;
+  /** Other Theme files the route can reach. */
+  extraFiles?: readonly Readonly<{ path: string; content: string }>[];
   taint: string | null;
   before: string | null;
   expected: readonly AstroB1Summary[];
@@ -726,4 +730,154 @@ export const DESTRUCTURE_TAINT_CASES: readonly DestructureTaintCase[] = [
     // No claim left, so no section either.
     expected: [{ name: "Hero", section: null, claims: [] }],
   },
+  {
+    id: "Y1",
+    title: "defineProperty on getPrototypeOf({}) taints every root",
+    body:
+      'Object.defineProperty(Object.getPrototypeOf({}), "alternate", { get() { return this.card; } });\n' +
+      "const { alternate: q = {} } = home;\n" +
+      'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y2",
+    title: "__defineGetter__ on a prototype taints every root",
+    body:
+      'Object.prototype.__defineGetter__("alternate", function () { return this.card; });\n' +
+      "const { alternate: q = {} } = home;\n" +
+      'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y3",
+    title: "Reflect.defineProperty on Reflect.getPrototypeOf taints every root",
+    body:
+      'Reflect.defineProperty(Reflect.getPrototypeOf({}), "alternate", { get() { return this.card; } });\n' +
+      "const { alternate: q = {} } = home;\n" +
+      'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y4",
+    title: "defineProperties on Object.prototype taints every root",
+    body:
+      "Object.defineProperties(Object.prototype, { alternate: { get() { return this.card; } } });\n" +
+      "const { alternate: q = {} } = home;\n" +
+      'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y5",
+    title: "a kept getPrototypeOf result taints every root",
+    body:
+      "const proto = Object.getPrototypeOf({});\n" + "proto.alternate = 1;\n",
+    taint: "page:*",
+    before: null,
+    expected: [HERO_NONE],
+  },
+  {
+    id: "Y6",
+    title: "a prototype write in an imported helper taints every root",
+    imports: 'import "../lib/proto-helper";\n',
+    extraFiles: [
+      {
+        path: "src/lib/proto-helper.ts",
+        content:
+          'Object.defineProperty(Object.prototype, "alternate", { get() { return this.card; } });\nexport {};\n',
+      },
+    ],
+    body: "const { alternate: q = {} } = home;\n" + 'q.title = "override";\n',
+    jsx: "<Card {...home.card} />",
+    taint: "page:*",
+    before: null,
+    expected: [{ name: "Card", section: "card", claims: [] }],
+  },
+  {
+    id: "Y6c",
+    title: "control: the same helper without the prototype write",
+    imports: 'import "../lib/proto-helper";\n',
+    extraFiles: [
+      {
+        path: "src/lib/proto-helper.ts",
+        content: "export const alternate = 1;\n",
+      },
+    ],
+    body: "",
+    jsx: "<Card {...home.card} />",
+    taint: null,
+    before: null,
+    expected: [CARD_BOTH],
+  },
+  {
+    id: "Z1",
+    title: "a plain __proto__ string is not a prototype write",
+    body: 'const note = "__proto__";\n',
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+  {
+    id: "Z2",
+    title: "replacing a copy's own scalar leaves the original's fields",
+    body: "const copy = { ...hero };\ncopy.title = 1;\n",
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+  {
+    id: "Z3",
+    title: "replacing a copy's own slot leaves the original's fields",
+    body: "const copy = { ...home };\ncopy.hero = {};\ndelete copy.card;\n",
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
+  {
+    id: "Z4",
+    title: "comparing prototypes is not a prototype write",
+    body: "const plain = Object.getPrototypeOf({}) === Object.prototype;\n",
+    taint: null,
+    before: null,
+    expected: [HERO_BOTH],
+  },
 ];
+
+/** The Start files for one destructuring case. */
+export function destructureStartFiles(
+  testCase: DestructureTaintCase,
+  routeFile = "src/routes/index.tsx",
+): Readonly<{ path: string; content: string }>[] {
+  return [
+    ...START_FIXTURE,
+    ...(testCase.extraFiles ?? []),
+    {
+      path: routeFile,
+      content:
+        (testCase.imports ?? "") +
+        startTwin(
+          `${DESTRUCTURE_HOME}${testCase.body}`,
+          testCase.jsx ?? "<Hero {...hero} />",
+        ),
+    },
+  ];
+}
+
+/** The `.astro` page for one destructuring case. */
+export function destructureAstroSource(testCase: DestructureTaintCase): string {
+  return astroPage(
+    `${testCase.imports ?? ""}${DESTRUCTURE_HOME}${testCase.body}`,
+    testCase.jsx ?? "<Hero {...hero} />",
+  );
+}

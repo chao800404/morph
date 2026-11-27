@@ -622,6 +622,105 @@ export const PROVENANCE_TAINT_BASELINE_51AD77B: DifferentialBaseline = {
         },
       ],
     },
+    "destructure:Y1": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y2": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y3": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y4": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y5": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
+    "destructure:Y6": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y6c": {
+      taints: [],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Z1": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
+    "destructure:Z2": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
+    "destructure:Z3": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
+    "destructure:Z4": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
   },
   astro: {
     "sample:A1": {
@@ -1115,6 +1214,105 @@ export const PROVENANCE_TAINT_BASELINE_51AD77B: DifferentialBaseline = {
         {
           name: "Hero",
           claims: ["hero.title"],
+        },
+      ],
+    },
+    "destructure:Y1": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y2": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y3": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y4": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y5": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
+    "destructure:Y6": {
+      taints: ["set|page:title"],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Y6c": {
+      taints: [],
+      instances: [
+        {
+          name: "Card",
+          claims: ["card.title"],
+        },
+      ],
+    },
+    "destructure:Z1": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
+    "destructure:Z2": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
+    "destructure:Z3": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
+        },
+      ],
+    },
+    "destructure:Z4": {
+      taints: [],
+      instances: [
+        {
+          name: "Hero",
+          claims: ["hero.desc", "hero.title"],
         },
       ],
     },

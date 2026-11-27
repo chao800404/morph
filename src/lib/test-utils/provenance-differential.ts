@@ -12,11 +12,10 @@
  */
 import {
   ASTRO_B1_SAMPLES,
-  DESTRUCTURE_HOME,
   DESTRUCTURE_TAINT_CASES,
   START_FIXTURE,
-  astroPage,
-  startTwin,
+  destructureAstroSource,
+  destructureStartFiles,
 } from "./astro-b1-samples";
 import { B1_INTEGRATION_CASES } from "./binding-acceptance-b1-cases";
 import {
@@ -38,6 +37,7 @@ export type AstroDifferentialFixture = Readonly<{
   id: string;
   routeFile: string;
   source: string;
+  extraFiles: readonly SourceFile[];
 }>;
 
 /** One fixture's result: sorted taints and each instance's sorted claims. */
@@ -87,16 +87,7 @@ export function startDifferentialFixtures(): StartDifferentialFixture[] {
     fixtures.push({
       id: `destructure:${testCase.id}`,
       routeFile,
-      files: [
-        ...START_FIXTURE,
-        {
-          path: routeFile,
-          content: startTwin(
-            `${DESTRUCTURE_HOME}${testCase.body}`,
-            testCase.jsx ?? "<Hero {...hero} />",
-          ),
-        },
-      ],
+      files: destructureStartFiles(testCase, routeFile),
     });
   }
   return fixtures;
@@ -110,16 +101,15 @@ export function astroDifferentialFixtures(): AstroDifferentialFixture[] {
       id: `sample:${sample.id}`,
       routeFile: sample.routeFile,
       source: sample.source,
+      extraFiles: [],
     });
   }
   for (const testCase of DESTRUCTURE_TAINT_CASES) {
     fixtures.push({
       id: `destructure:${testCase.id}`,
       routeFile: "src/pages/index.astro",
-      source: astroPage(
-        `${DESTRUCTURE_HOME}${testCase.body}`,
-        testCase.jsx ?? "<Hero {...hero} />",
-      ),
+      source: destructureAstroSource(testCase),
+      extraFiles: testCase.extraFiles ?? [],
     });
   }
   return fixtures;

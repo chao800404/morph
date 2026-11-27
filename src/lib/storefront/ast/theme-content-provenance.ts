@@ -517,32 +517,59 @@ const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 /**
  * Whether a module can change what a property read returns without writing
- * through a traced path (an inherited getter, a replaced prototype):
- * `__proto__` anywhere, a `setPrototypeOf` call, or a write into a
- * `.prototype` (`X.prototype.y = …`, or `X.prototype` handed to a call such
- * as `Object.assign` or `Object.defineProperty`). Reads such as
- * `Object.prototype.hasOwnProperty.call(…)` do not count. Such a module
- * taints every root it reads (fail closed).
+ * through a traced path (an inherited getter, a replaced prototype). Any of
+ * these counts:
+ *
+ * - `__proto__` as an identifier, or as a string used as a key;
+ * - `setPrototypeOf`, `__defineGetter__` or `__defineSetter__` anywhere;
+ * - a prototype (`X.prototype`, `getPrototypeOf(…)`) that is written
+ *   (`X.prototype.y = …`), handed to a call (`Object.defineProperty`,
+ *   `Reflect.defineProperty`, `Object.defineProperties`, `Object.assign`,
+ *   `Reflect.set`, …) or kept as a value; `getPrototypeOf` itself kept as a
+ *   value counts too.
+ *
+ * Reads such as `Object.prototype.hasOwnProperty.call(…)` do not count.
+ * Prototypes are shared by every module, so the caller checks every module
+ * the route can reach and taints every root (fail closed).
  */
 function changesPrototypes(
   ast: ParsedThemeAst,
   oracle: B1ScopeOracle,
 ): boolean {
-  const writesThrough = (member: AnyNode): boolean => {
+  const ALWAYS = new Set([
+    "setPrototypeOf",
+    "__defineGetter__",
+    "__defineSetter__",
+  ]);
+  /** Whether a prototype-valued expression is written, handed out or kept. */
+  const writesThrough = (start: AnyNode): boolean => {
     // Climb `X.prototype.a.b` to its outermost member, then ask how it is used.
-    let cursor = member;
+    let cursor = start;
     let parent = oracle.parentOf(cursor);
-    while (isMember(parent) && parent.object === cursor) {
+    let climbed = false;
+    while (
+      parent &&
+      ((isMember(parent) && parent.object === cursor) ||
+        (isTransparentExpression(parent) && parent.expression === cursor))
+    ) {
+      if (isMember(parent)) climbed = true;
       cursor = parent;
       parent = oracle.parentOf(cursor);
     }
     if (!parent) return false;
-    if (cursor === member && isCall(parent) && parent.callee !== cursor) {
-      return true; // `f(X.prototype)`: the call may change it.
+    if (isCall(parent) && parent.callee !== cursor) {
+      return true; // `f(proto)` or `f(proto.a)`: the call may change it.
     }
-    if (cursor === member) {
-      // `X.prototype` used as a value elsewhere (assigned, returned, …).
-      return !(isMember(parent) || parent.type === "ExpressionStatement");
+    if (!climbed) {
+      // The prototype itself as a value: compared is fine, anything else
+      // (assigned, returned, stored) may be changed later.
+      return !(
+        parent.type === "ExpressionStatement" ||
+        (parent.type === "BinaryExpression" &&
+          ["===", "!==", "==", "!=", "instanceof", "in"].includes(
+            parent.operator,
+          ))
+      );
     }
     return (
       (parent.type === "AssignmentExpression" && parent.left === cursor) ||
@@ -554,22 +581,66 @@ function changesPrototypes(
       parent.type === "ArrayPattern" ||
       parent.type === "RestElement" ||
       (parent.type === "ObjectProperty" &&
-        oracle.parentOf(parent)?.type === "ObjectPattern") ||
-      (isCall(parent) && parent.callee !== cursor)
+        oracle.parentOf(parent)?.type === "ObjectPattern")
     );
+  };
+  const isKeyPosition = (literal: AnyNode): boolean => {
+    const parent = oracle.parentOf(literal);
+    if (!parent) return false;
+    if (
+      (parent.type === "ObjectProperty" ||
+        parent.type === "ObjectMethod" ||
+        parent.type === "ClassProperty" ||
+        parent.type === "ClassMethod") &&
+      parent.key === literal
+    ) {
+      return true;
+    }
+    return isMember(parent) && parent.property === literal;
   };
   const visit = (value: unknown): boolean => {
     if (Array.isArray(value)) return value.some(visit);
     if (!value || typeof value !== "object") return false;
     const node = value as AnyNode;
     if (typeof node.type !== "string") return false;
-    if (node.type === "Identifier" && node.name === "__proto__") return true;
-    if (node.type === "StringLiteral" && node.value === "__proto__")
+    if (node.type === "Identifier") {
+      if (node.name === "__proto__" || ALWAYS.has(node.name)) return true;
+      if (node.name === "getPrototypeOf") {
+        // Only `X.getPrototypeOf(…)` is followed; the function kept as a
+        // value could be called anywhere.
+        const member = oracle.parentOf(node);
+        const call = member ? oracle.parentOf(member) : null;
+        const followed =
+          isMember(member) &&
+          member.property === node &&
+          isCall(call) &&
+          call.callee === member;
+        if (!followed) return true;
+      }
+    }
+    if (
+      node.type === "StringLiteral" &&
+      (node.value === "__proto__" || ALWAYS.has(node.value)) &&
+      isKeyPosition(node)
+    ) {
       return true;
-    if (isMember(node)) {
-      const key = staticKey(node);
-      if (key === "setPrototypeOf") return true;
-      if (key === "prototype" && writesThrough(node)) return true;
+    }
+    if (
+      isMember(node) &&
+      staticKey(node) === "prototype" &&
+      writesThrough(node)
+    ) {
+      return true;
+    }
+    if (isCall(node)) {
+      const callee = node.callee ? unwrapTs(node.callee) : null;
+      if (
+        isMember(callee) &&
+        staticKey(callee) === "getPrototypeOf" &&
+        writesThrough(node)
+      ) {
+        return true;
+      }
     }
     return Object.entries(node).some(
       ([key, child]) =>
@@ -1044,15 +1115,6 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
         return false;
     }
   };
-  // A module that can change what a property read returns (an inherited
-  // getter, a replaced prototype) can make any traced path stand for any
-  // other under the same root: every root this module reads is tainted.
-  if (changesPrototypes(ctx.ast, oracle)) {
-    if (ctx.contentBinding) taints.add(taintKey("content", null));
-    if (ctx.morphBinding) taints.add(taintKey("page", null));
-    if (ctx.routeBinding) taints.add(taintKey("loader", null));
-  }
-
   /**
    * Visits per node, keyed by root, path and the widening in effect: the
    * same expression reached as two different values (`c ? a : b`) is traced
@@ -1064,16 +1126,20 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
   let record = (key: string): void => {
     taints.add(key);
   };
-  /** Bindings whose widening is in effect, innermost last. */
-  const widening: AnyNode[] = [];
-  const wideningIds = new Map<AnyNode, number>();
-  const wideningKey = () =>
-    widening
+  /**
+   * The widenings (a binding) and copies (an object literal) in effect,
+   * innermost last. Each changes what is recorded, so it is part of the
+   * visit key.
+   */
+  const contexts: AnyNode[] = [];
+  const contextIds = new Map<AnyNode, number>();
+  const contextKey = () =>
+    contexts
       .map((id) => {
-        let n = wideningIds.get(id);
+        let n = contextIds.get(id);
         if (n === undefined) {
-          n = wideningIds.size;
-          wideningIds.set(id, n);
+          n = contextIds.size;
+          contextIds.set(id, n);
         }
         return n;
       })
@@ -1089,7 +1155,7 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
     at: string[],
     check: () => void,
   ): void => {
-    if (widening.includes(id)) {
+    if (contexts.includes(id)) {
       // The local flows back into its own initializer: give up on it.
       record(taintKey(root, null));
       return;
@@ -1101,14 +1167,46 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
       if (key === wholeRoot) outer(key);
       else reached = true;
     };
-    widening.push(id);
+    contexts.push(id);
     try {
       check();
     } finally {
-      widening.pop();
+      contexts.pop();
       record = outer;
     }
     if (reached) outer(taintKey(root, at, "in"));
+  };
+  /**
+   * Runs `check` for `{ ...x }` (`container`), followed as `x` at `at`: the
+   * copy's own properties are new, so replacing or deleting one of them
+   * (`copy.k = …`, exactly one key below `at`) changes nothing stored and is
+   * dropped. Everything deeper is shared with `x` and kept.
+   */
+  const asCopy = (
+    container: AnyNode,
+    root: B1Root,
+    at: readonly string[],
+    check: () => void,
+  ): void => {
+    if (contexts.includes(container)) {
+      // The copy flows back into itself: give up on it.
+      record(taintKey(root, null));
+      return;
+    }
+    const outer = record;
+    const own = `set|${root}:${at.length > 0 ? `${at.join(".")}.` : ""}`;
+    record = (key) => {
+      const rest = key.startsWith(own) ? key.slice(own.length) : null;
+      if (rest !== null && rest !== "" && !rest.includes(".")) return;
+      outer(key);
+    };
+    contexts.push(container);
+    try {
+      check();
+    } finally {
+      contexts.pop();
+      record = outer;
+    }
   };
   /** Checks every use of the value `node` evaluates to (a traced object). */
   const checkUse = (
@@ -1134,7 +1232,7 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
         ),
       );
     };
-    const visitKey = `${root}|${wideningKey()}|${path === null ? "*" : JSON.stringify(path)}`;
+    const visitKey = `${root}|${contextKey()}|${path === null ? "*" : JSON.stringify(path)}`;
     const seen = visited.get(start) ?? new Set<string>();
     if (seen.has(visitKey)) return;
     if (seen.size >= MAX_VISITS_PER_NODE) return taint(null);
@@ -1226,9 +1324,11 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
           const container = oracle.parentOf(parent);
           if (container?.type !== "ObjectExpression") return taint(path);
           // `{ ...x }`: a shallow copy whose nested values are x's own, so
-          // `copy.hero.title = …` changes x. Follow the copy as x (replacing
-          // one of its own properties is then over-reported, never missed).
-          return checkUse(container, root, path);
+          // `copy.hero.title = …` changes x. Follow the copy as x.
+          if (path === null) return checkUse(container, root, path);
+          return asCopy(container, root, path, () =>
+            checkUse(container, root, path),
+          );
         }
         // A component's props: a shallow copy. Its own properties are new;
         // values nested inside them are shared and can still be changed by
@@ -2337,6 +2437,16 @@ function analyzeRouteModule(
   // route's bindings.
   const taints: TaintSet = new Set();
   collectTaints(ctx, taints);
+  // A module that can change what a property read returns (an inherited
+  // getter, a replaced prototype) can make any traced path stand for any
+  // other. Prototypes are shared, so this holds for every module the route
+  // reaches, whether or not it reads content itself.
+  const taintEveryRoot = () => {
+    taints.add(taintKey("content", null));
+    taints.add(taintKey("loader", null));
+    taints.add(taintKey("page", null));
+  };
+  if (changesPrototypes(ast, ctx.oracle)) taintEveryRoot();
   const reachable = reachableThemeModules(
     normalizedRoute,
     normalizedFiles.map(({ path, content }) => ({ path, content })),
@@ -2363,6 +2473,7 @@ function analyzeRouteModule(
     if (!other) continue;
     const otherOracle = backend(other);
     const otherPartial = { ast: other, oracle: otherOracle, path: file.path };
+    if (changesPrototypes(other, otherOracle)) taintEveryRoot();
     const otherContent = contentImportBinding(otherPartial, filePaths, profile);
     const otherMorph = morphImportBinding(otherPartial, filePaths, profile);
     if (otherContent.aliases > 1) taints.add(taintKey("content", null));

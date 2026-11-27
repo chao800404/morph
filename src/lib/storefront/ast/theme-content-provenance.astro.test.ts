@@ -28,8 +28,8 @@ import {
   ASTRO_B1_SAMPLES,
   ASTRO_FIXTURE,
   ASTRO_STRICTER_THAN_START,
-  DESTRUCTURE_HOME,
   DESTRUCTURE_TAINT_CASES,
+  destructureAstroSource,
   HERO_BOTH,
   START_FIXTURE,
   astroPage,
@@ -691,10 +691,8 @@ describe("destructuring taints the stored value the local can reach (Astro)", ()
     it(`${testCase.id}: ${testCase.title}`, async () => {
       const analysis = await analyzeAstro(
         "src/pages/index.astro",
-        astroPage(
-          `${DESTRUCTURE_HOME}${testCase.body}`,
-          testCase.jsx ?? "<Hero {...hero} />",
-        ),
+        destructureAstroSource(testCase),
+        { extraFiles: testCase.extraFiles ?? [] },
       );
       if (testCase.taint) expect(analysis.taints).toContain(testCase.taint);
       expect(summarize(analysis)).toEqual(testCase.expected);
@@ -715,7 +713,9 @@ describe("the taint pass is never narrower than 51ad77b (Astro)", () => {
   for (const fixture of fixtures) {
     it(fixture.id, async () => {
       const head = differentialResult(
-        await analyzeAstro(fixture.routeFile, fixture.source),
+        await analyzeAstro(fixture.routeFile, fixture.source, {
+          extraFiles: fixture.extraFiles,
+        }),
       );
       expect(narrowerThanBase(head, baseline.astro[fixture.id]!)).toBeNull();
     });
