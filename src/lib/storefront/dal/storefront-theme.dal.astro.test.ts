@@ -32,6 +32,20 @@ import {
   ASTRO_FIXTURE,
   astroPage,
 } from "@/lib/test-utils/astro-b1-samples";
+import {
+  D3_EXPECTED_CLAIMS,
+  D3_HERO,
+  D3_HERO_FIELDS_PATH,
+  D3_HERO_PATH,
+  D3_REFUSED_PATH,
+  d3AboutPage,
+  d3HeroFields,
+  d3HomePage,
+  d3RefusedPage,
+  d3ReleaseAboutPage,
+  d3ReleaseHomePage,
+  d3SidecarPage,
+} from "@/lib/test-utils/astro-d3-cases";
 import { astroSourceDigest } from "../source-language/astro-instance-identity";
 import { SOURCE_ANALYSIS_ROUTE_STRUCTURE } from "../dto/storefront-theme.dto";
 
@@ -1400,5 +1414,91 @@ describe("the M2 case's home page, from an empty Theme to a stored draft", () =>
       title: "Same",
       subtitle: "Same",
     });
+  });
+});
+
+/**
+ * D3: Core's binding view of the very pages the D3 container cases open
+ * (`src/lib/test-utils/astro-d3-cases.ts`). A case assumes these claims; a
+ * fixture that binds otherwise fails here first.
+ */
+describe("the D3 container fixtures, as Core's binding view reads them", () => {
+  const writeFiles = (files: readonly { path: string; content: string }[]) => {
+    const upsert = sqlite.prepare(
+      `INSERT OR REPLACE INTO storefront_theme_files (id, storefront_id, theme_id, path, content, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'now', 'now')`,
+    );
+    for (const file of files) {
+      upsert.run(`${THEME}:${file.path}`, STOREFRONT, THEME, file.path, file.content);
+    }
+  };
+  const claimsOf = async (routePath: string) => {
+    const result = await read({ routePath });
+    expect(result).toMatchObject({
+      status: "view",
+      view: { status: { kind: "confirmed" } },
+    });
+    if (result.status !== "view") return [];
+    return result.view.instances.map((instance) => [
+      instance.section,
+      instance.declaredFields,
+      instance.claims.map(({ slot, ...claim }) => {
+        expect(slot).toBe(instance.section);
+        return claim;
+      }),
+    ]);
+  };
+  const expected = (sections: readonly string[]) =>
+    sections.map((section) => [
+      section,
+      ["title", "desc"],
+      D3_EXPECTED_CLAIMS[section],
+    ]);
+
+  beforeEach(() => {
+    mock.env.ASTRO_PARSER = parser.binding;
+    writeFiles([
+      { path: D3_HERO_PATH, content: D3_HERO },
+      { path: D3_HERO_FIELDS_PATH, content: d3HeroFields() },
+    ]);
+  });
+
+  it("group 1: field-wise, cross-name alias, renamed destructuring, literal before the spread; two instances on /about", async () => {
+    writeFiles([
+      { path: INDEX, content: d3HomePage() },
+      { path: ABOUT, content: d3AboutPage() },
+    ]);
+    expect(await claimsOf("/")).toEqual(expected(["p1", "p2", "c3", "c4a"]));
+    expect(await claimsOf("/about")).toEqual(expected(["teamA", "teamB"]));
+  });
+
+  it("group 2: each refused field is claimed by nothing, its sibling is; literals only render no section", async () => {
+    writeFiles([
+      {
+        path: `src/pages${D3_REFUSED_PATH}.astro`,
+        content: d3RefusedPage("D3 SALE"),
+      },
+    ]);
+    expect(await claimsOf(D3_REFUSED_PATH)).toEqual([
+      ...expected(["p4a", "p3", "p6", "r9"]),
+      [null, ["title", "desc"], []],
+    ]);
+  });
+
+  it("the sidecar and release pages spread one section each", async () => {
+    writeFiles([{ path: INDEX, content: d3SidecarPage() }]);
+    expect(await claimsOf("/")).toEqual([
+      ["card", ["title", "desc"], [{ field: "desc" }, { field: "title" }]],
+    ]);
+    writeFiles([
+      { path: INDEX, content: d3ReleaseHomePage() },
+      { path: ABOUT, content: d3ReleaseAboutPage() },
+    ]);
+    expect(await claimsOf("/")).toEqual([
+      ["hero", ["title", "desc"], [{ field: "desc" }, { field: "title" }]],
+    ]);
+    expect(await claimsOf("/about")).toEqual([
+      ["team", ["title", "desc"], [{ field: "desc" }, { field: "title" }]],
+    ]);
   });
 });

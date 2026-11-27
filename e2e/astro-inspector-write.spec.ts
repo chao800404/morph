@@ -1,52 +1,86 @@
 import { randomUUID } from "node:crypto";
 
-import { expect, test, type Frame, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { queryLifecycleD1 } from "../scripts/verify-published-artifact.mjs";
 import { EDITOR_PATH } from "./helpers";
+import {
+  SECTION_WRITE,
+  acceptedBasisOps,
+  astroCaseTheme,
+  astroContent,
+  astroField,
+  ensureSelection,
+  frameShowing,
+  liveFrame,
+  openEditorAt,
+  openPageFromList,
+  recordEditor,
+  selectCase,
+  withProps,
+  writeField,
+  type D3Document,
+  type EditorRecord,
+} from "./helpers/astro-d3";
 import { isServerFn } from "./helpers/editor-writes-paused";
+import { signedInPage } from "./native-acceptance";
 import {
-  THEMES,
-  expectHydrated,
-  serverFn,
-  signedInPage,
-  storefrontHarness,
-} from "./native-acceptance";
-import {
+  removeThemeFiles,
   themeScopeFromEditorPath,
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
 import { astroConfig } from "../src/lib/storefront/theme-framework/astro-native-prerender.fixtures";
+import {
+  D3_DEFAULT_DESC,
+  D3_HERO,
+  D3_HERO_FIELDS_PATH,
+  D3_HERO_PATH,
+  D3_P4A_LITERAL,
+  D3_REFUSED_PATH,
+  d3AboutPage,
+  d3HeroFields,
+  d3HomePage,
+  d3RefusedPage,
+  d3Row,
+  d3SidecarPage,
+} from "../src/lib/test-utils/astro-d3-cases";
 
 /**
- * Astro M2 PR 3, the first result: on a real Astro Live Preview (`astro dev`
- * in the container, behind the preview Worker), a click in Design on a
- * section Core's binding view confirms selects it and opens its declared
- * fields in the Inspector (owner decision D2). Typing into a field writes
- * the Document through the editor's one content write path, gated on the
- * section's acknowledged basis (option B, the #399 proof), and carries the
- * identity and Core's component digest. Then:
+ * Astro Inspector writes on a real Astro Live Preview (`astro dev` in the
+ * container, behind the preview Worker): M2 PR 3's first write, and the
+ * Astro M2 D3 coverage, equal to Start's B1 and binding acceptance (the
+ * shared case table, `~/handoff/2026-11-27/binding-case-table.md`), written
+ * as native `.astro` pages (`src/lib/test-utils/astro-d3-cases.ts`, whose
+ * binding Core's view is held to in `storefront-theme.dal.astro.test.ts`).
  *
- * 1. the raw D1 draft holds the typed value at exactly that field, one
- *    draft generation on, and nothing else in the Document changed;
- * 2. the page, after sync -> confirm -> reload, shows it;
- * 3. a second field typed after that reload is sent only once the
- *    reloaded page acknowledged the section again, and it may hold the same
- *    text as the first without either crossing into the other;
- * 4. after an editor reload, the page, the Inspector and D1 agree.
+ * A click in Design on a section Core's binding view confirms selects it
+ * and opens its declared fields in the Inspector (owner decision D2).
+ * Typing into a field writes the Document through the editor's one content
+ * write path, gated on the section's acknowledged basis (option B, the #399
+ * proof), and carries the identity and Core's component digest. In every
+ * case:
  *
- * The Theme row is inserted by the harness (no product entry creates an
- * Astro Theme yet), and one starting draft is seeded into this run's D1 as
- * in astro-basis-ack.spec.ts. Every value after that is written by the
- * Inspector.
+ * - every field of every section starts with the same text (Start's
+ *   equal-text trap), so an edit is told from its neighbours only by where
+ *   it lands;
+ * - after each write the whole raw D1 draft Document equals the one before
+ *   with exactly that field changed, one draft generation on;
+ * - the next input waits for the reloaded page's own basis ack;
+ * - a field Core does not prove writable for the call site is shown as
+ *   controlled by code, has no input, and nothing is written for it, while
+ *   its sibling still edits.
+ *
+ * Groups, each on an Astro Theme of its own (`e2e/helpers/astro-d3.ts`):
+ * the M2 PR 3 hero (D3 rows 1, 10, 11, 15, 16, 19, and a stale edit, row
+ * 20); the editable shapes (rows 2-4, 12, 17); the shapes Design must not
+ * write (rows 5-9); the `.fields.ts` declaration (row 30).
  *
  * Container transport only, with Astro on (`MORPH_ASTRO_THEMES=1`) and the
  * `.astro` parser behind Core's `ASTRO_PARSER` (`MORPH_E2E_ASTRO_PARSER=1`):
  * without it Core's binding view refuses every click. Every gate is a file
  * gate: where one does not hold the whole file skips, and its container
  * acceptance (scripts/container-acceptance-targets/astro-inspector-write.mjs)
- * then fails for the missing case rather than passing.
+ * then fails for the missing cases rather than passing.
  */
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
 const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
@@ -67,12 +101,32 @@ test.skip(
   "Core's binding view needs the .astro parser behind ASTRO_PARSER; run with MORPH_E2E_ASTRO_PARSER=1.",
 );
 
-const PREVIEW =
-  "/src/server/storefront/storefront-theme-preview-server.serverFn.ts";
-const SECTION_WRITE = "updateStorefrontThemeSectionProps";
+/** A case's own Theme, on the seeded store's storefront. */
+function caseTheme(name: string) {
+  if (!EDITOR_PATH || !STATE_DIR) return null;
+  const scope: ThemeScope = {
+    ...themeScopeFromEditorPath(EDITOR_PATH),
+    themeId: randomUUID(),
+  };
+  return astroCaseTheme({
+    name,
+    editorPath: EDITOR_PATH,
+    stateDir: STATE_DIR,
+    scope,
+  });
+}
 
-/** The M2 case's home page: `<Hero {...hero} />`, fields in `.fields.ts`. */
-const FILES = [
+/** The text every field of a case starts with. */
+const sale = (tag: string) => `d3-${tag}-sale-${randomUUID()}`;
+
+/** Said for a click Core confirms no writable field of. */
+const CONTROLLED_BY_CODE =
+  "This content is controlled by code, so it can't be edited in Design. Edit it in Code mode.";
+const TITLE_BY_CODE =
+  "Title is controlled by code on this page. Edit it in Code mode.";
+
+/** The M2 PR 3 case's home page: `<Hero {...hero} />`, fields in `.fields.ts`. */
+const PR3_FILES = [
   { path: "astro.config.mjs", content: astroConfig() },
   {
     path: "src/components/Hero.astro",
@@ -123,81 +177,29 @@ const { hero } = home;
   },
 ];
 
-type Hero = { title: string; subtitle: string };
-type DraftRow = {
-  generation: number;
-  sections: Array<{
-    id: string;
-    type?: string;
-    enabled?: boolean;
-    props?: Record<string, unknown> | null;
-  }>;
-};
-
-/** The live preview's frame, once the editor framed it. */
-async function liveFrame(page: Page): Promise<Frame> {
-  const iframe = page.locator("iframe").first();
-  await expect(iframe).toBeVisible({ timeout: 180_000 });
-  const host = new URL((await iframe.getAttribute("src"))!).hostname;
-  let frame: Frame | null = null;
-  await expect
-    .poll(() => (frame = page.frame({ url: (url) => url.hostname === host })), {
-      timeout: 180_000,
-    })
-    .toBeTruthy();
-  return frame!;
-}
-
-/**
- * The live frame once `selector` in it shows `text`. A write's sync ->
- * confirm -> reload can replace the canvas frame while this waits, so the
- * frame is looked up again on every poll rather than held from before.
- */
-async function frameShowing(
-  page: Page,
-  selector: string,
-  text: string,
-): Promise<Frame> {
-  await expect
-    .poll(
-      async () => {
-        const frame = await liveFrame(page);
-        return frame
-          .locator(selector)
-          .textContent({ timeout: 5_000 })
-          .catch(() => null);
-      },
-      { timeout: 120_000, message: `the page shows ${text} at ${selector}` },
-    )
-    .toBe(text);
-  return liveFrame(page);
-}
-
-/** Turns the pointer tool on, unless it is on, and waits for the frame. */
-async function ensureSelection(page: Page, frame: Frame) {
-  const off = page.getByRole("button", { name: "Disable section selection" });
-  if (!(await off.isVisible().catch(() => false))) {
-    const on = page.getByRole("button", { name: "Enable section selection" });
-    await expect(on, "the canvas offers the selection tool").toBeVisible({
-      timeout: 60_000,
-    });
-    await expectHydrated(on);
-    await on.click();
-    await expect(off).toBeVisible();
-  }
-  await expect(
-    frame.locator("html[data-storefront-editor-selection-enabled]"),
-  ).toBeAttached({ timeout: 45_000 });
-}
-
-/** `[preview-presentation]` lines: the ops whose `applied` the editor took. */
-function acceptedBasisOps(lines: readonly string[]): string[] {
-  return lines.flatMap((line) => {
-    const match = /ack accepted op=(section-basis-\d+) .*status=applied/.exec(
-      line,
-    );
-    return match ? [match[1]!] : [];
+/** Selects the M2 PR 3 hero and opens its Content. */
+async function selectHero(page: Page, record: EditorRecord) {
+  const frame = await liveFrame(page);
+  await ensureSelection(page, frame);
+  const acceptedBefore = acceptedBasisOps(record.lines).length;
+  await frame.locator("[data-m2w-hero] h1").click();
+  const content = astroContent(page, "hero");
+  await expect(content, "the Inspector opens the hero's fields").toBeVisible({
+    timeout: 60_000,
   });
+  // Core confirmed the frame's pair and the frame acknowledged the
+  // section's basis: the proof an input is sent with.
+  await expect
+    .poll(() => acceptedBasisOps(record.lines).length, {
+      timeout: 120_000,
+      message: "the editor takes the frame's applied ack for the hero",
+    })
+    .toBeGreaterThan(acceptedBefore);
+  await page
+    .locator("[data-editor-inspector-panel]")
+    .getByRole("button", { name: "Content", exact: true })
+    .click();
+  return content;
 }
 
 test.describe("Astro Inspector write on the container Live Preview (M2 PR 3)", () => {
@@ -205,255 +207,93 @@ test.describe("Astro Inspector write on the container Live Preview (M2 PR 3)", (
   test.setTimeout(30 * 60_000);
   test.use({ actionTimeout: 60_000 });
 
-  const scope: ThemeScope | null = EDITOR_PATH
-    ? { ...themeScopeFromEditorPath(EDITOR_PATH), themeId: randomUUID() }
-    : null;
-  const harness =
-    STATE_DIR && scope ? storefrontHarness({ scope, stateDir: STATE_DIR }) : null;
-  let homeId: string | null = null;
-  let editorPath: string | null = null;
-  const start: Hero = {
-    title: `m2w-start-${randomUUID()}-title`,
-    subtitle: `m2w-start-${randomUUID()}-subtitle`,
+  const theme = caseTheme("astro-inspector-write");
+  // D3 row 10: both fields start equal, and the first edit is made from
+  // that equal baseline.
+  const same = sale("m2w");
+  // The row Core writes for this instance: its ref and type are Core's own
+  // (`resolveAstroSectionWrite`). A row with no ref is refused as
+  // section-row-mismatch, never re-pointed.
+  const seeded: D3Document = {
+    version: 1,
+    sections: [
+      {
+        id: "hero",
+        type: "hero",
+        componentRef: "src/components/Hero.astro",
+        enabled: true,
+        props: { title: same, subtitle: same },
+      },
+    ],
   };
-
-  /** The home template's draft, read from this run's D1 itself. */
-  const draftRow = (): DraftRow => {
-    const rows = queryLifecycleD1(
-      STATE_DIR!,
-      `SELECT t.draft_generation AS generation, r.document AS document
-         FROM storefront_theme_templates t
-         JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
-        WHERE t.id = ?1 AND t.theme_id = ?2 AND t.deleted_at IS NULL`,
-      homeId!,
-      scope!.themeId,
-    ) as Array<{ generation: number; document: string }>;
-    expect(rows, "the home template has one draft").toHaveLength(1);
-    const document = JSON.parse(rows[0]!.document) as {
-      sections: DraftRow["sections"];
-    };
-    return { generation: rows[0]!.generation, sections: document.sections };
-  };
-  const heroOf = (row: DraftRow) =>
-    row.sections.find((section) => section.id === "hero")?.props ?? null;
-
-  /** The one starting draft (harness seeding; see the header). */
-  async function seedStart() {
-    const author = process.env.E2E_EMAIL;
-    expect(author, "E2E_EMAIL names the revision's author").toBeTruthy();
-    const revisionId = randomUUID();
-    const now = new Date().toISOString();
-    expect(
-      await harness!.writeD1(
-        `INSERT INTO storefront_theme_template_revisions
-           (id, template_id, version, document, created_by, created_at)
-         SELECT ?1, ?2,
-           COALESCE((SELECT MAX(version) FROM storefront_theme_template_revisions WHERE template_id = ?2), 0) + 1,
-           ?3, id, ?4
-         FROM users WHERE email = ?5`,
-        revisionId,
-        homeId!,
-        JSON.stringify({
-          version: 1,
-          // The row Core writes for this instance: its ref and type are
-          // Core's own (`resolveAstroSectionWrite`). A row with no ref is
-          // refused as section-row-mismatch, never re-pointed.
-          sections: [
-            {
-              id: "hero",
-              type: "hero",
-              componentRef: "src/components/Hero.astro",
-              enabled: true,
-              props: { ...start },
-            },
-          ],
-        }),
-        now,
-        author,
-      ),
-    ).toBe(1);
-    expect(
-      await harness!.writeD1(
-        `UPDATE storefront_theme_templates
-            SET draft_revision_id = ?1, draft_generation = draft_generation + 1, updated_at = ?2
-          WHERE id = ?3 AND theme_id = ?4 AND deleted_at IS NULL`,
-        revisionId,
-        now,
-        homeId!,
-        scope!.themeId,
-      ),
-    ).toBe(1);
-  }
-
-  async function openCaseEditor(page: Page) {
-    await page.goto(editorPath!, { waitUntil: "domcontentloaded" });
-    const publish = page.getByRole("button", { name: /^Publish$/ });
-    await expect(publish).toBeVisible({ timeout: 45_000 });
-    await expectHydrated(publish);
-  }
 
   test.beforeAll(async ({ browser }) => {
-    const page = await signedInPage(browser);
-    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    const now = new Date().toISOString();
-    expect(
-      await harness!.writeD1(
-        `INSERT INTO storefront_themes
-           (id, storefront_id, name, framework, metadata, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'astro', '{"starterTemplateVersion":1}', ?4, ?4)`,
-        scope!.themeId,
-        scope!.storefrontId,
-        `astro-inspector-write-${scope!.themeId}`,
-        now,
-      ),
-    ).toBe(1);
-    const saved = await writeThemeFiles(page, scope!, FILES);
-    expect(saved.success, JSON.stringify(saved)).toBe(true);
-    const ensured = (await serverFn(
-      page,
-      THEMES,
-      "ensureStorefrontThemeRouteTemplate",
-      { ...scope!, routePath: "/" },
-    )) as { success: boolean; data?: { id: string; createdByThisCall: boolean } };
-    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
-    expect(ensured.data?.createdByThisCall).toBe(true);
-    homeId = ensured.data!.id;
-    editorPath = `/store/${scope!.storefrontId}/themes/${scope!.themeId}/editor?templateId=${homeId}`;
-    await seedStart();
-    await page.context().close();
+    await theme!.setUp(browser, PR3_FILES, { "/": seeded });
   });
-
   test.afterAll(async ({ browser }) => {
-    await harness?.dispose();
-    if (!scope) return;
-    const page = await signedInPage(browser);
-    await page.goto("/", { waitUntil: "domcontentloaded" });
-    await serverFn(page, PREVIEW, "stopThemePreviewServer", scope).catch(
-      () => {},
-    );
-    await page.context().close();
+    await theme?.tearDown(browser);
   });
 
   test("a click selects the hero, an Inspector edit is stored in the Document, and page, Inspector and Document agree after a reload", async ({
     page,
   }) => {
-    const lines: string[] = [];
-    page.on("console", (message) => {
-      const text = message.text();
-      if (text.startsWith("[preview-presentation]")) lines.push(text);
-    });
-    const writeBodies: string[] = [];
-    page.on("request", (request) => {
-      if (isServerFn(request.url(), SECTION_WRITE)) {
-        writeBodies.push(request.postData() ?? "");
-      }
-    });
-    const inspector = page.locator("[data-editor-inspector-panel]");
-    const content = page.locator('[data-astro-inspector-content="hero"]');
-    const field = (name: "Title" | "Subtitle") =>
-      content.getByRole("textbox", { name, exact: true });
-    const written = (count: number) =>
-      expect
-        .poll(() => writeBodies.length, {
-          timeout: 60_000,
-          message: `${count} section write(s) sent`,
-        })
-        .toBe(count);
-    const answered = () =>
-      page.waitForResponse(
-        (response) => isServerFn(response.url(), SECTION_WRITE),
-        { timeout: 120_000 },
-      );
+    const record = recordEditor(page);
+    const field = (content: ReturnType<typeof astroContent>, name: string) =>
+      astroField(content, name);
 
-    /** Selects the hero on the canvas: Design, not Code (D2). */
-    const selectHero = async (frame: Frame) => {
-      await ensureSelection(page, frame);
-      const acceptedBefore = acceptedBasisOps(lines).length;
-      await frame.locator("[data-m2w-hero] h1").click();
-      await expect(content, "the Inspector opens the hero's fields").toBeVisible({
-        timeout: 60_000,
-      });
-      // Core confirmed the frame's pair and the frame acknowledged the
-      // section's basis: the proof an input is sent with.
-      await expect
-        .poll(() => acceptedBasisOps(lines).length, {
-          timeout: 120_000,
-          message: "the editor takes the frame's applied ack for the hero",
-        })
-        .toBeGreaterThan(acceptedBefore);
-    };
-
-    await openCaseEditor(page);
+    await openEditorAt(page, theme!.editorPath());
     let frame = await liveFrame(page);
-    await expect(frame.locator("[data-m2w-hero] h1")).toHaveText(start.title, {
+    await expect(frame.locator("[data-m2w-hero] h1")).toHaveText(same, {
       timeout: 180_000,
     });
     await expect(page.getByTestId("preview-document-navigation")).toHaveCount(
       0,
       { timeout: 120_000 },
     );
-    const before = draftRow();
-    expect(heroOf(before)).toEqual(start);
+    const before = theme!.draft("/");
+    expect(before.document).toEqual(seeded);
 
     // 1. The click selects; the Inspector shows the declared fields only.
-    await selectHero(frame);
-    await inspector.getByRole("button", { name: "Content", exact: true }).click();
-    await expect(field("Title")).toHaveValue(start.title);
-    await expect(field("Subtitle")).toHaveValue(start.subtitle);
-    expect(writeBodies, "a click writes nothing").toEqual([]);
+    let content = await selectHero(page, record);
+    await expect(field(content, "Title")).toHaveValue(same);
+    await expect(field(content, "Subtitle")).toHaveValue(same);
+    expect(record.writes, "a click writes nothing").toEqual([]);
 
-    // 2. Typing the title writes it, with Core's identity and digest.
+    // 2. Typing the title writes it, with Core's identity and digest, from
+    //    a baseline where both fields hold the same text (row 10).
     const edited = `m2w-${randomUUID()}`;
-    const firstAnswer = answered();
-    await field("Title").fill(edited);
-    expect((await firstAnswer).ok()).toBe(true);
-    const acceptedAtFirstAnswer = acceptedBasisOps(lines).length;
-    await written(1);
-    expect(writeBodies[0]).toContain("componentDigest");
-    expect(writeBodies[0]).toContain("identity");
-    expect(writeBodies[0]).toContain(edited);
-    // The raw draft: that field, one generation on, nothing else changed.
+    await writeField(page, record, field(content, "Title"), edited);
+    // The whole raw draft: that field, one generation on, nothing else
+    // (row 11).
+    const afterTitleDocument = withProps(seeded, "hero", { title: edited });
     await expect
-      .poll(() => heroOf(draftRow())?.title, { timeout: 60_000 })
-      .toBe(edited);
-    const afterTitle = draftRow();
-    expect(afterTitle.generation).toBe(before.generation + 1);
-    expect(afterTitle.sections.map((section) => section.id)).toEqual(
-      before.sections.map((section) => section.id),
-    );
-    expect(heroOf(afterTitle)).toEqual({ ...start, title: edited });
+      .poll(() => theme!.draft("/").document, { timeout: 60_000 })
+      .toEqual(afterTitleDocument);
+    expect(theme!.draft("/").generation).toBe(before.generation + 1);
 
-    // The page shows it after sync -> confirm -> reload.
+    // The page shows it after sync -> confirm -> reload; the other field,
+    // equal to the old title, is untouched.
     frame = await frameShowing(page, "[data-m2w-hero] h1", edited);
-    await expect(frame.locator("[data-m2w-hero] p")).toHaveText(start.subtitle);
+    await expect(frame.locator("[data-m2w-hero] p")).toHaveText(same);
 
     // 3. The same text into the subtitle, sent only on the reloaded page's
-    //    own basis ack, and nothing crosses between the two fields.
+    //    own basis ack (`writeField` waited for it), and nothing crosses
+    //    between the two fields.
+    await writeField(page, record, field(content, "Subtitle"), edited);
+    const afterSubtitleDocument = withProps(afterTitleDocument, "hero", {
+      subtitle: edited,
+    });
     await expect
-      .poll(() => acceptedBasisOps(lines).length, {
-        timeout: 120_000,
-        message: "the reloaded page acknowledges the hero's basis again",
-      })
-      .toBeGreaterThan(acceptedAtFirstAnswer);
-    const secondAnswer = answered();
-    await field("Subtitle").fill(edited);
-    expect((await secondAnswer).ok()).toBe(true);
-    await written(2);
-    expect(writeBodies[1]).toContain("componentDigest");
-    await expect
-      .poll(() => heroOf(draftRow())?.subtitle, { timeout: 60_000 })
-      .toBe(edited);
-    const afterSubtitle = draftRow();
+      .poll(() => theme!.draft("/").document, { timeout: 60_000 })
+      .toEqual(afterSubtitleDocument);
+    const afterSubtitle = theme!.draft("/");
     expect(afterSubtitle.generation).toBe(before.generation + 2);
-    expect(heroOf(afterSubtitle)).toEqual({ title: edited, subtitle: edited });
-    expect(afterSubtitle.sections.map((section) => section.id)).toEqual(
-      before.sections.map((section) => section.id),
-    );
     frame = await frameShowing(page, "[data-m2w-hero] p", edited);
     await expect(frame.locator("[data-m2w-hero] h1")).toHaveText(edited);
 
     // 4. An editor reload: the page, the Inspector and D1 agree.
-    await openCaseEditor(page);
+    const sentBeforeReload = record.writes.length;
+    await openEditorAt(page, theme!.editorPath());
     frame = await liveFrame(page);
     await expect(frame.locator("[data-m2w-hero] h1")).toHaveText(edited, {
       timeout: 180_000,
@@ -463,13 +303,505 @@ test.describe("Astro Inspector write on the container Live Preview (M2 PR 3)", (
       0,
       { timeout: 120_000 },
     );
-    await selectHero(frame);
-    await inspector.getByRole("button", { name: "Content", exact: true }).click();
-    await expect(field("Title")).toHaveValue(edited);
-    await expect(field("Subtitle")).toHaveValue(edited);
-    const afterReload = draftRow();
-    expect(afterReload.generation).toBe(afterSubtitle.generation);
-    expect(heroOf(afterReload)).toEqual({ title: edited, subtitle: edited });
-    expect(writeBodies, "the reload and the click wrote nothing").toHaveLength(2);
+    content = await selectHero(page, record);
+    await expect(field(content, "Title")).toHaveValue(edited);
+    await expect(field(content, "Subtitle")).toHaveValue(edited);
+    expect(theme!.draft("/")).toEqual(afterSubtitle);
+    expect(record.writes.length, "the reload and the click wrote nothing").toBe(
+      sentBeforeReload,
+    );
+  });
+
+  // D3 row 20: a write made on a copy another writer has since replaced is
+  // refused by Core's draft CAS, the author's text is kept, and nothing is
+  // written over the other writer's value or sent again on its own.
+  test("an edit made on a draft another writer replaced is refused, kept, and writes nothing", async ({
+    page,
+  }) => {
+    const record = recordEditor(page);
+    await openEditorAt(page, theme!.editorPath());
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(
+      0,
+      { timeout: 120_000 },
+    );
+    const content = await selectHero(page, record);
+    const title = astroField(content, "Title");
+    const held = theme!.draft("/");
+    await expect(title).toHaveValue(
+      String(held.document.sections[0]!.props!.title),
+    );
+
+    // Another writer replaces the draft after this editor read it.
+    const theirs = withProps(held.document, "hero", {
+      title: `theirs-${randomUUID()}`,
+    });
+    await theme!.seedDraft("/", theirs);
+    const replaced = theme!.draft("/");
+    expect(replaced.generation).toBe(held.generation + 1);
+    expect(replaced.document).toEqual(theirs);
+
+    const mine = `mine-${randomUUID()}`;
+    const answered = page.waitForResponse(
+      (response) => isServerFn(response.url(), SECTION_WRITE),
+      { timeout: 120_000 },
+    );
+    await title.fill(mine);
+    const refused = await answered;
+    expect(await refused.text()).toContain("TEMPLATE_DRAFT_CONFLICT");
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      "Out of date",
+      { timeout: 60_000 },
+    );
+    // Kept: the author's text is still in the field.
+    await expect(title).toHaveValue(mine);
+    // Nothing written over theirs, and nothing sent again on its own.
+    const sent = record.writes.length;
+    await page.waitForTimeout(5_000);
+    expect(record.writes.length, "nothing is resent without the author").toBe(
+      sent,
+    );
+    expect(theme!.draft("/")).toEqual(replaced);
+  });
+});
+
+/** The files every D3 Theme shares. */
+const D3_COMMON = [
+  { path: "astro.config.mjs", content: astroConfig() },
+  { path: D3_HERO_PATH, content: D3_HERO },
+  { path: D3_HERO_FIELDS_PATH, content: d3HeroFields() },
+];
+
+test.describe("Astro D3 shapes: field-wise, aliases, a literal before the spread, a second instance on another page", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(30 * 60_000);
+  test.use({ actionTimeout: 60_000 });
+
+  const theme = caseTheme("astro-d3-shapes");
+  const SALE = sale("shapes");
+  const both = { title: SALE, desc: SALE };
+  const home: D3Document = {
+    version: 1,
+    sections: ["p1", "p2", "c3", "c4a"].map((id) => d3Row(id, { ...both })),
+  };
+  const about: D3Document = {
+    version: 1,
+    sections: ["teamA", "teamB"].map((id) => d3Row(id, { ...both })),
+  };
+
+  test.beforeAll(async ({ browser }) => {
+    await theme!.setUp(
+      browser,
+      [
+        ...D3_COMMON,
+        { path: "src/pages/index.astro", content: d3HomePage() },
+        { path: "src/pages/about.astro", content: d3AboutPage() },
+      ],
+      { "/": home, "/about": about },
+    );
+  });
+  test.afterAll(async ({ browser }) => {
+    await theme?.tearDown(browser);
+  });
+
+  test("each shape edits only its own field, a second same-text instance on /about edits alone, and a reload agrees", async ({
+    page,
+  }) => {
+    const record = recordEditor(page);
+    await openEditorAt(page, theme!.editorPath("/"));
+    let frame = await liveFrame(page);
+    await expect(frame.locator('[data-d3-case="p1"] h1')).toHaveText(SALE, {
+      timeout: 180_000,
+    });
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(
+      0,
+      { timeout: 120_000 },
+    );
+    const homeStart = theme!.draft("/");
+    expect(homeStart.document).toEqual(home);
+    expect(theme!.draft("/about").document).toEqual(about);
+
+    // Each edit: which field the Inspector edits, where the page shows it,
+    // and what else of the case must still show the starting text.
+    const edits = [
+      // Row 2, Start p1: field-wise props; desc is edited.
+      { section: "p1", label: "Desc", field: "desc", shows: "p", keeps: "h1" },
+      // Row 3, Start p2: `title={heading}` where heading is p2.desc. The h1
+      // shows desc and the edit writes desc; the stored title reaches
+      // nothing here, and the p shows the component's own default.
+      { section: "p2", label: "Desc", field: "desc", shows: "h1", keeps: null },
+      // Row 3, Start c3: renamed destructuring; the renamed title is edited.
+      { section: "c3", label: "Title", field: "title", shows: "h1", keeps: "p" },
+      // Row 4, Start c4a: a literal before the spread, the stored section
+      // holding the key: the spread's value shows and is edited.
+      { section: "c4a", label: "Title", field: "title", shows: "h1", keeps: "p" },
+    ] as const;
+    let expected = home;
+    const values: Record<string, string> = {};
+    for (const [index, edit] of edits.entries()) {
+      const sentBeforeClick = record.writes.length;
+      const content = await selectCase(page, record, edit.section, edit.section);
+      if (edit.section === "p2") {
+        await expect(
+          content.locator('[data-astro-field-code-controlled="title"]'),
+        ).toHaveText(TITLE_BY_CODE);
+        await expect(astroField(content, "Title")).toHaveCount(0);
+      } else {
+        await expect(astroField(content, "Title")).toHaveValue(SALE);
+      }
+      await expect(astroField(content, "Desc")).toHaveValue(SALE);
+      expect(record.writes.length, "a click writes nothing").toBe(
+        sentBeforeClick,
+      );
+
+      const value = `d3-${edit.section}-${randomUUID()}`;
+      values[edit.section] = value;
+      await writeField(page, record, astroField(content, edit.label), value);
+      expected = withProps(expected, edit.section, { [edit.field]: value });
+      await expect
+        .poll(() => theme!.draft("/").document, { timeout: 60_000 })
+        .toEqual(expected);
+      expect(theme!.draft("/").generation).toBe(
+        homeStart.generation + index + 1,
+      );
+      frame = await frameShowing(
+        page,
+        `[data-d3-case="${edit.section}"] ${edit.shows}`,
+        value,
+      );
+      if (edit.keeps) {
+        await expect(
+          frame.locator(`[data-d3-case="${edit.section}"] ${edit.keeps}`),
+        ).toHaveText(SALE);
+      }
+    }
+    await expect(frame.locator('[data-d3-case="p2"] p')).toHaveText(
+      D3_DEFAULT_DESC,
+    );
+
+    // Rows 12 and 17: /about, a page of its own, and two instances of one
+    // component holding the same text. The second is edited; the first and
+    // the home page's draft keep every byte.
+    await openPageFromList(page, "/about");
+    frame = await liveFrame(page);
+    await expect(frame.locator('[data-d3-case="teamB"] h1')).toHaveText(SALE, {
+      timeout: 120_000,
+    });
+    const homeBefore = theme!.draft("/");
+    const aboutBefore = theme!.draft("/about");
+    const teamB = await selectCase(page, record, "teamB", "teamB");
+    await expect(astroField(teamB, "Title")).toHaveValue(SALE);
+    const second = `d3-teamB-${randomUUID()}`;
+    await writeField(page, record, astroField(teamB, "Title"), second);
+    const aboutExpected = withProps(about, "teamB", { title: second });
+    await expect
+      .poll(() => theme!.draft("/about").document, { timeout: 60_000 })
+      .toEqual(aboutExpected);
+    expect(theme!.draft("/about").generation).toBe(aboutBefore.generation + 1);
+    expect(theme!.draft("/")).toEqual(homeBefore);
+    frame = await frameShowing(page, '[data-d3-case="teamB"] h1', second);
+    await expect(frame.locator('[data-d3-case="teamA"] h1')).toHaveText(SALE);
+    await expect(frame.locator('[data-d3-case="teamA"] p')).toHaveText(SALE);
+    await expect(frame.locator('[data-d3-case="teamB"] p')).toHaveText(SALE);
+
+    // An editor reload on the home page: page, Inspector and D1 agree.
+    const sentBeforeReload = record.writes.length;
+    await openEditorAt(page, theme!.editorPath("/"));
+    frame = await liveFrame(page);
+    await expect(frame.locator('[data-d3-case="p1"] p')).toHaveText(
+      values.p1!,
+      { timeout: 180_000 },
+    );
+    await expect(frame.locator('[data-d3-case="p2"] h1')).toHaveText(values.p2!);
+    await expect(frame.locator('[data-d3-case="c3"] h1')).toHaveText(values.c3!);
+    await expect(frame.locator('[data-d3-case="c4a"] h1')).toHaveText(
+      values.c4a!,
+    );
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(
+      0,
+      { timeout: 120_000 },
+    );
+    const c4a = await selectCase(page, record, "c4a", "c4a");
+    await expect(astroField(c4a, "Title")).toHaveValue(values.c4a!);
+    await expect(astroField(c4a, "Desc")).toHaveValue(SALE);
+    expect(theme!.draft("/").document).toEqual(expected);
+    expect(theme!.draft("/about").document).toEqual(aboutExpected);
+    expect(record.writes.length, "the reload and the click wrote nothing").toBe(
+      sentBeforeReload,
+    );
+  });
+});
+
+test.describe("Astro D3 shapes Design must not write: literals, an override after the spread, author code, a page value", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(30 * 60_000);
+  test.use({ actionTimeout: 60_000 });
+
+  const theme = caseTheme("astro-d3-refused");
+  const SALE = sale("refused");
+  const both = { title: SALE, desc: SALE };
+  const refused: D3Document = {
+    version: 1,
+    sections: [
+      // p4a's stored section has no title: the literal before the spread
+      // shows, and title is not CMS data here (Start p4a).
+      d3Row("p4a", { desc: SALE }),
+      d3Row("p3", { ...both }),
+      d3Row("p6", { ...both }),
+      d3Row("r9", { ...both }),
+      // Stored, but no instance renders it: the literals are not it.
+      d3Row("c6a", { ...both }),
+    ],
+  };
+  const home: D3Document = {
+    version: 1,
+    sections: ["p1", "p2", "c3", "c4a"].map((id) => d3Row(id, { ...both })),
+  };
+
+  test.beforeAll(async ({ browser }) => {
+    await theme!.setUp(
+      browser,
+      [
+        ...D3_COMMON,
+        { path: "src/pages/index.astro", content: d3HomePage() },
+        {
+          path: `src/pages${D3_REFUSED_PATH}.astro`,
+          content: d3RefusedPage(SALE),
+        },
+      ],
+      { "/": home, [D3_REFUSED_PATH]: refused },
+    );
+  });
+  test.afterAll(async ({ browser }) => {
+    await theme?.tearDown(browser);
+  });
+
+  test("each refused field is shown as controlled by code and writes nothing, its sibling edits, and literals alone select nothing", async ({
+    page,
+  }) => {
+    const record = recordEditor(page);
+    await openEditorAt(page, theme!.editorPath(D3_REFUSED_PATH));
+    let frame = await liveFrame(page);
+    await expect(frame.locator('[data-d3-case="p4a"] h1')).toHaveText(
+      D3_P4A_LITERAL,
+      { timeout: 180_000 },
+    );
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(
+      0,
+      { timeout: 120_000 },
+    );
+    const refusedStart = theme!.draft(D3_REFUSED_PATH);
+    expect(refusedStart.document).toEqual(refused);
+    const homeBefore = theme!.draft("/");
+
+    // Rows 5 (p4a), 6 (p3), 8 (p6) and 9 (r9): title shows code's value and
+    // is controlled by code; desc is CMS and edits.
+    const titles: Record<string, string> = {
+      p4a: D3_P4A_LITERAL,
+      p3: SALE,
+      p6: SALE,
+      r9: SALE,
+    };
+    let expected = refused;
+    for (const [index, section] of ["p4a", "p3", "p6", "r9"].entries()) {
+      const sentBeforeClick = record.writes.length;
+      const content = await selectCase(page, record, section, section);
+      const byCode = content.locator(
+        '[data-astro-field-code-controlled="title"]',
+      );
+      await expect(
+        byCode,
+        `${section}'s title is shown as controlled by code`,
+      ).toHaveText(TITLE_BY_CODE);
+      await expect(astroField(content, "Title")).toHaveCount(0);
+      await expect(astroField(content, "Desc")).toHaveValue(SALE);
+      // A click on the refused field itself writes nothing either.
+      await byCode.click();
+      await page.waitForTimeout(1_000);
+      expect(record.writes.length, `${section}: clicks write nothing`).toBe(
+        sentBeforeClick,
+      );
+
+      const value = `d3-${section}-${randomUUID()}`;
+      await writeField(page, record, astroField(content, "Desc"), value);
+      expected = withProps(expected, section, { desc: value });
+      await expect
+        .poll(() => theme!.draft(D3_REFUSED_PATH).document, { timeout: 60_000 })
+        .toEqual(expected);
+      expect(theme!.draft(D3_REFUSED_PATH).generation).toBe(
+        refusedStart.generation + index + 1,
+      );
+      frame = await frameShowing(page, `[data-d3-case="${section}"] p`, value);
+      await expect(frame.locator(`[data-d3-case="${section}"] h1`)).toHaveText(
+        titles[section]!,
+      );
+    }
+    // p4a was never given a title by Design.
+    expect(
+      Object.keys(
+        theme!
+          .draft(D3_REFUSED_PATH)
+          .document.sections.find((row) => row.id === "p4a")!.props!,
+      ),
+    ).toEqual(["desc"]);
+
+    // Row 7 (Start c6a): an instance of literals only renders no section; a
+    // click selects nothing, says why, and writes nothing.
+    const sent = record.writes.length;
+    frame = await liveFrame(page);
+    await ensureSelection(page, frame);
+    await frame.locator('[data-d3-case="c6a"] h1').click();
+    await expect(page.getByText(CONTROLLED_BY_CODE).first()).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(astroContent(page, "c6a")).toHaveCount(0);
+    await page.waitForTimeout(3_000);
+    expect(record.writes.length, "the literal-only click writes nothing").toBe(
+      sent,
+    );
+    expect(theme!.draft(D3_REFUSED_PATH).document).toEqual(expected);
+    expect(theme!.draft("/")).toEqual(homeBefore);
+  });
+});
+
+test.describe("Astro D3 fields declared in <Name>.fields.ts", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(30 * 60_000);
+  test.use({ actionTimeout: 60_000 });
+
+  const theme = caseTheme("astro-d3-sidecar");
+  const SALE = sale("sidecar");
+  const seeded: D3Document = {
+    version: 1,
+    sections: [d3Row("card", { title: SALE, desc: SALE })],
+  };
+
+  test.beforeAll(async ({ browser }) => {
+    await theme!.setUp(
+      browser,
+      [
+        ...D3_COMMON,
+        { path: "src/pages/index.astro", content: d3SidecarPage() },
+      ],
+      { "/": seeded },
+    );
+  });
+  test.afterAll(async ({ browser }) => {
+    await theme?.tearDown(browser);
+  });
+
+  async function openCard(page: Page) {
+    await openEditorAt(page, theme!.editorPath("/"));
+    const frame = await liveFrame(page);
+    await expect(frame.locator('[data-d3-case="card"] h1')).toBeVisible({
+      timeout: 180_000,
+    });
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(
+      0,
+      { timeout: 120_000 },
+    );
+    return frame;
+  }
+
+  async function inAnotherTab(
+    browser: Browser,
+    change: (page: Page) => Promise<{ success: boolean }>,
+  ) {
+    const other = await signedInPage(browser);
+    try {
+      await other.goto(theme!.editorPath("/"), {
+        waitUntil: "domcontentloaded",
+      });
+      const result = await change(other);
+      expect(result.success, JSON.stringify(result)).toBe(true);
+    } finally {
+      await other.context().close();
+    }
+  }
+
+  test("follows a relabelled declaration saved in Code", async ({ page }) => {
+    const record = recordEditor(page);
+    await openCard(page);
+    let content = await selectCase(page, record, "card", "card");
+    await expect(astroField(content, "Title")).toHaveValue(SALE);
+
+    const saved = await writeThemeFiles(page, theme!.scope, [
+      { path: D3_HERO_FIELDS_PATH, content: d3HeroFields("Heading", "Body") },
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    await openCard(page);
+    content = await selectCase(page, record, "card", "card");
+    await expect(astroField(content, "Heading")).toHaveValue(SALE);
+    await expect(astroField(content, "Body")).toHaveValue(SALE);
+    await expect(astroField(content, "Title")).toHaveCount(0);
+    expect(record.writes, "nothing was written").toEqual([]);
+    expect(theme!.draft("/").document).toEqual(seeded);
+  });
+
+  test("does not save an edit after another tab deleted the declaration, keeps it, and says so", async ({
+    page,
+    browser,
+  }) => {
+    const record = recordEditor(page);
+    await openCard(page);
+    const content = await selectCase(page, record, "card", "card");
+    const heading = astroField(content, "Heading");
+    await expect(heading).toHaveValue(SALE);
+    const before = theme!.draft("/");
+
+    await inAnotherTab(browser, (other) =>
+      removeThemeFiles(other, theme!.scope, [D3_HERO_FIELDS_PATH]),
+    );
+
+    const stale = `stale-${randomUUID()}`;
+    const answered = page.waitForResponse(
+      (response) => isServerFn(response.url(), SECTION_WRITE),
+      { timeout: 120_000 },
+    );
+    await heading.fill(stale);
+    const refused = await answered;
+    expect(await refused.text()).toContain("SELECTION_SOURCE_CONFLICT");
+    await expect(
+      page.getByText(/The source code has changed\. Select the field again/),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(heading).toHaveValue(stale);
+    expect(theme!.draft("/")).toEqual(before);
+  });
+
+  test("drops the fields once the declaration is gone", async ({ page }) => {
+    const record = recordEditor(page);
+    const frame = await openCard(page);
+    await ensureSelection(page, frame);
+    await frame.locator('[data-d3-case="card"] h1').click();
+    await expect(page.getByText(CONTROLLED_BY_CODE).first()).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(astroContent(page, "card")).toHaveCount(0);
+    await page.waitForTimeout(3_000);
+    expect(record.writes, "nothing was written").toEqual([]);
+    expect(theme!.draft("/").document).toEqual(seeded);
+  });
+
+  test("brings the fields back when the declaration is made again, and an edit is stored", async ({
+    page,
+  }) => {
+    const record = recordEditor(page);
+    await page.goto(theme!.editorPath("/"), { waitUntil: "domcontentloaded" });
+    const saved = await writeThemeFiles(page, theme!.scope, [
+      { path: D3_HERO_FIELDS_PATH, content: d3HeroFields() },
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    await openCard(page);
+    const content = await selectCase(page, record, "card", "card");
+    await expect(astroField(content, "Title")).toHaveValue(SALE);
+    const before = theme!.draft("/");
+    const value = `d3-card-${randomUUID()}`;
+    await writeField(page, record, astroField(content, "Title"), value);
+    await expect
+      .poll(() => theme!.draft("/").document, { timeout: 60_000 })
+      .toEqual(withProps(seeded, "card", { title: value }));
+    expect(theme!.draft("/").generation).toBe(before.generation + 1);
+    const frame = await frameShowing(page, '[data-d3-case="card"] h1', value);
+    await expect(frame.locator('[data-d3-case="card"] p')).toHaveText(SALE);
   });
 });
