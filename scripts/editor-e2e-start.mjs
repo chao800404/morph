@@ -38,7 +38,7 @@ export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 export const START_PREVIEW_SHARDS = [
   // navigation-matrix: its Start preview cells took ~2.6 min locally (the
   // spec was added to the then-shortest shard).
-  ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "spread-override-binding.spec.ts", "navigation-matrix.spec.ts"],
+  ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "spread-override-binding.spec.ts", "navigation-matrix.spec.ts", "number-link-fields.spec.ts"],
   // starter-upgrade-start: the Starter upgrades that apply the current
   // Starter (D, B, Q, R, and an unrecorded Starter 31 Theme switched to Full
   // Start then upgraded), Start only (LANE_EXCLUSIVE_SPECS in
