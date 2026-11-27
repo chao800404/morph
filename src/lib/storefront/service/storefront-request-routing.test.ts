@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   collectPlatformHostnames,
   createThemeRuntime,
@@ -127,6 +127,81 @@ describe("createThemeRuntime", () => {
   it("fails closed when no transport is configured", () => {
     expect(createThemeRuntime({}).kind).toBe("unavailable");
     expect(createThemeRuntime(undefined).kind).toBe("unavailable");
+  });
+
+  describe("local origin guard", () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    afterEach(() => {
+      process.env.NODE_ENV = originalNodeEnv;
+    });
+    const ORIGIN = { MORPH_LOCAL_THEME_ORIGIN: "http://127.0.0.1:8788" };
+
+    async function messageOf(env: Record<string, unknown>) {
+      const result = await createThemeRuntime(env).handle({} as never);
+      return result.success ? null : result.message;
+    }
+
+    it("refuses the local origin when ENVIRONMENT is production", async () => {
+      process.env.NODE_ENV = "development";
+      const env = { ...ORIGIN, ENVIRONMENT: "production" };
+      expect(createThemeRuntime(env).kind).toBe("unavailable");
+      expect(await messageOf(env)).toContain(
+        "MORPH_LOCAL_THEME_ORIGIN is only used for local development",
+      );
+    });
+
+    it("refuses the local origin when NODE_ENV is production", () => {
+      process.env.NODE_ENV = "production";
+      expect(createThemeRuntime(ORIGIN).kind).toBe("unavailable");
+    });
+
+    it("refuses the local origin when Cloudflare credentials are present", () => {
+      process.env.NODE_ENV = "development";
+      expect(
+        createThemeRuntime({ ...ORIGIN, CLOUDFLARE_API_TOKEN: "token" }).kind,
+      ).toBe("unavailable");
+      expect(
+        createThemeRuntime({ ...ORIGIN, CLOUDFLARE_ACCOUNT_ID: "account" })
+          .kind,
+      ).toBe("unavailable");
+    });
+
+    it.each([
+      ["a space", " "],
+      ["a tab", "\t"],
+      ["a newline", "\n"],
+      ["CRLF", "\r\n"],
+      ["a non-breaking space", "\u00a0"],
+    ])(
+      "treats a blank origin (%s) as not configured, not as refused",
+      async (_label, origin) => {
+        process.env.NODE_ENV = "development";
+        const env = { MORPH_LOCAL_THEME_ORIGIN: origin };
+        expect(createThemeRuntime(env).kind).toBe("unavailable");
+        const message = await messageOf(env);
+        expect(message).toBe(await messageOf({}));
+        expect(message).not.toContain("only used for local development");
+      },
+    );
+
+    it("uses the local origin in development without credentials", () => {
+      process.env.NODE_ENV = "development";
+      expect(createThemeRuntime(ORIGIN).kind).toBe("local-direct");
+    });
+
+    it("keeps binding and dispatcher selection ahead of the guard", () => {
+      process.env.NODE_ENV = "production";
+      const production = { ...ORIGIN, ENVIRONMENT: "production" };
+      expect(
+        createThemeRuntime({ ...production, THEME_WORKER: binding }).kind,
+      ).toBe("service-binding");
+      expect(
+        createThemeRuntime({
+          ...production,
+          THEME_DISPATCHER: { get: () => ({}) },
+        }).kind,
+      ).toBe("dispatch-namespace");
+    });
   });
 });
 
