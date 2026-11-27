@@ -396,7 +396,16 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
   - **新的交付順序（2026-11-27，計畫 v2，handoff `2026-11-27/native-render-plan.md`，不在 repo；各步實作另行核准）：**
     0. spike：在真實 Sandbox 加 Cloudflare staging 上驗證：發布 A／B／回滾 A；SSG 改回 SSR 時跨網址別名；隱藏標記不出現在輸出；內容讀取失敗時建置失敗；Worker 版本綁定；開啟中頁面所需的 chunk；streaming 與 selective SSR 經 Core 送出。
     1. 原生建置與部署契約，只做 SSR，一次一個框架：正式環境採用 Theme 自己的設定；以證明取代 Hide 對 `custom-build` 的一律拒絕。
-    2. Core 預設 `private, no-store`。
+       - 設計已核准（handoff `2026-11-27/native-build-contract-design.md`，含 Codex 審查），分 7 個 PR：
+         - 0：staging 實測（與 6 一起，等 Workers Paid）；
+         - 1：Wrangler 設定規則（#490，【進行中】）；
+         - 2：SSR 准入與 SDK 解析證明（【進行中】）；
+         - 3：release／Worker 版本不一致回 503（先以關閉狀態合併，舊 Worker 遷移定好後才啟用；【進行中】）；
+         - 4：預覽與發佈一致；
+         - 5：原生建置支援 Hide；
+         - 6：正式環境開啟，並改寫 `.agents/rules/01` 允許清單文字。
+       - Codex 修正：開啟前 Morph 要能控制 log 取樣或花費上限。
+    2. 【已合併】Core 預設 `private, no-store`（#487，`d82e197`）。
     3. 原生 SSG，加 `crawlLinks` 選項 B 的驗證；通過認證的產出才解除發布守衛。
     4. release 綁定 Worker 版本。
     5. selective SSR 與 streaming 認證：編輯器 binding、寫入與 Hide 在 `ssr: false`、`'data-only'`、延遲路由上的行為；bridge 等待 30 秒。
@@ -445,7 +454,13 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     - 【已合併】#484（`0b2f360`）：Cloudflare Email Sending provider。
     - 【已合併】#485（`5dbd7cf`）：在 `src/cms.config.ts` 把 Cloudflare Email Sending 設為作者端預設。
     - 【已關閉，未合併】#294：使用者核准關閉，內容已由 main 上相同的 patch 涵蓋。
-    - 【已取代】#273（較早的 email Draft）由 #484 取代，目前仍開啟。
+    - 【已取代】#273（較早的 email Draft）由 #484 取代，目前仍開啟。（後續見下方：#273 已關閉，分支保留。）
+    - 2026-11-27 較晚的一批：
+      - 【已合併】#486（`f3d84b0`）：ROADMAP 更新，並退役舊的進度文件。
+      - 【已合併】#487（`d82e197`）：ISR 完成前，Theme 回應為 `private, no-store`。
+      - 【已合併】#488（`76efa42`）：Astro D3 批次 1，案例表 Astro 7→21 項完成（15 可編輯、6 安全拒絕）；Inspector 對無法證明可寫的欄位顯示「由程式控制」。
+      - 【已合併】#489（`414c2a5`）：Start number／link 欄位 E2E，並修正編輯器預覽缺少連結 `rel`（預覽與發佈一致）。
+      - 【已關閉】#273：由 #484 取代，分支保留。
     - 以上 #465、#468、#469 的狀態未在此重新核對。
   - **Email（2026-11-27）：** Cloudflare Email Sending 已在子網域 `stg.showtrue.com.tw` 啟用（使用者核准的 DNS：bounce MX／SPF、DKIM、`_dmarc.stg` 為 `p=reject`）。repo 預設 adapter 是 Cloudflare（REST）；不做以環境變數切換 provider。
   - **CI 實測（單次執行，共享 runner，會有雜訊，不是穩定性證據）：**
@@ -468,6 +483,7 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     4. Starter v33（圖片定位缺口）。
     5. 雲端 staging 驗收（含 Sleep→Wake）：另外核准。規劃 v2 已寫成（handoff，不在 repo），**尚未部署任何東西**。階段 1 用 `stg.showtrue.com.tw`（店面）與 `admin-stg.showtrue.com.tw`（CMS），預覽萬用字元網域不在階段 1。部署前的條件：使用者重新核准 #458 之後的 main SHA、使用者自己發放並保管 token，且每個遠端步驟逐步核准。規劃找到兩個會與正式環境相撞的阻擋項：Theme Worker 名稱（`morph-theme-<店面 id>`，新 D1 的第一個店面固定為預設 id，可能覆蓋同帳號正式環境的 Theme Worker）與庫存匯出佇列路由（以固定名稱比對）。修正在 #465（Draft，未合併；head `5aceb82` 的 CI 24 項通過，輪到時要在最新 main 上刷新）：以變數設定 Theme Worker 名稱前綴與佇列名稱，預設值不變。另有【待決】項目：店面網域的登記方式與 runtime 部署 token 的範圍與期限。
        - **2026-11-27 更新【進行中】：** 使用者已核准部署，版本為 main `ed9da34`，分兩階段：先部署 Core（不帶 `THEME_WORKER`，店面回 503）；第一次發布會建立 `morph-theme-<storefrontId>`；之後再綁定並重新部署。不需要 Workers for Platforms（`ServiceBindingThemeRuntime`）。runtime token 用 staging token，依使用者選擇無期限，專案結束時移除。階段 1 沒有雲端畫布預覽。目前驗證執行中，**尚未部署任何東西**。部署用拋棄式 worktree，其 `wrangler.jsonc` 換成 staging 設定（Vite plugin、`check-pending-migrations.mjs` 與部署都以固定檔名讀 `wrangler.jsonc`），並有守衛腳本拒絕任何正式環境的資源名稱。
+       - **2026-11-27 後續更新：** 步驟 1–3 完成（Mac 驗證 `ed9da34`、建立 D1／KV／R2／佇列、遠端遷移）；步驟 4 因 Containers 需要 Workers Paid 方案而暫停，使用者決定先完成其他工作再升級上線測試；Worker 程式已上傳但未綁網域，外部無法連線。
     6. 渲染模式交付線（見 1.5「R 渲染模式交付線」）：原「固定網址 SSG → 逐頁 CSR → staging → ISR」已於 2026-11-27 由框架原生方向（1.6）取代，新順序見該條。
 - **M1（11-21 以前的紀錄）：部分完成，正式案例尚未驗收。**
   - 已合併：預覽模式提示（#262）、每個 Theme 的預覽模式（#271）、託管 SDK 入口與每次請求的內容來源（#267）、預覽內切頁跟隨（#270），以及 1.2「目前進度」列出的編輯正確性與可靠性修正（#280、#282、#286、#289、#290、#291、#292、#295、#297 等）。
@@ -610,7 +626,7 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     - 待決：parser 容器綁定（改 CI 規則，需要指紋與容器 E2E）。`verifyOwnership` 不檢查 `storefronts.deleted_at` 的問題已由 #417 修正。
   - 2026-11-27：
     - 【已合併】D2（選取加 Inspector）：#482（Astro PR3）；之前的 #478（PR1）、#481（PR2）也已合併。
-    - D3 是與 Start 對等的案例表。範圍於 2026-11-27 與 Codex 討論後決定：批次 1 加批次 2（畫布內嵌編輯並以欄位為單位選取、layout 共用與 pending-layout 的封存）；程式碼預設值與列表、圖片一起暫緩；number 與 link 欄位排在 Start 的 E2E 之後。D3 批次 1【進行中】。
+    - D3 是與 Start 對等的案例表。範圍於 2026-11-27 與 Codex 討論後決定：批次 1 加批次 2（畫布內嵌編輯並以欄位為單位選取、layout 共用與 pending-layout 的封存）；程式碼預設值與列表、圖片一起暫緩；number 與 link 欄位排在 Start 的 E2E 之後。D3 批次 1【已合併】（#488）；批次 2【進行中】。
     - D4（本機容器 E2E）尚未開始。
     - Start 的 number 欄位與 link 欄位（href／target／rel）E2E 已排入佇列。
 - **M3：2026-11-26 重啟。**
@@ -679,6 +695,20 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
 **目標（使用者 2026-11-27）。** 在預覽、發布與編輯器中完整支援 TanStack Start 的所有渲染模式（SSR、streaming、selective SSR、SPA、SSG、ISR）；SPA 與 RSC 依上面暫緩。
 
 交付順序見 1.5「R 渲染模式交付線」。
+
+**2026-11-27 後續決定。**
+
+- **【已決定】SDK 讀取方式（使用者確認）。** 所有框架都用同一個入口 `import { morph } from "@morph/sdk"`，建置時由平台接到各框架的實作；`@morph/sdk/start`、`@morph/sdk/astro` 保留為相容別名；Start 現有的 `src/morph/content.ts` 保留為舊 Theme 的相容錨點。編輯器只在建置證明該匯入確實解析到 Morph 注入的 SDK 時才信任它。
+- **【已決定】工具鏈版本（使用者確認放寬）。** 由「必須完全同一版本」改為平台認證的版本範圍（以成組認證：react＋react-dom、start＋router、vite＋Cloudflare plugin）；套件允許清單保留。超出範圍以 `UNSUPPORTED_THEME_TOOLCHAIN` 在安裝前拒絕。細節（lockfile 是否必要等）仍待設計。
+- **【已決定】執行順序（使用者確認）。** 原生建置（R 新順序第 1 步，含 SDK 解析與 Hide 證明）→ 統一 SDK 匯入 → 版本範圍。
+- **2026-11-27 唯讀審查找到、作者目前被迫寫框架以外東西的項目（依影響）：**
+  1. 正式環境拒絕作者自己的 `vite.config`／`wrangler.jsonc`；
+  2. 套件版本必須完全一致；
+  3. Astro 預設設定（session、images、cache）被拒，且 Astro 在正式環境關閉；
+  4. Start 編輯只認 `src/morph/content.ts`；
+  5. Hide 需要 Starter 原樣檔案與固定寫法；
+  6. `.fields.ts` 宣告（可接受，類似 headless CMS 的欄位結構）。
+  - 另：預覽悄悄改用平台設定、發佈卻拒絕作者設定，兩邊不一致（由原生建置第 4 步修正）。
 
 ---
 
