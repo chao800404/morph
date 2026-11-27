@@ -139,25 +139,44 @@ export default {
 };
 `;
 
+/** A WorkerEntrypoint-style class whose fetch is an instance field. */
+const FIELD_CLASS_ENTRY = (key: string) => `${evaluationCounter(key)}
+${RECORD}
+export const calls = [];
+export default class ThemeEntrypoint {
+  constructor(ctx, env) { this.ctx = ctx; this.env = env; }
+  fetch = async (request) => record(calls, request, this.env);
+}
+`;
+
+/** An entry whose own top-level code throws. */
+const THROWING_ENTRY = (key: string) => `${evaluationCounter(key)}
+throw new Error("theme top-level failure");
+export default { fetch() {} };
+`;
+
 let directory = "";
 let counter = 0;
 
 async function loadGuard(
   mainModule: string,
   entrySource: (key: string) => string = OBJECT_ENTRY,
-): Promise<Loaded> {
+  options: { writeEntry?: boolean } = {},
+): Promise<Loaded & { writeEntry: () => Promise<void> }> {
   counter += 1;
   const key = `entry-${counter}`;
   const root = join(directory, key);
   const entryPath = join(root, mainModule);
   await mkdir(join(entryPath, ".."), { recursive: true });
-  await writeFile(entryPath, entrySource(key), "utf8");
+  const writeEntry = () => writeFile(entryPath, entrySource(key), "utf8");
+  if (options.writeEntry !== false) await writeEntry();
   const guardPath = join(root, "__morph_build_match.mjs");
   await writeFile(guardPath, themeBuildMatchModuleSource(mainModule), "utf8");
   const guardModule = (await import(
     /* @vite-ignore */ pathToFileURL(guardPath).href
   )) as Record<string, unknown> & { default: WorkerHandler };
   return {
+    writeEntry,
     guard: guardModule.default,
     guardModule,
     entry: () =>
@@ -392,6 +411,63 @@ describe("the Worker's build match module", () => {
     expect(response.status).toBe(200);
     const { calls } = await loaded.entry();
     expect(calls[0]).toMatchObject({ envBuildId: "bld_A", expectedHeader: null });
+  });
+
+  it("forwards to a class whose fetch is an instance field", async () => {
+    const loaded = await loadGuard("index.js", FIELD_CLASS_ENTRY);
+    const response = await loaded.guard.fetch(
+      coreRequest("/", { method: "POST", body: "x=1", expected: "bld_A" }),
+      workerEnv("bld_A"),
+      {},
+    );
+    expect(response.status).toBe(200);
+    const { calls } = await loaded.entry();
+    expect(calls[0]).toMatchObject({ envBuildId: "bld_A", body: "x=1" });
+  });
+
+  it("does not keep a rejected import: the next request imports again", async () => {
+    // The entry cannot be loaded at first (here: not there yet), then can.
+    const loaded = await loadGuard("index.js", OBJECT_ENTRY, {
+      writeEntry: false,
+    });
+    await expect(
+      loaded.guard.fetch(coreRequest("/", { expected: "bld_A" }), workerEnv("bld_A"), {}),
+    ).rejects.toThrow();
+    await loaded.writeEntry();
+    const response = await loaded.guard.fetch(
+      coreRequest("/", { expected: "bld_A" }),
+      workerEnv("bld_A"),
+      {},
+    );
+    expect(response.status).toBe(200);
+    expect((await loaded.entry()).calls).toHaveLength(1);
+  });
+
+  it("shares one import between concurrent first requests", async () => {
+    const loaded = await loadGuard("index.js");
+    const responses = await Promise.all(
+      [1, 2, 3].map(() =>
+        loaded.guard.fetch(coreRequest("/", { expected: "bld_A" }), workerEnv("bld_A"), {}),
+      ),
+    );
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
+    expect(loaded.evaluations()).toBe(1);
+  });
+
+  it("fails each request, and never hangs, when the entry's top level throws", async () => {
+    const loaded = await loadGuard("index.js", THROWING_ENTRY);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(
+        loaded.guard.fetch(coreRequest("/", { expected: "bld_A" }), workerEnv("bld_A"), {}),
+      ).rejects.toThrow("theme top-level failure");
+    }
+    // A mismatch is still refused without touching the Theme.
+    const refused = await loaded.guard.fetch(
+      coreRequest("/", { expected: "bld_B" }),
+      workerEnv("bld_A"),
+      {},
+    );
+    expect(refused.status).toBe(503);
   });
 
   it("imports an entry that sits below the server directory", async () => {

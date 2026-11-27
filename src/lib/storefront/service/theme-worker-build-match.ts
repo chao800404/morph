@@ -87,8 +87,10 @@ export function releaseWorkerMatchEnabled(
  * captures the intrinsics it uses before any Theme module is evaluated, and
  * reads the deployed build id on the first request, before it imports the
  * build. The build's entry is imported once, on the first request the module
- * lets through. Its default export may be an object with `fetch` (Start's
- * and Astro's entries) or a `WorkerEntrypoint`-style class.
+ * lets through; a rejected import is retried on the next request. Its
+ * default export may be an object with `fetch` (Start's and Astro's
+ * entries) or a `WorkerEntrypoint`-style class, whose `fetch` may be a
+ * prototype method or an instance field.
  *
  * Only `fetch` is forwarded. The deploy config this module is written for
  * declares no cron triggers, queue consumers, Durable Objects or named
@@ -130,14 +132,24 @@ function refuse() {
   });
 }
 
+// One import in flight at a time. A rejected import is not kept, so the next
+// request tries again. (An entry whose own top-level code threw stays in that
+// state for the isolate's life, as ESM requires, and rethrows on each try.)
+function loadTheme() {
+  if (theme === null) {
+    theme = import(${entry}).catch((error) => {
+      theme = null;
+      throw error;
+    });
+  }
+  return theme;
+}
+
 async function invoke(request, env, ctx) {
-  if (theme === null) theme = import(${entry});
-  const handler = (await theme).default;
-  if (
-    typeof handler === "function" &&
-    handler.prototype &&
-    typeof handler.prototype.fetch === "function"
-  ) {
+  const handler = (await loadTheme()).default;
+  // A class (WorkerEntrypoint style) is constructed with (ctx, env), and its
+  // fetch may be a prototype method or an instance field.
+  if (typeof handler === "function") {
     return new handler(ctx, env).fetch(request);
   }
   return handler.fetch(request, env, ctx);
