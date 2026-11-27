@@ -86,6 +86,28 @@ describe("resolveAstroDesignSelection", () => {
       sectionType: "hero",
       declaredFields: ["desc", "title"],
       fields: ["desc", "title"],
+      ownKeyFields: [],
+    });
+  });
+
+  // D3 row 5: the binding view says which claims hold only while the stored
+  // section has the key (a literal before the spread); the selection keeps
+  // that, so the Inspector can leave them to Code when the key is absent.
+  it("keeps the fields a literal before the spread takes only while the section holds them", () => {
+    const literalFirst = view({
+      instances: [
+        instance({
+          claims: [
+            { slot: "hero", field: "desc" },
+            { slot: "hero", field: "title", requiresOwnKey: true },
+          ],
+        }),
+      ],
+    });
+    expect(resolve({ view: literalFirst })).toMatchObject({
+      status: "confirmed",
+      fields: ["desc", "title"],
+      ownKeyFields: ["title"],
     });
   });
 

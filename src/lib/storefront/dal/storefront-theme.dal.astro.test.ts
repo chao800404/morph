@@ -473,6 +473,33 @@ describe("the binding view of an Astro page (readRouteBindings)", () => {
     });
   });
 
+  // D3 row 5: a literal before the spread is the spread's value only while
+  // the stored section has the key (Core's write refuses it otherwise,
+  // `source-key-absent`). The view says so, so the editor can tell.
+  it("marks a field a literal before the spread takes only while the section holds it", async () => {
+    sqlite
+      .prepare("UPDATE storefront_theme_files SET content = ? WHERE id = ?")
+      .run(
+        astroPage(
+          'const home = await morph.pages.get("/");\nconst { hero } = home;\n',
+          '<Hero title="Code literal" {...hero} />',
+        ),
+        `theme-a:${INDEX}`,
+      );
+    const result = await read();
+    expect(result).toMatchObject({
+      status: "view",
+      view: { status: { kind: "confirmed" } },
+    });
+    if (result.status !== "view") return;
+    expect(result.view.instances.map((instance) => instance.claims)).toEqual([
+      [
+        { slot: "hero", field: "desc" },
+        { slot: "hero", field: "title", requiresOwnKey: true },
+      ],
+    ]);
+  });
+
   it("refuses a dynamic page as a capability limit, before the parser is asked", async () => {
     const fetch = countParserCalls();
     const result = await read({ routePath: "/blog/[slug]" });

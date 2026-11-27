@@ -58,6 +58,7 @@ const selection = (
   sectionType: "hero",
   declaredFields: ["title", "subtitle"],
   fields: ["title", "subtitle"],
+  ownKeyFields: [],
   ...overrides,
 });
 
@@ -271,34 +272,106 @@ describe("astroInspectorFields", () => {
     ).toEqual([
       ["title", "text"],
       ["subtitle", "textarea"],
+      // Declared, not proven: listed for Code (the case below), no input.
+      ["image", null],
     ]);
   });
 
-  it("a declared field Core does not prove gets no input", () => {
+  // D3 rows 6-9. This case used to expect the unproven field to be dropped
+  // from the list (`["title"]`). That assertion held the defect: rule 02
+  // section 5.3.1 says a field Design cannot prove writable is shown as
+  // code-only, not hidden, as Start's Inspector marks it controlled by code.
+  // The new assertion keeps the boundary (no input, so no write) and adds
+  // the visible state.
+  it("a declared field Core does not prove is listed as controlled by code, with no input", () => {
     const fields = astroInspectorFields(
       selection({ fields: ["title"] }),
       declaration,
     );
-    expect(fields.map((field) => field.key)).toEqual(["title"]);
+    expect(fields).toEqual([
+      { key: "title", label: "Title", input: "text", codeOnly: null },
+      {
+        key: "subtitle",
+        label: "Subtitle",
+        input: null,
+        codeOnly: "controlled-by-code",
+      },
+      {
+        key: "image",
+        label: "Image",
+        input: null,
+        codeOnly: "controlled-by-code",
+      },
+    ]);
   });
 
   it("a proven field the .fields.ts declaration does not declare gets no input", () => {
     const fields = astroInspectorFields(
-      selection({ fields: ["title", "eyebrow"] }),
+      selection({ fields: ["title", "subtitle", "image", "eyebrow"] }),
       declaration,
     );
-    expect(fields.map((field) => field.key)).toEqual(["title"]);
+    expect(fields.map((field) => field.key)).toEqual([
+      "title",
+      "subtitle",
+      "image",
+    ]);
   });
 
   it("a field Design cannot edit as text yet is listed for Code, with no input", () => {
     const fields = astroInspectorFields(
-      selection({ fields: ["title", "image"] }),
+      selection({ fields: ["title", "subtitle", "image"] }),
       declaration,
     );
     expect(fields).toEqual([
-      { key: "title", label: "Title", input: "text" },
-      { key: "image", label: "Image", input: null },
+      { key: "title", label: "Title", input: "text", codeOnly: null },
+      { key: "subtitle", label: "Subtitle", input: "textarea", codeOnly: null },
+      { key: "image", label: "Image", input: null, codeOnly: "unsupported-type" },
     ]);
+  });
+
+  // D3 row 5: `<Hero title="Code literal" {...hero} />` claims `title` only
+  // while the stored section has its own `title` (Core refuses the write
+  // otherwise, `source-key-absent`). Without one the literal shows, so the
+  // Inspector offers no input Core would refuse.
+  describe("a field a literal before the spread takes from the section only when stored", () => {
+    const literalFirst = selection({
+      fields: ["title", "subtitle"],
+      ownKeyFields: ["title"],
+    });
+    const titleOf = (stored: Record<string, unknown> | null) =>
+      astroInspectorFields(literalFirst, declaration, stored).find(
+        (field) => field.key === "title",
+      );
+
+    it("is controlled by code while the stored section has no such key", () => {
+      expect(titleOf({ subtitle: "s" })).toEqual({
+        key: "title",
+        label: "Title",
+        input: null,
+        codeOnly: "controlled-by-code",
+      });
+      expect(titleOf({ title: undefined, subtitle: "s" })?.codeOnly).toBe(
+        "controlled-by-code",
+      );
+      expect(titleOf(null)?.codeOnly).toBe("controlled-by-code");
+    });
+
+    it("is editable once the stored section holds it", () => {
+      expect(titleOf({ title: "", subtitle: "s" })).toEqual({
+        key: "title",
+        label: "Title",
+        input: "text",
+        codeOnly: null,
+      });
+    });
+
+    it("leaves a field without that condition editable", () => {
+      expect(
+        astroInspectorFields(literalFirst, declaration, {}).find(
+          (field) => field.key === "subtitle",
+        ),
+      ).toMatchObject({ input: "textarea", codeOnly: null });
+    });
   });
 
   it("no declaration means no input at all", () => {
