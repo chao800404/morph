@@ -190,7 +190,8 @@
 
   // Secrets are configured outside source control:
   // pnpm wrangler secret put BETTER_AUTH_SECRET
-  // pnpm wrangler secret put RESEND_API_KEY
+  // pnpm wrangler secret put CLOUDFLARE_EMAIL_ACCOUNT_ID
+  // pnpm wrangler secret put CLOUDFLARE_EMAIL_API_TOKEN
   /**
    * Note: Use secrets to store sensitive data.
    * https://developers.cloudflare.com/workers/configuration/secrets/

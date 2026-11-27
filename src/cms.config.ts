@@ -3,7 +3,7 @@ import { defineConfig, type CMSUserConfig } from "./lib/config/create-config";
 import { localization } from "./lib/config/localization";
 import { cmsTrustedOrigins } from "./lib/config/trusted-origins";
 import { MAX_ASSETS_PER_RECORD } from "./lib/config/upload-limits";
-import { resendAdapter } from "./lib/email/adapters";
+import { cloudflareAdapter } from "./lib/email/adapters";
 import {
   Account,
   Contents,
@@ -114,13 +114,23 @@ export const cmsConfig = defineConfig({
   server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => ({
     database: { connectionString: process.env.DATABASE_URL },
     // Choose the adapter here. Identity and credentials have one configuration.
-    email: resendAdapter({
+    // The default is Cloudflare Email Sending (REST API). There is no env-based
+    // provider selection, no fallback and no retry; missing credentials make
+    // send() return the adapter's "not configured" failure without a network call.
+    // To switch back to Resend, replace only this one call and its import with:
+    //   import { resendAdapter } from "./lib/email/adapters";
+    //   email: resendAdapter({
+    //     defaultFromAddress: ..., defaultFromName: ..., supportAddress: ...,
+    //     apiKey: process.env.RESEND_API_KEY ?? "",
+    //   }),
+    email: cloudflareAdapter({
       // Compatibility placeholders; replace with owner-approved identities before sending.
       defaultFromAddress:
         process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
       defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
       supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
-      apiKey: process.env.RESEND_API_KEY ?? "",
+      accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+      apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
     }),
   })),
 });

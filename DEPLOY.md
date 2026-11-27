@@ -101,11 +101,46 @@ an explicit `it.todo` for rejecting `cmsapp.org` and its subdomains as the confi
 production sender; this is NOT a passing production-readiness check.
 
 If `server().email` is omitted, mail remains unconfigured; core does not
-invent a default provider. The repository's default server callback supplies Resend.
+invent a default provider. The repository's default server callback supplies Cloudflare Email Sending.
 
-#### Resend (unchanged default)
+#### Cloudflare Email Sending (default)
 
-The default server callback configures Resend alongside the database:
+The default server callback configures Cloudflare Email Sending alongside the
+database. Environment variables:
+
+- `CLOUDFLARE_EMAIL_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_API_TOKEN`: the account and
+  a dedicated token. The token needs the **Email Sending: Edit** permission.
+- `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME` and `EMAIL_SUPPORT_ADDRESS`: sender and
+  support identity (see the owner action above).
+
+Examples are in `.dev.vars.example` (local Worker) and `.env.example`. Leave the
+credentials unset for local/E2E/CI runs: sends then fail visibly with a
+"not configured" result and make no network call.
+
+This adapter uses the [Email Sending REST API](https://developers.cloudflare.com/email-service/api/send-emails/rest-api/),
+not an Email Routing-only setup. It uses a dedicated account ID and token, so
+email credentials are not coupled to the Theme deployment credentials. No Worker
+binding, Wrangler configuration change, type regeneration or extra package is
+required.
+
+```ts
+server: createServerOnlyFn(() => ({
+  database: { connectionString: process.env.DATABASE_URL },
+  email: cloudflareAdapter({
+    defaultFromAddress:
+      process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
+    defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
+    supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
+    accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+    apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+  }),
+})),
+```
+
+#### Resend (alternative)
+
+To use Resend, replace only the adapter call (and its import from
+`@/lib/email/adapters`) in the same server callback:
 
 ```ts
 server: createServerOnlyFn(() => ({
@@ -122,33 +157,7 @@ server: createServerOnlyFn(() => ({
 
 Configure `RESEND_API_KEY`. In the Resend account, verify the owner-selected sending domain
 and install the DNS records Resend supplies. Use a sending-only credential scoped
-to the intended domain. Leave the key unset for local/E2E/CI runs.
-
-#### Cloudflare Email Sending (explicit opt-in)
-
-This adapter uses the [Email Sending REST API](https://developers.cloudflare.com/email-service/api/send-emails/rest-api/),
-not an Email Routing-only setup. It uses a dedicated account ID and token, so
-email credentials are not coupled to the Theme deployment credentials. No Worker
-binding, Wrangler configuration change, type regeneration or extra package is
-required.
-
-To replace Resend directly, change the helper import to `cloudflareAdapter` from
-`@/lib/email/adapters` and use this construction inside the same
-server callback with the same identity fields and other server settings:
-
-```ts
-server: createServerOnlyFn(() => ({
-  database: { connectionString: process.env.DATABASE_URL },
-  email: cloudflareAdapter({
-    defaultFromAddress:
-      process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
-    defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
-    supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
-    accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
-    apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
-  }),
-})),
-```
+to the intended domain. Setting `RESEND_API_KEY` alone does not switch providers.
 
 The following official-documentation review was recorded on 2026-10-18; this
 documentation update does not revalidate the remote service:
@@ -187,8 +196,8 @@ Operator steps, each requiring separate approval for remote changes:
    Supply `CLOUDFLARE_EMAIL_ACCOUNT_ID` and store
    `CLOUDFLARE_EMAIL_API_TOKEN` in the Worker's secret store. Do not reuse a broad
    deployment token, put secrets in `wrangler.jsonc`, or expose them as `VITE_*`.
-4. Replace the email adapter call in the server callback with `cloudflareAdapter`
-   as shown above. Configure the three sender/support settings above.
+4. Cloudflare is already the default adapter in the server callback. Configure
+   the three sender/support settings above.
    A support mailbox also needs its own receiving-mail or forwarding setup;
    outbound domain verification does not create an inbox.
 5. Only after authorization, validate one real delivery and sender authentication.
@@ -253,7 +262,7 @@ No central provider union, registry or `getConfig` switch is needed.
 
 The server callback determines the adapter; available credentials do not select a
 provider. Missing Cloudflare settings or provider rejection returns a visible
-failed result; it never switches to Resend. With the default Resend adapter and
+failed result; it never switches to Resend. With Resend chosen explicitly and
 no key, the existing not-configured warning and `success:false`
 behavior remain. Custom adapters must provide their own explicit failure handling.
 
