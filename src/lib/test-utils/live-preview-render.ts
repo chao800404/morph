@@ -222,7 +222,17 @@ function asServerRead<T>(read: () => T): T {
 const morphForPreview: typeof previewReader = {
   pages: {
     ...previewReader.pages,
-    get: (path) => asServerRead(() => previewReader.pages.get(path)),
+    get: (path, options) =>
+      asServerRead(() =>
+        options === undefined
+          ? previewReader.pages.get(path)
+          : previewReader.pages.get(path, options),
+      ),
+  },
+  layouts: {
+    ...previewReader.layouts,
+    get: (name, options) =>
+      asServerRead(() => previewReader.layouts.get(name, options)),
   },
   products: {
     list: (params) => asServerRead(() => previewReader.products.list(params)),

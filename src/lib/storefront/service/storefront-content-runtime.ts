@@ -10,6 +10,7 @@ import {
   resolvePublishedThemeMediaUrl,
   resolveThemeMediaInSlotValues,
 } from "../theme-media";
+import { storefrontScopedContent } from "./storefront-content-read";
 import {
   routeTemplatePathForRequest,
   templateTypeForRoutePath,
@@ -188,13 +189,69 @@ export async function resolvePublishedStorefrontRenderPolicy(args: {
   });
 }
 
+/**
+ * Which part of a route's content a read returns (`storefront-content-read.ts`).
+ *
+ * - omitted: the shared layout's content with the route's laid over it, the
+ *   legacy merged read every existing Theme makes;
+ * - `"page"`: the sections the route's own Document declares;
+ * - `"layout"`: the sections the shared layout Document declares, as this
+ *   route renders them.
+ *
+ * Both scoped reads are cut from the route's merged read
+ * (`buildStorefrontScopedContent`), so they never disagree with it about a
+ * section's values or whether it is hidden.
+ */
+export type StorefrontContentScope = "page" | "layout";
+
 export async function resolveStorefrontContent(args: {
   publicationId: string | null;
   pathname: string;
   ports: ContentRuntimePorts;
+  scope?: StorefrontContentScope;
 }): Promise<StorefrontContentResult> {
   const { document, layoutDocument } = await readPublishedRouteDocuments(args);
+  if (args.scope) {
+    return buildStorefrontScopedContent(args.scope, layoutDocument, document);
+  }
   return buildStorefrontContent(layoutDocument, document);
+}
+
+/** The section ids a Document declares, in order: what a scoped read keys. */
+export function storefrontDeclaredSectionIds(
+  document: PublishedDocument | null,
+): string[] {
+  const ids: string[] = [];
+  for (const section of document?.sections ?? []) {
+    if (typeof section?.id === "string" && section.id.length > 0) {
+      ids.push(section.id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * A route's scoped content (`storefrontScopedContent`): its merged content,
+ * `buildStorefrontContent(layout, page)`, restricted to the ids one Document
+ * declares, with every id the merged read hides.
+ *
+ * Never built from a Document on its own, so a section either Document
+ * hides stays hidden (one slot namespace, PR-1 review item 6), and public
+ * media authorisation, derived from the merged read
+ * (`collectVisitorMediaKeys`), covers it unchanged.
+ */
+export function buildStorefrontScopedContent(
+  scope: StorefrontContentScope,
+  layoutDocument: PublishedDocument | null,
+  document: PublishedDocument | null,
+): StorefrontContentResult {
+  const content = storefrontScopedContent(
+    scope,
+    buildStorefrontContent(layoutDocument, document),
+    storefrontDeclaredSectionIds(document),
+    storefrontDeclaredSectionIds(layoutDocument),
+  );
+  return content as StorefrontContentResult;
 }
 
 /**

@@ -3,7 +3,13 @@ import {
   resolveStorefrontContent,
   templateTypeForPath,
   type StorefrontContentResult,
+  type StorefrontContentScope,
 } from "../service/storefront-content-runtime";
+import {
+  storefrontContentScopedBody,
+  storefrontContentScopedRead,
+  type StorefrontContentScopedRead,
+} from "../service/storefront-content-read";
 import type { ThemeRouteRegistry } from "./theme-route-registry";
 import { isStaticPageRoute, themePrerenderOptions } from "./theme-prerender";
 import { THEME_PRERENDER_CONTENT_DATA_RELATIVE_PATH } from "./theme-workspace-path";
@@ -13,9 +19,25 @@ import type { StorefrontTemplateType } from "@/db/storefront.schema";
 
 export const THEME_PRERENDER_CONTENT_FILE =
   THEME_PRERENDER_CONTENT_DATA_RELATIVE_PATH;
-export type ThemePrerenderContent = Readonly<
-  Record<string, StorefrontContentResult>
->;
+/**
+ * A build's sealed content for the SDK's scoped reads
+ * (`storefront-content-read.ts`), from the same sealed snapshot and resolver
+ * as the merged content beside it, for the same paths: each path's page-only
+ * and layout content, both cut from that path's merged content.
+ */
+export type SealedScopedContent = Readonly<{
+  page: Readonly<Record<string, StorefrontContentResult>>;
+  layout: Readonly<Record<string, StorefrontContentResult>>;
+}>;
+
+/**
+ * What a platform build's prerender may read: the merged content of each
+ * page the CMS marks SSG, by path, and the same pages' scoped content.
+ */
+export type ThemePrerenderContent = Readonly<{
+  content: Readonly<Record<string, StorefrontContentResult>>;
+  scoped: SealedScopedContent;
+}>;
 
 /**
  * Where a build's prerender records each content read it could not answer,
@@ -166,6 +188,12 @@ export type NativePrerenderContent = Readonly<{
   unavailable: Readonly<Record<string, string>>;
   /** Why no route has content: no snapshot, or one Core alone can read. */
   refusedAll?: string;
+  /**
+   * The scoped reads' content (`SealedScopedContent`), for the same routes as
+   * `content`. Absent from content sealed before scoped reads, and when
+   * `refusedAll` is set: every scoped read is then refused.
+   */
+  scoped?: SealedScopedContent;
 }>;
 
 /**
@@ -189,6 +217,47 @@ export function answerSealedContentRead(
         : "NATIVE_PRERENDER_PATH_NOT_SEALED: no static route of this build has this path"),
   };
 }
+
+/**
+ * What a build's sealed content answers for one scoped read
+ * (`storefront-content-read.ts`): the content, or why the read is refused.
+ * Like `answerSealedContentRead`, embedded by source in every content server
+ * a build runs, so it uses nothing outside itself. `notSealed` is the reason
+ * a path the build did not seal is refused with, the same as the merged
+ * read's for that server.
+ */
+export function answerSealedScopedRead(
+  sealed: Readonly<{
+    scoped?: SealedScopedContent;
+    unavailable?: Readonly<Record<string, string>>;
+    refusedAll?: string;
+  }>,
+  read: StorefrontContentScopedRead,
+  notSealed: string,
+): { content: StorefrontContentResult } | { refused: string } {
+  if (sealed.refusedAll) return { refused: sealed.refusedAll };
+  const scoped = sealed.scoped;
+  if (!scoped) {
+    return {
+      refused:
+        "PRERENDER_SCOPED_CONTENT_NOT_SEALED: this build sealed no layout or page-only content",
+    };
+  }
+  const byPath = read.scope === "layout" ? scoped.layout : scoped.page;
+  if (byPath && Object.hasOwn(byPath, read.path)) {
+    return { content: byPath[read.path]! };
+  }
+  return {
+    refused:
+      sealed.unavailable && Object.hasOwn(sealed.unavailable, read.path)
+        ? sealed.unavailable[read.path]!
+        : notSealed,
+  };
+}
+
+/** What a native build's merged read refuses a path it did not seal with. */
+const NATIVE_PRERENDER_PATH_NOT_SEALED =
+  "NATIVE_PRERENDER_PATH_NOT_SEALED: no static route of this build has this path";
 
 /** A native build with no sealed content: every content read is refused. */
 export const NATIVE_PRERENDER_WITHOUT_SNAPSHOT: NativePrerenderContent = {
@@ -254,7 +323,10 @@ function sealedContentResolver(snapshot: ThemeBuildContentSnapshot) {
     if (byType.has(type)) throw new Error("SSG_DUPLICATE_TEMPLATE_TYPE");
     byType.set(type, document);
   }
-  return async (path: string): Promise<StorefrontContentResult> => {
+  return async (
+    path: string,
+    scope?: StorefrontContentScope,
+  ): Promise<StorefrontContentResult> => {
     // A concrete route reference alone does not prove the role of a generic
     // product/page/blog template. Do not render a different document than Core.
     const type = templateTypeForPath(path);
@@ -274,6 +346,7 @@ function sealedContentResolver(snapshot: ThemeBuildContentSnapshot) {
     return resolveStorefrontContent({
       publicationId: snapshot.publicationId,
       pathname: path,
+      ...(scope ? { scope } : {}),
       ports: {
         getPublishedDocument: async ({ templateType }) =>
           templateType === "layout"
@@ -300,11 +373,15 @@ export async function createThemePrerenderContent(
   const options = themePrerenderOptions(snapshot, registry, true);
   if (!snapshot || !options) return undefined;
   const resolve = sealedContentResolver(snapshot);
-  const result: Record<string, StorefrontContentResult> = {};
+  const content: Record<string, StorefrontContentResult> = {};
+  const page: Record<string, StorefrontContentResult> = {};
+  const layout: Record<string, StorefrontContentResult> = {};
   for (const { path } of options.pages) {
-    result[path] = await resolve(path);
+    content[path] = await resolve(path);
+    page[path] = await resolve(path, "page");
+    layout[path] = await resolve(path, "layout");
   }
-  return result;
+  return { content, scoped: { page, layout } };
 }
 
 /** The content a native build's prerender may read (`NativePrerenderContent`). */
@@ -332,17 +409,25 @@ export async function createNativePrerenderContent(
     };
   }
   const content: Record<string, StorefrontContentResult> = {};
+  const page: Record<string, StorefrontContentResult> = {};
+  const layout: Record<string, StorefrontContentResult> = {};
   const unavailable: Record<string, string> = {};
   for (const route of registry.routes) {
     if (!isStaticPageRoute(route)) continue;
     try {
-      content[route.path] = await resolve(route.path);
+      // All or none: a path is sealed for every read or for none.
+      const merged = await resolve(route.path);
+      const own = await resolve(route.path, "page");
+      const shared = await resolve(route.path, "layout");
+      content[route.path] = merged;
+      page[route.path] = own;
+      layout[route.path] = shared;
     } catch (error) {
       unavailable[route.path] =
         error instanceof Error ? error.message : String(error);
     }
   }
-  return { content, unavailable };
+  return { content, unavailable, scoped: { page, layout } };
 }
 
 /** Node preview middleware only: neither the snapshot nor this plugin belongs
@@ -370,10 +455,21 @@ export function themePrerenderContentPluginSource(
   const refusedReadsFile = options.refusedReadsPath
     ? `const refusedReads = path.join(${JSON.stringify(root)}, ${JSON.stringify(options.refusedReadsPath)});`
     : "";
+  // Without a record (tests only) the file is a bare path map and has no
+  // scoped content; a platform build's is a `ThemePrerenderContent`, a native
+  // build's a `NativePrerenderContent`. A platform file sealed before scoped
+  // reads is a bare path map too: its merged reads are answered from it as
+  // before, and its scoped reads refused. Every path key starts with `/`, so a
+  // file naming both `content` and `scoped` is the current shape.
   const load = !options.refusedReadsPath
-    ? `const content = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));`
+    ? `const content = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
+      const sealed = {};`
     : options.platform
-      ? `const content = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
+      ? `const file = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
+      const current = file && typeof file === "object" &&
+        Object.hasOwn(file, "content") && Object.hasOwn(file, "scoped");
+      const sealed = current ? file : {};
+      const content = current ? file.content : file;
       ${refusedReadsFile}
       fs.rmSync(refusedReads, { force: true });`
       : `const sealed = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
@@ -383,6 +479,36 @@ export function themePrerenderContentPluginSource(
   const reason = options.platform
     ? JSON.stringify(PLATFORM_PRERENDER_PATH_NOT_SEALED)
     : "answerSealedContentRead(sealed, pathname).refused";
+  const scopedNotSealed = JSON.stringify(
+    options.platform
+      ? PLATFORM_PRERENDER_PATH_NOT_SEALED
+      : NATIVE_PRERENDER_PATH_NOT_SEALED,
+  );
+  // A scoped read (`storefront-content-read.ts`), answered from the same
+  // sealed file through `answerSealedScopedRead`; refused as the merged read
+  // is, and recorded under the path it names.
+  const scopedRead = `const scopedRead = storefrontContentScopedRead(url.searchParams);
+          if (scopedRead !== null) {
+            const answer = scopedRead === "invalid"
+              ? { refused: "PRERENDER_CONTENT_READ_INVALID: this content read cannot be answered" }
+              : answerSealedScopedRead(sealed, scopedRead, ${scopedNotSealed});
+            if (req.method !== "GET" || "refused" in answer) {
+              ${
+                options.refusedReadsPath
+                  ? `if (req.method === "GET") {
+                const recorded = scopedRead === "invalid" ? "(invalid read)" : scopedRead.path;
+                fs.mkdirSync(path.dirname(refusedReads), { recursive: true });
+                fs.appendFileSync(refusedReads, JSON.stringify({ path: recorded, reason: answer.refused || "not a GET" }) + "\\n");
+              }`
+                  : ""
+              }
+              res.statusCode = 404; res.end(); return;
+            }
+            res.setHeader("Content-Type", "application/json; charset=utf-8");
+            res.setHeader("Cache-Control", "no-store");
+            res.end(JSON.stringify(storefrontContentScopedBody(scopedRead, answer.content)));
+            return;
+          }`;
   const refuse = options.refusedReadsPath
     ? `if (req.method === "GET") {
               const reason = ${reason};
@@ -397,6 +523,9 @@ export function themePrerenderContentPluginSource(
     configurePreviewServer(server) {
       if (process.env.TSS_PRERENDERING !== "true") return;
       ${load}
+      const storefrontContentScopedRead = (${storefrontContentScopedRead.toString()});
+      const storefrontContentScopedBody = (${storefrontContentScopedBody.toString()});
+      const answerSealedScopedRead = (${answerSealedScopedRead.toString()});
       server.middlewares.use((req, res, next) => {
         const address = server.httpServer?.address();
         if (!address || typeof address === "string") return next(new Error("SSG_CONTENT_SERVER_UNAVAILABLE"));
@@ -413,6 +542,7 @@ export function themePrerenderContentPluginSource(
         const origin = "http://" + host + ":" + address.port;
         const url = new URL(req.url || "/", origin);
         if (url.pathname === "/_morph/content") {
+          ${scopedRead}
           const pathname = url.searchParams.get("path") || "/";
           if (req.method !== "GET" || !Object.hasOwn(content, pathname)) {
             ${refuse}

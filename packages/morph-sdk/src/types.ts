@@ -12,11 +12,59 @@
  * which no slot id can be called because slot ids never start with `_`.
  *
  * The same shape as the Starter's `MorphPage`.
+ *
+ * Which sections it holds depends on the read (`MorphPageReadOptions`): by
+ * default the shared layout's sections and the page's own, in one slot
+ * namespace; with `{ scope: "page" }` the page's own only.
  */
 export type MorphPage = {
   readonly _hidden: readonly string[];
   readonly [slotId: string]: any;
 };
+
+/**
+ * The shared layout's published content as one page renders it
+ * (`layouts.get`): the sections the layout declares, such as the header and
+ * footer, with no section of the page's own. The same shape as `MorphPage`,
+ * so `isHidden` reads it the same way: `_hidden` lists every id the merged
+ * read hides on that page (by the layout or by the page itself), and a hidden
+ * section has no values. An id both Documents declare carries the page's
+ * values, the ones that page renders.
+ */
+export type MorphLayout = MorphPage;
+
+/** How `layouts.get` reads the layout. */
+export type MorphLayoutReadOptions = Readonly<{
+  /**
+   * The page being rendered, as `pages.get` takes it. Required: layout and
+   * page share one slot namespace, so a page can hide a layout section, and
+   * only the page's own read can say so. A path with no Document of its own
+   * reads the layout as the author left it.
+   */
+  path: string;
+}>;
+
+/**
+ * Which shared layout to read. One exists today, `"default"`: the store's
+ * single layout Document. Any other name is refused before anything is sent
+ * (`invalid_request`).
+ */
+export type MorphLayoutName = "default";
+
+/** How `pages.get` reads a page. */
+export type MorphPageReadOptions = Readonly<{
+  /**
+   * Omitted: the shared layout's sections and the page's own, merged as
+   * every existing Theme reads them (a page section wins over a layout one
+   * with the same id, and a section either hides stays hidden).
+   *
+   * `"page"`: the sections the page's own Document declares, without the
+   * layout's; read those with `layouts.get("default", { path })`. `_hidden`
+   * lists every id the merged read hides on that page (one slot namespace).
+   * A path with no Document of its own has no sections of its own.
+   */
+  scope?: "page";
+}>;
 
 /** The store a catalog answer was scoped to, as the Store API reports it. */
 export type MorphStoreContext = Readonly<{
@@ -131,10 +179,32 @@ export type Morph = Readonly<{
      * Published content for one path. Server side only in v0: called where
      * `window` and `document` exist, it throws `invalid_content_origin`
      * before sending anything.
+     *
+     * Without `options`, the merged read: the shared layout's sections and
+     * the page's own (`MorphPageReadOptions`). With `{ scope: "page" }`, the
+     * page's own only. An option it does not know throws `invalid_request`.
+     * A scoped read is refused (`invalid_response`) by a content source
+     * that does not support it, never answered with merged content.
      */
-    get(path: string): Promise<MorphPage>;
+    get(path: string, options?: MorphPageReadOptions): Promise<MorphPage>;
     /** Whether the author hid this section on the page. */
     isHidden(page: MorphPage, slotId: string): boolean;
+  }>;
+  layouts: Readonly<{
+    /**
+     * The shared layout's published content as the page at `options.path`
+     * renders it (`MorphLayout`), from the same source, release and render
+     * context as `pages.get`. Server side only, read only, failing with the
+     * same errors as `pages.get` (resource `"page"`): a missing or bad path
+     * throws `invalid_path`; a name other than `"default"`, or options that
+     * are not `{ path }`, throw `invalid_request`.
+     */
+    get(
+      name: MorphLayoutName,
+      options: MorphLayoutReadOptions,
+    ): Promise<MorphLayout>;
+    /** Whether the author hid this section in the layout. */
+    isHidden(layout: MorphLayout, slotId: string): boolean;
   }>;
   products: Readonly<{
     list(params?: MorphProductListParams): Promise<MorphProductList>;

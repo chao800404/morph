@@ -44,8 +44,12 @@ import type {
   MorphErrorCode,
   MorphErrorResource,
   MorphFetch,
+  MorphLayout,
+  MorphLayoutName,
+  MorphLayoutReadOptions,
   MorphOptions,
   MorphPage,
+  MorphPageReadOptions,
   MorphPagination,
   MorphProduct,
   MorphProductAsset,
@@ -106,8 +110,13 @@ describe("@morph/sdk public surface", () => {
 
   it("returns a reader with exactly these methods", () => {
     const reader = core.createMorph({ baseUrl: "https://shop.example.com" });
-    expect(Object.keys(reader).sort()).toEqual(["pages", "products"]);
+    expect(Object.keys(reader).sort()).toEqual([
+      "layouts",
+      "pages",
+      "products",
+    ]);
     expect(Object.keys(reader.pages).sort()).toEqual(["get", "isHidden"]);
+    expect(Object.keys(reader.layouts).sort()).toEqual(["get", "isHidden"]);
     expect(Object.keys(reader.products).sort()).toEqual(["get", "list"]);
   });
 
@@ -129,12 +138,30 @@ describe("@morph/sdk public surface", () => {
     expectTypeOf<MorphOptions>().toEqualTypeOf<
       Readonly<{ baseUrl: string; fetch?: MorphFetch }>
     >();
+    // Widened additively by the scoped reads: `(path)` calls are unchanged.
     expectTypeOf<Morph["pages"]["get"]>().toEqualTypeOf<
-      (path: string) => Promise<MorphPage>
+      (path: string, options?: MorphPageReadOptions) => Promise<MorphPage>
+    >();
+    expectTypeOf<MorphPageReadOptions>().toEqualTypeOf<
+      Readonly<{ scope?: "page" }>
     >();
     expectTypeOf<Morph["pages"]["isHidden"]>().toEqualTypeOf<
       (page: MorphPage, slotId: string) => boolean
     >();
+    expectTypeOf<Morph["layouts"]["get"]>().toEqualTypeOf<
+      (
+        name: MorphLayoutName,
+        options: MorphLayoutReadOptions,
+      ) => Promise<MorphLayout>
+    >();
+    expectTypeOf<MorphLayoutReadOptions>().toEqualTypeOf<
+      Readonly<{ path: string }>
+    >();
+    expectTypeOf<Morph["layouts"]["isHidden"]>().toEqualTypeOf<
+      (layout: MorphLayout, slotId: string) => boolean
+    >();
+    expectTypeOf<MorphLayoutName>().toEqualTypeOf<"default">();
+    expectTypeOf<MorphLayout>().toEqualTypeOf<MorphPage>();
     expectTypeOf<Morph["products"]["list"]>().toEqualTypeOf<
       (params?: MorphProductListParams) => Promise<MorphProductList>
     >();
@@ -173,8 +200,16 @@ describe("@morph/sdk/start public surface", () => {
 
   it("keeps the request-scoped reader's methods and the header name", () => {
     expect(start.MORPH_CONTENT_ORIGIN_HEADER).toBe("x-morph-content-origin");
-    expect(Object.keys(start.morph).sort()).toEqual(["pages", "products"]);
+    expect(Object.keys(start.morph).sort()).toEqual([
+      "layouts",
+      "pages",
+      "products",
+    ]);
     expect(Object.keys(start.morph.pages).sort()).toEqual(["get", "isHidden"]);
+    expect(Object.keys(start.morph.layouts).sort()).toEqual([
+      "get",
+      "isHidden",
+    ]);
     expect(Object.keys(start.morph.products).sort()).toEqual(["get", "list"]);
   });
 

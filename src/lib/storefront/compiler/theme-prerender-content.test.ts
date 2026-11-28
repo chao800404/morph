@@ -222,9 +222,26 @@ describe("frozen prerender content", () => {
       },
     ]);
     expect(await createThemePrerenderContent(data, home)).toEqual({
-      "/": {
-        slots: { header: { title: "Frozen shell" }, hero: { title: "Frozen" } },
-        hiddenSlots: ["hidden"],
+      content: {
+        "/": {
+          slots: {
+            header: { title: "Frozen shell" },
+            hero: { title: "Frozen" },
+          },
+          hiddenSlots: ["hidden"],
+        },
+      },
+      // The scoped reads' content, from the same documents.
+      scoped: {
+        page: {
+          "/": { slots: { hero: { title: "Frozen" } }, hiddenSlots: ["hidden"] },
+        },
+        layout: {
+          "/": {
+            slots: { header: { title: "Frozen shell" } },
+            hiddenSlots: ["hidden"],
+          },
+        },
       },
     });
   });
@@ -248,7 +265,11 @@ describe("frozen prerender content", () => {
     );
     data.documents[0]!.document.sections = [];
     expect(await createThemePrerenderContent(data, products)).toEqual({
-      "/products/featured": { slots: {}, hiddenSlots: [] },
+      content: { "/products/featured": { slots: {}, hiddenSlots: [] } },
+      scoped: {
+        page: { "/products/featured": { slots: {}, hiddenSlots: [] } },
+        layout: { "/products/featured": { slots: {}, hiddenSlots: [] } },
+      },
     });
   });
   it.each([
@@ -363,9 +384,25 @@ describe("frozen prerender content", () => {
     });
     const before = JSON.stringify(data);
     expect(await createThemePrerenderContent(data, registry)).toEqual({
-      "/landing": {
-        slots: { header: { title: "Shell" }, hero: { title: "Frozen" } },
-        hiddenSlots: ["hidden"],
+      content: {
+        "/landing": {
+          slots: { header: { title: "Shell" }, hero: { title: "Frozen" } },
+          hiddenSlots: ["hidden"],
+        },
+      },
+      scoped: {
+        page: {
+          "/landing": {
+            slots: { hero: { title: "Frozen" } },
+            hiddenSlots: ["hidden"],
+          },
+        },
+        layout: {
+          "/landing": {
+            slots: { header: { title: "Shell" } },
+            hiddenSlots: ["hidden"],
+          },
+        },
       },
     });
     expect(JSON.stringify(data)).toBe(before);
@@ -420,7 +457,12 @@ describe("a platform build's refused prerender content reads", () => {
       })});`,
     )(
       {
-        readFileSync: () => JSON.stringify(content),
+        // A platform build's file (`ThemePrerenderContent`).
+        readFileSync: () =>
+          JSON.stringify({
+            content,
+            scoped: { page: {}, layout: {} },
+          }),
         rmSync: (file: string) => files.delete(file),
         mkdirSync: () => undefined,
         appendFileSync: (file: string, text: string) =>

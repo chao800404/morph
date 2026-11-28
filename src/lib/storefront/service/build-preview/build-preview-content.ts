@@ -2,6 +2,11 @@ import {
   resolveStorefrontContent,
   type ContentRuntimePorts,
 } from "../storefront-content-runtime";
+import {
+  STOREFRONT_CONTENT_INVALID_READ,
+  storefrontContentScopedBody,
+  storefrontContentScopedRead,
+} from "../storefront-content-read";
 import type { VerifiedBuildPreviewCapability } from "./build-preview-capability";
 
 /**
@@ -11,9 +16,10 @@ import type { VerifiedBuildPreviewCapability } from "./build-preview-capability"
  * else: not the drafts, not the live release. What the preview shows is then
  * what publishing this build would show, which is the point of previewing the
  * build rather than the source. Same shape and the same resolver as the
- * production endpoint (`StorefrontProductionService.serveContent`); only the
- * publication it reads and the caching differ — a preview's answer is private
- * to the user holding the capability, and is never stored.
+ * production endpoint (`StorefrontProductionService.serveContent`), scoped
+ * reads included (`storefront-content-read.ts`); only the publication it
+ * reads and the caching differ — a preview's answer is private to the user
+ * holding the capability, and is never stored.
  */
 export async function serveBuildPreviewContent(input: {
   request: Request;
@@ -32,7 +38,15 @@ export async function serveBuildPreviewContent(input: {
       headers: { ...headers, Allow: "GET, HEAD" },
     });
   }
-  const requestedPath = new URL(request.url).searchParams.get("path") ?? "/";
+  const params = new URL(request.url).searchParams;
+  const scoped = storefrontContentScopedRead(params);
+  if (scoped === "invalid") {
+    return new Response(
+      JSON.stringify({ error: STOREFRONT_CONTENT_INVALID_READ }),
+      { status: 400, headers },
+    );
+  }
+  const requestedPath = scoped ? scoped.path : (params.get("path") ?? "/");
   if (requestedPath.length > 500 || !requestedPath.startsWith("/")) {
     return new Response(JSON.stringify({ error: "Invalid content path." }), {
       status: 400,
@@ -43,9 +57,14 @@ export async function serveBuildPreviewContent(input: {
     publicationId: capability.contentPublicationId,
     pathname: requestedPath,
     ports,
+    ...(scoped ? { scope: scoped.scope } : {}),
   });
   return new Response(
-    request.method === "HEAD" ? null : JSON.stringify(content),
+    request.method === "HEAD"
+      ? null
+      : JSON.stringify(
+          scoped ? storefrontContentScopedBody(scoped, content) : content,
+        ),
     { status: 200, headers },
   );
 }

@@ -2,8 +2,12 @@ import { MorphError, type MorphErrorResource } from "./errors";
 import type {
   Morph,
   MorphFetch,
+  MorphLayout,
+  MorphLayoutName,
+  MorphLayoutReadOptions,
   MorphOptions,
   MorphPage,
+  MorphPageReadOptions,
   MorphProductList,
   MorphProductListParams,
   MorphProductResult,
@@ -244,13 +248,24 @@ export function createMorphReader(
     return new MorphError("store_error", resource, answer.status);
   }
 
-  function readPage(answer: Answer): MorphPage {
+  /**
+   * A content answer as a `MorphPage`. `scope` is what the read asked for:
+   * `null` for the legacy merged read, whose answer names no scope; a scoped
+   * read's answer must name the scope it answers (and the layout), or it came
+   * from a source that ignored the scope and answered merged content.
+   */
+  function readPage(
+    answer: Answer,
+    scope: "page" | "layout" | null = null,
+  ): MorphPage {
     const body = answer.body;
     if (
       !isRecord(body) ||
       !isRecord(body.slots) ||
       !Array.isArray(body.hiddenSlots) ||
-      !body.hiddenSlots.every((slot) => typeof slot === "string")
+      !body.hiddenSlots.every((slot) => typeof slot === "string") ||
+      (scope !== null && body.scope !== scope) ||
+      (scope === "layout" && body.layout !== "default")
     ) {
       throw new MorphError("invalid_response", "page", answer.status);
     }
@@ -318,9 +333,44 @@ export function createMorphReader(
     return query ? "?" + query : "";
   }
 
+  /** The page-content headers: the render context, when there is one. */
+  function contentHeaders(): Readonly<Record<string, string>> {
+    return renderContext === null
+      ? {}
+      : { [MORPH_RENDER_CONTEXT_HEADER]: renderContext };
+  }
+
+  /** A page path as every content read takes it. */
+  function checkPath(path: unknown): asserts path is string {
+    if (
+      typeof path !== "string" ||
+      !path.startsWith("/") ||
+      path.length > MAX_PATH_LENGTH
+    ) {
+      throw new MorphError("invalid_path", "page");
+    }
+  }
+
+  /** Only `{}`, `{ scope: undefined }` and `{ scope: "page" }` are read. */
+  function pageScope(options: unknown): "page" | null {
+    if (options === undefined) return null;
+    if (!isRecord(options)) throw new MorphError("invalid_request", "page");
+    for (const key of Object.keys(options)) {
+      if (key !== "scope") throw new MorphError("invalid_request", "page");
+    }
+    if (options.scope === undefined) return null;
+    if (options.scope !== "page") {
+      throw new MorphError("invalid_request", "page");
+    }
+    return "page";
+  }
+
   return {
     pages: {
-      async get(path: string): Promise<MorphPage> {
+      async get(
+        path: string,
+        options?: MorphPageReadOptions,
+      ): Promise<MorphPage> {
         if (
           typeof path !== "string" ||
           !path.startsWith("/") ||
@@ -328,19 +378,53 @@ export function createMorphReader(
         ) {
           throw new MorphError("invalid_path", "page");
         }
+        const scope = pageScope(options);
         if (inBrowser()) throw new MorphError("invalid_content_origin", "page");
+        // The legacy read's address is unchanged; a scoped read adds
+        // `scope=page` (storefront-content-read.ts on the server).
         const answer = await request(
-          origin + "/_morph/content?path=" + encodeURIComponent(path),
+          origin +
+            "/_morph/content?path=" +
+            encodeURIComponent(path) +
+            (scope === null ? "" : "&scope=page"),
           "page",
-          renderContext === null
-            ? {}
-            : { [MORPH_RENDER_CONTEXT_HEADER]: renderContext },
+          contentHeaders(),
         );
         if (!answer.ok) throw refusal(answer, "page");
-        return readPage(answer);
+        return readPage(answer, scope);
       },
       isHidden(page: MorphPage, slotId: string): boolean {
         return page._hidden.includes(slotId);
+      },
+    },
+    layouts: {
+      async get(
+        name: MorphLayoutName,
+        options: MorphLayoutReadOptions,
+      ): Promise<MorphLayout> {
+        if (name !== "default") throw new MorphError("invalid_request", "page");
+        if (options === undefined) throw new MorphError("invalid_path", "page");
+        if (!isRecord(options)) throw new MorphError("invalid_request", "page");
+        for (const key of Object.keys(options)) {
+          if (key !== "path") throw new MorphError("invalid_request", "page");
+        }
+        const path = (options as { path?: unknown }).path;
+        checkPath(path);
+        if (inBrowser()) throw new MorphError("invalid_content_origin", "page");
+        // Per page: the layout as this path renders it
+        // (storefront-content-read.ts on the server).
+        const answer = await request(
+          origin +
+            "/_morph/content?scope=layout&layout=default&path=" +
+            encodeURIComponent(path),
+          "page",
+          contentHeaders(),
+        );
+        if (!answer.ok) throw refusal(answer, "page");
+        return readPage(answer, "layout");
+      },
+      isHidden(layout: MorphLayout, slotId: string): boolean {
+        return layout._hidden.includes(slotId);
       },
     },
     products: {

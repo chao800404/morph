@@ -21,7 +21,8 @@ export type MorphErrorCode =
   | "invalid_response"
   | "response_too_large"
   | "reserved_slot"
-  // Product reads only.
+  // Product reads; and, checked before sending, a page read's options or a
+  // layout name (pages.get, layouts.get).
   | "invalid_request"
   | "invalid_store_context";
 

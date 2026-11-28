@@ -6,6 +6,11 @@
  * `theme-preview-start-runtime.pinned-snapshot.test.ts` compares the current
  * generator's output with this copy. Change it only together with a reviewed,
  * intended change to the Start Worker.
+ *
+ * Changed once since, intentionally: the content read answers through
+ * `previewContentForQuery` (the SDK's scoped reads, storefront-content-read.ts)
+ * in place of `previewContentForPath`, for the Start and the Astro Worker
+ * alike. A read without `scope` is answered exactly as before.
  */
 import { themePreviewContentModuleSource } from "./theme-preview-content";
 import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
@@ -114,7 +119,7 @@ globalThis.fetch = async function morphPreviewFetch(input, init) {
     let content = null;
     try {
       await readSnapshot();
-      content = previewContentForPath(url.searchParams.get("path") || "/");
+      content = previewContentForQuery(url.searchParams);
     } catch {
       content = null;
     }

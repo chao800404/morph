@@ -10,6 +10,8 @@ import { createMorph, MorphError } from "@morph/sdk";
 const morph = createMorph({ baseUrl: "https://shop.example.com" });
 
 const home = await morph.pages.get("/"); // server side only
+const layout = await morph.layouts.get("default", { path: "/" }); // the shared header, footer…
+const own = await morph.pages.get("/", { scope: "page" }); // the page's sections only
 const list = await morph.products.list({ q: "linen", page: 1, limit: 12 });
 const one = await morph.products.get("linen-shirt"); // null if not found
 ```
@@ -28,6 +30,7 @@ const one = await morph.products.get("linen-shirt"); // null if not found
   - In a hosted Theme (`@morph/sdk/start`, `@morph/sdk/astro`), each page read also sends back the render context the platform sent with the request being served (`x-morph-render-context`). Every read of that render then stays on the release the page was resolved to, even if a publish or rollback lands mid-render. `createMorph` never sends one.
   - Returns the Starter's `MorphPage` shape: slots spread onto one object, hidden slot ids in `_hidden`.
   - Refused in a browser (`window` and `document` both present), because the endpoint sends no CORS headers. This throws `invalid_content_origin` before anything is sent; v0 keeps the code set the same as the Starter's and #245's rather than adding one.
+- **`layouts.get("default", { path })`** and **`pages.get(path, { scope: "page" })`**: see "Shared layout content".
 - **`products.list({ q, page, limit, order })`**
   - Accepts only the parameters the Store API has, and checks them the way the API does before sending.
   - Returns `{ products, pagination, context }`.
@@ -39,6 +42,85 @@ const one = await morph.products.get("linen-shirt"); // null if not found
   - `/_storefront-media/…` (page media);
   - `/api/store/assets/…` (product images).
 
+## Shared layout content
+
+A page renders inside a shared layout: the header, the footer, an announcement bar. The layout's content is one Document, the store's singleton layout. The author edits it once, and every page shows it.
+
+`pages.get(path)` has always returned the layout's sections and the page's own sections together, in one slot namespace. Two more reads return them separately. Both take the page being rendered:
+
+```ts
+const layout = await morph.layouts.get("default", { path }); // the layout's sections, as this page shows them
+const page = await morph.pages.get(path, { scope: "page" }); // the page's own sections
+const both = await morph.pages.get(path); // unchanged: merged, as before
+
+if (!morph.layouts.isHidden(layout, "header")) render(layout.header);
+```
+
+### `layouts.get(name, { path })`
+
+- **What it returns.** A `MorphLayout`, which has the same shape as `MorphPage`. It holds the sections the layout Document declares, as the page at `path` renders them.
+- **Hidden sections.** `_hidden` lists every id the merged read hides on that page, whichever Document hid it. A hidden section carries no values. Layout and page share one slot namespace, so a page can hide a layout section on itself. That is why the layout read is per page.
+  - The list also covers a section the layout component renders from its own defaults without declaring it: if the page hides that id, the layout read hides it too, as the merged read does.
+  - A path with no Document of its own reads the layout as the author left it.
+  - `layouts.isHidden` (or `pages.isHidden`) reads `_hidden` the same way as on a page.
+- **Name.** One layout exists today, `"default"`. Any other name throws `invalid_request` before anything is sent.
+- **Path.** `path` is required, because the page cannot be derived. A Start loader runs on a server-function request on client navigation, so the request URL is not the page.
+  - A missing or bad path throws `invalid_path`.
+  - Any option other than `path` throws `invalid_request`.
+- **Collisions.** If the page shows its own section under a layout id, every read has the page's values for that id, because that is what the page renders. So a layout component reading it shows what the merged read shows.
+
+### `pages.get(path, { scope: "page" })`
+
+- **What it returns.** The sections declared by the Document that `path` resolves to, without the layout's.
+- **Hidden sections.** `_hidden` lists every id the merged read hides on that page, as for the layout read.
+- **No Document.** A path with no Document of its own has no sections of its own: `_hidden` alone, with whatever the layout hides.
+- **Options.** Any other option or `scope` value throws `invalid_request` before anything is sent. `{}` and `{ scope: undefined }` give the merged read.
+
+### What both reads share
+
+- **One source of truth.** Both are cut from that path's merged read on the server. They never show a value the merged read hides on that path, and they never disagree with it.
+  - Without id collisions, `{ ...layout, ...page }` (without `_hidden`) equals the merged slots.
+  - Public media authorisation is unchanged, because both reads stay within what the merged read and the layout alone already emit.
+- **The merged read is unchanged.** `pages.get(path)` sends the same request as before, and Morph answers it byte for byte as before.
+- **Same reader as `pages.get`.** Both use:
+  - the request's content origin;
+  - in a hosted Theme, its render context, so a page and its layout read in one render come from the same release on the public site;
+  - server-only reads, read only;
+  - the same error codes, with resource `"page"`.
+- **Every source answers them.** All of them answer from the same Documents through Core's own resolver (`resolveStorefrontContent` with a `scope`):
+  - the public site, from the pinned or active publication;
+  - Build Preview, from the build's publication;
+  - the Live Preview, from the confirmed draft snapshot. This covers the Start and Astro Workers, the dev server and the in-page fetch shim.
+    - **Live edits.** The page's live edits are included, and an unsaved edit stays on the path it was made on.
+    - **One snapshot per request.** Both Workers pin one snapshot per request, including reads made while a response body streams. So one render's reads never mix two drafts.
+  - a build's prerender, from the sealed snapshot. This covers Start and Astro, native and platform builds.
+
+### Wire format
+
+| Read | Request | Answer |
+| --- | --- | --- |
+| merged (legacy) | `GET /_morph/content?path=/x` | `{ slots, hiddenSlots }`, unchanged |
+| page-only | `GET /_morph/content?path=/x&scope=page` | `{ scope: "page", slots, hiddenSlots }` |
+| layout | `GET /_morph/content?scope=layout&layout=default&path=/x` | `{ scope: "layout", layout: "default", slots, hiddenSlots }` |
+
+- **Versioned by the echo.** A content source from before scoped reads ignores `scope` and answers with merged content that names no scope. The SDK refuses a scoped answer that does not name the scope (and layout) it asked for, with `invalid_response`. So merged content is never read as a layout or as page-only.
+  - Old SDK copies in existing builds never send `scope`, so they get the legacy answer.
+- **One rule for the query.** One function holds it, `storefrontContentScopedRead` (`src/lib/storefront/service/storefront-content-read.ts`). The preview and prerender servers embed it by source.
+  - It takes exactly one `path`, which starts with `/`, is at most 500 characters, and has well-formed percent-escapes.
+  - It normalises the path to one canonical key, so `/關於` and `/%E9%97%9C%E6%96%BC` are one page:
+    - the URL pathname spelling, with non-ASCII percent-encoded, as `Astro.url.pathname` and a browser's `location.pathname` spell it;
+    - no query and no trailing `/`.
+- **Unusable queries.** Core refuses them with 400. Examples: an unknown scope, a missing or repeated path, a malformed escape, another layout name. The preview and prerender servers refuse them as they refuse an unreadable read.
+- **Caching on the public site.** A scoped answer has its own `ETag`, with the path percent-encoded: `"<release>:page:<path>"` or `"<release>:layout:default:<path>"`. The merged one keeps `"<release>:<path>"`.
+  - Both use the merged read's cache policy. A read with no render context is `public, max-age=60, must-revalidate`, so a cache may serve the previous release's answer for up to 60 seconds after a publish or rollback, exactly as for the merged read.
+  - A read with a render context, which is what a hosted Theme's page render sends, is `private, no-store` and always pinned to its release.
+
+### Not in this change
+
+- **The bare name.** `@morph/sdk` still resolves to the generic client (`createMorph`) in every workspace (`theme-morph-sdk.ts`). A hosted Theme imports the request-scoped `morph` from `@morph/sdk/start` or `@morph/sdk/astro`. Mapping the bare name to the framework adapter is the later "uniform SDK import" step.
+- **Other work:** Core's binding analysis of layout reads, layout writes from the editor, and more than one layout.
+- **The local development proxy.** The opt-in proxy (`morph-dev-content-proxy.ts`) forwards only `path`. It answers browser navigation reads, and scoped reads are server only.
+
 ## Errors
 
 Every failure throws a `MorphError` with a `code`, a `resource` (`"page"`, `"product"`, or `null` for configuration), and the HTTP `status` when there was one.
@@ -49,15 +131,15 @@ Every failure throws a `MorphError` with a `code`, a `resource` (`"page"`, `"pro
 | Code                     | When                                                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------------------------------- |
 | `invalid_content_origin` | Bad `baseUrl`; or `pages.get` called in a browser                                                     |
-| `invalid_path`           | Page path not starting with `/`, or longer than 500 characters                                        |
-| `invalid_request`        | Unsupported list parameter or bad handle (checked before sending); or the API's `400 INVALID_REQUEST` |
+| `invalid_path`           | Page path not starting with `/`, or longer than 500 characters; a missing `layouts.get` path          |
+| `invalid_request`        | Unsupported list parameter or bad handle (checked before sending); or the API's `400 INVALID_REQUEST`; an unknown `pages.get` option or layout name (checked before sending) |
 | `invalid_store_context`  | The API's `401 INVALID_STORE_CONTEXT`                                                                 |
 | `content_not_found`      | A plain 404 from the host lookup: the address has no published store. Any 404 on a page read.         |
 | `store_unreachable`      | Network failure, timeout (15 s), or a body that breaks off                                            |
 | `redirect_refused`       | A 3xx, or an opaque redirect (status 0); the body is not read                                         |
 | `response_too_large`     | A body, or a declared `content-length`, over 2 MB                                                     |
 | `store_error`            | Any other non-2xx                                                                                     |
-| `invalid_response`       | Not JSON, or not the expected shape                                                                   |
+| `invalid_response`       | Not JSON, or not the expected shape; a scoped read answered without naming its scope                  |
 | `reserved_slot`          | A slot named `_hidden`                                                                                |
 
 `no_content_source` is in the type for parity with the Starter. The core never produces it, because there is always a `baseUrl`. `@morph/sdk/start` produces it when the request carries no `x-morph-content-origin` header and no development fallback applies.
@@ -153,10 +235,12 @@ This section covers `@morph/sdk` and `@morph/sdk/start`. `start/api-surface.test
   - `createMorph(options: MorphOptions): Morph`;
   - `class MorphError extends Error { code: MorphErrorCode; resource: "page" | "product" | null; status: number | null }`;
   - `isMorphError(value: unknown): value is MorphError`.
-- Types: `Morph`, `MorphFetch`, `MorphOptions` (`{ baseUrl: string; fetch?: MorphFetch }`), `MorphPage`, `MorphPagination`, `MorphProduct`, `MorphProductAsset`, `MorphProductList`, `MorphProductListItem`, `MorphProductListParams`, `MorphProductResult`, `MorphStoreContext`, `MorphErrorCode`, `MorphErrorResource`.
+- Types: `Morph`, `MorphFetch`, `MorphLayout` (`= MorphPage`), `MorphLayoutName` (`"default"`), `MorphLayoutReadOptions` (`{ path: string }`), `MorphOptions` (`{ baseUrl: string; fetch?: MorphFetch }`), `MorphPage`, `MorphPageReadOptions` (`{ scope?: "page" }`), `MorphPagination`, `MorphProduct`, `MorphProductAsset`, `MorphProductList`, `MorphProductListItem`, `MorphProductListParams`, `MorphProductResult`, `MorphStoreContext`, `MorphErrorCode`, `MorphErrorResource`.
 - `Morph` methods:
-  - `pages.get(path: string): Promise<MorphPage>`;
+  - `pages.get(path: string, options?: MorphPageReadOptions): Promise<MorphPage>` (`options` added for the scoped read; a call without it is unchanged);
   - `pages.isHidden(page: MorphPage, slotId: string): boolean`;
+  - `layouts.get(name: MorphLayoutName, options: MorphLayoutReadOptions): Promise<MorphLayout>`;
+  - `layouts.isHidden(layout: MorphLayout, slotId: string): boolean`;
   - `products.list(params?: MorphProductListParams): Promise<MorphProductList>`;
   - `products.get(handle: string): Promise<MorphProductResult | null>`.
 
