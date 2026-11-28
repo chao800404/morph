@@ -5,7 +5,11 @@ import {
   scrubDeploymentSecrets,
   wranglerDeployConfig,
 } from "./sandbox-wrangler-theme-worker-deployer";
-import { expectValidSandboxId } from "./sandbox-id.test-support";
+import {
+  expectValidSandboxId,
+  sandboxIdViolation,
+  validatingGetSandbox,
+} from "./sandbox-id.test-support";
 import type { ThemeWorkerDeploymentRequest } from "./theme-worker-deployer.types";
 import {
   THEME_BUILD_ID_VAR,
@@ -72,7 +76,7 @@ function r2() {
 
 function deployer(session: any, overrides: any = {}) {
   return new SandboxWranglerThemeWorkerDeployer({
-    sandboxProvider: { getSandbox: async () => session },
+    sandboxProvider: { getSandbox: validatingGetSandbox(session) },
     sandboxBinding: {},
     r2Bucket: r2(),
     credentials: { apiToken: TOKEN, accountId: ACCOUNT },
@@ -119,6 +123,49 @@ describe("deploymentSandboxSessionId", () => {
       crypto.randomUUID(),
     );
     expectValidSandboxId(id);
+  });
+});
+
+describe("sandbox id guard in the fake provider", () => {
+  const uuid = () => crypto.randomUUID();
+
+  it("refuses the old deploy-<uuid>-<uuid> form and invalid characters", async () => {
+    const { session } = sandboxStub(vi.fn());
+    const get = validatingGetSandbox(session);
+    const old = `deploy-${uuid()}-${uuid()}`;
+    expect(old.length).toBeGreaterThan(63);
+    await expect(get({}, old)).rejects.toThrow(/1-63 characters/);
+    await expect(get({}, "deploy_SF.1")).rejects.toThrow(/lowercase DNS label/);
+    expect(sandboxIdViolation("deploy-" + "a".repeat(32))).toBeNull();
+  });
+
+  it("fails a deploy whose provider is handed an invalid id", async () => {
+    const { session } = sandboxStub(vi.fn());
+    // The id builder is called inside the deployer module, so the old form is
+    // injected at the provider boundary: the deployer must surface the error.
+    const real = validatingGetSandbox(session);
+    for (const bad of [`deploy-${uuid()}-${uuid()}`, "deploy_SF.1"]) {
+      const result = await deployer(session, {
+        sandboxProvider: { getSandbox: (b: unknown) => real(b, bad) },
+      }).deploy(request);
+      expect(result).toMatchObject({ success: false, reason: "DEPLOY_ERROR" });
+    }
+  });
+
+  it("deploys with real UUID inputs through the validating provider", async () => {
+    const exec = vi.fn(async () => ({
+      exitCode: 0,
+      success: true,
+      stdout: "Current Version ID: 1a2b3c4d-5e6f",
+      stderr: "",
+    }));
+    const { session } = sandboxStub(exec);
+    const result = await deployer(session).deploy({
+      ...request,
+      storefrontId: uuid(),
+      releaseId: uuid(),
+    });
+    expect(result.success).toBe(true);
   });
 });
 
@@ -562,7 +609,7 @@ describe("SandboxWranglerThemeWorkerDeployer with the release/Worker build match
 
   it("on: refuses, before any container starts, a build that wrote the module's path", async () => {
     const { session } = recordingSession();
-    const getSandbox = vi.fn(async () => session);
+    const getSandbox = vi.fn(validatingGetSandbox(session));
     const result = await new SandboxWranglerThemeWorkerDeployer({
       sandboxProvider: { getSandbox },
       sandboxBinding: {},
