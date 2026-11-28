@@ -55,13 +55,18 @@ Related: ROADMAP sections 1.2 and 1.6, [`docs/multi-runtime-theme-plan.md`](mult
 - Scope at first: default slot only. PR1 proves the recording in the real container.
 - Source: `astro-runtime-provenance-design.md` (handoff, not in the repo) and its Codex review.
 
-#### Q4: number, boolean and enum fields through a spread (pending owner confirmation)
+#### Q4: number, boolean and enum fields through a spread (deferred, owner decision 2026-11-28, option B)
 
-- The owner approved Q4 = Yes earlier (v1, step B3). Codex later recommended deferring it. Status: Codex recommends
-  deferral, owner confirmation pending.
+- The owner approved Q4 = Yes earlier (v1, step B3). Codex later recommended deferring it. On 2026-11-28 the owner
+  decided to defer (option B).
 - Reason: `const props = { ...hero, count: 3 }; <Hero {...props} />` passes the single-spread veto when
   `hero.count` is already 3, and an absent key also needs positive binding evidence.
-- The deferral would cover only number, boolean and enum, and only for the Astro default slot through a spread.
+- The deferral covers only number, boolean and enum, and only for the Astro default slot through a spread.
+- v1 first runs text (string), image, link and array to stability in the real container.
+- Until the form-mode fallback is wired, the deferred types must explicitly route to jump-to-Code with a "controlled
+  by code" label ("由程式碼控制"). They must never look editable (no fake editability).
+- Acceptance (unverified): a number, boolean or enum field passed through a spread into the Astro default slot shows
+  the label and a jump-to-Code action, has no input control, and never writes to the Document.
 - `image` (media object), `link` and `array` are separate: all three are in v1 under exact binding (WeakMap plus an
   enumerable symbol tag, design section 1.4). So far this is verified only in read-only Node probes (design probes 2
   and 3); nothing is verified in the real container or browser.

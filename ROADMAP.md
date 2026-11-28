@@ -741,16 +741,19 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
 - Host 驗證該紀錄對應正確的路由、預覽實例與完整渲染。
 - 儲存時，Core 仍檢查元件身分與欄位資格，並在同一個 OCC／CAS 批次中檢查該次渲染所依賴的各項版本。
 
-**Q4：Astro 預設 slot 透過 spread 傳入的欄位（Codex 建議延後，待使用者確認）。**
+**Q4：Astro 預設 slot 透過 spread 傳入的欄位（使用者決定延後，2026-11-28，選項 B）。**
 
-- 使用者先前核准 Q4 = Yes：number／boolean／enum 在 v1 經 spread 傳入（設計 B3，`astro-runtime-provenance-design.md` 第 467 行）。Codex 之後建議延後（`codex-astro-B-design.txt` Q4 列）。
+- 使用者先前核准 Q4 = Yes（設計 B3，`astro-runtime-provenance-design.md` 第 467 行）；Codex 之後建議延後（`codex-astro-B-design.txt` Q4 列）；使用者 2026-11-28 改決定延後（選項 B）。
 - 理由：`const props = { ...hero, count: 3 }; <Hero {...props} />` 在 `hero.count` 本來就是 3 時，會通過單一 spread 的否決檢查；缺少的 key 也需要正向的綁定證據。
-- 待確認延後的範圍只有 number、boolean、enum，且只限「Astro 預設 slot 透過 spread 傳入」。
+- v1 延後的範圍只有 number、boolean、enum，且只限「Astro 預設 slot 透過 spread 傳入」。
+- v1 先把 text（字串）、image、link、array 在真實容器跑到穩定。
+- 表單模式備援接上之前，被延後的 number、boolean、enum 必須明確導向跳到程式碼，並標示「由程式碼控制」，絕不能看起來可編輯（不做假的可編輯性）。
+- 驗收（未驗證）：Astro 預設 slot 經 spread 傳入的 number、boolean、enum 欄位，在 Design 中顯示「由程式碼控制」並提供跳到程式碼，沒有可輸入的控制項，也不會寫入 Document。
 
 | 欄位型別 | 是否在 v1 | 驗證程度 |
 |---|---|---|
 | 字串 | 在 v1（sentinel 渲染） | 設計階段；唯讀 Node probe 1 到 4；容器與瀏覽器未驗證 |
-| number／boolean／enum（經 spread） | 待使用者確認（Codex 建議延後） | 設計階段；容器與瀏覽器未驗證 |
+| number／boolean／enum（經 spread） | 延後（使用者決定，選項 B；跳到程式碼，標示「由程式碼控制」） | 設計階段；容器與瀏覽器未驗證 |
 | `image`（media 物件） | 在 v1（WeakMap 加 enumerable symbol tag 的精確綁定，設計 1.4） | 只有唯讀 Node probe 2、3；容器與瀏覽器未驗證 |
 | `link` | 在 v1（同上） | 只有唯讀 Node probe 2、3；容器與瀏覽器未驗證 |
 | `array` | 在 v1（同上） | 只有唯讀 Node probe 2、3；容器與瀏覽器未驗證 |
