@@ -1465,6 +1465,7 @@ type PublicationBuildDraft = NonNullable<
   import("@/lib/validations/storefront-theme-build").CreateStorefrontThemeBuildInput["publicationDraft"]
 >;
 
+const NO_COMMENT_GROUPS: StorefrontCommentGroupDTO[] = [];
 const EMPTY_THEME_FILES: StorefrontThemeFileDTO[] = [];
 const EMPTY_THEME_TREE: StorefrontThemeFileTreeNode[] = [];
 /** A route with no Start `content()` structure: one of another framework. */
@@ -1948,8 +1949,12 @@ export function VisualEditorShell({
     ),
     enabled: Boolean(activeTemplate?.id),
   });
+  // The same empty list while there are none: the effect below depends on
+  // it, and a new `[]` on every render set state after every commit.
   const commentGroups = (
-    commentGroupsQuery.data?.success ? commentGroupsQuery.data.data : []
+    commentGroupsQuery.data?.success
+      ? commentGroupsQuery.data.data
+      : NO_COMMENT_GROUPS
   ) as StorefrontCommentGroupDTO[];
 
   useEffect(() => {
@@ -5546,13 +5551,22 @@ export function VisualEditorShell({
   const previewServerOrigin = previewServerUrl
     ? safeOrigin(previewServerUrl)
     : null;
-  const livePreviewSecurity = resolveLivePreviewSecurity({
-    editorOrigin: context.previewChannel?.editorOrigin ?? "",
-    configuredPreviewOrigin:
-      previewServerOrigin ??
-      import.meta.env.VITE_STOREFRONT_LIVE_PREVIEW_ORIGIN,
-    executionMode: "user-code",
-  });
+  // Kept by its inputs: the server-state effect below depends on it, and its
+  // dispatch always schedules a render (a reducer has no eager bailout). A new
+  // object on every render made every commit end in one more update, which
+  // React counts as an update loop once commits follow each other closely.
+  const livePreviewEditorOrigin = context.previewChannel?.editorOrigin ?? "";
+  const livePreviewConfiguredOrigin =
+    previewServerOrigin ?? import.meta.env.VITE_STOREFRONT_LIVE_PREVIEW_ORIGIN;
+  const livePreviewSecurity = useMemo(
+    () =>
+      resolveLivePreviewSecurity({
+        editorOrigin: livePreviewEditorOrigin,
+        configuredPreviewOrigin: livePreviewConfiguredOrigin,
+        executionMode: "user-code",
+      }),
+    [livePreviewConfiguredOrigin, livePreviewEditorOrigin],
+  );
 
   const livePreviewWorkspaceKey = `${context.storefront.id}:${context.theme.id}`;
   const stablePreviewSession = useStableLivePreviewSession(
