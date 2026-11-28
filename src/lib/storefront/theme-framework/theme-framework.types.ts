@@ -165,6 +165,8 @@ export type ThemeFrameworkAdapter = Readonly<{
       collect(
         outputs: ReadonlyMap<string, Uint8Array | string>,
         nonce?: string,
+        /** The build's input files, for a framework that checks its sources. */
+        files?: ReadonlyArray<Readonly<{ path: string; content: string }>>,
       ): NativeThemeArtifact;
       artifactEntry: string;
       verifyArtifact(input: {

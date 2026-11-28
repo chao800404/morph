@@ -49,7 +49,16 @@ import { THEME_START_TOOLCHAIN } from "../compiler/theme-start-toolchain";
  * Author plugins run in the same process, so this is integrity evidence
  * against a build that silently stops reading content through Morph, not a
  * security boundary (design section 1); isolation stays the Sandbox and Core.
- * What it cannot see is listed in the PR body ("Remaining bypasses").
+ * What it cannot see is listed in the PR body ("Remaining bypasses"), among
+ * them:
+ * - call-site rewrites that keep the graph: a plugin that leaves an SDK
+ *   import in place but changes what the code does with it, including a
+ *   Worker source with two imports of one name of which only one is
+ *   rewritten (the source check compares per file, kind and name);
+ * - imports computed at run time from values it cannot see. In the Worker
+ *   such an import of a bare SDK name has nothing to load; in a browser a
+ *   page's import map could resolve one, so a Theme that ships an import
+ *   map naming `@morph/sdk` is outside what this proves.
  *
  * The verified result is the artifact's `nativeProof` (manifest `runtime`);
  * a native artifact without it is refused before a production publish
@@ -206,8 +215,14 @@ function imports(ast) {
   return { found, computed };
 }
 
-export default function morphNativeResolution({ workspaceRoot, nonce }) {
+// Each Vite Web Worker bundle (a "?worker" import) is its own Rollup build,
+// with the plugins of worker.plugins; the wrapper adds this plugin there
+// with scope "worker", and each such build records under its own number.
+let workerBuilds = 0;
+
+export default function morphNativeResolution({ workspaceRoot, nonce, scope }) {
   const root = fs.realpathSync(workspaceRoot);
+  const worker = scope === "worker" ? ++workerBuilds : 0;
   const where = (id) => {
     const raw = String(id).replace(/\\/g, "/");
     const query = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
@@ -299,7 +314,8 @@ export default function morphNativeResolution({ workspaceRoot, nonce }) {
           });
         }
       }
-      write("resolution", environment.name, {
+      write("resolution", worker ? environment.name + "__worker" + worker : environment.name, {
+        worker,
         nonce,
         environment: environment.name,
         consumer: environment.consumer,
@@ -329,7 +345,8 @@ export default function morphNativeResolution({ workspaceRoot, nonce }) {
           });
         }
         chunks.sort((a, b) => (a.fileName < b.fileName ? -1 : 1));
-        write("bundle", environment.name, {
+        write("bundle", worker ? environment.name + "__worker" + worker : environment.name, {
+          worker,
           nonce,
           environment: environment.name,
           outDir: environment.outDir,
@@ -405,6 +422,8 @@ type RecordedEdge = {
 type ResolutionRecord = {
   nonce: string;
   environment: string;
+  /** 0 for the environment itself; n for its n-th Web Worker bundle. */
+  worker: number;
   consumer: "client" | "server" | null;
   outDir: string;
   publicDir: string | null;
@@ -426,9 +445,19 @@ type BundleChunk = {
 type BundleRecord = {
   nonce: string;
   environment: string;
+  worker: number;
   outDir: string;
   chunks: BundleChunk[];
 };
+
+/** A record's Web Worker number: absent is the environment itself. */
+function workerOf(path: string, value: unknown): number {
+  if (value === undefined) return 0;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+  return refuse(`${path} names a Web Worker bundle Morph cannot read. Rebuild the Theme.`);
+}
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -473,7 +502,10 @@ function readResolutionRecord(path: string, content: Bytes): ResolutionRecord {
       return refuse(`${path} holds an edge Morph cannot read. Rebuild the Theme.`);
     }
   }
-  return record as unknown as ResolutionRecord;
+  return {
+    ...(record as unknown as ResolutionRecord),
+    worker: workerOf(path, record.worker),
+  };
 }
 
 function readBundleRecord(path: string, content: Bytes): BundleRecord {
@@ -499,7 +531,10 @@ function readBundleRecord(path: string, content: Bytes): BundleRecord {
       return refuse(`${path} holds a chunk Morph cannot read. Rebuild the Theme.`);
     }
   }
-  return record as unknown as BundleRecord;
+  return {
+    ...(record as unknown as BundleRecord),
+    worker: workerOf(path, record.worker),
+  };
 }
 
 function describeResolution(edge: RecordedEdge): string {
@@ -588,19 +623,42 @@ function sentinelOf(node: Record<string, unknown>): string | null {
  * expression-free template). Relative specifiers are resolved against the
  * chunk's own path; others are kept for the reserved-name check.
  */
-function chunkImports(path: string, code: string, root: string): ChunkImports {
-  let ast: ReturnType<typeof parse>;
-  try {
-    ast = parse(code, {
-      sourceType: "module",
+function chunkImports(
+  path: string,
+  code: string,
+  root: string,
+  /**
+   * `module`: bundler output, always an ES module. `script-or-module`: a
+   * file copied from the public directory, which a page may load as a
+   * classic script (sloppy mode: duplicate parameters, `with`, octal
+   * literals) or as a module; it is read as a module when it parses as
+   * one, else as a classic script, where only `import()` can load code.
+   */
+  mode: "module" | "script-or-module" = "module",
+): ChunkImports {
+  const parseAs = (sourceType: "module" | "script") =>
+    parse(code, {
+      sourceType,
       allowReturnOutsideFunction: true,
       allowAwaitOutsideFunction: true,
       createImportExpressions: true,
     });
+  let ast: ReturnType<typeof parse>;
+  try {
+    ast = parseAs("module");
   } catch {
-    return refuse(
-      `${path} is not JavaScript Morph can read. A Vite plugin rewrites the build's output; remove it.`,
-    );
+    if (mode === "module") {
+      return refuse(
+        `${path} is not JavaScript Morph can read. A Vite plugin rewrites the build's output; remove it.`,
+      );
+    }
+    try {
+      ast = parseAs("script");
+    } catch {
+      return refuse(
+        `${path}, copied from the public directory, is not JavaScript Morph can read as a script or a module. Fix the file or remove it.`,
+      );
+    }
   }
   const result: ChunkImports = {
     static: [],
@@ -894,6 +952,13 @@ export function verifyNativeStartSdkProof(args: {
   configFile?: string;
   /** The Worker entry the artifact deploys, workspace-relative. */
   workerEntry?: string;
+  /**
+   * The build's prepared inputs (the Theme's sources after the file-language
+   * passes, as the plan wrote them), by path: what the Worker-graph source
+   * check reads, so a file changed or removed during the build does not
+   * change the answer.
+   */
+  sources: ReadonlyMap<string, string>;
 }): NativeBuildProof["sdk"] & { vite: string; publicDir: string | null } {
   const config = args.configFile ?? "vite.config.ts";
   if (!args.nonce) {
@@ -904,6 +969,10 @@ export function verifyNativeStartSdkProof(args: {
 
   const resolutions = new Map<string, { path: string; record: ResolutionRecord }>();
   const bundles = new Map<string, { path: string; record: BundleRecord }>();
+  // One record of each kind per Vite environment and per Web Worker bundle
+  // built inside it.
+  const keyOf = (record: { environment: string; worker: number }) =>
+    `${record.environment}#${record.worker}`;
   for (const [path, content] of args.outputs) {
     if (!path.startsWith(`${NATIVE_RESOLUTION_RECORD_DIR}/`)) continue;
     if (ADAPTER_RECORDS.has(path)) continue;
@@ -915,10 +984,10 @@ export function verifyNativeStartSdkProof(args: {
     }
     if (match[1] === "resolution") {
       const record = readResolutionRecord(path, content);
-      resolutions.set(record.environment, { path, record });
+      resolutions.set(keyOf(record), { path, record });
     } else {
       const record = readBundleRecord(path, content);
-      bundles.set(record.environment, { path, record });
+      bundles.set(keyOf(record), { path, record });
     }
   }
 
@@ -928,26 +997,43 @@ export function verifyNativeStartSdkProof(args: {
       : outDir === args.directories.client
         ? "client"
         : null;
+  // A Web Worker bundle ships inside the browser output (Vite emits it as an
+  // asset of the client build), whatever its own build calls its directory.
+  const partOf = (record: { outDir: string; worker: number }) =>
+    record.worker > 0 ? "client" : outputOf(record.outDir);
   for (const part of ["server", "client"] as const) {
     const named = part === "server" ? "Worker" : "browser";
-    if (![...resolutions.values()].some(({ record }) => outputOf(record.outDir) === part)) {
+    const main = (record: { outDir: string; worker: number }) =>
+      record.worker === 0 && outputOf(record.outDir) === part;
+    if (![...resolutions.values()].some(({ record }) => main(record))) {
       return refuse(
         `the build wrote no SDK resolution record for its ${named} output. A Vite plugin may stop Morph's ${NATIVE_RESOLUTION_PLUGIN_NAME} plugin from running; remove it, or rebuild the Theme.`,
       );
     }
-    if (![...bundles.values()].some(({ record }) => outputOf(record.outDir) === part)) {
+    if (![...bundles.values()].some(({ record }) => main(record))) {
       return refuse(
         `the build wrote no bundle record for its ${named} output. A Vite plugin may stop Morph's ${NATIVE_RESOLUTION_PLUGIN_NAME} plugin from running; remove it, or rebuild the Theme.`,
       );
     }
   }
 
-  const environments: NativeSdkProofEnvironment[] = [];
+  type Part = {
+    name: string;
+    outDir: string;
+    publicDir: string | null;
+    edges: RecordedEdge[];
+    chunks: BundleChunk[];
+  };
+  const parts = new Map<"server" | "client", Part>();
   let vite: string | null = null;
   let publicDir: string | null = null;
-  for (const name of [...resolutions.keys()].sort()) {
-    const { path, record } = resolutions.get(name)!;
-    const output = outputOf(record.outDir);
+  for (const key of [...resolutions.keys()].sort()) {
+    const { path, record } = resolutions.get(key)!;
+    const name =
+      record.worker > 0
+        ? `${record.environment} Web Worker ${record.worker}`
+        : record.environment;
+    const output = partOf(record);
     if (record.nonce !== args.nonce) {
       return refuse(`${path} was not written by this build. Rebuild the Theme.`);
     }
@@ -957,7 +1043,7 @@ export function verifyNativeStartSdkProof(args: {
       );
     }
     vite = record.vite;
-    if (output === "client") publicDir = record.publicDir;
+    if (output === "client" && record.worker === 0) publicDir = record.publicDir;
     if (record.unparsed.length > 0) {
       return refuse(
         `${record.unparsed[0]} names @morph/sdk in code Morph cannot read in the ${name} environment. A Vite plugin rewrites it; remove that plugin.`,
@@ -989,49 +1075,19 @@ export function verifyNativeStartSdkProof(args: {
     }
 
     // The Worker's graph: a Theme source that imports a reserved name as a
-    // value still does so in its final code.
-    if (output === "server") {
-      const kept = new Set(
-        record.edges.map(
-          (edge) => `${stripQuery(edge.importer)} ${edge.kind} ${edge.specifier}`,
-        ),
-      );
-      const sources = new Set(
-        record.modules
-          .map(stripQuery)
-          .filter(
-            (module) =>
-              !module.startsWith(".morph/") &&
-              /\.(?:m|c)?(?:j|t)sx?$/.test(module),
-          ),
-      );
-      for (const source of [...sources].sort()) {
-        const content = args.outputs.get(source);
-        if (content === undefined) continue;
-        const text = decode(content);
-        if (!text.includes("@morph/sdk")) continue;
-        const imported = sourceSdkImports(source, text);
-        if (imported === null) {
-          return refuse(
-            `${source} imports @morph/sdk, but Morph cannot read the file to check it. Simplify its syntax.`,
-          );
-        }
-        for (const { specifier, kind } of imported) {
-          if (specifier === COMPUTED_SPECIFIER) {
-            return refuse(
-              `${source} imports @morph/sdk through a specifier computed at run time. Import @morph/sdk or @morph/sdk/start by name.`,
-            );
-          }
-          if (!kept.has(`${source} ${kind} ${specifier}`)) {
-            return refuse(
-              `${source} imports ${specifier}${kind === "dynamic" ? " dynamically" : ""}, but the code the ${name} environment built from it does not. A Vite plugin rewrites that import; remove it.`,
-            );
-          }
-        }
-      }
+    // value still does so in its final code. Read from the build's own
+    // prepared inputs, never from the workspace the build could change.
+    if (output === "server" && record.worker === 0) {
+      const refused = checkWorkerSources({
+        record,
+        name,
+        sources: args.sources,
+        outputs: args.outputs,
+      });
+      if (refused) return refuse(refused);
     }
 
-    const bundle = bundles.get(name);
+    const bundle = resolutions.has(key) ? bundles.get(key) : undefined;
     if (!bundle) {
       if (output) {
         return refuse(
@@ -1043,33 +1099,79 @@ export function verifyNativeStartSdkProof(args: {
     if (bundle.record.nonce !== args.nonce) {
       return refuse(`${bundle.path} was not written by this build. Rebuild the Theme.`);
     }
-    if (bundle.record.outDir !== record.outDir) {
+    if (record.worker === 0 && bundle.record.outDir !== record.outDir) {
       return refuse(`${bundle.path} names another output directory. Rebuild the Theme.`);
     }
-    const proven = output
-      ? proveBundle({
-          name,
-          outDir: record.outDir,
-          edges: record.edges,
-          chunks: bundle.record.chunks,
-          outputs: args.outputs,
-          nonce: args.nonce,
-          config,
-          artifactPrefix: output === "server" ? "runtime/server" : "runtime/client",
-          ...(output === "server"
-            ? { entryFile: args.workerEntry }
-            : { publicDir: record.publicDir }),
-        })
-      : { specifiers: [] as string[], sentinelFiles: [] as string[], edges: 0 };
-    if (output) {
-      environments.push({
-        name,
-        output,
-        specifiers: proven.specifiers,
-        edges: proven.edges,
-        sentinelFiles: proven.sentinelFiles,
-      });
+    const partFor = (target: "server" | "client") =>
+      parts.get(target) ?? {
+        name: "",
+        outDir: target === "server" ? args.directories.server : args.directories.client,
+        publicDir: null,
+        edges: [],
+        chunks: [],
+      };
+    if (record.worker === 0) {
+      if (!output) continue;
+      const part = partFor(output);
+      part.name = record.environment;
+      part.publicDir = record.publicDir;
+      part.edges.push(...record.edges);
+      part.chunks.push(...bundle.record.chunks);
+      parts.set(output, part);
+      continue;
     }
+    // Vite builds a Web Worker bundle once and emits the same bytes as an
+    // asset of every environment that imports it: the bundle belongs to
+    // each output that holds its files (their hashes are checked there).
+    const holding = (["server", "client"] as const).filter((target) => {
+      const outDir =
+        target === "server" ? args.directories.server : args.directories.client;
+      return bundle.record.chunks.every((chunk) =>
+        args.outputs.has(`${outDir}/${chunk.fileName}`),
+      );
+    });
+    if (holding.length === 0) {
+      return refuse(
+        `the ${name} bundle was emitted, but no output holds its files. A Vite plugin changes the output after it is generated; remove it.`,
+      );
+    }
+    for (const target of holding) {
+      const part = partFor(target);
+      part.edges.push(...record.edges);
+      part.chunks.push(...bundle.record.chunks);
+      parts.set(target, part);
+    }
+  }
+  // A bundle record no resolution record pairs with: a plugin wrote it.
+  for (const [key, bundle] of bundles) {
+    if (!resolutions.has(key)) {
+      return refuse(`${bundle.path} has no resolution record beside it. Rebuild the Theme.`);
+    }
+  }
+
+  const environments: NativeSdkProofEnvironment[] = [];
+  for (const output of ["client", "server"] as const) {
+    const part = parts.get(output)!;
+    const proven = proveBundle({
+      name: part.name,
+      outDir: part.outDir,
+      edges: part.edges,
+      chunks: part.chunks,
+      outputs: args.outputs,
+      nonce: args.nonce,
+      config,
+      artifactPrefix: output === "server" ? "runtime/server" : "runtime/client",
+      ...(output === "server"
+        ? { entryFile: args.workerEntry }
+        : { publicDir: part.publicDir }),
+    });
+    environments.push({
+      name: part.name,
+      output,
+      specifiers: proven.specifiers,
+      edges: proven.edges,
+      sentinelFiles: proven.sentinelFiles,
+    });
   }
 
   return {
@@ -1077,6 +1179,73 @@ export function verifyNativeStartSdkProof(args: {
     vite: vite ?? THEME_START_TOOLCHAIN.vite,
     publicDir,
   };
+}
+
+/**
+ * Files a build writes into its own graph that are not the Theme's: the
+ * route tree Start's router plugin generates. Read from the workspace, the
+ * only place they exist.
+ */
+const BUILD_GENERATED_SOURCES = new Set(["src/routeTree.gen.ts"]);
+
+/**
+ * The Worker-graph source check: every Theme module of the Worker's final
+ * graph is one of the build's prepared inputs (or a file the build itself
+ * generates), and every SDK import those inputs make as a value is still in
+ * the module's final code, per specifier and kind. Null when it holds.
+ */
+function checkWorkerSources(args: {
+  record: ResolutionRecord;
+  name: string;
+  sources: ReadonlyMap<string, string>;
+  outputs: ReadonlyMap<string, Bytes>;
+}): string | null {
+  const kept = new Set(
+    args.record.edges.map(
+      (edge) => `${stripQuery(edge.importer)} ${edge.kind} ${edge.specifier}`,
+    ),
+  );
+  // A module counts when the graph loads the file's own code: with no query,
+  // or a query that still compiles the file (a router's code-split part).
+  // Vite's `?worker`, `?url`, `?raw` and `?inline` load something else (a
+  // stub that starts the worker, a URL, the text), not the file's imports.
+  const otherContent =
+    /[?&](?:worker|sharedworker|worker_file|url|raw|inline)(?:[=&]|$)/;
+  const modules = new Set(
+    args.record.modules
+      .filter((module) => !otherContent.test(module))
+      .map(stripQuery)
+      .filter(
+        (module) =>
+          !module.startsWith(".morph/") && /\.(?:m|c)?(?:j|t)sx?$/.test(module),
+      ),
+  );
+  for (const module of [...modules].sort()) {
+    let text = args.sources.get(module);
+    if (text === undefined) {
+      const generated = BUILD_GENERATED_SOURCES.has(module)
+        ? args.outputs.get(module)
+        : undefined;
+      if (generated === undefined) {
+        return `${module} is in the ${args.name} environment's graph but is not one of the files the build was given. A Vite plugin writes it during the build; remove it.`;
+      }
+      text = decode(generated);
+    }
+    if (!text.includes("@morph/sdk")) continue;
+    const imported = sourceSdkImports(module, text);
+    if (imported === null) {
+      return `${module} imports @morph/sdk, but Morph cannot read the file to check it. Simplify its syntax.`;
+    }
+    for (const { specifier, kind } of imported) {
+      if (specifier === COMPUTED_SPECIFIER) {
+        return `${module} imports @morph/sdk through a specifier computed at run time. Import @morph/sdk or @morph/sdk/start by name.`;
+      }
+      if (!kept.has(`${module} ${kind} ${specifier}`)) {
+        return `${module} imports ${specifier}${kind === "dynamic" ? " dynamically" : ""}, but the code the ${args.name} environment built from it does not. A Vite plugin rewrites that import; remove it.`;
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -1148,7 +1317,9 @@ function proveBundle(args: {
 
   const graph = new Map<string, ChunkImports>();
   for (const [file, text] of code) graph.set(file, chunkImports(file, text, args.outDir));
-  for (const [file, text] of publicCopies) graph.set(file, chunkImports(file, text, args.outDir));
+  for (const [file, text] of publicCopies) {
+    graph.set(file, chunkImports(file, text, args.outDir, "script-or-module"));
+  }
 
   // The Worker is deployed from its entry: that file must be a verified
   // chunk the bundler marked as an entry.

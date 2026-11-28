@@ -202,21 +202,79 @@ function build(
   return outputs;
 }
 
-const verify = (outputs: Map<string, string>, nonce = NONCE) =>
+/** The build's prepared inputs, by default the sources the outputs hold. */
+const inputsOf = (outputs: Map<string, string>) =>
+  new Map([...outputs].filter(([path]) => path.startsWith("src/")));
+
+const verify = (
+  outputs: Map<string, string>,
+  nonce = NONCE,
+  sources: ReadonlyMap<string, string> = inputsOf(outputs),
+) =>
   verifyNativeStartSdkProof({
     outputs,
     directories: DIRECTORIES,
     nonce,
     workerEntry: "dist/server/index.js",
+    sources,
   });
 
-const refusal = (outputs: Map<string, string>) => {
+const refusal = (
+  outputs: Map<string, string>,
+  sources?: ReadonlyMap<string, string>,
+) => {
   try {
-    verify(outputs);
+    verify(outputs, NONCE, sources);
   } catch (error) {
     return (error as Error).message;
   }
   return null;
+};
+
+/** A Vite Web Worker bundle's records, and its chunk on disk. */
+const withWorker = (
+  outputs: Map<string, string>,
+  worker: { code: string; edges?: Edge[]; record?: boolean },
+) => {
+  const file = "assets/worker-abc.js";
+  outputs.set(`${DIRECTORIES.client}/${file}`, worker.code);
+  if (worker.record === false) return outputs;
+  outputs.set(
+    ".morph/records/resolution.client__worker1.json",
+    JSON.stringify({
+      worker: 1,
+      nonce: NONCE,
+      environment: "client",
+      consumer: "client",
+      outDir: "dist",
+      publicDir: "public",
+      vite: THEME_START_TOOLCHAIN.vite,
+      rollup: "4.59.0",
+      edges: worker.edges ?? [],
+      unparsed: [],
+      computed: [],
+      modules: [],
+    }),
+  );
+  outputs.set(
+    ".morph/records/bundle.client__worker1.json",
+    JSON.stringify({
+      worker: 1,
+      nonce: NONCE,
+      environment: "client",
+      outDir: "dist",
+      chunks: [
+        {
+          fileName: file,
+          isEntry: true,
+          isDynamicEntry: false,
+          modules: worker.edges?.length ? ["src/workers/sdk.ts", START_FILE] : [],
+          sha256: hash(worker.code),
+        },
+      ],
+    }),
+  );
+  return outputs;
 };
 
 const NO_SDK_SERVER: Chunk[] = [
@@ -346,6 +404,90 @@ describe("a native Start build's SDK resolution proof", () => {
       ),
     ).toMatch(
       /runtime\/server\/index\.js imports runtime\/server\/assets\/missing\.js, which is not code the bundler emitted/,
+    );
+  });
+
+  it("admits a Vite Web Worker bundle its own records cover, and proves its SDK edges", () => {
+    expect(
+      refusal(withWorker(build(), { code: "self.onmessage=(e)=>self.postMessage(e.data);" })),
+    ).toBeNull();
+    // The worker imports the SDK: its bundle must carry the sentinel.
+    const sdkWorker = withWorker(build(), {
+      code: `const morph={};${sentinelStatement(START)}self.onmessage=()=>self.postMessage(String(morph));`,
+      edges: [edge({ importer: "src/workers/sdk.ts" })],
+    });
+    expect(verify(sdkWorker).environments[0]).toMatchObject({
+      name: "client",
+      output: "client",
+      specifiers: [START],
+      sentinelFiles: ["runtime/client/assets/worker-abc.js"],
+    });
+    expect(
+      refusal(
+        withWorker(build(), {
+          code: "self.onmessage=()=>{};",
+          edges: [edge({ importer: "src/workers/sdk.ts" })],
+        }),
+      ),
+    ).toMatch(
+      /the client environment imports @morph\/sdk\/start \(src\/workers\/sdk\.ts\), but the code the build wrote for it does not reach Morph's copy of it/,
+    );
+    // The same bytes with no worker record are not vouched for.
+    expect(
+      refusal(withWorker(build(), { code: "self.onmessage=()=>{};", record: false })),
+    ).toMatch(/runtime\/client\/assets\/worker-abc\.js is not code the bundler emitted/);
+  });
+
+  it("reads a classic script copied from the public directory as a classic script, and still scans it", () => {
+    // Valid only outside strict mode: duplicate parameters.
+    const classic = "function pick(a, a) { return a; }\nwindow.pick = pick;\n";
+    expect(
+      refusal(
+        build({
+          extraOutputs: { "public/legacy.js": classic, "dist/client/legacy.js": classic },
+        }),
+      ),
+    ).toBeNull();
+    const loader = 'function load(a, a) { return import("@morph/sdk"); }\n';
+    expect(
+      refusal(
+        build({
+          extraOutputs: { "public/legacy.js": loader, "dist/client/legacy.js": loader },
+        }),
+      ),
+    ).toMatch(/runtime\/client\/legacy\.js still imports "@morph\/sdk" at run time/);
+    // Bundler output stays a module: the same sloppy code there is refused.
+    expect(
+      refusal(
+        build({
+          client: [{ file: "assets/main.js", code: classic, modules: [], isEntry: true }],
+        }),
+      ),
+    ).toMatch(/dist\/client\/assets\/main\.js is not JavaScript Morph can read/);
+  });
+
+  it("reads the Worker graph's sources from the build's inputs, not the workspace the build left", () => {
+    const importing =
+      'import { morph } from "@morph/sdk/start";\nexport const read = () => morph;\n';
+    // Rewritten during the build: the workspace copy no longer imports the
+    // SDK, the input still does, and the final code has no edge.
+    const rewritten = build({
+      serverEdges: [],
+      server: NO_SDK_SERVER,
+      sources: { [CONTENT]: "export const read = () => null;\n" },
+    });
+    expect(refusal(rewritten, new Map([[CONTENT, importing]]))).toMatch(
+      /src\/morph\/content\.ts imports @morph\/sdk\/start, but the code the ssr environment built from it does not/,
+    );
+    // Deleted during the build: still checked, from the input.
+    const deleted = build({ serverEdges: [], server: NO_SDK_SERVER });
+    deleted.delete(CONTENT);
+    expect(refusal(deleted, new Map([[CONTENT, importing]]))).toMatch(
+      /src\/morph\/content\.ts imports @morph\/sdk\/start, but the code the ssr environment built from it does not/,
+    );
+    // A Theme module of the Worker's graph the build was not given.
+    expect(refusal(build(), new Map())).toBe(
+      "NATIVE_PROOF_SDK_RESOLUTION: src/morph/content.ts is in the ssr environment's graph but is not one of the files the build was given. A Vite plugin writes it during the build; remove it.",
     );
   });
 
@@ -809,4 +951,4 @@ describe("the native production admission", () => {
 
 /** sha256 of `nativeResolutionPluginSource()`. */
 const PLUGIN_SHA256 =
-  "8ec648ac524d8a438f7d797753fa90d3ef1f553adbef12250e29e2d897d15988";
+  "533d649232da31c747295d1c64e12b81b39471fc9dcaeb8d2519667ee1d0f3e7";

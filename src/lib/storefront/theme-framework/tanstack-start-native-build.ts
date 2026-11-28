@@ -309,6 +309,12 @@ export type NativeStartArtifact = NativeThemeArtifact;
 export function collectNativeStartArtifact(
   outputs: ReadonlyMap<string, Uint8Array | string>,
   nonce = "",
+  /**
+   * The build's input files, as the plan was given them: the Worker-graph
+   * source check reads them after the same preparation the plan applied,
+   * never the workspace the build could change.
+   */
+  files: ReadonlyArray<Readonly<{ path: string; content: string }>> = [],
 ): NativeStartArtifact {
   const artifact = collectNativeCloudflareArtifact(outputs);
   const config = artifact.files.get("runtime/server/wrangler.json");
@@ -346,6 +352,9 @@ export function collectNativeStartArtifact(
     nonce,
     configFile,
     workerEntry: `${artifact.sourceDirectories.server}/${artifact.workerEntry.slice("runtime/server/".length)}`,
+    sources: new Map(
+      prepareSourcesForBuild(files).files.map((file) => [file.path, file.content]),
+    ),
   });
   // The Worker was built by a checked cloudflare() call of this pass, whose
   // options Morph holds to the table again here, and whose environment is

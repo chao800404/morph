@@ -166,7 +166,11 @@ export function nativeBuildResult(options: {
 
   let collected: ReturnType<typeof native.collect>;
   try {
-    collected = native.collect(options.outputs, nonce);
+    collected = native.collect(
+      options.outputs,
+      nonce,
+      input.files.map((file) => ({ path: file.path, content: file.content })),
+    );
   } catch (error) {
     return fail(
       "output-collection",

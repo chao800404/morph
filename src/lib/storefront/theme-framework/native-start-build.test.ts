@@ -179,15 +179,13 @@ describe("a TanStack Start project built with its own configuration", () => {
   let records: Record<string, Record<string, unknown>> = {};
 
   beforeAll(async () => {
-    const plan = themeFramework().build.native.plan(
-      [
-        ...STARTER_THEME_FILES,
-        SDK_ROUTE,
-        { path: "vite.config.ts", content: VITE_CONFIG },
-        { path: "wrangler.jsonc", content: WRANGLER },
-      ],
-      { nonce: NONCE },
-    );
+    const inputs = [
+      ...STARTER_THEME_FILES,
+      SDK_ROUTE,
+      { path: "vite.config.ts", content: VITE_CONFIG },
+      { path: "wrangler.jsonc", content: WRANGLER },
+    ];
+    const plan = themeFramework().build.native.plan(inputs, { nonce: NONCE });
     if (!plan.ok) throw new Error(plan.message);
 
     workspace = mkdtempSync(join(tmpdir(), "native-start-build-"));
@@ -230,6 +228,7 @@ describe("a TanStack Start project built with its own configuration", () => {
         [...outputs].map(([path, bytes]) => [path, new Uint8Array(bytes)]),
       ),
       NONCE,
+      inputs,
     );
     nativeProof = artifact.metadata?.nativeProof;
     records = Object.fromEntries(
@@ -552,16 +551,14 @@ function buildTampered(
     }
   | { ok: false; stage: "build" | "collect"; message: string } {
   const framework = themeFramework();
-  const plan = framework.build.native.plan(
-    [
-      ...STARTER_THEME_FILES,
-      BARE_SDK_ROUTE,
-      ...extraFiles,
-      { path: "vite.config.ts", content: viteConfig },
-      { path: "wrangler.jsonc", content: WRANGLER },
-    ],
-    { nonce: NONCE },
-  );
+  const inputs = [
+    ...STARTER_THEME_FILES,
+    BARE_SDK_ROUTE,
+    ...extraFiles,
+    { path: "vite.config.ts", content: viteConfig },
+    { path: "wrangler.jsonc", content: WRANGLER },
+  ];
+  const plan = framework.build.native.plan(inputs, { nonce: NONCE });
   if (!plan.ok) return { ok: false, stage: "build", message: plan.message };
   const root = mkdtempSync(join(tmpdir(), "native-start-tampered-"));
   try {
@@ -591,7 +588,10 @@ function buildTampered(
       return { ok: false, stage: "build", message: cause?.message ?? failure };
     }
     try {
-      return { ok: true, artifact: framework.build.native.collect(outputs, NONCE) };
+      return {
+        ok: true,
+        artifact: framework.build.native.collect(outputs, NONCE, inputs),
+      };
     } catch (error) {
       return {
         ok: false,
@@ -676,6 +676,42 @@ export const Route = createFileRoute("/sdk-types")({
 });
 `,
         },
+        // A Vite Web Worker (a ?worker import) that itself imports the SDK:
+        // Vite builds it as its own bundle and emits it as an asset.
+        {
+          path: "src/workers/echo.ts",
+          content: `import { isMorphError } from "@morph/sdk";
+self.onmessage = (event: MessageEvent) => {
+  self.postMessage({ echo: event.data, morphError: isMorphError(event.data) });
+};
+`,
+        },
+        {
+          path: "src/routes/worker-echo.tsx",
+          content: `import { useEffect, useState } from "react";
+import { createFileRoute } from "@tanstack/react-router";
+import EchoWorker from "../workers/echo?worker";
+
+export const Route = createFileRoute("/worker-echo")({
+  component: function WorkerEcho() {
+    const [reply, setReply] = useState("");
+    useEffect(() => {
+      const worker = new EchoWorker();
+      worker.onmessage = (event) => setReply(JSON.stringify(event.data));
+      worker.postMessage("ping");
+      return () => worker.terminate();
+    }, []);
+    return <p data-worker-echo>{reply}</p>;
+  },
+});
+`,
+        },
+        // A classic script served from public/: valid only outside strict
+        // mode (duplicate parameters).
+        {
+          path: "public/legacy.js",
+          content: "function pick(a, a) { return a; }\nwindow.pick = pick;\n",
+        },
       ]);
       if (!built.ok) throw new Error(`${built.stage}: ${built.message}`);
       const proof = readNativeBuildProof(built.artifact.metadata?.nativeProof)!;
@@ -683,6 +719,13 @@ export const Route = createFileRoute("/sdk-types")({
       const ssr = proof.sdk.environments.find((entry) => entry.output === "server")!;
       expect(client.specifiers).toContain("@morph/sdk");
       expect(ssr.specifiers).toContain("@morph/sdk");
+      // The worker's own bundle was recorded, verified and proven: it is one
+      // of the files carrying the bare SDK's sentinel in the browser output.
+      expect(
+        client.sentinelFiles.some((path) => /\/echo-[^/]*\.js$/.test(path)),
+        JSON.stringify(client.sentinelFiles),
+      ).toBe(true);
+      expect(built.artifact.files.has("runtime/client/legacy.js")).toBe(true);
       for (const environment of [client, ssr]) {
         const carrying = environment.sentinelFiles.map((path) => {
           const content = built.artifact.files.get(path)!;

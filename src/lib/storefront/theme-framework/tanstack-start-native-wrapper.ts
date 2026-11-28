@@ -437,7 +437,7 @@ const allowedPackages = new Set(${JSON.stringify(allowed)});
 ${resolutionNonce}
 export default async (env) => {
   const own = typeof themeConfig === "function" ? await themeConfig(env) : await themeConfig;
-${markCheck}  return mergeConfig(own ?? {}, {
+${markCheck}  ${options.resolutionNonce !== undefined ? "const merged = " : "return "}mergeConfig(own ?? {}, {
     plugins: [
 ${plugins.map((plugin) => `      ${plugin}`).join(",\n")},
     ],
@@ -455,6 +455,26 @@ ${plugins.map((plugin) => `      ${plugin}`).join(",\n")},
     // own prerender server listens here.
     preview: { host: "127.0.0.1" },
   });
-};
+${options.resolutionNonce !== undefined ? workerResolutionSource() : ""}};
+`;
+}
+
+/**
+ * Vite builds each Web Worker (a `?worker` import) as its own bundle, with
+ * the plugins of `worker.plugins` only, and emits its code as an asset of
+ * the parent bundle. The resolution plugin is added there too, after the
+ * project's own worker plugins, so each worker bundle is recorded and
+ * verified like any chunk (native-start-proof.ts).
+ */
+function workerResolutionSource(): string {
+  return `  const ownWorkerPlugins = own?.worker?.plugins;
+  merged.worker = {
+    ...merged.worker,
+    plugins: () => [
+      ...(typeof ownWorkerPlugins === "function" ? ownWorkerPlugins() ?? [] : []),
+      morphNativeResolution({ workspaceRoot, nonce: morphBuildNonce, scope: "worker" }),
+    ],
+  };
+  return merged;
 `;
 }
