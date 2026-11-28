@@ -2788,7 +2788,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe preview-start-two-tab-race-start "$RUNNER_TEMP/container-network"
 
       - name: Run two-tab start race container acceptance
-        timeout-minutes: 4
+        timeout-minutes: 2
         id: preview_start_two_tab_race_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2798,7 +2798,8 @@ jobs:
           MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/preview-start-two-tab-race-handover.json
           MORPH_E2E_LOCK: "1"
           MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
-        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/preview-start-two-tab-race.spec.ts
+        # DO NOT MERGE: experiment, the spec never ends; see e2e/zz-timeout-experiment.spec.ts
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/zz-timeout-experiment.spec.ts
 
       - name: Mark two-tab start race container window end
         if: always()
