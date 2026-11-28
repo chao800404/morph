@@ -710,81 +710,65 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
   6. `.fields.ts` 宣告（可接受，類似 headless CMS 的欄位結構）。
   - 另：預覽悄悄改用平台設定、發佈卻拒絕作者設定，兩邊不一致（由原生建置第 4 步修正）。
 
-### 1.7 Final goal, priority order and support view (2026-11-28, owner approved)
+### 1.7 最終目標、優先順序與支援現況（2026-11-28，使用者核准）
 
-This section is written in English; the sections around it are not. The goal and approach record is
-[`docs/final-goal-and-approach.md`](docs/final-goal-and-approach.md). Summary: code is the main body, Code mode never
-restricts native framework writing, Design only helps non-coders, every Astro and Start rendering mode is supported in
-preview, publish and the editor, and each framework uses its official Cloudflare setup.
+目標與做法的記錄在 [`docs/final-goal-and-approach.md`](docs/final-goal-and-approach.md)（英文）。摘要：程式碼是主體，Code 模式不限制作者使用框架原生寫法，Design 只協助不寫程式的人修改程式與內容；Astro 與 TanStack Start 的所有渲染模式都要在預覽、發布與編輯器中支援；每個框架使用自己官方的 Cloudflare 設定，Morph 不發明自己的寫法。
 
-**Approach decisions of 2026-11-28** (detail in the doc above):
+**2026-11-28 的做法決定**（細節見上述文件）：
 
-- Security boundary: the Sandbox container (decision A); package checks are defence in depth. Managed Start refuses a
-  Theme PostCSS config (`THEME_POSTCSS_CONFIG_UNSUPPORTED`); native Astro runs the author's config as is. Planned,
-  not implemented: offline build container, fresh container per retry, `--ignore-scripts` for future installs.
-- Astro default slot: runtime render recording replaces static proof (direction B), default slot only at first; PR1
-  proves recording in the real container. The static slot branch is retired (never merged).
-- Uniform SDK: one `@morph/sdk` entry (U1 to U6); order native build, SDK, version ranges.
-- Design fallback: source literal to Source, declared CMS field to Document, ambiguous canvas element to a form edit
-  plus jump-to-code.
+- 安全邊界：Sandbox 容器是邊界（決定 A），建置內的套件檢查只是縱深防禦。託管 Start 拒絕 Theme 的 PostCSS 設定（`THEME_POSTCSS_CONFIG_UNSUPPORTED`）；原生 Astro 照作者的設定執行。計畫中、尚未實作：建置容器完全離線、每次重試用新容器、日後安裝相依套件以 `--ignore-scripts` 為關卡。
+- Astro 預設 slot：以執行期渲染記錄取代靜態證明（方向 B），一開始只做預設 slot；PR1 在真實容器證明記錄可行。靜態 slot 分支已退役，未合併。
+- 證據列：先用 D1 evidence row（Q3）；HMAC 收據延後，PR1 之後再評估。
+- Q4（非字串的 Astro 欄位經 spread 傳入）：延後（Codex 審查，lead 決定 11-28）。
+- 統一 SDK：單一 `@morph/sdk` 入口（U1 到 U6）；順序為原生建置、SDK、版本範圍。
+- Design 備援三層：原始碼字面值寫入 Source；已宣告的 CMS 欄位寫入 Document；畫布上無法判定的元素提供表單編輯加跳到程式碼。
 
-**Priority order (owner approved 2026-11-28).** The R line in section 1.5 keeps its own step numbering for the
-render-mode work; this list orders the work overall.
+**優先順序（使用者 2026-11-28 核准）。** 1.5 的 R 線仍保留自己的步驟編號，這份清單是整體排序。
 
-1. Cloud publish loop: staging on Cloudflare (in progress; the handoff log records a first staging deploy and a
-   first publish started, no acceptance recorded).
-2. Native project import and dependency snapshot: one official Astro example and one official Start example, each
-   with an integration.
-3. Design form-mode fallback.
-4. Two render-mode acceptance tables (Start, Astro), kept in this section.
-5. The three-column view below, kept current.
-6. A `vite.config` allowlist by shipped-template hash, with a warning or refusal for custom configs.
-7. Stop adding managed-only features.
+1. 雲端發布閉環：Cloudflare staging（進行中；handoff 紀錄顯示已部署一次並開始第一次發布，尚無驗收紀錄）。
+2. 原生專案匯入與相依套件快照：一個官方 Astro 範例與一個官方 Start 範例，各含一項 integration。
+3. Design 表單模式備援。
+4. 兩份渲染模式驗收表（Start、Astro），維護在本節。
+5. 下方三欄現況表，持續更新。
+6. 以隨附模板雜湊建立 `vite.config` 允許清單，自訂設定給警告或拒絕。
+7. 停止新增只適用託管模式的功能。
 
-**Merged on `main` (git log, origin/main `0e444ed`).** #490 native Wrangler config contract; #496 release/Worker
-build match (dormant, off in production); #497 binding taint fixes; #499 shared layout and page-only SDK reads; #500
-and #502 test flake fixes; #498 and #503 E2E/CI hardening. Not merged: native PR2 (SSR admission and SDK resolution
-proof), the Astro runtime recording, the uniform SDK steps.
+**已合併到 `main`（依 git log，origin/main `0e444ed`）。** #490 原生 Wrangler 設定契約；#496 release／Worker 版本比對（休眠，正式環境關閉）；#497 binding taint 修正；#499 共用 layout 與頁面專屬 section 的 SDK 讀取；#500、#502 測試不穩修正；#498、#503 E2E／CI 強化。原生 PR2（SSR 准入與 SDK 解析證明）：CI 中（PR 待合併）。尚未合併：Astro 執行期記錄、統一 SDK 各步。
 
-**Support view: runs / publishes / Design can edit.** Built from the repo's docs and handoff evidence; a cell says
-"unverified" when no evidence was found. "Local" means local or container tests, not real Cloudflare.
+**支援現況：能執行／能發布／Design 能編輯。** 依 repo 文件與 handoff 證據整理；沒有證據的格子寫「unverified」。「本機」指本機或容器測試，不是真實 Cloudflare。
 
-| Target | Runs (preview) | Publishes | Design can edit |
+| 目標 | 能執行（預覽） | 能發布 | Design 能編輯 |
 |---|---|---|---|
-| Start managed (Starter v32) | Yes, full Start preview (M1 accepted locally) | Yes, SSR (local); real Cloudflare unverified | Yes, via `content.ts` or SDK reads (M1 accepted locally) |
-| Start native (own `vite.config`) | Partial: preview uses platform config, not the author's (section 1.6) | No: refused in production (`NATIVE_START_BUILD_UNAVAILABLE`) until native PR6 | No: Hide refuses `custom-build`; trust needs native PR4 |
-| Astro native | Yes, preview (Astro PR1 to PR3 merged) | No: Astro is off in production (section 1.6) | Partial: select plus Inspector (D2 merged); M2 case not accepted; default slot pending runtime recording |
+| Start 託管（Starter v32） | 是，完整 Start 預覽（M1 本機驗收） | 是，SSR（本機）；真實 Cloudflare unverified | 是，經 `content.ts` 或 SDK 讀取（M1 本機驗收） |
+| Start 原生（自備 `vite.config`） | 部分：預覽用平台設定，不是作者的（見 1.6） | 否：正式環境拒絕（`NATIVE_START_BUILD_UNAVAILABLE`），到原生 PR6 為止 | 否：Hide 拒絕 `custom-build`；信任需原生 PR4 |
+| Astro 原生 | 是，預覽（Astro PR1 到 PR3 已合併） | 否：Astro 在正式環境關閉（見 1.6） | 部分：選取加 Inspector（D2 已合併）；M2 案例未驗收；預設 slot 等執行期記錄 |
 
-**Start render modes** (from the 2026-11-28 audit at `12969ee`; S supported, P partial, R refused, U unverified;
-#500 to #503 after it do not touch rendering).
+**Start 渲染模式**（來自 2026-11-28 在 `12969ee` 上的審查；S 支援、P 部分、R 拒絕、U unverified；之後的 #500 到 #503 不涉及渲染）。
 
-| Mode | Runs (preview) | Publishes | Design can edit |
+| 模式 | 能執行（預覽） | 能發布 | Design 能編輯 |
 |---|---|---|---|
-| Full SSR | S | S (local) | S, Hide covered |
-| Streaming (deferred data) | S in Live Preview; Build Preview U | S rendering; Morph reads during streaming U | P: bridge waits up to 30 s for the stream |
-| Selective SSR (`ssr: false`, `'data-only'`) | S in Live Preview; Build Preview U | S | U |
-| `ssr` function, `defaultSsr` | U | U | U; `defaultSsr` or root `ssr: false` disables Hide |
+| 完整 SSR | S | S（本機） | S，Hide 已涵蓋 |
+| Streaming（延遲資料） | Live Preview S；Build Preview U | 渲染 S；串流中讀 Morph 內容 U | P：bridge 最多等串流 30 秒 |
+| 選擇性 SSR（`ssr: false`、`'data-only'`） | Live Preview S；Build Preview U | S | U |
+| `ssr` 函式、`defaultSsr` | U | U | U；`defaultSsr` 或根路由 `ssr: false` 會停用 Hide |
 | SPA | R | R | R |
-| SSG / prerender | U | R by `assertRenderingModeReady`; Core serving is ready | U |
-| ISR | U | Not wired; Core sends `private, no-store` (#487) | U |
+| SSG／預先渲染 | U | R（`assertRenderingModeReady`）；Core 送出已就緒 | U |
+| ISR | U | 未接線；Core 送出 `private, no-store`（#487） | U |
 
-**Astro render modes.** No audit exists yet; every cell is unverified until the Astro table is built (priority 4).
+**Astro 渲染模式。** 尚無審查；在建立 Astro 驗收表（優先順序 4）之前，所有格子都是 unverified。
 
-| Mode | Runs (preview) | Publishes | Design can edit |
+| 模式 | 能執行（預覽） | 能發布 | Design 能編輯 |
 |---|---|---|---|
-| SSR (on-demand) | unverified | unverified (Astro off in production) | unverified |
+| SSR（隨需） | unverified | unverified（Astro 在正式環境關閉） | unverified |
 | Streaming | unverified | unverified | unverified |
-| Static (`prerender`) | unverified | unverified | unverified |
-| Hybrid per-route `prerender` | unverified | unverified | unverified |
+| 靜態（`prerender`） | unverified | unverified | unverified |
+| 混合（逐路由 `prerender`） | unverified | unverified | unverified |
 | Server islands | unverified | unverified | unverified |
-| ISR-equivalent | unverified | unverified | unverified |
+| ISR 等效 | unverified | unverified | unverified |
 
-**Start render-mode decisions of 2026-11-28 (owner approved).** SPA after native PR6 with a content-free shell; the
-bridge starts at shell hydration rather than waiting for the stream to end; Hide stays gated on a proven root
-(including `defaultSsr`); an initial `ssr: false` hydration is pinned to the document release; the editor never
-forces `ssr: true`. The first PR is evidence tests (Starter 32 fixture, all modes, hidden and visible sentinels).
+**Start 渲染模式的決定（2026-11-28，使用者核准）。** SPA 排在原生 PR6 之後，使用不含內容的 shell；bridge 從 shell hydration 開始，不等串流結束；Hide 仍以已證明的根路由為前提（含 `defaultSsr`）；初次 `ssr: false` hydration 釘在文件所屬 release；編輯器不強制 `ssr: true`。第一個 PR 是證據測試（Starter 32 fixture、所有模式、隱藏與可見的標記值）。
 
-**Process note.** The CI rerun rule is unchanged: per-case owner approval.
+**流程備註。** CI 重跑規則不變：逐案由使用者核准。
 
 ---
 

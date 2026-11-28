@@ -31,11 +31,10 @@ Related: ROADMAP sections 1.2 and 1.6, [`docs/multi-runtime-theme-plan.md`](mult
 - Runtime render recording replaces static proof. Static analysis stays as lint only.
 - Design: a preview SDK tags values; a recorder runs through an aliased `astro/compiler-runtime`; a completed-render
   criterion applies; a server-side evidence row is keyed on the CAS tuple plus every dependency Document.
-  Whether the receipt is an HMAC or a D1 row is decided after PR1.
+  Receipt: D1 evidence row first (Q3); HMAC receipt deferred, revisit after PR1.
 - Scope at first: default slot only. PR1 proves the recording in the real container.
-- Source: `astro-runtime-provenance-design.md` (handoff, not in the repo) and its Codex review. Open: the Codex
-  review recommends deferring non-string fields passed by spread (Q4), which differs from the earlier owner
-  recommendation; this is not yet re-decided.
+- Source: `astro-runtime-provenance-design.md` (handoff, not in the repo) and its Codex review.
+- Q4 (non-string fields passed by spread): deferred (Codex review, lead decision 11-28).
 
 ### Uniform SDK (2026-11-27, plan approved 2026-11-28)
 
