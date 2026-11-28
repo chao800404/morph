@@ -130,6 +130,35 @@ test("every script the container acceptance job runs is a rule or excluded with 
   assert.deepEqual(testsOff, []);
 });
 
+test("a local Playwright reporter named on a --reporter argument is a rule", () => {
+  // The runner names its reporters in DEFAULT_REPORTERS and the workflow may
+  // pass --reporter itself; neither is an import or a `node scripts/...`
+  // line, so the guards above do not see them.
+  const sources = [
+    ".github/workflows/ci.yml",
+    ...CI_RULE_PATHS.filter((file) => file.endsWith(".mjs") && !file.endsWith(".test.mjs")),
+  ];
+  const named = new Set();
+  for (const file of sources) {
+    const text = readFileSync(new URL(file, REPO_ROOT), "utf8");
+    for (const [, list] of text.matchAll(/--reporter=([^\s"'`]+)/g)) {
+      for (const entry of list.split(",")) if (/^\.{1,2}\//.test(entry)) named.add(path.posix.normalize(entry));
+    }
+    for (const [, list] of text.matchAll(/DEFAULT_REPORTERS = "([^"]+)"/g)) {
+      for (const entry of list.split(",")) if (/^\.{1,2}\//.test(entry)) named.add(path.posix.normalize(entry));
+    }
+  }
+  assert.ok(named.has("scripts/e2e-progress-reporter.mjs"), "the parser must see the progress reporter");
+  assert.deepEqual(
+    [...named].filter((file) => !isRulePath(file, CI_RULE_PATHS)),
+    [],
+  );
+  for (const file of named) {
+    const sibling = file.replace(/\.mjs$/, ".test.mjs");
+    if (existsSync(new URL(sibling, REPO_ROOT))) assert.ok(isRulePath(sibling, CI_RULE_PATHS), sibling);
+  }
+});
+
 test("unionRules keeps both lists and refuses a non-path", () => {
   assert.deepEqual(unionRules(["b", "a/"], ["c", "a/"]), ["a/", "b", "c"]);
   for (const bad of ["", "/etc/passwd", 7, null]) {

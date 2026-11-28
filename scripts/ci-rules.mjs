@@ -53,6 +53,10 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/e2e-client-lane-guard.mjs",
   "scripts/e2e-client-lane-guard.test.mjs",
   "scripts/e2e-preview-runtime-guard.mjs",
+  // Loaded by Playwright from the runner's --reporter argument; a reporter that
+  // throws fails the run, and one could override its result.
+  "scripts/e2e-progress-reporter.mjs",
+  "scripts/e2e-progress-reporter.test.mjs",
   "scripts/editor-e2e-shards.mjs",
   "scripts/editor-e2e-start.mjs",
   // Maps the runner's exit and signals to the container step's exit code.
@@ -61,6 +65,7 @@ export const CI_RULE_PATHS = Object.freeze([
   "scripts/run-editor-e2e.mjs",
   "scripts/run-editor-e2e.test.mjs",
   "scripts/run-start-preview-shard.mjs",
+  "scripts/run-start-preview-shard.test.mjs",
   // Fails the Sandbox prerender smoke job when a test was skipped or none
   // passed, so the job cannot go green without having prerendered anything.
   "scripts/sandbox-prerender-smoke.mjs",
