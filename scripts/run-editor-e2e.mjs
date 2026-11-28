@@ -340,6 +340,14 @@ const started = [];
  * build's cost has to be read from, so one capture answers both questions.
  */
 const buildTimings = [];
+/**
+ * The reporters of a run that names none: the console line, the JSON report
+ * (written only when the run ends) and the progress reporter, which appends a
+ * line per test boundary to `<report>.progress.jsonl` as it happens. A run
+ * stopped before it ends (a step's time limit in CI) leaves the progress file
+ * and no JSON report; the progress reporter prints nothing and sets no status.
+ */
+const DEFAULT_REPORTERS = "line,json,./scripts/e2e-progress-reporter.mjs";
 let stateDir = null;
 /**
  * This run's own sidecar workspaces, under `.morph-previews/` (gitignored) and
@@ -2070,7 +2078,7 @@ async function main() {
   const lateReoptimizationReport = `${report}.late-dependency-reoptimizations.json`;
   const reporting = extra.some((argument) => argument.startsWith("--reporter"))
     ? []
-    : ["--reporter=line,json"];
+    : [`--reporter=${DEFAULT_REPORTERS}`];
   log(`running playwright${extra.length ? ` (${extra.join(" ")})` : ""}`);
   const suite = ["playwright", "test", "--project=editor"];
   suite.push(...reporting, ...selection);
@@ -2094,6 +2102,7 @@ async function main() {
       E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,
       MORPH_E2E_STATE_DIR: stateDir,
       PLAYWRIGHT_JSON_OUTPUT_NAME: report,
+      MORPH_E2E_PROGRESS_FILE: `${report}.progress.jsonl`,
       MORPH_E2E_HANDOFF: path.join(stateDir, HANDOFF_FILE),
       // Without this the port guard's own escape hatch does not work: the script
       // would move the dev server to `MORPH_E2E_PORT` and leave the suite calling

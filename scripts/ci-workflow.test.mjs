@@ -739,6 +739,51 @@ test("case E's step selects exactly case E of its spec", async () => {
   );
 });
 
+/**
+ * A hung E2E run used to reach its job's 30 minutes: GitHub then cancels the
+ * whole job, and a cancelled job keeps a cut-off log and uploads nothing.
+ * Every step that runs the E2E suite has a time limit of its own, short enough
+ * that the job's remaining steps (the always() upload among them) still have
+ * time. A step that times out fails, so the job is red either way; nothing
+ * signals or kills anything in the workflow, and no acceptance step changed.
+ */
+test("every step that runs the E2E suite ends before its job's limit and the upload still runs", () => {
+  const jobLimit = 30;
+  const reserveMinutes = 6;
+  const runsSuite = /(?:run-editor-e2e\.mjs|run-start-preview-shard\.mjs|pnpm test:e2e:local-preview)/;
+  let seen = 0;
+  for (const key of jobKeys(workflow)) {
+    const job = withoutComments(jobBlock(workflow, key));
+    const steps = job.split("\n      - name: ").slice(1);
+    const suiteSteps = steps.filter((step) => /^ {8}run: /m.test(step) && runsSuite.test(/^ {8}run: (.+)$/m.exec(step)?.[1] ?? ""));
+    if (suiteSteps.length === 0) continue;
+    const limit = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(job)?.[1]);
+    assert.equal(limit, jobLimit, key);
+    let sum = 0;
+    for (const step of suiteSteps) {
+      const name = step.split("\n")[0];
+      const minutes = Number(/^ {8}timeout-minutes: (\d+)$/m.exec(step)?.[1]);
+      assert.ok(minutes > 0, key + ": " + name + " needs its own timeout-minutes");
+      assert.ok(minutes <= jobLimit - reserveMinutes, key + ": " + name + " must leave the job " + reserveMinutes + " minutes");
+      assert.doesNotMatch(step, /continue-on-error/, key + ": " + name);
+      sum = Math.max(sum, minutes);
+      seen += 1;
+    }
+    // The evidence is uploaded whatever happened before it.
+    const upload = steps.find((step) => /uses: actions\/upload-artifact@v4/.test(step));
+    assert.ok(upload && /^ {8}if: always\(\)$/m.test(upload), key + ": the upload runs always");
+    assert.ok(sum > 0);
+  }
+  // 2 shard/full Start steps + the Stage 3 jobs' 11 container runs.
+  assert.equal(seen, 2 + 11);
+});
+
+test("every E2E run writes a progress line per test, beside the line and JSON reports", () => {
+  const runner = readFileSync(new URL("./run-editor-e2e.mjs", import.meta.url), "utf8");
+  assert.match(runner, /DEFAULT_REPORTERS = "line,json,\.\/scripts\/e2e-progress-reporter\.mjs"/);
+  assert.ok(runner.includes("MORPH_E2E_PROGRESS_FILE: `${report}.progress.jsonl`"));
+});
+
 test("every job that installs Chromium first puts the primary Ubuntu archive ahead of the Azure mirror", () => {
   const installers = jobKeys(workflow).filter((key) =>
     withoutComments(jobBlock(workflow, key)).includes(
