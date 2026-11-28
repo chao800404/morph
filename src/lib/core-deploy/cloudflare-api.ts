@@ -125,6 +125,9 @@ async function readList(
     }
     items.push(...envelope.result);
     const info = envelope.result_info;
+    if (perPage !== null && envelope.result.length > perPage) {
+      throw new CloudflareReadError(`${label}: page ${page} carries ${envelope.result.length} entries, more than per_page ${perPage}`);
+    }
     if (info && typeof info.count === "number" && info.count !== envelope.result.length) {
       throw new CloudflareReadError(`${label}: page ${page} says ${info.count} entries and carries ${envelope.result.length}`);
     }

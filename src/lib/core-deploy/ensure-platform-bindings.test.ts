@@ -147,7 +147,28 @@ describe("platform:ensure", () => {
     });
     const result = await run();
     expect(result.status).toBe("refused");
-    expect(result.steps[0]).toMatchObject({ subject: "ops.example.com", outcome: "refused" });
+    expect(result.steps.map((step) => `${step.subject}:${step.outcome}`)).toEqual([
+      "admin.example.com:refused",
+      "ops.example.com:not-attempted",
+      "*.preview.example.com/*:not-attempted",
+    ]);
+    expect(result.steps[0]!.detail).toMatch(/ops\.example\.com changed since the first read/);
+    expect(api.writes()).toEqual([]);
+  });
+
+  it("stops the Route create when the fresh read fails the caller's check", async () => {
+    const { api, run } = await setup(baseState());
+    let reads = 0;
+    const result = await ensurePlatformBindings({
+      target: TARGET,
+      manifest: { ...MANIFEST, customDomains: [] },
+      read: () => readInventory(createInventoryApi({ baseUrl: api.baseUrl, token: "i", accountId: ACCOUNT }), TARGET, MANIFEST),
+      api: createBootstrapApi({ baseUrl: api.baseUrl, token: "b", accountId: ACCOUNT }),
+      checkBeforeWrite: () => (++reads >= 1 ? ["t1.preview.example.com is inside the preview namespace"] : []),
+    });
+    void run;
+    expect(result.status).toBe("refused");
+    expect(result.steps[0]).toMatchObject({ subject: "*.preview.example.com/*", outcome: "refused" });
     expect(api.writes()).toEqual([]);
   });
 

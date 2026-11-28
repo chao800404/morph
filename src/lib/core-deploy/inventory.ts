@@ -112,7 +112,8 @@ export type DiscrepancyKind =
   | "platform-route-changed"
   | "unknown-route"
   | "storefront-domain-in-preview-namespace"
-  | "storefront-domain-changed";
+  | "storefront-domain-changed"
+  | "storefront-domain-pending";
 
 export type Discrepancy = Readonly<{
   kind: DiscrepancyKind;
@@ -359,7 +360,22 @@ export async function reconcile(input: {
       // Read again while a pending row is one the previous read did not have:
       // every pending row is seen on two consecutive paired reads.
       const unseen = pending.filter((key) => !(previousPending ?? []).includes(key));
-      if (unseen.length > 0 && reads < maxReads) {
+      if (unseen.length > 0) {
+        if (reads === maxReads) {
+          // A connect that started on the last allowed read is still moving.
+          return {
+            status: "transient",
+            snapshot,
+            transient: unseen.map((key) => ({
+              kind: "storefront-domain-pending" as const,
+              key: `storefront-domain-pending|${key}`,
+              detail: `pending storefront domain ${key} first seen on the last paired read`,
+            })),
+            tolerated,
+            diagnostics,
+            reads,
+          };
+        }
         previousPending = pending;
         previous = [];
         await sleep(delayMs);
@@ -377,7 +393,8 @@ export async function reconcile(input: {
         reads,
       };
     }
-    previousPending ??= pending;
+    // Compared with the immediately preceding read only.
+    previousPending = pending;
     if (previous) {
       const before = new Set(previous.map((d) => d.key));
       const now = new Set(discrepancies.map((d) => d.key));

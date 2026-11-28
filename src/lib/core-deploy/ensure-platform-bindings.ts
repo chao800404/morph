@@ -117,6 +117,12 @@ export async function ensurePlatformBindings(input: {
   manifest: PlatformManifest;
   read: () => Promise<InventorySnapshot>;
   api: BootstrapApi;
+  /**
+   * What else must hold on every fresh read before a write: the caller's
+   * inventory comparison (bootstrap mode), so that a storefront domain that
+   * appears inside the preview namespace mid-run stops the Route create.
+   */
+  checkBeforeWrite?: (snapshot: InventorySnapshot) => string[];
 }): Promise<EnsureResult> {
   const { target, manifest } = input;
   const snapshot = await input.read();
@@ -140,7 +146,8 @@ export async function ensurePlatformBindings(input: {
   for (const step of planned) {
     const subject = subjectOf(step);
     if (stopped) {
-      steps.push({ kind: step.kind, subject, outcome: step.action === "present" ? "present" : "not-attempted", detail: step.detail });
+      // After a stop, nothing from the first plan is reported as current.
+      steps.push({ kind: step.kind, subject, outcome: "not-attempted", detail: `not checked after the stop (first read: ${step.detail})` });
       continue;
     }
     if (step.action === "present") {
@@ -167,12 +174,15 @@ export async function ensurePlatformBindings(input: {
     // A claim seen anywhere — on this step or on any other, a "present" one
     // included — stops the run before this write.
     const refusal = replanned.find((candidate) => candidate.action === "refuse");
-    if (refusal) {
+    const blocking = input.checkBeforeWrite?.(fresh) ?? [];
+    if (refusal || blocking.length > 0) {
       stopped = {
-        kind: refusal.kind,
-        subject: subjectOf(refusal),
+        kind: step.kind,
+        subject,
         outcome: "refused",
-        detail: `changed since the first read: ${refusal.detail}`,
+        detail: refusal
+          ? `not written: ${subjectOf(refusal)} changed since the first read: ${refusal.detail}`
+          : `not written: the inventory is no longer clean: ${blocking.join("; ")}`,
       };
       steps.push(stopped);
       refusedMidRun = true;

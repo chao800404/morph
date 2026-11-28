@@ -79,7 +79,14 @@ export type CoreDeployDeps = Readonly<{
   reconcileDelayMs?: number;
 }>;
 
-type Prepared = { target: DeployTarget; source: unknown; manifest: PlatformManifest; sourcePath: string };
+type Prepared = {
+  target: DeployTarget;
+  source: unknown;
+  /** The exact text the source guard checked. */
+  sourceText: string;
+  manifest: PlatformManifest;
+  sourcePath: string;
+};
 
 function refuse(deps: CoreDeployDeps, problems: string[]): RunResult {
   for (const problem of problems) deps.log(`[core-deploy] refused: ${problem}`);
@@ -132,7 +139,8 @@ function prepare(
 
   const sourcePath = path.join(root, "wrangler.jsonc");
   let source: unknown = null;
-  const parsedSource = deps.parseJsonc(deps.readText(sourcePath));
+  const sourceText = deps.readText(sourcePath);
+  const parsedSource = deps.parseJsonc(sourceText);
   if (!parsedSource.ok) {
     problems.push(`wrangler.jsonc does not parse: ${parsedSource.error}`);
   } else {
@@ -143,7 +151,7 @@ function prepare(
   const manifest = platformManifest(vars);
   // Manifest problems are already in the source guard's list.
   if (problems.length > 0 || !manifest.ok) return { ok: false, result: refuse(deps, problems) };
-  return { ok: true, prepared: { target, source, manifest: manifest.value, sourcePath } };
+  return { ok: true, prepared: { target, source, sourceText, manifest: manifest.value, sourcePath } };
 }
 
 async function inventory(
@@ -248,6 +256,8 @@ async function ensureLocked(deps: CoreDeployDeps, prepared: Prepared): Promise<R
       manifest: prepared.manifest,
       read: () => readInventory(api, target, prepared.manifest, deps.now),
       api: deps.bootstrapApi(target.accountId),
+      checkBeforeWrite: (snapshot) =>
+        compareInventory({ snapshot, target, manifest: prepared.manifest, mode: "bootstrap" }).discrepancies.map((d) => d.detail),
     });
   } catch (error) {
     deps.log(`[core-deploy] platform:ensure: verification unavailable: ${error instanceof Error ? error.message : String(error)}`);
@@ -311,52 +321,67 @@ async function deployLocked(options: RunnerOptions, deps: CoreDeployDeps, prepar
   const build = await deps.run("build", ["pnpm", "run", "build"], childEnv);
   if (build !== 0) return refuse(deps, ["The build failed."]);
 
+  // Each file is read once; the guard checks those bytes, and the fingerprint
+  // below is taken of the same bytes, so a file replaced after its check is a
+  // change, never a new baseline.
   const redirectPath = path.join(root, DEPLOY_REDIRECT_PATH);
+  const artifactPath = path.join(root, ARTIFACT_CONFIG_PATH);
   const artifactProblems: string[] = [];
-  if (!deps.exists(redirectPath)) {
-    artifactProblems.push(`The build wrote no ${DEPLOY_REDIRECT_PATH}.`);
-  } else {
-    const redirect = checkDeployRedirect(readJsonFile(deps, redirectPath), root);
-    if (!redirect.ok) {
-      artifactProblems.push(...redirect.problems);
-    } else if (!deps.exists(redirect.artifactPath)) {
-      artifactProblems.push(`The build wrote no ${ARTIFACT_CONFIG_PATH}.`);
+  let redirectText: string | null = null;
+  let artifactText: string | null = null;
+  try {
+    if (!deps.exists(redirectPath)) {
+      artifactProblems.push(`The build wrote no ${DEPLOY_REDIRECT_PATH}.`);
     } else {
-      if (deps.mtimeMs(redirect.artifactPath) < buildStartedAt - 1000 || deps.mtimeMs(redirectPath) < buildStartedAt - 1000) {
-        artifactProblems.push(`${ARTIFACT_CONFIG_PATH} is older than this build.`);
+      redirectText = deps.readText(redirectPath);
+      const redirect = checkDeployRedirect(JSON.parse(redirectText), root);
+      if (!redirect.ok) {
+        artifactProblems.push(...redirect.problems);
+      } else if (!deps.exists(artifactPath)) {
+        artifactProblems.push(`The build wrote no ${ARTIFACT_CONFIG_PATH}.`);
+      } else {
+        if (deps.mtimeMs(artifactPath) < buildStartedAt - 1000 || deps.mtimeMs(redirectPath) < buildStartedAt - 1000) {
+          artifactProblems.push(`${ARTIFACT_CONFIG_PATH} is older than this build.`);
+        }
+        artifactText = deps.readText(artifactPath);
+        artifactProblems.push(
+          ...checkArtifactConfig(JSON.parse(artifactText), prepared.source, target, prepared.sourcePath),
+        );
       }
-      artifactProblems.push(
-        ...checkArtifactConfig(readJsonFile(deps, redirect.artifactPath), prepared.source, target, prepared.sourcePath),
-      );
     }
+  } catch (error) {
+    artifactProblems.push(`Could not read the build's deploy config: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (artifactProblems.length > 0) return refuse(deps, artifactProblems);
+  if (artifactProblems.length > 0 || redirectText === null || artifactText === null) {
+    return refuse(deps, artifactProblems.length > 0 ? artifactProblems : ["The build's deploy config was not read."]);
+  }
 
   // What Wrangler reads — the redirect, the artifact it points at, and the
   // source it falls back to — must be what was checked, immediately before
   // it starts and still after it exits.
-  const fingerprint = () => {
+  const files = [redirectPath, artifactPath, prepared.sourcePath];
+  const digest = (texts: readonly string[]) => {
     const hash = createHash("sha256");
-    // A file that vanishes mid-read is a change, not an error: the
-    // post-deploy inventory must still run.
-    const read = (file: string) => {
-      try {
-        return deps.exists(file) ? deps.readText(file) : "<missing>";
-      } catch {
-        return "<unreadable>";
-      }
-    };
-    for (const file of [redirectPath, path.join(root, ARTIFACT_CONFIG_PATH), prepared.sourcePath]) {
-      hash.update(file).update("\0").update(read(file)).update("\0");
-    }
+    files.forEach((file, index) => hash.update(file).update("\0").update(texts[index]!).update("\0"));
     return hash.digest("hex");
   };
-  const checked = fingerprint();
+  const checked = digest([redirectText, artifactText, prepared.sourceText]);
+  // Before Wrangler: a file that cannot be read refuses the deploy. After it:
+  // a file that cannot be read is a change, and the post-deploy inventory
+  // still runs.
+  const current = (strict: boolean): string | null => {
+    try {
+      return digest(files.map((file) => (deps.exists(file) ? deps.readText(file) : "<missing>")));
+    } catch (error) {
+      if (strict) return null;
+      return `<unreadable: ${error instanceof Error ? error.message : String(error)}>`;
+    }
+  };
 
   const wranglerBin = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
   let deployExit: number;
   let deployError: string | null = null;
-  if (fingerprint() !== checked) return refuse(deps, ["The checked config changed before Wrangler started."]);
+  if (current(true) !== checked) return refuse(deps, ["The checked config changed, or could not be read, before Wrangler started."]);
   try {
     deployExit = await deps.run("wrangler", ["node", ...wranglerDeployArgv(wranglerBin)], childEnv);
   } catch (error) {
@@ -367,7 +392,7 @@ async function deployLocked(options: RunnerOptions, deps: CoreDeployDeps, prepar
     deps.log(`[core-deploy] wrangler deploy exited ${deployExit}${deployError ? ` (${deployError})` : ""}; the upload may have committed, so the post-check still runs.`);
   }
 
-  const changedDuringDeploy = fingerprint() !== checked;
+  const changedDuringDeploy = current(false) !== checked;
   if (changedDuringDeploy) {
     deps.log("[core-deploy] the checked config changed while Wrangler ran; what it deployed is not known to be what was checked.");
   }

@@ -124,6 +124,48 @@ describe("the binding inventory", () => {
     expect(verdict.reads).toBe(3);
   });
 
+  it("is transient when a pending row first appears on the last allowed read", async () => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    const { verdict } = await verdictFor(state, {
+      maxReads: 2,
+      mutate: (api) => {
+        let reads = 0;
+        api.beforeAnswer.push((request, s) => {
+          // Read 1 finds drift (shop-b unbound); read 2 rebinds it and a connect starts.
+          if (request.path.endsWith("/query") && ++reads === 2) s.d1[D1_ID]!.push(row("late.example.com", null, "pending"));
+        });
+        const shopB = api.state.domains.find((d) => d.hostname === "shop-b.example.com")!;
+        api.state.domains = api.state.domains.filter((d) => d !== shopB);
+        let domainReads = 0;
+        api.beforeAnswer.push((request, s) => {
+          if (request.path.endsWith("/workers/domains") && ++domainReads === 2) s.domains.push(shopB);
+        });
+      },
+    });
+    expect(verdict.status).toBe("transient");
+  });
+
+  it("is unavailable when a page carries more entries than its per_page", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) => {
+          if (request.path !== `/accounts/${ACCOUNT}/workers/domains`) return undefined;
+          const page = Number(request.query.get("page") ?? "1");
+          const result = page === 1 ? state.domains.slice(0, 1) : state.domains.slice(1);
+          return {
+            status: 200,
+            body: { success: true, errors: [], result, result_info: { page, per_page: 1, total_pages: 2, count: result.length, total_count: state.domains.length } },
+          };
+        },
+      ],
+    });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    await expect(client.listWorkerDomains()).rejects.toThrow(/more than per_page/);
+  });
+
   it("is unavailable when a page's count disagrees with its entries", async () => {
     const state = healthyState();
     const api = await startMockCloudflareApi(state, {

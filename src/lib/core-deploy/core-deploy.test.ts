@@ -383,6 +383,34 @@ describe("pnpm run platform:ensure and deploy:verify", () => {
     expect(h.api.requests).toEqual([]);
   });
 
+  it("refuses, without running Wrangler, an artifact replaced after its check", async () => {
+    const h = await harness();
+    const readText = h.deps.readText;
+    let artifactReads = 0;
+    (h.deps as { readText: (file: string) => string }).readText = (file) => {
+      if (file === at("dist/server/wrangler.json") && ++artifactReads === 2) {
+        // A plain build in the same checkout, between the guard and the spawn.
+        h.files.set(file, JSON.stringify({ name: "swapped", routes: [{ pattern: "a.example.com", custom_domain: true }] }));
+      }
+      return readText(file);
+    };
+    const result = await deploy(h);
+    expect(result.exitCode).toBe(EXIT.refused);
+    expect(h.steps.some((s) => s.startsWith("wrangler"))).toBe(false);
+  });
+
+  it("refuses, without running Wrangler, when a checked file cannot be read before it starts", async () => {
+    const h = await harness();
+    const readText = h.deps.readText;
+    let artifactReads = 0;
+    (h.deps as { readText: (file: string) => string }).readText = (file) => {
+      if (file === at("dist/server/wrangler.json") && ++artifactReads >= 2) throw new Error("EIO");
+      return readText(file);
+    };
+    expect((await deploy(h)).exitCode).toBe(EXIT.refused);
+    expect(h.steps.some((s) => s.startsWith("wrangler"))).toBe(false);
+  });
+
   it("still runs the post-check when a checked file cannot be read after Wrangler", async () => {
     const h = await harness({
       onWrangler: () => {
