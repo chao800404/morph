@@ -934,6 +934,39 @@ export const Route = createFileRoute("/both-sdk")({
   );
 
   it(
+    "refuses a Web Worker that imports a package the Theme may not use",
+    () => {
+      // Installed beside the toolchain here, but not an approved dependency:
+      // the worker bundle is held to the same guard as the main graphs.
+      const built = buildTampered(tamperedConfig({}), [
+        {
+          path: "src/workers/unapproved.ts",
+          content: `import { z } from "zod";
+self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(event.data).success);
+`,
+        },
+        {
+          path: "src/routes/worker-unapproved.tsx",
+          content: `import { createFileRoute } from "@tanstack/react-router";
+import UnapprovedWorker from "../workers/unapproved?worker";
+
+export const Route = createFileRoute("/worker-unapproved")({
+  component: function WorkerUnapproved() {
+    return <button onClick={() => new UnapprovedWorker()}>start</button>;
+  },
+});
+`,
+        },
+      ]);
+      expect(built).toMatchObject({ ok: false, stage: "build" });
+      expect((built as { message: string }).message).toContain(
+        'UNAPPROVED_DEPENDENCY: Theme imports "zod" from package "zod", which is not an approved dependency.',
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
+  it(
     "refuses a script written into the output that the bundler never emitted",
     () => {
       // Recorded chunks untouched; one more module beside them, which the

@@ -13,6 +13,8 @@ import {
   NATIVE_BUILD_LOADER_PATH,
   NATIVE_BUILD_NODE_OPTIONS,
   NATIVE_WRAPPER_CONFIG_PATH,
+  nativeImportGuardPluginSource,
+  nativeWrapperConfigSource,
 } from "./tanstack-start-native-wrapper";
 import {
   NATIVE_PROOF_VERSION,
@@ -297,6 +299,33 @@ describe("planNativeStartBuild", () => {
     expect(byPath.get(".morph/sdk/src/index.ts")).toContain(
       nativeSdkSentinel(NONCE, "@morph/sdk"),
     );
+  });
+
+  it("holds Web Worker bundles to the import guard and records them, after the project's own worker plugins", () => {
+    const plan = planNativeStartBuild(project(), { nonce: NONCE });
+    if (!plan.ok) throw new Error(plan.message);
+    const wrapper = plan.workspaceFiles.find(
+      (f) => f.path === NATIVE_WRAPPER_CONFIG_PATH,
+    )!.content;
+    const workerBlock = wrapper.slice(wrapper.indexOf("merged.worker = {"));
+    // The same guard the main graphs get, not a copy of a weaker one.
+    expect(workerBlock).toContain(nativeImportGuardPluginSource());
+    expect(workerBlock).toContain(
+      'morphNativeResolution({ workspaceRoot, nonce: morphBuildNonce, scope: "worker" })',
+    );
+    // The project's own worker plugins first; the prerender content plugin
+    // has nothing to answer in a browser-only bundle.
+    expect(workerBlock.indexOf("ownWorkerPlugins()")).toBeLessThan(
+      workerBlock.indexOf('name: "morph:native-import-guard"'),
+    );
+    expect(workerBlock).not.toContain("morph:frozen-prerender-content");
+    expect(wrapper).toContain("morph:frozen-prerender-content");
+    // Without the proof (no nonce), the wrapper is the one before it.
+    const legacy = nativeWrapperConfigSource({
+      themeConfigPath: "vite.config.ts",
+      allowedPackages: [],
+    });
+    expect(legacy).not.toContain("merged.worker");
   });
 
   it("gives the build a copy without dev or the author's other ignored keys", () => {

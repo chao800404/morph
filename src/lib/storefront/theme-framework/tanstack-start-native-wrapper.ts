@@ -462,9 +462,18 @@ ${options.resolutionNonce !== undefined ? workerResolutionSource() : ""}};
 /**
  * Vite builds each Web Worker (a `?worker` import) as its own bundle, with
  * the plugins of `worker.plugins` only, and emits its code as an asset of
- * the parent bundle. The resolution plugin is added there too, after the
- * project's own worker plugins, so each worker bundle is recorded and
- * verified like any chunk (native-start-proof.ts).
+ * the parent bundle. Two of Morph's plugins are added there too, after the
+ * project's own worker plugins:
+ *
+ * - the resolved-path import guard, so a worker's imports are held to the
+ *   same approved packages and workspace containment as the main graphs
+ *   (it is `enforce: "pre"`, so its place in the list does not matter);
+ * - the resolution plugin, so each worker bundle is recorded and verified
+ *   like any chunk (native-start-proof.ts).
+ *
+ * Not the frozen-content prerender plugin: it answers content reads in the
+ * Node preview server Start prerenders through, and a Web Worker runs only
+ * in the browser, never in that server, so it has nothing to answer there.
  */
 function workerResolutionSource(): string {
   return `  const ownWorkerPlugins = own?.worker?.plugins;
@@ -472,6 +481,7 @@ function workerResolutionSource(): string {
     ...merged.worker,
     plugins: () => [
       ...(typeof ownWorkerPlugins === "function" ? ownWorkerPlugins() ?? [] : []),
+      ${nativeImportGuardPluginSource()},
       morphNativeResolution({ workspaceRoot, nonce: morphBuildNonce, scope: "worker" }),
     ],
   };
