@@ -24,12 +24,14 @@ import type * as NodePath from "node:path";
  * - **Files Vite reads itself.** A stylesheet's `@import` and `url()`, and an
  *   asset's `new URL("…", import.meta.url)`, are resolved and read by Vite's
  *   own resolver, outside the module graph. A worker has no document to
- *   style, so a stylesheet is refused before it is read. A `new URL(…)` that
- *   names `import.meta.url` in a Theme module must name a plain relative or
- *   root-relative string literal whose file lies in the workspace or in an
- *   approved package; anything else is refused. The transform is an ordinary
- *   one, so it sees the code after the TypeScript transform and before
- *   Vite's `import.meta.url` plugins.
+ *   style, so a stylesheet is refused before it is read. In a Theme module,
+ *   read as a parsed program, every `import.meta.url` must be the second
+ *   argument of a `new URL()` whose first is a plain string, and every file
+ *   Vite could read for that string (the build resolver's answer and Vite's
+ *   fallback paths) must lie in the workspace or an approved package;
+ *   anything else is refused. The transform is an ordinary one, so it sees
+ *   the code after the TypeScript transform and before Vite's
+ *   `import.meta.url` plugins.
  *
  * Self-contained, so a generated config embeds it as source
  * (`themeWorkerBundleGuardPluginSource`) and an in-process build calls it.
@@ -83,14 +85,6 @@ export function createThemeWorkerBundleGuard(options: {
   const WORKER_WRAPPER = /(?:\?|&)(?:worker|sharedworker)(?:&|$)/;
   const WORKER_FILE = /(?:\?|&)worker_file&type=\w+(?:&|$)/;
   const RAW_OR_URL = /(?:\?|&)(?:raw|url)(?:&|$)/;
-  // `import.meta.url`, with whitespace or comments between its tokens (Vite
-  // blanks comments before it looks for `new URL(…, import.meta.url)`).
-  const gap = "(?:\\s|\\/\\*[\\s\\S]*?\\*\\/|\\/\\/[^\\n]*(?:\\n|$))*";
-  const IMPORT_META_URL = new RegExp(
-    "\\bimport" + gap + "\\." + gap + "meta" + gap + "\\." + gap + "url\\b",
-    "g",
-  );
-
   type Place =
     | { kind: "package"; name: string }
     | { kind: "theme" }
@@ -142,176 +136,70 @@ export function createThemeWorkerBundleGuard(options: {
     };
   };
 
-  /**
-   * The code with its comments and the contents of its strings, templates
-   * and regular expressions blanked, as Vite blanks them before it looks for
-   * `new URL(…, import.meta.url)`; null where it cannot tell (an
-   * unterminated literal or comment).
-   */
-  const stripLiterals = (code: string): string | null => {
-    const blank = (text: string) => text.replace(/[^\n]/g, " ");
-    const REGEX_AFTER = new Set([
-      "return",
-      "typeof",
-      "instanceof",
-      "in",
-      "of",
-      "new",
-      "delete",
-      "void",
-      "throw",
-      "case",
-      "do",
-      "else",
-      "yield",
-      "await",
-    ]);
-    const out: string[] = [];
-    const templates: number[] = [];
-    let depth = 0;
-    let last = "";
-    let word = "";
-    const regexAllowed = () =>
-      last === "" ||
-      "(,=:[!&|?{};+-*%<>~^".includes(last) ||
-      REGEX_AFTER.has(word);
-    let i = 0;
-    while (i < code.length) {
-      const c = code[i]!;
-      const next = code[i + 1];
-      if (c === "/" && next === "/") {
-        const end = code.indexOf("\n", i);
-        const stop = end < 0 ? code.length : end;
-        out.push(blank(code.slice(i, stop)));
-        i = stop;
+  type Node = { type: string; [key: string]: unknown };
+  const isNode = (value: unknown): value is Node =>
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { type?: unknown }).type === "string";
+  /** Every node of a parsed program, depth first. */
+  const nodesOf = (root: Node): Node[] => {
+    const found: Node[] = [];
+    const stack: unknown[] = [root];
+    while (stack.length > 0) {
+      const value = stack.pop();
+      if (Array.isArray(value)) {
+        stack.push(...value);
         continue;
       }
-      if (c === "/" && next === "*") {
-        const end = code.indexOf("*/", i + 2);
-        if (end < 0) return null;
-        out.push(blank(code.slice(i, end + 2)));
-        i = end + 2;
-        continue;
-      }
-      if (c === "'" || c === '"') {
-        let j = i + 1;
-        for (; j < code.length; j++) {
-          if (code[j] === "\\") {
-            j++;
-            continue;
-          }
-          if (code[j] === c) break;
-          if (code[j] === "\n") return null;
-        }
-        if (j >= code.length) return null;
-        out.push(c + blank(code.slice(i + 1, j)) + c);
-        i = j + 1;
-        last = c;
-        word = "";
-        continue;
-      }
-      if (
-        c === "`" ||
-        (c === "}" &&
-          templates.length > 0 &&
-          templates[templates.length - 1] === depth)
-      ) {
-        if (c === "}") templates.pop();
-        let j = i + 1;
-        for (; j < code.length; j++) {
-          if (code[j] === "\\") {
-            j++;
-            continue;
-          }
-          if (code[j] === "`" || (code[j] === "$" && code[j + 1] === "{"))
-            break;
-        }
-        if (j >= code.length) return null;
-        out.push(c + blank(code.slice(i + 1, j)));
-        if (code[j] === "`") {
-          out.push("`");
-          i = j + 1;
-          last = "`";
-        } else {
-          out.push("${");
-          templates.push(depth);
-          i = j + 2;
-          last = "{";
-        }
-        word = "";
-        continue;
-      }
-      if (c === "/" && regexAllowed()) {
-        let j = i + 1;
-        let inClass = false;
-        for (; j < code.length; j++) {
-          const ch = code[j];
-          if (ch === "\\") {
-            j++;
-            continue;
-          }
-          if (ch === "\n") return null;
-          if (inClass) {
-            if (ch === "]") inClass = false;
-            continue;
-          }
-          if (ch === "[") inClass = true;
-          else if (ch === "/") break;
-        }
-        if (j >= code.length) return null;
-        out.push("/" + blank(code.slice(i + 1, j)) + "/");
-        i = j + 1;
-        last = "/";
-        word = "";
-        continue;
-      }
-      if (c === "{") depth++;
-      else if (c === "}") depth--;
-      out.push(c);
-      if (/[A-Za-z0-9_$]/.test(c)) {
-        word = /[A-Za-z0-9_$]/.test(last) ? word + c : c;
-        last = c;
-      } else if (!/\s/.test(c)) {
-        last = c;
-        word = "";
-      }
-      i++;
-    }
-    return out.join("");
-  };
-
-  /** Each `new URL(...)` whose arguments name import.meta.url: its literal, or null. */
-  const importMetaUrlReferences = (code: string): Array<string | null> => {
-    const found: Array<string | null> = [];
-    const start = /\bnew\s+URL\s*\(/g;
-    while (start.exec(code) !== null) {
-      let index = start.lastIndex;
-      let depth = 1;
-      let quote: string | null = null;
-      for (; index < code.length && depth > 0; index++) {
-        const char = code[index];
-        if (quote) {
-          if (char === "\\") index++;
-          else if (char === quote) quote = null;
-          continue;
-        }
-        if (char === "'" || char === '"' || char === "`") quote = char;
-        else if (char === "(") depth++;
-        else if (char === ")") depth--;
-      }
-      const args = code.slice(
-        start.lastIndex,
-        depth === 0 ? index - 1 : code.length,
-      );
-      if (depth !== 0 || /\bimport\s*\.\s*meta\s*\.\s*url\b/.test(args)) {
-        const literal =
-          /^\s*(?:'([^'\\\n]*)'|"([^"\\\n]*)")\s*,\s*import\.meta\.url\s*,?\s*$/.exec(
-            args,
-          );
-        found.push(depth === 0 && literal ? (literal[1] ?? literal[2])! : null);
+      if (!isNode(value)) continue;
+      found.push(value);
+      for (const [key, child] of Object.entries(value)) {
+        if (key !== "type" && typeof child === "object") stack.push(child);
       }
     }
     return found;
+  };
+  /** `import.meta.url`, dotted or as `import.meta["url"]`. */
+  const isImportMetaUrl = (node: unknown): boolean => {
+    if (!isNode(node) || node.type !== "MemberExpression") return false;
+    const object = node.object as Node;
+    const property = node.property as Node;
+    const meta =
+      isNode(object) &&
+      object.type === "MetaProperty" &&
+      (object.meta as { name?: string })?.name === "import" &&
+      (object.property as { name?: string })?.name === "meta";
+    const url = node.computed
+      ? isNode(property) &&
+        property.type === "Literal" &&
+        property.value === "url"
+      : isNode(property) && (property as { name?: string }).name === "url";
+    return Boolean(meta && url);
+  };
+  /** A string the code states outright: a literal, or a template with no holes. */
+  const plainString = (node: unknown): string | null => {
+    if (!isNode(node)) return null;
+    if (node.type === "Literal" && typeof node.value === "string")
+      return node.value;
+    if (
+      node.type === "TemplateLiteral" &&
+      Array.isArray(node.expressions) &&
+      node.expressions.length === 0 &&
+      Array.isArray(node.quasis) &&
+      node.quasis.length === 1
+    ) {
+      const cooked = (node.quasis[0] as { value?: { cooked?: unknown } }).value
+        ?.cooked;
+      return typeof cooked === "string" ? cooked : null;
+    }
+    return null;
+  };
+  const isFile = (file: string) => {
+    try {
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
   };
 
   return {
@@ -329,8 +217,15 @@ export function createThemeWorkerBundleGuard(options: {
         return null;
       },
     },
-    transform(
-      this: { error(message: string): never },
+    async transform(
+      this: {
+        error(message: string): never;
+        parse(code: string): unknown;
+        resolve(
+          source: string,
+          importer?: string,
+        ): Promise<{ id: string; external?: boolean | string } | null>;
+      },
       code: string,
       id: string,
     ) {
@@ -340,6 +235,7 @@ export function createThemeWorkerBundleGuard(options: {
       // A file's text or address, not code that runs.
       if (RAW_OR_URL.test(id)) return null;
       if (place(id).kind !== "theme") return null;
+      if (!/\bmeta\b/.test(code)) return null;
       const refuse = (why: string): never =>
         this.error(
           'WORKER_ASSET_URL_UNSUPPORTED: Worker module "' +
@@ -348,76 +244,94 @@ export function createThemeWorkerBundleGuard(options: {
             why +
             ".",
         );
-      const references = importMetaUrlReferences(code);
-      // Every import.meta.url in the code (strings and comments aside, as
-      // Vite reads it), however spaced, is one of the plain-literal calls
-      // checked below; any other use is refused, so no spelling Vite would
-      // act on goes unchecked. Code the stripper cannot read is counted
-      // whole, strings included.
-      const stripped = stripLiterals(code);
-      const uses = (stripped ?? code).match(IMPORT_META_URL)?.length ?? 0;
-      if (uses > references.filter((literal) => literal !== null).length) {
-        refuse(
-          'uses import.meta.url other than as new URL("…", import.meta.url) with a plain string literal',
-        );
+      // Read as a program, not as text: comments, strings and spacing are the
+      // parser's business, so no spelling of import.meta.url escapes the check
+      // and no text that merely names it is counted.
+      let program: unknown;
+      try {
+        program = this.parse(code);
+      } catch {
+        return refuse("could not be parsed to check its import.meta.url");
       }
-      for (const literal of references) {
+      if (!isNode(program))
+        return refuse("could not be parsed to check its import.meta.url");
+      const nodes = nodesOf(program);
+      const checked = new Set<unknown>();
+      const literals: string[] = [];
+      for (const node of nodes) {
+        if (node.type !== "NewExpression") continue;
+        const callee = node.callee as Node;
+        if (
+          !isNode(callee) ||
+          callee.type !== "Identifier" ||
+          callee.name !== "URL"
+        )
+          continue;
+        const args = Array.isArray(node.arguments) ? node.arguments : [];
+        if (!isImportMetaUrl(args[1])) continue;
+        const literal = plainString(args[0]);
         if (literal === null) {
           refuse(
-            "passes import.meta.url to new URL() with something other than a plain string literal",
+            "passes import.meta.url to new URL() with something other than a plain string",
           );
-          continue;
         }
+        checked.add(args[1]);
+        literals.push(literal as string);
+      }
+      // Every import.meta.url is one of those calls: Vite resolves and reads
+      // a file only for that shape, and any other use is refused rather than
+      // judged.
+      for (const node of nodes) {
+        if (isImportMetaUrl(node) && !checked.has(node)) {
+          refuse(
+            'uses import.meta.url other than as new URL("…", import.meta.url) with a plain string',
+          );
+        }
+      }
+      const moduleDir = path.dirname(id.split("?")[0]!);
+      for (const literal of literals) {
         if (/^[a-z][a-z0-9+.-]*:/i.test(literal) || literal.startsWith("//"))
           continue;
         const target = literal.split(/[?#]/)[0]!;
-        // The file Vite reads for it, which must be a file: Vite resolves a
-        // relative path that names no file by extension, index or
-        // package.json, and a root-relative one at the root and then in
-        // public/, so only an existing file is the one it reads.
-        let candidates: string[];
-        if (target.startsWith("./") || target.startsWith("../")) {
-          candidates = [path.resolve(path.dirname(id.split("?")[0]!), target)];
-        } else if (target.startsWith("/")) {
-          candidates = [
-            path.resolve(workspaceRoot, "." + target),
-            path.resolve(workspaceRoot, "public", "." + target),
-          ];
-        } else {
+        if (!target) continue;
+        // Every file Vite could read for it is held to the rules, so the one
+        // it does read is: what the build's own resolver makes of it (aliases,
+        // extensions, index files, packages, through the import guard, which
+        // refuses an unapproved package itself), and the paths Vite falls
+        // back to: relative to the module, at the root, in public/.
+        const files = new Set<string>();
+        const resolved = await this.resolve(target, id);
+        if (resolved && !resolved.external) files.add(resolved.id);
+        for (const fallback of [
+          path.resolve(moduleDir, target),
+          ...(target.startsWith("/")
+            ? [
+                path.resolve(workspaceRoot, "." + target),
+                path.resolve(workspaceRoot, "public", "." + target),
+                path.resolve(target),
+              ]
+            : []),
+        ]) {
+          if (isFile(fallback)) files.add(fallback);
+        }
+        for (const file of files) {
+          const asset = place(file);
+          if (asset.kind === "theme") continue;
+          if (asset.kind === "package" && allowedPackages.has(asset.name))
+            continue;
           refuse(
             'names "' +
               literal +
-              '" in new URL(); only a relative or root-relative path is supported',
+              '", which ' +
+              (asset.kind === "package"
+                ? 'is in package "' +
+                  asset.name +
+                  '", which is not an approved dependency'
+                : asset.kind === "refused"
+                  ? asset.detail
+                  : "is not a Theme file"),
           );
-          continue;
         }
-        const file = candidates.find((candidate) => {
-          try {
-            return fs.statSync(candidate).isFile();
-          } catch {
-            return false;
-          }
-        });
-        if (!file) {
-          refuse('names "' + literal + '", which is not a file');
-          continue;
-        }
-        const asset = place(file);
-        if (asset.kind === "theme") continue;
-        if (asset.kind === "package" && allowedPackages.has(asset.name))
-          continue;
-        refuse(
-          'names "' +
-            literal +
-            '", which ' +
-            (asset.kind === "package"
-              ? 'is in package "' +
-                asset.name +
-                '", which is not an approved dependency'
-              : asset.kind === "refused"
-                ? asset.detail
-                : "is not a Theme file"),
-        );
       }
       return null;
     },

@@ -409,8 +409,11 @@ self.onmessage = () => self.postMessage(secret.href);
           "preview",
         );
         const output = refusedOutput(built);
-        expect(output).toContain("WORKER_ASSET_URL_UNSUPPORTED:");
-        expect(output).toContain("which resolves outside the workspace");
+        // Refused by the worker guard, or by the import guard the build's
+        // resolver runs it through: either way before the file is read.
+        expect(output).toMatch(
+          /WORKER_ASSET_URL_UNSUPPORTED:|WORKSPACE_PATH_ESCAPE:/,
+        );
       } finally {
         await fs.rm(outside, { force: true });
       }
@@ -428,12 +431,7 @@ self.onmessage = () => self.postMessage(secret.href);
       'new URL("../../../${OUTSIDE}", import /* */ .meta.url)',
     ],
     ["import.meta.url outside new URL()", "import.meta.url"],
-    // Vite would resolve these to another file (by extension; a path under
-    // the root spelled as an absolute one), so only an existing file passes.
-    [
-      "a path Vite completes with an extension",
-      'new URL("./probe", import.meta.url)',
-    ],
+    // Resolved by the build's resolver and Vite's fallbacks alike.
     [
       "a root-relative path naming no file at the root",
       'new URL("/nowhere/../../${OUTSIDE}", import.meta.url)',
@@ -441,6 +439,7 @@ self.onmessage = () => self.postMessage(secret.href);
   ])(
     "refuses a worker that spells an asset URL Vite would still read: %s",
     async (_name, expression) => {
+      const refusal = /WORKER_ASSET_URL_UNSUPPORTED:|WORKSPACE_PATH_ESCAPE:/;
       const built = await buildManaged(
         themeWith(
           [
@@ -456,7 +455,7 @@ self.onmessage = () => self.postMessage(String(data));
         ),
         "preview",
       );
-      expect(refusedOutput(built)).toContain("WORKER_ASSET_URL_UNSUPPORTED:");
+      expect(refusedOutput(built)).toMatch(refusal);
     },
     TEST_TIMEOUT_MS,
   );
@@ -678,8 +677,10 @@ import notes from "./notes.json";
 // Text that names import.meta.url is not a use of it.
 const note = "import.meta.url is only read in new URL() here";
 const data = new URL("./data.txt", import.meta.url);
+// Completed by the resolver (./label.ts), as Vite completes it.
+const completed = new URL("./label", import.meta.url);
 self.onmessage = (event: MessageEvent) =>
-  self.postMessage(clsx(WORKER_LABEL, ALIAS_LABEL, BASE_URL_LABEL, data.href, note, notes.text, String(event.data)));
+  self.postMessage(clsx(WORKER_LABEL, ALIAS_LABEL, BASE_URL_LABEL, data.href, completed.href, note, notes.text, String(event.data)));
 `,
             },
           ],

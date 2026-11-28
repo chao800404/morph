@@ -396,7 +396,9 @@ self.onmessage = () => self.postMessage(hosts.href);
       );
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errorMessage).toContain("WORKER_ASSET_URL_UNSUPPORTED:");
+        expect(result.errorMessage).toMatch(
+          /WORKER_ASSET_URL_UNSUPPORTED:|WORKSPACE_PATH_ESCAPE:/,
+        );
       }
     },
   );
