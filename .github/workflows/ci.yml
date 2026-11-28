@@ -2173,12 +2173,18 @@ jobs:
   # of its own. Lane B is not measured yet: if it takes the job past about
   # 25 min it moves to a job of its own with this pattern. Last, ordinary
   # TanStack Start code published and served on a storefront hostname
-  # (native-compat-published), with the native build off. Same pattern as
-  # editor-e2e-container.
+  # (native-compat-published), with the native build off. After it, the
+  # render-mode evidence (handoff/2026-11-28): Starter 32 with one route per
+  # TanStack Start render mode, hidden sections held out of the Live
+  # Preview, Build Preview and the published site. It builds and publishes
+  # five times and moves the active release, so it runs last, in a runner
+  # invocation and state of its own like the targets before it (22 to 24 min
+  # on the Mac's emulated amd64 container lane, runs rm-evidence-13 and -17;
+  # not measured on CI yet). Same pattern as editor-e2e-container.
   editor-e2e-container-starter-publish:
     name: Editor E2E container Starter upgrade publish acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -2515,20 +2521,67 @@ jobs:
           MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
         run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/native-compat-published-handover.json" e2e/native-compat-published.spec.ts
 
+      - name: Mark render modes hidden container window start
+        run: |
+          printf '{"name":"start-render-modes-hidden-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe start-render-modes-hidden-start "$RUNNER_TEMP/container-network"
+
+      - name: Run render modes hidden container acceptance
+        timeout-minutes: 20
+        id: render_modes_hidden_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/start-render-modes-hidden.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/start-render-modes-hidden-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/start-render-modes-hidden.spec.ts
+
+      - name: Mark render modes hidden container window end
+        if: always()
+        run: |
+          printf '{"name":"start-render-modes-hidden-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe start-render-modes-hidden-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve render modes hidden acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/start-render-modes-hidden"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/start-render-modes-hidden/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/start-render-modes-hidden/start-render-modes-hidden.json" ]; then
+            echo "::warning::Render modes hidden acceptance report was not produced."
+          fi
+
+      - name: Require exact render modes hidden target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/start-render-modes-hidden/start-render-modes-hidden.json" scripts/container-acceptance-targets/start-render-modes-hidden.mjs
+
+      - name: Require render modes hidden runner handover
+        id: render_modes_hidden_handover
+        if: always() && steps.render_modes_hidden_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/start-render-modes-hidden-handover.json" e2e/start-render-modes-hidden.spec.ts
+
       - name: Record Stage 3 runner identities and handover results
         if: always()
         env:
           STARTER_UPGRADE_PUBLISH_HANDOVER_OUTCOME: ${{ steps.starter_upgrade_publish_handover.outcome }}
           STARTER_V32_FULL_START_HANDOVER_OUTCOME: ${{ steps.starter_v32_full_start_handover.outcome }}
           NATIVE_COMPAT_PUBLISHED_HANDOVER_OUTCOME: ${{ steps.native_compat_published_handover.outcome }}
+          RENDER_MODES_HIDDEN_HANDOVER_OUTCOME: ${{ steps.render_modes_hidden_handover.outcome }}
         run: |
-          node --input-type=module - "$RUNNER_TEMP/stage3/starter-upgrade-publish-handover.json" "$RUNNER_TEMP/stage3/starter-v32-full-start-handover.json" "$RUNNER_TEMP/stage3/native-compat-published-handover.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/stage3/starter-upgrade-publish-handover.json" "$RUNNER_TEMP/stage3/starter-v32-full-start-handover.json" "$RUNNER_TEMP/stage3/native-compat-published-handover.json" "$RUNNER_TEMP/stage3/start-render-modes-hidden-handover.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const paths = process.argv.slice(2);
           const entries = [
             ["starter-upgrade-publish", paths[0], process.env.STARTER_UPGRADE_PUBLISH_HANDOVER_OUTCOME],
             ["starter-v32-full-start", paths[1], process.env.STARTER_V32_FULL_START_HANDOVER_OUTCOME],
             ["native-compat-published", paths[2], process.env.NATIVE_COMPAT_PUBLISHED_HANDOVER_OUTCOME],
+            ["start-render-modes-hidden", paths[3], process.env.RENDER_MODES_HIDDEN_HANDOVER_OUTCOME],
           ];
           for (const [name, filename, outcome] of entries) {
             try {
@@ -2597,7 +2650,7 @@ jobs:
 
       - name: Require each container window's veths to have come and gone inside it
         if: always()
-        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" starter-upgrade-publish starter-v32-full-start native-compat-published
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" starter-upgrade-publish starter-v32-full-start native-compat-published start-render-modes-hidden
 
       - name: Keep Stage 3 records with the results
         if: always()

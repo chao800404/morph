@@ -104,6 +104,13 @@ const STAGE3_JOBS = {
       spec: "native-compat-published.spec.ts",
       target: "native-compat-published.mjs",
     },
+    {
+      label: "render modes hidden",
+      id: "render_modes_hidden",
+      window: "start-render-modes-hidden",
+      spec: "start-render-modes-hidden.spec.ts",
+      target: "start-render-modes-hidden.mjs",
+    },
   ],
   "editor-e2e-container-preview": [
     {
@@ -407,9 +414,6 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
     // M3 stage 1, the newsletter acceptance (#477): run locally on the
     // container transport; its CI step comes in a later change.
     "publish-hidden-page-section.mjs",
-    // Render-mode evidence (handoff/2026-11-28): run by hand on the
-    // container transport; no CI step runs it yet.
-    "start-render-modes-hidden.mjs",
   ];
 
   assert.deepEqual(wired, ["preview-access-container.mjs"]);
@@ -822,7 +826,7 @@ const E2E_JOBS = {
   "editor-e2e-container": 33,
   "editor-e2e-container-presentation-ack": 33,
   "editor-e2e-container-publish": 64,
-  "editor-e2e-container-starter-publish": 55,
+  "editor-e2e-container-starter-publish": 75,
   "editor-e2e-container-preview": 55,
 };
 test("each E2E job's limit is its setup, Chromium install limit, E2E step limits and reserve, and the upload runs always", () => {
@@ -855,8 +859,8 @@ test("each E2E job's limit is its setup, Chromium install limit, E2E step limits
     const upload = steps.find((step) => /uses: actions\/upload-artifact@v4/.test(step));
     assert.ok(upload && /^ {8}if: always\(\)$/m.test(upload), key + ": the upload runs always");
   }
-  // 2 shard/full Start steps + the Stage 3 jobs' 16 container runs.
-  assert.equal(limits.length, 2 + 16);
+  // 2 shard/full Start steps + the Stage 3 jobs' 17 container runs.
+  assert.equal(limits.length, 2 + 17);
 });
 
 test("every E2E run writes a progress line per test, beside the line and JSON reports", () => {

@@ -47,6 +47,7 @@ export const KNOWN_WINDOWS = Object.freeze([
   "starter-upgrade-publish",
   "starter-v32-full-start",
   "native-compat-published",
+  "start-render-modes-hidden",
   "preview-socket",
   "start-container-content-sync",
   "starter-upgrade-case-e",

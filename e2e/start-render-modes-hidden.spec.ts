@@ -91,7 +91,8 @@ import {
  * Containers only, and the full Start preview only: publishing builds in
  * the Sandbox container, the preview and Build Preview hosts are fronted by
  * containers, and Starter 32 reads through `createServerFn`. It moves the
- * storefront's active release to this Theme's.
+ * storefront's active release to this Theme's, so CI runs it last in
+ * editor-e2e-container-starter-publish, in a runner invocation of its own.
  */
 
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;

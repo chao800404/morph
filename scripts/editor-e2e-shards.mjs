@@ -176,8 +176,8 @@ export const EDITOR_SHARDS = [
     // Render-mode evidence (handoff/2026-11-28): container transport and the
     // full Start preview only, so it skips on every shard. Its exact tests
     // are listed in
-    // scripts/container-acceptance-targets/start-render-modes-hidden.mjs; no
-    // CI step runs that check yet.
+    // scripts/container-acceptance-targets/start-render-modes-hidden.mjs; the
+    // editor-e2e-container-starter-publish job runs that check.
     "start-render-modes-hidden.spec.ts",
   ],
   [

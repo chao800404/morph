@@ -15,9 +15,11 @@
  *
  * `node scripts/check-container-acceptance.mjs <report> <this module>`
  * requires exactly these titles, each once, passed with zero skip and zero
- * retry. No CI step runs that check yet: it is run on the container
- * transport by hand (Mac container lane). A renamed case changes this list in
- * the same commit.
+ * retry. The editor-e2e-container-starter-publish job runs that check
+ * after its own container step (MORPH_E2E_TRANSPORT=cloudflare-sandbox,
+ * MORPH_E2E_PREVIEW_RUNTIME=start, MORPH_THEME_PREVIEW_RUNTIME=start), last
+ * in the job: the spec moves the storefront's active release. A renamed case
+ * changes this list in the same commit.
  */
 export const TARGET = Object.freeze({
   file: "start-render-modes-hidden.spec.ts",
