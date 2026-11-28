@@ -166,6 +166,18 @@ async function openEditor(page: Page) {
   await expect(previewFrame(page).locator("main").first()).toBeVisible({
     timeout: 90_000,
   });
+  // `main` is in the server's HTML, so it shows long before the editor's
+  // bridge runs: a Full Start preview loads the bridge only once React has
+  // hydrated and the document has finished loading, seconds later on a busy
+  // runner. The bridge is what adds the editor's stylesheet to the page, so
+  // waiting for `main` and a fixed pause read the page before that sheet
+  // could be there (main 0e444ed, job 140891509148). A sortable section tree
+  // waits for the bridge itself: the editor allows a reorder only once the
+  // bridge has acknowledged every bound section's presentation, which it
+  // does after its stylesheet is in place.
+  await expect(page.locator("[data-editor-tree-sortable]").first()).toBeAttached(
+    { timeout: 45_000 },
+  );
   // The toolbar renders before the page hydrates; a click in that window is
   // received by nothing.
   await page.waitForTimeout(2_000);
