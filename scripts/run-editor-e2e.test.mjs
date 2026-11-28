@@ -579,7 +579,7 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
       assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
         "test",
         "--project=editor",
-        "--reporter=line,json",
+        "--reporter=line,json,./scripts/e2e-progress-reporter.mjs",
         ...editorShardArguments([FIRST_SHARD]),
       ]);
       assert.equal(
@@ -797,7 +797,7 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
       assert.equal(failing.code, 1);
       assert.match(
         failing.stderr,
-        /npx playwright test --project=editor --reporter=line,json fake\.spec\.ts exited with 1/,
+        /npx playwright test --project=editor --reporter=line,json,\.\/scripts\/e2e-progress-reporter\.mjs fake\.spec\.ts exited with 1/,
       );
       assert.equal(
         JSON.parse(
@@ -819,7 +819,7 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
       const result = await runRunner({ FAKE_PLAYWRIGHT_MODE: "fail" });
       assert.match(
         result.stderr,
-        /\[e2e\] npx playwright test --project=editor --reporter=line,json fake\.spec\.ts exited with 1/,
+        /\[e2e\] npx playwright test --project=editor --reporter=line,json,\.\/scripts\/e2e-progress-reporter\.mjs fake\.spec\.ts exited with 1/,
       );
       assert.match(result.stdout, /\[e2e\] stopped dev server/);
       assert.doesNotMatch(result.stdout, /\[e2e\] passed/);

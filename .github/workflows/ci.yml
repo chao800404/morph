@@ -345,7 +345,7 @@ jobs:
   editor-e2e-local-preview:
     name: Editor E2E shard ${{ matrix.shard }}/6
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 47
     strategy:
       fail-fast: false
       matrix:
@@ -556,7 +556,15 @@ jobs:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_REQUIRE_CLIENT_LANE: "1"
           MORPH_E2E_REPORT_PATH: test-results/shard-${{ matrix.shard }}.json
-        run: pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/6
+        run: exec node scripts/run-editor-e2e.mjs --shard=${{ matrix.shard }}/6
+        # A time limit on this step, not only on the job (slowest seen: 19 min):
+        # the step fails at the limit and the `if: always()` upload after it
+        # still runs. The job's own limit would cancel the whole job, leaving a
+        # cut-off log and no artifact; it is the sum of this job's setup, the
+        # Chromium install limit, its E2E step limits and a reserve
+        # (scripts/ci-workflow.test.mjs). The command is `exec`ed so the
+        # platform's cancel signals reach node, not a shell in between.
+        timeout-minutes: 24
 
       # One name per attempt: re-running a failed shard keeps the run's earlier
       # artifacts, and the acceptance job reads each shard's latest attempt
@@ -629,7 +637,7 @@ jobs:
   editor-e2e-full-start:
     name: Editor E2E full Start shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 47
     strategy:
       fail-fast: false
       matrix:
@@ -809,7 +817,15 @@ jobs:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/full-start-${{ matrix.shard }}.json
-        run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}
+        run: exec node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}
+        # A time limit on this step, not only on the job (slowest seen: 20 min):
+        # the step fails at the limit and the `if: always()` upload after it
+        # still runs. The job's own limit would cancel the whole job, leaving a
+        # cut-off log and no artifact; it is the sum of this job's setup, the
+        # Chromium install limit, its E2E step limits and a reserve
+        # (scripts/ci-workflow.test.mjs). The command is `exec`ed so the
+        # platform's cancel signals reach node, not a shell in between.
+        timeout-minutes: 24
 
       # Playwright passes a run whose tests skipped themselves, and every
       # Start test skips when the runtime did not reach it. Only the listed
@@ -866,7 +882,7 @@ jobs:
   editor-e2e-container:
     name: Editor E2E container lifecycle acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 33
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1097,6 +1113,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe lifecycle-start "$RUNNER_TEMP/container-network"
 
       - name: Run M1 container lifecycle acceptance
+        timeout-minutes: 6
         id: lifecycle_run
         env:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
@@ -1145,6 +1162,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe preview-access-start "$RUNNER_TEMP/container-network"
 
       - name: Run preview access container acceptance
+        timeout-minutes: 4
         id: preview_access_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -1307,7 +1325,7 @@ jobs:
   editor-e2e-container-presentation-ack:
     name: Editor E2E container presentation-ack acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 33
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1503,12 +1521,13 @@ jobs:
           echo "::warning::Container diagnostics did not start; the run goes on without them."
 
       - name: Run presentation-ack container acceptance
+        timeout-minutes: 10
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_THEME_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/container-presentation-ack.json
-        run: node scripts/run-editor-e2e.mjs e2e/presentation-ack-refresh.spec.ts --output=test-results/container-presentation-ack
+        run: exec node scripts/run-editor-e2e.mjs e2e/presentation-ack-refresh.spec.ts --output=test-results/container-presentation-ack
 
       - name: Stop container diagnostics
         if: always()
@@ -1588,7 +1607,7 @@ jobs:
   editor-e2e-container-publish:
     name: Editor E2E container publish acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 44
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1789,6 +1808,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe b1-publish-rollback-start "$RUNNER_TEMP/container-network"
 
       - name: Run B1 publish and rollback container acceptance
+        timeout-minutes: 8
         id: b1_publish_rollback_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -1833,6 +1853,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe navigation-matrix-public-start "$RUNNER_TEMP/container-network"
 
       - name: Run public navigation matrix container acceptance
+        timeout-minutes: 5
         id: navigation_matrix_public_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -1871,18 +1892,70 @@ jobs:
           MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
         run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" e2e/navigation-matrix-public.spec.ts
 
+      - name: Mark section visibility layout container window start
+        run: |
+          printf '{"name":"section-visibility-layout-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe section-visibility-layout-start "$RUNNER_TEMP/container-network"
+
+      # Both of the spec's tests, on the full Start runtime and the container
+      # transport: the publish test builds in the Sandbox container, which no
+      # other lane has. Its hide-and-reload test also runs on editor shard 6;
+      # the publish test skips there. The throwaway Theme it inserts records
+      # the run's preview runtime (see e2e/helpers/throwaway-theme.ts).
+      - name: Run section visibility layout container acceptance
+        timeout-minutes: 8
+        id: section_visibility_layout_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/section-visibility-layout.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/section-visibility-layout-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/section-visibility-layout.spec.ts
+
+      - name: Mark section visibility layout container window end
+        if: always()
+        run: |
+          printf '{"name":"section-visibility-layout-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe section-visibility-layout-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve section visibility layout acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/section-visibility-layout"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/section-visibility-layout/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/section-visibility-layout/section-visibility-layout.json" ]; then
+            echo "::warning::Section visibility layout acceptance report was not produced."
+          fi
+
+      - name: Require exact section visibility layout target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/section-visibility-layout/section-visibility-layout.json" scripts/container-acceptance-targets/section-visibility-layout.mjs
+
+      - name: Require section visibility layout runner handover
+        id: section_visibility_layout_handover
+        if: always() && steps.section_visibility_layout_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/section-visibility-layout-handover.json" e2e/section-visibility-layout.spec.ts
+
       - name: Record Stage 3 runner identities and handover results
         if: always()
         env:
           B1_PUBLISH_ROLLBACK_HANDOVER_OUTCOME: ${{ steps.b1_publish_rollback_handover.outcome }}
           NAVIGATION_MATRIX_PUBLIC_HANDOVER_OUTCOME: ${{ steps.navigation_matrix_public_handover.outcome }}
+          SECTION_VISIBILITY_LAYOUT_HANDOVER_OUTCOME: ${{ steps.section_visibility_layout_handover.outcome }}
         run: |
-          node --input-type=module - "$RUNNER_TEMP/stage3/b1-publish-rollback-handover.json" "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/stage3/b1-publish-rollback-handover.json" "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" "$RUNNER_TEMP/stage3/section-visibility-layout-handover.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const paths = process.argv.slice(2);
           const entries = [
             ["b1-publish-rollback", paths[0], process.env.B1_PUBLISH_ROLLBACK_HANDOVER_OUTCOME],
             ["navigation-matrix-public", paths[1], process.env.NAVIGATION_MATRIX_PUBLIC_HANDOVER_OUTCOME],
+            ["section-visibility-layout", paths[2], process.env.SECTION_VISIBILITY_LAYOUT_HANDOVER_OUTCOME],
           ];
           for (const [name, filename, outcome] of entries) {
             try {
@@ -1951,7 +2024,7 @@ jobs:
 
       - name: Require each container window's veths to have come and gone inside it
         if: always()
-        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" b1-publish-rollback navigation-matrix-public
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" b1-publish-rollback navigation-matrix-public section-visibility-layout
 
       - name: Keep Stage 3 records with the results
         if: always()
@@ -1983,7 +2056,7 @@ jobs:
   editor-e2e-container-starter-publish:
     name: Editor E2E container Starter upgrade publish acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -2184,6 +2257,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe starter-upgrade-publish-start "$RUNNER_TEMP/container-network"
 
       - name: Run Starter upgrade publish container acceptance
+        timeout-minutes: 14
         id: starter_upgrade_publish_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2228,6 +2302,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe starter-v32-full-start-start "$RUNNER_TEMP/container-network"
 
       - name: Run Starter 32 full Start container acceptance
+        timeout-minutes: 8
         id: starter_v32_full_start_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2376,7 +2451,7 @@ jobs:
   editor-e2e-container-preview:
     name: Editor E2E container socket, content sync and case E acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -2577,6 +2652,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe preview-socket-start "$RUNNER_TEMP/container-network"
 
       - name: Run preview socket container acceptance
+        timeout-minutes: 8
         id: preview_socket_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2622,6 +2698,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe start-container-content-sync-start "$RUNNER_TEMP/container-network"
 
       - name: Run Start content sync container acceptance
+        timeout-minutes: 4
         id: start_content_sync_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2666,6 +2743,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe starter-upgrade-case-e-start "$RUNNER_TEMP/container-network"
 
       - name: Run Starter upgrade case E container acceptance
+        timeout-minutes: 6
         id: starter_upgrade_case_e_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2710,6 +2788,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe preview-start-two-tab-race-start "$RUNNER_TEMP/container-network"
 
       - name: Run two-tab start race container acceptance
+        timeout-minutes: 4
         id: preview_start_two_tab_race_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox

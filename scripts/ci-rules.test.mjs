@@ -130,6 +130,74 @@ test("every script the container acceptance job runs is a rule or excluded with 
   assert.deepEqual(testsOff, []);
 });
 
+test("a local Playwright reporter named on a --reporter argument is a rule", () => {
+  // The runner names its reporters in DEFAULT_REPORTERS and the workflow may
+  // pass --reporter itself; neither is an import or a `node scripts/...`
+  // line, so the guards above do not see them.
+  const sources = [
+    ".github/workflows/ci.yml",
+    "playwright.config.ts",
+    ...CI_RULE_PATHS.filter((file) => file.endsWith(".mjs") && !file.endsWith(".test.mjs")),
+  ];
+  const named = new Set();
+  for (const file of sources) {
+    const text = readFileSync(new URL(file, REPO_ROOT), "utf8");
+    // `--reporter=a,b`, `--reporter a,b`, `--reporter="a,b"` and `--reporter 'a'`.
+    for (const [, list] of text.matchAll(/--reporter(?:=|\s+)["']?([^\s"'`]+)/g)) {
+      for (const entry of list.split(",")) if (/^\.{1,2}\//.test(entry)) named.add(path.posix.normalize(entry));
+    }
+    // A `reporter` declared in the Playwright config: string paths on its lines.
+    // From the `reporter` key to the bracket that closes its value, so a path
+    // on its own line inside a multiline array counts too.
+    if (file.endsWith(".ts")) {
+      for (const key of text.matchAll(/\breporter\b/g)) {
+        let depth = 0;
+        let end = key.index;
+        for (let i = key.index; i < text.length; i += 1) {
+          const ch = text[i];
+          if ("[({".includes(ch)) depth += 1;
+          else if ("])}".includes(ch)) depth -= 1;
+          end = i;
+          if ((depth === 0 && (ch === "," || ch === "\n") && i > key.index + 8) || depth < 0) break;
+        }
+        for (const [, entry] of text.slice(key.index, end + 1).matchAll(/["'](\.{1,2}\/[^"']+)["']/g)) {
+          named.add(path.posix.normalize(entry));
+        }
+      }
+    }
+    for (const [, list] of text.matchAll(/DEFAULT_REPORTERS = "([^"]+)"/g)) {
+      for (const entry of list.split(",")) if (/^\.{1,2}\//.test(entry)) named.add(path.posix.normalize(entry));
+    }
+  }
+  assert.ok(named.has("scripts/e2e-progress-reporter.mjs"), "the parser must see the progress reporter");
+  assert.deepEqual(
+    [...named].filter((file) => !isRulePath(file, CI_RULE_PATHS)),
+    [],
+  );
+  for (const file of named) {
+    const sibling = file.replace(/\.mjs$/, ".test.mjs");
+    if (existsSync(new URL(sibling, REPO_ROOT))) assert.ok(isRulePath(sibling, CI_RULE_PATHS), sibling);
+  }
+});
+
+test("the reporter scan reads a path on its own line inside a multiline array", () => {
+  const text = 'export default {\n  reporter: [\n    ["line"],\n    ["./scripts/some-reporter.mjs"],\n  ],\n  other: "./not-a-reporter.mjs",\n};\n';
+  const found = [];
+  for (const key of text.matchAll(/\breporter\b/g)) {
+    let depth = 0;
+    let end = key.index;
+    for (let i = key.index; i < text.length; i += 1) {
+      const ch = text[i];
+      if ("[({".includes(ch)) depth += 1;
+      else if ("])}".includes(ch)) depth -= 1;
+      end = i;
+      if ((depth === 0 && (ch === "," || ch === "\n") && i > key.index + 8) || depth < 0) break;
+    }
+    for (const [, entry] of text.slice(key.index, end + 1).matchAll(/["'](\.{1,2}\/[^"']+)["']/g)) found.push(entry);
+  }
+  assert.deepEqual(found, ["./scripts/some-reporter.mjs"]);
+});
+
 test("unionRules keeps both lists and refuses a non-path", () => {
   assert.deepEqual(unionRules(["b", "a/"], ["c", "a/"]), ["a/", "b", "c"]);
   for (const bad of ["", "/etc/passwd", 7, null]) {

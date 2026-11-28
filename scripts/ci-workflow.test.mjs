@@ -59,6 +59,13 @@ const STAGE3_JOBS = {
       spec: "navigation-matrix-public.spec.ts",
       target: "navigation-matrix-public.mjs",
     },
+    {
+      label: "section visibility layout",
+      id: "section_visibility_layout",
+      window: "section-visibility-layout",
+      spec: "section-visibility-layout.spec.ts",
+      target: "section-visibility-layout.mjs",
+    },
   ],
   "editor-e2e-container-starter-publish": [
     {
@@ -558,7 +565,7 @@ test("Stage 3 probes the clock at each window marker and checks every window's v
   );
 });
 
-test("each Stage 3 job reports its own check, on the container runner, within the container jobs' timeout", () => {
+test("each Stage 3 job reports its own check, on the container runner, on the container runner", () => {
   assert.deepEqual(
     Object.keys(STAGE3_JOBS).flatMap((key) => jobCheckNames(workflow, key)),
     CONTAINER_STAGE3_CHECKS,
@@ -566,7 +573,7 @@ test("each Stage 3 job reports its own check, on the container runner, within th
   for (const key of Object.keys(STAGE3_JOBS)) {
     const block = withoutComments(jobBlock(workflow, key));
     assert.match(block, /^ {4}runs-on: ubuntu-24\.04$/m, key);
-    assert.match(block, /^ {4}timeout-minutes: 30$/m, key);
+    // The job's limit is pinned by the E2E time budget test below.
     assert.doesNotMatch(block, /^ {4}(?:needs|if|strategy):/m, `${key} runs on its own`);
     assert.doesNotMatch(block, /continue-on-error/, key);
     // The same setup as the other container jobs: the steps up to the first
@@ -737,6 +744,69 @@ test("case E's step selects exactly case E of its spec", async () => {
     selected.map((title) => `Starter upgrade, reviewed by the author › ${title}`),
     TARGET.titles,
   );
+});
+
+/**
+ * A hung E2E run used to reach its job's limit: GitHub then cancels the whole
+ * job, and a cancelled job keeps a cut-off log and uploads nothing. Every step
+ * that runs the E2E suite has a time limit of its own, so a hang ends that
+ * step (which fails, so the job is red) while the always() upload can still
+ * run. That only holds if the limits jointly fit inside the job's own: the
+ * sum of the setup, the Chromium install's own limit (it may use all of it
+ * and still pass), every E2E step's limit and a reserve for the steps after
+ * them (the upload, the signal grace) must be the job's timeout-minutes. The
+ * job's limit is that sum exactly, so it cannot drift looser or tighter
+ * unnoticed. Nothing signals or kills anything in the workflow.
+ */
+const SETUP_MINUTES = 3; // measured: checkout to install, 1-2 min at most
+const RESERVE_MINUTES = 5; // always() steps, the upload, cancellation grace
+const E2E_JOBS = {
+  "editor-e2e-local-preview": 47,
+  "editor-e2e-full-start": 47,
+  "editor-e2e-container": 33,
+  "editor-e2e-container-presentation-ack": 33,
+  "editor-e2e-container-publish": 44,
+  "editor-e2e-container-starter-publish": 45,
+  "editor-e2e-container-preview": 45,
+};
+test("each E2E job's limit is its setup, Chromium install limit, E2E step limits and reserve, and the upload runs always", () => {
+  const runsSuite = /(?:run-editor-e2e\.mjs|run-start-preview-shard\.mjs|pnpm test:e2e:local-preview)/;
+  const limits = [];
+  for (const [key, expected] of Object.entries(E2E_JOBS)) {
+    const job = withoutComments(jobBlock(workflow, key));
+    const steps = job.split("\n      - name: ").slice(1);
+    const suiteSteps = steps.filter((step) =>
+      runsSuite.test(/^ {8}run: (.+)$/m.exec(step)?.[1] ?? ""),
+    );
+    assert.ok(suiteSteps.length > 0, key + " runs the suite");
+    const install = steps.find((step) => step.startsWith("Install Chromium for Playwright\n"));
+    assert.ok(install, key + " installs Chromium");
+    const installLimit = Number(/^ {8}timeout-minutes: (\d+)$/m.exec(install)?.[1]);
+    assert.equal(installLimit, 15, key + ": the install keeps its own limit");
+    let sum = 0;
+    for (const step of suiteSteps) {
+      const name = step.split("\n")[0];
+      const minutes = Number(/^ {8}timeout-minutes: (\d+)$/m.exec(step)?.[1]);
+      assert.ok(minutes > 0, key + ": " + name + " needs its own timeout-minutes");
+      assert.doesNotMatch(step, /continue-on-error/, key + ": " + name);
+      sum += minutes;
+      limits.push(name);
+    }
+    const jobLimit = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(job)?.[1]);
+    assert.equal(jobLimit, SETUP_MINUTES + installLimit + sum + RESERVE_MINUTES, key + ": the job's limit is its budget");
+    assert.equal(jobLimit, expected, key + ": the budget changes only on purpose");
+    // The evidence is uploaded whatever happened before it.
+    const upload = steps.find((step) => /uses: actions\/upload-artifact@v4/.test(step));
+    assert.ok(upload && /^ {8}if: always\(\)$/m.test(upload), key + ": the upload runs always");
+  }
+  // 2 shard/full Start steps + the Stage 3 jobs' 12 container runs.
+  assert.equal(limits.length, 2 + 12);
+});
+
+test("every E2E run writes a progress line per test, beside the line and JSON reports", () => {
+  const runner = readFileSync(new URL("./run-editor-e2e.mjs", import.meta.url), "utf8");
+  assert.match(runner, /DEFAULT_REPORTERS = "line,json,\.\/scripts\/e2e-progress-reporter\.mjs"/);
+  assert.ok(runner.includes("MORPH_E2E_PROGRESS_FILE: `${report}.progress.jsonl`"));
 });
 
 test("every job that installs Chromium first puts the primary Ubuntu archive ahead of the Azure mirror", () => {
@@ -1157,7 +1227,7 @@ test("the six client shards must be the client lane, and the acceptance job chec
   assert.match(run[1], /^ {10}MORPH_E2E_REQUIRE_CLIENT_LANE: "1"$/m);
   assert.doesNotMatch(run[1], /MORPH_E2E_PREVIEW_RUNTIME|MORPH_E2E_RECORD_PREVIEW_RUNTIME|MORPH_E2E_TRANSPORT/);
   assert.match(run[1], /^ {10}MORPH_E2E_REPORT_PATH: test-results\/shard-\$\{\{ matrix\.shard \}\}\.json$/m);
-  assert.equal(run[2], "pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/6");
+  assert.equal(run[2], "exec node scripts/run-editor-e2e.mjs --shard=${{ matrix.shard }}/6");
   assert.doesNotMatch(shards, /MORPH_E2E_PREVIEW_RUNTIME/);
 
   const acceptance = withoutComments(jobBlock(workflow, "editor-e2e-acceptance"));

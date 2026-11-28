@@ -386,8 +386,8 @@ test("a shard listed twice in the matrix, or a second matrix, fails", () => {
 test("a job name, runner flag or artifact name left at the old count fails", () => {
   for (const leftover of [
     "    name: Editor E2E shard ${{ matrix.shard }}/3\n",
-    "        run: pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/3\n",
-    "        run: pnpm test:e2e:local-preview -- --shard=2/3\n",
+    "        run: exec node scripts/run-editor-e2e.mjs --shard=${{ matrix.shard }}/3\n",
+    "        run: exec node scripts/run-editor-e2e.mjs --shard=2/3\n",
     "# Editor E2E shard 3/3\n",
   ])
     assert.throws(
@@ -480,14 +480,14 @@ test("the shard job name only in another job fails", () => {
   assert.throws(() => verifyWorkflowWiring(moved), /job name/);
 });
 test("the --shard flag only in another job, or only in a comment, fails", () => {
-  const dropped = once(workflow, ` -- ${SHARD_FLAG}\n`, "\n");
-  const moved = `${dropped}        run: pnpm test:e2e:local-preview -- ${SHARD_FLAG}\n`;
+  const dropped = once(workflow, ` ${SHARD_FLAG}\n`, "\n");
+  const moved = `${dropped}        run: exec node scripts/run-editor-e2e.mjs ${SHARD_FLAG}\n`;
   assert.throws(() => verifyWorkflowWiring(moved), /--shard=N/);
   // Still inside the shard job, but only as a comment.
   const commented = once(
     dropped,
     "      - name: Upload shard results and failure traces\n",
-    `      # was: pnpm test:e2e:local-preview -- ${SHARD_FLAG}\n      - name: Upload shard results and failure traces\n`,
+    `      # was: exec node scripts/run-editor-e2e.mjs ${SHARD_FLAG}\n      - name: Upload shard results and failure traces\n`,
   );
   assert.throws(() => verifyWorkflowWiring(commented), /--shard=N/);
 });

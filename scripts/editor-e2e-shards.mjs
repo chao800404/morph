@@ -177,6 +177,11 @@ export const EDITOR_SHARDS = [
     "session-editor-writes.spec.ts",
     "content-fields-sidecar.spec.ts",
     "media-svg.spec.ts",
+    // Client lane: its hide-and-reload test runs here, and its publish test
+    // skips (publishing builds in the Sandbox container). Both run, once and
+    // without skip or retry, on the container transport and the full Start
+    // runtime: scripts/container-acceptance-targets/section-visibility-layout.mjs,
+    // checked by the editor-e2e-container-publish job.
     "section-visibility-layout.spec.ts",
     "auth-failure.spec.ts",
     // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
