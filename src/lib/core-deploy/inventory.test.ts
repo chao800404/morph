@@ -166,6 +166,24 @@ describe("the binding inventory", () => {
     await expect(client.listWorkerDomains()).rejects.toThrow(/more than per_page/);
   });
 
+  it("is unavailable when the first page carries more entries than its per_page", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) =>
+          request.path === `/accounts/${ACCOUNT}/workers/domains`
+            ? {
+                status: 200,
+                body: { success: true, errors: [], result: state.domains, result_info: { page: 1, per_page: 1, total_pages: 1, count: state.domains.length, total_count: state.domains.length } },
+              }
+            : undefined,
+      ],
+    });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    await expect(client.listWorkerDomains()).rejects.toThrow(/page 1 carries .* more than per_page 1/);
+  });
+
   it("is unavailable when a page's count disagrees with its entries", async () => {
     const state = healthyState();
     const api = await startMockCloudflareApi(state, {

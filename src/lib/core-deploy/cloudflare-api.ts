@@ -125,8 +125,10 @@ async function readList(
     }
     items.push(...envelope.result);
     const info = envelope.result_info;
-    if (perPage !== null && envelope.result.length > perPage) {
-      throw new CloudflareReadError(`${label}: page ${page} carries ${envelope.result.length} entries, more than per_page ${perPage}`);
+    // Each page's own per_page, page 1 included, bounds what it may carry.
+    const declaredPerPage = typeof info?.per_page === "number" ? info.per_page : perPage;
+    if (declaredPerPage !== null && envelope.result.length > declaredPerPage) {
+      throw new CloudflareReadError(`${label}: page ${page} carries ${envelope.result.length} entries, more than per_page ${declaredPerPage}`);
     }
     if (info && typeof info.count === "number" && info.count !== envelope.result.length) {
       throw new CloudflareReadError(`${label}: page ${page} says ${info.count} entries and carries ${envelope.result.length}`);
