@@ -27,6 +27,7 @@ import {
 } from "./theme-preview-dev-server";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
+import { themeWorkerBundleGuardPluginSource } from "./theme-worker-graph-guard";
 import { sha256 } from "./theme-compiler-hasher";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
 import {
@@ -368,6 +369,36 @@ export function themeWorkspaceFingerprint(
   );
 }
 
+/**
+ * The Theme file that would configure PostCSS for a build rooted at the
+ * workspace, if any: the files PostCSS's config loader looks for at the root,
+ * and a `postcss` field in the root package.json.
+ */
+function themePostcssConfigFile(
+  files: readonly ThemeWorkspaceFile[],
+): string | null {
+  for (const file of files) {
+    const path = file.path.replace(/\\/g, "/").replace(/^\.\//, "");
+    if (
+      /^postcss\.config\.(?:[cm]?[jt]s|json)$/.test(path) ||
+      /^\.postcssrc(?:\.(?:json|ya?ml|[cm]?[jt]s))?$/.test(path)
+    ) {
+      return path;
+    }
+    if (path === "package.json" && !isBinaryWorkspaceFile(file)) {
+      try {
+        const parsed: unknown = JSON.parse(file.content);
+        if (parsed && typeof parsed === "object" && "postcss" in parsed) {
+          return "the postcss field of package.json";
+        }
+      } catch {
+        // Not JSON: not a PostCSS config either.
+      }
+    }
+  }
+  return null;
+}
+
 export function planThemeSandboxWorkspace({
   files: authoredFiles,
   entry,
@@ -389,6 +420,20 @@ export function planThemeSandboxWorkspace({
     return {
       ok: false,
       stage: "entry",
+      errorMessage,
+      errors: [{ severity: "error", message: errorMessage }],
+    };
+  }
+  // A PostCSS config is refused, not left out: the platform's CSS pipeline
+  // (Tailwind through @tailwindcss/vite, PostCSS options inline in the
+  // generated config) never runs it, so leaving it out would build and show
+  // a Theme styled differently from what its author wrote.
+  const postcssConfig = themePostcssConfigFile(authoredFiles);
+  if (postcssConfig) {
+    const errorMessage = `THEME_POSTCSS_CONFIG_UNSUPPORTED: Managed builds use Morph's CSS pipeline (Tailwind via @tailwindcss/vite) and do not run a Theme's PostCSS configuration; remove ${postcssConfig} or move the Theme to a native build.`;
+    return {
+      ok: false,
+      stage: "build-config",
       errorMessage,
       errors: [{ severity: "error", message: errorMessage }],
     };
@@ -1013,6 +1058,13 @@ if (themeAliasDefinitions.some(({ key, wildcard }) =>
 if (morphSdkModuleNames.has(source)) {
   return null;
 }
+// A baseUrl import resolves to a Theme file the base-URL plugin finds inside
+// the workspace. In the main graphs that plugin answers first and this is
+// never reached; in a worker this enforcer answers first (see below), so it
+// leaves the import to that plugin rather than calling it a package.
+if (themeBaseUrlPlugin && themeBaseUrlPlugin.resolveId(source)) {
+  return null;
+}
 
 const basePkg = source.startsWith("@")
   ? source.split("/").slice(0, 2).join("/")
@@ -1026,6 +1078,27 @@ if (!approvedSet.has(source) && !approvedSet.has(basePkg)) {
 return null;
   }
 };
+
+// A Vite Web Worker (\`?worker\`, \`new Worker(new URL(...))\`) is its own
+// bundle, built with \`worker.plugins\` only: none of the plugins above see its
+// imports. The same enforcer runs there, with the same handler (not a copy),
+// listed first and with its resolveId ordered "pre", so no other resolver in
+// a worker bundle answers an import before it does.
+const workerDependencyEnforcerPlugin = {
+  ...dependencyEnforcerPlugin,
+  resolveId: { order: "pre", handler: dependencyEnforcerPlugin.resolveId },
+};
+// What reaches a worker bundle without passing through the enforcer (its
+// entry, an id another resolver returned, a file Vite reads itself) is held
+// to the same rules (theme-worker-graph-guard.ts).
+const workerBundleGuardPlugin = ${themeWorkerBundleGuardPluginSource({
+    allowedPackages: "approvedSet",
+    workspaceRoot: hostRootLiteral,
+    dependencyRoots: JSON.stringify([
+      `${hostWorkspaceRoot}/node_modules`,
+      `${toolchainRoot}/node_modules`,
+    ]),
+  })};
 
 export default defineConfig({
   root: ${hostRootLiteral},
@@ -1098,6 +1171,24 @@ export default defineConfig({
       outDir: `${hostWorkspaceRoot}/dist/preview`,
     })}] : []),
   ],
+  // Every worker bundle, in every target: the enforcer first, then the
+  // Theme's baseUrl resolution the main graphs have, then the bundle guard.
+  // Vite gives a worker the aliases above itself.
+  worker: {
+    plugins: () => [
+      workerDependencyEnforcerPlugin,
+      ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
+      workerBundleGuardPlugin,
+    ],
+  },
+  // The platform's PostCSS options, inline, so Vite never looks for a
+  // PostCSS config (a Theme's postcss.config.* or .postcssrc, or one above
+  // the workspace) and never runs one: that would be Theme code in the build
+  // process, outside the import guard. Tailwind is the Vite plugin above.
+  // An explicit Tailwind @config or @plugin in a Theme stylesheet is
+  // different: it is the author's own source, and runs Theme code inside the
+  // Sandbox container, the build's security boundary, by design (decision A).
+  css: { postcss: { plugins: [] } },
   resolve: {
     alias: [...morphSdkAliases, ...themeAliases],
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],

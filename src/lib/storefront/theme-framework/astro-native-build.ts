@@ -1,4 +1,5 @@
 import { withThemeMorphSdkIdentity } from "../compiler/theme-morph-sdk";
+import { withThemeWorkerGuardIdentity } from "../compiler/theme-worker-guard-version";
 import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   THEME_PRERENDER_CONTENT_FILE,
@@ -82,7 +83,9 @@ export function nativeAstroCompilerIdentity(): Readonly<{
   // in the build's identity, as a Start build's does (theme-morph-sdk.ts).
   return {
     id: NATIVE_ASTRO_COMPILER_ID,
-    version: withThemeMorphSdkIdentity(version),
+    // ...and the Web Worker guard its integration installs
+    // (theme-worker-guard-version.ts).
+    version: withThemeWorkerGuardIdentity(withThemeMorphSdkIdentity(version)),
   };
 }
 

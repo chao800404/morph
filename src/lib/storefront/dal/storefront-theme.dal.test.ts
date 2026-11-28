@@ -65,10 +65,12 @@ import {
   proveAndPatchSourceDefault,
 } from "../editor/source-default-control";
 import { readFileSync } from "node:fs";
+import { withThemeWorkerGuardIdentity } from "../compiler/theme-worker-guard-version";
 import { join } from "node:path";
 import {
   withThemeMorphSdkIdentity,
   withThemeStartBuildIdentity,
+  withThemeManagedStartBuildIdentity,
 } from "../compiler/theme-morph-sdk";
 import {
   chainLayoutPreparation,
@@ -302,8 +304,8 @@ beforeEach(() => {
     VALUES ('storefront-a', 'channel-a', 'Store A', 'active', 'now', 'now');
     INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, release_generation, created_at, updated_at)
     VALUES ('theme-a', 'storefront-a', 'Default Theme', 'draft', 1, 1, 'now', 'now');
-    INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, created_at, updated_at)
-    VALUES ('33333333-3333-4333-8333-333333333333', 'storefront-a', 'theme-a', '22222222-2222-4222-8222-222222222222', 'succeeded', 'themes/theme-a/builds/build-a', '{}', 'now', 'now');
+    INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_id, compiler_version, created_at, updated_at)
+    VALUES ('33333333-3333-4333-8333-333333333333', 'storefront-a', 'theme-a', '22222222-2222-4222-8222-222222222222', 'succeeded', 'themes/theme-a/builds/build-a', '{}', 'tailwind-v4-build', '${withThemeManagedStartBuildIdentity("4.1.17")}', 'now', 'now');
   `);
 });
 
@@ -6545,7 +6547,12 @@ function Home() {
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(options.compilerVersion, BUILD);
+      .run(
+        options.compilerVersion === null
+          ? null
+          : withThemeWorkerGuardIdentity(options.compilerVersion),
+        BUILD,
+      );
   }
 
   const publish = (
@@ -6726,7 +6733,7 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+      .run(withThemeWorkerGuardIdentity(withThemeStartBuildIdentity("1.168.32")), BUILD);
   }
   const publish = (files: ReadonlyArray<{ path: string; content: string }>) =>
     storefrontThemeDal.publishTemplate({
@@ -7045,7 +7052,7 @@ function Home() { return <main><Hero {...content("hero")} /></main>; }`;
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+      .run(withThemeWorkerGuardIdentity(withThemeStartBuildIdentity("1.168.32")), BUILD);
     return saveTemplateDraft(options.templateHidden ?? false);
   }
 
@@ -7333,7 +7340,12 @@ function Home() {
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(options.compilerVersion, BUILD);
+      .run(
+        options.compilerVersion === null
+          ? null
+          : withThemeWorkerGuardIdentity(options.compilerVersion),
+        BUILD,
+      );
   }
   const publish = (
     readSourceRevisionFiles: () => Promise<
@@ -7411,6 +7423,46 @@ function Home() {
       await expect(publish(starterRevision)).resolves.toMatchObject({
         releaseId: expect.any(String),
       });
+    });
+  }
+
+  // A build of a compiler that carries the Web Worker guard is published
+  // only when it records the current guard; its frozen record is kept.
+  for (const [label, compilerId, compilerVersion, published] of [
+    ["a managed Start build before the worker guard", "tailwind-v4-build", withThemeStartBuildIdentity("4.1.17"), false],
+    ["a managed Start build with the current worker guard", "tailwind-v4-build", withThemeManagedStartBuildIdentity("4.1.17"), true],
+    ["a native Astro build before the worker guard", "astro-native", withThemeMorphSdkIdentity("7.3.5"), false],
+    ["a build that records no compiler", null, withThemeManagedStartBuildIdentity("4.1.17"), false],
+  ] as const) {
+    it(`${published ? "publishes" : "refuses"} ${label}`, async () => {
+      seed({
+        document: {
+          version: 1,
+          sections: [section("hero", true), section("other", false)],
+        },
+        compilerVersion,
+      });
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_builds SET compiler_id = ?, compiler_version = ? WHERE id = ?",
+        )
+        .run(compilerId, compilerVersion, BUILD);
+      if (published) {
+        await expect(publish(wrappedRevision)).resolves.toMatchObject({
+          releaseId: expect.any(String),
+        });
+      } else {
+        await expect(publish(wrappedRevision)).rejects.toThrow(
+          /^PUBLISH_BUILD_GUARD_STALE: .*(no worker guard, not the current wg-1|records no compiler identity)\. Build Preview is required/,
+        );
+        expect(releases()).toEqual([]);
+        // The build's record is left as it was frozen.
+        expect(
+          sqlite
+            .prepare("SELECT compiler_version FROM storefront_theme_builds WHERE id = ?")
+            .get(BUILD),
+        ).toEqual({ compiler_version: compilerVersion });
+      }
     });
   }
 });
@@ -7495,7 +7547,7 @@ function Home() { return <main>Home</main>; }`;
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+      .run(withThemeWorkerGuardIdentity(withThemeStartBuildIdentity("1.168.32")), BUILD);
   }
   const publish = () =>
     storefrontThemeDal.publishTemplate({

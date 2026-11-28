@@ -244,6 +244,209 @@ const ok = z.string().parse("x");
     },
   );
 
+  // A Vite Web Worker is its own bundle, built with `worker.plugins` only;
+  // the guard of the main graphs runs there too.
+  const WORKER_PAGE = `---
+export const prerender = true;
+---
+<html><body><button id="go">go</button>
+<script>
+import ProbeWorker from "../workers/probe?worker";
+document.getElementById("go")?.addEventListener("click", () => new ProbeWorker());
+</script>
+</body></html>
+`;
+  const workerFiles = (worker: string, config?: string) =>
+    astroThemeFiles({
+      ...(config ? { config } : {}),
+      pages: [],
+      extra: [
+        { path: "src/pages/worker.astro", content: WORKER_PAGE },
+        { path: "src/workers/probe.ts", content: worker },
+        {
+          path: "src/workers/label.ts",
+          content: 'export const WORKER_LABEL = "astro-worker-guard-allowed-probe";\n',
+        },
+      ],
+    });
+
+  it(
+    "refuses a Web Worker that imports a package the toolchain does not approve",
+    BUILD,
+    async () => {
+      const result = await run(
+        astroInput(
+          "astro-runner-worker-guard",
+          workerFiles(`import { z } from "zod";
+self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(event.data).success);
+`),
+          null,
+        ),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain(
+          'UNAPPROVED_DEPENDENCY: Theme imports "zod"',
+        );
+      }
+    },
+  );
+
+  it(
+    "refuses an unapproved package the Theme's own pre-ordered worker resolver hands a worker",
+    BUILD,
+    async () => {
+      // The Theme's config may carry worker plugins. This one answers a
+      // made-up name with an unapproved package's file, ordered "pre" at both
+      // levels; it is still the guard that decides.
+      const config = `import { createRequire } from "node:module";
+import { defineConfig } from "astro/config";
+import cloudflare from "@astrojs/cloudflare";
+const zod = createRequire(import.meta.url).resolve("zod");
+export default defineConfig({
+  output: "server",
+  adapter: cloudflare({ imageService: "passthrough", inspectorPort: false }),
+  session: false,
+  devToolbar: { enabled: false },
+  telemetry: false,
+  vite: {
+    worker: {
+      plugins: () => [
+        {
+          name: "theme-pre-resolver",
+          enforce: "pre",
+          resolveId: {
+            order: "pre",
+            handler(source) {
+              return source === "sneaky-package" ? zod : null;
+            },
+          },
+        },
+      ],
+    },
+  },
+});
+`;
+      const result = await run(
+        astroInput(
+          "astro-runner-worker-resolver",
+          workerFiles(
+            `import { z } from "sneaky-package";
+self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(event.data).success);
+`,
+            config,
+          ),
+          null,
+        ),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain("UNAPPROVED_DEPENDENCY:");
+        expect(result.errorMessage).toContain('"zod"');
+      }
+    },
+  );
+
+  it(
+    "refuses a Web Worker whose entry is an unapproved package's file",
+    BUILD,
+    async () => {
+      const page = `---
+export const prerender = true;
+---
+<html><body><button id="go">go</button>
+<script>
+document.getElementById("go")?.addEventListener("click", () =>
+  new Worker(new URL("../../node_modules/zod/index.js", import.meta.url), { type: "module" }),
+);
+</script>
+</body></html>
+`;
+      const result = await run(
+        astroInput(
+          "astro-runner-worker-entry",
+          astroThemeFiles({
+            pages: [],
+            extra: [{ path: "src/pages/worker.astro", content: page }],
+          }),
+          null,
+        ),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain(
+          'in package "zod", which is not an approved dependency.',
+        );
+      }
+    },
+  );
+
+  it(
+    "refuses a Web Worker asset URL that resolves outside the workspace",
+    BUILD,
+    async () => {
+      const result = await run(
+        astroInput(
+          "astro-runner-worker-asset",
+          workerFiles(`const hosts = new URL("${"../".repeat(24)}etc/hosts", import.meta.url);
+self.onmessage = () => self.postMessage(hosts.href);
+`),
+          null,
+        ),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toMatch(
+          /WORKER_ASSET_URL_UNSUPPORTED:|WORKSPACE_PATH_ESCAPE:/,
+        );
+      }
+    },
+  );
+
+  it(
+    "refuses a stylesheet in a Web Worker before its @import is read",
+    BUILD,
+    async () => {
+      const files = [
+        ...workerFiles(`import styles from "./probe.css?inline";
+self.onmessage = () => self.postMessage(styles);
+`),
+        { path: "src/workers/probe.css", content: '@import "zod/package.json";\n' },
+      ];
+      const result = await run(astroInput("astro-runner-worker-css", files, null));
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain("WORKER_CSS_UNSUPPORTED:");
+      }
+    },
+  );
+
+  it(
+    "still builds a Web Worker that imports its own module",
+    BUILD,
+    async () => {
+      const result = await run(
+        astroInput(
+          "astro-runner-worker-allowed",
+          workerFiles(`import { WORKER_LABEL } from "./label";
+self.onmessage = (event: MessageEvent) => self.postMessage(WORKER_LABEL + String(event.data));
+`),
+          null,
+        ),
+      );
+      if (!result.success) throw new Error(result.errorMessage);
+      expect(
+        result.artifacts.some(
+          (artifact) =>
+            artifact.path.startsWith("runtime/client/") &&
+            artifact.path.endsWith(".js") &&
+            (text(artifact.content) ?? "").includes("astro-worker-guard-allowed-probe"),
+        ),
+        result.artifacts.map((artifact) => artifact.path).join("\n"),
+      ).toBe(true);
+    },
+  );
+
   it(
     "processes an image kept under src/ with imageService \"compile\"",
     BUILD,

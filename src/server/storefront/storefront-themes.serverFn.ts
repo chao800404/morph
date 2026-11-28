@@ -967,6 +967,15 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           { error: "PUBLISH_RENDER_POLICY_NOT_READY" },
         );
       }
+      // A succeeded build made before the current build guard: said as
+      // such, since the author has a build and needs to know why it is not
+      // enough (theme-worker-guard-version.ts).
+      if (message.includes("PUBLISH_BUILD_GUARD_STALE")) {
+        return fail(
+          "Build Preview again: this build predates the current build guard. The existing release is unchanged.",
+          { error: "PUBLISH_BUILD_GUARD_STALE" },
+        );
+      }
       if (
         message.includes("PUBLISH_BUILD_NOT_FOUND") ||
         message.includes("PUBLISH_BUILD_NOT_READY") ||

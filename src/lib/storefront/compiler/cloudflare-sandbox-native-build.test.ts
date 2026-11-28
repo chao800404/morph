@@ -4,7 +4,8 @@
 import { NATIVE_PROOF_VERSION } from "../theme-framework/native-start-proof";
 import { describe, expect, it, vi } from "vitest";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
+import { withThemeStartBuildIdentity,
+  withThemeManagedStartBuildIdentity } from "./theme-morph-sdk";
 import { START_TOOLCHAIN, answerToolchainCommand } from "./sandbox-toolchain.test-support";
 
 vi.mock("cloudflare:workers", () => ({ env: {} }));
@@ -386,7 +387,7 @@ describe("the Sandbox runner's native build", () => {
     const result = await runner.run({
       ...input(),
       compilerId: "tailwind-v4-build",
-      compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
+      compilerVersion: withThemeManagedStartBuildIdentity(TAILWIND_VERSION),
     });
     expect(result).toMatchObject({
       success: false,

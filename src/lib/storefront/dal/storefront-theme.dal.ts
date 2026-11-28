@@ -85,6 +85,7 @@ import {
 } from "../content/section-hide-check";
 import { hideRefusalMessage } from "../ast/theme-hide-capability";
 import { buildHideGuardVersion } from "../compiler/theme-morph-sdk";
+import { workerGuardPublishProblem } from "../compiler/theme-worker-guard-version";
 import {
   contentTargetForRoutePath,
   normalizeRoutePath,
@@ -3265,6 +3266,18 @@ export const storefrontThemeDal = {
     ) {
       throw new Error(
         `PUBLISH_BUILD_MISMATCH: Theme build "${themeBuildId}" is not bound to source revision "${sourceRevisionId}" or has no immutable artifact.`,
+      );
+    }
+    // A build made before the current Web Worker guard keeps its frozen
+    // record, but is not published as current: Build Preview builds again
+    // under the guard (theme-worker-guard-version.ts). Only a new publish is
+    // judged: activating an existing release (rollback) and restoring the
+    // previous release after a failed publish put back an artifact that was
+    // already published, and stay available for one built before the guard.
+    const workerGuardProblem = workerGuardPublishProblem(build);
+    if (workerGuardProblem) {
+      throw new Error(
+        `PUBLISH_BUILD_GUARD_STALE: Theme build "${themeBuildId}" cannot be published because ${workerGuardProblem}. Build Preview is required before publishing.`,
       );
     }
 

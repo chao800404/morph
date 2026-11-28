@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
+import { withThemeManagedStartBuildIdentity } from "./theme-morph-sdk";
 import { starterThemeWorkspaceFiles } from "../starter-theme-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
@@ -82,7 +82,7 @@ function input(hiddenPromo: boolean): ThemeBuildRunnerInput {
     entry: "src/routes/index.tsx",
     inputHash: (hiddenPromo ? "c" : "d").repeat(64),
     compilerId: "tailwind-v4-build",
-    compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
+    compilerVersion: withThemeManagedStartBuildIdentity(TAILWIND_VERSION),
     toolchainId: START_TOOLCHAIN.id,
     files: files as ThemeBuildRunnerInput["files"],
     contentSnapshot: {
@@ -227,8 +227,8 @@ describe("a hidden section in a real platform Start build, prerendered", () => {
       for (const absent of ["PROMO-STORED", "HERO-STORED", "FOOTER-STORED"]) {
         expect(server, absent).not.toContain(absent);
       }
-      // Built under the hardened guard.
-      expect(input(true).compilerVersion).toMatch(/\.hide-7$/);
+      // Built under the hardened guard (and the Web Worker guard after it).
+      expect(input(true).compilerVersion).toMatch(/\.hide-7\.wg-\d+$/);
       expect(result.artifacts.some((file) => file.path.includes(".morph/"))).toBe(
         false,
       );

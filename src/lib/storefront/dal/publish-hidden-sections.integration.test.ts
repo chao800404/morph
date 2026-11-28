@@ -15,6 +15,7 @@
  * was. Each success is read back from the sealed publication item, whose
  * section is shown with its content intact.
  */
+import { withThemeWorkerGuardIdentity } from "../compiler/theme-worker-guard-version";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -137,14 +138,14 @@ async function seedTheme(options: { templateNewsletterShown: boolean }): Promise
     NOW,
   );
   await run(
-    `INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_version, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5, '{}', ?6, ?7, ?7)`,
+    `INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_id, compiler_version, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5, '{}', 'tailwind-v4-build', ?6, ?7, ?7)`,
     buildId,
     storefrontId,
     themeId,
     sourceRevisionId,
     `themes/${themeId}/builds/${buildId}`,
-    withThemeStartBuildIdentity("1.168.32"),
+    withThemeWorkerGuardIdentity(withThemeStartBuildIdentity("1.168.32")),
     NOW,
   );
   const document = JSON.stringify(documentWith(options.templateNewsletterShown));

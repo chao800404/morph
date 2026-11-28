@@ -9,6 +9,7 @@ import { themeToolchainForFramework } from "../theme-framework/theme-toolchains"
 import { nativeBuildResult } from "./native-build-result";
 import { materializeThemeBuildInput } from "./theme-build-materializer";
 import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
+import { withThemeWorkerGuardIdentity } from "./theme-worker-guard-version";
 
 // docs/astro-theme-plan.md A4: Astro is built natively, only where the
 // server's switch is given, and its artifact is refused at build time for
@@ -101,9 +102,10 @@ describe("materializing an Astro build", () => {
       framework: "astro",
       buildMode: "native",
       compilerId: "astro-native",
-      // Astro's own version, naming the SDK copy the build carries.
-      compilerVersion: withThemeMorphSdkIdentity(
-        ASTRO.directDependencies.astro!,
+      // Astro's own version, naming the SDK copy the build carries and the
+      // Web Worker guard its integration installs.
+      compilerVersion: withThemeWorkerGuardIdentity(
+        withThemeMorphSdkIdentity(ASTRO.directDependencies.astro!),
       ),
       toolchainId: ASTRO.id,
       inputHashFormat: 2,
