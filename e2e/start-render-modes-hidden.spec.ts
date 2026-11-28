@@ -1211,7 +1211,30 @@ test.describe("Start render modes keep hidden sections out", () => {
     let release = "";
     for (const mode of RENDER_MODES) {
       await openEditor(page, editorPathFor(mode));
-      await (await publishShowingRelease(page)).close();
+      // The release preview a publish opens loads the page itself; on
+      // /rm-defer its document waits on the held value (run rm-evidence-11),
+      // so every held value on the release preview's origin is let go while
+      // the publish shows it.
+      let publishing = true;
+      const releasing =
+        mode === "defer"
+          ? (async () => {
+              while (publishing) {
+                const src = await page
+                  .locator('iframe[data-build-preview="release"]')
+                  .getAttribute("src", { timeout: 1_000 })
+                  .catch(() => null);
+                if (src) await releaseOnce(page, new URL(src).origin);
+                await page.waitForTimeout(1_000).catch(() => {});
+              }
+            })()
+          : Promise.resolve();
+      try {
+        await (await publishShowingRelease(page)).close();
+      } finally {
+        publishing = false;
+        await releasing;
+      }
       release = await latestRelease(page, scope!);
       const [made] = queryD1(
         "SELECT theme_id FROM storefront_releases WHERE id = ?1",
