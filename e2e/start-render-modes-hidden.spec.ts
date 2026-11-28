@@ -19,6 +19,7 @@ import {
   EDITOR_PATH,
   clickExposedElement,
   enableSelection,
+  isServerFunctionCall,
   previewFrame,
 } from "./helpers";
 import { execLocalD1 } from "./helpers/editor-writes-paused";
@@ -768,7 +769,8 @@ test.describe("Start render modes keep hidden sections out", () => {
       const component = renderModeComponent(mode, "shown");
       await node.hover();
       const hideAnswer = page.waitForResponse(
-        (response) => response.url().includes("updateStorefrontThemeSectionProps"),
+        (response) =>
+          isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps"),
         { timeout: 30_000 },
       );
       await node.getByRole("button", { name: /^Hide section / }).click();
