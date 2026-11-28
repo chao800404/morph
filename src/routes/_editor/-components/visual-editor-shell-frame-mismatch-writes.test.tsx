@@ -1084,6 +1084,17 @@ export default function Layout({ children }) {
     frameSelects("hero", "items");
     await tick(0);
     expect(selectedInInspector()).toBe("hero");
+    // The edit's ordinary 300 ms save debounce must still be waiting when the
+    // reorder arrives. On the real clock that held only while rendering the
+    // edit stayed under 300 ms, which a loaded CI shard does not promise: the
+    // debounce then sent the edit first. Freeze the clock so only `tick`
+    // moves it. The frame's acknowledgements are then given here, not left to
+    // the helper's timed pump: the frame has shown the section as it stands,
+    // so the edit is not held for a presentation proof (a held draft is sent
+    // the moment its ack arrives, with no debounce).
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const frame = { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION };
+    answerFramePings(frame);
     act(() => {
       lastPanelProps?.onSectionPropsChange?.("hero", {
         items: [
@@ -1095,11 +1106,20 @@ export default function Layout({ children }) {
     // The list preview must apply the staged values before the drag captures
     // its presentation proof; keep the ordinary save debounce pending.
     await tick(0);
+    expect(toast.warning).not.toHaveBeenCalledWith(
+      PREVIEW_PRESENTATION_SYNCING_MESSAGE,
+      expect.anything(),
+    );
+    answerFramePings(frame);
+    await tick(0);
     expect(updateSectionProps).not.toHaveBeenCalled();
     // Reorder before the pending edit's ordinary debounce sends it. The view
     // owns the virtual slot; the raw Document must not fabricate it on read.
     ENTRIES["commit-array-item-reorder"]!.send();
-    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    // Past the edit's debounce: the reorder carried the pending edit, so that
+    // debounce has nothing left to send — one write, not two.
+    await tick(400);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
     const saved = updateSectionProps.mock.calls[0]![0].data as {
       templateId: string;
       sectionId: string;
