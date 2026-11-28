@@ -177,10 +177,19 @@ export function createThemeWorkerBundleGuard(options: {
     return Boolean(meta && url);
   };
   /** A string the code states outright: a literal, or a template with no holes. */
+  /**
+   * A string the code states outright and spells as it means it: a quoted
+   * literal or a template with no holes, whose source has no escape (Vite
+   * reads the source spelling, so an escape could name one path to this
+   * check and another to Vite).
+   */
   const plainString = (node: unknown): string | null => {
     if (!isNode(node)) return null;
-    if (node.type === "Literal" && typeof node.value === "string")
-      return node.value;
+    if (node.type === "Literal" && typeof node.value === "string") {
+      const raw = typeof node.raw === "string" ? node.raw : null;
+      if (raw === null || raw.includes("\\")) return null;
+      return raw.slice(1, -1) === node.value ? node.value : null;
+    }
     if (
       node.type === "TemplateLiteral" &&
       Array.isArray(node.expressions) &&
@@ -188,12 +197,32 @@ export function createThemeWorkerBundleGuard(options: {
       Array.isArray(node.quasis) &&
       node.quasis.length === 1
     ) {
-      const cooked = (node.quasis[0] as { value?: { cooked?: unknown } }).value
-        ?.cooked;
-      return typeof cooked === "string" ? cooked : null;
+      const value = (
+        node.quasis[0] as { value?: { raw?: unknown; cooked?: unknown } }
+      ).value;
+      if (typeof value?.raw !== "string" || value.raw.includes("\\"))
+        return null;
+      return value.raw === value.cooked ? value.raw : null;
     }
     return null;
   };
+  // A path relative to the module, spelled plainly: no query, fragment,
+  // percent-escape, backslash or empty segment, so Vite's own resolution of
+  // it (path.resolve from the module, then its file-system resolver) starts
+  // from the same path this check does.
+  const PLAIN_RELATIVE =
+    /^\.\.?\/(?:[A-Za-z0-9_@+~-][A-Za-z0-9_.@+~-]*\/|\.\.?\/)*[A-Za-z0-9_@+~.-]*[A-Za-z0-9_@+~-]$/;
+  // What Vite's file-system resolver tries for a path that names no file:
+  // its default extensions, then an index file, in that directory.
+  const RESOLVE_EXTENSIONS = [
+    ".mjs",
+    ".js",
+    ".mts",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".json",
+  ];
   const isFile = (file: string) => {
     try {
       return fs.statSync(file).isFile();
@@ -217,14 +246,10 @@ export function createThemeWorkerBundleGuard(options: {
         return null;
       },
     },
-    async transform(
+    transform(
       this: {
         error(message: string): never;
         parse(code: string): unknown;
-        resolve(
-          source: string,
-          importer?: string,
-        ): Promise<{ id: string; external?: boolean | string } | null>;
       },
       code: string,
       id: string,
@@ -292,29 +317,39 @@ export function createThemeWorkerBundleGuard(options: {
       for (const literal of literals) {
         if (/^[a-z][a-z0-9+.-]*:/i.test(literal) || literal.startsWith("//"))
           continue;
-        const target = literal.split(/[?#]/)[0]!;
-        if (!target) continue;
-        // Every file Vite could read for it is held to the rules, so the one
-        // it does read is: what the build's own resolver makes of it (aliases,
-        // extensions, index files, packages, through the import guard, which
-        // refuses an unapproved package itself), and the paths Vite falls
-        // back to: relative to the module, at the root, in public/.
-        const files = new Set<string>();
-        const resolved = await this.resolve(target, id);
-        if (resolved && !resolved.external) files.add(resolved.id);
-        for (const fallback of [
-          path.resolve(moduleDir, target),
-          ...(target.startsWith("/")
-            ? [
-                path.resolve(workspaceRoot, "." + target),
-                path.resolve(workspaceRoot, "public", "." + target),
-                path.resolve(target),
-              ]
-            : []),
-        ]) {
-          if (isFile(fallback)) files.add(fallback);
+        // Only a plain relative path: for a root-relative or bare one Vite
+        // runs its own resolver (aliases, public/, packages), whose answer a
+        // build plugin cannot see, so it is refused rather than guessed.
+        if (!PLAIN_RELATIVE.test(literal)) {
+          refuse(
+            'names "' +
+              literal +
+              '" in new URL(); only a plain relative path (./ or ../, no query) is supported in a worker',
+          );
         }
-        for (const file of files) {
+        // Every file Vite's resolver could pick for it: the path itself,
+        // its default extensions, and an index file or package.json in it
+        // when it is a directory. Each must be the Theme's (or an approved
+        // package's); a path that names none is left unread, as Vite leaves
+        // it.
+        const base = path.resolve(moduleDir, literal);
+        const candidates = [
+          base,
+          ...RESOLVE_EXTENSIONS.map((extension) => base + extension),
+          path.join(base, "package.json"),
+          ...RESOLVE_EXTENSIONS.map((extension) =>
+            path.join(base, "index" + extension),
+          ),
+        ];
+        for (const file of candidates) {
+          if (!isFile(file)) continue;
+          if (file === path.join(base, "package.json")) {
+            refuse(
+              'names "' +
+                literal +
+                '", a directory with a package.json, whose entry Vite would choose',
+            );
+          }
           const asset = place(file);
           if (asset.kind === "theme") continue;
           if (asset.kind === "package" && allowedPackages.has(asset.name))

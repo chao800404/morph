@@ -431,7 +431,20 @@ self.onmessage = () => self.postMessage(secret.href);
       'new URL("../../../${OUTSIDE}", import /* */ .meta.url)',
     ],
     ["import.meta.url outside new URL()", "import.meta.url"],
-    // Resolved by the build's resolver and Vite's fallbacks alike.
+    // Spelled so that Vite would read another path than the one checked. The
+    // TypeScript transform prints escapes plainly, so the guard and Vite read
+    // the same path; this one reaches outside.
+    [
+      "an escape in the literal",
+      'new URL("\\u002e\\u002e/\\u002e\\u002e/\\u002e\\u002e/${OUTSIDE}", import.meta.url)',
+    ],
+    [
+      "a backslash path",
+      'new URL(".\\\\..\\\\..\\\\${OUTSIDE}", import.meta.url)',
+    ],
+    ["a query on the path", 'new URL("./data.txt?raw", import.meta.url)'],
+    // Resolved by Vite's own resolver (aliases, public/, packages): refused.
+    ["a bare path", 'new URL("data.txt", import.meta.url)'],
     [
       "a root-relative path naming no file at the root",
       'new URL("/nowhere/../../${OUTSIDE}", import.meta.url)',
@@ -440,22 +453,33 @@ self.onmessage = () => self.postMessage(secret.href);
     "refuses a worker that spells an asset URL Vite would still read: %s",
     async (_name, expression) => {
       const refusal = /WORKER_ASSET_URL_UNSUPPORTED:|WORKSPACE_PATH_ESCAPE:/;
-      const built = await buildManaged(
-        themeWith(
-          [
-            { path: "src/workers/data.txt", content: "data\n" },
-            {
-              path: "src/workers/probe.ts",
-              content: `const data = ${expression.replace("${OUTSIDE}", "outside.txt")};
+      // A real file beside the workspace, so a path that reaches it would be
+      // read; a path to no file is left unread by Vite and by the guard.
+      const outside = path.join(
+        process.cwd(),
+        `.morph-worker-guard-spelled-${process.pid}.txt`,
+      );
+      await fs.writeFile(outside, "outside the workspace\n");
+      try {
+        const built = await buildManaged(
+          themeWith(
+            [
+              { path: "src/workers/data.txt", content: "data\n" },
+              {
+                path: "src/workers/probe.ts",
+                content: `const data = ${expression.replace("${OUTSIDE}", path.basename(outside))};
 self.onmessage = () => self.postMessage(String(data));
 `,
-            },
-          ],
-          WORKER_IMPORT,
-        ),
-        "preview",
-      );
-      expect(refusedOutput(built)).toMatch(refusal);
+              },
+            ],
+            WORKER_IMPORT,
+          ),
+          "preview",
+        );
+        expect(refusedOutput(built)).toMatch(refusal);
+      } finally {
+        await fs.rm(outside, { force: true });
+      }
     },
     TEST_TIMEOUT_MS,
   );
