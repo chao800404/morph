@@ -1,4 +1,8 @@
-import { normalizeStorefrontHostname } from "./storefront-host-resolver";
+import {
+  collectPlatformHostnames,
+  isPlatformHostname,
+  isPreviewHostname,
+} from "./platform-hostnames";
 import {
   DispatchNamespaceThemeRuntime,
   LocalDirectThemeRuntime,
@@ -10,90 +14,17 @@ import {
 import type { ThemeRuntime } from "./theme-runtime.types";
 import { releaseWorkerMatchEnabled } from "./theme-worker-build-match";
 
-/** The Worker vars `collectPlatformHostnames` reads, and no others. */
-const PLATFORM_HOSTNAME_ENV_KEYS = [
-  "PUBLIC_URL",
-  "MORPH_PLATFORM_HOSTNAMES",
-  "MORPH_CMS_HOSTNAME",
-] as const;
-
-export type PlatformHostnameEnv = Readonly<
-  Partial<Record<(typeof PLATFORM_HOSTNAME_ENV_KEYS)[number], string>>
->;
-
-/**
- * The part of a Worker env that names Morph's own hostnames, copied out by
- * key. Anything that must decide platform hostnames somewhere the env should
- * not go — another process, a container — is handed this instead, so secrets
- * and bindings never travel with it.
- */
-export function pickPlatformHostnameEnv(
-  env: Record<string, unknown> | undefined,
-): PlatformHostnameEnv {
-  const picked: Partial<Record<keyof PlatformHostnameEnv, string>> = {};
-  for (const key of PLATFORM_HOSTNAME_ENV_KEYS) {
-    const value = env?.[key];
-    if (typeof value === "string") picked[key] = value;
-  }
-  return picked;
-}
-
-/**
- * Hostnames that always belong to Morph Core (dashboard, editor, server
- * functions) and must never be resolved as a customer storefront.
- *
- * Membership is decided by exact hostname, not by suffix matching: a suffix
- * rule would let a merchant attach `evil-morph.example.com` and have it treated
- * as platform surface.
- */
-export function collectPlatformHostnames(
-  env: Record<string, unknown> | undefined,
-): ReadonlySet<string> {
-  const hosts = new Set<string>(["localhost", "127.0.0.1", "0.0.0.0"]);
-
-  const publicUrl = typeof env?.PUBLIC_URL === "string" ? env.PUBLIC_URL : null;
-  if (publicUrl) {
-    try {
-      hosts.add(new URL(publicUrl).hostname.toLowerCase());
-    } catch {
-      // A malformed PUBLIC_URL must not widen storefront routing.
-    }
-  }
-
-  const extra =
-    typeof env?.MORPH_PLATFORM_HOSTNAMES === "string"
-      ? env.MORPH_PLATFORM_HOSTNAMES
-      : null;
-  addConfiguredPlatformHostnames(hosts, extra);
-
-  // A single CMS hostname is convenient for the common split-domain setup;
-  // keep the plural variable above for deployments with staging/admin hosts.
-  addConfiguredPlatformHostnames(hosts, env?.MORPH_CMS_HOSTNAME);
-
-  return hosts;
-}
-
-export function isPlatformHostname(
-  rawHostname: string | null,
-  platformHostnames: ReadonlySet<string>,
-): boolean {
-  if (!rawHostname) return true;
-
-  // Use the same canonicalizer for configured values and request headers. In
-  // particular, this handles a trailing dot and an explicit port consistently
-  // so `shop.example.com.` cannot bypass the platform-host check.
-  const normalized = normalizeStorefrontHostname(rawHostname);
-  if (!normalized) {
-    // Local development and malformed hosts are platform traffic. The latter
-    // must never be guessed into a storefront request.
-    return true;
-  }
-
-  if (platformHostnames.has(normalized)) return true;
-  // Deploy previews and the default Workers domain are platform surface.
-  if (normalized.endsWith(".workers.dev")) return true;
-  return false;
-}
+// The hostname rules live in a module with no runtime dependencies, so the
+// Core deploy tooling reads the same ones (see platform-hostnames.ts). They
+// are exported from here too, where every existing caller imports them.
+export {
+  collectPlatformHostnames,
+  isPlatformHostname,
+  isPreviewHostname,
+  isReservedPlatformHostname,
+  pickPlatformHostnameEnv,
+  type PlatformHostnameEnv,
+} from "./platform-hostnames";
 
 function safeUrlHostname(url: string): string | null {
   try {
@@ -101,65 +32,6 @@ function safeUrlHostname(url: string): string | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Accept a platform hostname in either the form operators usually use in
- * environment variables (`admin.example.com`) or a full origin
- * (`https://admin.example.com`). Invalid entries are ignored so a typo cannot
- * turn an arbitrary request host into platform traffic.
- */
-function normalizeConfiguredPlatformHostname(raw: string): string | null {
-  const value = raw.trim();
-  if (!value) return null;
-
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return normalizeStorefrontHostname(parsed.hostname);
-    }
-  } catch {
-    // Treat the entry as a hostname below. Invalid values are rejected there.
-  }
-
-  return normalizeStorefrontHostname(value);
-}
-
-function addConfiguredPlatformHostnames(
-  hosts: Set<string>,
-  raw: unknown,
-): void {
-  if (typeof raw !== "string") return;
-  for (const entry of raw.split(",")) {
-    const normalized = normalizeConfiguredPlatformHostname(entry);
-    if (normalized) hosts.add(normalized);
-  }
-}
-
-export function isPreviewHostname(
-  rawHostname: string | null,
-  env?: Record<string, unknown>,
-): boolean {
-  if (!rawHostname) return false;
-  const normalized = normalizeStorefrontHostname(rawHostname);
-  if (!normalized) return false;
-  if (
-    normalized === "preview.localhost" ||
-    normalized.endsWith(".preview.localhost")
-  ) {
-    return true;
-  }
-  const configured =
-    typeof env?.THEME_PREVIEW_HOSTNAME === "string"
-      ? normalizeStorefrontHostname(env.THEME_PREVIEW_HOSTNAME)
-      : null;
-  if (
-    configured &&
-    (normalized === configured || normalized.endsWith("." + configured))
-  ) {
-    return true;
-  }
-  return false;
 }
 
 /**
@@ -198,20 +70,6 @@ export function mayServePlatformAssets(
   const host = request.headers.get("host") ?? safeUrlHostname(request.url);
   if (isPreviewHostname(host, env)) return false;
   return isPlatformHostname(host, collectPlatformHostnames(env));
-}
-
-/**
- * Hostnames that must never be connected as a storefront domain.
- *
- * Routing classifies platform hosts first, so a storefront registered on a
- * platform hostname would be silently unreachable while the dashboard reports
- * it as connected. Refusing at creation keeps that contradiction impossible.
- */
-export function isReservedPlatformHostname(
-  hostname: string,
-  env: Record<string, unknown> | undefined,
-): boolean {
-  return isPlatformHostname(hostname, collectPlatformHostnames(env));
 }
 
 export const DEFAULT_THEME_SERVICE_BINDING = "THEME_WORKER";

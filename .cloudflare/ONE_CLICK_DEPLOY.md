@@ -1,5 +1,14 @@
 # 🚀 One-Click Deploy Guide
 
+> **Not the Morph Core deploy procedure.** This guide is from the template Morph
+> started from. Morph Core is deployed with `pnpm run deploy` as described in
+> [DEPLOY.md](../DEPLOY.md) ("Core deploy and hostname bindings"): its Worker has
+> `workers_dev` and `preview_urls` off and binds no hostname from its config,
+> so a one-click deploy leaves it with no public address until
+> `pnpm run platform:ensure` binds the CMS hostname. Never add `routes` to make
+> it reachable: a deploy with a Custom Domain list removes every storefront
+> domain connected from Settings.
+
 Deploy this template to Cloudflare Workers in just a few clicks!
 
 ## Quick Start
@@ -9,7 +18,7 @@ Deploy this template to Cloudflare Workers in just a few clicks!
 3. **Configure** - Select your Cloudflare account and name your Worker
 4. **Deploy** - Wait 2-3 minutes for automatic setup
 
-That's it! Your app will be live at `https://your-worker.workers.dev`
+For the template, the app was live at `https://your-worker.workers.dev`; Morph Core turns workers.dev off (see the note above).
 
 ## ⚠️ Important: Initialize D1 Database
 
@@ -82,8 +91,11 @@ export CLOUDFLARE_API_TOKEN="your_token"
 export CLOUDFLARE_ACCOUNT_ID="your_account_id"
 pnpm setup:cloudflare
 
-# Deploy
-pnpm deploy
+# Deploy: the guarded Core deploy, never `wrangler deploy` with routes.
+# It needs a deploy target and its own credentials; see DEPLOY.md,
+# "Core deploy and hostname bindings".
+pnpm run deploy:bootstrap
+pnpm run platform:ensure
 ```
 
 ## Learn More

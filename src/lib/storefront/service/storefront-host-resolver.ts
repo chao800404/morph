@@ -3,6 +3,7 @@ import { storefrontDomainDal } from "../dal/storefront-domain.dal";
 import { storefrontReleaseDal } from "../dal/storefront-release.dal";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
 import { storefrontDal } from "../dal/storefront.dal";
+import { normalizeStorefrontHostname } from "./storefront-hostname";
 
 /**
  * Every reason production hostname resolution can refuse to serve.
@@ -41,35 +42,9 @@ export type StorefrontHostResolution =
       message: string;
     };
 
-const HOSTNAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
-const MAX_HOSTNAME_LENGTH = 253;
-
-/**
- * Normalizes an untrusted `Host` header into a comparable hostname.
- * Returns `null` when the value cannot be a routable storefront hostname, so
- * callers never query storage with attacker-controlled shapes.
- */
-export function normalizeStorefrontHostname(raw: string | null): string | null {
-  if (!raw) return null;
-  let value = raw.trim().toLowerCase();
-  if (!value) return null;
-
-  // Strip an explicit port, including bracketed IPv6 forms we do not serve.
-  if (value.startsWith("[")) return null;
-  const colonIndex = value.lastIndexOf(":");
-  if (colonIndex !== -1) {
-    const port = value.slice(colonIndex + 1);
-    if (!/^\d+$/.test(port)) return null;
-    value = value.slice(0, colonIndex);
-  }
-
-  value = value.replace(/\.$/, "");
-  if (!value || value.length > MAX_HOSTNAME_LENGTH) return null;
-  if (value.includes("..") || value.includes("_")) return null;
-  if (!HOSTNAME_PATTERN.test(value)) return null;
-
-  return value;
-}
+// Defined in a module with no runtime dependencies; exported from here too
+// because this is where every existing caller imports it from.
+export { normalizeStorefrontHostname };
 
 /**
  * The resolver declares its own dependency ports instead of reusing DAL

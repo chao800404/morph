@@ -15,6 +15,15 @@
   // User-owned entry instead of "@tanstack/react-start/server-entry".
   // See src/server.ts for why (TanStack/router#7285 breaks SSR HMR).
   "main": "src/server.ts",
+  // Core binds no hostname from this file: there is no "route" or "routes"
+  // key, not even [], and `pnpm run deploy` refuses a config with one. A
+  // non-empty Custom Domain list makes `wrangler deploy` replace the Worker's
+  // Custom Domains with that list, removing every storefront domain Settings
+  // connected. Platform hostnames are bound by `pnpm run platform:ensure`,
+  // storefront domains by Settings → Domains (DEPLOY.md). With no routes,
+  // Wrangler turns workers.dev on unless told otherwise, so both are off.
+  "workers_dev": false,
+  "preview_urls": false,
   // Morph's static files (its public/ and build assets) are served by the
   // Worker, through this binding, and only on a platform hostname. Without
   // run_worker_first, Cloudflare answers any path matching one of them before
@@ -171,10 +180,11 @@
    * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
    */
   "vars": {
-    // Keep the workers.dev URL as the safe default platform origin.
-    // For production split-domain deployments, replace it with the CMS
-    // Custom Domain (for example https://shop.example.com) and add the same
-    // hostname as MORPH_CMS_HOSTNAME. See DEPLOY.md for the route shape.
+    // A placeholder: with workers_dev off this address is not served, and
+    // `pnpm run deploy` refuses it. Before a production deploy, replace it
+    // with the CMS Custom Domain (for example https://shop.example.com), add
+    // the same hostname as MORPH_CMS_HOSTNAME, and set CLOUDFLARE_ZONE_ID.
+    // See DEPLOY.md, "Core deploy and hostname bindings".
     "PUBLIC_URL": "https://morph.yuho0298.workers.dev",
     // "MORPH_CMS_HOSTNAME": "shop.example.com",
     // "MORPH_PLATFORM_HOSTNAMES": "staging.example.com,admin.example.com",

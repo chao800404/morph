@@ -258,7 +258,7 @@ pnpm db:migrate:prod
 | `pnpm db:migrate:dev`    | Apply migrations to local D1                    |
 | `pnpm db:studio:dev`     | Open Drizzle Studio against local D1            |
 | `pnpm cf-typegen`        | Refresh Cloudflare binding types                |
-| `pnpm deploy`            | Build and deploy with Wrangler                  |
+| `pnpm run deploy`        | Guarded Core deploy (see DEPLOY.md)             |
 
 ## Cloudflare resources
 
