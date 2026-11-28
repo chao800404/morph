@@ -36,14 +36,16 @@
  *
  * Every assertion is about what happened; none is a timing threshold.
  */
-import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  serveWorkerd,
+  type ServedWorkerd,
+} from "../../../src/lib/test-utils/workerd-serve";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "../../..");
@@ -158,7 +160,7 @@ export default {
 `;
 
 describe("@morph/sdk/start reads while a published page streams (workerd)", () => {
-  let child: ChildProcess | null = null;
+  let served: ServedWorkerd | null = null;
   let dir = "";
   let origin = "";
 
@@ -199,15 +201,15 @@ describe("@morph/sdk/start reads while a published page streams (workerd)", () =
       outfile: path.join(dir, "main.mjs"),
       logLevel: "silent",
     });
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
-    origin = `http://127.0.0.1:${port}`;
+    // The socket's address is the OS's choice (serveWorkerd binds
+    // 127.0.0.1:0 and reads the port back); the config names none.
     fs.writeFileSync(
       path.join(dir, "config.capnp"),
       [
         'using Workerd = import "/workerd/workerd.capnp";',
         "const config :Workerd.Config = (",
         '  services = [ (name = "main", worker = .probe) ],',
-        `  sockets = [ (name = "http", address = "127.0.0.1:${port}", http = (), service = "main") ],`,
+        '  sockets = [ (name = "http", http = (), service = "main") ],',
         ");",
         "const probe :Workerd.Worker = (",
         '  modules = [ (name = "main.mjs", esModule = embed "main.mjs") ],',
@@ -216,29 +218,12 @@ describe("@morph/sdk/start reads while a published page streams (workerd)", () =
         ");",
       ].join("\n"),
     );
-    const binary = createRequire(import.meta.url).resolve("workerd/bin/workerd");
-    const output: string[] = [];
-    child = spawn(binary, ["serve", path.join(dir, "config.capnp")], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    child.stdout?.on("data", (chunk) => output.push(String(chunk)));
-    child.stderr?.on("data", (chunk) => output.push(String(chunk)));
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      try {
-        await fetch(origin + "/__reset");
-        break;
-      } catch {
-        if (Date.now() > deadline || child.exitCode !== null) {
-          throw new Error("workerd did not start: " + output.join(""));
-        }
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
-    }
+    served = await serveWorkerd(path.join(dir, "config.capnp"), { socket: "http" });
+    origin = served.origin;
   }, 120_000);
 
-  afterAll(() => {
-    child?.kill("SIGKILL");
+  afterAll(async () => {
+    await served?.stop();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
