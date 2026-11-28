@@ -90,8 +90,16 @@ function plan(snapshot: InventorySnapshot, target: DeployTarget, manifest: Platf
   }
   for (const { pattern } of manifest.routes) {
     const matches = snapshot.zoneRoutes.filter((route) => route.pattern === pattern);
+    const overlaps = wildcardOverlaps(pattern, snapshot, target, manifest);
     if (!isInZone(routePatternHostname(pattern), snapshot.zone.name)) {
       steps.push({ kind: "route", pattern, action: "refuse", detail: `not in zone ${snapshot.zone.name}` });
+    } else if (overlaps.length > 0) {
+      steps.push({
+        kind: "route",
+        pattern,
+        action: "refuse",
+        detail: `it would take traffic from bindings this Core Worker does not serve: ${overlaps.join("; ")}`,
+      });
     } else if (matches.length === 0) {
       steps.push({ kind: "route", pattern, action: "create", detail: "no Workers Route" });
     } else if (matches.length === 1 && matches[0]!.script === target.workerName) {
@@ -106,6 +114,40 @@ function plan(snapshot: InventorySnapshot, target: DeployTarget, manifest: Platf
     }
   }
   return steps;
+}
+
+/**
+ * What a wildcard Route `*.<preview>/*` would take over or compete with.
+ * Cloudflare gives a matching Route precedence over a Custom Domain, so any
+ * Custom Domain under the wildcard that is not this Core Worker's (another
+ * Worker, another environment, another zone) would lose its traffic; any
+ * other Route under it, or a broader wildcard over it, that is not this
+ * Worker's (an exclusion Route included) would compete with it.
+ */
+function wildcardOverlaps(
+  pattern: string,
+  snapshot: InventorySnapshot,
+  target: DeployTarget,
+  manifest: PlatformManifest,
+): string[] {
+  if (!pattern.startsWith("*.")) return [];
+  const base = routePatternHostname(pattern);
+  const under = (hostname: string) => hostname.endsWith(`.${base}`);
+  const found: string[] = [];
+  for (const domain of snapshot.customDomains) {
+    if (under(domain.hostname) && !domainIsOurs(domain, target, manifest)) {
+      found.push(`Custom Domain ${domain.hostname} (${domain.id}, service=${domain.service}, environment=${domain.environment}, zone=${domain.zoneId})`);
+    }
+  }
+  for (const route of snapshot.zoneRoutes) {
+    if (route.pattern === pattern || route.script === target.workerName) continue;
+    const host = routePatternHostname(route.pattern);
+    const broader = route.pattern.startsWith("*") && (base === host || base.endsWith(`.${host}`));
+    if (host === base || under(host) || broader) {
+      found.push(`Route ${route.pattern} (${route.id}, script=${route.script ?? "none"})`);
+    }
+  }
+  return found;
 }
 
 function subjectOf(step: Plan): string {

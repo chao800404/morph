@@ -113,7 +113,8 @@ export type DiscrepancyKind =
   | "unknown-route"
   | "storefront-domain-in-preview-namespace"
   | "storefront-domain-changed"
-  | "storefront-domain-pending";
+  | "storefront-domain-pending"
+  | "binding-removed";
 
 export type Discrepancy = Readonly<{
   kind: DiscrepancyKind;
@@ -284,6 +285,40 @@ export function compareInventory(input: {
   for (const route of snapshot.zoneRoutes) {
     if (route.script === target.workerName && !expectedPatterns.has(route.pattern)) {
       add("unknown-route", `${route.pattern}|${route.id}`, `Route ${route.pattern} (${route.id}) runs this Worker and is not in the platform config`);
+    }
+  }
+
+  // The post-deploy check also walks the pre-deploy identities: a binding of
+  // this Worker that is gone afterwards is drift even when nothing else names
+  // it any more (its D1 row soft-deleted after a 404, say). Bindings that
+  // appeared during the deploy are reported.
+  if (input.baseline) {
+    const nowDomainIds = new Set(snapshot.customDomains.map((d) => d.id));
+    const activeNow = new Set(snapshot.storefrontDomains.filter((r) => r.status === "active").map((r) => r.hostname));
+    for (const before of input.baseline.customDomains) {
+      if (before.service !== target.workerName || nowDomainIds.has(before.id)) continue;
+      // Still bound under another id, a platform hostname, or an active row:
+      // reported above as changed, missing or mismatched.
+      if (byHostname.has(before.hostname) || platform.has(before.hostname) || activeNow.has(before.hostname)) continue;
+      add("binding-removed", identity(before), `${identity(before)} was bound to this Worker before the deploy and is gone after it (a Settings disconnect during the deploy also looks like this)`);
+    }
+    const nowRouteIds = new Set(snapshot.zoneRoutes.map((r) => r.id));
+    for (const before of input.baseline.zoneRoutes) {
+      if (before.script !== target.workerName || nowRouteIds.has(before.id)) continue;
+      if (expectedPatterns.has(before.pattern) || snapshot.zoneRoutes.some((r) => r.pattern === before.pattern)) continue;
+      add("binding-removed", `route|${before.pattern}|${before.id}`, `Route ${before.pattern} (${before.id}) ran this Worker before the deploy and is gone after it`);
+    }
+    const beforeDomainIds = new Set(input.baseline.customDomains.map((d) => d.id));
+    for (const domain of snapshot.customDomains) {
+      if (domain.service === target.workerName && !beforeDomainIds.has(domain.id)) {
+        diagnostics.push(`added during the deploy: ${domain.hostname} (${domain.id})`);
+      }
+    }
+    const beforeRouteIds = new Set(input.baseline.zoneRoutes.map((r) => r.id));
+    for (const route of snapshot.zoneRoutes) {
+      if (route.script === target.workerName && !beforeRouteIds.has(route.id)) {
+        diagnostics.push(`added during the deploy: Route ${route.pattern} (${route.id})`);
+      }
     }
   }
 

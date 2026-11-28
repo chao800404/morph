@@ -330,7 +330,7 @@ describe("the binding inventory", () => {
     });
     apis.push(api);
     const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    await expect(client.listWorkerDomains()).rejects.toThrow(/incomplete list/);
+    await expect(client.listWorkerDomains()).rejects.toThrow(/incomplete list|repeats entries/);
   });
 
   it("follows every page a paged answer announces", async () => {
@@ -404,5 +404,68 @@ describe("the binding inventory", () => {
     apis.push(api);
     const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
     await expect(client.listWorkerDomains()).rejects.toThrow(/describes another list/);
+  });
+});
+
+describe("round 5: completeness without totals, and the post-check by identity", () => {
+  const pagedWithoutTotals = (pages: (state: MockState) => Array<unknown[]>) =>
+    (state: MockState) => (request: import("./test-support/mock-cloudflare-api").RecordedRequest) => {
+      if (request.path !== `/accounts/${ACCOUNT}/workers/domains`) return undefined;
+      const page = Number(request.query.get("page") ?? "1");
+      const all = pages(state);
+      const result = all[page - 1] ?? [];
+      return { status: 200, body: { success: true, errors: [], result, result_info: { page, per_page: 2, count: result.length } } };
+    };
+
+  it("does not accept a full page without totals: it reads on until a short page", async () => {
+    const state = healthyState();
+    const handler = pagedWithoutTotals((s) => [s.domains.slice(0, 2), s.domains.slice(2, 4), s.domains.slice(4)]);
+    const api = await startMockCloudflareApi(state, { handlers: [handler(state)] });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    const domains = await client.listWorkerDomains();
+    expect(domains.map((d) => d.hostname)).toEqual(state.domains.map((d) => d.hostname));
+    expect(api.requests.filter((r) => r.path.endsWith("/workers/domains")).length).toBe(3);
+  });
+
+  it("is unavailable when an endpoint without totals repeats a page instead of advancing", async () => {
+    const state = healthyState();
+    const handler = pagedWithoutTotals((s) => [s.domains.slice(0, 2), s.domains.slice(0, 2), s.domains.slice(0, 2)]);
+    const api = await startMockCloudflareApi(state, { handlers: [handler(state)] });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    await expect(client.listWorkerDomains()).rejects.toThrow(/repeat/);
+  });
+
+  it("catches a storefront binding that vanished during the deploy together with its D1 row", async () => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    const api = await startMockCloudflareApi(state);
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    const before = await readInventory(client, TARGET, MANIFEST);
+    // The deploy removed shop-a; Settings then got a 404 and soft-deleted the row.
+    state.domains = state.domains.filter((d) => d.hostname !== "shop-a.example.com");
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.hostname !== "shop-a.example.com");
+    const after = await readInventory(client, TARGET, MANIFEST);
+    expect(compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict" }).discrepancies).toEqual([]);
+    const { discrepancies } = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
+    expect(discrepancies.map((d) => d.kind)).toEqual(["binding-removed"]);
+  });
+
+  it("reports a binding added during the deploy", async () => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    const api = await startMockCloudflareApi(state);
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    const before = await readInventory(client, TARGET, MANIFEST);
+    const added = domain("new.example.com");
+    state.domains.push(added);
+    state.d1[D1_ID]!.push(row("new.example.com", added.id));
+    const after = await readInventory(client, TARGET, MANIFEST);
+    const result = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
+    expect(result.discrepancies).toEqual([]);
+    expect(result.diagnostics.some((line) => line.startsWith("added during the deploy: new.example.com"))).toBe(true);
   });
 });

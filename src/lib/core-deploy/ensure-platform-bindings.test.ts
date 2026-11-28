@@ -208,3 +208,35 @@ describe("platform:ensure", () => {
     expect(api.writes()).toEqual([]);
   });
 });
+
+describe("round 5: the preview wildcard never takes over another binding", () => {
+  it.each([
+    ["a foreign Custom Domain under it", { domains: [domain("app.preview.example.com", { service: "someone-else" })] }],
+    ["one of this account's other Workers", { domains: [domain("t1.preview.example.com", { service: "morph-theme-x" })] }],
+    ["a Core binding in another environment", { domains: [domain("t2.preview.example.com", { environment: "staging" })] }],
+  ])("refuses, writing nothing, when %s exists", async (_label, overrides) => {
+    const { api, run } = await setup(baseState(overrides));
+    const result = await run();
+    expect(result.status).toBe("refused");
+    expect(result.steps.find((s) => s.kind === "route")).toMatchObject({ outcome: "refused" });
+    expect(api.writes()).toEqual([]);
+  });
+
+  it.each([
+    ["a broader wildcard for another Worker", { id: "r1", pattern: "*.example.com/*", script: "other" }],
+    ["a narrower Route under it", { id: "r2", pattern: "t1.preview.example.com/*", script: "other" }],
+    ["an exclusion Route under it", { id: "r3", pattern: "t1.preview.example.com/assets/*" }],
+  ])("refuses, writing nothing, when %s overlaps it", async (_label, route) => {
+    const { api, run } = await setup(baseState({ routes: { [ZONE]: [route] } }));
+    const result = await run();
+    expect(result.status).toBe("refused");
+    expect(api.writes()).toEqual([]);
+  });
+
+  it("still creates it when the only host under it is served by this Worker", async () => {
+    const { api, run } = await setup(baseState({ domains: [domain("ok.preview.example.com")] }));
+    const result = await run();
+    expect(result.status).toBe("complete");
+    expect(api.writes().some((w) => w.method === "POST")).toBe(true);
+  });
+});

@@ -18,15 +18,16 @@ export const CLOUDFLARE_API_BASE_URL = "https://api.cloudflare.com/client/v4";
 /**
  * The argv, with nothing from the caller in it.
  *
- * - no `--config`: Wrangler follows `.wrangler/deploy/config.json` to the
- *   artifact the guard checked, and an explicit config would bypass that;
+ * - `--config` names the runner's own verified snapshot of the build output
+ *   (a private copy), so Wrangler follows no redirect and falls back to no
+ *   `wrangler.json`/`wrangler.jsonc`; a caller's `--config` is still refused;
  * - no `--route(s)` or `--domain(s)`: those are added to the config's list;
  * - `--no-autoconfig`: framework detection may rewrite the config it deploys;
  * - `--env-file /dev/null`: no `.env` in the checkout can set Wrangler's own
  *   settings (the API address among them).
  */
-export function wranglerDeployArgv(wranglerBin: string): readonly string[] {
-  return [wranglerBin, "deploy", "--no-autoconfig", "--env-file", "/dev/null"];
+export function wranglerDeployArgv(wranglerBin: string, configPath: string): readonly string[] {
+  return [wranglerBin, "deploy", "--config", configPath, "--no-autoconfig", "--env-file", "/dev/null"];
 }
 
 export type CoreDeployCommand = "deploy" | "ensure-platform-bindings" | "verify";
@@ -101,6 +102,13 @@ const REFUSED_ENV: ReadonlyArray<[string, string]> = [
   ["CLOUDFLARE_ENV", "selects a Wrangler environment at build and deploy time"],
   ["CLOUDFLARE_API_KEY", "is a global API key, which Wrangler prefers to the token"],
   ["CLOUDFLARE_EMAIL", "goes with a global API key"],
+  // Deprecated aliases the pinned Wrangler still reads (cli.js `deprecatedName`).
+  ["CF_API_KEY", "is the deprecated alias of CLOUDFLARE_API_KEY"],
+  ["CF_EMAIL", "is the deprecated alias of CLOUDFLARE_EMAIL"],
+  ["CF_API_TOKEN", "is the deprecated alias of CLOUDFLARE_API_TOKEN"],
+  ["CF_ACCOUNT_ID", "is the deprecated alias of CLOUDFLARE_ACCOUNT_ID"],
+  ["CF_API_BASE_URL", "is the deprecated alias of CLOUDFLARE_API_BASE_URL"],
+  ["WRANGLER_CF_AUTHORIZATION_TOKEN", "replaces the credential Wrangler authenticates with"],
 ];
 
 export function checkDeployEnvironment(

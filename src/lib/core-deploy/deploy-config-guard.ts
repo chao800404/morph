@@ -53,16 +53,48 @@ function sections(config: Config): Array<{ label: string; section: Config }> {
   return out;
 }
 
-/** Route keys and exposure flags, in every section. */
+/**
+ * Keys that `JSON.parse` keeps as plain own properties but the pinned
+ * Wrangler's parser assigns, so that `"__proto__": {"routes": [...]}` becomes
+ * an inherited Custom Domain list Wrangler deploys while an own-key check sees
+ * nothing. Refused anywhere in the document.
+ */
+const PROTOTYPE_KEYS = ["__proto__", "constructor", "prototype"];
+
+function prototypeKeys(value: unknown, at: string, found: string[]): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => prototypeKeys(item, `${at}[${index}]`, found));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const key of Object.keys(value)) {
+    if (PROTOTYPE_KEYS.includes(key)) found.push(`${at}.${key}`);
+    prototypeKeys((value as Record<string, unknown>)[key], `${at}.${key}`, found);
+  }
+}
+
+/** Route keys, `unsafe`, prototype keys and exposure flags, in every section. */
 function checkBindingPolicy(config: Config, label: string): string[] {
   const problems: string[] = [];
+  const found: string[] = [];
+  prototypeKeys(config, "$", found);
+  for (const where of found) {
+    problems.push(`${label}: ${where} is a prototype key; Wrangler's parser would turn it into inherited config (routes among them). Refused anywhere.`);
+  }
   for (const { label: where, section } of sections(config)) {
+    // `in`, not an own-key check: Wrangler's normalizer reads inherited
+    // properties, so an inherited route list is a route list.
     for (const key of ROUTE_KEYS) {
-      if (Object.prototype.hasOwnProperty.call(section, key)) {
+      if (key in section) {
         problems.push(
           `${label}: ${where} has "${key}" (${JSON.stringify(section[key])}). Core's deploy config must not contain route or routes in any form, including []; platform hostnames are bound by platform:ensure and storefront domains by Settings.`,
         );
       }
+    }
+    if ("unsafe" in section) {
+      problems.push(
+        `${label}: ${where} has "unsafe" (${JSON.stringify(section.unsafe)}). Its metadata is applied after the upload metadata is built and can rewrite any binding, the D1 database among them; Core's deploy config must not contain it.`,
+      );
     }
     if (where !== "top level") {
       for (const flag of ["workers_dev", "preview_urls"]) {
@@ -228,6 +260,41 @@ export function checkArtifactConfig(
   const artifactVars = isObject(artifact.vars) ? artifact.vars : {};
   if (stableJson(sourceVars) !== stableJson(artifactVars)) {
     problems.push(`${ARTIFACT_CONFIG_PATH}: vars differ from wrangler.jsonc; the build used another config or environment.`);
+  }
+  return problems;
+}
+
+/**
+ * The pinned Wrangler's own normalized config for the verified snapshot
+ * (`unstable_readConfig`), checked with the same policy: what Wrangler will
+ * deploy, after its own parsing, inheritance and defaults.
+ */
+export function checkNormalizedConfig(normalized: unknown, target: DeployTarget): string[] {
+  const label = "Wrangler's reader";
+  if (!isObject(normalized)) return [`${label}: no config.`];
+  const problems: string[] = [];
+  const routes = normalized.routes;
+  if (routes !== undefined) {
+    problems.push(`${label}: routes is ${JSON.stringify(routes)}; Core deploys none, not even [].`);
+  }
+  if (normalized.route !== undefined) {
+    problems.push(`${label}: route is ${JSON.stringify(normalized.route)}.`);
+  }
+  for (const flag of ["workers_dev", "preview_urls"]) {
+    if (normalized[flag] !== false) problems.push(`${label}: ${flag} is ${JSON.stringify(normalized[flag])}, not false.`);
+  }
+  if (normalized.name !== target.workerName) {
+    problems.push(`${label}: name is ${JSON.stringify(normalized.name)}, the target is "${target.workerName}".`);
+  }
+  const unsafe = normalized.unsafe;
+  if (unsafe !== undefined && !(isObject(unsafe) && Object.keys(unsafe).length === 0)) {
+    problems.push(`${label}: unsafe is ${JSON.stringify(unsafe)}.`);
+  }
+  const d1 = bindingMap(normalized.d1_databases, "database_id");
+  if (!d1 || !sameMap(d1, target.d1Databases)) {
+    problems.push(
+      `${label}: d1_databases binds ${JSON.stringify(d1)}, the target (and the migration check) is ${JSON.stringify(target.d1Databases)}.`,
+    );
   }
   return problems;
 }

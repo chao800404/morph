@@ -65,16 +65,18 @@ describe("the runner's arguments", () => {
 });
 
 describe("the Wrangler invocation", () => {
-  it("is a fixed argv with no config, route or domain override, autoconfig off and no .env", () => {
-    const argv = wranglerDeployArgv("/repo/node_modules/wrangler/bin/wrangler.js");
+  it("names exactly the verified snapshot's config, with no route or domain override, autoconfig off and no .env", () => {
+    const argv = wranglerDeployArgv("/repo/node_modules/wrangler/bin/wrangler.js", "/tmp/snap/dist/server/wrangler.json");
     expect(argv).toEqual([
       "/repo/node_modules/wrangler/bin/wrangler.js",
       "deploy",
+      "--config",
+      "/tmp/snap/dist/server/wrangler.json",
       "--no-autoconfig",
       "--env-file",
       "/dev/null",
     ]);
-    expect(argv.join(" ")).not.toMatch(/--config|-c |--route|--domain|--env /);
+    expect(argv.join(" ")).not.toMatch(/--route|--domain|--env /);
   });
 
   it("keeps the inventory and bootstrap credentials away from Wrangler and pins its destination", () => {
@@ -108,6 +110,13 @@ describe("the deploy environment", () => {
     ["CLOUDFLARE_EMAIL", "a@example.com"],
     ["CLOUDFLARE_API_BASE_URL", "http://127.0.0.1:9/client/v4"],
     ["WRANGLER_API_ENVIRONMENT", "staging"],
+    // Deprecated aliases the pinned Wrangler still reads (cli.js deprecatedName).
+    ["CF_API_KEY", "global"],
+    ["CF_EMAIL", "a@example.com"],
+    ["CF_API_TOKEN", "other-token"],
+    ["CF_ACCOUNT_ID", "ffffffffffffffffffffffffffffffff"],
+    ["CF_API_BASE_URL", "http://127.0.0.1:9/client/v4"],
+    ["WRANGLER_CF_AUTHORIZATION_TOKEN", "x"],
   ])("refuses %s", (name, value) => {
     const problems = checkDeployEnvironment({ ...DEPLOY_ENV, [name]: value }, TARGET, { deployToken: true });
     expect(problems).toEqual([expect.stringContaining(name)]);

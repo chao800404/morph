@@ -96,10 +96,17 @@ function describe(envelope: Envelope | null, status: number): string {
 const MAX_PAGES = 200;
 
 /**
- * A list endpoint, read to the end. The first request names no page; an
- * answer whose `result_info` says there are more pages is followed page by
- * page, and a stated total must match what arrived. An answer with no
- * `result_info` is an unpaged list.
+ * A list endpoint, read to the end, or not at all.
+ *
+ * - With a total on page 1 (`total_count` or `total_pages`): every page is
+ *   followed, every page must describe the same list as page 1 (same totals,
+ *   same `per_page`), no page may carry more than its `per_page` or other
+ *   than its `count`, and the entries must add up to `total_count`.
+ * - Without a total, a list is never taken as complete from a full page:
+ *   pages are read until one comes back short (fewer entries than the page
+ *   size, `per_page` or else page 1's length) or empty. A page that only
+ *   repeats entries already read means the endpoint ignores paging, and
+ *   completeness cannot be shown: unavailable.
  */
 async function readList(
   transport: CloudflareTransport,
@@ -107,10 +114,12 @@ async function readList(
   path: string,
 ): Promise<unknown[]> {
   const items: unknown[] = [];
+  const seen = new Set<string>();
   let totalCount: number | null = null;
-  let totalPages = 1;
+  let totalPages: number | null = null;
   let perPage: number | null = null;
-  for (let page = 1; page <= totalPages; page += 1) {
+  let pageSize: number | null = null;
+  for (let page = 1; ; page += 1) {
     if (page > MAX_PAGES) throw new CloudflareReadError(`${label}: more than ${MAX_PAGES} pages`);
     const query = page === 1 ? "" : `${path.includes("?") ? "&" : "?"}page=${page}${perPage ? `&per_page=${perPage}` : ""}`;
     let answer: Awaited<ReturnType<typeof send>>;
@@ -123,35 +132,48 @@ async function readList(
     if (status !== 200 || !envelope || envelope.success !== true || !Array.isArray(envelope.result)) {
       throw new CloudflareReadError(`${label}: unreadable answer (${describe(envelope, status)})`);
     }
-    items.push(...envelope.result);
+    const result = envelope.result;
     const info = envelope.result_info;
-    // Each page's own per_page, page 1 included, bounds what it may carry.
     const declaredPerPage = typeof info?.per_page === "number" ? info.per_page : perPage;
-    if (declaredPerPage !== null && envelope.result.length > declaredPerPage) {
-      throw new CloudflareReadError(`${label}: page ${page} carries ${envelope.result.length} entries, more than per_page ${declaredPerPage}`);
+    if (declaredPerPage !== null && result.length > declaredPerPage) {
+      throw new CloudflareReadError(`${label}: page ${page} carries ${result.length} entries, more than per_page ${declaredPerPage}`);
     }
-    if (info && typeof info.count === "number" && info.count !== envelope.result.length) {
-      throw new CloudflareReadError(`${label}: page ${page} says ${info.count} entries and carries ${envelope.result.length}`);
-    }
-    if (page === 1) {
-      if (info && typeof info.total_count === "number") totalCount = info.total_count;
-      if (info && typeof info.total_pages === "number" && info.total_pages > 1) totalPages = info.total_pages;
-      if (info && typeof info.per_page === "number") perPage = info.per_page;
-    } else {
-      // Every page must describe the same list the first page described: a
-      // total that moves between pages means the list changed (or the answer
-      // is wrong) while it was being read, so what arrived proves nothing.
-      const pageTotal = typeof info?.total_count === "number" ? info.total_count : null;
-      const pagePages = typeof info?.total_pages === "number" ? info.total_pages : null;
-      const pagePer = typeof info?.per_page === "number" ? info.per_page : null;
-      if (pageTotal !== totalCount || pagePages !== totalPages || pagePer !== perPage) {
-        throw new CloudflareReadError(
-          `${label}: page ${page} describes another list (total ${pageTotal}/${pagePages} pages, page 1 said ${totalCount}/${totalPages})`,
-        );
-      }
+    if (info && typeof info.count === "number" && info.count !== result.length) {
+      throw new CloudflareReadError(`${label}: page ${page} says ${info.count} entries and carries ${result.length}`);
     }
     if (info && typeof info.page === "number" && info.page !== page) {
       throw new CloudflareReadError(`${label}: asked for page ${page}, the API answered page ${info.page}`);
+    }
+    const pageTotal = typeof info?.total_count === "number" ? info.total_count : null;
+    const pagePages = typeof info?.total_pages === "number" ? info.total_pages : null;
+    const pagePer = typeof info?.per_page === "number" ? info.per_page : null;
+    if (page === 1) {
+      totalCount = pageTotal;
+      totalPages = pagePages;
+      perPage = pagePer;
+      pageSize = perPage ?? result.length;
+    } else if (pageTotal !== totalCount || pagePages !== totalPages || pagePer !== perPage) {
+      // A total that moves between pages means the list changed (or the answer
+      // is wrong) while it was being read, so what arrived proves nothing.
+      throw new CloudflareReadError(
+        `${label}: page ${page} describes another list (total ${pageTotal}/${pagePages} pages per ${pagePer}, page 1 said ${totalCount}/${totalPages} per ${perPage})`,
+      );
+    }
+    const keys = result.map((entry) => JSON.stringify(entry));
+    if (page > 1 && keys.length > 0 && keys.every((key) => seen.has(key))) {
+      throw new CloudflareReadError(`${label}: page ${page} repeats entries already read; the endpoint ignores paging, so the list cannot be shown complete`);
+    }
+    for (const key of keys) seen.add(key);
+    items.push(...result);
+
+    if (totalCount !== null || totalPages !== null) {
+      // A stated total: follow the stated pages (or, with only a count,
+      // until it is reached).
+      const lastPage = totalPages ?? Math.max(1, Math.ceil((totalCount ?? 0) / Math.max(1, pageSize ?? 1)));
+      if (page >= lastPage || (totalPages === null && items.length >= (totalCount ?? 0))) break;
+      if (result.length === 0) break;
+    } else if (result.length === 0 || result.length < (pageSize ?? 0)) {
+      break;
     }
   }
   if (totalCount !== null && totalCount !== items.length) {

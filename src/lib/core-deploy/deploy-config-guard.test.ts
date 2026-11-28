@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkArtifactConfig,
   checkDeployRedirect,
+  checkNormalizedConfig,
   checkSourceConfig,
 } from "./deploy-config-guard";
 import { parseDeployTarget, type DeployTarget } from "./deploy-target";
@@ -193,5 +194,71 @@ describe("the deploy target", () => {
     ["an unknown field", { routes: [] }],
   ])("refuses %s", (_label, overrides) => {
     expect(parseDeployTarget({ ...TARGET, ...overrides }).ok).toBe(false);
+  });
+});
+
+describe("parser parity with the pinned Wrangler (round 5)", () => {
+  const sourcePath = "/repo/wrangler.jsonc";
+  // JSON.parse keeps "__proto__" as an own key; Wrangler's parser assigns it,
+  // so these routes become inherited and Wrangler deploys them.
+  const protoText = JSON.stringify(config()).replace(/}$/, ',"__proto__":{"routes":[{"pattern":"a.example.com","custom_domain":true}]}}');
+
+  it.each(["__proto__", "constructor", "prototype"])("refuses a %s key anywhere, source or artifact", (key) => {
+    const nested = { ...config(), observability: JSON.parse(`{"${key}": {"enabled": true}}`) };
+    expect(checkSourceConfig(nested, TARGET).some((p) => p.includes(key))).toBe(true);
+    expect(checkArtifactConfig(nested, config(), TARGET, sourcePath).some((p) => p.includes(key))).toBe(true);
+  });
+
+  it("refuses the artifact Wrangler would read with inherited routes", () => {
+    const parsed = JSON.parse(protoText);
+    expect(Object.prototype.hasOwnProperty.call(parsed, "routes")).toBe(false);
+    expect(checkArtifactConfig(parsed, config(), TARGET, sourcePath).some((p) => p.includes("__proto__"))).toBe(true);
+  });
+
+  it("refuses route keys a section inherits rather than owns", () => {
+    const inherited = Object.assign(Object.create({ routes: [] }), config());
+    expect(checkSourceConfig(inherited, TARGET).some((p) => /route or routes/.test(p))).toBe(true);
+  });
+
+  it.each([
+    ["unsafe at the top level", { unsafe: {} }],
+    ["unsafe.metadata", { unsafe: { metadata: { bindings: [] } } }],
+    ["unsafe in an environment", { env: { e2e: { unsafe: { bindings: [] } } } }],
+  ])("refuses %s, which can rewrite the uploaded bindings", (_label, overrides) => {
+    expect(checkSourceConfig(config(overrides), TARGET).some((p) => p.includes("unsafe"))).toBe(true);
+    expect(checkArtifactConfig(config(overrides), config(), TARGET, sourcePath).some((p) => p.includes("unsafe"))).toBe(true);
+  });
+
+  it("refuses an artifact whose uploaded D1 binding is not the migration-check target", () => {
+    const other = config({ d1_databases: [{ binding: "DATABASE", database_id: "ffffffff-0000-0000-0000-000000000000" }] });
+    expect(checkArtifactConfig(other, config(), TARGET, sourcePath).some((p) => p.includes("d1_databases"))).toBe(true);
+  });
+
+  describe("Wrangler's normalized config", () => {
+    const normalized = (overrides: Record<string, unknown> = {}) => ({
+      name: WORKER,
+      routes: undefined,
+      route: undefined,
+      workers_dev: false,
+      preview_urls: false,
+      unsafe: {},
+      d1_databases: [{ binding: "DATABASE", database_id: D1_ID }],
+      ...overrides,
+    });
+    it("passes a route-free normalized config", () => {
+      expect(checkNormalizedConfig(normalized(), TARGET)).toEqual([]);
+    });
+    it.each([
+      ["inherited routes", { routes: [{ pattern: "a.example.com", custom_domain: true }] }],
+      ["routes: []", { routes: [] }],
+      ["a route", { route: "a.example.com/*" }],
+      ["workers_dev on", { workers_dev: true }],
+      ["preview_urls undefined", { preview_urls: undefined }],
+      ["another name", { name: "morph" }],
+      ["unsafe metadata", { unsafe: { metadata: { x: 1 } } }],
+      ["another database", { d1_databases: [{ binding: "DATABASE", database_id: "other" }] }],
+    ])("refuses %s", (_label, overrides) => {
+      expect(checkNormalizedConfig(normalized(overrides), TARGET).length).toBeGreaterThan(0);
+    });
   });
 });

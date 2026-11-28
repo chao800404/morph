@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 import type { BootstrapApi, InventoryApi } from "./cloudflare-api";
 import {
@@ -6,6 +5,7 @@ import {
   DEPLOY_REDIRECT_PATH,
   checkArtifactConfig,
   checkDeployRedirect,
+  checkNormalizedConfig,
   checkSourceConfig,
 } from "./deploy-config-guard";
 import {
@@ -68,8 +68,18 @@ export type CoreDeployDeps = Readonly<{
   lock(dir: string): boolean;
   unlock(dir: string): void;
   parseJsonc(text: string): { ok: true; value: unknown } | { ok: false; error: string };
+  /**
+   * Copies `dirs` (relative to `from`) into a new private directory only this
+   * process can write (mode 0700), keeping their relative layout, and returns
+   * that directory.
+   */
+  snapshot(from: string, dirs: readonly string[]): string;
+  /** A digest of every file under `dir`: paths and contents. Throws if one cannot be read. */
+  hashTree(dir: string): string;
+  /** The pinned Wrangler's own reader (`unstable_readConfig`) on exactly this config file. */
+  readWranglerConfig(configPath: string): unknown;
   /** Runs a child process with inherited output; resolves with its exit code. */
-  run(step: "build" | "wrangler", argv: readonly string[], env: Record<string, string>): Promise<number>;
+  run(step: "build" | "wrangler", argv: readonly string[], env: Record<string, string>, cwd?: string): Promise<number>;
   inventoryApi: (accountId: string) => InventoryApi;
   bootstrapApi: (accountId: string) => BootstrapApi;
   writeReport(name: string, data: unknown): void;
@@ -356,34 +366,81 @@ async function deployLocked(options: RunnerOptions, deps: CoreDeployDeps, prepar
     return refuse(deps, artifactProblems.length > 0 ? artifactProblems : ["The build's deploy config was not read."]);
   }
 
-  // What Wrangler reads — the redirect, the artifact it points at, and the
-  // source it falls back to — must be what was checked, immediately before
-  // it starts and still after it exits.
-  const files = [redirectPath, artifactPath, prepared.sourcePath];
-  const digest = (texts: readonly string[]) => {
-    const hash = createHash("sha256");
-    files.forEach((file, index) => hash.update(file).update("\0").update(texts[index]!).update("\0"));
-    return hash.digest("hex");
-  };
-  const checked = digest([redirectText, artifactText, prepared.sourceText]);
-  // Before Wrangler: a file that cannot be read refuses the deploy. After it:
-  // a file that cannot be read is a change, and the post-deploy inventory
-  // still runs.
-  const current = (strict: boolean): string | null => {
-    try {
-      return digest(files.map((file) => (deps.exists(file) ? deps.readText(file) : "<missing>")));
-    } catch (error) {
-      if (strict) return null;
-      return `<unreadable: ${error instanceof Error ? error.message : String(error)}>`;
-    }
-  };
+  // Wrangler reads a private copy of what was checked, never the checkout: a
+  // build in the checkout after this point cannot change what is deployed,
+  // and with --config naming the copy no redirect is followed and no
+  // wrangler.json/wrangler.jsonc is fallen back to. A stray one at the root
+  // is refused anyway: it is a config nobody checked, one flag away.
+  const stray = ["wrangler.json", "wrangler.toml"].filter((name) => deps.exists(path.join(root, name)));
+  if (stray.length > 0) {
+    return refuse(deps, [`${stray.join(" and ")} at the checkout root: an unchecked Wrangler config. Remove it.`]);
+  }
+  const artifact = JSON.parse(artifactText) as { d1_databases?: Array<{ binding?: string; migrations_dir?: string }> };
+  const migrationsDir = (artifact.d1_databases ?? []).find((entry) => entry.binding === "DATABASE")?.migrations_dir;
+  const extraDirs: string[] = [];
+  if (migrationsDir) {
+    const resolved = path.relative(root, path.resolve(path.dirname(artifactPath), migrationsDir));
+    if (resolved && !resolved.startsWith("..") && !path.isAbsolute(resolved)) extraDirs.push(resolved);
+  }
+  let snapshotDir: string;
+  try {
+    snapshotDir = deps.snapshot(root, ["dist", ...extraDirs]);
+  } catch (error) {
+    return refuse(deps, [`Could not copy the build output: ${error instanceof Error ? error.message : String(error)}`]);
+  }
+  try {
+    return await deploySnapshot({ deps, prepared, mode, childEnv, before: before.snapshot, artifactText, snapshotDir });
+  } finally {
+    deps.removeDir(snapshotDir);
+  }
+}
 
-  const wranglerBin = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+async function deploySnapshot(input: {
+  deps: CoreDeployDeps;
+  prepared: Prepared;
+  mode: CompareMode;
+  childEnv: Record<string, string>;
+  before: InventorySnapshot;
+  artifactText: string;
+  snapshotDir: string;
+}): Promise<RunResult> {
+  const { deps, prepared, mode, childEnv, artifactText, snapshotDir } = input;
+  const { target } = prepared;
+  const snapshotConfig = path.join(snapshotDir, ARTIFACT_CONFIG_PATH);
+
+  // The copy must be byte for byte the artifact the guard read, and Wrangler's
+  // own reader must see the same policy in it (prototype keys, inherited
+  // routes, unsafe metadata and defaults are its business, not JSON.parse's).
+  let checked: string;
+  const problems: string[] = [];
+  try {
+    if (deps.readText(snapshotConfig) !== artifactText) {
+      problems.push("The copied artifact differs from the one the guard checked (the build output changed in between).");
+    }
+    problems.push(...checkNormalizedConfig(deps.readWranglerConfig(snapshotConfig), target));
+    checked = deps.hashTree(snapshotDir);
+  } catch (error) {
+    return refuse(deps, [
+      ...problems,
+      `Could not verify the snapshot: ${error instanceof Error ? error.message : String(error)}`,
+    ]);
+  }
+  if (problems.length > 0) return refuse(deps, problems);
+
+  // Immediately before Wrangler starts: unchanged, and readable.
+  let current: string | null;
+  try {
+    current = deps.hashTree(snapshotDir);
+  } catch {
+    current = null;
+  }
+  if (current !== checked) return refuse(deps, ["The verified snapshot changed, or could not be read, before Wrangler started."]);
+
+  const wranglerBin = path.join(deps.rootDir, "node_modules", "wrangler", "bin", "wrangler.js");
   let deployExit: number;
   let deployError: string | null = null;
-  if (current(true) !== checked) return refuse(deps, ["The checked config changed, or could not be read, before Wrangler started."]);
   try {
-    deployExit = await deps.run("wrangler", ["node", ...wranglerDeployArgv(wranglerBin)], childEnv);
+    deployExit = await deps.run("wrangler", ["node", ...wranglerDeployArgv(wranglerBin, snapshotConfig)], childEnv, snapshotDir);
   } catch (error) {
     deployExit = -1;
     deployError = error instanceof Error ? error.message : String(error);
@@ -392,17 +449,25 @@ async function deployLocked(options: RunnerOptions, deps: CoreDeployDeps, prepar
     deps.log(`[core-deploy] wrangler deploy exited ${deployExit}${deployError ? ` (${deployError})` : ""}; the upload may have committed, so the post-check still runs.`);
   }
 
-  const changedDuringDeploy = current(false) !== checked;
+  // After it: a change, or a file that cannot be read, is reported; the
+  // post-deploy inventory runs either way.
+  let afterHash: string;
+  try {
+    afterHash = deps.hashTree(snapshotDir);
+  } catch (error) {
+    afterHash = `<unreadable: ${error instanceof Error ? error.message : String(error)}>`;
+  }
+  const changedDuringDeploy = afterHash !== checked;
   if (changedDuringDeploy) {
-    deps.log("[core-deploy] the checked config changed while Wrangler ran; what it deployed is not known to be what was checked.");
+    deps.log("[core-deploy] the verified snapshot changed while Wrangler ran; what it deployed is not known to be what was checked.");
   }
 
   // Runs whatever Wrangler did: an upload can commit before a later step fails.
-  const after = await inventory(deps, prepared, mode, before.snapshot);
+  const after = await inventory(deps, prepared, mode, input.before);
   report(deps, "post", after, target.workerName);
   const deployProblems = [
     ...(deployExit !== 0 ? [`wrangler deploy exited ${deployExit}`] : []),
-    ...(changedDuringDeploy ? ["the checked config changed while Wrangler ran"] : []),
+    ...(changedDuringDeploy ? ["the verified snapshot changed while Wrangler ran"] : []),
   ];
   if (after.status !== "ok") {
     return { exitCode: verdictExit(after), problems: [`post-deploy check: ${after.status}`, ...deployProblems] };

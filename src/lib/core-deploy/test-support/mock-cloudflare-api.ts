@@ -61,6 +61,13 @@ export function ok(result: unknown, extra: Record<string, unknown> = {}): Reply 
   return { status: 200, body: { success: true, errors: [], messages: [], result, ...extra } };
 }
 
+/** A complete one-page list, with the totals a paged endpoint states. */
+export function okList(result: unknown[]): Reply {
+  return ok(result, {
+    result_info: { page: 1, per_page: Math.max(result.length, 20), count: result.length, total_count: result.length, total_pages: 1 },
+  });
+}
+
 export function apiError(status: number, code: number, message: string): Reply {
   return { status, body: { success: false, errors: [{ code, message }], messages: [], result: null } };
 }
@@ -90,7 +97,7 @@ function coreHandler(request: RecordedRequest, state: MockState): Reply | undefi
     return zone ? ok(zone) : apiError(404, 1001, "Invalid zone identifier");
   }
   if (method === "GET" && path === `${account}/workers/domains`) {
-    return ok(state.domains);
+    return okList(state.domains);
   }
   if (method === "PUT" && path === `${account}/workers/domains`) {
     const input = JSON.parse(request.body) as { hostname: string; service: string; environment?: string; zone_id: string };
@@ -116,7 +123,7 @@ function coreHandler(request: RecordedRequest, state: MockState): Reply | undefi
     const zoneId = match[1]!;
     if (!state.zones.some((z) => z.id === zoneId)) return apiError(404, 1001, "Invalid zone identifier");
     const routes = (state.routes[zoneId] ??= []);
-    if (method === "GET") return ok(routes);
+    if (method === "GET") return okList(routes);
     if (method === "POST") {
       const input = JSON.parse(request.body) as { pattern: string; script?: string };
       if (routes.some((r) => r.pattern === input.pattern)) {

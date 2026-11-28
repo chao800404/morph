@@ -11,9 +11,29 @@
  * src/lib/core-deploy/ for the rules.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+// The pinned Wrangler's own config reader: the guard also runs on what it
+// reads from the snapshot (parser parity).
+const { unstable_readConfig: readWranglerConfig } = createRequire(import.meta.url)("wrangler") as {
+  unstable_readConfig: (args: { config: string }, options: { hideWarnings: boolean }) => unknown;
+};
 
 // The repo's own JSONC reader for wrangler.jsonc; a plain .mjs with no types.
 // @ts-expect-error TS7016
@@ -64,10 +84,32 @@ const result = await runCoreDeploy(command, args.options, {
   },
   unlock: (dir) => rmSync(dir, { recursive: true, force: true }),
   parseJsonc: (text) => parseJsonc(text),
-  run: (step, argv, env) =>
+  snapshot: (from, dirs) => {
+    // mkdtemp creates the directory 0700: only this user can change the copy.
+    const dir = mkdtempSync(path.join(tmpdir(), "morph-core-deploy-"));
+    chmodSync(dir, 0o700);
+    for (const rel of dirs) {
+      cpSync(path.join(from, rel), path.join(dir, rel), { recursive: true, dereference: true, errorOnExist: true });
+    }
+    return dir;
+  },
+  hashTree: (dir) => {
+    const hash = createHash("sha256");
+    const walk = (current: string) => {
+      for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const file = path.join(current, entry.name);
+        if (entry.isDirectory()) walk(file);
+        else hash.update(path.relative(dir, file)).update("\0").update(readFileSync(file)).update("\0");
+      }
+    };
+    walk(dir);
+    return hash.digest("hex");
+  },
+  readWranglerConfig: (configPath) => readWranglerConfig({ config: configPath }, { hideWarnings: true }),
+  run: (step, argv, env, cwd) =>
     new Promise((resolve, reject) => {
       console.log(`[core-deploy] ${step}: ${argv.join(" ")}`);
-      const child = spawn(argv[0]!, argv.slice(1), { cwd: ROOT, env, stdio: "inherit" });
+      const child = spawn(argv[0]!, argv.slice(1), { cwd: cwd ?? ROOT, env, stdio: "inherit" });
       child.on("error", reject);
       child.on("close", (code, signal) => resolve(code ?? (signal ? 128 : 1)));
     }),

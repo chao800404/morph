@@ -327,10 +327,18 @@ order, the command:
 3. runs the migration check below, against the target's database id;
 4. reads the binding inventory and stops unless it is clean;
 5. builds, then checks `.wrangler/deploy/config.json` and the artifact it
-   points at (`dist/server/wrangler.json`);
-6. runs the pinned Wrangler with a fixed argv;
-7. reads the inventory again and compares it with step 4 — also when Wrangler
-   failed, because an upload can commit before a later step fails.
+   points at (`dist/server/wrangler.json`), and refuses a stray `wrangler.json`
+   or `wrangler.toml` at the checkout root;
+6. copies the build output into a private directory (mode 0700), checks the
+   copy is byte for byte the artifact it checked, runs the pinned Wrangler's own
+   config reader (`unstable_readConfig`) on the copy and applies the same policy
+   to what it returns, and hashes the copy;
+7. runs the pinned Wrangler with a fixed argv whose `--config` names that copy,
+   from inside it, so no redirect is followed and nothing in the checkout is
+   read; the copy must hash the same right before it starts;
+8. reads the inventory again and compares it with step 4 — also when Wrangler
+   failed, because an upload can commit before a later step fails — and
+   removes the copy.
 
 The migration check reads the remote database against `drizzle/`, reading
 `d1_migrations` and changing nothing, and stops when (the same rules as
@@ -389,9 +397,18 @@ no `route` or `routes` key in any section, not even `[]` (an empty list is
 harmless in this Wrangler, but it inherits nothing only by accident and is one
 edit away from a list), and `workers_dev` and `preview_urls` are both `false`.
 The guard checks `wrangler.jsonc`, every `env` section, the
-`.wrangler/deploy/config.json` redirect and the built
-`dist/server/wrangler.json`, and refuses `WRANGLER_CI_OVERRIDE_NAME`,
-`CLOUDFLARE_ENV`, a global API key and any API address but the official one.
+`.wrangler/deploy/config.json` redirect, the built `dist/server/wrangler.json`
+and Wrangler's own reading of the copy it deploys. It refuses route keys owned
+or inherited, an `unsafe` key anywhere (its metadata can rewrite any binding,
+the D1 database among them, after the guard's check), and a `__proto__`,
+`constructor` or `prototype` key anywhere (`JSON.parse` keeps them as plain
+keys, Wrangler's parser turns them into inherited config, routes included). The
+D1 binding Wrangler would upload must be the database the migration check
+read. In the environment it refuses `WRANGLER_CI_OVERRIDE_NAME`,
+`CLOUDFLARE_ENV`, a global API key (`CLOUDFLARE_API_KEY`/`CLOUDFLARE_EMAIL`),
+the deprecated aliases the pinned Wrangler still reads (`CF_API_KEY`,
+`CF_EMAIL`, `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_API_BASE_URL`),
+`WRANGLER_CF_AUTHORIZATION_TOKEN`, and any API address but the official one.
 
 Wrangler is pinned to exactly 4.146.0 (and the Vite plugin, whose output the
 guard reads, to 1.62.4). Upgrading either means re-reading the route handling
@@ -442,9 +459,18 @@ the next run. It never deletes, never moves a binding and never adopts one: a
 hostname bound to another Worker, or named by a storefront domain row (even on
 this Worker), is refused and nothing is written in that run. The Custom Domain
 attach is a PUT, so every attach is followed by a re-read that must show exactly
-one binding for the hostname, on this Worker. It cannot fence a second writer
-racing it; the assumption is that platform hostnames are bound by this command
-only. A Route existing proves nothing about wildcard DNS, TLS or HTTP for the
+one binding for the hostname, on this Worker. **Accepted residual (an API
+limitation):** the Custom Domain API has no create-only or conditional attach,
+so a binding someone else creates for the same hostname between the last read
+and the PUT (from the Dashboard, the API, or another checkout) is replaced by
+it, and the re-read then shows this Worker as the owner. The single-runner lock
+covers this checkout only; platform hostnames are to be bound by this command
+only, for one target from one checkout at a time. Before creating the preview
+wildcard Route it reads every Custom Domain in the account and every Route in
+the zone, and refuses (writing nothing) if any hostname under the wildcard is
+served by anything but this Core Worker, or if another Route overlaps it (a
+Route under it, a broader wildcard over it, or an exclusion Route): Cloudflare
+gives a matching Route precedence over a Custom Domain. A Route existing proves nothing about wildcard DNS, TLS or HTTP for the
 preview namespace: check a preview host resolves, presents a valid certificate
 and reaches the Worker, separately.
 
@@ -465,18 +491,23 @@ paired reads are drift, findings that moved are a connect or disconnect in
 progress and reported apart. A storefront domain inside the preview namespace
 is drift (routing would serve it as a preview), and so is a platform hostname
 inside it. After the deploy, a storefront row that stayed active must keep the
-same Cloudflare id and binding it had before. Only one deploy or
-`platform:ensure` runs per checkout (`.wrangler/core-deploy.lock`), and the
-checked redirect, artifact and source must be unchanged right before Wrangler
-starts and after it exits. Each of those files is read once, and the guard
-and the fingerprint use the same bytes, so a file replaced after its check
-refuses the deploy before Wrangler starts. Do not run a plain `pnpm build` in
-the same checkout while a deploy runs: the lock covers the runner's commands
-only, and a replacement in the instant between the last check and Wrangler's
-own read is detected afterwards (exit 2 or worse), not prevented. Run
-`platform:ensure` for one target from one checkout at a time: the lock does
-not reach across checkouts, and the Custom Domain attach is an upsert. `platform:ensure` refuses to write unless
-the inventory is clean apart from the platform bindings it will create. An inventory that cannot be read
+same Cloudflare id and binding it had before, and every binding this Worker
+had before must still be there (one that vanished with its D1 row is drift
+too); bindings that appeared are reported. Only one deploy or
+`platform:ensure` runs per checkout (`.wrangler/core-deploy.lock`). Wrangler
+reads only the private copy, so a build in the checkout during a deploy
+cannot change what is deployed; the copy itself must hash the same before
+Wrangler starts and after it exits. `platform:ensure` refuses to write unless
+the inventory is clean apart from the platform bindings it will create.
+
+A list is complete only when the API says so: with `total_count` or
+`total_pages`, every stated page is read and must agree with page 1; without
+them, pages are read until one comes back short or empty, and an endpoint that
+answers a later page with entries already read cannot be shown complete. Either
+failure is "verification unavailable", never an empty list. If a Cloudflare
+list endpoint states no totals and ignores paging, every inventory read is
+unavailable and the deploy refuses: the first `deploy:verify` on staging
+shows which. An inventory that cannot be read
 refuses the deploy before it starts. After the deploy the exit code says what
 the post-check found, with the Wrangler result reported separately:
 

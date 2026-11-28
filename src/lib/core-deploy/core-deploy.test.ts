@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // The repo's own JSONC reader for wrangler.jsonc; a plain .mjs with no types.
@@ -68,6 +69,8 @@ type Harness = {
   files: Map<string, string>;
   api: MockApi;
   childEnvs: Record<string, Record<string, string>>;
+  cwds: Record<string, string | undefined>;
+  snapshots: string[];
 };
 
 async function harness(
@@ -79,6 +82,10 @@ async function harness(
     artifact?: (source: Record<string, unknown>) => Record<string, unknown>;
     /** The migrations directory's entries; the mock D1 has applied 0001_init.sql. */
     migrationFiles?: string[];
+    /** What Wrangler's own config reader returns for the snapshot's config (default: JSON.parse). */
+    normalize?: (parsed: Record<string, unknown>) => Record<string, unknown>;
+    /** Runs just before the snapshot is copied (a concurrent build). */
+    beforeSnapshot?: (files: Map<string, string>) => void;
   } = {},
 ): Promise<Harness> {
   const admin = domain("admin.example.com");
@@ -114,6 +121,8 @@ async function harness(
   const logs: string[] = [];
   const reports: Record<string, unknown> = {};
   const childEnvs: Record<string, Record<string, string>> = {};
+  const cwds: Record<string, string | undefined> = {};
+  const snapshots: string[] = [];
   const deps: CoreDeployDeps = {
     rootDir: ROOT,
     env: { ...ENV, ...options.env },
@@ -143,15 +152,41 @@ async function harness(
       for (const key of [...files.keys()]) if (key.startsWith(`${dir}/`)) files.delete(key);
     },
     parseJsonc: (text) => parseJsonc(text),
-    run: async (step, argv, env) => {
+    snapshot: (from, dirs) => {
+      options.beforeSnapshot?.(files);
+      const dir = `/snap-${snapshots.length + 1}`;
+      snapshots.push(dir);
+      steps.push(`snapshot ${dirs.join(",")}`);
+      for (const rel of dirs) {
+        for (const [key, value] of [...files]) {
+          if (key.startsWith(`${path.join(from, rel)}/`)) files.set(`${dir}/${path.relative(from, key)}`, value);
+        }
+      }
+      return dir;
+    },
+    hashTree: (dir) => {
+      const hash = createHash("sha256");
+      for (const key of [...files.keys()].filter((k) => k.startsWith(`${dir}/`)).sort()) {
+        hash.update(key).update(deps.readText(key));
+      }
+      return hash.digest("hex");
+    },
+    readWranglerConfig: (configPath) => {
+      const parsed = JSON.parse(deps.readText(configPath));
+      return options.normalize ? options.normalize(parsed) : parsed;
+    },
+    run: async (step, argv, env, cwd) => {
       steps.push(`${step}: ${argv.slice(1).map((a) => (a.startsWith(ROOT) ? path.relative(ROOT, a) : a)).join(" ")}`);
       childEnvs[step] = env;
+      cwds[step] = cwd;
       if (step === "build") {
         clock += 10_000;
         const source = JSON.parse(files.get(at("wrangler.jsonc"))!.replace(/^\/\/.*\n/, ""));
         const artifact = options.artifact?.(source) ?? {
           ...source,
           main: "index.js",
+          // As the Vite plugin writes it: relative to dist/server.
+          d1_databases: source.d1_databases.map((entry: Record<string, unknown>) => ({ ...entry, migrations_dir: "../../drizzle" })),
           configPath: at("wrangler.jsonc"),
           userConfigPath: at("wrangler.jsonc"),
           topLevelName: source.name,
@@ -174,7 +209,7 @@ async function harness(
     sleep: async () => {},
     reconcileDelayMs: 0,
   };
-  return { deps, steps, logs, reports, files, api, childEnvs };
+  return { deps, steps, logs, reports, files, api, childEnvs, cwds, snapshots };
 }
 
 const deploy = (h: Harness, args: { bootstrap?: boolean } = {}) =>
@@ -191,9 +226,13 @@ describe("pnpm run deploy", () => {
       "rm .wrangler/deploy",
       "ls drizzle",
       "build: run build",
-      "wrangler: node_modules/wrangler/bin/wrangler.js deploy --no-autoconfig --env-file /dev/null",
+      "snapshot dist,drizzle",
+      "wrangler: node_modules/wrangler/bin/wrangler.js deploy --config /snap-1/dist/server/wrangler.json --no-autoconfig --env-file /dev/null",
+      "rm ../snap-1",
       "unlock",
     ]);
+    // Wrangler runs inside the private snapshot, never from the checkout.
+    expect(h.cwds.wrangler).toBe("/snap-1");
     // The migration check read the target's database by id, before the build.
     const queries = h.api.requests.filter((r) => r.path.endsWith(`/d1/database/${D1_ID}/query`)).map((r) => JSON.parse(r.body).sql);
     expect(queries[0]).toBe("SELECT name FROM d1_migrations ORDER BY id");
@@ -275,16 +314,45 @@ describe("pnpm run deploy", () => {
     expect(h.steps).toEqual([]);
   });
 
-  it("reports an artifact replaced while Wrangler ran", async () => {
+  it("is not affected by a build replacing the checkout's artifact while Wrangler runs", async () => {
     const h = await harness({
       onWrangler: () => {
-        h.files.set(at("dist/server/wrangler.json"), JSON.stringify({ name: "swapped" }));
+        h.files.set(at("dist/server/wrangler.json"), JSON.stringify({ name: "swapped", routes: [{ pattern: "a.example.com", custom_domain: true }] }));
+        return 0;
+      },
+    });
+    expect(await deploy(h)).toEqual({ exitCode: EXIT.ok, problems: [] });
+  });
+
+  it("reports the snapshot changing while Wrangler ran", async () => {
+    const h = await harness({
+      onWrangler: () => {
+        h.files.set("/snap-1/dist/server/wrangler.json", JSON.stringify({ name: "swapped" }));
         return 0;
       },
     });
     const result = await deploy(h);
-    expect(result).toEqual({ exitCode: EXIT.deployFailed, problems: ["the checked config changed while Wrangler ran"] });
+    expect(result).toEqual({ exitCode: EXIT.deployFailed, problems: ["the verified snapshot changed while Wrangler ran"] });
     expect(h.steps.at(-1)).toBe("unlock");
+  });
+
+  it("refuses a stray wrangler.json or wrangler.toml at the checkout root", async () => {
+    for (const name of ["wrangler.json", "wrangler.toml"]) {
+      const h = await harness();
+      h.files.set(at(name), "{}");
+      expect((await deploy(h)).exitCode).toBe(EXIT.refused);
+      expect(h.steps.some((step) => step.startsWith("wrangler"))).toBe(false);
+    }
+  });
+
+  it("refuses when Wrangler's own reader sees routes the JSON guard does not (parser parity)", async () => {
+    const h = await harness({
+      normalize: (parsed) => ({ ...parsed, routes: [{ pattern: "admin.example.com", custom_domain: true }] }),
+    });
+    const result = await deploy(h);
+    expect(result.exitCode).toBe(EXIT.refused);
+    expect(result.problems.join("\n")).toMatch(/Wrangler's reader/);
+    expect(h.steps.some((step) => step.startsWith("wrangler"))).toBe(false);
   });
 
   it("refuses an artifact that differs from the checked source", async () => {
@@ -383,47 +451,42 @@ describe("pnpm run platform:ensure and deploy:verify", () => {
     expect(h.api.requests).toEqual([]);
   });
 
-  it("refuses, without running Wrangler, an artifact replaced after its check", async () => {
-    const h = await harness();
-    const readText = h.deps.readText;
-    let artifactReads = 0;
-    (h.deps as { readText: (file: string) => string }).readText = (file) => {
-      if (file === at("dist/server/wrangler.json") && ++artifactReads === 2) {
-        // A plain build in the same checkout, between the guard and the spawn.
-        h.files.set(file, JSON.stringify({ name: "swapped", routes: [{ pattern: "a.example.com", custom_domain: true }] }));
-      }
-      return readText(file);
-    };
+  it("refuses, without running Wrangler, an artifact replaced between its check and the snapshot", async () => {
+    const h = await harness({
+      beforeSnapshot: (files) => {
+        // A plain build in the same checkout, between the guard and the copy.
+        files.set(at("dist/server/wrangler.json"), JSON.stringify({ name: "swapped", routes: [{ pattern: "a.example.com", custom_domain: true }] }));
+      },
+    });
     const result = await deploy(h);
     expect(result.exitCode).toBe(EXIT.refused);
     expect(h.steps.some((s) => s.startsWith("wrangler"))).toBe(false);
   });
 
-  it("refuses, without running Wrangler, when a checked file cannot be read before it starts", async () => {
+  it("refuses, without running Wrangler, when the snapshot cannot be read before it starts", async () => {
     const h = await harness();
     const readText = h.deps.readText;
-    let artifactReads = 0;
     (h.deps as { readText: (file: string) => string }).readText = (file) => {
-      if (file === at("dist/server/wrangler.json") && ++artifactReads >= 2) throw new Error("EIO");
+      if (file.startsWith("/snap-1/")) throw new Error("EIO");
       return readText(file);
     };
     expect((await deploy(h)).exitCode).toBe(EXIT.refused);
     expect(h.steps.some((s) => s.startsWith("wrangler"))).toBe(false);
   });
 
-  it("still runs the post-check when a checked file cannot be read after Wrangler", async () => {
+  it("still runs the post-check when the snapshot cannot be read after Wrangler", async () => {
     const h = await harness({
       onWrangler: () => {
         const readText = h.deps.readText;
         (h.deps as { readText: (file: string) => string }).readText = (file) => {
-          if (file.endsWith("dist/server/wrangler.json")) throw new Error("EIO");
+          if (file.startsWith("/snap-1/")) throw new Error("EIO");
           return readText(file);
         };
         return 0;
       },
     });
     const result = await deploy(h);
-    expect(result).toEqual({ exitCode: EXIT.deployFailed, problems: ["the checked config changed while Wrangler ran"] });
+    expect(result).toEqual({ exitCode: EXIT.deployFailed, problems: ["the verified snapshot changed while Wrangler ran"] });
     expect(h.reports.post).toMatchObject({ status: "ok" });
   });
 

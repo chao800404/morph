@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
+import { checkArtifactConfig, checkNormalizedConfig } from "./deploy-config-guard";
 import { PINNED_WRANGLER_VERSION, deployChildEnv, wranglerDeployArgv } from "./deploy-invocation";
 import {
   ACCOUNT,
@@ -147,9 +149,15 @@ async function layout(artifact: Record<string, unknown>, options: { assetsOnly?:
   }
   await writeFile(path.join(root, "wrangler.jsonc"), JSON.stringify({ name: SCRIPT, compatibility_date: "2026-03-24" }));
   await writeFile(path.join(root, "dist", "server", "wrangler.json"), JSON.stringify(artifact, null, 2));
+  // A redirect that names a config with a Custom Domain list. The runner
+  // passes --config, so Wrangler must never follow it.
+  await writeFile(
+    path.join(root, "dist", "server", "redirected.json"),
+    JSON.stringify({ ...artifact, routes: [{ pattern: "redirected.example.com", custom_domain: true }] }),
+  );
   await writeFile(
     path.join(root, ".wrangler", "deploy", "config.json"),
-    JSON.stringify({ configPath: "../../dist/server/wrangler.json", auxiliaryWorkers: [] }),
+    JSON.stringify({ configPath: "../../dist/server/redirected.json", auxiliaryWorkers: [] }),
   );
   return { root, home };
 }
@@ -170,7 +178,7 @@ async function deploy(
   layoutDirs: Layout,
   api: MockApi,
 ): Promise<{ code: number | null; output: string }> {
-  const [bin, ...argv] = wranglerDeployArgv(WRANGLER_BIN);
+  const [bin, ...argv] = wranglerDeployArgv(WRANGLER_BIN, path.join(layoutDirs.root, "dist", "server", "wrangler.json"));
   const env = {
     ...deployChildEnv({
       PATH: process.env.PATH ?? "",
@@ -297,4 +305,30 @@ describe("what the pinned Wrangler writes for each route shape", () => {
     ]);
     expect(api.state.routes[ZONE]).toEqual([expect.objectContaining({ pattern: "*.preview.example.com/*", script: SCRIPT })]);
   }, 120_000);
+});
+
+describe("parser parity: the guard sees what the pinned Wrangler reads", () => {
+  const require = createRequire(import.meta.url);
+  const { unstable_readConfig } = require("wrangler") as {
+    unstable_readConfig: (args: { config: string }, options: { hideWarnings: boolean }) => Record<string, unknown>;
+  };
+
+  it("a __proto__ key is an inherited Custom Domain list to Wrangler, and both guards refuse it", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "morph-wrangler-parity-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    await writeFile(path.join(root, "index.js"), "export default { fetch() { return new Response('ok'); } };\n");
+    const base = { name: SCRIPT, main: "index.js", compatibility_date: "2026-03-24", workers_dev: false, preview_urls: false };
+    const text = JSON.stringify(base).replace(/}$/, ',"__proto__":{"routes":[{"pattern":"a.example.com","custom_domain":true}]}}');
+    const file = path.join(root, "wrangler.json");
+    await writeFile(file, text);
+
+    const parsed = JSON.parse(text);
+    expect(Object.prototype.hasOwnProperty.call(parsed, "routes")).toBe(false);
+    const seen = unstable_readConfig({ config: file }, { hideWarnings: true });
+    expect(seen.routes).toEqual([{ pattern: "a.example.com", custom_domain: true }]);
+
+    const target = { accountId: ACCOUNT, workerName: SCRIPT, environment: "production", d1Databases: {}, kvNamespaces: {}, r2Buckets: {} };
+    expect(checkArtifactConfig(parsed, base, target, "/x").some((p) => p.includes("__proto__"))).toBe(true);
+    expect(checkNormalizedConfig(seen, target).some((p) => /routes/.test(p))).toBe(true);
+  });
 });
