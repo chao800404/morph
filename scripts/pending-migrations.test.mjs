@@ -252,12 +252,17 @@ describe("check-pending-migrations.mjs --remote, the deploy gate", () => {
     }
   }
 
-  it("is what pnpm run deploy runs first", () => {
+  // `pnpm run deploy` is the guarded Core deploy runner since design 2. The
+  // gate moved inside it, ahead of the build and Wrangler; that order is
+  // asserted step by step in src/lib/core-deploy/core-deploy.test.ts. Here:
+  // the script is that runner, and the runner still names this gate.
+  it("is what pnpm run deploy runs before building", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-    assert.match(
-      pkg.scripts.deploy,
-      /^node scripts\/check-pending-migrations\.mjs --remote && /,
-    );
+    assert.equal(pkg.scripts.deploy, "tsx scripts/core-deploy.ts deploy");
+    const runner = readFileSync(join(root, "src/lib/core-deploy/core-deploy.ts"), "utf8");
+    const gate = runner.indexOf('"check-pending-migrations.mjs"), "--remote"]');
+    assert.ok(gate > 0, "the runner runs check-pending-migrations.mjs --remote");
+    assert.ok(gate < runner.indexOf('["pnpm", "run", "build"]'), "before the build");
     assert.ok(files.includes(RUNTIME), `${RUNTIME} is in drizzle/`);
   });
 

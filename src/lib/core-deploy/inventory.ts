@@ -1,0 +1,377 @@
+import {
+  CloudflareReadError,
+  type InventoryApi,
+  type WorkerDomain,
+  type Zone,
+  type ZoneRoute,
+} from "./cloudflare-api";
+import type { DeployTarget } from "./deploy-target";
+import { isInZone, routePatternHostname, type PlatformManifest } from "./platform-manifest";
+
+/**
+ * The Worker's hostname bindings, read before and after a Core deploy and
+ * compared by exact identity (design 2, "Inventory before and after").
+ *
+ * Under option B the deploy writes no binding, so this is a check, not a
+ * protection: it shows that what was bound before is bound after, to the same
+ * Worker, with the same ids — and refuses a deploy it cannot show that for.
+ *
+ * What is read, in one "paired read":
+ * - D1 `storefront_domains` for every undeleted storefront (not only the
+ *   oldest, which is what Settings shows): active rows are what must be bound,
+ *   pending and failed rows are reported;
+ * - every Custom Domain in the account, unfiltered, so a hostname bound to
+ *   another Worker is visible rather than filtered out;
+ * - every Workers Route in the platform zone, unfiltered, for the same reason;
+ * - the zone itself, to check that each platform hostname belongs to it.
+ *
+ * There is no count rule. A count can hide a dropped binding behind a new
+ * one; every expectation is a hostname or pattern with its identity.
+ */
+
+export const STOREFRONT_DOMAIN_ROWS_SQL = [
+  "SELECT d.id AS id, d.storefront_id AS storefront_id, d.hostname AS hostname,",
+  "d.status AS status, d.cloudflare_domain_id AS cloudflare_domain_id, d.updated_at AS updated_at",
+  "FROM storefront_domains d JOIN storefronts s ON s.id = d.storefront_id",
+  "WHERE d.deleted_at IS NULL AND s.deleted_at IS NULL",
+  "ORDER BY d.hostname, d.id",
+].join(" ");
+
+export type StorefrontDomainRow = Readonly<{
+  id: string;
+  storefrontId: string;
+  hostname: string;
+  status: string;
+  cloudflareDomainId: string | null;
+  updatedAt: string | null;
+}>;
+
+export type InventorySnapshot = Readonly<{
+  readAt: string;
+  accountId: string;
+  zone: Zone;
+  storefrontDomains: readonly StorefrontDomainRow[];
+  customDomains: readonly WorkerDomain[];
+  zoneRoutes: readonly ZoneRoute[];
+}>;
+
+function toRow(raw: Record<string, unknown>): StorefrontDomainRow {
+  const text = (key: string) => (typeof raw[key] === "string" ? (raw[key] as string) : null);
+  const id = text("id");
+  const storefrontId = text("storefront_id");
+  const hostname = text("hostname");
+  const status = text("status");
+  if (!id || !storefrontId || !hostname || !status) {
+    throw new CloudflareReadError(`D1: a storefront_domains row lacks id, storefront_id, hostname or status (${JSON.stringify(raw)})`);
+  }
+  return {
+    id,
+    storefrontId,
+    hostname: hostname.toLowerCase(),
+    status,
+    cloudflareDomainId: text("cloudflare_domain_id"),
+    updatedAt: text("updated_at"),
+  };
+}
+
+export async function readInventory(
+  api: InventoryApi,
+  target: DeployTarget,
+  manifest: PlatformManifest,
+  now: () => Date = () => new Date(),
+): Promise<InventorySnapshot> {
+  const zone = await api.getZone(manifest.zoneId);
+  const databaseId = target.d1Databases.DATABASE!;
+  const rows = (await api.queryD1(databaseId, STOREFRONT_DOMAIN_ROWS_SQL)).map(toRow);
+  const customDomains = await api.listWorkerDomains();
+  const zoneRoutes = await api.listZoneRoutes(manifest.zoneId);
+  return {
+    readAt: now().toISOString(),
+    accountId: target.accountId,
+    zone,
+    storefrontDomains: rows,
+    customDomains,
+    zoneRoutes,
+  };
+}
+
+export type DiscrepancyKind =
+  | "platform-hostname-outside-zone"
+  | "platform-domain-missing"
+  | "platform-domain-wrong-owner"
+  | "platform-domain-storefront-row"
+  | "platform-domain-changed"
+  | "storefront-domain-missing"
+  | "storefront-domain-wrong-owner"
+  | "storefront-domain-id-mismatch"
+  | "unknown-domain"
+  | "duplicate-domain"
+  | "platform-route-missing"
+  | "platform-route-wrong-owner"
+  | "platform-route-changed"
+  | "unknown-route";
+
+export type Discrepancy = Readonly<{
+  kind: DiscrepancyKind;
+  /** Kind plus the exact identities involved; equal keys are the same finding. */
+  key: string;
+  detail: string;
+}>;
+
+export type CompareMode = "strict" | "bootstrap";
+
+/** Kinds a bootstrap deploy expects, because platform:ensure has not run yet. */
+const BOOTSTRAP_TOLERATED: ReadonlySet<DiscrepancyKind> = new Set([
+  "platform-domain-missing",
+  "platform-route-missing",
+]);
+
+function identity(domain: WorkerDomain): string {
+  return `${domain.hostname} id=${domain.id} service=${domain.service} environment=${domain.environment} zone=${domain.zoneId}`;
+}
+
+export function compareInventory(input: {
+  snapshot: InventorySnapshot;
+  target: DeployTarget;
+  manifest: PlatformManifest;
+  mode: CompareMode;
+  /** The pre-deploy snapshot, for the post-deploy check. */
+  baseline?: InventorySnapshot;
+}): { discrepancies: Discrepancy[]; tolerated: Discrepancy[]; diagnostics: string[] } {
+  const { snapshot, target, manifest } = input;
+  const found: Discrepancy[] = [];
+  const diagnostics: string[] = [];
+  const add = (kind: DiscrepancyKind, subject: string, detail: string) =>
+    found.push({ kind, key: `${kind}|${subject}`, detail });
+
+  const ours = (domain: WorkerDomain) =>
+    domain.service === target.workerName &&
+    domain.environment === target.environment &&
+    domain.zoneId === manifest.zoneId;
+
+  const byHostname = new Map<string, WorkerDomain[]>();
+  for (const domain of snapshot.customDomains) {
+    byHostname.set(domain.hostname, [...(byHostname.get(domain.hostname) ?? []), domain]);
+  }
+  for (const [hostname, domains] of byHostname) {
+    if (domains.length > 1) {
+      add("duplicate-domain", `${hostname}|${domains.map((d) => d.id).sort().join(",")}`, `${hostname} has ${domains.length} Custom Domain entries: ${domains.map(identity).join("; ")}`);
+    }
+  }
+  const rowsByHostname = new Map<string, StorefrontDomainRow[]>();
+  for (const row of snapshot.storefrontDomains) {
+    rowsByHostname.set(row.hostname, [...(rowsByHostname.get(row.hostname) ?? []), row]);
+  }
+
+  // Platform Custom Domains.
+  const platform = new Set(manifest.customDomains);
+  for (const hostname of manifest.customDomains) {
+    if (!isInZone(hostname, snapshot.zone.name)) {
+      add("platform-hostname-outside-zone", hostname, `${hostname} is not in zone ${snapshot.zone.name} (${snapshot.zone.id})`);
+    }
+    const rows = rowsByHostname.get(hostname);
+    if (rows) {
+      add("platform-domain-storefront-row", `${hostname}|${rows.map((r) => r.id).join(",")}`, `${hostname} is a platform hostname and also a storefront domain row (${rows.map((r) => `${r.id} ${r.status}`).join(", ")})`);
+    }
+    const bound = byHostname.get(hostname) ?? [];
+    if (bound.length === 0) {
+      add("platform-domain-missing", hostname, `${hostname} has no Custom Domain`);
+    } else {
+      for (const domain of bound) {
+        if (!ours(domain)) {
+          add("platform-domain-wrong-owner", identity(domain), `${hostname} is bound elsewhere: ${identity(domain)}`);
+        }
+      }
+    }
+    if (input.baseline) {
+      const before = input.baseline.customDomains.filter((d) => d.hostname === hostname).map(identity).sort().join(";");
+      const after = bound.map(identity).sort().join(";");
+      if (before !== "" && before !== after) {
+        add("platform-domain-changed", `${hostname}|${before}|${after}`, `${hostname} changed during the deploy: before ${before}, after ${after || "nothing"}`);
+      }
+    }
+  }
+
+  // Storefront Custom Domains, against every undeleted row.
+  for (const row of snapshot.storefrontDomains) {
+    if (platform.has(row.hostname)) continue;
+    const bound = byHostname.get(row.hostname) ?? [];
+    if (row.status === "active") {
+      if (bound.length === 0) {
+        add("storefront-domain-missing", `${row.hostname}|${row.id}|${row.cloudflareDomainId}`, `${row.hostname} is active in D1 (row ${row.id}, Cloudflare id ${row.cloudflareDomainId ?? "none"}) and has no Custom Domain`);
+        continue;
+      }
+      for (const domain of bound) {
+        if (!ours(domain)) {
+          add("storefront-domain-wrong-owner", `${row.id}|${identity(domain)}`, `${row.hostname} (row ${row.id}) is bound elsewhere: ${identity(domain)}`);
+        } else if (domain.id !== row.cloudflareDomainId) {
+          add("storefront-domain-id-mismatch", `${row.id}|${row.cloudflareDomainId}|${domain.id}`, `${row.hostname}: D1 row ${row.id} records Cloudflare id ${row.cloudflareDomainId ?? "none"}, the bound Custom Domain is ${domain.id}. Reconcile it through the storefront lifecycle (Settings), not by hand.`);
+        }
+      }
+    } else {
+      diagnostics.push(
+        `${row.status} storefront domain ${row.hostname} (row ${row.id}, updated ${row.updatedAt ?? "?"}): ${bound.length > 0 ? `bound as ${bound.map(identity).join("; ")}` : "not bound"}`,
+      );
+    }
+  }
+
+  // Bindings on this Worker that nothing in D1 or the platform config explains.
+  for (const domain of snapshot.customDomains) {
+    if (domain.service !== target.workerName) continue;
+    if (platform.has(domain.hostname)) continue;
+    const rows = rowsByHostname.get(domain.hostname) ?? [];
+    if (rows.some((row) => row.status === "active" || row.status === "pending")) continue;
+    add("unknown-domain", identity(domain), `${identity(domain)} is bound to this Worker, and no active or pending storefront domain or platform hostname names it`);
+  }
+
+  // Workers Routes.
+  const expectedPatterns = new Set(manifest.routes.map((route) => route.pattern));
+  for (const { pattern } of manifest.routes) {
+    if (!isInZone(routePatternHostname(pattern), snapshot.zone.name)) {
+      add("platform-hostname-outside-zone", pattern, `${pattern} is not in zone ${snapshot.zone.name}`);
+    }
+    const matches = snapshot.zoneRoutes.filter((route) => route.pattern === pattern);
+    if (matches.length === 0) {
+      add("platform-route-missing", pattern, `${pattern} has no Workers Route in zone ${snapshot.zone.name}`);
+    }
+    for (const route of matches) {
+      if (route.script !== target.workerName) {
+        add("platform-route-wrong-owner", `${pattern}|${route.id}|${route.script}`, `${pattern} (route ${route.id}) runs ${route.script ?? "no Worker"}`);
+      }
+    }
+    if (input.baseline) {
+      const ids = (routes: readonly ZoneRoute[]) =>
+        routes.filter((route) => route.pattern === pattern).map((route) => `${route.id}:${route.script}`).sort().join(",");
+      const before = ids(input.baseline.zoneRoutes);
+      const after = ids(snapshot.zoneRoutes);
+      if (before !== "" && before !== after) {
+        add("platform-route-changed", `${pattern}|${before}|${after}`, `${pattern} changed during the deploy: before ${before}, after ${after || "nothing"}`);
+      }
+    }
+  }
+  for (const route of snapshot.zoneRoutes) {
+    if (route.script === target.workerName && !expectedPatterns.has(route.pattern)) {
+      add("unknown-route", `${route.pattern}|${route.id}`, `Route ${route.pattern} (${route.id}) runs this Worker and is not in the platform config`);
+    }
+  }
+
+  const tolerated = input.mode === "bootstrap" ? found.filter((d) => BOOTSTRAP_TOLERATED.has(d.kind)) : [];
+  const discrepancies = found.filter((d) => !tolerated.includes(d));
+  return { discrepancies, tolerated, diagnostics };
+}
+
+export type Verdict =
+  | Readonly<{ status: "ok"; snapshot: InventorySnapshot; tolerated: Discrepancy[]; diagnostics: string[]; reads: number }>
+  | Readonly<{
+      status: "drift";
+      snapshot: InventorySnapshot;
+      /** Found the same in the last two paired reads. */
+      drift: Discrepancy[];
+      /** Seen in only one of the last two reads: a connect or disconnect still moving. */
+      transient: Discrepancy[];
+      tolerated: Discrepancy[];
+      diagnostics: string[];
+      reads: number;
+    }>
+  | Readonly<{
+      status: "transient";
+      snapshot: InventorySnapshot;
+      transient: Discrepancy[];
+      tolerated: Discrepancy[];
+      diagnostics: string[];
+      reads: number;
+    }>
+  | Readonly<{ status: "unavailable"; reason: string; reads: number }>;
+
+/**
+ * Paired reads until the answer settles.
+ *
+ * A discrepancy on one read may be a connect or disconnect in progress
+ * (connect writes `pending`, attaches, then activates; disconnect detaches
+ * while the row is still `active`), so a first read with discrepancies is
+ * always followed by a second. Findings present in both of the last two reads
+ * are stable drift; findings in only one are transient. Reading stops when a
+ * read is clean, when two consecutive reads agree, or after `maxReads`.
+ *
+ * A read that fails is `unavailable`, never "nothing found".
+ */
+export async function reconcile(input: {
+  read: () => Promise<InventorySnapshot>;
+  compare: (snapshot: InventorySnapshot) => ReturnType<typeof compareInventory>;
+  maxReads?: number;
+  delayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<Verdict> {
+  const maxReads = Math.max(2, input.maxReads ?? 4);
+  const delayMs = input.delayMs ?? 3000;
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let previous: Discrepancy[] | null = null;
+  for (let reads = 1; reads <= maxReads; reads += 1) {
+    let snapshot: InventorySnapshot;
+    try {
+      snapshot = await input.read();
+    } catch (error) {
+      return {
+        status: "unavailable",
+        reason: error instanceof Error ? error.message : String(error),
+        reads,
+      };
+    }
+    const { discrepancies, tolerated, diagnostics } = input.compare(snapshot);
+    if (discrepancies.length === 0) return { status: "ok", snapshot, tolerated, diagnostics, reads };
+    if (previous) {
+      const before = new Set(previous.map((d) => d.key));
+      const now = new Set(discrepancies.map((d) => d.key));
+      const stable = discrepancies.filter((d) => before.has(d.key));
+      const moving = [
+        ...discrepancies.filter((d) => !before.has(d.key)),
+        ...previous.filter((d) => !now.has(d.key)),
+      ];
+      if (moving.length === 0 || reads === maxReads) {
+        return stable.length > 0
+          ? { status: "drift", snapshot, drift: stable, transient: moving, tolerated, diagnostics, reads }
+          : { status: "transient", snapshot, transient: moving, tolerated, diagnostics, reads };
+      }
+    }
+    previous = discrepancies;
+    await sleep(delayMs);
+  }
+  // Unreachable: the loop returns on its last read.
+  return { status: "unavailable", reason: "no read completed", reads: maxReads };
+}
+
+export function describeVerdict(verdict: Verdict): string[] {
+  const lines: string[] = [];
+  if (verdict.status === "unavailable") {
+    return [`verification unavailable after ${verdict.reads} read(s): ${verdict.reason}`];
+  }
+  lines.push(`${verdict.status} after ${verdict.reads} paired read(s)`);
+  if (verdict.status === "drift") for (const d of verdict.drift) lines.push(`  drift: ${d.detail}`);
+  if (verdict.status === "drift" || verdict.status === "transient") {
+    for (const d of verdict.transient) lines.push(`  transient: ${d.detail}`);
+  }
+  for (const d of verdict.tolerated) lines.push(`  bootstrap pending: ${d.detail}`);
+  for (const line of verdict.diagnostics) lines.push(`  note: ${line}`);
+  return lines;
+}
+
+/** The identities a run should record, without anything else from the read. */
+export function bindingIdentities(snapshot: InventorySnapshot, workerName: string) {
+  return {
+    readAt: snapshot.readAt,
+    zone: snapshot.zone,
+    customDomains: snapshot.customDomains
+      .filter((d) => d.service === workerName)
+      .map((d) => ({ hostname: d.hostname, id: d.id, environment: d.environment, zoneId: d.zoneId })),
+    zoneRoutes: snapshot.zoneRoutes
+      .filter((r) => r.script === workerName)
+      .map((r) => ({ pattern: r.pattern, id: r.id })),
+    storefrontDomains: snapshot.storefrontDomains.map((r) => ({
+      hostname: r.hostname,
+      status: r.status,
+      rowId: r.id,
+      storefrontId: r.storefrontId,
+      cloudflareDomainId: r.cloudflareDomainId,
+    })),
+  };
+}

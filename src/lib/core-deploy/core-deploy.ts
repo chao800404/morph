@@ -1,0 +1,314 @@
+import path from "node:path";
+import type { BootstrapApi, InventoryApi } from "./cloudflare-api";
+import {
+  ARTIFACT_CONFIG_PATH,
+  DEPLOY_REDIRECT_PATH,
+  checkArtifactConfig,
+  checkDeployRedirect,
+  checkSourceConfig,
+} from "./deploy-config-guard";
+import {
+  checkDeployEnvironment,
+  checkPinnedTools,
+  deployChildEnv,
+  wranglerDeployArgv,
+  type CoreDeployCommand,
+  type RunnerOptions,
+} from "./deploy-invocation";
+import { parseDeployTarget, type DeployTarget } from "./deploy-target";
+import { ensurePlatformBindings } from "./ensure-platform-bindings";
+import {
+  bindingIdentities,
+  compareInventory,
+  describeVerdict,
+  readInventory,
+  reconcile,
+  type CompareMode,
+  type InventorySnapshot,
+  type Verdict,
+} from "./inventory";
+import { platformManifest, type PlatformManifest } from "./platform-manifest";
+
+/**
+ * The Core deploy flow (design 2, option B), with every effect injected so
+ * the order of steps and every refusal can be tested without a network,
+ * a build or a Wrangler run.
+ *
+ *   deploy:  pins → env → target → source guard → clean → migration check →
+ *            pre-inventory → build → redirect + artifact guard → wrangler →
+ *            post-inventory (always, once Wrangler has been started)
+ *   verify:  pins → target → source guard → inventory
+ *   ensure-platform-bindings: pins → target → source guard → create-only
+ *            bootstrap → strict inventory
+ */
+
+export const EXIT = {
+  ok: 0,
+  refused: 1,
+  deployFailed: 2,
+  drift: 3,
+  transient: 4,
+  unavailable: 5,
+} as const;
+
+export type RunResult = Readonly<{ exitCode: number; problems: string[] }>;
+
+export type CoreDeployDeps = Readonly<{
+  rootDir: string;
+  env: Readonly<Record<string, string | undefined>>;
+  readText(file: string): string;
+  exists(file: string): boolean;
+  mtimeMs(file: string): number;
+  removeDir(dir: string): void;
+  parseJsonc(text: string): { ok: true; value: unknown } | { ok: false; error: string };
+  /** Runs a child process with inherited output; resolves with its exit code. */
+  run(step: "migrations" | "build" | "wrangler", argv: readonly string[], env: Record<string, string>): Promise<number>;
+  inventoryApi: (accountId: string) => InventoryApi;
+  bootstrapApi: (accountId: string) => BootstrapApi;
+  writeReport(name: string, data: unknown): void;
+  log(line: string): void;
+  now(): Date;
+  sleep(ms: number): Promise<void>;
+  reconcileDelayMs?: number;
+}>;
+
+type Prepared = { target: DeployTarget; source: unknown; manifest: PlatformManifest; sourcePath: string };
+
+function refuse(deps: CoreDeployDeps, problems: string[]): RunResult {
+  for (const problem of problems) deps.log(`[core-deploy] refused: ${problem}`);
+  return { exitCode: EXIT.refused, problems };
+}
+
+function readJsonFile(deps: CoreDeployDeps, file: string): unknown {
+  return JSON.parse(deps.readText(file));
+}
+
+/** Pins, target and source guard — everything decided before any remote read. */
+function prepare(
+  command: CoreDeployCommand,
+  options: RunnerOptions,
+  deps: CoreDeployDeps,
+): { ok: true; prepared: Prepared } | { ok: false; result: RunResult } {
+  const problems: string[] = [];
+  const root = deps.rootDir;
+  try {
+    problems.push(
+      ...checkPinnedTools({
+        packageJson: readJsonFile(deps, path.join(root, "package.json")),
+        installedWranglerVersion: (readJsonFile(deps, path.join(root, "node_modules", "wrangler", "package.json")) as { version?: unknown }).version,
+        installedVitePluginVersion: (readJsonFile(deps, path.join(root, "node_modules", "@cloudflare", "vite-plugin", "package.json")) as { version?: unknown }).version,
+      }),
+    );
+  } catch (error) {
+    problems.push(`Could not read the installed tool versions: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const targetPath = options.targetPath ?? deps.env.MORPH_DEPLOY_TARGET ?? null;
+  if (!targetPath) {
+    problems.push("No deploy target: pass --target <file> or set MORPH_DEPLOY_TARGET (see DEPLOY.md).");
+    return { ok: false, result: refuse(deps, problems) };
+  }
+  let target: DeployTarget | null = null;
+  try {
+    const parsed = parseDeployTarget(readJsonFile(deps, path.resolve(root, targetPath)));
+    if (parsed.ok) target = parsed.value;
+    else problems.push(...parsed.problems);
+  } catch (error) {
+    problems.push(`Could not read the deploy target ${targetPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!target) return { ok: false, result: refuse(deps, problems) };
+
+  problems.push(...checkDeployEnvironment(deps.env, target, { deployToken: command === "deploy" }));
+  if (command === "ensure-platform-bindings" && !deps.env.MORPH_BOOTSTRAP_API_TOKEN) {
+    problems.push("MORPH_BOOTSTRAP_API_TOKEN (the platform bootstrap credential) is not set.");
+  }
+
+  const sourcePath = path.join(root, "wrangler.jsonc");
+  let source: unknown = null;
+  const parsedSource = deps.parseJsonc(deps.readText(sourcePath));
+  if (!parsedSource.ok) {
+    problems.push(`wrangler.jsonc does not parse: ${parsedSource.error}`);
+  } else {
+    source = parsedSource.value;
+    problems.push(...checkSourceConfig(source, target));
+  }
+  const vars = (source as { vars?: Record<string, unknown> } | null)?.vars;
+  const manifest = platformManifest(vars);
+  // Manifest problems are already in the source guard's list.
+  if (problems.length > 0 || !manifest.ok) return { ok: false, result: refuse(deps, problems) };
+  return { ok: true, prepared: { target, source, manifest: manifest.value, sourcePath } };
+}
+
+async function inventory(
+  deps: CoreDeployDeps,
+  prepared: Prepared,
+  mode: CompareMode,
+  baseline?: InventorySnapshot,
+): Promise<Verdict> {
+  const api = deps.inventoryApi(prepared.target.accountId);
+  return reconcile({
+    read: () => readInventory(api, prepared.target, prepared.manifest, deps.now),
+    compare: (snapshot) =>
+      compareInventory({ snapshot, target: prepared.target, manifest: prepared.manifest, mode, ...(baseline ? { baseline } : {}) }),
+    delayMs: deps.reconcileDelayMs ?? 3000,
+    sleep: deps.sleep,
+  });
+}
+
+function report(deps: CoreDeployDeps, phase: string, verdict: Verdict, workerName: string) {
+  for (const line of describeVerdict(verdict)) deps.log(`[core-deploy] ${phase}: ${line}`);
+  deps.writeReport(phase, {
+    status: verdict.status,
+    ...(verdict.status === "unavailable"
+      ? { reason: verdict.reason }
+      : {
+          bindings: bindingIdentities(verdict.snapshot, workerName),
+          ...(verdict.status === "drift" ? { drift: verdict.drift } : {}),
+          ...(verdict.status === "drift" || verdict.status === "transient" ? { transient: verdict.transient } : {}),
+          tolerated: verdict.tolerated,
+          diagnostics: verdict.diagnostics,
+        }),
+  });
+}
+
+function verdictExit(verdict: Verdict): number {
+  switch (verdict.status) {
+    case "ok":
+      return EXIT.ok;
+    case "drift":
+      return EXIT.drift;
+    case "transient":
+      return EXIT.transient;
+    case "unavailable":
+      return EXIT.unavailable;
+  }
+}
+
+export async function runCoreDeploy(
+  command: CoreDeployCommand,
+  options: RunnerOptions,
+  deps: CoreDeployDeps,
+): Promise<RunResult> {
+  const ready = prepare(command, options, deps);
+  if (!ready.ok) return ready.result;
+  const { prepared } = ready;
+  const { target } = prepared;
+
+  if (command === "verify") {
+    const verdict = await inventory(deps, prepared, "strict");
+    report(deps, "verify", verdict, target.workerName);
+    return { exitCode: verdictExit(verdict), problems: [] };
+  }
+
+  if (command === "ensure-platform-bindings") {
+    const api = deps.inventoryApi(target.accountId);
+    let result;
+    try {
+      result = await ensurePlatformBindings({
+        target,
+        manifest: prepared.manifest,
+        read: () => readInventory(api, target, prepared.manifest, deps.now),
+        api: deps.bootstrapApi(target.accountId),
+      });
+    } catch (error) {
+      deps.log(`[core-deploy] platform:ensure: verification unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      return { exitCode: EXIT.unavailable, problems: [] };
+    }
+    for (const step of result.steps) {
+      deps.log(`[core-deploy] platform:ensure: ${step.kind} ${step.subject}: ${step.outcome} — ${step.detail}`);
+    }
+    deps.writeReport("ensure", result);
+    if (result.status === "refused") return { exitCode: EXIT.refused, problems: [] };
+    if (result.status === "failed") return { exitCode: EXIT.deployFailed, problems: [] };
+    const verdict = await inventory(deps, prepared, "strict");
+    report(deps, "ensure-verify", verdict, target.workerName);
+    if (prepared.manifest.routes.length > 0) {
+      deps.log("[core-deploy] platform:ensure: a Route exists; verify the preview namespace's wildcard DNS, TLS and HTTP separately (DEPLOY.md).");
+    }
+    return { exitCode: verdictExit(verdict), problems: [] };
+  }
+
+  // deploy
+  const mode: CompareMode = options.bootstrap ? "bootstrap" : "strict";
+  const root = deps.rootDir;
+  const childEnv = deployChildEnv(deps.env);
+
+  // A redirect or artifact left by an earlier build must not be what is
+  // checked or deployed; the migration check must read wrangler.jsonc, not a
+  // stale redirect.
+  deps.removeDir(path.join(root, "dist"));
+  deps.removeDir(path.join(root, path.dirname(DEPLOY_REDIRECT_PATH)));
+
+  const migrations = await deps.run(
+    "migrations",
+    ["node", path.join(root, "scripts", "check-pending-migrations.mjs"), "--remote"],
+    childEnv,
+  );
+  if (migrations !== 0) return refuse(deps, ["The remote D1 migration check did not pass."]);
+
+  const before = await inventory(deps, prepared, mode);
+  report(deps, "pre", before, target.workerName);
+  if (before.status !== "ok") {
+    return refuse(deps, [
+      before.status === "unavailable"
+        ? "The binding inventory could not be read; a deploy that cannot be checked is not run."
+        : `The binding inventory is not clean (${before.status}); reconcile it first${mode === "strict" ? " (a first deploy uses deploy:bootstrap)" : ""}.`,
+    ]);
+  }
+
+  const buildStartedAt = deps.now().getTime();
+  const build = await deps.run("build", ["pnpm", "run", "build"], childEnv);
+  if (build !== 0) return refuse(deps, ["The build failed."]);
+
+  const redirectPath = path.join(root, DEPLOY_REDIRECT_PATH);
+  const artifactProblems: string[] = [];
+  if (!deps.exists(redirectPath)) {
+    artifactProblems.push(`The build wrote no ${DEPLOY_REDIRECT_PATH}.`);
+  } else {
+    const redirect = checkDeployRedirect(readJsonFile(deps, redirectPath), root);
+    if (!redirect.ok) {
+      artifactProblems.push(...redirect.problems);
+    } else if (!deps.exists(redirect.artifactPath)) {
+      artifactProblems.push(`The build wrote no ${ARTIFACT_CONFIG_PATH}.`);
+    } else {
+      if (deps.mtimeMs(redirect.artifactPath) < buildStartedAt - 1000 || deps.mtimeMs(redirectPath) < buildStartedAt - 1000) {
+        artifactProblems.push(`${ARTIFACT_CONFIG_PATH} is older than this build.`);
+      }
+      artifactProblems.push(
+        ...checkArtifactConfig(readJsonFile(deps, redirect.artifactPath), prepared.source, target, prepared.sourcePath),
+      );
+    }
+  }
+  if (artifactProblems.length > 0) return refuse(deps, artifactProblems);
+
+  const wranglerBin = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+  let deployExit: number;
+  let deployError: string | null = null;
+  try {
+    deployExit = await deps.run("wrangler", ["node", ...wranglerDeployArgv(wranglerBin)], childEnv);
+  } catch (error) {
+    deployExit = -1;
+    deployError = error instanceof Error ? error.message : String(error);
+  }
+  if (deployExit !== 0) {
+    deps.log(`[core-deploy] wrangler deploy exited ${deployExit}${deployError ? ` (${deployError})` : ""}; the upload may have committed, so the post-check still runs.`);
+  }
+
+  // Runs whatever Wrangler did: an upload can commit before a later step fails.
+  const after = await inventory(deps, prepared, mode, before.snapshot);
+  report(deps, "post", after, target.workerName);
+  if (after.status !== "ok") {
+    return {
+      exitCode: verdictExit(after),
+      problems: [
+        `post-deploy check: ${after.status}`,
+        ...(deployExit !== 0 ? [`wrangler deploy exited ${deployExit}`] : []),
+      ],
+    };
+  }
+  if (deployExit !== 0) return { exitCode: EXIT.deployFailed, problems: [`wrangler deploy exited ${deployExit}`] };
+  if (mode === "bootstrap" && after.tolerated.length > 0) {
+    deps.log("[core-deploy] bootstrap deploy done; run `pnpm run platform:ensure`, then `pnpm run deploy:verify`.");
+  }
+  return { exitCode: EXIT.ok, problems: [] };
+}

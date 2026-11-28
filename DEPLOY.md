@@ -5,7 +5,11 @@ Morph deploys to Cloudflare Workers with Wrangler. The repository does not curre
 ## Prerequisites
 
 - Access to the Cloudflare account that owns the configured Worker resources
-- Wrangler authentication through `pnpm wrangler login` or `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` for the deploy, plus the separate
+  inventory credential (`MORPH_INVENTORY_API_TOKEN`); see
+  [Credentials, one per purpose](#credentials-one-per-purpose). A `wrangler login` session
+  alone is refused: without `CLOUDFLARE_ACCOUNT_ID` Wrangler picks an account itself.
+- A deploy target file (see [The deploy target](#the-deploy-target))
 - Permission to edit Workers, D1, R2, Queues, Durable Objects, Containers, and secrets
 - A running Docker daemon. `wrangler.jsonc` declares a container
   (`class_name: Sandbox`, `image: ./Dockerfile.sandbox`) and `wrangler deploy`
@@ -38,29 +42,32 @@ Configure the selected email provider separately; see
 [Transactional email providers](#transactional-email-providers). The commands in
 that section are operator instructions, not actions performed by the adapter.
 
-`PUBLIC_URL` is a non-secret canonical CMS URL. For a split-domain deployment, set it to
-the CMS hostname (for example `https://shop.example.com`), not the `workers.dev` fallback.
-If more than one CMS/staging hostname must stay on the Morph router, set
-`MORPH_PLATFORM_HOSTNAMES` to a comma-separated list. `MORPH_CMS_HOSTNAME` is a shortcut for
-one CMS hostname and accepts either a hostname or a full origin.
-
-Attach the CMS hostname to the Worker as a Cloudflare Custom Domain. In `wrangler.jsonc`, the
-shape is:
+`PUBLIC_URL` is a non-secret canonical CMS URL. Set it to the CMS hostname (for example
+`https://shop.example.com`); the `workers.dev` value in the repository is a placeholder, and
+the deploy refuses it because `workers_dev` is off. If more than one CMS/staging hostname must
+stay on the Morph router, set `MORPH_PLATFORM_HOSTNAMES` to a comma-separated list.
+`MORPH_CMS_HOSTNAME` is a shortcut for one CMS hostname and accepts either a hostname or a
+full origin. `CLOUDFLARE_ZONE_ID` names the zone these hostnames are in:
 
 ```jsonc
-"routes": [
-  { "pattern": "shop.example.com", "custom_domain": true }
-],
+"workers_dev": false,
+"preview_urls": false,
+// no "route" or "routes" key, not even []
 "vars": {
   "PUBLIC_URL": "https://shop.example.com",
-  "MORPH_CMS_HOSTNAME": "shop.example.com"
+  "MORPH_CMS_HOSTNAME": "shop.example.com",
+  "CLOUDFLARE_ZONE_ID": "<zone id>",
+  "CLOUDFLARE_WORKER_SERVICE": "<the Worker name>"
 }
 ```
 
-Replace `shop.example.com` with the customer's real CMS hostname. The storefront hostname is
-then connected from Dashboard → Settings → Domains; it is stored as an active storefront
-domain and routed by the same Worker. Do not register the CMS hostname in that storefront
-domain list.
+**Do not put the CMS hostname in `routes`.** A `wrangler deploy` whose config lists Custom
+Domains replaces the Worker's Custom Domains with that list, so every storefront domain
+connected from Settings, and its DNS record, is removed by the next deploy. The CMS hostname
+is bound once by `pnpm run platform:ensure`; storefront hostnames are connected from
+Dashboard → Settings → Domains, stored as storefront domains and routed by the same Worker.
+Do not register the CMS hostname in that storefront domain list (Settings refuses it). See
+[Core deploy and hostname bindings](#core-deploy-and-hostname-bindings).
 
 ### Transactional email providers
 
@@ -305,9 +312,27 @@ pnpm run deploy
 ```
 
 `pnpm run deploy`, not `pnpm deploy`: the latter is pnpm's own command for
-copying a workspace package, and never runs this script.
+copying a workspace package, and never runs this script. It takes no Wrangler
+arguments: `--route`, `--domain`, `--config`, `--env` and every other argument
+except `--target` are refused, never passed on. The guard, the inventory and
+the credentials are described in
+[Core deploy and hostname bindings](#core-deploy-and-hostname-bindings); in
+order, the command:
 
-The command first checks the remote database against `drizzle/`, reading
+1. checks the pinned tools, the environment, the deploy target and
+   `wrangler.jsonc` (no route keys, both exposure flags `false`, exact
+   identities);
+2. removes `dist/` and `.wrangler/deploy/`, so nothing from an earlier build is
+   checked or deployed;
+3. runs the migration check below;
+4. reads the binding inventory and stops unless it is clean;
+5. builds, then checks `.wrangler/deploy/config.json` and the artifact it
+   points at (`dist/server/wrangler.json`);
+6. runs the pinned Wrangler with a fixed argv;
+7. reads the inventory again and compares it with step 4 — also when Wrangler
+   failed, because an upload can commit before a later step fails.
+
+The migration check reads the remote database against `drizzle/`, reading
 `d1_migrations` and changing nothing, and stops when:
 
 - a migration file has not been applied — apply it (step 3), then deploy;
@@ -322,8 +347,8 @@ does more than upload a Worker, and each part can fail on its own:
 - **The container image.** `wrangler deploy` builds `Dockerfile.sandbox` and
   pushes it, because `containers` is configured. This needs Docker running
   locally and is usually the slowest part of a first deployment.
-  `--containers-rollout none` deploys the Worker without touching Containers,
-  which is the right flag only when the image is known to be unchanged.
+  `pnpm run deploy` always builds it: Wrangler's `--containers-rollout none`
+  is not offered, because the deploy argv is fixed.
 - **The container rollout is gradual.** New instances replace old ones in steps,
   so immediately after a deploy some previews may still be served by the
   previous image. `wrangler containers instances <ID>` shows the state.
@@ -334,6 +359,124 @@ does more than upload a Worker, and each part can fail on its own:
   (`morph-theme-builds`). A deployment that registers the producer but not the
   consumer accepts builds and never runs them, which looks like a hung build
   rather than a misconfiguration.
+
+## Core deploy and hostname bindings
+
+A Core deploy binds no hostname. Hostnames reach the Worker two ways, each with
+one owner, and `wrangler deploy` is neither:
+
+| Hostnames | Bound by | Recorded in |
+| --------- | -------- | ----------- |
+| Storefront domains | Dashboard → Settings → Domains (the storefront domain provider) | D1 `storefront_domains` |
+| CMS / platform hostnames (`PUBLIC_URL`, `MORPH_CMS_HOSTNAME`, `MORPH_PLATFORM_HOSTNAMES`) | `pnpm run platform:ensure` | the Worker vars |
+| The preview namespace's wildcard Route (`*.<THEME_PREVIEW_HOSTNAME>/*`, when it is a public name) | `pnpm run platform:ensure` | the Worker vars |
+
+The runtime reads the same vars to reserve those hostnames: Settings refuses a
+platform hostname and any host in the preview namespace as a storefront domain.
+
+### Why `routes` is refused
+
+Wrangler 4.146.0 sends no request to the Custom Domain or Workers Route write
+endpoints when the effective route list is empty. A non-empty Custom Domain
+list is sent as a replace-state changeset, which removes every Custom Domain
+the list does not name, and without a terminal it also forces the override of
+an existing origin or DNS record. A wildcard-only list sends a script-level
+`PUT /routes`, which deletes the Worker's other Routes. So `wrangler.jsonc` has
+no `route` or `routes` key in any section, not even `[]` (an empty list is
+harmless in this Wrangler, but it inherits nothing only by accident and is one
+edit away from a list), and `workers_dev` and `preview_urls` are both `false`.
+The guard checks `wrangler.jsonc`, every `env` section, the
+`.wrangler/deploy/config.json` redirect and the built
+`dist/server/wrangler.json`, and refuses `WRANGLER_CI_OVERRIDE_NAME`,
+`CLOUDFLARE_ENV`, a global API key and any API address but the official one.
+
+Wrangler is pinned to exactly 4.146.0 (and the Vite plugin, whose output the
+guard reads, to 1.62.4). Upgrading either means re-reading the route handling
+in its source and re-running `src/lib/core-deploy/wrangler-trigger-writes.test.ts`
+first; the deploy refuses another installed version.
+
+### The deploy target
+
+The deploy refuses unless the account, Worker name and resource ids in
+`wrangler.jsonc`, in the built artifact and in `CLOUDFLARE_ACCOUNT_ID` all equal
+a target file kept outside `wrangler.jsonc`:
+
+```json
+{
+  "accountId": "<32-character account id>",
+  "workerName": "morph",
+  "environment": "production",
+  "d1Databases": { "DATABASE": "<database_id>" },
+  "kvNamespaces": { "KV": "<namespace id>" },
+  "r2Buckets": { "R2_BUCKET": "<bucket name>" }
+}
+```
+
+Pass it as `--target <file>` or `MORPH_DEPLOY_TARGET=<file>`.
+
+### Credentials, one per purpose
+
+| Variable | Used by | Needs |
+| -------- | ------- | ----- |
+| `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` | the migration check, the build and `wrangler deploy` | Workers Scripts edit, Containers edit, Queues edit, D1 read (migration check), account read. **No** Workers Routes or DNS edit, and no zone access: an ordinary deploy never writes a binding. |
+| `MORPH_INVENTORY_API_TOKEN` | the inventory before and after a deploy, `deploy:verify` | Workers Scripts read (Custom Domains list), Zone read and Workers Routes read for the platform zone, D1 read (one `SELECT`, sent as a POST; check the grant separately from the SQL). Never passed to Wrangler. |
+| `MORPH_BOOTSTRAP_API_TOKEN` | `platform:ensure` writes | Workers Scripts edit (Custom Domain attach), Workers Routes edit and DNS edit for the platform zone. Used only for that command; never passed to Wrangler. |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` **Worker secrets** | the runtime storefront domain provider (Settings) and the Theme Worker deployer | Workers Scripts edit, Workers Routes/DNS edit for the storefront zone. Set with `wrangler secret put`; not the deploy shell's token. |
+
+### Commands
+
+```bash
+pnpm run deploy:verify           # read-only: the binding inventory, exact identities
+pnpm run deploy                  # guarded deploy; every binding must already be present
+pnpm run deploy:bootstrap        # first deploy: platform bindings may still be missing
+pnpm run platform:ensure         # create-only bootstrap/repair of platform bindings
+```
+
+A first deployment is `deploy:bootstrap`, then `platform:ensure`, then
+`deploy:verify`. `platform:ensure` is resumable: it reads the current state,
+creates only what is missing, stops at the first failed write, and finishes on
+the next run. It never deletes, never moves a binding and never adopts one: a
+hostname bound to another Worker, or named by a storefront domain row (even on
+this Worker), is refused and nothing is written in that run. The Custom Domain
+attach is a PUT, so every attach is followed by a re-read that must show exactly
+one binding for the hostname, on this Worker. It cannot fence a second writer
+racing it; the assumption is that platform hostnames are bound by this command
+only. A Route existing proves nothing about wildcard DNS, TLS or HTTP for the
+preview namespace: check a preview host resolves, presents a valid certificate
+and reaches the Worker, separately.
+
+### The inventory
+
+Before and after a deploy, the inventory reads, through the API:
+
+- D1 `storefront_domains` for every undeleted storefront — active rows must be
+  bound; pending and failed rows are reported, not compared;
+- every Custom Domain in the account, unfiltered, compared by hostname, domain
+  id, service, environment and zone;
+- every Workers Route in the platform zone, unfiltered, compared by pattern, id
+  and Worker.
+
+There is no count rule. A finding on one read is re-read; findings in both of
+the last two paired reads are drift, findings that moved are a connect or
+disconnect in progress and reported apart. An inventory that cannot be read
+refuses the deploy before it starts. After the deploy the exit code says what
+the post-check found, with the Wrangler result reported separately:
+
+| Exit | Meaning |
+| ---- | ------- |
+| 0 | deployed, bindings unchanged |
+| 1 | refused before deploying (guard, migration check, build, pre-check) |
+| 2 | Wrangler failed; the post-check found bindings unchanged |
+| 3 | post-check: drift |
+| 4 | post-check: a transition still moving |
+| 5 | post-check: verification unavailable |
+
+Each run writes its reports, with the binding ids, under
+`.wrangler/core-deploy/<time>/`. A drift involving a storefront domain — a
+missing binding, or a binding whose id differs from its D1 row — is reconciled
+through the storefront lifecycle (disconnect and reconnect it in Settings), not
+by a direct API call, which would leave D1 holding an id that a later
+disconnect deletes by.
 
 ## 5. Verify
 
