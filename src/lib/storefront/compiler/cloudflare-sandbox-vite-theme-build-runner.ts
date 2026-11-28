@@ -47,6 +47,7 @@ import type { ThemeBuildBinaryFile } from "@/lib/storefront/dto/storefront-theme
 import {
   SANDBOX_START_BUDGET_MS,
   SandboxStartProbeError,
+  SandboxStartTimeoutError,
   startBuildSandbox,
   type SandboxStartProbeResult,
 } from "./sandbox-build-start";
@@ -1014,6 +1015,28 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err);
       addLog("error", `Sandbox build error: ${errMessage}`);
+
+      // The start phase reached its deadline: the build fails with what is
+      // known about where it stopped, rather than waiting on a start that
+      // may never answer. No session was handed over, so none is torn down.
+      if (err instanceof SandboxStartTimeoutError) {
+        return {
+          success: false,
+          errorMessage: errMessage,
+          diagnosticsJson: {
+            stage: "sandbox-start",
+            startStage: err.stage,
+            attempt: err.attempt,
+            elapsedMs: err.elapsedMs,
+            boundMs: err.boundMs,
+            destroyConfirmed: err.destroyConfirmed,
+            reason: errMessage,
+            errors: [{ severity: "error", message: errMessage }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
 
       // Ensure timeout destroys container process immediately
       if (sandbox && errMessage.includes("TIMEOUT") && sandbox.killProcess) {

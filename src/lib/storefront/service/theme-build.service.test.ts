@@ -667,6 +667,59 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     });
   });
 
+  it("keeps a build that failed on a start timeout failed, with its diagnostics, when a success comes late", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-start-timeout", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+    ]);
+    const diagnostics = {
+      stage: "sandbox-start",
+      startStage: "probe",
+      attempt: 1,
+      elapsedMs: 90_000,
+      boundMs: 90_000,
+      destroyConfirmed: true,
+      reason:
+        "SANDBOX_START_TIMEOUT: the container's probe did not answer within 90000 ms",
+    };
+
+    const failedBuild = await service.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-start-timeout",
+      runner: new FakeThemeBuildRunner({
+        shouldSucceed: false,
+        errorMessage: diagnostics.reason,
+        diagnostics,
+      }),
+    });
+    expect(failedBuild.status).toBe("failed");
+    expect(failedBuild.diagnosticsJson).toEqual(diagnostics);
+
+    // Whatever answers after the timeout cannot relabel the failure: the
+    // success transition is guarded on `building`.
+    await expect(
+      storefrontThemeBuildDal.markBuildSucceeded(
+        "storefront-1",
+        "theme-1",
+        failedBuild.id,
+        {
+          artifactPrefix: "r2://artifacts/late",
+          manifestJson: { entry: "src/index.tsx" },
+        },
+      ),
+    ).rejects.toThrow(/INVALID_STATE_TRANSITION/);
+    const after = await storefrontThemeBuildDal.getBuild(
+      "storefront-1",
+      "theme-1",
+      failedBuild.id,
+    );
+    expect(after?.status).toBe("failed");
+    expect(after?.artifactPrefix ?? null).toBeNull();
+    expect(after?.diagnosticsJson).toEqual(diagnostics);
+  });
+
   it("transitions to failed when materialization fails (e.g. corrupt snapshot)", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");

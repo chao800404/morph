@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { posix as posixPath } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
 import { withThemeManagedStartBuildIdentity } from "./theme-morph-sdk";
 import {
@@ -960,6 +960,100 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(result.success).toBe(false);
     expect(provider.getSandbox).toHaveBeenCalledTimes(1);
     expect(mock.session.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  describe("a start that never answers", () => {
+    const entry = [
+      {
+        path: "src/pages/index.tsx",
+        content: "export default () => <h1>Home</h1>;",
+        isEntry: true,
+      },
+    ];
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-11-23T00:00:00Z"));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** The run's result once the start budget has elapsed, or "pending". */
+    async function afterBudget(work: Promise<unknown>) {
+      const outcome = work.then((value) => ({ value }));
+      await vi.advanceTimersByTimeAsync(90_000);
+      // The destroy after a timeout has its own 30 s bound.
+      await vi.advanceTimersByTimeAsync(30_000);
+      return Promise.race([outcome, Promise.resolve("pending" as const)]);
+    }
+
+    it("fails the build with the start's diagnostics when the probe never answers", async () => {
+      let lateProbe!: (value: { ok: true }) => void;
+      const mock = createMockSandbox({
+        probeStart: vi.fn(
+          () =>
+            new Promise<{ ok: true }>((done) => {
+              lateProbe = done;
+            }),
+        ),
+      });
+      const provider: CloudflareSandboxProvider = {
+        getSandbox: vi.fn(async () => mock.session),
+      };
+      const runner = new CloudflareSandboxViteThemeBuildRunner({
+        sandboxProvider: provider,
+      });
+
+      const outcome = await afterBudget(runner.run(createInput(entry)));
+      expect(outcome).not.toBe("pending");
+      const result = (outcome as { value: any }).value;
+      expect(result.success).toBe(false);
+      expect(result.errorMessage).toMatch(/^SANDBOX_START_TIMEOUT: /);
+      expect(result.diagnosticsJson).toMatchObject({
+        stage: "sandbox-start",
+        startStage: "probe",
+        attempt: 1,
+        elapsedMs: 90_000,
+        boundMs: 90_000,
+        destroyConfirmed: true,
+        reason: expect.stringContaining("SANDBOX_START_TIMEOUT"),
+      });
+      expect(provider.getSandbox).toHaveBeenCalledTimes(1);
+      expect(mock.session.destroy).toHaveBeenCalledTimes(1);
+
+      // The container answering afterwards changes nothing: no workspace is
+      // written and no build command runs in it.
+      lateProbe({ ok: true });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(mock.writtenFiles.size).toBe(0);
+      expect(
+        vi
+          .mocked(mock.session.exec)
+          .mock.calls.some(([command]) => String(command).includes("vite")),
+      ).toBe(false);
+    });
+
+    it("fails the build with the start's diagnostics when the Sandbox is never handed over", async () => {
+      const provider: CloudflareSandboxProvider = {
+        getSandbox: vi.fn(() => new Promise<CloudflareSandboxSession>(() => {})),
+      };
+      const runner = new CloudflareSandboxViteThemeBuildRunner({
+        sandboxProvider: provider,
+      });
+
+      const outcome = await afterBudget(runner.run(createInput(entry)));
+      expect(outcome).not.toBe("pending");
+      const result = (outcome as { value: any }).value;
+      expect(result.success).toBe(false);
+      expect(result.diagnosticsJson).toMatchObject({
+        stage: "sandbox-start",
+        startStage: "acquire",
+        attempt: 1,
+        elapsedMs: 90_000,
+        reason: expect.stringContaining("SANDBOX_START_TIMEOUT"),
+      });
+      expect(provider.getSandbox).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("the toolchain the build records", () => {

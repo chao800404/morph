@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   classifySandboxStartError,
   describeSandboxStartError,
@@ -244,6 +244,173 @@ describe("startBuildSandbox", () => {
     // Bounded by the 10 ms left, not by the 60 s destroy bound.
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(run.options.acquire).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("startBuildSandbox's own deadline", () => {
+  // A start RPC that never answers: the Sandbox SDK was asked for a
+  // container and nothing came back (seen in a local E2E run, 2026-11-23,
+  // where the build then stayed `building` with no error).
+  const never = <T,>() => new Promise<T>(() => {});
+  const BUDGET = 90_000;
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  /** Real-time options under fake timers: `Date.now` is the fake clock. */
+  function timed(
+    overrides: Partial<Parameters<typeof startBuildSandbox<Session>>[0]> = {},
+  ) {
+    const sessions: Session[] = [];
+    const options = {
+      acquire: vi.fn(async () => {
+        const session = { id: sessions.length + 1, destroyed: false };
+        sessions.push(session);
+        return session;
+      }),
+      probe: vi.fn(async (_session: Session): Promise<unknown> => undefined),
+      destroy: vi.fn(async (session: Session) => {
+        session.destroyed = true;
+      }),
+      deadline: Date.now() + BUDGET,
+      log: vi.fn(),
+      random: () => 0.5,
+      ...overrides,
+    };
+    return { options, sessions };
+  }
+
+  /** Settled or still pending, without waiting on a promise that never ends. */
+  async function settledWithin(work: Promise<unknown>, ms: number) {
+    const outcome = work.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    await vi.advanceTimersByTimeAsync(ms);
+    return Promise.race([outcome, Promise.resolve("pending" as const)]);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-23T00:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fails an acquire that never answers at the deadline, with its diagnostics", async () => {
+    const run = timed({ acquire: vi.fn(() => never<Session>()) });
+    const outcome = await settledWithin(startBuildSandbox(run.options), BUDGET);
+    expect(outcome).not.toBe("pending");
+    expect(outcome).toMatchObject({
+      error: {
+        code: "SANDBOX_START_TIMEOUT",
+        stage: "acquire",
+        attempt: 1,
+        elapsedMs: BUDGET,
+        boundMs: BUDGET,
+      },
+    });
+    const { error } = outcome as { error: Error };
+    expect(error.message).toMatch(/^SANDBOX_START_TIMEOUT: /);
+    expect(error.message).toContain("acquire");
+    // A timeout is not a recognised start failure: retry policy unchanged.
+    expect(run.options.acquire).toHaveBeenCalledTimes(1);
+    expect(run.options.probe).not.toHaveBeenCalled();
+    expect(run.options.log).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("SANDBOX_START_TIMEOUT"),
+    );
+  });
+
+  it("fails a probe that never answers at the deadline, destroys its container, and does not retry", async () => {
+    const run = timed({ probe: vi.fn(() => never<unknown>()) });
+    const outcome = await settledWithin(startBuildSandbox(run.options), BUDGET);
+    expect(outcome).not.toBe("pending");
+    expect(outcome).toMatchObject({
+      error: {
+        code: "SANDBOX_START_TIMEOUT",
+        stage: "probe",
+        attempt: 1,
+        elapsedMs: BUDGET,
+        boundMs: BUDGET,
+        destroyConfirmed: true,
+      },
+    });
+    expect(run.options.acquire).toHaveBeenCalledTimes(1);
+    expect(run.sessions[0]!.destroyed).toBe(true);
+  });
+
+  it("names the attempt that timed out, and bounds it by what is left of the budget", async () => {
+    const failures = [startupFailed];
+    const run = timed({
+      probe: vi.fn((session: Session) => {
+        const failure = failures[session.id - 1];
+        return failure ? Promise.reject(failure()) : never<unknown>();
+      }),
+    });
+    const outcome = await settledWithin(startBuildSandbox(run.options), BUDGET);
+    // Attempt 1 failed at once and waited 2.5 s; attempt 2 had the rest.
+    expect(outcome).toMatchObject({
+      error: {
+        code: "SANDBOX_START_TIMEOUT",
+        stage: "probe",
+        attempt: 2,
+        elapsedMs: BUDGET,
+        boundMs: BUDGET - 2_500,
+      },
+    });
+    expect(run.options.acquire).toHaveBeenCalledTimes(2);
+    expect(run.sessions.every((session) => session.destroyed)).toBe(true);
+  });
+
+  it("never hands back a session whose acquire answered after the deadline, and destroys it", async () => {
+    const late = deferred<Session>();
+    const run = timed({ acquire: vi.fn(() => late.promise) });
+    const start = startBuildSandbox(run.options);
+    const outcome = await settledWithin(start, BUDGET);
+    expect(outcome).toMatchObject({ error: { stage: "acquire" } });
+
+    const lateSession = { id: 99, destroyed: false };
+    late.resolve(lateSession);
+    await vi.advanceTimersByTimeAsync(0);
+    // The start already failed; the late container is not left running.
+    await expect(start).rejects.toMatchObject({
+      code: "SANDBOX_START_TIMEOUT",
+    });
+    expect(run.options.destroy).toHaveBeenCalledWith(lateSession);
+    expect(lateSession.destroyed).toBe(true);
+    expect(run.options.probe).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a probe that answered after the deadline into a start", async () => {
+    const late = deferred<unknown>();
+    const run = timed({ probe: vi.fn(() => late.promise) });
+    const start = startBuildSandbox(run.options);
+    const outcome = await settledWithin(start, BUDGET);
+    expect(outcome).toMatchObject({ error: { stage: "probe" } });
+
+    late.resolve({ ok: true });
+    await vi.advanceTimersByTimeAsync(BUDGET);
+    await expect(start).rejects.toMatchObject({
+      code: "SANDBOX_START_TIMEOUT",
+    });
+    // Nothing more happened: no second attempt, one destroy.
+    expect(run.options.acquire).toHaveBeenCalledTimes(1);
+    expect(run.options.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the normal start unchanged, and leaves no timer behind", async () => {
+    const run = timed();
+    const outcome = await settledWithin(startBuildSandbox(run.options), 0);
+    expect(outcome).toEqual({ value: { id: 1, destroyed: false } });
+    expect(run.options.destroy).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
