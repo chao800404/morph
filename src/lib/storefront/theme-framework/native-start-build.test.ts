@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { dirname, join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { unstable_startWorker } from "wrangler";
@@ -98,6 +99,16 @@ const WRANGLER = `{
 }
 `;
 const BUILD_BUDGET_MS = 180_000;
+/**
+ * Runs Vite in a child process without blocking this test worker. A
+ * synchronous child (`execFileSync`) holds the worker's event loop for the
+ * whole build, and tests that only do that never give it back between
+ * them: Vitest's worker RPC (`onTaskUpdate`) then times out once a run of
+ * such tests outlasts its window, though every test passed.
+ */
+const execFileAsync = promisify(execFile);
+/** Vite's build log can exceed execFile's default 1 MiB buffer. */
+const BUILD_OUTPUT_LIMIT = 64 * 1024 * 1024;
 
 /**
  * A route reading content through the SDK's Start thin entry: loader ->
@@ -210,11 +221,11 @@ describe("a TanStack Start project built with its own configuration", () => {
 
     const [command, ...args] = plan.command;
     expect(command).toBe("vite");
-    execFileSync(process.execPath, ["node_modules/vite/bin/vite.js", ...args], {
+    await execFileAsync(process.execPath, ["node_modules/vite/bin/vite.js", ...args], {
       cwd: workspace,
       env: { ...process.env, ...plan.env },
-      stdio: "pipe",
       timeout: BUILD_BUDGET_MS,
+      maxBuffer: BUILD_OUTPUT_LIMIT,
     });
 
     const outputs = new Map(
@@ -541,15 +552,16 @@ const IMPOSTOR_SDK =
  * Builds the Starter plus `BARE_SDK_ROUTE` under `viteConfig`, as a runner
  * would, and collects it. A build that fails or is refused reports why.
  */
-function buildTampered(
+async function buildTampered(
   viteConfig: string,
   extraFiles: ReadonlyArray<{ path: string; content: string }> = [],
-):
+): Promise<
   | {
       ok: true;
       artifact: ReturnType<ReturnType<typeof themeFramework>["build"]["native"]["collect"]>;
     }
-  | { ok: false; stage: "build" | "collect"; message: string } {
+  | { ok: false; stage: "build" | "collect"; message: string }
+> {
   const framework = themeFramework();
   const inputs = [
     ...STARTER_THEME_FILES,
@@ -570,14 +582,14 @@ function buildTampered(
     const [, ...args] = plan.command;
     let failure: string | null = null;
     try {
-      execFileSync(process.execPath, ["node_modules/vite/bin/vite.js", ...args], {
+      await execFileAsync(process.execPath, ["node_modules/vite/bin/vite.js", ...args], {
         cwd: root,
         env: { ...process.env, ...plan.env },
-        stdio: "pipe",
         timeout: BUILD_BUDGET_MS,
+        maxBuffer: BUILD_OUTPUT_LIMIT,
       });
     } catch (error) {
-      const detail = error as { stderr?: Buffer; stdout?: Buffer };
+      const detail = error as { stderr?: string; stdout?: string };
       failure = `${detail.stderr?.toString() ?? ""}\n${detail.stdout?.toString() ?? ""}`;
     }
     const outputs = new Map(
@@ -606,7 +618,7 @@ function buildTampered(
 
 /** A canonical manifest for a collected native artifact, as the store keeps it. */
 function manifestFor(
-  artifact: Extract<ReturnType<typeof buildTampered>, { ok: true }>["artifact"],
+  artifact: Extract<Awaited<ReturnType<typeof buildTampered>>, { ok: true }>["artifact"],
 ): CanonicalThemeBuildManifest {
   return {
     buildId: "bld_native_proof",
@@ -642,7 +654,7 @@ function manifestFor(
 }
 
 const workerConfigOf = (
-  artifact: Extract<ReturnType<typeof buildTampered>, { ok: true }>["artifact"],
+  artifact: Extract<Awaited<ReturnType<typeof buildTampered>>, { ok: true }>["artifact"],
 ) => {
   const config = artifact.files.get("runtime/server/wrangler.json")!;
   return JSON.parse(
@@ -653,8 +665,8 @@ const workerConfigOf = (
 describe("a native Start build's SDK resolution proof, against what a Vite config can do", () => {
   it(
     "proves the bare @morph/sdk in both the browser and the Worker, and a production deployment refuses the build's static HTML",
-    () => {
-      const built = buildTampered(tamperedConfig({}), [
+    async () => {
+      const built = await buildTampered(tamperedConfig({}), [
         { path: "public/landing.html", content: "<!doctype html><p>static</p>" },
         // A type-only re-export of the SDK in a module both graphs load:
         // TypeScript erases it, and no edge is required for it.
@@ -821,8 +833,8 @@ export const Route = createFileRoute("/worker-more")({
 
   it(
     "refuses a plugin that redirects @morph/sdk with an alias of its own",
-    () => {
-      const built = buildTampered(
+    async () => {
+      const built = await buildTampered(
         tamperedConfig({
           plugins: `{ name: "author-redirect", config: () => ({ resolve: { alias: [{ find: /^@morph\\/sdk$/, replacement: path.resolve("src/impostor-sdk.ts") }] } }) },`,
         }),
@@ -838,8 +850,8 @@ export const Route = createFileRoute("/worker-more")({
 
   it(
     "refuses an SDK left external in the browser build",
-    () => {
-      const built = buildTampered(
+    async () => {
+      const built = await buildTampered(
         tamperedConfig({
           settings: `environments: { client: { build: { rollupOptions: { external: ["@morph/sdk"] } } } },`,
         }),
@@ -854,8 +866,8 @@ export const Route = createFileRoute("/worker-more")({
 
   it(
     "refuses a plugin that serves other code for Morph's copy: its sentinel is missing",
-    () => {
-      const built = buildTampered(
+    async () => {
+      const built = await buildTampered(
         tamperedConfig({
           plugins: `{ name: "author-impostor", enforce: "pre", load(id) { if (id.split("?")[0].replace(/\\\\/g, "/").endsWith(".morph/sdk/src/index.ts")) return ${JSON.stringify(IMPOSTOR_SDK)}; } },`,
         }),
@@ -870,9 +882,9 @@ export const Route = createFileRoute("/worker-more")({
 
   it(
     "refuses a transform that rewrites a Theme source's SDK import away before the graph is recorded",
-    () => {
+    async () => {
       // Relative to the module, so the final code names no reserved name.
-      const built = buildTampered(
+      const built = await buildTampered(
         tamperedConfig({
           plugins: `{ name: "author-rewrite", enforce: "pre", transform(code, id) { if (id.split("?")[0].replace(/\\\\/g, "/").endsWith("/src/morph/content.ts")) return code.replace(/["']@morph\\/sdk\\/start["']/g, '"../impostor-start.ts"'); } },`,
         }),
@@ -894,8 +906,8 @@ export const Route = createFileRoute("/worker-more")({
 
   it(
     "refuses an expression-free template-literal dynamic import that an alias redirects",
-    () => {
-      const built = buildTampered(
+    async () => {
+      const built = await buildTampered(
         tamperedConfig({
           plugins: `{ name: "author-redirect", config: () => ({ resolve: { alias: [{ find: /^@morph\\/sdk$/, replacement: path.resolve("src/impostor-sdk.ts") }] } }) },`,
         }),
@@ -929,8 +941,8 @@ export const Route = createFileRoute("/lazy-sdk")({
 
   it(
     "refuses a dynamic import a resolveDynamicImport hook redirects beside a static import of the same name",
-    () => {
-      const built = buildTampered(
+    async () => {
+      const built = await buildTampered(
         tamperedConfig({
           plugins: `{ name: "author-dynamic-redirect", enforce: "pre", resolveDynamicImport(specifier) { if (specifier === "@morph/sdk") return path.resolve("src/impostor-sdk.ts"); } },`,
         }),
@@ -964,8 +976,8 @@ export const Route = createFileRoute("/both-sdk")({
 
   it(
     "refuses output rewritten after the bundle was generated (writeBundle)",
-    () => {
-      const built = buildTampered(
+    async () => {
+      const built = await buildTampered(
         tamperedConfig({
           plugins: `{ name: "author-rewrite-output", writeBundle(options, bundle) { for (const file of Object.keys(bundle)) { if (file.endsWith(".js")) fs.appendFileSync(path.join(options.dir, file), "\\n// rewritten\\n"); } } },`,
           head: `import fs from "node:fs";`,
@@ -981,10 +993,10 @@ export const Route = createFileRoute("/both-sdk")({
 
   it(
     "refuses a Web Worker that imports a package the Theme may not use",
-    () => {
+    async () => {
       // Installed beside the toolchain here, but not an approved dependency:
       // the worker bundle is held to the same guard as the main graphs.
-      const built = buildTampered(tamperedConfig({}), [
+      const built = await buildTampered(tamperedConfig({}), [
         {
           path: "src/workers/unapproved.ts",
           content: `import { z } from "zod";
@@ -1023,8 +1035,8 @@ export const Route = createFileRoute("/worker-unapproved")({
     ],
   ])(
     "refuses a Web Worker import of an unapproved package that the project's worker plugin resolves itself (%s)",
-    (_name, plugin) => {
-      const built = buildTampered(
+    async (_name, plugin) => {
+      const built = await buildTampered(
         tamperedConfig({
           head: `import { createRequire } from "node:module";\nconst requireFromConfig = createRequire(path.resolve("package.json"));`,
           settings: `worker: { plugins: () => [${plugin}] },`,
@@ -1060,10 +1072,10 @@ export const Route = createFileRoute("/worker-aliased")({
 
   it(
     "refuses a script written into the output that the bundler never emitted",
-    () => {
+    async () => {
       // Recorded chunks untouched; one more module beside them, which the
       // Worker could import at run time.
-      const built = buildTampered(
+      const built = await buildTampered(
         tamperedConfig({
           plugins: `{ name: "author-extra-module", writeBundle(options) { fs.mkdirSync(path.join(options.dir, "assets"), { recursive: true }); fs.writeFileSync(path.join(options.dir, "assets", "extra.js"), 'export * from "@morph/sdk";'); } },`,
           head: `import fs from "node:fs";`,
@@ -1079,8 +1091,8 @@ export const Route = createFileRoute("/worker-aliased")({
 
   it(
     "refuses an option given through a getter, so the value checked is the value used",
-    () => {
-      const built = buildTampered(
+    async () => {
+      const built = await buildTampered(
         tamperedConfig({
           cloudflare: `{ viteEnvironment: { name: "ssr" }, get persistState() { return false; } }`,
         }),
@@ -1097,10 +1109,10 @@ export const Route = createFileRoute("/worker-aliased")({
 
   it(
     "refuses a Cloudflare plugin the config builds without the checked call",
-    () => {
+    async () => {
       // Loaded from a data: module, which the shim leaves alone, and given an
       // option the check refuses.
-      const built = buildTampered(
+      const built = await buildTampered(
         tamperedConfig({
           head: `import { pathToFileURL } from "node:url";
 const pluginUrl = pathToFileURL(path.resolve("node_modules/@cloudflare/vite-plugin/dist/index.mjs")).href;
@@ -1120,9 +1132,9 @@ const unchecked = await import("data:text/javascript," + encodeURIComponent("exp
 
   it(
     "refuses a Cloudflare plugin option at the call, computed or not",
-    () => {
+    async () => {
       // Not a literal `configPath:` a text check would find.
-      const built = buildTampered(
+      const built = await buildTampered(
         tamperedConfig({
           head: `const option = ["config", "Path"].join("");`,
           cloudflare: `{ viteEnvironment: { name: "ssr" }, [option]: "./wrangler.jsonc" }`,
