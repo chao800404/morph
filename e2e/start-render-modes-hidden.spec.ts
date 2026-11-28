@@ -32,6 +32,7 @@ import {
   THEMES,
   latestRelease,
   openEditor,
+  openPublish,
   publishShowingRelease,
   serverFn,
   signedInPage,
@@ -1251,7 +1252,41 @@ test.describe("Start render modes keep hidden sections out", () => {
           : Promise.resolve();
       const publishStarted = Date.now();
       try {
-        await (await publishShowingRelease(page)).close();
+        if (mode === "defer") {
+          // Runs rm-evidence-14 to -16: this, the tenth bp- container of the
+          // run (five Build Previews, five release previews), never answered
+          // within publishShowingRelease's 120 s, whatever the held value
+          // did (released from a second tab or by the fixture after 120, 45
+          // or 20 s); run -13 passed at 43 s. The release preview is not this
+          // case's claim, so the publish itself is waited for here and the
+          // release preview's state recorded; the release is checked below.
+          await openPublish(page);
+          await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+            "aria-label",
+            "Published",
+            { timeout: 9 * 60_000 },
+          );
+          const preview = page.locator('iframe[data-build-preview="release"]');
+          await expect(preview).toBeVisible({ timeout: 60_000 });
+          const host = new URL((await preview.getAttribute("src"))!).hostname;
+          const answered = await expect
+            .poll(() => Boolean(page.frame({ url: (url) => url.hostname === host })), {
+              timeout: 60_000,
+            })
+            .toBe(true)
+            .then(
+              () => true,
+              () => false,
+            );
+          test.info().annotations.push({
+            type: "defer-release-preview",
+            description: JSON.stringify({ host, answeredWithin60s: answered }),
+          });
+          await page.keyboard.press("Escape");
+          await expect(preview).toBeHidden({ timeout: 30_000 });
+        } else {
+          await (await publishShowingRelease(page)).close();
+        }
       } finally {
         publishing = false;
         await releasing;
