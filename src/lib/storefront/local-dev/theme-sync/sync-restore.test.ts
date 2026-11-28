@@ -224,7 +224,7 @@ describe("restoring local files from Morph", () => {
   });
 
   it("keeps leaving out what the last sync's rules listed when .morphignore is missing", async () => {
-    const { local, session, answer } = setup({
+    const { workspace, local, session, answer } = setup({
       morph: { "a.tsx": "a", "notes/plan.md": "from Morph" },
       state: { ignoreHistory: { text: "notes/\n" } },
     });
@@ -237,6 +237,16 @@ describe("restoring local files from Morph", () => {
     expect(local.files.has("notes/plan.md")).toBe(false);
     // Restore is not a cycle: it does not record the rules it used.
     expect(session.state.ignoreHistory).toEqual({ text: "notes/\n" });
+
+    // And the next cycle, under the same rules, leaves Morph's copy alone.
+    const next = await session.runCycle();
+    expect(next.summary.remoteDeletions).toEqual([]);
+    expect(workspace.files.get("notes/plan.md")?.content).toBe("from Morph");
+    // Completed under the last sync's rules, not cut short by a retry, and
+    // not pulling the ignored file back into the folder either.
+    expect(next.status).toBe("applied");
+    expect(next.summary.ignoreRulesFrom).toBe("last-sync");
+    expect(next.summary.downloads).toEqual([]);
   });
 
   it("restores nothing when .morphignore changes while waiting for the answer", async () => {
