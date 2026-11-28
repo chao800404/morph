@@ -40,11 +40,17 @@ import {
   LocalDirectThemeRuntime,
   ServiceBindingThemeRuntime,
   UnavailableThemeRuntime,
+  type ThemeServiceBinding,
 } from "./theme-runtimes";
 import { themeWorkerScriptName } from "./theme-runtime.types";
 import type { StorefrontHostResolverDeps } from "./storefront-host-resolver";
 
 const HOST = "shop.example.com";
+
+/** A resolver that always answers with `binding`. */
+const bound = (binding: ThemeServiceBinding) => () =>
+  ({ ok: true, binding }) as const;
+
 const ASSET_PATH = "runtime/client/assets/app-abc123.js";
 
 // Canonical manifest shape as persisted to D1: the artifact store maps the
@@ -567,8 +573,12 @@ describe("StorefrontProductionService", () => {
         subcode: "BINDING_ABSENT",
       },
       {
-        name: "a service binding resolver that returns nothing",
-        runtime: () => new ServiceBindingThemeRuntime(() => null),
+        name: "a service binding resolver that finds no binding",
+        runtime: () =>
+          new ServiceBindingThemeRuntime(() => ({
+            ok: false,
+            unmapped: "BINDING_ABSENT",
+          })),
         kind: "service-binding",
         code: "BINDING_UNMAPPED",
         subcode: "BINDING_ABSENT",
@@ -844,9 +854,11 @@ describe("ThemeRuntime transports", () => {
       );
       return new Response("ok");
     });
-    const result = await new ServiceBindingThemeRuntime(() => ({
-      fetch,
-    })).handle({
+    const result = await new ServiceBindingThemeRuntime(
+      bound({
+        fetch,
+      }),
+    ).handle({
       ...invocation,
       request: input,
     });
@@ -885,9 +897,11 @@ describe("ThemeRuntime transports", () => {
       return new Response("ok");
     });
 
-    const result = await new ServiceBindingThemeRuntime(() => ({
-      fetch,
-    })).handle(invocation);
+    const result = await new ServiceBindingThemeRuntime(
+      bound({
+        fetch,
+      }),
+    ).handle(invocation);
 
     expect(result.success).toBe(true);
     expect(fetch).toHaveBeenCalledOnce();
@@ -907,9 +921,11 @@ describe("ThemeRuntime transports", () => {
       return new Response("ok");
     });
 
-    const result = await new ServiceBindingThemeRuntime(() => ({
-      fetch,
-    })).handle(spoofed);
+    const result = await new ServiceBindingThemeRuntime(
+      bound({
+        fetch,
+      }),
+    ).handle(spoofed);
 
     expect(result.success).toBe(true);
     expect(fetch).toHaveBeenCalledOnce();
@@ -929,7 +945,7 @@ describe("ThemeRuntime transports", () => {
       }),
     });
     const transports = [
-      new ServiceBindingThemeRuntime(() => ({ fetch: theme })),
+      new ServiceBindingThemeRuntime(bound({ fetch: theme })),
       new DispatchNamespaceThemeRuntime({ get: () => ({ fetch: theme }) }),
       new LocalDirectThemeRuntime("http://127.0.0.1:8788", (async (
         input: RequestInfo | URL,
@@ -972,7 +988,7 @@ describe("ThemeRuntime transports", () => {
       }),
     };
     const transports = [
-      new ServiceBindingThemeRuntime(() => ({ fetch: theme })),
+      new ServiceBindingThemeRuntime(bound({ fetch: theme })),
       new DispatchNamespaceThemeRuntime({ get: () => ({ fetch: theme }) }),
       new LocalDirectThemeRuntime("http://127.0.0.1:8788", (async (
         input: RequestInfo | URL,
@@ -1004,12 +1020,14 @@ describe("ServiceBindingThemeRuntime", () => {
 
   it("forwards to the bound Theme Worker with resolved storefront context", async () => {
     let seen: Request | null = null;
-    const runtime = new ServiceBindingThemeRuntime(() => ({
-      fetch: async (request: Request) => {
-        seen = request;
-        return new Response("themed");
-      },
-    }));
+    const runtime = new ServiceBindingThemeRuntime(
+      bound({
+        fetch: async (request: Request) => {
+          seen = request;
+          return new Response("themed");
+        },
+      }),
+    );
 
     const result = await runtime.handle({
       request: new Request(`https://${HOST}/about`),
@@ -1025,12 +1043,14 @@ describe("ServiceBindingThemeRuntime", () => {
 
   it("overwrites client-supplied storefront context headers", async () => {
     let seen: Request | null = null;
-    const runtime = new ServiceBindingThemeRuntime(() => ({
-      fetch: async (request: Request) => {
-        seen = request;
-        return new Response("themed");
-      },
-    }));
+    const runtime = new ServiceBindingThemeRuntime(
+      bound({
+        fetch: async (request: Request) => {
+          seen = request;
+          return new Response("themed");
+        },
+      }),
+    );
 
     await runtime.handle({
       request: new Request(`https://${HOST}/about`, {
@@ -1048,12 +1068,14 @@ describe("ServiceBindingThemeRuntime", () => {
 
   it("strips a spoofed content publication header when the release has none", async () => {
     let seen: Request | null = null;
-    const runtime = new ServiceBindingThemeRuntime(() => ({
-      fetch: async (request: Request) => {
-        seen = request;
-        return new Response("themed");
-      },
-    }));
+    const runtime = new ServiceBindingThemeRuntime(
+      bound({
+        fetch: async (request: Request) => {
+          seen = request;
+          return new Response("themed");
+        },
+      }),
+    );
 
     await runtime.handle({
       request: new Request(`https://${HOST}/about`, {
@@ -1066,7 +1088,10 @@ describe("ServiceBindingThemeRuntime", () => {
   });
 
   it("refuses an unmapped storefront instead of using another Theme Worker", async () => {
-    const result = await new ServiceBindingThemeRuntime(() => null).handle({
+    const result = await new ServiceBindingThemeRuntime(() => ({
+      ok: false,
+      unmapped: "BINDING_ABSENT",
+    })).handle({
       request: new Request(`https://${HOST}/`),
       resolved,
     });
@@ -1218,9 +1243,11 @@ describe("what of a shopper's request reaches the Theme Worker", () => {
       "service binding",
       async (request) => {
         const fetch = vi.fn(async (_r: Request) => new Response("ok"));
-        const result = await new ServiceBindingThemeRuntime(() => ({
-          fetch,
-        })).handle({ request, resolved });
+        const result = await new ServiceBindingThemeRuntime(
+          bound({
+            fetch,
+          }),
+        ).handle({ request, resolved });
         expect(result.success).toBe(true);
         expect(fetch).toHaveBeenCalledOnce();
         return fetch.mock.calls[0]![0];
@@ -1631,7 +1658,7 @@ describe("a page render during a release change (G3)", () => {
         });
       });
     const service = new StorefrontProductionService({
-      runtime: new ServiceBindingThemeRuntime(() => ({ fetch: theme })),
+      runtime: new ServiceBindingThemeRuntime(bound({ fetch: theme })),
       r2Bucket: r2(),
       renderContextSecret: options.secret,
       resolverDeps: {
@@ -1686,12 +1713,14 @@ describe("a page render during a release change (G3)", () => {
   async function issuedContext(secret: string): Promise<string | null> {
     let captured: string | null = null;
     const capture = new StorefrontProductionService({
-      runtime: new ServiceBindingThemeRuntime(() => ({
-        fetch: async (request: Request) => {
-          captured = request.headers.get("x-morph-render-context");
-          return new Response("ok");
-        },
-      })),
+      runtime: new ServiceBindingThemeRuntime(
+        bound({
+          fetch: async (request: Request) => {
+            captured = request.headers.get("x-morph-render-context");
+            return new Response("ok");
+          },
+        }),
+      ),
       r2Bucket: r2(),
       renderContextSecret: secret,
       resolverDeps: resolverDeps(),
