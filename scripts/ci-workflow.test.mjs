@@ -1227,7 +1227,7 @@ test("the six client shards must be the client lane, and the acceptance job chec
   assert.match(run[1], /^ {10}MORPH_E2E_REQUIRE_CLIENT_LANE: "1"$/m);
   assert.doesNotMatch(run[1], /MORPH_E2E_PREVIEW_RUNTIME|MORPH_E2E_RECORD_PREVIEW_RUNTIME|MORPH_E2E_TRANSPORT/);
   assert.match(run[1], /^ {10}MORPH_E2E_REPORT_PATH: test-results\/shard-\$\{\{ matrix\.shard \}\}\.json$/m);
-  assert.equal(run[2], "pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/6");
+  assert.equal(run[2], "exec node scripts/run-editor-e2e.mjs --shard=${{ matrix.shard }}/6");
   assert.doesNotMatch(shards, /MORPH_E2E_PREVIEW_RUNTIME/);
 
   const acceptance = withoutComments(jobBlock(workflow, "editor-e2e-acceptance"));
