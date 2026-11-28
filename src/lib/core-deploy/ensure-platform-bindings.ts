@@ -163,7 +163,22 @@ export async function ensurePlatformBindings(input: {
       steps.push(stopped);
       continue;
     }
-    const again = plan(fresh, target, manifest).find((candidate) => subjectOf(candidate) === subject)!;
+    const replanned = plan(fresh, target, manifest);
+    // A claim seen anywhere — on this step or on any other, a "present" one
+    // included — stops the run before this write.
+    const refusal = replanned.find((candidate) => candidate.action === "refuse");
+    if (refusal) {
+      stopped = {
+        kind: refusal.kind,
+        subject: subjectOf(refusal),
+        outcome: "refused",
+        detail: `changed since the first read: ${refusal.detail}`,
+      };
+      steps.push(stopped);
+      refusedMidRun = true;
+      continue;
+    }
+    const again = replanned.find((candidate) => subjectOf(candidate) === subject)!;
     if (again.action !== "create") {
       const outcome: EnsureStep = {
         kind: step.kind,

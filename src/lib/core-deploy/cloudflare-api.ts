@@ -125,6 +125,9 @@ async function readList(
     }
     items.push(...envelope.result);
     const info = envelope.result_info;
+    if (info && typeof info.count === "number" && info.count !== envelope.result.length) {
+      throw new CloudflareReadError(`${label}: page ${page} says ${info.count} entries and carries ${envelope.result.length}`);
+    }
     if (page === 1) {
       if (info && typeof info.total_count === "number") totalCount = info.total_count;
       if (info && typeof info.total_pages === "number" && info.total_pages > 1) totalPages = info.total_pages;
@@ -135,7 +138,8 @@ async function readList(
       // is wrong) while it was being read, so what arrived proves nothing.
       const pageTotal = typeof info?.total_count === "number" ? info.total_count : null;
       const pagePages = typeof info?.total_pages === "number" ? info.total_pages : null;
-      if (pageTotal !== totalCount || pagePages !== totalPages) {
+      const pagePer = typeof info?.per_page === "number" ? info.per_page : null;
+      if (pageTotal !== totalCount || pagePages !== totalPages || pagePer !== perPage) {
         throw new CloudflareReadError(
           `${label}: page ${page} describes another list (total ${pageTotal}/${pagePages} pages, page 1 said ${totalCount}/${totalPages})`,
         );

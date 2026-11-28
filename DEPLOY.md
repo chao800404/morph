@@ -465,9 +465,14 @@ paired reads are drift, findings that moved are a connect or disconnect in
 progress and reported apart. A storefront domain inside the preview namespace
 is drift (routing would serve it as a preview), and so is a platform hostname
 inside it. After the deploy, a storefront row that stayed active must keep the
-same Cloudflare id and binding it had before. Only one deploy runs per
-checkout (`.wrangler/core-deploy.lock`), and the checked redirect, artifact and
-source must be unchanged right before Wrangler starts and after it exits. An inventory that cannot be read
+same Cloudflare id and binding it had before. Only one deploy or
+`platform:ensure` runs per checkout (`.wrangler/core-deploy.lock`), and the
+checked redirect, artifact and source must be unchanged right before Wrangler
+starts and after it exits. Do not run a plain `pnpm build` in the same
+checkout while a deploy runs: the lock covers the runner's commands only, and
+a change between the last check and Wrangler's own read is detected afterwards
+(exit 2 or worse), not prevented. `platform:ensure` refuses to write unless
+the inventory is clean apart from the platform bindings it will create. An inventory that cannot be read
 refuses the deploy before it starts. After the deploy the exit code says what
 the post-check found, with the Wrangler result reported separately:
 

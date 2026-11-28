@@ -110,6 +110,35 @@ describe("the binding inventory", () => {
     }
   });
 
+  it("reads again when a new pending row appears on the second read", async () => {
+    const state = healthyState();
+    const { verdict } = await verdictFor(state, {
+      mutate: (api) => {
+        let reads = 0;
+        api.beforeAnswer.push((request, s) => {
+          if (request.path.endsWith("/query") && ++reads === 2) s.d1[D1_ID]!.push(row("second.example.com", null, "pending"));
+        });
+      },
+    });
+    expect(verdict.status).toBe("ok");
+    expect(verdict.reads).toBe(3);
+  });
+
+  it("is unavailable when a page's count disagrees with its entries", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) =>
+          request.path === `/zones/${ZONE}/workers/routes`
+            ? { status: 200, body: { success: true, errors: [], result: state.routes[ZONE], result_info: { count: 99 } } }
+            : undefined,
+      ],
+    });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    await expect(client.listZoneRoutes(ZONE)).rejects.toThrow(/says 99 entries/);
+  });
+
   it("compares a pending row that activates between the paired reads", async () => {
     const state = healthyState();
     const { verdict } = await verdictFor(state, {

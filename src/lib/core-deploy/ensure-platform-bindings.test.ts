@@ -137,6 +137,20 @@ describe("platform:ensure", () => {
     expect(api.writes()).toEqual([]);
   });
 
+  it("stops before a write when the fresh read shows a claim on another planned hostname", async () => {
+    const { api, run } = await setup(baseState());
+    let reads = 0;
+    api.beforeAnswer.push((request, state) => {
+      if (request.method === "GET" && request.path.endsWith("/workers/domains") && ++reads === 2) {
+        state.domains.push(domain("ops.example.com", { service: "morph" }));
+      }
+    });
+    const result = await run();
+    expect(result.status).toBe("refused");
+    expect(result.steps[0]).toMatchObject({ subject: "ops.example.com", outcome: "refused" });
+    expect(api.writes()).toEqual([]);
+  });
+
   it("refuses, and writes nothing, when a platform hostname is bound to another Worker", async () => {
     const { api, run } = await setup(baseState({ domains: [domain("ops.example.com", { service: "morph" })] }));
     const result = await run();

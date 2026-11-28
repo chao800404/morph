@@ -356,8 +356,47 @@ describe("pnpm run platform:ensure and deploy:verify", () => {
     const result = await runCoreDeploy("ensure-platform-bindings", { targetPath: null, bootstrap: false }, h.deps);
     expect(result.exitCode).toBe(EXIT.ok);
     expect(h.api.writes().map((w) => w.method)).toEqual(["PUT"]);
-    expect(h.steps).toEqual([]);
+    expect(h.steps).toEqual(["lock", "unlock"]);
+    expect(h.reports["ensure-pre"]).toMatchObject({ status: "ok" });
     expect(h.reports["ensure-verify"]).toMatchObject({ status: "ok" });
+  });
+
+  it("refuses to bootstrap over a storefront domain inside the preview namespace, writing nothing", async () => {
+    const h = await harness();
+    h.api.state.domains = h.api.state.domains.filter((d) => d.hostname !== "admin.example.com");
+    const hidden = domain("shop.preview.localhost");
+    h.api.state.domains.push(hidden);
+    h.api.state.d1[D1_ID]!.push(row("shop.preview.localhost", hidden.id));
+    const result = await runCoreDeploy("ensure-platform-bindings", { targetPath: null, bootstrap: false }, h.deps);
+    expect(result.exitCode).toBe(EXIT.refused);
+    expect(h.api.writes()).toEqual([]);
+    expect(h.reports["ensure-pre"]).toMatchObject({
+      status: "drift",
+      drift: [expect.objectContaining({ kind: "storefront-domain-in-preview-namespace" })],
+    });
+  });
+
+  it("refuses platform:ensure while another run holds the checkout", async () => {
+    const h = await harness();
+    h.files.set(at(".wrangler/core-deploy.lock/pid"), "999");
+    expect((await runCoreDeploy("ensure-platform-bindings", { targetPath: null, bootstrap: false }, h.deps)).exitCode).toBe(EXIT.refused);
+    expect(h.api.requests).toEqual([]);
+  });
+
+  it("still runs the post-check when a checked file cannot be read after Wrangler", async () => {
+    const h = await harness({
+      onWrangler: () => {
+        const readText = h.deps.readText;
+        (h.deps as { readText: (file: string) => string }).readText = (file) => {
+          if (file.endsWith("dist/server/wrangler.json")) throw new Error("EIO");
+          return readText(file);
+        };
+        return 0;
+      },
+    });
+    const result = await deploy(h);
+    expect(result).toEqual({ exitCode: EXIT.deployFailed, problems: ["the checked config changed while Wrangler ran"] });
+    expect(h.reports.post).toMatchObject({ status: "ok" });
   });
 
   it("verify only reads", async () => {

@@ -207,48 +207,64 @@ export async function runCoreDeploy(
     return { exitCode: verdictExit(verdict), problems: [] };
   }
 
-  if (command === "ensure-platform-bindings") {
-    const api = deps.inventoryApi(target.accountId);
-    let result;
-    try {
-      result = await ensurePlatformBindings({
-        target,
-        manifest: prepared.manifest,
-        read: () => readInventory(api, target, prepared.manifest, deps.now),
-        api: deps.bootstrapApi(target.accountId),
-      });
-    } catch (error) {
-      deps.log(`[core-deploy] platform:ensure: verification unavailable: ${error instanceof Error ? error.message : String(error)}`);
-      return { exitCode: EXIT.unavailable, problems: [] };
-    }
-    for (const step of result.steps) {
-      deps.log(`[core-deploy] platform:ensure: ${step.kind} ${step.subject}: ${step.outcome} — ${step.detail}`);
-    }
-    deps.writeReport("ensure", result);
-    if (result.status === "refused") return { exitCode: EXIT.refused, problems: [] };
-    if (result.status === "failed") return { exitCode: EXIT.deployFailed, problems: [] };
-    const verdict = await inventory(deps, prepared, "strict");
-    report(deps, "ensure-verify", verdict, target.workerName);
-    if (prepared.manifest.routes.length > 0) {
-      deps.log("[core-deploy] platform:ensure: a Route exists; verify the preview namespace's wildcard DNS, TLS and HTTP separately (DEPLOY.md).");
-    }
-    return { exitCode: verdictExit(verdict), problems: [] };
-  }
-
-  // deploy
-  // One run per checkout: a second run (or its build) would replace the
-  // redirect and artifact this one checked before Wrangler reads them.
+  // The two commands that write — the deploy and platform:ensure — run one at
+  // a time per checkout. For the deploy, a second run (or its build) would
+  // replace the redirect and artifact this one checked; for platform:ensure,
+  // two runs would race the same upserting Custom Domain PUT.
   const lockDir = path.join(deps.rootDir, ".wrangler", "core-deploy.lock");
   if (!deps.lock(lockDir)) {
     return refuse(deps, [
-      `${path.relative(deps.rootDir, lockDir)} exists: another Core deploy is running in this checkout. If none is (a killed run), remove it and run again.`,
+      `${path.relative(deps.rootDir, lockDir)} exists: another Core deploy or platform:ensure is running in this checkout. If none is (a killed run), remove it and run again.`,
     ]);
   }
   try {
-    return await deployLocked(options, deps, prepared);
+    return command === "ensure-platform-bindings"
+      ? await ensureLocked(deps, prepared)
+      : await deployLocked(options, deps, prepared);
   } finally {
     deps.unlock(lockDir);
   }
+}
+
+async function ensureLocked(deps: CoreDeployDeps, prepared: Prepared): Promise<RunResult> {
+  const { target } = prepared;
+  // Everything but the missing platform bindings must already be clean: a
+  // storefront domain inside the preview namespace, a foreign binding or an
+  // unknown one is reconciled first, never built on.
+  const before = await inventory(deps, prepared, "bootstrap");
+  report(deps, "ensure-pre", before, target.workerName);
+  if (before.status !== "ok") {
+    return refuse(deps, [
+      before.status === "unavailable"
+        ? "The binding inventory could not be read; platform:ensure writes nothing it cannot check."
+        : `The binding inventory is not clean apart from missing platform bindings (${before.status}); reconcile it first.`,
+    ]);
+  }
+  const api = deps.inventoryApi(target.accountId);
+  let result;
+  try {
+    result = await ensurePlatformBindings({
+      target,
+      manifest: prepared.manifest,
+      read: () => readInventory(api, target, prepared.manifest, deps.now),
+      api: deps.bootstrapApi(target.accountId),
+    });
+  } catch (error) {
+    deps.log(`[core-deploy] platform:ensure: verification unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    return { exitCode: EXIT.unavailable, problems: [] };
+  }
+  for (const step of result.steps) {
+    deps.log(`[core-deploy] platform:ensure: ${step.kind} ${step.subject}: ${step.outcome} — ${step.detail}`);
+  }
+  deps.writeReport("ensure", result);
+  if (result.status === "refused") return { exitCode: EXIT.refused, problems: [] };
+  if (result.status === "failed") return { exitCode: EXIT.deployFailed, problems: [] };
+  const verdict = await inventory(deps, prepared, "strict");
+  report(deps, "ensure-verify", verdict, target.workerName);
+  if (prepared.manifest.routes.length > 0) {
+    deps.log("[core-deploy] platform:ensure: a Route exists; verify the preview namespace's wildcard DNS, TLS and HTTP separately (DEPLOY.md).");
+  }
+  return { exitCode: verdictExit(verdict), problems: [] };
 }
 
 async function deployLocked(options: RunnerOptions, deps: CoreDeployDeps, prepared: Prepared): Promise<RunResult> {
@@ -321,8 +337,17 @@ async function deployLocked(options: RunnerOptions, deps: CoreDeployDeps, prepar
   // it starts and still after it exits.
   const fingerprint = () => {
     const hash = createHash("sha256");
+    // A file that vanishes mid-read is a change, not an error: the
+    // post-deploy inventory must still run.
+    const read = (file: string) => {
+      try {
+        return deps.exists(file) ? deps.readText(file) : "<missing>";
+      } catch {
+        return "<unreadable>";
+      }
+    };
     for (const file of [redirectPath, path.join(root, ARTIFACT_CONFIG_PATH), prepared.sourcePath]) {
-      hash.update(file).update("\0").update(deps.exists(file) ? deps.readText(file) : "<missing>").update("\0");
+      hash.update(file).update("\0").update(read(file)).update("\0");
     }
     return hash.digest("hex");
   };

@@ -356,7 +356,10 @@ export async function reconcile(input: {
       // clean first read with pending rows is read once more; rows still
       // pending after that are reported, not compared (an abandoned connect
       // must not block every later deploy).
-      if (pending.length > 0 && previousPending === null && reads < maxReads) {
+      // Read again while a pending row is one the previous read did not have:
+      // every pending row is seen on two consecutive paired reads.
+      const unseen = pending.filter((key) => !(previousPending ?? []).includes(key));
+      if (unseen.length > 0 && reads < maxReads) {
         previousPending = pending;
         previous = [];
         await sleep(delayMs);
