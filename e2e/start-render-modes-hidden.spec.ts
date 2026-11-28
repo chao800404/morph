@@ -788,9 +788,37 @@ test.describe("Start render modes keep hidden sections out", () => {
         await expect(canvas.getByText(stored(mode, "shown"))).toHaveCount(0);
         await expect(canvas.getByText(renderModeDefault(mode, "shown"))).toHaveCount(0);
       } finally {
-        const show = page.getByRole("button", { name: `Show section ${sectionType}` });
+        const show = page
+          .getByRole("button", { name: `Show section ${sectionType}` })
+          .first();
         await node.hover().catch(() => {});
-        if (await show.first().isVisible().catch(() => false)) await show.first().click();
+        if (await show.isVisible().catch(() => false)) {
+          if (mode === "defer") {
+            // The hide re-ran the route's loader, whose deferred value is
+            // held again. Recorded: whether the panel waits on it.
+            const disabledWhileHeld = await show.isDisabled();
+            await page.waitForTimeout(3_000);
+            const stillDisabled = await show.isDisabled();
+            await releaseFromSecondTab(page, previewOrigin!).catch(() => {});
+            const releasedAt = Date.now();
+            await expect(show, "defer: Show is enabled once the value is released").toBeEnabled({
+              timeout: 60_000,
+            });
+            test.info().annotations.push({
+              type: "defer-show-after-hide",
+              description: JSON.stringify({
+                disabledRightAfterHide: disabledWhileHeld,
+                disabledAfter3sHeld: stillDisabled,
+                enabledAfterReleaseMs: Date.now() - releasedAt,
+              }),
+            });
+          }
+          await expect(show).toBeEnabled({ timeout: 60_000 });
+          await show.click();
+          if (mode === "defer") {
+            await releaseFromSecondTab(page, previewOrigin!).catch(() => {});
+          }
+        }
       }
       await expect(section, `${mode}: shown again`).toHaveCount(1, { timeout: 20_000 });
       await expect(canvas.getByText(stored(mode, "shown")).first()).toBeVisible();
