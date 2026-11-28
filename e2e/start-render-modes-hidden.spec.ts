@@ -1216,6 +1216,7 @@ test.describe("Start render modes keep hidden sections out", () => {
       // so every held value on the release preview's origin is let go while
       // the publish shows it.
       let publishing = true;
+      const attempts: Array<{ origin: string; status: number; body: string }> = [];
       const releasing =
         mode === "defer"
           ? (async () => {
@@ -1224,16 +1225,45 @@ test.describe("Start render modes keep hidden sections out", () => {
                   .locator('iframe[data-build-preview="release"]')
                   .getAttribute("src", { timeout: 1_000 })
                   .catch(() => null);
-                if (src) await releaseOnce(page, new URL(src).origin);
-                await page.waitForTimeout(1_000).catch(() => {});
+                if (src && attempts.length < 30) {
+                  const origin = new URL(src).origin;
+                  const helper = await page.context().newPage();
+                  try {
+                    const response = await helper
+                      .goto(`${origin}${RENDER_MODE_RELEASE_PATH}`, { timeout: 15_000 })
+                      .catch(() => null);
+                    attempts.push({
+                      origin,
+                      status: response?.status() ?? -1,
+                      body: ((await response?.text().catch(() => "")) ?? "").slice(0, 160),
+                    });
+                  } finally {
+                    await helper.close().catch(() => {});
+                  }
+                }
+                await new Promise((resolve) => setTimeout(resolve, 1_000));
               }
             })()
           : Promise.resolve();
+      const publishStarted = Date.now();
       try {
         await (await publishShowingRelease(page)).close();
       } finally {
         publishing = false;
         await releasing;
+        test.info().annotations.push({
+          type: "publish-step",
+          description: JSON.stringify({
+            mode,
+            ms: Date.now() - publishStarted,
+            releaseFrame: await page
+              .locator('iframe[data-build-preview="release"]')
+              .getAttribute("src", { timeout: 1_000 })
+              .catch(() => null),
+            releaseAttempts: attempts.slice(0, 6),
+            releaseAttemptCount: attempts.length,
+          }),
+        });
       }
       release = await latestRelease(page, scope!);
       const [made] = queryD1(
