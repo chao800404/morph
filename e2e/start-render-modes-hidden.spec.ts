@@ -869,7 +869,13 @@ test.describe("Start render modes keep hidden sections out", () => {
   // Seen on the Mac container lane (runs rm-evidence-4 and -5, 2026-11-28):
   // on /rm-defer, Hide takes the section out of the canvas, but the Sections
   // panel then keeps its Show control disabled and does not let it go after
-  // the held value is released either. Asserted as it is, so this fails once
+  // the held value is released either. Run rm-evidence-7's preview lines name
+  // the cause: the hidden section inside `<Await>` (rmdeferloadhidden) is
+  // answered `not-applied reason=section-missing cause=not-rendered`, the
+  // editor's ack wait expires on it ("cannot confirm sections="), and the
+  // panel says "This preview cannot confirm what it shows, so content edits
+  // are paused." The hidden sections outside `<Await>` on the same route are
+  // acknowledged. Asserted as it is, so this fails once
   // the gap closes and has to become an ordinary Show assertion; the panel's
   // status text and the preview's own lines are recorded for diagnosis. The
   // Document is put back through the same write the Show control sends.
@@ -955,59 +961,95 @@ test.describe("Start render modes keep hidden sections out", () => {
     expect((await storedSection(page, templateId, shownSlot))?.enabled).not.toBe(false);
   });
 
-  test("Build Preview: each mode's HTML and hydrated DOM on the bp- host carry no hidden section", async () => {
+  // A Build Preview seals the page it is built from (and the layout): on
+  // the Mac lane (run rm-evidence-7) a build made from /rm-ssr answered
+  // /_morph/content for /rm-off with the layout's slots only. So each route
+  // is built from its own page here; what the first build serves for another
+  // route is recorded (annotation), not asserted.
+  test("Build Preview: each mode's route, built from its own page, carries no hidden section in its HTML or hydrated DOM on the bp- host", async () => {
     const page = shared!;
-    await openEditor(page, editorPathFor("ssr"));
-    await enableSelection(page);
-    const build = page.locator("button[data-editor-build-action]");
-    await expect(build).toBeEnabled({ timeout: 30_000 });
-    await build.click();
-    await expect(build).toHaveAttribute("data-build-pending", "true", { timeout: 30_000 });
-    await expect(build).toHaveAttribute("data-build-pending", "false", {
-      timeout: 9 * 60_000,
-    });
-    const frameElement = page.locator('iframe[data-build-preview="isolated"]');
-    await expect(frameElement).toBeVisible({ timeout: 60_000 });
-    const address = new URL((await frameElement.getAttribute("src"))!);
-    expect(address.hostname).toMatch(/^bp-[0-9a-f]{40}\./);
-    const isolated = () => page.frame({ url: (url) => url.hostname === address.hostname });
-    await expect.poll(isolated, { timeout: 120_000 }).toBeTruthy();
     for (const mode of RENDER_MODES) {
-      const answer = await isolated()!.evaluate(async (path) => {
-        const response = await fetch(`/_morph/content?path=${encodeURIComponent(path)}`, {
-          cache: "no-store",
-        });
-        return { status: response.status, body: await response.text() };
-      }, renderModePath(mode));
+      await openEditor(page, editorPathFor(mode));
+      await enableSelection(page);
+      const build = page.locator("button[data-editor-build-action]");
+      await expect(build).toBeEnabled({ timeout: 30_000 });
+      await build.click();
+      await expect(build).toHaveAttribute("data-build-pending", "true", { timeout: 30_000 });
+      await expect(build).toHaveAttribute("data-build-pending", "false", {
+        timeout: 9 * 60_000,
+      });
+      const frameElement = page.locator('iframe[data-build-preview="isolated"]');
+      await expect(frameElement).toBeVisible({ timeout: 60_000 });
+      const address = new URL((await frameElement.getAttribute("src"))!);
+      expect(address.hostname).toMatch(/^bp-[0-9a-f]{40}\./);
+      const isolated = () => page.frame({ url: (url) => url.hostname === address.hostname });
+      await expect.poll(isolated, { timeout: 120_000 }).toBeTruthy();
+      const contentOf = (path: string) =>
+        isolated()!.evaluate(async (path) => {
+          const response = await fetch(`/_morph/content?path=${encodeURIComponent(path)}`, {
+            cache: "no-store",
+          });
+          return { status: response.status, body: await response.text() };
+        }, path);
+      const answer = await contentOf(renderModePath(mode));
       expect(answer.status, `bp ${mode} content`).toBe(200);
       expectNoHiddenSentinel(answer.body, `bp /_morph/content ${mode}`);
-      expect(answer.body).toContain(stored(mode, "shown"));
-    }
-    for (const visit of VISITS) {
-      const where = `Build Preview ${visit.label}`;
-      expectStreamed(await streamedIn(isolated()!, visit.path), visit, `${where} (streamed)`);
-      const frame = isolated()!;
-      const navigated = frame.goto(`${address.origin}${visit.path}`, { waitUntil: "commit" });
-      if (visit.mode === "defer") {
-        await expect(frame.locator("[data-rm-defer-shell]")).toBeAttached({ timeout: 90_000 });
-        await expect
-          .poll(
-            async () =>
-              page
-                .frame({ url: (url) => url.hostname === address.hostname })!
-                .evaluate(async (path) => {
-                  const response = await fetch(path, { cache: "no-store" });
-                  return ((await response.json()) as { released: number }).released;
-                }, RENDER_MODE_RELEASE_PATH)
-                .catch(() => 0),
-            { timeout: 60_000 },
-          )
-          .toBeGreaterThan(0);
+      expect(answer.body, `bp ${mode}: the sealed page`).toContain(stored(mode, "shown"));
+      expect(
+        (JSON.parse(answer.body) as { hiddenSlots: string[] }).hiddenSlots,
+        `bp ${mode}: the hidden list`,
+      ).toEqual(
+        expect.arrayContaining([...HIDDEN_KINDS.map((kind) => renderModeSlot(mode, kind)), FOOTER]),
+      );
+      if (mode === "ssr") {
+        // Recorded: another route on a build made from /rm-ssr.
+        const other = await contentOf(renderModePath("off"));
+        const otherHtml = await isolated()!.evaluate(async (path) => {
+          const response = await fetch(path, { cache: "no-store" });
+          return { status: response.status, html: await response.text() };
+        }, renderModePath("off"));
+        test.info().annotations.push({
+          type: "build-preview-other-route",
+          description: JSON.stringify({
+            content: { status: other.status, body: other.body.slice(0, 600) },
+            html: {
+              status: otherHtml.status,
+              hiddenDefault: otherHtml.html.includes(renderModeDefault("off", "hidden")),
+              hiddenLoaderDefault: otherHtml.html.includes(renderModeDefault("off", "loadhidden")),
+              shownDefault: otherHtml.html.includes(renderModeDefault("off", "shown")),
+              hiddenStored: otherHtml.html.includes(stored("off", "hidden")),
+            },
+          }),
+        });
       }
-      await navigated;
-      const current = page.frame({ url: (url) => url.hostname === address.hostname })!;
-      await waitForRouter(current);
-      await expectRouteDom(current, visit);
+      for (const visit of VISITS.filter((each) => each.mode === mode)) {
+        const where = `Build Preview ${visit.label}`;
+        expectStreamed(await streamedIn(isolated()!, visit.path), visit, `${where} (streamed)`);
+        const frame = isolated()!;
+        const navigated = frame.goto(`${address.origin}${visit.path}`, { waitUntil: "commit" });
+        if (visit.mode === "defer") {
+          await expect(frame.locator("[data-rm-defer-shell]")).toBeAttached({ timeout: 90_000 });
+          await expect
+            .poll(
+              async () =>
+                page
+                  .frame({ url: (url) => url.hostname === address.hostname })!
+                  .evaluate(async (path) => {
+                    const response = await fetch(path, { cache: "no-store" });
+                    return ((await response.json()) as { released: number }).released;
+                  }, RENDER_MODE_RELEASE_PATH)
+                  .catch(() => 0),
+              { timeout: 60_000 },
+            )
+            .toBeGreaterThan(0);
+        }
+        await navigated;
+        const current = page.frame({ url: (url) => url.hostname === address.hostname })!;
+        await waitForRouter(current);
+        await expectRouteDom(current, visit);
+      }
+      await page.keyboard.press("Escape");
+      await expect(frameElement).toBeHidden({ timeout: 30_000 }).catch(() => {});
     }
   });
 

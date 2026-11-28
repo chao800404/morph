@@ -26,7 +26,7 @@ export const TARGET = Object.freeze({
     "Start render modes keep hidden sections out › Live Preview: client navigation through every mode and Back reads no hidden section through /_serverFn",
     "Start render modes keep hidden sections out › editor: selection, Hide and Show work on the full SSR, ssr: false, data-only and ssr() routes; the bridge's wait on a held deferred value is recorded",
     "Start render modes keep hidden sections out › KNOWN GAP: on the deferred <Await> route, Show stays disabled after Hide, even once the held value is released",
-    "Start render modes keep hidden sections out › Build Preview: each mode's HTML and hydrated DOM on the bp- host carry no hidden section",
+    "Start render modes keep hidden sections out › Build Preview: each mode's route, built from its own page, carries no hidden section in its HTML or hydrated DOM on the bp- host",
     "Start render modes keep hidden sections out › published on SSR: each mode on the public site carries no hidden section, through load, reload, navigation and Back",
   ]),
 });
