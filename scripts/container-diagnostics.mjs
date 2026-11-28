@@ -20,22 +20,44 @@
  * same way, as snapshot-requests-<container>.ndjson. Lines written after
  * the last copy that succeeded are still not seen.
  *
- * Nothing it writes is taken whole from Docker or a container: each Docker
- * event keeps a fixed set of fields, and from a container's log only lines
- * carrying the request record's marker are read, each reduced to that
+ * Each Docker event keeps a fixed set of fields, and from a container's log
+ * the lines carrying the request record's marker are reduced to that
  * record's own fields. No label, environment, command line, header, cookie,
- * query or body is kept. Every step that cannot be done is recorded as such;
- * none of them fails the job.
+ * query or body is taken from Docker's own data.
+ *
+ * Why a container stopped (handoff 2026-11-23, a preview container's main
+ * process exiting with 1 mid-start) needs its own output and exit status,
+ * so for every container it follows the recorder also keeps:
+ *
+ * - container-output-<container>.ndjson: a summary line, then the last
+ *   OUTPUT_MAX_LINES lines of its stdout and stderr (at most
+ *   OUTPUT_MAX_BYTES in all, each line cut at OUTPUT_MAX_LINE_BYTES), with
+ *   Docker's timestamp and the stream. The summary says how many lines and
+ *   bytes were dropped from the front and how many lines were cut. Every
+ *   line passes through redactSecrets first: a container's output is not
+ *   Morph's to vouch for (the deploy step hands a container a Cloudflare
+ *   token in its environment), so token-, key- and password-shaped values,
+ *   URL queries and credentials in URLs are replaced before anything is
+ *   kept. These lines go to the artifact only, never to the job log.
+ * - container-exit.ndjson: the container's State from `docker inspect`
+ *   (status, exit code, OOMKilled, error, start and finish times) each time
+ *   it dies, and once more for every followed container when the recorder
+ *   stops. Only `{{json .State}}` is asked for, so no configuration or
+ *   environment is ever read. A container restarted right after its death
+ *   can be inspected already running again; such an entry says `running`,
+ *   and the die event's own exitCode is kept beside it.
+ *
+ * Every step that cannot be done is recorded as such; none of them fails
+ * the job.
  *
  * A request missing from the container record is not, by itself, a request
  * that never arrived: first rule out the record missing it. recorder.ndjson
  * says which containers were followed, how many log lines each gave in all
- * (counted, never kept) and how many were records, and how reading each log
- * ended; each Vite process writes `trace-start` when its record begins, and
- * the Worker's own start line carries `vite.requestTrace` when it handed
- * Vite the switch.
+ * and how many were records, and how reading each log ended; each Vite
+ * process writes `trace-start` when its record begins, and the Worker's own
+ * start line carries `vite.requestTrace` when it handed Vite the switch.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -185,6 +207,7 @@ export function parseTraceLine(line) {
 export const RECORD_PATH = "/tmp/morph-preview-request-trace.txt";
 export const SNAPSHOT_INTERVAL_MS = 2_000;
 const SNAPSHOT_TIMEOUT_MS = 10_000;
+const INSPECT_TIMEOUT_MS = 5_000;
 // The record stops at 4 MiB; a copy is that file in a tar archive.
 const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024 + 64 * 1024;
 
@@ -224,6 +247,197 @@ export function snapshotRecords(text, id, identity) {
     });
   }
   return { records, invalid };
+}
+
+export const OUTPUT_MAX_LINES = 2_000;
+export const OUTPUT_MAX_BYTES = 1024 * 1024;
+export const OUTPUT_MAX_LINE_BYTES = 8 * 1024;
+export const REDACTED = "[REDACTED]";
+
+// A name that says its value is a secret, as `name=value`, `name: value` or
+// `"name":"value"`. Matched within a longer name too (MORPH_API_TOKEN).
+const SECRET_NAME =
+  "[A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key|auth(?:orization)?|cookie|credential|signature)[A-Za-z0-9_.-]*";
+// Each pattern has two groups: what is kept before the value, and the value.
+const SECRET_PATTERNS = [
+  // `Authorization: Bearer x`, `Basic x`, and a bare `Bearer x`. First, so
+  // the named-value pattern below does not take the scheme for the value.
+  /(\b(?:Bearer|Basic)\s+)([A-Za-z0-9._~+/=-]+)/gi,
+  // A named value, quoted or not.
+  new RegExp(
+    `((?:^|[^A-Za-z0-9_])"?${SECRET_NAME}"?\\s*[:=]\\s*)("(?:[^"\\\\]|\\\\.)*"|'[^']*'|\\[REDACTED\\]|[^\\s,;&"'}\\]]+)`,
+    "gi",
+  ),
+  // Credentials in a URL: scheme://user:password@host.
+  /(\b[a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+:[^\s/@]+)(?=@)/gi,
+  // A URL query's values: preview and access links carry tokens there.
+  /([?&][^=\s&#"']+=)([^&\s#"']+)/g,
+  // JSON Web Tokens.
+  /()(\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*)/g,
+  // Well-known token prefixes: GitHub, Slack, OpenAI/Anthropic-style, AWS.
+  /()(\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b)/g,
+];
+// A long run of token characters mixing upper case, lower case and digits
+// (a Cloudflare API token is 40 of them). Plain hex (container ids,
+// digests) and paths are left alone.
+const OPAQUE_RUN = /[A-Za-z0-9_+=-]{32,}/g;
+
+function looksOpaque(run) {
+  if (/^[0-9a-fA-F_-]+$/.test(run)) return false;
+  return /[A-Z]/.test(run) && /[a-z]/.test(run) && /[0-9]/.test(run);
+}
+
+/**
+ * A line of container output with secret-shaped values replaced by
+ * REDACTED, and how many were replaced. Errs towards replacing: a lost
+ * detail costs a diagnosis, a kept token costs a credential.
+ */
+export function redactSecrets(text) {
+  let count = 0;
+  let out = String(text);
+  for (const pattern of SECRET_PATTERNS) {
+    out = out.replace(pattern, (match, prefix, value) => {
+      if (value.includes(REDACTED)) return match;
+      count++;
+      // A quoted value stays quoted, so a JSON line stays JSON.
+      const quote = /^["']/.test(value) ? value[0] : "";
+      return `${prefix}${quote}${REDACTED}${quote}`;
+    });
+  }
+  out = out.replace(OPAQUE_RUN, (run) => {
+    if (!looksOpaque(run)) return run;
+    count++;
+    return REDACTED;
+  });
+  return { text: out, count };
+}
+
+/**
+ * `docker logs --timestamps` puts an RFC 3339 time and a space before each
+ * line; the line itself is the rest.
+ */
+export function splitDockerTimestamp(line) {
+  const match =
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})) (.*)$/s.exec(
+      line,
+    );
+  return match ? { t: match[1], text: match[2] } : { t: null, text: line };
+}
+
+/**
+ * The last lines of one container's output, bounded by line count and by
+ * bytes; what falls off the front is counted, and a line too long is cut.
+ * `push` takes a line as written (redaction is the caller's).
+ */
+export function createOutputTail({
+  maxLines = OUTPUT_MAX_LINES,
+  maxBytes = OUTPUT_MAX_BYTES,
+  maxLineBytes = OUTPUT_MAX_LINE_BYTES,
+} = {}) {
+  const lines = [];
+  let bytes = 0;
+  let total = 0;
+  let droppedLines = 0;
+  let droppedBytes = 0;
+  let cutLines = 0;
+  return {
+    push(entry) {
+      total++;
+      let text = entry.text;
+      const size = Buffer.byteLength(text, "utf8");
+      if (size > maxLineBytes) {
+        // Cut on a character boundary, and say how much was cut.
+        const kept = Buffer.from(text, "utf8")
+          .subarray(0, maxLineBytes)
+          .toString("utf8")
+          .replace(/�+$/, "");
+        text = `${kept}…[cut ${size - Buffer.byteLength(kept, "utf8")} bytes]`;
+        cutLines++;
+      }
+      const kept = { ...entry, text };
+      const keptBytes = Buffer.byteLength(text, "utf8");
+      lines.push({ value: kept, bytes: keptBytes });
+      bytes += keptBytes;
+      while (
+        lines.length > maxLines ||
+        (bytes > maxBytes && lines.length > 1)
+      ) {
+        const dropped = lines.shift();
+        bytes -= dropped.bytes;
+        droppedLines++;
+        droppedBytes += dropped.bytes;
+      }
+    },
+    summary() {
+      return {
+        totalLines: total,
+        keptLines: lines.length,
+        keptBytes: bytes,
+        droppedLines,
+        droppedBytes,
+        cutLines,
+        truncated: droppedLines > 0 || cutLines > 0,
+        limits: { maxLines, maxBytes, maxLineBytes },
+      };
+    },
+    lines() {
+      return lines.map((line) => line.value);
+    },
+  };
+}
+
+/**
+ * A container's `{{json .State}}`, reduced to what says how and when it
+ * stopped. Null when the text is not that.
+ */
+export function parseContainerState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(String(text).trim());
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const string = (value) => (typeof value === "string" ? value : null);
+  const bool = (value) => (typeof value === "boolean" ? value : null);
+  if (typeof raw.ExitCode !== "number" && typeof raw.Status !== "string") {
+    return null;
+  }
+  const error = string(raw.Error);
+  return {
+    status: string(raw.Status),
+    running: bool(raw.Running),
+    restarting: bool(raw.Restarting),
+    dead: bool(raw.Dead),
+    oomKilled: bool(raw.OOMKilled),
+    exitCode: typeof raw.ExitCode === "number" ? raw.ExitCode : null,
+    error: error ? redactSecrets(error).text : error,
+    startedAt: string(raw.StartedAt),
+    finishedAt: string(raw.FinishedAt),
+  };
+}
+
+/**
+ * The lines `docker inspect --format '{{.Id}} {{json .State}}' <id>...`
+ * prints, one per container found, as id -> state.
+ */
+export function parseInspectLines(text) {
+  const states = new Map();
+  for (const line of String(text).split("\n")) {
+    const at = line.indexOf(" ");
+    if (at === -1) continue;
+    const id = line.slice(0, at);
+    if (!/^[0-9a-f]{12,64}$/.test(id)) continue;
+    const state = parseContainerState(line.slice(at + 1));
+    if (state) states.set(id, state);
+  }
+  return states;
+}
+
+/** A die event's own exit code (Docker gives it as a string), or null. */
+export function exitCodeOf(event) {
+  const code = event?.exitCode;
+  return typeof code === "string" && /^-?\d+$/.test(code) ? Number(code) : null;
 }
 
 function appendLine(file, value) {
@@ -356,30 +570,89 @@ function record(dir) {
   };
   const counts = { events: 0, traceLines: new Map(), logLines: new Map() };
 
+  // Per followed container: the tail of its output and what was read.
+  const outputs = new Map();
+  const exitFile = path.join(dir, "container-exit.ndjson");
+
+  const writeOutput = (id) => {
+    const output = outputs.get(id);
+    if (!output) return;
+    const target = path.join(dir, `container-output-${id.slice(0, 12)}.ndjson`);
+    const summary = {
+      kind: "summary",
+      container: id.slice(0, 12),
+      role: output.identity.role,
+      objectId: output.identity.objectId,
+      // More than one when the container was started again: Docker keeps
+      // one log across restarts, read again from its start.
+      follows: output.follows,
+      // Request-record lines are in container-requests.ndjson, reduced;
+      // they are not repeated here.
+      traceLinesOmitted: output.traceLines,
+      redactions: output.redactions,
+      ...output.tail.summary(),
+    };
+    try {
+      fs.writeFileSync(
+        `${target}.tmp`,
+        [summary, ...output.tail.lines()]
+          .map((value) => `${JSON.stringify(value)}\n`)
+          .join(""),
+      );
+      fs.renameSync(`${target}.tmp`, target);
+    } catch (error) {
+      status({
+        ev: "output-write-error",
+        container: id.slice(0, 12),
+        code: error?.code ?? null,
+      });
+    }
+  };
+
   const follow = (id, identity) => {
     if (
-      followed.has(id) ||
       !identity.role ||
+      identity.role === "other" ||
       identity.role.endsWith("-proxy")
     ) {
       return;
     }
-    if (identity.role === "other") return;
-    const child = spawn("docker", ["logs", "--follow", id], {
+    const running = followed.get(id);
+    if (running && running.exitCode === null && running.signalCode === null) {
+      return;
+    }
+    let output = outputs.get(id);
+    if (!output) {
+      output = {
+        identity,
+        tail: createOutputTail(),
+        redactions: 0,
+        traceLines: 0,
+        follows: 0,
+        seen: { stdout: 0, stderr: 0 },
+      };
+      outputs.set(id, output);
+    }
+    output.follows++;
+    // A restart's log starts again from the container's first line: skip,
+    // per stream, the lines already read.
+    const skip = { ...output.seen };
+    const child = spawn("docker", ["logs", "--follow", "--timestamps", id], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     followed.set(id, child);
-    let pending = "";
-    const read = (chunk) => {
-      pending += chunk.toString("utf8");
-      const lines = pending.split("\n");
-      pending = lines.pop() ?? "";
-      for (const line of lines) {
-        // Counted, never kept: says whether this container's log was read
-        // at all, apart from whether it held any record line.
-        counts.logLines.set(id, (counts.logLines.get(id) ?? 0) + 1);
-        const trace = parseTraceLine(line);
-        if (!trace) continue;
+    const pending = { stdout: "", stderr: "" };
+    const handle = (stream, line) => {
+      if (skip[stream] > 0) {
+        skip[stream]--;
+        return;
+      }
+      output.seen[stream]++;
+      counts.logLines.set(id, (counts.logLines.get(id) ?? 0) + 1);
+      const { t, text } = splitDockerTimestamp(line);
+      const trace = parseTraceLine(text);
+      if (trace) {
+        output.traceLines++;
         counts.traceLines.set(id, (counts.traceLines.get(id) ?? 0) + 1);
         appendLine(requestsFile, {
           ...trace,
@@ -388,10 +661,27 @@ function record(dir) {
           role: identity.role,
           objectId: identity.objectId,
         });
+        return;
+      }
+      // Redacted before it is held, so nothing unredacted is ever written.
+      const redacted = redactSecrets(text);
+      output.redactions += redacted.count;
+      output.tail.push({ t, stream, text: redacted.text });
+    };
+    const read = (stream) => (chunk) => {
+      pending[stream] += chunk.toString("utf8");
+      const lines = pending[stream].split("\n");
+      pending[stream] = lines.pop() ?? "";
+      for (const line of lines) handle(stream, line);
+    };
+    child.stdout.on("data", read("stdout"));
+    child.stderr.on("data", read("stderr"));
+    output.flush = () => {
+      for (const stream of ["stdout", "stderr"]) {
+        if (pending[stream] !== "") handle(stream, pending[stream]);
+        pending[stream] = "";
       }
     };
-    child.stdout.on("data", read);
-    child.stderr.on("data", read);
     child.on("error", (error) =>
       status({
         ev: "follow-error",
@@ -410,6 +700,99 @@ function record(dir) {
         logLines: counts.logLines.get(id) ?? 0,
       }),
     );
+    // Every byte read: write what this container said so far.
+    child.on("close", () => {
+      output.flush();
+      writeOutput(id);
+    });
+  };
+
+  const exitEntry = (id, trigger, extra) => {
+    const identity = outputs.get(id)?.identity ?? known.get(id);
+    return {
+      t: new Date().toISOString(),
+      trigger,
+      container: id.slice(0, 12),
+      role: identity?.role ?? "other",
+      objectId: identity?.objectId ?? null,
+      ...extra,
+    };
+  };
+
+  // The container's State as soon as it dies. Asks for `.State` only.
+  const inspectOnDie = (id, eventExitCode) => {
+    if (!outputs.has(id)) return;
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(
+      "docker",
+      ["inspect", "--type", "container", "--format", "{{json .State}}", id],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const timer = setTimeout(() => child.kill("SIGKILL"), INSPECT_TIMEOUT_MS);
+    child.stdout.on("data", (chunk) => {
+      stdout = (stdout + chunk.toString("utf8")).slice(0, 64 * 1024);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(0, 400);
+    });
+    let settled = false;
+    const done = (outcome, state = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      appendLine(
+        exitFile,
+        exitEntry(id, "die", { eventExitCode, outcome, state }),
+      );
+    };
+    child.on("error", (error) => done(`spawn-${error.code ?? "error"}`));
+    child.on("close", (code, signal) => {
+      if (signal) return done(`killed-${signal}`);
+      if (code !== 0) {
+        return done(/no such/i.test(stderr) ? "missing" : `exit-${code}`);
+      }
+      const state = parseContainerState(stdout);
+      return state ? done("ok", state) : done("unreadable");
+    });
+  };
+
+  // Once more for every followed container when the recorder stops, in one
+  // bounded call: the containers still running, and the last word on the
+  // ones that died.
+  const inspectAllOnStop = () => {
+    const ids = [...outputs.keys()];
+    if (ids.length === 0) return;
+    const result = spawnSync(
+      "docker",
+      [
+        "inspect",
+        "--type",
+        "container",
+        "--format",
+        "{{.Id}} {{json .State}}",
+        ...ids,
+      ],
+      {
+        encoding: "utf8",
+        timeout: INSPECT_TIMEOUT_MS,
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    );
+    const states = parseInspectLines(result.stdout ?? "");
+    const failed = result.error
+      ? `spawn-${result.error.code ?? "error"}`
+      : null;
+    for (const id of ids) {
+      const state = states.get(id) ?? null;
+      appendLine(
+        exitFile,
+        exitEntry(id, "stopped", {
+          outcome: state ? "ok" : (failed ?? "missing"),
+          state,
+        }),
+      );
+    }
   };
 
   const events = spawn(
@@ -462,6 +845,12 @@ function record(dir) {
       ) {
         stopSnapshots(raw.Actor?.ID);
       }
+      if (event.type === "container" && event.action === "die") {
+        const id = raw.Actor?.ID;
+        if (typeof id === "string") {
+          inspectOnDie(id, exitCodeOf(event));
+        }
+      }
     }
   });
   events.on("error", (error) =>
@@ -476,6 +865,11 @@ function record(dir) {
     for (const id of snapshots.keys()) stopSnapshots(id);
     events.kill("SIGTERM");
     for (const child of followed.values()) child.kill("SIGTERM");
+    inspectAllOnStop();
+    for (const [id, output] of outputs) {
+      output.flush?.();
+      writeOutput(id);
+    }
     status({
       ev: "stopped",
       dockerEvents: counts.events,
@@ -528,7 +922,9 @@ async function stop(dir, out) {
     } catch {
       // Already gone.
     }
-    for (let i = 0; i < 50; i++) {
+    // The recorder inspects every followed container once more and writes
+    // their output before it exits, each bounded (INSPECT_TIMEOUT_MS).
+    for (let i = 0; i < 150; i++) {
       try {
         process.kill(pid, 0);
       } catch {
@@ -539,29 +935,43 @@ async function stop(dir, out) {
   }
   fs.mkdirSync(out, { recursive: true });
   const copied = [];
-  let snapshotFiles = [];
+  let names = [];
   try {
-    snapshotFiles = fs
-      .readdirSync(dir)
-      .filter((name) => /^snapshot-requests-[0-9a-f]{12}\.ndjson$/.test(name));
+    names = fs.readdirSync(dir);
   } catch {
     // Nothing recorded.
   }
-  for (const name of [
-    "docker-events.ndjson",
-    "container-requests.ndjson",
-    "recorder.ndjson",
-    ...snapshotFiles,
-  ]) {
+  for (const name of keptFileNames(names)) {
     const from = path.join(dir, name);
     if (fs.existsSync(from)) {
       fs.copyFileSync(from, path.join(out, name));
       copied.push(name);
     }
   }
+  // File names only: what the containers said stays in the artifact.
+  const outputs = copied.filter((name) => name.startsWith("container-output-"));
+  const listed = copied.filter((name) => !name.startsWith("container-output-"));
+  if (outputs.length)
+    listed.push(`container-output-*.ndjson (${outputs.length})`);
   console.log(
-    `container diagnostics: ${copied.length ? copied.join(", ") : "nothing recorded"} -> ${out}`,
+    `container diagnostics: ${listed.length ? listed.join(", ") : "nothing recorded"} -> ${out}`,
   );
+}
+
+/** Which of the recorder's files are kept with the results, in order. */
+export function keptFileNames(names) {
+  const fixed = [
+    "docker-events.ndjson",
+    "container-requests.ndjson",
+    "container-exit.ndjson",
+    "recorder.ndjson",
+  ];
+  const per = (pattern) => names.filter((name) => pattern.test(name)).sort();
+  return [
+    ...fixed.filter((name) => names.includes(name)),
+    ...per(/^snapshot-requests-[0-9a-f]{12}\.ndjson$/),
+    ...per(/^container-output-[0-9a-f]{12}\.ndjson$/),
+  ];
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
