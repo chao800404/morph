@@ -345,7 +345,7 @@ jobs:
   editor-e2e-local-preview:
     name: Editor E2E shard ${{ matrix.shard }}/6
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 47
     strategy:
       fail-fast: false
       matrix:
@@ -557,9 +557,12 @@ jobs:
           MORPH_E2E_REQUIRE_CLIENT_LANE: "1"
           MORPH_E2E_REPORT_PATH: test-results/shard-${{ matrix.shard }}.json
         run: pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/6
-        # A time limit on this step, not only on the job: the step fails six minutes before the job's limit (slowest seen: 19),
+        # A time limit on this step, not only on the job (slowest seen: 19 min):
+        # the step fails at the limit,
         # and the `if: always()` upload after it still runs. The job's own limit
-        # (30) cancels the whole job, which leaves a cut-off log and no artifact.
+        # The job's own limit cancels the whole job, which leaves a cut-off log
+        # and no artifact; it is the sum of this job's setup, Chromium install
+        # limit, E2E step limits and a reserve (scripts/ci-workflow.test.mjs).
         timeout-minutes: 24
 
       # One name per attempt: re-running a failed shard keeps the run's earlier
@@ -633,7 +636,7 @@ jobs:
   editor-e2e-full-start:
     name: Editor E2E full Start shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 47
     strategy:
       fail-fast: false
       matrix:
@@ -814,9 +817,12 @@ jobs:
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/full-start-${{ matrix.shard }}.json
         run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}
-        # A time limit on this step, not only on the job: the step fails six minutes before the job's limit (slowest seen: 20),
+        # A time limit on this step, not only on the job (slowest seen: 20 min):
+        # the step fails at the limit,
         # and the `if: always()` upload after it still runs. The job's own limit
-        # (30) cancels the whole job, which leaves a cut-off log and no artifact.
+        # The job's own limit cancels the whole job, which leaves a cut-off log
+        # and no artifact; it is the sum of this job's setup, Chromium install
+        # limit, E2E step limits and a reserve (scripts/ci-workflow.test.mjs).
         timeout-minutes: 24
 
       # Playwright passes a run whose tests skipped themselves, and every
@@ -874,7 +880,7 @@ jobs:
   editor-e2e-container:
     name: Editor E2E container lifecycle acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 33
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1105,7 +1111,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe lifecycle-start "$RUNNER_TEMP/container-network"
 
       - name: Run M1 container lifecycle acceptance
-        timeout-minutes: 8
+        timeout-minutes: 6
         id: lifecycle_run
         env:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
@@ -1154,7 +1160,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe preview-access-start "$RUNNER_TEMP/container-network"
 
       - name: Run preview access container acceptance
-        timeout-minutes: 5
+        timeout-minutes: 4
         id: preview_access_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -1317,7 +1323,7 @@ jobs:
   editor-e2e-container-presentation-ack:
     name: Editor E2E container presentation-ack acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 33
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1513,7 +1519,7 @@ jobs:
           echo "::warning::Container diagnostics did not start; the run goes on without them."
 
       - name: Run presentation-ack container acceptance
-        timeout-minutes: 12
+        timeout-minutes: 10
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
           MORPH_E2E_PREVIEW_RUNTIME: start
@@ -1599,7 +1605,7 @@ jobs:
   editor-e2e-container-publish:
     name: Editor E2E container publish acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 44
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1800,7 +1806,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe b1-publish-rollback-start "$RUNNER_TEMP/container-network"
 
       - name: Run B1 publish and rollback container acceptance
-        timeout-minutes: 10
+        timeout-minutes: 8
         id: b1_publish_rollback_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -1845,7 +1851,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe navigation-matrix-public-start "$RUNNER_TEMP/container-network"
 
       - name: Run public navigation matrix container acceptance
-        timeout-minutes: 6
+        timeout-minutes: 5
         id: navigation_matrix_public_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -1895,7 +1901,7 @@ jobs:
       # the publish test skips there. The throwaway Theme it inserts records
       # the run's preview runtime (see e2e/helpers/throwaway-theme.ts).
       - name: Run section visibility layout container acceptance
-        timeout-minutes: 14
+        timeout-minutes: 8
         id: section_visibility_layout_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2048,7 +2054,7 @@ jobs:
   editor-e2e-container-starter-publish:
     name: Editor E2E container Starter upgrade publish acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -2249,7 +2255,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe starter-upgrade-publish-start "$RUNNER_TEMP/container-network"
 
       - name: Run Starter upgrade publish container acceptance
-        timeout-minutes: 16
+        timeout-minutes: 14
         id: starter_upgrade_publish_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2294,7 +2300,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe starter-v32-full-start-start "$RUNNER_TEMP/container-network"
 
       - name: Run Starter 32 full Start container acceptance
-        timeout-minutes: 10
+        timeout-minutes: 8
         id: starter_v32_full_start_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2443,7 +2449,7 @@ jobs:
   editor-e2e-container-preview:
     name: Editor E2E container socket, content sync and case E acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -2644,7 +2650,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe preview-socket-start "$RUNNER_TEMP/container-network"
 
       - name: Run preview socket container acceptance
-        timeout-minutes: 10
+        timeout-minutes: 8
         id: preview_socket_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2690,7 +2696,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe start-container-content-sync-start "$RUNNER_TEMP/container-network"
 
       - name: Run Start content sync container acceptance
-        timeout-minutes: 5
+        timeout-minutes: 4
         id: start_content_sync_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2735,7 +2741,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe starter-upgrade-case-e-start "$RUNNER_TEMP/container-network"
 
       - name: Run Starter upgrade case E container acceptance
-        timeout-minutes: 8
+        timeout-minutes: 6
         id: starter_upgrade_case_e_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
@@ -2780,7 +2786,7 @@ jobs:
           node scripts/check-container-network-windows.mjs probe preview-start-two-tab-race-start "$RUNNER_TEMP/container-network"
 
       - name: Run two-tab start race container acceptance
-        timeout-minutes: 5
+        timeout-minutes: 4
         id: preview_start_two_tab_race_run
         env:
           MORPH_E2E_TRANSPORT: cloudflare-sandbox
