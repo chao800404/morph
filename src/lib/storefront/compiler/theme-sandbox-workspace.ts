@@ -27,6 +27,7 @@ import {
 } from "./theme-preview-dev-server";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
+import { themeWorkerGraphGuardPluginSource } from "./theme-worker-graph-guard";
 import { sha256 } from "./theme-compiler-hasher";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
 import {
@@ -1013,6 +1014,13 @@ if (themeAliasDefinitions.some(({ key, wildcard }) =>
 if (morphSdkModuleNames.has(source)) {
   return null;
 }
+// A baseUrl import resolves to a Theme file the base-URL plugin finds inside
+// the workspace. In the main graphs that plugin answers first and this is
+// never reached; in a worker this enforcer answers first (see below), so it
+// leaves the import to that plugin rather than calling it a package.
+if (themeBaseUrlPlugin && themeBaseUrlPlugin.resolveId(source)) {
+  return null;
+}
 
 const basePkg = source.startsWith("@")
   ? source.split("/").slice(0, 2).join("/")
@@ -1026,6 +1034,22 @@ if (!approvedSet.has(source) && !approvedSet.has(basePkg)) {
 return null;
   }
 };
+
+// A Vite Web Worker (\`?worker\`, \`new Worker(new URL(...))\`) is its own
+// bundle, built with \`worker.plugins\` only: none of the plugins above see its
+// imports. The same enforcer runs there, with the same handler (not a copy),
+// listed first and with its resolveId ordered "pre", so no other resolver in
+// a worker bundle answers an import before it does.
+const workerDependencyEnforcerPlugin = {
+  ...dependencyEnforcerPlugin,
+  resolveId: { order: "pre", handler: dependencyEnforcerPlugin.resolveId },
+};
+// Whichever resolver answered, the worker's built module graph is held to the
+// same rules (theme-worker-graph-guard.ts).
+const workerGraphGuardPlugin = ${themeWorkerGraphGuardPluginSource({
+    allowedPackages: "approvedSet",
+    workspaceRoot: hostRootLiteral,
+  })};
 
 export default defineConfig({
   root: ${hostRootLiteral},
@@ -1098,6 +1122,16 @@ export default defineConfig({
       outDir: `${hostWorkspaceRoot}/dist/preview`,
     })}] : []),
   ],
+  // Every worker bundle, in every target: the enforcer first, then the
+  // Theme's baseUrl resolution the main graphs have, then the graph check.
+  // Vite gives a worker the aliases above itself.
+  worker: {
+    plugins: () => [
+      workerDependencyEnforcerPlugin,
+      ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
+      workerGraphGuardPlugin,
+    ],
+  },
   resolve: {
     alias: [...morphSdkAliases, ...themeAliases],
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],

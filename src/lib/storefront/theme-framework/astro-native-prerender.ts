@@ -18,6 +18,7 @@ import {
 } from "../service/storefront-content-read";
 import { normalizeRoutePath } from "../theme-template-routes";
 import { nativeImportGuardPluginSource } from "./tanstack-start-native-wrapper";
+import { themeWorkerGraphGuardPluginSource } from "../compiler/theme-worker-graph-guard";
 
 /**
  * How an Astro build's prerendered pages read the build's sealed content.
@@ -165,8 +166,42 @@ export function astroBuildIntegrationSource(options: {
   const guard = options.allowedPackages
     ? `const allowedPackages = new Set(${JSON.stringify([...new Set(options.allowedPackages)].sort())});
 const workspaceRoot = root;
-const importGuard = ${nativeImportGuardPluginSource()};`
-    : "const importGuard = null;";
+const importGuard = ${nativeImportGuardPluginSource()};
+// A Vite Web Worker is its own bundle, built with worker.plugins only, so
+// the guard runs there too: the same plugin, listed first and with its
+// resolveId ordered "pre", so no resolver of the Theme's answers before it,
+// and then the check of the worker's built module graph
+// (theme-worker-graph-guard.ts), whichever resolver answered.
+const workerImportGuard = {
+  ...importGuard,
+  resolveId: { order: "pre", handler: importGuard.resolveId },
+};
+const workerGraphGuard = ${themeWorkerGraphGuardPluginSource({
+        allowedPackages: "allowedPackages",
+        workspaceRoot: "workspaceRoot",
+      })};
+// Set on the Vite config the build resolves, after Astro and the Theme's
+// integrations have merged theirs: the Theme's own worker plugins (a
+// function, or the older array) are kept, after Morph's guard. Set in place,
+// not merged: merging a function into an array would leave neither.
+const WORKER_GUARDED = Symbol.for("morph.astro.workerGuarded");
+const workerGuardConfigPlugin = {
+  name: "morph:astro-worker-guard",
+  config(viteConfig) {
+    const own = viteConfig.worker?.plugins;
+    if (own && own[WORKER_GUARDED]) return;
+    // Nested as given (Vite flattens a worker's plugin list, promises
+    // included), so a Theme's list is kept whatever its shape.
+    const plugins = () => [
+      workerImportGuard,
+      (typeof own === "function" ? own() : own) ?? [],
+      workerGraphGuard,
+    ];
+    plugins[WORKER_GUARDED] = true;
+    viteConfig.worker = { ...(viteConfig.worker ?? {}), plugins };
+  },
+};`
+    : "const importGuard = null;\nconst workerGuardConfigPlugin = null;";
   return `// Written by Morph for this build (astro-native-prerender.ts).
 import fs from "node:fs";
 import http from "node:http";
@@ -364,7 +399,11 @@ export function morphAstroBuild() {
           vite: {
             resolve: { alias: morphSdkAliases },
             cacheDir: buildViteCacheDir(),
-            plugins: importGuard ? [importGuard, prerenderPlugin] : [prerenderPlugin],
+            // The worker guard's config plugin, not the prerender plugin, in
+            // worker bundles: a worker runs only in the browser.
+            plugins: importGuard
+              ? [importGuard, workerGuardConfigPlugin, prerenderPlugin]
+              : [prerenderPlugin],
           },
         });
       },
