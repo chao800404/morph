@@ -1216,8 +1216,9 @@ test.describe("Start render modes keep hidden sections out", () => {
       // /rm-defer its document waits on the held value (run rm-evidence-11),
       // so every held value on the release preview's origin is let go while
       // the publish shows it. Its bp- host does not always answer a second
-      // tab (run rm-evidence-14: every attempt timed out), so the fixture's
-      // own 45 s release is what bounds the wait there.
+      // tab (runs rm-evidence-14 and -15: every attempt timed out, with a
+      // 45 s fixture release too), so the fixture's own 20 s release is what
+      // bounds the wait there. The editor case holds for 10 s, inside it.
       let publishing = true;
       const attempts: Array<{ origin: string; status: number; body: string }> = [];
       const releasing =
