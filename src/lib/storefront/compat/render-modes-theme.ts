@@ -173,7 +173,7 @@ ${guarded}
 /**
  * The deferred value's gate. Module state of the Theme's server: a page
  * request's promise waits here until `POST /api/rm-release` lets every
- * waiting one go (GET or POST), or two minutes pass (so a failed run never holds a stream
+ * waiting one go (GET or POST), or 45 s pass (so a failed run never holds a stream
  * open for good). It reads no content itself (a module that does would be a
  * reader the Hide proof has to follow); the route reads the page after it.
  */
@@ -186,7 +186,7 @@ export function held() {
       waiting.delete(release);
       resolve();
     };
-    const timer = setTimeout(release, 120_000);
+    const timer = setTimeout(release, 45_000);
     waiting.add(release);
   });
 }
