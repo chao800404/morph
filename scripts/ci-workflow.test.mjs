@@ -407,6 +407,9 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
     // M3 stage 1, the newsletter acceptance (#477): run locally on the
     // container transport; its CI step comes in a later change.
     "publish-hidden-page-section.mjs",
+    // Render-mode evidence (handoff/2026-11-28): run by hand on the
+    // container transport; no CI step runs it yet.
+    "start-render-modes-hidden.mjs",
   ];
 
   assert.deepEqual(wired, ["preview-access-container.mjs"]);

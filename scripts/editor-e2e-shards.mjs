@@ -173,6 +173,12 @@ export const EDITOR_SHARDS = [
     // again: container transport only, so it skips on every shard. No CI
     // step runs it yet; it is run locally on the container transport.
     "publish-hidden-page-section.spec.ts",
+    // Render-mode evidence (handoff/2026-11-28): container transport and the
+    // full Start preview only, so it skips on every shard. Its exact tests
+    // are listed in
+    // scripts/container-acceptance-targets/start-render-modes-hidden.mjs; no
+    // CI step runs that check yet.
+    "start-render-modes-hidden.spec.ts",
   ],
   [
     "session-editor-writes.spec.ts",
