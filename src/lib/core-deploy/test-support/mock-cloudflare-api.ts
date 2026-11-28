@@ -61,11 +61,12 @@ export function ok(result: unknown, extra: Record<string, unknown> = {}): Reply 
   return { status: 200, body: { success: true, errors: [], messages: [], result, ...extra } };
 }
 
-/** A complete one-page list, with the totals a paged endpoint states. */
+/**
+ * The two Workers lists, as the real endpoints answer them: the whole list,
+ * no `result_info` (the SDK models both as `SinglePage`).
+ */
 export function okList(result: unknown[]): Reply {
-  return ok(result, {
-    result_info: { page: 1, per_page: Math.max(result.length, 20), count: result.length, total_count: result.length, total_pages: 1 },
-  });
+  return ok(result);
 }
 
 export function apiError(status: number, code: number, message: string): Reply {

@@ -152,17 +152,19 @@ async function harness(
       for (const key of [...files.keys()]) if (key.startsWith(`${dir}/`)) files.delete(key);
     },
     parseJsonc: (text) => parseJsonc(text),
-    snapshot: (from, dirs) => {
+    snapshot: ({ root, artifactPath }) => {
       options.beforeSnapshot?.(files);
       const dir = `/snap-${snapshots.length + 1}`;
       snapshots.push(dir);
+      const dirs = ["dist", "drizzle"];
       steps.push(`snapshot ${dirs.join(",")}`);
       for (const rel of dirs) {
         for (const [key, value] of [...files]) {
-          if (key.startsWith(`${path.join(from, rel)}/`)) files.set(`${dir}/${path.relative(from, key)}`, value);
+          if (key.startsWith(`${path.join(root, rel)}/`)) files.set(`${dir}/${path.relative(root, key)}`, value);
         }
       }
-      return dir;
+      const configPath = `${dir}/${path.relative(root, artifactPath)}`;
+      return { dir, configPath, configText: files.get(configPath)!, copied: dirs };
     },
     hashTree: (dir) => {
       const hash = createHash("sha256");
@@ -343,6 +345,19 @@ describe("pnpm run deploy", () => {
       expect((await deploy(h)).exitCode).toBe(EXIT.refused);
       expect(h.steps.some((step) => step.startsWith("wrangler"))).toBe(false);
     }
+  });
+
+  it("refuses when Wrangler's reader resolves a container image outside the snapshot", async () => {
+    const h = await harness({
+      normalize: (parsed) => ({
+        ...parsed,
+        containers: [{ class_name: "Sandbox", image: at("Dockerfile.sandbox"), image_build_context: ROOT }],
+      }),
+    });
+    const result = await deploy(h);
+    expect(result.exitCode).toBe(EXIT.refused);
+    expect(result.problems.join("\n")).toMatch(/outside the snapshot/);
+    expect(h.steps.some((step) => step.startsWith("wrangler"))).toBe(false);
   });
 
   it("refuses when Wrangler's own reader sees routes the JSON guard does not (parser parity)", async () => {

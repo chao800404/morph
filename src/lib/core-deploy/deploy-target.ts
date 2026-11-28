@@ -73,8 +73,10 @@ export function parseDeployTarget(value: unknown): Parsed<DeployTarget> {
     problems.push("target.workerName must be a non-empty string.");
   }
   const environment = raw.environment ?? "production";
-  if (typeof environment !== "string" || environment.trim() === "") {
-    problems.push("target.environment must be a non-empty string.");
+  if (environment !== "production") {
+    problems.push(
+      `target.environment is ${JSON.stringify(environment)}; only "production" is supported. A Core deploy refuses --env and CLOUDFLARE_ENV, so Wrangler always deploys the Worker's production environment, and the storefront domain provider attaches domains there; any other value would bind platform hostnames where nothing is deployed.`,
+    );
   }
   const d1Databases = stringMap(raw.d1Databases, "d1Databases", problems);
   const kvNamespaces = stringMap(raw.kvNamespaces, "kvNamespaces", problems);

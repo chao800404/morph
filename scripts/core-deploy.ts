@@ -12,20 +12,8 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,6 +29,7 @@ import { parseJsonc } from "./theme-runtime-wiring-scan.mjs";
 
 import { createBootstrapApi, createInventoryApi } from "../src/lib/core-deploy/cloudflare-api";
 import { EXIT, runCoreDeploy } from "../src/lib/core-deploy/core-deploy";
+import { createSnapshot } from "../src/lib/core-deploy/snapshot";
 import {
   CLOUDFLARE_API_BASE_URL,
   parseRunnerArgs,
@@ -84,15 +73,7 @@ const result = await runCoreDeploy(command, args.options, {
   },
   unlock: (dir) => rmSync(dir, { recursive: true, force: true }),
   parseJsonc: (text) => parseJsonc(text),
-  snapshot: (from, dirs) => {
-    // mkdtemp creates the directory 0700: only this user can change the copy.
-    const dir = mkdtempSync(path.join(tmpdir(), "morph-core-deploy-"));
-    chmodSync(dir, 0o700);
-    for (const rel of dirs) {
-      cpSync(path.join(from, rel), path.join(dir, rel), { recursive: true, dereference: true, errorOnExist: true });
-    }
-    return dir;
-  },
+  snapshot: (input) => createSnapshot(input),
   hashTree: (dir) => {
     const hash = createHash("sha256");
     const walk = (current: string) => {

@@ -75,9 +75,36 @@ export function platformManifest(
   };
 }
 
-/** The hostname part of a Route pattern (`*.preview.example.com/*` → `preview.example.com`). */
+/**
+ * A Route pattern as Cloudflare matches it: hostnames are case-insensitive,
+ * and an `http://` or `https://` prefix only narrows the scheme, so it is
+ * stripped before any host comparison.
+ */
+export function normalizeRoutePattern(pattern: string): string {
+  return pattern.trim().toLowerCase().replace(/^https?:\/\//, "");
+}
+
+/** The host part of a Route pattern, without its leading wildcard (`*.preview.example.com/*` → `preview.example.com`). */
 export function routePatternHostname(pattern: string): string {
-  return pattern.replace(/^\*\.?/, "").replace(/\/.*$/, "");
+  return normalizeRoutePattern(pattern).replace(/^\*\.?/, "").replace(/\/.*$/, "");
+}
+
+/** Whether the pattern's host part starts with a wildcard. */
+export function isWildcardRoute(pattern: string): boolean {
+  return normalizeRoutePattern(pattern).startsWith("*");
+}
+
+/**
+ * Whether a Route pattern can match requests for `hostname`: an exact host,
+ * `*.base` (every subdomain of base), or `*base` (base and every host ending
+ * in it; `*` alone matches all).
+ */
+export function routeMatchesHostname(pattern: string, hostname: string): boolean {
+  const host = normalizeRoutePattern(pattern).replace(/\/.*$/, "");
+  const name = hostname.toLowerCase();
+  if (!host.startsWith("*")) return host === name;
+  const suffix = host.slice(1);
+  return suffix === "" || name.endsWith(suffix);
 }
 
 export function isInZone(hostname: string, zoneName: string): boolean {

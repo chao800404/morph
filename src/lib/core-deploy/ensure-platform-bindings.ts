@@ -6,7 +6,14 @@ import {
 } from "./cloudflare-api";
 import type { DeployTarget } from "./deploy-target";
 import type { InventorySnapshot } from "./inventory";
-import { isInZone, routePatternHostname, type PlatformManifest } from "./platform-manifest";
+import {
+  isInZone,
+  isWildcardRoute,
+  normalizeRoutePattern,
+  routeMatchesHostname,
+  routePatternHostname,
+  type PlatformManifest,
+} from "./platform-manifest";
 
 /**
  * `platform:ensure` — binds Morph Core's own hostnames to its Worker, once,
@@ -66,8 +73,20 @@ function plan(snapshot: InventorySnapshot, target: DeployTarget, manifest: Platf
   for (const hostname of manifest.customDomains) {
     const rows = snapshot.storefrontDomains.filter((row) => row.hostname === hostname);
     const bound = snapshot.customDomains.filter((domain) => domain.hostname === hostname);
+    // A matching Route takes precedence over a Custom Domain: one that is not
+    // this Worker's (an exclusion Route included) would override the binding.
+    const overriding = snapshot.zoneRoutes.filter(
+      (route) => route.script !== target.workerName && routeMatchesHostname(route.pattern, hostname),
+    );
     if (!isInZone(hostname, snapshot.zone.name)) {
       steps.push({ kind: "custom-domain", hostname, action: "refuse", detail: `not in zone ${snapshot.zone.name}` });
+    } else if (overriding.length > 0) {
+      steps.push({
+        kind: "custom-domain",
+        hostname,
+        action: "refuse",
+        detail: `a Route for another Worker would override it: ${overriding.map((r) => `${r.pattern} (${r.id}, script=${r.script ?? "none"})`).join("; ")}`,
+      });
     } else if (rows.length > 0) {
       steps.push({
         kind: "custom-domain",
@@ -89,7 +108,7 @@ function plan(snapshot: InventorySnapshot, target: DeployTarget, manifest: Platf
     }
   }
   for (const { pattern } of manifest.routes) {
-    const matches = snapshot.zoneRoutes.filter((route) => route.pattern === pattern);
+    const matches = snapshot.zoneRoutes.filter((route) => normalizeRoutePattern(route.pattern) === normalizeRoutePattern(pattern));
     const overlaps = wildcardOverlaps(pattern, snapshot, target, manifest);
     if (!isInZone(routePatternHostname(pattern), snapshot.zone.name)) {
       steps.push({ kind: "route", pattern, action: "refuse", detail: `not in zone ${snapshot.zone.name}` });
@@ -130,19 +149,20 @@ function wildcardOverlaps(
   target: DeployTarget,
   manifest: PlatformManifest,
 ): string[] {
-  if (!pattern.startsWith("*.")) return [];
+  if (!normalizeRoutePattern(pattern).startsWith("*.")) return [];
   const base = routePatternHostname(pattern);
   const under = (hostname: string) => hostname.endsWith(`.${base}`);
   const found: string[] = [];
   for (const domain of snapshot.customDomains) {
-    if (under(domain.hostname) && !domainIsOurs(domain, target, manifest)) {
+    if (under(domain.hostname.toLowerCase()) && !domainIsOurs(domain, target, manifest)) {
       found.push(`Custom Domain ${domain.hostname} (${domain.id}, service=${domain.service}, environment=${domain.environment}, zone=${domain.zoneId})`);
     }
   }
   for (const route of snapshot.zoneRoutes) {
-    if (route.pattern === pattern || route.script === target.workerName) continue;
+    if (normalizeRoutePattern(route.pattern) === normalizeRoutePattern(pattern) || route.script === target.workerName) continue;
+    // Compared without scheme and case (https://APP.example.com/* is app.example.com).
     const host = routePatternHostname(route.pattern);
-    const broader = route.pattern.startsWith("*") && (base === host || base.endsWith(`.${host}`));
+    const broader = isWildcardRoute(route.pattern) && routeMatchesHostname(route.pattern, `a.${base}`);
     if (host === base || under(host) || broader) {
       found.push(`Route ${route.pattern} (${route.id}, script=${route.script ?? "none"})`);
     }
@@ -250,6 +270,7 @@ export async function ensurePlatformBindings(input: {
       : await createRoute(step.pattern, input);
     steps.push(outcome);
     if (outcome.outcome !== "created" && outcome.outcome !== "present") stopped = outcome;
+    if (outcome.outcome === "refused") refusedMidRun = true;
   }
   return { status: refusedMidRun ? "refused" : stopped ? "failed" : "complete", steps };
 }
@@ -281,6 +302,27 @@ async function createCustomDomain(
       subject: hostname,
       outcome: "failed",
       detail: `re-read after the attach failed (${error instanceof Error ? error.message : String(error)}); run again to resume`,
+    };
+  }
+  // A storefront row for the hostname, seen on the re-read, means a merchant
+  // claimed it meanwhile: never adopt it, whatever the binding shows.
+  const rows = after.storefrontDomains.filter((row) => row.hostname === hostname);
+  if (rows.length > 0) {
+    return {
+      kind: "custom-domain",
+      subject: hostname,
+      outcome: "refused",
+      detail: `the re-read shows storefront domain row ${rows.map((row) => `${row.id} (${row.status})`).join(", ")} for it; a storefront-owned binding is never adopted`,
+    };
+  }
+  // A definite refusal is a failure even if the hostname now looks bound to
+  // this Worker: whoever bound it, it was not this write.
+  if (writeError && !(writeError instanceof CloudflareWriteError && writeError.ambiguous)) {
+    return {
+      kind: "custom-domain",
+      subject: hostname,
+      outcome: "failed",
+      detail: `the attach was refused (${writeError.message}); run again after fixing the cause`,
     };
   }
   const bound = after.customDomains.filter((domain) => domain.hostname === hostname);

@@ -114,7 +114,8 @@ export type DiscrepancyKind =
   | "storefront-domain-in-preview-namespace"
   | "storefront-domain-changed"
   | "storefront-domain-pending"
-  | "binding-removed";
+  | "binding-removed"
+  | "binding-reassigned";
 
 export type Discrepancy = Readonly<{
   kind: DiscrepancyKind;
@@ -293,20 +294,40 @@ export function compareInventory(input: {
   // it any more (its D1 row soft-deleted after a 404, say). Bindings that
   // appeared during the deploy are reported.
   if (input.baseline) {
-    const nowDomainIds = new Set(snapshot.customDomains.map((d) => d.id));
     const activeNow = new Set(snapshot.storefrontDomains.filter((r) => r.status === "active").map((r) => r.hostname));
     for (const before of input.baseline.customDomains) {
-      if (before.service !== target.workerName || nowDomainIds.has(before.id)) continue;
-      // Still bound under another id, a platform hostname, or an active row:
-      // reported above as changed, missing or mismatched.
-      if (byHostname.has(before.hostname) || platform.has(before.hostname) || activeNow.has(before.hostname)) continue;
-      add("binding-removed", identity(before), `${identity(before)} was bound to this Worker before the deploy and is gone after it (a Settings disconnect during the deploy also looks like this)`);
+      if (!ours(before)) continue;
+      // Kept only if the binding with that id (or, failing that, for that
+      // hostname) still has this Worker's owner identity: service,
+      // environment and zone. Presence alone is not kept: another Worker can
+      // hold the same id or hostname now.
+      const now =
+        snapshot.customDomains.find((d) => d.id === before.id) ??
+        (byHostname.get(before.hostname) ?? []).find((d) => ours(d)) ??
+        (byHostname.get(before.hostname) ?? [])[0];
+      if (now && ours(now)) continue;
+      // A platform hostname or an active row is reported above (missing,
+      // wrong owner); anything else would go unreported without this.
+      if (platform.has(before.hostname) || activeNow.has(before.hostname)) continue;
+      if (!now) {
+        add("binding-removed", identity(before), `${identity(before)} was bound to this Worker before the deploy and is gone after it (a Settings disconnect during the deploy also looks like this)`);
+      } else {
+        add("binding-reassigned", `${identity(before)}|${identity(now)}`, `${before.hostname} was this Worker's before the deploy (${identity(before)}) and is now ${identity(now)}`);
+      }
     }
-    const nowRouteIds = new Set(snapshot.zoneRoutes.map((r) => r.id));
     for (const before of input.baseline.zoneRoutes) {
-      if (before.script !== target.workerName || nowRouteIds.has(before.id)) continue;
-      if (expectedPatterns.has(before.pattern) || snapshot.zoneRoutes.some((r) => r.pattern === before.pattern)) continue;
-      add("binding-removed", `route|${before.pattern}|${before.id}`, `Route ${before.pattern} (${before.id}) ran this Worker before the deploy and is gone after it`);
+      if (before.script !== target.workerName) continue;
+      const now =
+        snapshot.zoneRoutes.find((r) => r.id === before.id) ??
+        snapshot.zoneRoutes.find((r) => r.pattern === before.pattern && r.script === target.workerName) ??
+        snapshot.zoneRoutes.find((r) => r.pattern === before.pattern);
+      if (now && now.script === target.workerName) continue;
+      if (expectedPatterns.has(before.pattern)) continue; // reported above (missing, wrong owner)
+      if (!now) {
+        add("binding-removed", `route|${before.pattern}|${before.id}`, `Route ${before.pattern} (${before.id}) ran this Worker before the deploy and is gone after it`);
+      } else {
+        add("binding-reassigned", `route|${before.pattern}|${before.id}|${now.id}|${now.script}`, `Route ${before.pattern} ran this Worker before the deploy and now runs ${now.script ?? "no Worker"} (${now.id})`);
+      }
     }
     const beforeDomainIds = new Set(input.baseline.customDomains.map((d) => d.id));
     for (const domain of snapshot.customDomains) {

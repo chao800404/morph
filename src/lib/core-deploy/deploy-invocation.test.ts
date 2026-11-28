@@ -145,6 +145,15 @@ describe("the pinned tools", () => {
     ).toEqual([]);
   });
 
+  it("refuses a range on the Vite plugin in package.json", () => {
+    const problems = checkPinnedTools({
+      packageJson: { devDependencies: { wrangler: PINNED_WRANGLER_VERSION }, dependencies: { "@cloudflare/vite-plugin": `^${PINNED_VITE_PLUGIN_VERSION}` } },
+      installedWranglerVersion: PINNED_WRANGLER_VERSION,
+      installedVitePluginVersion: PINNED_VITE_PLUGIN_VERSION,
+    });
+    expect(problems).toEqual([expect.stringContaining("@cloudflare/vite-plugin")]);
+  });
+
   it("refuses a range, another installed Wrangler and another Vite plugin", () => {
     const problems = checkPinnedTools({
       packageJson: { devDependencies: { wrangler: `^${PINNED_WRANGLER_VERSION}` } },

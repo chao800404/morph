@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
-import { createInventoryApi } from "./cloudflare-api";
+import { createInventoryApi, readCloudflareList } from "./cloudflare-api";
 import type { DeployTarget } from "./deploy-target";
 import { compareInventory, readInventory, reconcile, type Verdict } from "./inventory";
 import type { PlatformManifest } from "./platform-manifest";
@@ -33,6 +33,11 @@ const MANIFEST: PlatformManifest = {
 };
 
 const apis: MockApi[] = [];
+/** The generic reader on a paginated endpoint (the two Workers lists are not). */
+const pagedList = (api: MockApi) =>
+  readCloudflareList({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT }, "Paged list", `/accounts/${ACCOUNT}/workers/domains`, {
+    paged: true,
+  }) as Promise<Array<{ hostname: string }>>;
 afterEach(async () => {
   for (const api of apis.splice(0)) await api.close();
 });
@@ -162,8 +167,7 @@ describe("the binding inventory", () => {
       ],
     });
     apis.push(api);
-    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    await expect(client.listWorkerDomains()).rejects.toThrow(/more than per_page/);
+    await expect(pagedList(api)).rejects.toThrow(/more than per_page/);
   });
 
   it("is unavailable when the first page carries more entries than its per_page", async () => {
@@ -180,8 +184,7 @@ describe("the binding inventory", () => {
       ],
     });
     apis.push(api);
-    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    await expect(client.listWorkerDomains()).rejects.toThrow(/page 1 carries .* more than per_page 1/);
+    await expect(pagedList(api)).rejects.toThrow(/page 1 carries .* more than per_page 1/);
   });
 
   it("is unavailable when a page's count disagrees with its entries", async () => {
@@ -196,7 +199,7 @@ describe("the binding inventory", () => {
     });
     apis.push(api);
     const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    await expect(client.listZoneRoutes(ZONE)).rejects.toThrow(/says 99 entries/);
+    await expect(client.listZoneRoutes(ZONE)).rejects.toThrow(/says 99 entries|only part of the list/);
   });
 
   it("compares a pending row that activates between the paired reads", async () => {
@@ -330,7 +333,7 @@ describe("the binding inventory", () => {
     });
     apis.push(api);
     const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    await expect(client.listWorkerDomains()).rejects.toThrow(/incomplete list|repeats entries/);
+    await expect(client.listWorkerDomains()).rejects.toThrow(/incomplete list|repeats entries|only part of the list/);
   });
 
   it("follows every page a paged answer announces", async () => {
@@ -349,8 +352,7 @@ describe("the binding inventory", () => {
       ],
     });
     apis.push(api);
-    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    expect((await client.listWorkerDomains()).map((d) => d.hostname)).toEqual(state.domains.map((d) => d.hostname));
+    expect((await pagedList(api)).map((d) => d.hostname)).toEqual(state.domains.map((d) => d.hostname));
   });
 
   it("compares the post-deploy read with the pre-deploy read by identity, not by count", async () => {
@@ -402,8 +404,7 @@ describe("the binding inventory", () => {
       ],
     });
     apis.push(api);
-    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    await expect(client.listWorkerDomains()).rejects.toThrow(/describes another list/);
+    await expect(pagedList(api)).rejects.toThrow(/describes another list/);
   });
 });
 
@@ -422,8 +423,7 @@ describe("round 5: completeness without totals, and the post-check by identity",
     const handler = pagedWithoutTotals((s) => [s.domains.slice(0, 2), s.domains.slice(2, 4), s.domains.slice(4)]);
     const api = await startMockCloudflareApi(state, { handlers: [handler(state)] });
     apis.push(api);
-    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    const domains = await client.listWorkerDomains();
+    const domains = await pagedList(api);
     expect(domains.map((d) => d.hostname)).toEqual(state.domains.map((d) => d.hostname));
     expect(api.requests.filter((r) => r.path.endsWith("/workers/domains")).length).toBe(3);
   });
@@ -433,8 +433,7 @@ describe("round 5: completeness without totals, and the post-check by identity",
     const handler = pagedWithoutTotals((s) => [s.domains.slice(0, 2), s.domains.slice(0, 2), s.domains.slice(0, 2)]);
     const api = await startMockCloudflareApi(state, { handlers: [handler(state)] });
     apis.push(api);
-    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
-    await expect(client.listWorkerDomains()).rejects.toThrow(/repeat/);
+    await expect(pagedList(api)).rejects.toThrow(/repeat/);
   });
 
   it("catches a storefront binding that vanished during the deploy together with its D1 row", async () => {
@@ -467,5 +466,106 @@ describe("round 5: completeness without totals, and the post-check by identity",
     const result = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
     expect(result.discrepancies).toEqual([]);
     expect(result.diagnostics.some((line) => line.startsWith("added during the deploy: new.example.com"))).toBe(true);
+  });
+});
+
+describe("round 6: the Workers lists are unpaginated; paging rules elsewhere; owner identity", () => {
+  it("reads an unpaginated list (no result_info) of any size in one request", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) =>
+          request.path === `/accounts/${ACCOUNT}/workers/domains` || request.path === `/zones/${ZONE}/workers/routes`
+            ? { status: 200, body: { success: true, errors: [], messages: [], result: request.path.includes("routes") ? state.routes[ZONE] : state.domains } }
+            : undefined,
+      ],
+    });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    expect((await client.listWorkerDomains()).length).toBe(state.domains.length);
+    expect((await client.listZoneRoutes(ZONE)).length).toBe(state.routes[ZONE]!.length);
+    const lists = api.requests.filter((r) => r.path.endsWith("/workers/domains") || r.path.endsWith("/workers/routes"));
+    expect(lists.map((r) => r.query.toString())).toEqual(["", ""]);
+  });
+
+  it("is unavailable when an unpaginated answer says it is only part of the list", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) =>
+          request.path === `/accounts/${ACCOUNT}/workers/domains`
+            ? { status: 200, body: { success: true, errors: [], result: state.domains, result_info: { page: 1, total_pages: 2 } } }
+            : undefined,
+      ],
+    });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    await expect(client.listWorkerDomains()).rejects.toThrow(/unpaginated/);
+  });
+
+  it("reads every stated page when total_pages is given without total_count; an early empty page is unavailable", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) => {
+          if (request.path !== `/accounts/${ACCOUNT}/workers/domains`) return undefined;
+          const page = Number(request.query.get("page") ?? "1");
+          const result = page === 1 ? state.domains.slice(0, 2) : [];
+          return { status: 200, body: { success: true, errors: [], result, result_info: { page, per_page: 2, total_pages: 3 } } };
+        },
+      ],
+    });
+    apis.push(api);
+    await expect(pagedList(api)).rejects.toThrow(/empty before the last stated page/);
+  });
+
+  it("is unavailable when a later page repeats some entries of an earlier one", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) => {
+          if (request.path !== `/accounts/${ACCOUNT}/workers/domains`) return undefined;
+          const page = Number(request.query.get("page") ?? "1");
+          // A list that shifted while it was read: page 2 starts with page 1's last entry.
+          const result = page === 1 ? state.domains.slice(0, 2) : state.domains.slice(1, 3);
+          return { status: 200, body: { success: true, errors: [], result, result_info: { page, per_page: 2, total_pages: 2, total_count: 4 } } };
+        },
+      ],
+    });
+    apis.push(api);
+    await expect(pagedList(api)).rejects.toThrow(/repeats/);
+  });
+
+  it.each([
+    ["soft-deleted", (s: MockState) => { s.d1[D1_ID] = s.d1[D1_ID]!.filter((r) => r.hostname !== "shop-a.example.com"); }],
+    ["pending", (s: MockState) => { s.d1[D1_ID] = s.d1[D1_ID]!.map((r) => (r.hostname === "shop-a.example.com" ? { ...r, status: "pending" } : r)); }],
+    ["failed", (s: MockState) => { s.d1[D1_ID] = s.d1[D1_ID]!.map((r) => (r.hostname === "shop-a.example.com" ? { ...r, status: "failed" } : r)); }],
+  ])("catches a binding reassigned to another Worker during the deploy while its D1 row is %s", async (_label, mutateRow) => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    const api = await startMockCloudflareApi(state);
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    const before = await readInventory(client, TARGET, MANIFEST);
+    // Same id, moved in place to another Worker.
+    state.domains = state.domains.map((d) => (d.hostname === "shop-a.example.com" ? { ...d, service: "other-worker" } : d));
+    mutateRow(state);
+    const after = await readInventory(client, TARGET, MANIFEST);
+    const { discrepancies } = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
+    expect(discrepancies.map((d) => d.kind)).toContain("binding-reassigned");
+  });
+
+  it("catches a Route of this Worker reassigned to another script during the deploy", async () => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    state.routes[ZONE]!.push({ id: "route-extra", pattern: "extra.example.com/*", script: WORKER });
+    const api = await startMockCloudflareApi(state);
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    const before = await readInventory(client, TARGET, MANIFEST);
+    state.routes[ZONE] = state.routes[ZONE]!.map((r) => (r.id === "route-extra" ? { ...r, script: "other" } : r));
+    const after = await readInventory(client, TARGET, MANIFEST);
+    const { discrepancies } = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
+    expect(discrepancies.map((d) => d.kind)).toContain("binding-reassigned");
   });
 });

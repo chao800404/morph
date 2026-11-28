@@ -186,6 +186,12 @@ export function checkPinnedTools(input: {
   if (declared !== PINNED_WRANGLER_VERSION) {
     problems.push(`package.json declares wrangler ${JSON.stringify(declared)}; Core deploy requires exactly ${PINNED_WRANGLER_VERSION}.`);
   }
+  const declaredPlugin = pkg?.dependencies?.["@cloudflare/vite-plugin"] ?? pkg?.devDependencies?.["@cloudflare/vite-plugin"];
+  if (declaredPlugin !== undefined && declaredPlugin !== PINNED_VITE_PLUGIN_VERSION) {
+    problems.push(
+      `package.json declares @cloudflare/vite-plugin ${JSON.stringify(declaredPlugin)}; Core deploy requires exactly ${PINNED_VITE_PLUGIN_VERSION}.`,
+    );
+  }
   if (input.installedWranglerVersion !== PINNED_WRANGLER_VERSION) {
     problems.push(
       `Installed wrangler is ${JSON.stringify(input.installedWranglerVersion)}; Core deploy requires exactly ${PINNED_WRANGLER_VERSION}. An upgrade needs the source check and the harness re-run first.`,

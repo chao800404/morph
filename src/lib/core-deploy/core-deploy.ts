@@ -30,6 +30,7 @@ import {
 } from "./inventory";
 import { platformManifest, type PlatformManifest } from "./platform-manifest";
 import { checkRemoteMigrations } from "./remote-migrations";
+import { expectedSnapshotConfig, pathsOutsideSnapshot, type Snapshot } from "./snapshot";
 
 /**
  * The Core deploy flow (design 2, option B), with every effect injected so
@@ -69,11 +70,11 @@ export type CoreDeployDeps = Readonly<{
   unlock(dir: string): void;
   parseJsonc(text: string): { ok: true; value: unknown } | { ok: false; error: string };
   /**
-   * Copies `dirs` (relative to `from`) into a new private directory only this
-   * process can write (mode 0700), keeping their relative layout, and returns
-   * that directory.
+   * The private (mode 0700) copy of every path the artifact references, its
+   * config rewritten only to point containers into the copy (snapshot.ts).
+   * Throws to refuse.
    */
-  snapshot(from: string, dirs: readonly string[]): string;
+  snapshot(input: { root: string; artifactPath: string; artifactText: string }): Snapshot;
   /** A digest of every file under `dir`: paths and contents. Throws if one cannot be read. */
   hashTree(dir: string): string;
   /** The pinned Wrangler's own reader (`unstable_readConfig`) on exactly this config file. */
@@ -375,21 +376,17 @@ async function deployLocked(options: RunnerOptions, deps: CoreDeployDeps, prepar
   if (stray.length > 0) {
     return refuse(deps, [`${stray.join(" and ")} at the checkout root: an unchecked Wrangler config. Remove it.`]);
   }
-  const artifact = JSON.parse(artifactText) as { d1_databases?: Array<{ binding?: string; migrations_dir?: string }> };
-  const migrationsDir = (artifact.d1_databases ?? []).find((entry) => entry.binding === "DATABASE")?.migrations_dir;
-  const extraDirs: string[] = [];
-  if (migrationsDir) {
-    const resolved = path.relative(root, path.resolve(path.dirname(artifactPath), migrationsDir));
-    if (resolved && !resolved.startsWith("..") && !path.isAbsolute(resolved)) extraDirs.push(resolved);
-  }
+  // Every path the config references — dist/, the migrations dir, each
+  // container's Dockerfile and its COPY sources — goes into the snapshot
+  // (snapshot.ts); a reference the snapshot cannot hold is a refusal.
   let snapshotDir: string;
   try {
-    snapshotDir = deps.snapshot(root, ["dist", ...extraDirs]);
+    snapshotDir = deps.snapshot({ root, artifactPath, artifactText }).dir;
   } catch (error) {
-    return refuse(deps, [`Could not copy the build output: ${error instanceof Error ? error.message : String(error)}`]);
+    return refuse(deps, [`Could not snapshot the build output: ${error instanceof Error ? error.message : String(error)}`]);
   }
   try {
-    return await deploySnapshot({ deps, prepared, mode, childEnv, before: before.snapshot, artifactText, snapshotDir });
+    return await deploySnapshot({ deps, prepared, mode, childEnv, before: before.snapshot, artifactText, artifactPath, snapshotDir });
   } finally {
     deps.removeDir(snapshotDir);
   }
@@ -402,6 +399,7 @@ async function deploySnapshot(input: {
   childEnv: Record<string, string>;
   before: InventorySnapshot;
   artifactText: string;
+  artifactPath: string;
   snapshotDir: string;
 }): Promise<RunResult> {
   const { deps, prepared, mode, childEnv, artifactText, snapshotDir } = input;
@@ -414,10 +412,14 @@ async function deploySnapshot(input: {
   let checked: string;
   const problems: string[] = [];
   try {
-    if (deps.readText(snapshotConfig) !== artifactText) {
-      problems.push("The copied artifact differs from the one the guard checked (the build output changed in between).");
+    // The checked artifact, with only its container paths moved into the
+    // snapshot; computed here, not taken from the snapshot step.
+    if (deps.readText(snapshotConfig) !== expectedSnapshotConfig(artifactText, deps.rootDir, input.artifactPath, snapshotDir)) {
+      problems.push("The snapshot's config differs from the artifact the guard checked (the build output changed in between).");
     }
-    problems.push(...checkNormalizedConfig(deps.readWranglerConfig(snapshotConfig), target));
+    const normalized = deps.readWranglerConfig(snapshotConfig);
+    problems.push(...checkNormalizedConfig(normalized, target));
+    problems.push(...pathsOutsideSnapshot(normalized, snapshotDir, snapshotConfig).map((p) => `Wrangler's reader: ${p}`));
     checked = deps.hashTree(snapshotDir);
   } catch (error) {
     return refuse(deps, [

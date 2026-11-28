@@ -95,84 +95,111 @@ function describe(envelope: Envelope | null, status: number): string {
 
 const MAX_PAGES = 200;
 
+async function getEnvelope(transport: CloudflareTransport, label: string, pathAndQuery: string) {
+  let answer: Awaited<ReturnType<typeof send>>;
+  try {
+    answer = await send(transport, "GET", pathAndQuery);
+  } catch (error) {
+    throw new CloudflareReadError(`${label}: request failed (${error instanceof Error ? error.message : String(error)})`);
+  }
+  const { status, envelope } = answer;
+  if (status !== 200 || !envelope || envelope.success !== true || !Array.isArray(envelope.result)) {
+    throw new CloudflareReadError(`${label}: unreadable answer (${describe(envelope, status)})`);
+  }
+  return { result: envelope.result as unknown[], info: envelope.result_info };
+}
+
 /**
- * A list endpoint, read to the end, or not at all.
+ * A list endpoint, read completely or not at all. Each endpoint is declared
+ * paginated or not, from Cloudflare's own SDK (the pinned Wrangler bundles
+ * `cloudflare@5.2.0`, whose list calls for `/accounts/{a}/workers/domains`
+ * and `/zones/{z}/workers/routes` are `SinglePage`: no `page`, no
+ * `per_page`, no `result_info`).
  *
- * - With a total on page 1 (`total_count` or `total_pages`): every page is
- *   followed, every page must describe the same list as page 1 (same totals,
- *   same `per_page`), no page may carry more than its `per_page` or other
- *   than its `count`, and the entries must add up to `total_count`.
- * - Without a total, a list is never taken as complete from a full page:
- *   pages are read until one comes back short (fewer entries than the page
- *   size, `per_page` or else page 1's length) or empty. A page that only
- *   repeats entries already read means the endpoint ignores paging, and
- *   completeness cannot be shown: unavailable.
+ * - **Unpaginated:** one request. The answer is the whole list. A
+ *   `result_info` that says otherwise (more pages, a larger total, a
+ *   `count` that is not the payload) is unavailable.
+ * - **Paginated:** a missing `result_info` is never complete, and
+ *   - with `total_pages`: every stated page is read; a page that comes back
+ *     empty before the last stated one is unavailable;
+ *   - with only `total_count`: pages are read until it is reached, and an
+ *     empty page before that is unavailable;
+ *   - with neither: pages are read until one comes back short or empty;
+ *   - every page must agree with page 1 (totals, `per_page`), carry no more
+ *     than its `per_page` and exactly its `count`, and repeat no entry
+ *     already read (a list that shifted while it was read proves nothing).
  */
-async function readList(
+export async function readCloudflareList(
   transport: CloudflareTransport,
   label: string,
   path: string,
+  options: Readonly<{ paged: boolean }>,
 ): Promise<unknown[]> {
+  if (!options.paged) {
+    const { result, info } = await getEnvelope(transport, label, path);
+    if (info) {
+      const pages = typeof info.total_pages === "number" ? info.total_pages : null;
+      const total = typeof info.total_count === "number" ? info.total_count : null;
+      const count = typeof info.count === "number" ? info.count : null;
+      if ((pages !== null && pages > 1) || (total !== null && total !== result.length) || (count !== null && count !== result.length)) {
+        throw new CloudflareReadError(
+          `${label}: an unpaginated endpoint answered with only part of the list (${result.length} entries, result_info ${JSON.stringify(info)})`,
+        );
+      }
+    }
+    return result;
+  }
+
   const items: unknown[] = [];
   const seen = new Set<string>();
   let totalCount: number | null = null;
   let totalPages: number | null = null;
   let perPage: number | null = null;
-  let pageSize: number | null = null;
+  let pageSize = 0;
   for (let page = 1; ; page += 1) {
     if (page > MAX_PAGES) throw new CloudflareReadError(`${label}: more than ${MAX_PAGES} pages`);
     const query = page === 1 ? "" : `${path.includes("?") ? "&" : "?"}page=${page}${perPage ? `&per_page=${perPage}` : ""}`;
-    let answer: Awaited<ReturnType<typeof send>>;
-    try {
-      answer = await send(transport, "GET", `${path}${query}`);
-    } catch (error) {
-      throw new CloudflareReadError(`${label}: request failed (${error instanceof Error ? error.message : String(error)})`);
-    }
-    const { status, envelope } = answer;
-    if (status !== 200 || !envelope || envelope.success !== true || !Array.isArray(envelope.result)) {
-      throw new CloudflareReadError(`${label}: unreadable answer (${describe(envelope, status)})`);
-    }
-    const result = envelope.result;
-    const info = envelope.result_info;
-    const declaredPerPage = typeof info?.per_page === "number" ? info.per_page : perPage;
+    const { result, info } = await getEnvelope(transport, label, `${path}${query}`);
+    if (!info) throw new CloudflareReadError(`${label}: page ${page} of a paginated list carries no result_info`);
+    const declaredPerPage = typeof info.per_page === "number" ? info.per_page : perPage;
     if (declaredPerPage !== null && result.length > declaredPerPage) {
       throw new CloudflareReadError(`${label}: page ${page} carries ${result.length} entries, more than per_page ${declaredPerPage}`);
     }
-    if (info && typeof info.count === "number" && info.count !== result.length) {
+    if (typeof info.count === "number" && info.count !== result.length) {
       throw new CloudflareReadError(`${label}: page ${page} says ${info.count} entries and carries ${result.length}`);
     }
-    if (info && typeof info.page === "number" && info.page !== page) {
+    if (typeof info.page === "number" && info.page !== page) {
       throw new CloudflareReadError(`${label}: asked for page ${page}, the API answered page ${info.page}`);
     }
-    const pageTotal = typeof info?.total_count === "number" ? info.total_count : null;
-    const pagePages = typeof info?.total_pages === "number" ? info.total_pages : null;
-    const pagePer = typeof info?.per_page === "number" ? info.per_page : null;
+    const pageTotal = typeof info.total_count === "number" ? info.total_count : null;
+    const pagePages = typeof info.total_pages === "number" ? info.total_pages : null;
+    const pagePer = typeof info.per_page === "number" ? info.per_page : null;
     if (page === 1) {
       totalCount = pageTotal;
       totalPages = pagePages;
       perPage = pagePer;
       pageSize = perPage ?? result.length;
     } else if (pageTotal !== totalCount || pagePages !== totalPages || pagePer !== perPage) {
-      // A total that moves between pages means the list changed (or the answer
-      // is wrong) while it was being read, so what arrived proves nothing.
       throw new CloudflareReadError(
         `${label}: page ${page} describes another list (total ${pageTotal}/${pagePages} pages per ${pagePer}, page 1 said ${totalCount}/${totalPages} per ${perPage})`,
       );
     }
-    const keys = result.map((entry) => JSON.stringify(entry));
-    if (page > 1 && keys.length > 0 && keys.every((key) => seen.has(key))) {
-      throw new CloudflareReadError(`${label}: page ${page} repeats entries already read; the endpoint ignores paging, so the list cannot be shown complete`);
+    for (const entry of result) {
+      const key = JSON.stringify(entry);
+      if (seen.has(key)) {
+        throw new CloudflareReadError(`${label}: page ${page} repeats entries already read; the list cannot be shown complete`);
+      }
+      seen.add(key);
     }
-    for (const key of keys) seen.add(key);
     items.push(...result);
 
-    if (totalCount !== null || totalPages !== null) {
-      // A stated total: follow the stated pages (or, with only a count,
-      // until it is reached).
-      const lastPage = totalPages ?? Math.max(1, Math.ceil((totalCount ?? 0) / Math.max(1, pageSize ?? 1)));
-      if (page >= lastPage || (totalPages === null && items.length >= (totalCount ?? 0))) break;
-      if (result.length === 0) break;
-    } else if (result.length === 0 || result.length < (pageSize ?? 0)) {
+    if (totalPages !== null) {
+      if (page >= totalPages) break;
+      if (result.length === 0) throw new CloudflareReadError(`${label}: page ${page} is empty before the last stated page ${totalPages}`);
+    } else if (totalCount !== null) {
+      if (items.length >= totalCount) break;
+      if (result.length === 0) throw new CloudflareReadError(`${label}: page ${page} is empty before total_count ${totalCount} was reached`);
+    } else if (result.length === 0 || result.length < pageSize) {
       break;
     }
   }
@@ -239,11 +266,11 @@ export function createInventoryApi(transport: CloudflareTransport): InventoryApi
       return { id: result.id, name: (result.name as string).toLowerCase() };
     },
     async listWorkerDomains() {
-      const items = await readList(transport, "Custom Domains", `${account}/workers/domains`);
+      const items = await readCloudflareList(transport, "Custom Domains", `${account}/workers/domains`, { paged: false });
       return items.map(toWorkerDomain);
     },
     async listZoneRoutes(zoneId) {
-      const items = await readList(transport, `Workers Routes (zone ${zoneId})`, `/zones/${zoneId}/workers/routes`);
+      const items = await readCloudflareList(transport, `Workers Routes (zone ${zoneId})`, `/zones/${zoneId}/workers/routes`, { paged: false });
       return items.map(toZoneRoute);
     },
     async queryD1(databaseId, sql) {

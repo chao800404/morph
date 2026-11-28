@@ -240,3 +240,49 @@ describe("round 5: the preview wildcard never takes over another binding", () =>
     expect(api.writes().some((w) => w.method === "POST")).toBe(true);
   });
 });
+
+describe("round 6: Route normalization, attach errors, storefront rows on re-read, foreign Routes over a hostname", () => {
+  it.each([
+    ["an https:// broader wildcard", { id: "r1", pattern: "https://*.example.com/*", script: "other" }],
+    ["an http:// Route under it", { id: "r2", pattern: "http://app.preview.example.com/*", script: "other" }],
+    ["an uppercase Route under it", { id: "r3", pattern: "APP.Preview.Example.com/*", script: "other" }],
+  ])("refuses the preview wildcard over %s", async (_label, route) => {
+    const { api, run } = await setup(baseState({ routes: { [ZONE]: [route] } }));
+    const result = await run();
+    expect(result.status).toBe("refused");
+    expect(api.writes()).toEqual([]);
+  });
+
+  it("fails, and never reports present, when the attach answers a non-ambiguous 4xx", async () => {
+    const { api, run } = await setup(baseState());
+    // The API refuses (403), yet the re-read finds the hostname bound to this Worker.
+    api.faults.push({ method: "PUT", path: `/accounts/${ACCOUNT}/workers/domains`, times: 1, status: 403, applyFirst: true });
+    const result = await run();
+    expect(result.status).toBe("failed");
+    expect(result.steps[0]).toMatchObject({ subject: "admin.example.com", outcome: "failed" });
+  });
+
+  it("refuses when the re-read after an attach shows a storefront row for the hostname", async () => {
+    const { api, run } = await setup(baseState());
+    api.beforeAnswer.push((request, state) => {
+      if (request.method === "PUT" && request.path.endsWith("/workers/domains")) {
+        state.d1[D1_ID]!.push(row("admin.example.com", null, "pending"));
+      }
+    });
+    const result = await run();
+    expect(result.status).toBe("refused");
+    expect(result.steps[0]).toMatchObject({ subject: "admin.example.com", outcome: "refused" });
+  });
+
+  it.each([
+    ["a broader wildcard for another Worker", { id: "r4", pattern: "*.example.com/*", script: "other" }],
+    ["an exact Route for another Worker", { id: "r5", pattern: "https://ops.example.com/*", script: "other" }],
+    ["an exclusion Route", { id: "r6", pattern: "*example.com/*" }],
+  ])("refuses a Custom Domain that %s would override", async (_label, route) => {
+    const { api, run } = await setup(baseState({ routes: { [ZONE]: [route] } }));
+    const result = await run();
+    expect(result.status).toBe("refused");
+    expect(result.steps.find((s) => s.subject === "ops.example.com")).toMatchObject({ outcome: "refused" });
+    expect(api.writes()).toEqual([]);
+  });
+});

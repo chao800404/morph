@@ -192,8 +192,15 @@ describe("the deploy target", () => {
     ["a short account id", { accountId: "abc" }],
     ["no D1 database", { d1Databases: {} }],
     ["an unknown field", { routes: [] }],
+    ["a non-production environment", { environment: "staging" }],
   ])("refuses %s", (_label, overrides) => {
     expect(parseDeployTarget({ ...TARGET, ...overrides }).ok).toBe(false);
+  });
+
+  it("says why a non-production environment is refused", () => {
+    const parsed = parseDeployTarget({ ...TARGET, environment: "staging" });
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.problems.join("\n")).toMatch(/only "production"/);
   });
 });
 

@@ -329,10 +329,15 @@ order, the command:
 5. builds, then checks `.wrangler/deploy/config.json` and the artifact it
    points at (`dist/server/wrangler.json`), and refuses a stray `wrangler.json`
    or `wrangler.toml` at the checkout root;
-6. copies the build output into a private directory (mode 0700), checks the
-   copy is byte for byte the artifact it checked, runs the pinned Wrangler's own
-   config reader (`unstable_readConfig`) on the copy and applies the same policy
-   to what it returns, and hashes the copy;
+6. copies into a private directory (mode 0700) every path the built config
+   references: `dist/`, the D1 migrations directory, and each container's
+   Dockerfile with every file its `COPY` lines take from the build context
+   (a wildcard or remote source, or any path outside the checkout, is
+   refused). The copy's config is the checked artifact with only the container
+   `image` and `image_build_context` paths moved into the copy. It then runs the
+   pinned Wrangler's own config reader (`unstable_readConfig`) on the copy,
+   applies the same policy to what it returns, refuses any path that reader
+   resolves outside the copy, and hashes the copy;
 7. runs the pinned Wrangler with a fixed argv whose `--config` names that copy,
    from inside it, so no redirect is followed and nothing in the checkout is
    read; the copy must hash the same right before it starts;
@@ -410,8 +415,8 @@ the deprecated aliases the pinned Wrangler still reads (`CF_API_KEY`,
 `CF_EMAIL`, `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_API_BASE_URL`),
 `WRANGLER_CF_AUTHORIZATION_TOKEN`, and any API address but the official one.
 
-Wrangler is pinned to exactly 4.146.0 (and the Vite plugin, whose output the
-guard reads, to 1.62.4). Upgrading either means re-reading the route handling
+Wrangler is pinned to exactly 4.146.0 and the Vite plugin, whose output the
+guard reads, to exactly 1.62.4, both in `package.json` and installed. Upgrading either means re-reading the route handling
 in its source and re-running `src/lib/core-deploy/wrangler-trigger-writes.test.ts`
 first; the deploy refuses another installed version.
 
@@ -470,7 +475,14 @@ wildcard Route it reads every Custom Domain in the account and every Route in
 the zone, and refuses (writing nothing) if any hostname under the wildcard is
 served by anything but this Core Worker, or if another Route overlaps it (a
 Route under it, a broader wildcard over it, or an exclusion Route): Cloudflare
-gives a matching Route precedence over a Custom Domain. A Route existing proves nothing about wildcard DNS, TLS or HTTP for the
+gives a matching Route precedence over a Custom Domain. For the same reason a
+platform Custom Domain is refused when a Route for another Worker (or an
+exclusion Route) matches its hostname. Route patterns are compared without
+their `http://`/`https://` prefix and case. An attach the API refuses
+outright is a failure, even if the hostname looks bound afterwards, and a
+storefront domain row seen on the re-read is a refusal. The target's
+`environment` must be `production`: Core deploys and the storefront provider
+both use the production environment. A Route existing proves nothing about wildcard DNS, TLS or HTTP for the
 preview namespace: check a preview host resolves, presents a valid certificate
 and reaches the Worker, separately.
 
@@ -492,22 +504,25 @@ progress and reported apart. A storefront domain inside the preview namespace
 is drift (routing would serve it as a preview), and so is a platform hostname
 inside it. After the deploy, a storefront row that stayed active must keep the
 same Cloudflare id and binding it had before, and every binding this Worker
-had before must still be there (one that vanished with its D1 row is drift
-too); bindings that appeared are reported. Only one deploy or
+had before must still be this Worker's, with the same service, environment
+and zone (and script, for a Route): one that vanished with its D1 row, or was
+reassigned to another Worker while its row was deleted, pending or failed, is
+drift; bindings that appeared are reported. Only one deploy or
 `platform:ensure` runs per checkout (`.wrangler/core-deploy.lock`). Wrangler
 reads only the private copy, so a build in the checkout during a deploy
 cannot change what is deployed; the copy itself must hash the same before
 Wrangler starts and after it exits. `platform:ensure` refuses to write unless
 the inventory is clean apart from the platform bindings it will create.
 
-A list is complete only when the API says so: with `total_count` or
-`total_pages`, every stated page is read and must agree with page 1; without
-them, pages are read until one comes back short or empty, and an endpoint that
-answers a later page with entries already read cannot be shown complete. Either
-failure is "verification unavailable", never an empty list. If a Cloudflare
-list endpoint states no totals and ignores paging, every inventory read is
-unavailable and the deploy refuses: the first `deploy:verify` on staging
-shows which. An inventory that cannot be read
+Each list is read the way its endpoint is defined. The two Workers lists
+(`/accounts/{a}/workers/domains` and `/zones/{z}/workers/routes`) are
+unpaginated (the pinned Wrangler's bundled Cloudflare SDK models both as
+`SinglePage`): one request is the whole list, and a `result_info` that says it
+is only part of a list is "verification unavailable". A paginated endpoint is
+read strictly: every stated page (`total_pages`), or until `total_count` is
+reached, or, without totals, until a short or empty page; an early empty page,
+a page that disagrees with page 1, or any entry repeated across pages is
+unavailable, never an empty list. An inventory that cannot be read
 refuses the deploy before it starts. After the deploy the exit code says what
 the post-check found, with the Wrangler result reported separately:
 
