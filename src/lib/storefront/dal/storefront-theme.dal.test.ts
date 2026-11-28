@@ -65,6 +65,7 @@ import {
   proveAndPatchSourceDefault,
 } from "../editor/source-default-control";
 import { readFileSync } from "node:fs";
+import { withThemeWorkerGuardIdentity } from "../compiler/theme-worker-guard-version";
 import { join } from "node:path";
 import {
   withThemeMorphSdkIdentity,
@@ -303,8 +304,8 @@ beforeEach(() => {
     VALUES ('storefront-a', 'channel-a', 'Store A', 'active', 'now', 'now');
     INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, release_generation, created_at, updated_at)
     VALUES ('theme-a', 'storefront-a', 'Default Theme', 'draft', 1, 1, 'now', 'now');
-    INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_id, created_at, updated_at)
-    VALUES ('33333333-3333-4333-8333-333333333333', 'storefront-a', 'theme-a', '22222222-2222-4222-8222-222222222222', 'succeeded', 'themes/theme-a/builds/build-a', '{}', 'tanstack-start-native', 'now', 'now');
+    INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_id, compiler_version, created_at, updated_at)
+    VALUES ('33333333-3333-4333-8333-333333333333', 'storefront-a', 'theme-a', '22222222-2222-4222-8222-222222222222', 'succeeded', 'themes/theme-a/builds/build-a', '{}', 'tailwind-v4-build', '${withThemeManagedStartBuildIdentity("4.1.17")}', 'now', 'now');
   `);
 });
 
@@ -6546,7 +6547,12 @@ function Home() {
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(options.compilerVersion, BUILD);
+      .run(
+        options.compilerVersion === null
+          ? null
+          : withThemeWorkerGuardIdentity(options.compilerVersion),
+        BUILD,
+      );
   }
 
   const publish = (
@@ -6727,7 +6733,7 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+      .run(withThemeWorkerGuardIdentity(withThemeStartBuildIdentity("1.168.32")), BUILD);
   }
   const publish = (files: ReadonlyArray<{ path: string; content: string }>) =>
     storefrontThemeDal.publishTemplate({
@@ -7046,7 +7052,7 @@ function Home() { return <main><Hero {...content("hero")} /></main>; }`;
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+      .run(withThemeWorkerGuardIdentity(withThemeStartBuildIdentity("1.168.32")), BUILD);
     return saveTemplateDraft(options.templateHidden ?? false);
   }
 
@@ -7334,7 +7340,12 @@ function Home() {
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(options.compilerVersion, BUILD);
+      .run(
+        options.compilerVersion === null
+          ? null
+          : withThemeWorkerGuardIdentity(options.compilerVersion),
+        BUILD,
+      );
   }
   const publish = (
     readSourceRevisionFiles: () => Promise<
@@ -7432,8 +7443,10 @@ function Home() {
         compilerVersion,
       });
       sqlite
-        .prepare("UPDATE storefront_theme_builds SET compiler_id = ? WHERE id = ?")
-        .run(compilerId, BUILD);
+        .prepare(
+          "UPDATE storefront_theme_builds SET compiler_id = ?, compiler_version = ? WHERE id = ?",
+        )
+        .run(compilerId, compilerVersion, BUILD);
       if (published) {
         await expect(publish(wrappedRevision)).resolves.toMatchObject({
           releaseId: expect.any(String),
@@ -7534,7 +7547,7 @@ function Home() { return <main>Home</main>; }`;
       .prepare(
         "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
       )
-      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+      .run(withThemeWorkerGuardIdentity(withThemeStartBuildIdentity("1.168.32")), BUILD);
   }
   const publish = () =>
     storefrontThemeDal.publishTemplate({

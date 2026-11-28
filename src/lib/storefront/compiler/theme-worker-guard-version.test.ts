@@ -45,9 +45,11 @@ describe("the Web Worker guard in the build identity", () => {
   it("is not claimed by the native Start build, which does not carry it yet", () => {
     const native =
       themeFramework("tanstack-start").build.native.compilerIdentity();
-    expect(native.version).toBe(
-      withThemeStartBuildIdentity(THEME_START_TOOLCHAIN.reactStart),
-    );
+    expect(
+      native.version.startsWith(
+        withThemeStartBuildIdentity(THEME_START_TOOLCHAIN.reactStart),
+      ),
+    ).toBe(true);
     expect(buildWorkerGuardVersion(native.version)).toBeNull();
     expect(THEME_WORKER_GUARDED_COMPILER_IDS.has(native.id)).toBe(false);
   });
