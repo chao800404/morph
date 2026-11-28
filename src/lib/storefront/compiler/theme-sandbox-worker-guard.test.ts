@@ -419,9 +419,25 @@ self.onmessage = () => self.postMessage(secret.href);
   );
 
   it.each([
-    ["a comment between new and URL", 'new /* */ URL("../../../${OUTSIDE}", import.meta.url)'],
-    ["a comment inside import.meta.url", 'new URL("../../../${OUTSIDE}", import /* */ .meta.url)'],
+    [
+      "a comment between new and URL",
+      'new /* */ URL("../../../${OUTSIDE}", import.meta.url)',
+    ],
+    [
+      "a comment inside import.meta.url",
+      'new URL("../../../${OUTSIDE}", import /* */ .meta.url)',
+    ],
     ["import.meta.url outside new URL()", "import.meta.url"],
+    // Vite would resolve these to another file (by extension; a path under
+    // the root spelled as an absolute one), so only an existing file passes.
+    [
+      "a path Vite completes with an extension",
+      'new URL("./probe", import.meta.url)',
+    ],
+    [
+      "a root-relative path naming no file at the root",
+      'new URL("/nowhere/../../${OUTSIDE}", import.meta.url)',
+    ],
   ])(
     "refuses a worker that spells an asset URL Vite would still read: %s",
     async (_name, expression) => {
@@ -634,6 +650,10 @@ self.onmessage = () => self.postMessage(styles);
             },
             { path: "src/workers/data.txt", content: "worker-guard-data\n" },
             {
+              path: "src/workers/notes.json",
+              content: JSON.stringify({ text: "import.meta.url in data" }),
+            },
+            {
               path: "src/workers/label.ts",
               content: `export const WORKER_LABEL = "worker-guard-allowed-probe";
 `,
@@ -654,9 +674,12 @@ self.onmessage = () => self.postMessage(styles);
 import { WORKER_LABEL } from "./label";
 import { ALIAS_LABEL } from "@w/alias-label";
 import { BASE_URL_LABEL } from "workers/base-url-label";
+import notes from "./notes.json";
+// Text that names import.meta.url is not a use of it.
+const note = "import.meta.url is only read in new URL() here";
 const data = new URL("./data.txt", import.meta.url);
 self.onmessage = (event: MessageEvent) =>
-  self.postMessage(clsx(WORKER_LABEL, ALIAS_LABEL, BASE_URL_LABEL, data.href, String(event.data)));
+  self.postMessage(clsx(WORKER_LABEL, ALIAS_LABEL, BASE_URL_LABEL, data.href, note, notes.text, String(event.data)));
 `,
             },
           ],

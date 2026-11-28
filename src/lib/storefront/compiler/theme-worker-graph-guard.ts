@@ -69,6 +69,7 @@ export function createThemeWorkerBundleGuard(options: {
     "\0vite/dynamic-import-helper.js",
     "\0vite/wasm-helper.js",
     "\0rolldown/runtime.js",
+    "\0commonjs-dynamic-modules",
   ]);
   // Vite's empty stub for a module a browser bundle leaves out (a Node
   // built-in, a package's `browser: false`); it imports nothing.
@@ -141,6 +142,144 @@ export function createThemeWorkerBundleGuard(options: {
     };
   };
 
+  /**
+   * The code with its comments and the contents of its strings, templates
+   * and regular expressions blanked, as Vite blanks them before it looks for
+   * `new URL(…, import.meta.url)`; null where it cannot tell (an
+   * unterminated literal or comment).
+   */
+  const stripLiterals = (code: string): string | null => {
+    const blank = (text: string) => text.replace(/[^\n]/g, " ");
+    const REGEX_AFTER = new Set([
+      "return",
+      "typeof",
+      "instanceof",
+      "in",
+      "of",
+      "new",
+      "delete",
+      "void",
+      "throw",
+      "case",
+      "do",
+      "else",
+      "yield",
+      "await",
+    ]);
+    const out: string[] = [];
+    const templates: number[] = [];
+    let depth = 0;
+    let last = "";
+    let word = "";
+    const regexAllowed = () =>
+      last === "" ||
+      "(,=:[!&|?{};+-*%<>~^".includes(last) ||
+      REGEX_AFTER.has(word);
+    let i = 0;
+    while (i < code.length) {
+      const c = code[i]!;
+      const next = code[i + 1];
+      if (c === "/" && next === "/") {
+        const end = code.indexOf("\n", i);
+        const stop = end < 0 ? code.length : end;
+        out.push(blank(code.slice(i, stop)));
+        i = stop;
+        continue;
+      }
+      if (c === "/" && next === "*") {
+        const end = code.indexOf("*/", i + 2);
+        if (end < 0) return null;
+        out.push(blank(code.slice(i, end + 2)));
+        i = end + 2;
+        continue;
+      }
+      if (c === "'" || c === '"') {
+        let j = i + 1;
+        for (; j < code.length; j++) {
+          if (code[j] === "\\") {
+            j++;
+            continue;
+          }
+          if (code[j] === c) break;
+          if (code[j] === "\n") return null;
+        }
+        if (j >= code.length) return null;
+        out.push(c + blank(code.slice(i + 1, j)) + c);
+        i = j + 1;
+        last = c;
+        word = "";
+        continue;
+      }
+      if (
+        c === "`" ||
+        (c === "}" &&
+          templates.length > 0 &&
+          templates[templates.length - 1] === depth)
+      ) {
+        if (c === "}") templates.pop();
+        let j = i + 1;
+        for (; j < code.length; j++) {
+          if (code[j] === "\\") {
+            j++;
+            continue;
+          }
+          if (code[j] === "`" || (code[j] === "$" && code[j + 1] === "{"))
+            break;
+        }
+        if (j >= code.length) return null;
+        out.push(c + blank(code.slice(i + 1, j)));
+        if (code[j] === "`") {
+          out.push("`");
+          i = j + 1;
+          last = "`";
+        } else {
+          out.push("${");
+          templates.push(depth);
+          i = j + 2;
+          last = "{";
+        }
+        word = "";
+        continue;
+      }
+      if (c === "/" && regexAllowed()) {
+        let j = i + 1;
+        let inClass = false;
+        for (; j < code.length; j++) {
+          const ch = code[j];
+          if (ch === "\\") {
+            j++;
+            continue;
+          }
+          if (ch === "\n") return null;
+          if (inClass) {
+            if (ch === "]") inClass = false;
+            continue;
+          }
+          if (ch === "[") inClass = true;
+          else if (ch === "/") break;
+        }
+        if (j >= code.length) return null;
+        out.push("/" + blank(code.slice(i + 1, j)) + "/");
+        i = j + 1;
+        last = "/";
+        word = "";
+        continue;
+      }
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+      out.push(c);
+      if (/[A-Za-z0-9_$]/.test(c)) {
+        word = /[A-Za-z0-9_$]/.test(last) ? word + c : c;
+        last = c;
+      } else if (!/\s/.test(c)) {
+        last = c;
+        word = "";
+      }
+      i++;
+    }
+    return out.join("");
+  };
+
   /** Each `new URL(...)` whose arguments name import.meta.url: its literal, or null. */
   const importMetaUrlReferences = (code: string): Array<string | null> => {
     const found: Array<string | null> = [];
@@ -210,10 +349,13 @@ export function createThemeWorkerBundleGuard(options: {
             ".",
         );
       const references = importMetaUrlReferences(code);
-      // Every import.meta.url, however spaced or commented, is one of the
-      // plain-literal calls checked below; any other use is refused, so no
-      // spelling Vite would act on goes unchecked.
-      const uses = code.match(IMPORT_META_URL)?.length ?? 0;
+      // Every import.meta.url in the code (strings and comments aside, as
+      // Vite reads it), however spaced, is one of the plain-literal calls
+      // checked below; any other use is refused, so no spelling Vite would
+      // act on goes unchecked. Code the stripper cannot read is counted
+      // whole, strings included.
+      const stripped = stripLiterals(code);
+      const uses = (stripped ?? code).match(IMPORT_META_URL)?.length ?? 0;
       if (uses > references.filter((literal) => literal !== null).length) {
         refuse(
           'uses import.meta.url other than as new URL("…", import.meta.url) with a plain string literal',
@@ -229,15 +371,17 @@ export function createThemeWorkerBundleGuard(options: {
         if (/^[a-z][a-z0-9+.-]*:/i.test(literal) || literal.startsWith("//"))
           continue;
         const target = literal.split(/[?#]/)[0]!;
-        // The files Vite may read for it: relative to the module, or for a
-        // root-relative path the public directory's copy and the root's.
+        // The file Vite reads for it, which must be a file: Vite resolves a
+        // relative path that names no file by extension, index or
+        // package.json, and a root-relative one at the root and then in
+        // public/, so only an existing file is the one it reads.
         let candidates: string[];
         if (target.startsWith("./") || target.startsWith("../")) {
           candidates = [path.resolve(path.dirname(id.split("?")[0]!), target)];
         } else if (target.startsWith("/")) {
           candidates = [
-            path.resolve(workspaceRoot, "public", "." + target),
             path.resolve(workspaceRoot, "." + target),
+            path.resolve(workspaceRoot, "public", "." + target),
           ];
         } else {
           refuse(
@@ -247,32 +391,33 @@ export function createThemeWorkerBundleGuard(options: {
           );
           continue;
         }
-        for (const file of candidates) {
-          if (!fs.existsSync(file)) {
-            if (!under(slash(path.resolve(file)), workspaceRoots)) {
-              refuse(
-                'names "' + literal + '", which resolves outside the workspace',
-              );
-            }
-            continue;
+        const file = candidates.find((candidate) => {
+          try {
+            return fs.statSync(candidate).isFile();
+          } catch {
+            return false;
           }
-          const asset = place(file);
-          if (asset.kind === "theme") continue;
-          if (asset.kind === "package" && allowedPackages.has(asset.name))
-            continue;
-          refuse(
-            'names "' +
-              literal +
-              '", which ' +
-              (asset.kind === "package"
-                ? 'is in package "' +
-                  asset.name +
-                  '", which is not an approved dependency'
-                : asset.kind === "refused"
-                  ? asset.detail
-                  : "is not a Theme file"),
-          );
+        });
+        if (!file) {
+          refuse('names "' + literal + '", which is not a file');
+          continue;
         }
+        const asset = place(file);
+        if (asset.kind === "theme") continue;
+        if (asset.kind === "package" && allowedPackages.has(asset.name))
+          continue;
+        refuse(
+          'names "' +
+            literal +
+            '", which ' +
+            (asset.kind === "package"
+              ? 'is in package "' +
+                asset.name +
+                '", which is not an approved dependency'
+              : asset.kind === "refused"
+                ? asset.detail
+                : "is not a Theme file"),
+        );
       }
       return null;
     },
