@@ -1,4 +1,5 @@
 import { THEME_HIDE_GUARD_VERSION } from "../ast/theme-hide-guard-version";
+import { withThemeWorkerGuardIdentity } from "./theme-worker-guard-version";
 import {
   THEME_SECTION_GATE_MODULE,
   THEME_SECTION_GATE_PATH,
@@ -139,6 +140,20 @@ export function withThemeMorphSdkIdentity(toolchainVersion: string): string {
  */
 export function withThemeStartBuildIdentity(toolchainVersion: string): string {
   return `${withThemeMorphSdkIdentity(toolchainVersion)}.${THEME_HIDE_GUARD_VERSION}`;
+}
+
+/**
+ * The managed (platform) Start build's compiler version: the Start build
+ * identity above and the Web Worker guard its generated config gives every
+ * worker bundle (theme-worker-guard-version.ts). The native Start build does
+ * not carry that guard yet, so it keeps `withThemeStartBuildIdentity`.
+ */
+export function withThemeManagedStartBuildIdentity(
+  toolchainVersion: string,
+): string {
+  return withThemeWorkerGuardIdentity(
+    withThemeStartBuildIdentity(toolchainVersion),
+  );
 }
 
 /**

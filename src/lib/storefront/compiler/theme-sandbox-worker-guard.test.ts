@@ -62,7 +62,7 @@ const WORKER_URL = `export function startProbeWorker() {
  * resolveId ordered "pre"), mapping a made-up name onto an unapproved
  * package's file.
  */
-function hostileWrapperConfig(target: string): string {
+function hostileWrapperConfig(target: string, load?: string): string {
   return `import base from "./vite.config.ts";
 const hostile = {
   name: "hostile-pre-resolver",
@@ -72,6 +72,11 @@ const hostile = {
     handler(source) {
       return source === "sneaky-package" ? ${JSON.stringify(target)} : null;
     },
+  },
+  load(id) {
+    return id === ${JSON.stringify(target)} && ${JSON.stringify(load ?? null)} !== null
+      ? ${JSON.stringify(load ?? "")}
+      : null;
   },
 };
 export default {
@@ -84,10 +89,16 @@ export default {
 `;
 }
 
+type Hostile = (
+  workspace: string,
+) =>
+  | Promise<{ target: string; load?: string }>
+  | { target: string; load?: string };
+
 async function buildManaged(
   files: ReturnType<typeof themeWith>,
   target: Target,
-  options: { hostileResolverTarget?: string } = {},
+  options: { hostile?: Hostile } = {},
 ): Promise<
   | { ok: true; outDir: string; cleanup: () => Promise<void> }
   | { ok: false; output: string }
@@ -132,11 +143,12 @@ async function buildManaged(
       "dir",
     );
     let configPath = path.join(workspace, "vite.config.ts");
-    if (options.hostileResolverTarget) {
+    if (options.hostile) {
+      const hostile = await options.hostile(workspace);
       configPath = path.join(workspace, "vite.hostile.config.ts");
       await fs.writeFile(
         configPath,
-        hostileWrapperConfig(options.hostileResolverTarget),
+        hostileWrapperConfig(hostile.target, hostile.load),
       );
     }
     try {
@@ -207,9 +219,11 @@ describe("the generated config's worker plugins", () => {
       );
       const source = config && "content" in config ? config.content : "";
       const worker = source.slice(source.indexOf("  worker: {"));
-      expect(worker.indexOf("workerDependencyEnforcerPlugin,")).toBeGreaterThan(0);
+      expect(worker.indexOf("workerDependencyEnforcerPlugin,")).toBeGreaterThan(
+        0,
+      );
       expect(worker.indexOf("workerDependencyEnforcerPlugin,")).toBeLessThan(
-        worker.indexOf("workerGraphGuardPlugin,"),
+        worker.indexOf("workerBundleGuardPlugin,"),
       );
       // The main graphs' handler itself, at the hook's "pre" order.
       expect(source).toContain(
@@ -318,7 +332,7 @@ self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(
           WORKER_IMPORT,
         ),
         "preview",
-        { hostileResolverTarget: zod },
+        { hostile: () => ({ target: zod }) },
       );
       if (built.ok) await built.cleanup();
       expect(built.ok).toBe(false);
@@ -326,7 +340,190 @@ self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(
       // the check of the worker's built module graph.
       const output = (built as { output: string }).output;
       expect(output).toContain("UNAPPROVED_DEPENDENCY: Theme worker module");
-      expect(output).toContain('from package "zod", which is not an approved dependency.');
+      expect(output).toContain(
+        'from package "zod", which is not an approved dependency.',
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  const ZOD_WORKER = `import { z } from "zod";
+self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(event.data).success);
+`;
+  const refusedOutput = (built: Awaited<ReturnType<typeof buildManaged>>) => {
+    if (built.ok) {
+      void built.cleanup();
+      throw new Error("the build was admitted");
+    }
+    return built.output;
+  };
+
+  it(
+    "refuses a worker whose entry is an unapproved package's file",
+    async () => {
+      // Vite resolves this URL with its own resolver and makes the file the
+      // worker bundle's entry, which nothing in that bundle imports.
+      const built = await buildManaged(
+        themeWith(
+          [],
+          `export function startProbeWorker() {
+  return new Worker(new URL("../../node_modules/zod/index.js", import.meta.url), { type: "module" });
+}
+`,
+        ),
+        "preview",
+      );
+      expect(refusedOutput(built)).toContain(
+        'in package "zod", which is not an approved dependency.',
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses a worker asset URL that resolves outside the workspace",
+    async () => {
+      const outside = path.join(
+        process.cwd(),
+        `.morph-worker-guard-outside-${process.pid}.txt`,
+      );
+      await fs.writeFile(outside, "outside the workspace\n");
+      try {
+        const built = await buildManaged(
+          themeWith(
+            [
+              {
+                path: "src/workers/probe.ts",
+                content: `const secret = new URL("../../../${path.basename(outside)}", import.meta.url);
+self.onmessage = () => self.postMessage(secret.href);
+`,
+              },
+            ],
+            WORKER_IMPORT,
+          ),
+          "preview",
+        );
+        const output = refusedOutput(built);
+        expect(output).toContain("WORKER_ASSET_URL_UNSUPPORTED:");
+        expect(output).toContain("which resolves outside the workspace");
+      } finally {
+        await fs.rm(outside, { force: true });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses a worker asset URL that is not a plain string literal",
+    async () => {
+      const built = await buildManaged(
+        themeWith(
+          [
+            { path: "src/workers/data.txt", content: "data\n" },
+            {
+              path: "src/workers/probe.ts",
+              content: `const name = "./data.txt";
+const data = new URL(name, import.meta.url);
+self.onmessage = () => self.postMessage(data.href);
+`,
+            },
+          ],
+          WORKER_IMPORT,
+        ),
+        "preview",
+      );
+      expect(refusedOutput(built)).toContain("WORKER_ASSET_URL_UNSUPPORTED:");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses a stylesheet in a worker before its @import of an unapproved package is read",
+    async () => {
+      const built = await buildManaged(
+        themeWith(
+          [
+            {
+              path: "src/workers/probe.css",
+              content: `@import "sonner/dist/styles.css";\n`,
+            },
+            {
+              path: "src/workers/probe.ts",
+              content: `import styles from "./probe.css?inline";
+self.onmessage = () => self.postMessage(styles);
+`,
+            },
+          ],
+          WORKER_IMPORT,
+        ),
+        "preview",
+      );
+      expect(refusedOutput(built)).toContain("WORKER_CSS_UNSUPPORTED:");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses a workspace path a resolver returned that is a link to a file outside",
+    async () => {
+      const outside = path.join(
+        process.cwd(),
+        `.morph-worker-guard-linked-${process.pid}.js`,
+      );
+      await fs.writeFile(
+        outside,
+        "export const z = { string: () => ({ safeParse: () => ({ success: true }) }) };\n",
+      );
+      try {
+        const built = await buildManaged(
+          themeWith(
+            [
+              {
+                path: "src/workers/probe.ts",
+                content: ZOD_WORKER.replace('"zod"', '"sneaky-package"'),
+              },
+            ],
+            WORKER_IMPORT,
+          ),
+          "preview",
+          {
+            hostile: async (workspace) => {
+              const link = path.join(workspace, "src/workers/linked.js");
+              await fs.symlink(outside, link);
+              return { target: link };
+            },
+          },
+        );
+        expect(refusedOutput(built)).toContain("WORKSPACE_PATH_ESCAPE:");
+      } finally {
+        await fs.rm(outside, { force: true });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses a virtual module a resolver returned that Morph does not know",
+    async () => {
+      const built = await buildManaged(
+        themeWith(
+          [
+            {
+              path: "src/workers/probe.ts",
+              content: ZOD_WORKER.replace('"zod"', '"sneaky-package"'),
+            },
+          ],
+          WORKER_IMPORT,
+        ),
+        "preview",
+        {
+          hostile: () => ({
+            target: "\0sneaky-virtual",
+            load: "export const z = { string: () => ({ safeParse: () => ({ success: true }) }) };",
+          }),
+        },
+      );
+      expect(refusedOutput(built)).toContain("WORKER_MODULE_UNVERIFIED:");
     },
     TEST_TIMEOUT_MS,
   );
@@ -340,9 +537,13 @@ self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(
             {
               path: "tsconfig.json",
               content: JSON.stringify({
-                compilerOptions: { baseUrl: "src", paths: { "@w/*": ["workers/*"] } },
+                compilerOptions: {
+                  baseUrl: "src",
+                  paths: { "@w/*": ["workers/*"] },
+                },
               }),
             },
+            { path: "src/workers/data.txt", content: "worker-guard-data\n" },
             {
               path: "src/workers/label.ts",
               content: `export const WORKER_LABEL = "worker-guard-allowed-probe";
@@ -364,8 +565,9 @@ self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(
 import { WORKER_LABEL } from "./label";
 import { ALIAS_LABEL } from "@w/alias-label";
 import { BASE_URL_LABEL } from "workers/base-url-label";
+const data = new URL("./data.txt", import.meta.url);
 self.onmessage = (event: MessageEvent) =>
-  self.postMessage(clsx(WORKER_LABEL, ALIAS_LABEL, BASE_URL_LABEL, String(event.data)));
+  self.postMessage(clsx(WORKER_LABEL, ALIAS_LABEL, BASE_URL_LABEL, data.href, String(event.data)));
 `,
             },
           ],

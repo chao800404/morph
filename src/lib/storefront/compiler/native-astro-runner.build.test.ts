@@ -348,6 +348,78 @@ self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(
   );
 
   it(
+    "refuses a Web Worker whose entry is an unapproved package's file",
+    BUILD,
+    async () => {
+      const page = `---
+export const prerender = true;
+---
+<html><body><button id="go">go</button>
+<script>
+document.getElementById("go")?.addEventListener("click", () =>
+  new Worker(new URL("../../node_modules/zod/index.js", import.meta.url), { type: "module" }),
+);
+</script>
+</body></html>
+`;
+      const result = await run(
+        astroInput(
+          "astro-runner-worker-entry",
+          astroThemeFiles({
+            pages: [],
+            extra: [{ path: "src/pages/worker.astro", content: page }],
+          }),
+          null,
+        ),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain(
+          'in package "zod", which is not an approved dependency.',
+        );
+      }
+    },
+  );
+
+  it(
+    "refuses a Web Worker asset URL that resolves outside the workspace",
+    BUILD,
+    async () => {
+      const result = await run(
+        astroInput(
+          "astro-runner-worker-asset",
+          workerFiles(`const hosts = new URL("${"../".repeat(24)}etc/hosts", import.meta.url);
+self.onmessage = () => self.postMessage(hosts.href);
+`),
+          null,
+        ),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain("WORKER_ASSET_URL_UNSUPPORTED:");
+      }
+    },
+  );
+
+  it(
+    "refuses a stylesheet in a Web Worker before its @import is read",
+    BUILD,
+    async () => {
+      const files = [
+        ...workerFiles(`import styles from "./probe.css?inline";
+self.onmessage = () => self.postMessage(styles);
+`),
+        { path: "src/workers/probe.css", content: '@import "zod/package.json";\n' },
+      ];
+      const result = await run(astroInput("astro-runner-worker-css", files, null));
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain("WORKER_CSS_UNSUPPORTED:");
+      }
+    },
+  );
+
+  it(
     "still builds a Web Worker that imports its own module",
     BUILD,
     async () => {

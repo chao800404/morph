@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
+import { withThemeManagedStartBuildIdentity } from "./theme-morph-sdk";
 import { unstable_startWorker } from "wrangler";
 
 import {
@@ -115,7 +115,7 @@ const input = (
   entry: "src/routes/index.tsx",
   inputHash: "c".repeat(64),
   compilerId: "tailwind-v4-build",
-  compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
+  compilerVersion: withThemeManagedStartBuildIdentity(TAILWIND_VERSION),
   toolchainId: START_TOOLCHAIN.id,
   files,
 });

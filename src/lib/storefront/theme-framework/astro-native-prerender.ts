@@ -18,7 +18,7 @@ import {
 } from "../service/storefront-content-read";
 import { normalizeRoutePath } from "../theme-template-routes";
 import { nativeImportGuardPluginSource } from "./tanstack-start-native-wrapper";
-import { themeWorkerGraphGuardPluginSource } from "../compiler/theme-worker-graph-guard";
+import { themeWorkerBundleGuardPluginSource } from "../compiler/theme-worker-graph-guard";
 
 /**
  * How an Astro build's prerendered pages read the build's sealed content.
@@ -170,15 +170,16 @@ const importGuard = ${nativeImportGuardPluginSource()};
 // A Vite Web Worker is its own bundle, built with worker.plugins only, so
 // the guard runs there too: the same plugin, listed first and with its
 // resolveId ordered "pre", so no resolver of the Theme's answers before it,
-// and then the check of the worker's built module graph
-// (theme-worker-graph-guard.ts), whichever resolver answered.
+// and then Morph's worker bundle guard (theme-worker-graph-guard.ts) for
+// what reaches a worker without passing through it.
 const workerImportGuard = {
   ...importGuard,
   resolveId: { order: "pre", handler: importGuard.resolveId },
 };
-const workerGraphGuard = ${themeWorkerGraphGuardPluginSource({
+const workerBundleGuard = ${themeWorkerBundleGuardPluginSource({
         allowedPackages: "allowedPackages",
         workspaceRoot: "workspaceRoot",
+        dependencyRoots: '[path.join(workspaceRoot, "node_modules")]',
       })};
 // Set on the Vite config the build resolves, after Astro and the Theme's
 // integrations have merged theirs: the Theme's own worker plugins (a
@@ -195,7 +196,7 @@ const workerGuardConfigPlugin = {
     const plugins = () => [
       workerImportGuard,
       (typeof own === "function" ? own() : own) ?? [],
-      workerGraphGuard,
+      workerBundleGuard,
     ];
     plugins[WORKER_GUARDED] = true;
     viteConfig.worker = { ...(viteConfig.worker ?? {}), plugins };

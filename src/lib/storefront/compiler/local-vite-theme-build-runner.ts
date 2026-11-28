@@ -2,10 +2,10 @@ import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
 import {
   themeMorphSdkAliases,
   themeMorphSdkFiles,
-  withThemeStartBuildIdentity,
+  withThemeManagedStartBuildIdentity,
 } from "./theme-morph-sdk";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import nodeFs, { existsSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -44,6 +44,7 @@ import {
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePublicTextMimeType } from "../theme-public-files";
 import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
+import { createThemeWorkerBundleGuard } from "./theme-worker-graph-guard";
 import { randomBytes } from "node:crypto";
 import {
   nativeBuildFailureMessage,
@@ -190,7 +191,8 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
   readonly compilerId = "tailwind-v4-build";
   /** Tailwind plus the injected Morph SDK; see theme-morph-sdk.ts. */
-  readonly compilerVersion = withThemeStartBuildIdentity(TAILWIND_VERSION);
+  readonly compilerVersion =
+    withThemeManagedStartBuildIdentity(TAILWIND_VERSION);
 
   private readonly maxDurationMs: number;
   private readonly maxSourceFiles: number;
@@ -627,33 +629,32 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         pathAliasConfig,
         workspaceRoot,
       );
+      const resolveThemeBaseUrl = (source: string): string | null => {
+        if (!pathAliasConfig.baseUrl) return null;
+        if (source.startsWith(".") || source.startsWith("/")) return null;
+        const candidateRoot = path.resolve(
+          workspaceRoot,
+          pathAliasConfig.baseUrl,
+          source,
+        );
+        const relative = path.relative(workspaceRoot, candidateRoot);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+        const candidates = [
+          candidateRoot,
+          ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map(
+            (extension) => `${candidateRoot}${extension}`,
+          ),
+          ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map(
+            (extension) => `${candidateRoot}/index${extension}`,
+          ),
+        ];
+        return candidates.find((candidate) => existsSync(candidate)) ?? null;
+      };
       const themeBaseUrlPlugin: Plugin | null = pathAliasConfig.baseUrl
         ? {
             name: "morph-theme-base-url",
             enforce: "pre",
-            resolveId(source) {
-              if (source.startsWith(".") || source.startsWith("/")) return null;
-              const candidateRoot = path.resolve(
-                workspaceRoot,
-                pathAliasConfig.baseUrl,
-                source,
-              );
-              const relative = path.relative(workspaceRoot, candidateRoot);
-              if (relative.startsWith("..") || path.isAbsolute(relative))
-                return null;
-              const candidates = [
-                candidateRoot,
-                ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map(
-                  (extension) => `${candidateRoot}${extension}`,
-                ),
-                ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map(
-                  (extension) => `${candidateRoot}/index${extension}`,
-                ),
-              ];
-              return (
-                candidates.find((candidate) => existsSync(candidate)) ?? null
-              );
-            },
+            resolveId: (source) => resolveThemeBaseUrl(source),
           }
         : null;
       const isThemeAliasSource = (source: string): boolean =>
@@ -756,6 +757,11 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
           if (isThemeAliasSource(source)) {
             return null;
           }
+          // Answered by the base-URL plugin, which the main graphs list
+          // first; a worker lists this enforcer first (see workerPlugins).
+          if (resolveThemeBaseUrl(source)) {
+            return null;
+          }
           const basePkg = source.startsWith("@")
             ? source.split("/").slice(0, 2).join("/")
             : source.split("/")[0];
@@ -769,6 +775,34 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
           return null;
         },
       };
+
+      // A Vite Web Worker is its own bundle, built with worker.plugins only:
+      // the same enforcer, first and ordered "pre", the base-URL resolution,
+      // then Morph's worker bundle guard (theme-worker-graph-guard.ts), as the
+      // generated config gives the Sandbox build.
+      const workerPlugins = (): Plugin[] => [
+        {
+          ...securityPlugin,
+          resolveId: {
+            order: "pre",
+            handler: securityPlugin.resolveId as (
+              source: string,
+              importer: string | undefined,
+            ) => null,
+          },
+        } as Plugin,
+        ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
+        createThemeWorkerBundleGuard({
+          fs: nodeFs,
+          path,
+          allowedPackages: approvedSet,
+          workspaceRoot,
+          dependencyRoots: [
+            path.join(workspaceRoot, "node_modules"),
+            path.join(process.cwd(), "node_modules"),
+          ],
+        }) as unknown as Plugin,
+      ];
 
       addLog("info", `Executing Vite build with Tailwind CSS v4...`);
 
@@ -884,6 +918,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
               ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
               securityPlugin,
             ],
+            worker: { plugins: workerPlugins },
             resolve: {
               alias: [...morphSdkAliases, ...themeAliases],
             },
@@ -941,6 +976,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
               ]
             : []),
         ],
+        worker: { plugins: workerPlugins },
         resolve: {
           alias: [...morphSdkAliases, ...themeAliases],
         },

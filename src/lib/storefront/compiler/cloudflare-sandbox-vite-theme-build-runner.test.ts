@@ -2,7 +2,7 @@
 import { posix as posixPath } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
+import { withThemeManagedStartBuildIdentity } from "./theme-morph-sdk";
 import {
   CloudflareSandboxViteThemeBuildRunner,
   type CloudflareSandboxProvider,
@@ -149,7 +149,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     entry: "src/pages/index.tsx",
     inputHash: "a".repeat(64),
     compilerId: "tailwind-v4-build",
-    compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
+    compilerVersion: withThemeManagedStartBuildIdentity(TAILWIND_VERSION),
     toolchainId: START_TOOLCHAIN.id,
     files: files as any,
     ...overrides,

@@ -27,7 +27,7 @@ import {
 } from "./theme-preview-dev-server";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
-import { themeWorkerGraphGuardPluginSource } from "./theme-worker-graph-guard";
+import { themeWorkerBundleGuardPluginSource } from "./theme-worker-graph-guard";
 import { sha256 } from "./theme-compiler-hasher";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
 import {
@@ -1044,11 +1044,16 @@ const workerDependencyEnforcerPlugin = {
   ...dependencyEnforcerPlugin,
   resolveId: { order: "pre", handler: dependencyEnforcerPlugin.resolveId },
 };
-// Whichever resolver answered, the worker's built module graph is held to the
-// same rules (theme-worker-graph-guard.ts).
-const workerGraphGuardPlugin = ${themeWorkerGraphGuardPluginSource({
+// What reaches a worker bundle without passing through the enforcer (its
+// entry, an id another resolver returned, a file Vite reads itself) is held
+// to the same rules (theme-worker-graph-guard.ts).
+const workerBundleGuardPlugin = ${themeWorkerBundleGuardPluginSource({
     allowedPackages: "approvedSet",
     workspaceRoot: hostRootLiteral,
+    dependencyRoots: JSON.stringify([
+      `${hostWorkspaceRoot}/node_modules`,
+      `${toolchainRoot}/node_modules`,
+    ]),
   })};
 
 export default defineConfig({
@@ -1123,13 +1128,13 @@ export default defineConfig({
     })}] : []),
   ],
   // Every worker bundle, in every target: the enforcer first, then the
-  // Theme's baseUrl resolution the main graphs have, then the graph check.
+  // Theme's baseUrl resolution the main graphs have, then the bundle guard.
   // Vite gives a worker the aliases above itself.
   worker: {
     plugins: () => [
       workerDependencyEnforcerPlugin,
       ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
-      workerGraphGuardPlugin,
+      workerBundleGuardPlugin,
     ],
   },
   resolve: {

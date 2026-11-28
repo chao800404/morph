@@ -173,9 +173,11 @@ describe("an Astro build and @morph/sdk/astro", () => {
     ]) {
       expect(planned.get(sdk.path), sdk.path).toBe(sdk.content);
     }
+    // The SDK's identifier, then the Web Worker guard's
+    // (theme-worker-guard-version.ts).
     expect(
-      nativeAstroCompilerIdentity().version.endsWith(
-        `+morph-sdk.${themeMorphSdkSourceHash().slice(0, 16)}`,
+      nativeAstroCompilerIdentity().version.includes(
+        `+morph-sdk.${themeMorphSdkSourceHash().slice(0, 16)}.`,
       ),
     ).toBe(true);
   });
