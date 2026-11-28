@@ -5,6 +5,7 @@ import {
   scrubDeploymentSecrets,
   wranglerDeployConfig,
 } from "./sandbox-wrangler-theme-worker-deployer";
+import { expectValidSandboxId } from "./sandbox-id.test-support";
 import type { ThemeWorkerDeploymentRequest } from "./theme-worker-deployer.types";
 import {
   THEME_BUILD_ID_VAR,
@@ -96,11 +97,28 @@ describe("scrubDeploymentSecrets", () => {
 });
 
 describe("deploymentSandboxSessionId", () => {
-  it("never collides with a build session id", () => {
-    const id = deploymentSandboxSessionId("sf_1", "rel_1");
-    expect(id).toBe("deploy-sf_1-rel_1");
+  it("never collides with a build session id", async () => {
+    const id = await deploymentSandboxSessionId("sf_1", "rel_1");
     expect(id).not.toBe("bld_1");
     expect(id.startsWith("deploy-")).toBe(true);
+  });
+
+  it("is deterministic per pair and differs across pairs", async () => {
+    const a = await deploymentSandboxSessionId("sf_1", "rel_1");
+    expect(await deploymentSandboxSessionId("sf_1", "rel_1")).toBe(a);
+    expect(await deploymentSandboxSessionId("sf_1", "rel_2")).not.toBe(a);
+    expect(await deploymentSandboxSessionId("sf_2", "rel_1")).not.toBe(a);
+    expect(await deploymentSandboxSessionId("a-b", "c")).not.toBe(
+      await deploymentSandboxSessionId("a", "b-c"),
+    );
+  });
+
+  it("is accepted by the Sandbox SDK id rule with real UUIDs", async () => {
+    const id = await deploymentSandboxSessionId(
+      crypto.randomUUID(),
+      crypto.randomUUID(),
+    );
+    expectValidSandboxId(id);
   });
 });
 
@@ -502,7 +520,9 @@ describe("SandboxWranglerThemeWorkerDeployer with the release/Worker build match
         durationMs: expect.any(Number),
       });
       expect(
-        [...written.keys()].some((path) => path.endsWith(THEME_BUILD_MATCH_MODULE)),
+        [...written.keys()].some((path) =>
+          path.endsWith(THEME_BUILD_MATCH_MODULE),
+        ),
       ).toBe(false);
       expect(configOf(written)).toBe(
         JSON.stringify(wranglerDeployConfig(request.plan), null, 2),
@@ -521,9 +541,9 @@ describe("SandboxWranglerThemeWorkerDeployer with the release/Worker build match
       deploymentId: "1a2b3c4d-5e6f",
       durationMs: expect.any(Number),
     });
-    expect(written.get(`/workspace/deploy/server/${THEME_BUILD_MATCH_MODULE}`)).toBe(
-      themeBuildMatchModuleSource("index.js"),
-    );
+    expect(
+      written.get(`/workspace/deploy/server/${THEME_BUILD_MATCH_MODULE}`),
+    ).toBe(themeBuildMatchModuleSource("index.js"));
     // The build's own entry is still written, as before, for the module to import.
     expect(written.has("/workspace/deploy/server/index.js")).toBe(true);
     const config = JSON.parse(configOf(written) ?? "null");
@@ -569,10 +589,12 @@ describe("SandboxWranglerThemeWorkerDeployer with the release/Worker build match
 
   it("on: refuses a deployment that names no build id", async () => {
     const { session } = recordingSession();
-    const result = await deployer(session, { releaseWorkerMatch: true }).deploy({
-      ...request,
-      themeBuildId: " ",
-    });
+    const result = await deployer(session, { releaseWorkerMatch: true }).deploy(
+      {
+        ...request,
+        themeBuildId: " ",
+      },
+    );
     expect(result).toMatchObject({ success: false, reason: "DEPLOY_ERROR" });
     expect(session.exec).not.toHaveBeenCalled();
   });
@@ -598,7 +620,11 @@ describe("wranglerDeployConfig with the release/Worker build match", () => {
     ).toEqual({
       ...wranglerDeployConfig({ ...plan, assetsBinding: "ASSETS" }),
       main: THEME_BUILD_MATCH_MODULE,
-      assets: { directory: "../client", binding: "ASSETS", run_worker_first: true },
+      assets: {
+        directory: "../client",
+        binding: "ASSETS",
+        run_worker_first: true,
+      },
       vars: { STORE_LABEL: "probe", [THEME_BUILD_ID_VAR]: "bld_9" },
     });
   });

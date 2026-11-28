@@ -236,11 +236,22 @@ export function scrubDeploymentSecrets(
  * deployment — putting both in one container would expose the credential to
  * code the platform does not control.
  */
-export function deploymentSandboxSessionId(
+export async function deploymentSandboxSessionId(
   storefrontId: string,
   releaseId: string,
-): string {
-  return `deploy-${storefrontId}-${releaseId}`;
+): Promise<string> {
+  // The SDK refuses ids over 63 characters, and two UUIDs alone are 73. Hash
+  // the pair (length-prefixed so no two pairs flatten into one input): the id
+  // stays deterministic per (storefront, release) and is always 7 + 32 chars.
+  const material = `morph-deploy:v1:${storefrontId.length}:${storefrontId}${releaseId.length}:${releaseId}`;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(material),
+  );
+  const hex = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `deploy-${hex.slice(0, 32)}`;
 }
 
 async function readArtifactBytes(
@@ -339,7 +350,7 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
       );
 
     try {
-      const sessionId = deploymentSandboxSessionId(
+      const sessionId = await deploymentSandboxSessionId(
         request.storefrontId,
         request.releaseId,
       );
