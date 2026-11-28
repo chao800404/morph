@@ -839,6 +839,12 @@ test.describe("Start render modes keep hidden sections out", () => {
     const hydration = lines.find(
       (line) => line.at >= reloaded && line.text.includes("frame hydration"),
     );
+    // Once loaded, the bridge may re-run the route's loader (an invalidate),
+    // which holds a new deferred value. Recorded, then released.
+    const heldAgain = await releaseFromSecondTab(page, previewOrigin!).then(
+      () => true,
+      () => false,
+    );
     test.info().annotations.push({
       type: "bridge-unavailable-while-held",
       description: JSON.stringify({
@@ -848,6 +854,7 @@ test.describe("Start render modes keep hidden sections out", () => {
         bridgeLoadedAfterReleaseMs: bridge.at - releasedAt,
         bridgeUnavailableSinceShellMs: bridge.at - shellAt,
         hydrationLine: hydration?.text ?? null,
+        heldAgainAfterBridgeLoaded: heldAgain,
       }),
     });
     await expectRouteDom(await previewDocument(page), {
