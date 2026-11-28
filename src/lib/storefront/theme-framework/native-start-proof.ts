@@ -220,9 +220,10 @@ function imports(ast) {
 // with scope "worker", and each such build records under its own number.
 let workerBuilds = 0;
 
-export default function morphNativeResolution({ workspaceRoot, nonce, scope }) {
+export default function morphNativeResolution({ workspaceRoot, nonce, scope, allowedPackages }) {
   const root = fs.realpathSync(workspaceRoot);
   const worker = scope === "worker" ? ++workerBuilds : 0;
+  const allowed = Array.isArray(allowedPackages) ? new Set(allowedPackages) : null;
   const where = (id) => {
     const raw = String(id).replace(/\\/g, "/");
     const query = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
@@ -263,6 +264,58 @@ export default function morphNativeResolution({ workspaceRoot, nonce, scope }) {
     enforce: "post",
     async buildEnd(error) {
       if (error) return;
+      // A Web Worker's finished graph against the import guard's rules,
+      // whichever resolver answered: a package a Theme module imports must
+      // be approved, and a Theme module must stay inside the workspace.
+      if (allowed) {
+        const isTheme = (id) => {
+          const from = String(id).split("?")[0].replace(/\\/g, "/");
+          return path.isAbsolute(from) && !from.startsWith("\0") && !from.includes("/node_modules/");
+        };
+        // Imported by a Theme module, directly or through modules a plugin
+        // made in between (a CommonJS proxy, a virtual wrapper).
+        const importedFromTheme = (id) => {
+          const seen = new Set();
+          const queue = [id];
+          while (queue.length > 0) {
+            const current = queue.pop();
+            const info = this.getModuleInfo(current);
+            if (!info) continue;
+            for (const importer of [...(info.importers || []), ...(info.dynamicImporters || [])]) {
+              if (seen.has(importer)) continue;
+              seen.add(importer);
+              if (isTheme(importer)) return true;
+              if (String(importer).startsWith("\0")) queue.push(importer);
+            }
+          }
+          return false;
+        };
+        for (const id of this.getModuleIds()) {
+          const info = this.getModuleInfo(id);
+          if (!info || info.isExternal) continue;
+          const file = String(id).split("?")[0].replace(/\\/g, "/");
+          if (file.startsWith("\0") || !path.isAbsolute(file)) continue;
+          const fromTheme = importedFromTheme(id);
+          const packages = file.lastIndexOf("/node_modules/");
+          if (packages >= 0) {
+            if (!fromTheme) continue;
+            const parts = file.slice(packages + "/node_modules/".length).split("/");
+            const name = parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
+            if (!allowed.has(name)) {
+              throw new Error('UNAPPROVED_DEPENDENCY: Theme Web Worker imports package "' + name + '", which is not an approved dependency.');
+            }
+            continue;
+          }
+          let real = file;
+          try {
+            real = fs.realpathSync(file);
+          } catch {}
+          const relative = path.relative(root, real);
+          if (relative.startsWith("..") || path.isAbsolute(relative)) {
+            throw new Error('WORKSPACE_PATH_ESCAPE: Theme Web Worker module "' + file + '" resolves outside the Theme.');
+          }
+        }
+      }
       const environment = describe(this.environment);
       const edges = [];
       const unparsed = [];
@@ -577,6 +630,11 @@ type ChunkImports = {
    * "<sentinel>")`, not a substring anywhere in the code.
    */
   sentinels: string[];
+  /**
+   * Long string literals (64 characters or more), where Vite embeds an
+   * inline Web Worker's code (`?worker&inline`).
+   */
+  strings: string[];
 };
 
 const isIdentifier = (node: unknown, name: string) =>
@@ -665,6 +723,7 @@ function chunkImports(
     dynamic: [],
     reserved: [],
     sentinels: [],
+    strings: [],
   };
   const literal = (node: unknown): string | null => {
     if (
@@ -733,6 +792,23 @@ function chunkImports(
       node.arguments.length >= 1
     ) {
       add(literal(node.arguments[0]), "dynamic");
+    }
+    if (
+      node.type === "StringLiteral" &&
+      typeof node.value === "string" &&
+      node.value.length >= 64
+    ) {
+      result.strings.push(node.value);
+    } else if (
+      node.type === "TemplateLiteral" &&
+      Array.isArray(node.expressions) &&
+      node.expressions.length === 0 &&
+      Array.isArray(node.quasis)
+    ) {
+      const text = (node.quasis as Array<{ value: { cooked: string } }>)
+        .map((quasi) => quasi.value.cooked)
+        .join("");
+      if (text.length >= 64) result.strings.push(text);
     }
     const sentinel = sentinelOf(node);
     if (sentinel !== null) result.sentinels.push(sentinel);
@@ -1017,14 +1093,32 @@ export function verifyNativeStartSdkProof(args: {
     }
   }
 
+  // Each output's Rollup bundles, kept apart: SDK reachability is proven
+  // within each bundle (an edge of one never counts the other's chunks),
+  // and only the results are aggregated for the manifest.
   type Part = {
     name: string;
     outDir: string;
     publicDir: string | null;
-    edges: RecordedEdge[];
-    chunks: BundleChunk[];
+    bundles: ProofBundle[];
+    /** Worker bundles no output holds as files: perhaps inlined here. */
+    inline: ProofBundle[];
   };
   const parts = new Map<"server" | "client", Part>();
+  const partFor = (target: "server" | "client") => {
+    const existing = parts.get(target);
+    if (existing) return existing;
+    const created: Part = {
+      name: "",
+      outDir: target === "server" ? args.directories.server : args.directories.client,
+      publicDir: null,
+      bundles: [],
+      inline: [],
+    };
+    parts.set(target, created);
+    return created;
+  };
+  const inlineCandidates: Array<{ name: string; bundle: ProofBundle }> = [];
   let vite: string | null = null;
   let publicDir: string | null = null;
   for (const key of [...resolutions.keys()].sort()) {
@@ -1087,7 +1181,7 @@ export function verifyNativeStartSdkProof(args: {
       if (refused) return refuse(refused);
     }
 
-    const bundle = resolutions.has(key) ? bundles.get(key) : undefined;
+    const bundle = bundles.get(key);
     if (!bundle) {
       if (output) {
         return refuse(
@@ -1102,27 +1196,24 @@ export function verifyNativeStartSdkProof(args: {
     if (record.worker === 0 && bundle.record.outDir !== record.outDir) {
       return refuse(`${bundle.path} names another output directory. Rebuild the Theme.`);
     }
-    const partFor = (target: "server" | "client") =>
-      parts.get(target) ?? {
-        name: "",
-        outDir: target === "server" ? args.directories.server : args.directories.client,
-        publicDir: null,
-        edges: [],
-        chunks: [],
-      };
+    const proofBundle: ProofBundle = {
+      name,
+      edges: record.edges,
+      chunks: bundle.record.chunks,
+    };
     if (record.worker === 0) {
       if (!output) continue;
       const part = partFor(output);
       part.name = record.environment;
       part.publicDir = record.publicDir;
-      part.edges.push(...record.edges);
-      part.chunks.push(...bundle.record.chunks);
-      parts.set(output, part);
+      part.bundles.push(proofBundle);
       continue;
     }
     // Vite builds a Web Worker bundle once and emits the same bytes as an
     // asset of every environment that imports it: the bundle belongs to
     // each output that holds its files (their hashes are checked there).
+    // A worker imported with `?worker&inline` has no file: its code is a
+    // string in the parent's chunk, matched there by hash.
     const holding = (["server", "client"] as const).filter((target) => {
       const outDir =
         target === "server" ? args.directories.server : args.directories.client;
@@ -1130,16 +1221,12 @@ export function verifyNativeStartSdkProof(args: {
         args.outputs.has(`${outDir}/${chunk.fileName}`),
       );
     });
+    for (const target of holding) partFor(target).bundles.push(proofBundle);
     if (holding.length === 0) {
-      return refuse(
-        `the ${name} bundle was emitted, but no output holds its files. A Vite plugin changes the output after it is generated; remove it.`,
-      );
-    }
-    for (const target of holding) {
-      const part = partFor(target);
-      part.edges.push(...record.edges);
-      part.chunks.push(...bundle.record.chunks);
-      parts.set(target, part);
+      inlineCandidates.push({ name, bundle: proofBundle });
+      for (const target of ["server", "client"] as const) {
+        partFor(target).inline.push(proofBundle);
+      }
     }
   }
   // A bundle record no resolution record pairs with: a plugin wrote it.
@@ -1150,14 +1237,15 @@ export function verifyNativeStartSdkProof(args: {
   }
 
   const environments: NativeSdkProofEnvironment[] = [];
+  const inlined = new Set<ProofBundle>();
   for (const output of ["client", "server"] as const) {
     const part = parts.get(output)!;
     const proven = proveBundle({
-      name: part.name,
       outDir: part.outDir,
-      edges: part.edges,
-      chunks: part.chunks,
+      bundles: part.bundles,
+      inline: part.inline,
       outputs: args.outputs,
+      sources: args.sources,
       nonce: args.nonce,
       config,
       artifactPrefix: output === "server" ? "runtime/server" : "runtime/client",
@@ -1165,6 +1253,7 @@ export function verifyNativeStartSdkProof(args: {
         ? { entryFile: args.workerEntry }
         : { publicDir: part.publicDir }),
     });
+    for (const bundle of proven.inlined) inlined.add(bundle);
     environments.push({
       name: part.name,
       output,
@@ -1173,6 +1262,13 @@ export function verifyNativeStartSdkProof(args: {
       sentinelFiles: proven.sentinelFiles,
     });
   }
+  for (const { name, bundle } of inlineCandidates) {
+    if (!inlined.has(bundle)) {
+      return refuse(
+        `the ${name} bundle was emitted, but no output holds its files or embeds its code. A Vite plugin changes the output after it is generated; remove it.`,
+      );
+    }
+  }
 
   return {
     environments,
@@ -1180,6 +1276,13 @@ export function verifyNativeStartSdkProof(args: {
     publicDir,
   };
 }
+
+/** One Rollup bundle's edges and chunks, proven on its own. */
+type ProofBundle = Readonly<{
+  name: string;
+  edges: readonly RecordedEdge[];
+  chunks: readonly BundleChunk[];
+}>;
 
 /**
  * Files a build writes into its own graph that are not the Theme's: the
@@ -1249,20 +1352,30 @@ function checkWorkerSources(args: {
 }
 
 /**
- * One deployed output's SDK reachability, from its bytes: every recorded
- * chunk on disk with its recorded hash; the import graph between chunks
- * parsed from them; and for each edge whose importer is in a chunk the
- * entries reach, the chunk holding the entry's file reachable from it (static
- * imports for a static edge) and carrying the entry's sentinel. A dynamic
- * import the bundler removed as dead leaves the entry's file in no chunk and
- * is not required.
+ * One deployed output's SDK reachability, from its bytes.
+ *
+ * - Every recorded chunk of every bundle the output holds is on disk with
+ *   its recorded hash, and every script the output ships is such a chunk,
+ *   or a copy of a public-directory input file.
+ * - A Web Worker bundle imported with `?worker&inline` has no file: its
+ *   code is a string literal in a verified chunk of this output, found by
+ *   its recorded hash, and is checked as if it were a chunk.
+ * - The import graph between chunks is parsed from the bytes; no shipped
+ *   script imports a reserved name at run time.
+ * - Per bundle: for each edge whose importing module is in one of the
+ *   bundle's chunks, a chunk of the same bundle holding the entry's file is
+ *   reachable from it (static imports for a static edge) and carries the
+ *   entry's sentinel. Another bundle's chunks never satisfy it. A dynamic
+ *   import the bundler removed as dead leaves the file in no chunk of the
+ *   bundle and is not required.
  */
 function proveBundle(args: {
-  name: string;
   outDir: string;
-  edges: readonly RecordedEdge[];
-  chunks: readonly BundleChunk[];
+  bundles: readonly ProofBundle[];
+  inline: readonly ProofBundle[];
   outputs: ReadonlyMap<string, Bytes>;
+  /** The build's prepared inputs, for public-directory copies. */
+  sources: ReadonlyMap<string, string>;
   nonce: string;
   config: string;
   artifactPrefix: string;
@@ -1270,33 +1383,55 @@ function proveBundle(args: {
   entryFile?: string;
   /** The public directory, workspace-relative (the browser output only). */
   publicDir?: string | null;
-}): { specifiers: string[]; sentinelFiles: string[]; edges: number } {
-  const byFile = new Map<string, BundleChunk>();
-  const code = new Map<string, string>();
-  for (const chunk of args.chunks) {
+}): {
+  specifiers: string[];
+  sentinelFiles: string[];
+  edges: number;
+  inlined: ProofBundle[];
+} {
+  const shown = (file: string) =>
+    file.startsWith(`${args.outDir}/`)
+      ? `${args.artifactPrefix}/${file.slice(args.outDir.length + 1)}`
+      : file;
+  const isScript = (path: string) => /\.(?:m|c)?js$/i.test(path);
+  const fileOf = (bundle: ProofBundle, chunk: BundleChunk) => {
     const file = normalize(`${args.outDir}/${chunk.fileName}`);
     if (file === null || !file.startsWith(`${args.outDir}/`)) {
-      return refuse(`the ${args.name} bundle record names ${chunk.fileName}, outside its output. Rebuild the Theme.`);
-    }
-    const content = args.outputs.get(file);
-    if (content === undefined) {
       return refuse(
-        `the ${args.name} environment emitted ${chunk.fileName}, but the build did not write it. A Vite plugin changes the output after it is generated; remove it.`,
+        `the ${bundle.name} bundle record names ${chunk.fileName}, outside its output. Rebuild the Theme.`,
       );
     }
-    if (sha256(content) !== chunk.sha256) {
-      return refuse(
-        `${chunk.fileName} in the ${args.name} output is not the code the bundler emitted. A Vite plugin rewrites the output after it is generated; remove it.`,
-      );
+    return file;
+  };
+
+  const byFile = new Map<string, BundleChunk>();
+  const owner = new Map<string, ProofBundle>();
+  const code = new Map<string, string>();
+  for (const bundle of args.bundles) {
+    for (const chunk of bundle.chunks) {
+      const file = fileOf(bundle, chunk);
+      const content = args.outputs.get(file);
+      if (content === undefined) {
+        return refuse(
+          `the ${bundle.name} environment emitted ${chunk.fileName}, but the build did not write it. A Vite plugin changes the output after it is generated; remove it.`,
+        );
+      }
+      if (sha256(content) !== chunk.sha256) {
+        return refuse(
+          `${chunk.fileName} in the ${bundle.name} output is not the code the bundler emitted. A Vite plugin rewrites the output after it is generated; remove it.`,
+        );
+      }
+      byFile.set(file, chunk);
+      owner.set(file, bundle);
+      code.set(file, decode(content));
     }
-    byFile.set(file, chunk);
-    code.set(file, decode(content));
   }
+
   // Coverage: every script this output ships is a chunk the bundler emitted
   // and Morph verified. The only exception is a browser file copied
-  // unchanged from the public directory, which is the author's own static
-  // file, not built code; it is still scanned for SDK imports below.
-  const isScript = (path: string) => /\.(?:m|c)?js$/i.test(path);
+  // unchanged from a public-directory input file the build was given,
+  // which is the author's own static file, not built code; it is still
+  // scanned for SDK imports below.
   const publicCopies = new Map<string, string>();
   for (const [path, content] of args.outputs) {
     if (!path.startsWith(`${args.outDir}/`) || !isScript(path)) continue;
@@ -1304,14 +1439,14 @@ function proveBundle(args: {
     const served = path.slice(args.outDir.length + 1);
     const original =
       args.publicDir != null
-        ? args.outputs.get(`${args.publicDir}/${served}`)
+        ? args.sources.get(`${args.publicDir}/${served}`)
         : undefined;
     if (original !== undefined && sha256(original) === sha256(content)) {
       publicCopies.set(path, decode(content));
       continue;
     }
     return refuse(
-      `${args.artifactPrefix}/${served} is not code the bundler emitted for the ${args.name} environment, so Morph cannot vouch for it. A Vite plugin writes it into the output; remove it.`,
+      `${args.artifactPrefix}/${served} is not code the bundler emitted for this output, so Morph cannot vouch for it. A Vite plugin writes it into the output; remove it.`,
     );
   }
 
@@ -1321,16 +1456,62 @@ function proveBundle(args: {
     graph.set(file, chunkImports(file, text, args.outDir, "script-or-module"));
   }
 
+  // Inline Web Workers: a bundle whose every chunk's code is a string in a
+  // verified chunk of this output, by hash.
+  const literals = new Map<string, string>();
+  for (const file of byFile.keys()) {
+    for (const value of graph.get(file)!.strings) literals.set(sha256(value), value);
+  }
+  const inlined: ProofBundle[] = [];
+  for (const bundle of args.inline) {
+    const embedded = bundle.chunks.map((chunk) => literals.get(chunk.sha256));
+    if (embedded.some((value) => value === undefined)) continue;
+    bundle.chunks.forEach((chunk, index) => {
+      // Not a file of the output: named after the worker's own chunk so its
+      // imports and diagnostics read like any chunk's.
+      const file = fileOf(bundle, chunk);
+      byFile.set(file, chunk);
+      owner.set(file, bundle);
+      graph.set(file, chunkImports(file, embedded[index]!, args.outDir));
+    });
+    inlined.push(bundle);
+  }
+
   // The Worker is deployed from its entry: that file must be a verified
   // chunk the bundler marked as an entry.
   if (args.entryFile !== undefined) {
     const entry = byFile.get(args.entryFile);
-    if (!entry || !entry.isEntry) {
+    if (!entry || !entry.isEntry || !args.outputs.has(args.entryFile)) {
       return refuse(
-        `the Worker's entry ${args.artifactPrefix}/${args.entryFile.slice(args.outDir.length + 1)} is not an entry chunk the bundler emitted. Rebuild the Theme.`,
+        `the Worker's entry ${shown(args.entryFile)} is not an entry chunk the bundler emitted. Rebuild the Theme.`,
       );
     }
   }
+
+  // Relative imports must stay inside what was verified.
+  for (const [file, imports] of graph) {
+    for (const target of [...imports.static, ...imports.dynamic]) {
+      if (isScript(target) && !graph.has(target)) {
+        return refuse(
+          `${shown(file)} imports ${shown(target)}, which is not code the bundler emitted for this output. A Vite plugin changes the output; remove it.`,
+        );
+      }
+    }
+  }
+
+  // Without the record: no shipped script (and no inline worker) imports a
+  // reserved name at run time (an SDK left external, or a computed one).
+  // Every one counts as able to run: a Worker can import any module it was
+  // deployed with, a browser any file it is served.
+  for (const file of [...graph.keys()].sort()) {
+    const reserved = graph.get(file)!.reserved;
+    if (reserved.length > 0) {
+      return refuse(
+        `${shown(file)} still imports "${reserved[0]}" at run time: ${args.config} leaves the Morph SDK external. Remove the external, alias or plugin that does this.`,
+      );
+    }
+  }
+
   const reach = (from: readonly string[], kinds: "static" | "all") => {
     const seen = new Set<string>();
     const queue = [...from];
@@ -1345,76 +1526,69 @@ function proveBundle(args: {
     }
     return seen;
   };
-  // Every shipped script counts as able to run: a Worker can import any
-  // module it was deployed with, a browser any file it is served. So every
-  // one is checked, not only those an entry reaches.
-  const reachable = new Set(graph.keys());
-  // Relative imports must stay inside what was verified.
-  for (const [file, imports] of graph) {
-    for (const target of [...imports.static, ...imports.dynamic]) {
-      if (isScript(target) && !graph.has(target)) {
-        return refuse(
-          `${args.artifactPrefix}/${file.slice(args.outDir.length + 1)} imports ${target.startsWith(`${args.outDir}/`) ? `${args.artifactPrefix}/${target.slice(args.outDir.length + 1)}` : target}, which is not code the bundler emitted for the ${args.name} environment. A Vite plugin changes the output; remove it.`,
-        );
-      }
-    }
-  }
-
-  // Without the record: no shipped script imports a reserved name at run
-  // time (an SDK left external, or a computed SDK specifier).
-  for (const file of [...reachable].sort()) {
-    const reserved = graph.get(file)?.reserved ?? [];
-    if (reserved.length > 0) {
-      return refuse(
-        `${args.artifactPrefix}/${file.slice(args.outDir.length + 1)} still imports "${reserved[0]}" at run time: ${args.config} leaves the Morph SDK external. Remove the external, alias or plugin that does this.`,
-      );
-    }
-  }
-
-  const chunksOf = (module: string) =>
-    [...byFile].filter(([, chunk]) => chunk.modules.includes(module)).map(([file]) => file);
 
   const specifiers = new Set<string>();
   const sentinelFiles = new Set<string>();
   let counted = 0;
-  for (const edge of args.edges) {
-    const expected = THEME_MORPH_SDK_MODULES[edge.specifier]!;
-    const importerChunks = chunksOf(edge.importer).filter((file) => reachable.has(file));
-    // The importing module is in no chunk the deployed entries reach: its
-    // code does not run.
-    if (importerChunks.length === 0) continue;
-    const targetChunks = chunksOf(expected).filter((file) => reachable.has(file));
-    if (targetChunks.length === 0) {
-      if (edge.kind === "dynamic") continue;
-      return refuse(
-        `${stripQuery(edge.importer)} imports ${edge.specifier} in the ${args.name} environment, but Morph's copy of it is in no chunk the deployed code reaches. A Vite plugin drops or replaces that module; remove it.`,
-      );
-    }
-    const sentinel = nativeSdkSentinel(args.nonce, edge.specifier);
-    for (const importer of importerChunks) {
-      const reached = reach([importer], edge.kind === "static" ? "static" : "all");
-      const carrying = targetChunks.filter(
-        (file) =>
-          reached.has(file) && graph.get(file)!.sentinels.includes(sentinel),
-      );
-      if (carrying.length === 0) {
+  for (const bundle of [...args.bundles, ...inlined]) {
+    const own = [...byFile.keys()].filter((file) => owner.get(file) === bundle);
+    const chunksOf = (module: string) =>
+      own.filter((file) => byFile.get(file)!.modules.includes(module));
+    for (const edge of bundle.edges) {
+      const expected = THEME_MORPH_SDK_MODULES[edge.specifier]!;
+      const importerChunks = chunksOf(edge.importer);
+      // The importing module is in no chunk of its bundle: its code does
+      // not run.
+      if (importerChunks.length === 0) continue;
+      const targetChunks = chunksOf(expected);
+      if (targetChunks.length === 0) {
+        if (edge.kind === "dynamic") continue;
         return refuse(
-          `the ${args.name} environment imports ${edge.specifier} (${stripQuery(edge.importer)}), but the code the build wrote for it does not reach Morph's copy of it. A Vite plugin replaces or drops that module, or redirects the import; remove it.`,
+          `${stripQuery(edge.importer)} imports ${edge.specifier} in the ${bundle.name} environment, but Morph's copy of it is in no chunk the deployed code reaches. A Vite plugin drops or replaces that module; remove it.`,
         );
       }
-      for (const file of carrying) {
-        sentinelFiles.add(`${args.artifactPrefix}/${file.slice(args.outDir.length + 1)}`);
+      const sentinel = nativeSdkSentinel(args.nonce, edge.specifier);
+      for (const importer of importerChunks) {
+        const reached = reach([importer], edge.kind === "static" ? "static" : "all");
+        const carrying = targetChunks.filter(
+          (file) =>
+            reached.has(file) && graph.get(file)!.sentinels.includes(sentinel),
+        );
+        if (carrying.length === 0) {
+          return refuse(
+            `the ${bundle.name} environment imports ${edge.specifier} (${stripQuery(edge.importer)}), but the code the build wrote for it does not reach Morph's copy of it. A Vite plugin replaces or drops that module, or redirects the import; remove it.`,
+          );
+        }
+        for (const file of carrying) {
+          // An inline worker's code ships inside the parent chunk that
+          // embeds it; that parent is the file a reader can check.
+          if (args.outputs.has(file)) sentinelFiles.add(shown(file));
+          else {
+            for (const parent of byFile.keys()) {
+              if (
+                args.outputs.has(parent) &&
+                graph.get(parent)!.strings.some(
+                  (value) => sha256(value) === byFile.get(file)!.sha256,
+                )
+              ) {
+                sentinelFiles.add(shown(parent));
+              }
+            }
+          }
+        }
       }
+      specifiers.add(edge.specifier);
+      counted += 1;
     }
-    specifiers.add(edge.specifier);
-    counted += 1;
   }
   return {
     specifiers: [...specifiers].sort(),
     sentinelFiles: [...sentinelFiles].sort(),
     edges: counted,
+    inlined,
   };
 }
+
 
 /**
  * The static HTML among an artifact's served assets, and where each came

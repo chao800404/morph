@@ -301,23 +301,31 @@ describe("planNativeStartBuild", () => {
     );
   });
 
-  it("holds Web Worker bundles to the import guard and records them, after the project's own worker plugins", () => {
+  it("holds Web Worker bundles to the import guard, first at both ordering levels, and records them", () => {
     const plan = planNativeStartBuild(project(), { nonce: NONCE });
     if (!plan.ok) throw new Error(plan.message);
     const wrapper = plan.workspaceFiles.find(
       (f) => f.path === NATIVE_WRAPPER_CONFIG_PATH,
     )!.content;
     const workerBlock = wrapper.slice(wrapper.indexOf("merged.worker = {"));
-    // The same guard the main graphs get, not a copy of a weaker one.
-    expect(workerBlock).toContain(nativeImportGuardPluginSource());
-    expect(workerBlock).toContain(
-      'morphNativeResolution({ workspaceRoot, nonce: morphBuildNonce, scope: "worker" })',
+    // The main graphs' guard, with its hook at Rollup's order "pre" too.
+    const guard = nativeImportGuardPluginSource({ hookOrderPre: true });
+    expect(guard).toContain('order: "pre"');
+    expect(guard).toContain('enforce: "pre"');
+    expect(workerBlock).toContain(guard);
+    // First in the list, before the project's own worker plugins.
+    expect(workerBlock.indexOf('name: "morph:native-import-guard"')).toBeLessThan(
+      workerBlock.indexOf("ownWorkerPlugins()"),
     );
-    // The project's own worker plugins first; the prerender content plugin
-    // has nothing to answer in a browser-only bundle.
+    // The resolution plugin after them, with the approved packages so it
+    // checks the finished worker graph too.
     expect(workerBlock.indexOf("ownWorkerPlugins()")).toBeLessThan(
-      workerBlock.indexOf('name: "morph:native-import-guard"'),
+      workerBlock.indexOf("morphNativeResolution({"),
     );
+    expect(workerBlock).toContain('scope: "worker"');
+    expect(workerBlock).toContain("allowedPackages: [...allowedPackages]");
+    // The main graphs' guard is unchanged.
+    expect(nativeImportGuardPluginSource()).not.toContain('order: "pre"');
     expect(workerBlock).not.toContain("morph:frozen-prerender-content");
     expect(wrapper).toContain("morph:frozen-prerender-content");
     // Without the proof (no nonce), the wrapper is the one before it.

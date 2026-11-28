@@ -712,6 +712,52 @@ export const Route = createFileRoute("/worker-echo")({
           path: "public/legacy.js",
           content: "function pick(a, a) { return a; }\nwindow.pick = pick;\n",
         },
+        // ?worker&inline: Vite embeds the worker bundle's code as a string
+        // in the parent chunk, with no file of its own. It imports the SDK.
+        {
+          path: "src/workers/inline-echo.ts",
+          content: `import { isMorphError } from "@morph/sdk";
+self.onmessage = (event: MessageEvent) => {
+  self.postMessage({ inline: true, morphError: isMorphError(event.data) });
+};
+`,
+        },
+        // A worker whose dynamic SDK import is dead code: Rollup drops it, so
+        // this worker's bundle holds no SDK, while the echo worker's does.
+        {
+          path: "src/workers/dead-sdk.ts",
+          content: `if (false) {
+  void import("@morph/sdk");
+}
+self.onmessage = (event: MessageEvent) => self.postMessage(event.data);
+`,
+        },
+        {
+          path: "src/routes/worker-more.tsx",
+          content: `import { useEffect, useState } from "react";
+import { createFileRoute } from "@tanstack/react-router";
+import InlineEcho from "../workers/inline-echo?worker&inline";
+import DeadSdk from "../workers/dead-sdk?worker";
+
+export const Route = createFileRoute("/worker-more")({
+  component: function WorkerMore() {
+    const [reply, setReply] = useState("");
+    useEffect(() => {
+      const inline = new InlineEcho();
+      const dead = new DeadSdk();
+      inline.onmessage = (event) => setReply(JSON.stringify(event.data));
+      inline.postMessage("ping");
+      dead.postMessage("ping");
+      return () => {
+        inline.terminate();
+        dead.terminate();
+      };
+    }, []);
+    return <p data-worker-more>{reply}</p>;
+  },
+});
+`,
+        },
       ]);
       if (!built.ok) throw new Error(`${built.stage}: ${built.message}`);
       const proof = readNativeBuildProof(built.artifact.metadata?.nativeProof)!;
@@ -966,6 +1012,52 @@ export const Route = createFileRoute("/worker-unapproved")({
     BUILD_BUDGET_MS,
   );
 
+  it.each([
+    [
+      "a plugin in Vite's pre group",
+      `{ name: "author-worker-resolver", enforce: "pre", resolveId(source) { if (source === "author-zod") return requireFromConfig.resolve("zod"); } }`,
+    ],
+    [
+      "a resolveId hook at Rollup's order pre",
+      `{ name: "author-worker-resolver", resolveId: { order: "pre", handler(source) { if (source === "author-zod") return requireFromConfig.resolve("zod"); } } }`,
+    ],
+  ])(
+    "refuses a Web Worker import of an unapproved package that the project's worker plugin resolves itself (%s)",
+    (_name, plugin) => {
+      const built = buildTampered(
+        tamperedConfig({
+          head: `import { createRequire } from "node:module";\nconst requireFromConfig = createRequire(path.resolve("package.json"));`,
+          settings: `worker: { plugins: () => [${plugin}] },`,
+        }),
+        [
+          {
+            path: "src/workers/aliased.ts",
+            content: `import { z } from "author-zod";
+self.onmessage = (event: MessageEvent) => self.postMessage(z.string().safeParse(event.data).success);
+`,
+          },
+          {
+            path: "src/routes/worker-aliased.tsx",
+            content: `import { createFileRoute } from "@tanstack/react-router";
+import AliasedWorker from "../workers/aliased?worker";
+
+export const Route = createFileRoute("/worker-aliased")({
+  component: function WorkerAliased() {
+    return <button onClick={() => new AliasedWorker()}>start</button>;
+  },
+});
+`,
+          },
+        ],
+      );
+      expect(built).toMatchObject({ ok: false, stage: "build" });
+      expect((built as { message: string }).message).toMatch(
+        /UNAPPROVED_DEPENDENCY: Theme (imports "author-zod" from package "zod"|Web Worker imports package "zod"), which is not an approved dependency\./,
+      );
+    },
+    BUILD_BUDGET_MS,
+  );
+
   it(
     "refuses a script written into the output that the bundler never emitted",
     () => {
@@ -979,7 +1071,7 @@ export const Route = createFileRoute("/worker-unapproved")({
       );
       expect(built).toMatchObject({ ok: false, stage: "collect" });
       expect((built as { message: string }).message).toMatch(
-        /^NATIVE_PROOF_SDK_RESOLUTION: runtime\/(client|server)\/assets\/extra\.js is not code the bundler emitted for the (client|ssr) environment, so Morph cannot vouch for it\./,
+        /^NATIVE_PROOF_SDK_RESOLUTION: runtime\/(client|server)\/assets\/extra\.js is not code the bundler emitted for this output, so Morph cannot vouch for it\./,
       );
     },
     BUILD_BUDGET_MS,

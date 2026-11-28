@@ -204,7 +204,11 @@ function build(
 
 /** The build's prepared inputs, by default the sources the outputs hold. */
 const inputsOf = (outputs: Map<string, string>) =>
-  new Map([...outputs].filter(([path]) => path.startsWith("src/")));
+  new Map(
+    [...outputs].filter(
+      ([path]) => path.startsWith("src/") || path.startsWith("public/"),
+    ),
+  );
 
 const verify = (
   outputs: Map<string, string>,
@@ -234,15 +238,27 @@ const refusal = (
 /** A Vite Web Worker bundle's records, and its chunk on disk. */
 const withWorker = (
   outputs: Map<string, string>,
-  worker: { code: string; edges?: Edge[]; record?: boolean },
+  worker: {
+    code: string;
+    edges?: Edge[];
+    record?: boolean;
+    /** Which worker build (1 by default). */
+    index?: number;
+    /** Written as a file of the browser output (an inline worker is not). */
+    onDisk?: boolean;
+    modules?: string[];
+  },
 ) => {
-  const file = "assets/worker-abc.js";
-  outputs.set(`${DIRECTORIES.client}/${file}`, worker.code);
+  const index = worker.index ?? 1;
+  const file = `assets/worker-${index}.js`;
+  if (worker.onDisk !== false) {
+    outputs.set(`${DIRECTORIES.client}/${file}`, worker.code);
+  }
   if (worker.record === false) return outputs;
   outputs.set(
-    ".morph/records/resolution.client__worker1.json",
+    `.morph/records/resolution.client__worker${index}.json`,
     JSON.stringify({
-      worker: 1,
+      worker: index,
       nonce: NONCE,
       environment: "client",
       consumer: "client",
@@ -257,9 +273,9 @@ const withWorker = (
     }),
   );
   outputs.set(
-    ".morph/records/bundle.client__worker1.json",
+    `.morph/records/bundle.client__worker${index}.json`,
     JSON.stringify({
-      worker: 1,
+      worker: index,
       nonce: NONCE,
       environment: "client",
       outDir: "dist",
@@ -268,7 +284,9 @@ const withWorker = (
           fileName: file,
           isEntry: true,
           isDynamicEntry: false,
-          modules: worker.edges?.length ? ["src/workers/sdk.ts", START_FILE] : [],
+          modules:
+            worker.modules ??
+            (worker.edges?.length ? ["src/workers/sdk.ts", START_FILE] : []),
           sha256: hash(worker.code),
         },
       ],
@@ -385,7 +403,7 @@ describe("a native Start build's SDK resolution proof", () => {
         build({ extraOutputs: { "dist/server/assets/extra.js": 'export * from "@morph/sdk";' } }),
       ),
     ).toBe(
-      "NATIVE_PROOF_SDK_RESOLUTION: runtime/server/assets/extra.js is not code the bundler emitted for the ssr environment, so Morph cannot vouch for it. A Vite plugin writes it into the output; remove it.",
+      "NATIVE_PROOF_SDK_RESOLUTION: runtime/server/assets/extra.js is not code the bundler emitted for this output, so Morph cannot vouch for it. A Vite plugin writes it into the output; remove it.",
     );
     // The recorded entry imports a file that is not shipped at all.
     expect(
@@ -420,7 +438,7 @@ describe("a native Start build's SDK resolution proof", () => {
       name: "client",
       output: "client",
       specifiers: [START],
-      sentinelFiles: ["runtime/client/assets/worker-abc.js"],
+      sentinelFiles: ["runtime/client/assets/worker-1.js"],
     });
     expect(
       refusal(
@@ -430,12 +448,106 @@ describe("a native Start build's SDK resolution proof", () => {
         }),
       ),
     ).toMatch(
-      /the client environment imports @morph\/sdk\/start \(src\/workers\/sdk\.ts\), but the code the build wrote for it does not reach Morph's copy of it/,
+      /the client Web Worker 1 environment imports @morph\/sdk\/start \(src\/workers\/sdk\.ts\), but the code the build wrote for it does not reach Morph's copy of it/,
     );
     // The same bytes with no worker record are not vouched for.
     expect(
       refusal(withWorker(build(), { code: "self.onmessage=()=>{};", record: false })),
-    ).toMatch(/runtime\/client\/assets\/worker-abc\.js is not code the bundler emitted/);
+    ).toMatch(/runtime\/client\/assets\/worker-1\.js is not code the bundler emitted/);
+  });
+
+  it("proves an inline Web Worker (?worker&inline) from the string its parent chunk embeds", () => {
+    const workerCode = `const morph={};${sentinelStatement(START)}self.onmessage=()=>self.postMessage(String(morph));`;
+    const parent = `const jsContent = ${JSON.stringify(workerCode)};export const start=()=>new Worker(URL.createObjectURL(new Blob([jsContent])));`;
+    const inline = withWorker(
+      build({ client: [{ file: "assets/main.js", code: parent, modules: [], isEntry: true }] }),
+      { code: workerCode, edges: [edge({ importer: "src/workers/sdk.ts" })], onDisk: false },
+    );
+    // The SDK is proven in the embedded code; the parent chunk is the file
+    // that carries it.
+    expect(verify(inline).environments[0]).toMatchObject({
+      output: "client",
+      specifiers: [START],
+      sentinelFiles: ["runtime/client/assets/main.js"],
+    });
+    // Embedded code that is not the recorded bundle's is not this worker.
+    const other = withWorker(
+      build({
+        client: [
+          {
+            file: "assets/main.js",
+            code: `const jsContent = ${JSON.stringify(`${workerCode}//changed`)};`,
+            modules: [],
+            isEntry: true,
+          },
+        ],
+      }),
+      { code: workerCode, edges: [edge({ importer: "src/workers/sdk.ts" })], onDisk: false },
+    );
+    expect(refusal(other)).toMatch(
+      /the client Web Worker 1 bundle was emitted, but no output holds its files or embeds its code/,
+    );
+    // An inline worker that imports an SDK name at run time is caught too.
+    const externalCode = `import("@morph/sdk/start");self.onmessage=()=>self.postMessage("an inline worker payload long enough to be scanned");`;
+    expect(
+      refusal(
+        withWorker(
+          build({
+            client: [
+              {
+                file: "assets/main.js",
+                code: `const jsContent = ${JSON.stringify(externalCode)};`,
+                modules: [],
+                isEntry: true,
+              },
+            ],
+          }),
+          { code: externalCode, onDisk: false },
+        ),
+      ),
+    ).toMatch(/still imports "@morph\/sdk\/start" at run time/);
+  });
+
+  it("proves reachability within each bundle: one worker's dead SDK import is not held to another worker's SDK chunk", () => {
+    // Worker 1's dynamic SDK import was dropped as dead: its bundle holds
+    // no SDK file. Worker 2 bundles the SDK. Pooled together, worker 1
+    // would be required to reach worker 2's chunk.
+    const twoWorkers = withWorker(
+      withWorker(build(), {
+        index: 1,
+        code: "self.onmessage=()=>self.postMessage(1);",
+        edges: [edge({ importer: "src/workers/dead.ts", kind: "dynamic" })],
+        modules: ["src/workers/dead.ts"],
+      }),
+      {
+        index: 2,
+        code: `const morph={};${sentinelStatement(START)}self.onmessage=()=>self.postMessage(String(morph));`,
+        edges: [edge({ importer: "src/workers/sdk.ts" })],
+      },
+    );
+    expect(verify(twoWorkers).environments[0]).toMatchObject({
+      output: "client",
+      specifiers: [START],
+      sentinelFiles: ["runtime/client/assets/worker-2.js"],
+    });
+  });
+
+  it("admits a public copy only against the build's public input, not the public directory the build left", () => {
+    const copy = "self.addEventListener('install', () => {});";
+    // In the workspace after the build, but not one of the build's inputs.
+    expect(
+      refusal(
+        build({ extraOutputs: { "public/sw.js": copy, "dist/client/sw.js": copy } }),
+        inputsOf(build()),
+      ),
+    ).toMatch(/runtime\/client\/sw\.js is not code the bundler emitted for this output/);
+    // The input says otherwise than the workspace: the input decides.
+    expect(
+      refusal(
+        build({ extraOutputs: { "public/sw.js": copy, "dist/client/sw.js": copy } }),
+        new Map([...inputsOf(build()), ["public/sw.js", `${copy}//input`]]),
+      ),
+    ).toMatch(/runtime\/client\/sw\.js is not code the bundler emitted for this output/);
   });
 
   it("reads a classic script copied from the public directory as a classic script, and still scans it", () => {
@@ -951,4 +1063,4 @@ describe("the native production admission", () => {
 
 /** sha256 of `nativeResolutionPluginSource()`. */
 const PLUGIN_SHA256 =
-  "533d649232da31c747295d1c64e12b81b39471fc9dcaeb8d2519667ee1d0f3e7";
+  "e5ee0ffb4983622cde34c2d115e290c615cb48878795219816dae41e9bd83d8e";

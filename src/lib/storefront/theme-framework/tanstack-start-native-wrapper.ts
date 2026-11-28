@@ -353,11 +353,26 @@ function nativeStartBuildLoaderSource(configFile: string, nonce: string): string
  * Resolved-path import guard, as plugin source. Reads `allowedPackages`,
  * `workspaceRoot`, `fs` and `path` from the wrapper around it.
  */
-export function nativeImportGuardPluginSource(): string {
+export function nativeImportGuardPluginSource(
+  options: Readonly<{
+    /**
+     * Run the hook at Rollup's `order: "pre"` as well as in Vite's `pre`
+     * group: with the plugin first in its list, no project resolver of
+     * either kind resolves an import before it (the Web Worker plugins).
+     */
+    hookOrderPre?: boolean;
+  }> = {},
+): string {
+  const open = options.hookOrderPre
+    ? `resolveId: {
+      order: "pre",
+      async handler(source, importer, options) {`
+    : `async resolveId(source, importer, options) {`;
+  const close = options.hookOrderPre ? `},\n    },` : `},`;
   return `{
     name: "morph:native-import-guard",
     enforce: "pre",
-    async resolveId(source, importer, options) {
+    ${open}
       if (!importer || typeof source !== "string") return null;
       if (/^(\\0|virtual:|cloudflare:|node:)/.test(source)) return null;
       const from = importer.replace(/\\\\/g, "/");
@@ -382,7 +397,7 @@ export function nativeImportGuardPluginSource(): string {
         throw new Error('WORKSPACE_PATH_ESCAPE: Import "' + source + '" resolves outside the Theme.');
       }
       return resolved;
-    },
+    ${close}
   }`;
 }
 
@@ -462,14 +477,16 @@ ${options.resolutionNonce !== undefined ? workerResolutionSource() : ""}};
 /**
  * Vite builds each Web Worker (a `?worker` import) as its own bundle, with
  * the plugins of `worker.plugins` only, and emits its code as an asset of
- * the parent bundle. Two of Morph's plugins are added there too, after the
- * project's own worker plugins:
+ * the parent bundle. Two of Morph's plugins are added there too:
  *
- * - the resolved-path import guard, so a worker's imports are held to the
- *   same approved packages and workspace containment as the main graphs
- *   (it is `enforce: "pre"`, so its place in the list does not matter);
- * - the resolution plugin, so each worker bundle is recorded and verified
- *   like any chunk (native-start-proof.ts).
+ * - the resolved-path import guard, first in the list, `enforce: "pre"`
+ *   and with its hook at `order: "pre"`, so no project worker plugin of
+ *   either ordering kind resolves an import before it (Rollup stops at the
+ *   first resolution). Whatever resolver answers, the resolution plugin
+ *   also checks the worker's finished graph against the same rules;
+ * - the resolution plugin, after the project's own worker plugins, so each
+ *   worker bundle is recorded and verified like any chunk
+ *   (native-start-proof.ts).
  *
  * Not the frozen-content prerender plugin: it answers content reads in the
  * Node preview server Start prerenders through, and a Web Worker runs only
@@ -480,9 +497,14 @@ function workerResolutionSource(): string {
   merged.worker = {
     ...merged.worker,
     plugins: () => [
+      ${nativeImportGuardPluginSource({ hookOrderPre: true })},
       ...(typeof ownWorkerPlugins === "function" ? ownWorkerPlugins() ?? [] : []),
-      ${nativeImportGuardPluginSource()},
-      morphNativeResolution({ workspaceRoot, nonce: morphBuildNonce, scope: "worker" }),
+      morphNativeResolution({
+        workspaceRoot,
+        nonce: morphBuildNonce,
+        scope: "worker",
+        allowedPackages: [...allowedPackages],
+      }),
     ],
   };
   return merged;
