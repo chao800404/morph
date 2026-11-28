@@ -10,6 +10,7 @@ import {
   flushFrames,
   fromPreview,
   getThemeEditor,
+  holdContentDebounce,
   liveFrame,
   messagesOfType,
   objposSavedFiles,
@@ -2348,27 +2349,51 @@ function Home() {
       return input;
     }
 
-    /** Two keys into "Two", checked after each, then left and saved. */
+    /**
+     * Two keys into "Two", checked after each, then left and saved.
+     *
+     * Both keys are typed inside one 300 ms debounce, so they leave as one
+     * write. The debounce is held rather than raced: the checks between the
+     * keys wait for frames on the real clock, and on a busy machine that took
+     * longer than 300 ms, the first key left on its own and the write counts
+     * below read 2 for 1 (CI run 46135176667). The held timer is run once the
+     * field is left, as it running out would. Keys further apart than the
+     * debounce are the next test's.
+     */
     async function typeTwoKeys() {
       const input = await enter("Two", 3);
       const card = rowCardOf(input);
       expect(card).toBeTruthy();
+      const sentBefore = sent().length;
 
-      press(input, "!");
-      await flushFrames();
-      expect(input.isConnected, "the same input after key 1").toBe(true);
-      expect(card!.isConnected, "the same row card after key 1").toBe(true);
-      expect(document.activeElement, "focus after key 1").toBe(input);
-      expect(input.selectionStart, "caret after key 1").toBe(4);
+      const debounce = holdContentDebounce();
+      try {
+        press(input, "!");
+        await flushFrames();
+        expect(input.isConnected, "the same input after key 1").toBe(true);
+        expect(card!.isConnected, "the same row card after key 1").toBe(true);
+        expect(document.activeElement, "focus after key 1").toBe(input);
+        expect(input.selectionStart, "caret after key 1").toBe(4);
+        expect(debounce.count(), "key 1 waits in the debounce").toBe(1);
 
-      press(focused(), "?");
-      await flushFrames();
-      expect(input.isConnected, "the same input after key 2").toBe(true);
-      expect(document.activeElement, "focus after key 2").toBe(input);
-      expect(input.selectionStart, "caret after key 2").toBe(5);
-      expect(input.value).toBe("Two!?");
+        press(focused(), "?");
+        await flushFrames();
+        expect(input.isConnected, "the same input after key 2").toBe(true);
+        expect(document.activeElement, "focus after key 2").toBe(input);
+        expect(input.selectionStart, "caret after key 2").toBe(5);
+        expect(input.value).toBe("Two!?");
+        expect(debounce.count(), "key 2 replaces key 1's wait").toBe(1);
+        expect(sent(), "nothing left between the keys").toHaveLength(sentBefore);
 
-      act(() => input.blur());
+        act(() => input.blur());
+      } finally {
+        // Back on the real clock before the write goes out: anything the
+        // write schedules runs as it would.
+        debounce.restore();
+      }
+      await act(async () => {
+        debounce.fire();
+      });
       await settle();
       return { input, card: card! };
     }
@@ -2404,6 +2429,59 @@ function Home() {
       expect(rowsSent(sent()[0]!)).toEqual([
         [one!.id, "One"],
         [two!.id, "Two!?"],
+      ]);
+      expect(saveStatus()).toBe("Unpublished");
+    });
+
+    it("control: keys further apart than the debounce leave one write each, the second at the generation the first returned", async () => {
+      vi.spyOn(toast, "error").mockImplementation(() => "");
+      const [one, two] = identified();
+      await openTitle({ items: [one, two] }, 1);
+      const input = await enter("Two", 3);
+
+      const debounce = holdContentDebounce();
+      try {
+        press(input, "!");
+        await flushFrames();
+        // The author pauses: the debounce runs out and the key is saved.
+        await act(async () => {
+          debounce.fire();
+        });
+        await waitFor(() => expect(sent()).toHaveLength(1));
+        await flushFrames();
+        expect(input.isConnected, "the same input after the save").toBe(true);
+        expect(document.activeElement, "focus after the save").toBe(input);
+
+        press(focused(), "?");
+        await flushFrames();
+        expect(debounce.count(), "key 2 waits in the debounce").toBe(1);
+        act(() => input.blur());
+      } finally {
+        debounce.restore();
+      }
+      await act(async () => {
+        debounce.fire();
+      });
+      await settle();
+
+      // Two saves of what the field held each time, not one save sent twice.
+      expect(
+        sent().map((data) => [data.expectedDraftGeneration, rowsSent(data)]),
+      ).toEqual([
+        [
+          1,
+          [
+            [one!.id, "One"],
+            [two!.id, "Two!"],
+          ],
+        ],
+        [
+          2,
+          [
+            [one!.id, "One"],
+            [two!.id, "Two!?"],
+          ],
+        ],
       ]);
       expect(saveStatus()).toBe("Unpublished");
     });
