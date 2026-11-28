@@ -7,7 +7,6 @@ import {
   RENDER_MODES,
   RENDER_MODE_RELEASE_PATH,
   RENDER_MODES_FILES,
-  renderModeComponent,
   renderModeDefault,
   renderModePath,
   renderModeRendered,
@@ -766,14 +765,20 @@ test.describe("Start render modes keep hidden sections out", () => {
       ).toHaveCount(1, { timeout: 20_000 });
       // Hide, then Show, from the Sections panel; no author guard.
       const node = page.locator(`[data-editor-tree-node-id^="${shownSlot}:"]`).first();
-      const component = renderModeComponent(mode, "shown");
       await node.hover();
+      const hide = node.getByRole("button", { name: /^Hide section / });
+      // The panel names the section by its type, as the Hide control says.
+      const sectionType = ((await hide.getAttribute("aria-label")) ?? "").replace(
+        /^Hide section /,
+        "",
+      );
+      expect(sectionType, `${mode}: the Hide control names the section`).not.toBe("");
       const hideAnswer = page.waitForResponse(
         (response) =>
           isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps"),
         { timeout: 30_000 },
       );
-      await node.getByRole("button", { name: /^Hide section / }).click();
+      await hide.click();
       try {
         const answer = await (await hideAnswer).text();
         expect(answer, `${mode}: Hide is not refused`).not.toContain("SECTION_HIDE_UNSUPPORTED");
@@ -783,8 +788,9 @@ test.describe("Start render modes keep hidden sections out", () => {
         await expect(canvas.getByText(stored(mode, "shown"))).toHaveCount(0);
         await expect(canvas.getByText(renderModeDefault(mode, "shown"))).toHaveCount(0);
       } finally {
-        const show = page.getByRole("button", { name: `Show section ${component}` });
-        if (await show.isVisible().catch(() => false)) await show.click();
+        const show = page.getByRole("button", { name: `Show section ${sectionType}` });
+        await node.hover().catch(() => {});
+        if (await show.first().isVisible().catch(() => false)) await show.first().click();
       }
       await expect(section, `${mode}: shown again`).toHaveCount(1, { timeout: 20_000 });
       await expect(canvas.getByText(stored(mode, "shown")).first()).toBeVisible();
