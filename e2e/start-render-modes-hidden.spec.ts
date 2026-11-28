@@ -1026,10 +1026,10 @@ test.describe("Start render modes keep hidden sections out", () => {
         const where = `Build Preview ${visit.label}`;
         if (visit.mode === "defer") {
           // Run rm-evidence-8: read chunk by chunk, /rm-defer on the bp- host
-          // answered 200 with an empty body, the fallback never streamed.
-          // Recorded here with the value released after 3 s from a parallel
-          // request, whatever has streamed by then: timings, size, and the
-          // hidden sentinels, which must be absent from whatever arrives.
+          // never streamed its fallback (so the chunk reader never released
+          // it). Run rm-evidence-9, released after 3 s from a parallel
+          // request: headers and the whole body arrived together, one chunk,
+          // right after the release. Recorded (timings, chunks), not asserted.
           const probe = await isolated()!.evaluate(
             async ({ path, releasePath }) => {
               const started = performance.now();
@@ -1084,27 +1084,19 @@ test.describe("Start render modes keep hidden sections out", () => {
               hasRouterState: html.includes("$_TSR"),
             }),
           });
-          expectNoHiddenSentinel(html, `${where} (probe)`);
+          // Whatever the delivery, the document is the route's, hidden
+          // sections absent.
+          expectRouteHtml(html, visit, `${where} (probe)`);
         } else {
           expectStreamed(await streamedIn(isolated()!, visit.path), visit, `${where} (streamed)`);
         }
         const frame = isolated()!;
         const navigated = frame.goto(`${address.origin}${visit.path}`, { waitUntil: "commit" });
         if (visit.mode === "defer") {
-          await expect(frame.locator("[data-rm-defer-shell]")).toBeAttached({ timeout: 90_000 });
-          await expect
-            .poll(
-              async () =>
-                page
-                  .frame({ url: (url) => url.hostname === address.hostname })!
-                  .evaluate(async (path) => {
-                    const response = await fetch(path, { cache: "no-store" });
-                    return ((await response.json()) as { released: number }).released;
-                  }, RENDER_MODE_RELEASE_PATH)
-                  .catch(() => 0),
-              { timeout: 60_000 },
-            )
-            .toBeGreaterThan(0);
+          // The bp- host answers only once the whole body is ready (run
+          // rm-evidence-9), so the document cannot commit while the value is
+          // held: it is released from a second tab on the bp- origin.
+          await releaseFromSecondTab(page, address.origin);
         }
         await navigated;
         const current = page.frame({ url: (url) => url.hostname === address.hostname })!;
