@@ -398,9 +398,9 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
     1. 原生建置與部署契約，只做 SSR，一次一個框架：正式環境採用 Theme 自己的設定；以證明取代 Hide 對 `custom-build` 的一律拒絕。
        - 設計已核准（handoff `2026-11-27/native-build-contract-design.md`，含 Codex 審查），分 7 個 PR：
          - 0：staging 實測（與 6 一起，等 Workers Paid）；
-         - 1：Wrangler 設定規則（#490，【進行中】）；
+         - 1：Wrangler 設定規則（【已合併】#490，`f1a2a6c`）；
          - 2：SSR 准入與 SDK 解析證明（【進行中】）；
-         - 3：release／Worker 版本不一致回 503（先以關閉狀態合併，舊 Worker 遷移定好後才啟用；【進行中】）；
+         - 3：release／Worker 版本不一致回 503（先以關閉狀態合併，舊 Worker 遷移定好後才啟用；【已合併】#496，`11ce585` 起，正式環境仍關閉）；
          - 4：預覽與發佈一致；
          - 5：原生建置支援 Hide；
          - 6：正式環境開啟，並改寫 `.agents/rules/01` 允許清單文字。
@@ -709,6 +709,82 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
   5. Hide 需要 Starter 原樣檔案與固定寫法；
   6. `.fields.ts` 宣告（可接受，類似 headless CMS 的欄位結構）。
   - 另：預覽悄悄改用平台設定、發佈卻拒絕作者設定，兩邊不一致（由原生建置第 4 步修正）。
+
+### 1.7 Final goal, priority order and support view (2026-11-28, owner approved)
+
+This section is written in English; the sections around it are not. The goal and approach record is
+[`docs/final-goal-and-approach.md`](docs/final-goal-and-approach.md). Summary: code is the main body, Code mode never
+restricts native framework writing, Design only helps non-coders, every Astro and Start rendering mode is supported in
+preview, publish and the editor, and each framework uses its official Cloudflare setup.
+
+**Approach decisions of 2026-11-28** (detail in the doc above):
+
+- Security boundary: the Sandbox container (decision A); package checks are defence in depth. Managed Start refuses a
+  Theme PostCSS config (`THEME_POSTCSS_CONFIG_UNSUPPORTED`); native Astro runs the author's config as is. Planned,
+  not implemented: offline build container, fresh container per retry, `--ignore-scripts` for future installs.
+- Astro default slot: runtime render recording replaces static proof (direction B), default slot only at first; PR1
+  proves recording in the real container. The static slot branch is retired (never merged).
+- Uniform SDK: one `@morph/sdk` entry (U1 to U6); order native build, SDK, version ranges.
+- Design fallback: source literal to Source, declared CMS field to Document, ambiguous canvas element to a form edit
+  plus jump-to-code.
+
+**Priority order (owner approved 2026-11-28).** The R line in section 1.5 keeps its own step numbering for the
+render-mode work; this list orders the work overall.
+
+1. Cloud publish loop: staging on Cloudflare (in progress; the handoff log records a first staging deploy and a
+   first publish started, no acceptance recorded).
+2. Native project import and dependency snapshot: one official Astro example and one official Start example, each
+   with an integration.
+3. Design form-mode fallback.
+4. Two render-mode acceptance tables (Start, Astro), kept in this section.
+5. The three-column view below, kept current.
+6. A `vite.config` allowlist by shipped-template hash, with a warning or refusal for custom configs.
+7. Stop adding managed-only features.
+
+**Merged on `main` (git log, origin/main `0e444ed`).** #490 native Wrangler config contract; #496 release/Worker
+build match (dormant, off in production); #497 binding taint fixes; #499 shared layout and page-only SDK reads; #500
+and #502 test flake fixes; #498 and #503 E2E/CI hardening. Not merged: native PR2 (SSR admission and SDK resolution
+proof), the Astro runtime recording, the uniform SDK steps.
+
+**Support view: runs / publishes / Design can edit.** Built from the repo's docs and handoff evidence; a cell says
+"unverified" when no evidence was found. "Local" means local or container tests, not real Cloudflare.
+
+| Target | Runs (preview) | Publishes | Design can edit |
+|---|---|---|---|
+| Start managed (Starter v32) | Yes, full Start preview (M1 accepted locally) | Yes, SSR (local); real Cloudflare unverified | Yes, via `content.ts` or SDK reads (M1 accepted locally) |
+| Start native (own `vite.config`) | Partial: preview uses platform config, not the author's (section 1.6) | No: refused in production (`NATIVE_START_BUILD_UNAVAILABLE`) until native PR6 | No: Hide refuses `custom-build`; trust needs native PR4 |
+| Astro native | Yes, preview (Astro PR1 to PR3 merged) | No: Astro is off in production (section 1.6) | Partial: select plus Inspector (D2 merged); M2 case not accepted; default slot pending runtime recording |
+
+**Start render modes** (from the 2026-11-28 audit at `12969ee`; S supported, P partial, R refused, U unverified;
+#500 to #503 after it do not touch rendering).
+
+| Mode | Runs (preview) | Publishes | Design can edit |
+|---|---|---|---|
+| Full SSR | S | S (local) | S, Hide covered |
+| Streaming (deferred data) | S in Live Preview; Build Preview U | S rendering; Morph reads during streaming U | P: bridge waits up to 30 s for the stream |
+| Selective SSR (`ssr: false`, `'data-only'`) | S in Live Preview; Build Preview U | S | U |
+| `ssr` function, `defaultSsr` | U | U | U; `defaultSsr` or root `ssr: false` disables Hide |
+| SPA | R | R | R |
+| SSG / prerender | U | R by `assertRenderingModeReady`; Core serving is ready | U |
+| ISR | U | Not wired; Core sends `private, no-store` (#487) | U |
+
+**Astro render modes.** No audit exists yet; every cell is unverified until the Astro table is built (priority 4).
+
+| Mode | Runs (preview) | Publishes | Design can edit |
+|---|---|---|---|
+| SSR (on-demand) | unverified | unverified (Astro off in production) | unverified |
+| Streaming | unverified | unverified | unverified |
+| Static (`prerender`) | unverified | unverified | unverified |
+| Hybrid per-route `prerender` | unverified | unverified | unverified |
+| Server islands | unverified | unverified | unverified |
+| ISR-equivalent | unverified | unverified | unverified |
+
+**Start render-mode decisions of 2026-11-28 (owner approved).** SPA after native PR6 with a content-free shell; the
+bridge starts at shell hydration rather than waiting for the stream to end; Hide stays gated on a proven root
+(including `defaultSsr`); an initial `ssr: false` hydration is pinned to the document release; the editor never
+forces `ssr: true`. The first PR is evidence tests (Starter 32 fixture, all modes, hidden and visible sentinels).
+
+**Process note.** The CI rerun rule is unchanged: per-case owner approval.
 
 ---
 
