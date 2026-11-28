@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { NATIVE_PROOF_VERSION } from "../theme-framework/native-start-proof";
 import { THEME_HIDE_GUARD_VERSION } from "../ast/theme-hide-guard-version";
+import { THEME_WORKER_GUARD_VERSION } from "./theme-worker-guard-version";
 import { describe, expect, it, vi } from "vitest";
 
 /**
@@ -91,12 +92,13 @@ describe("a Theme build's identity names the Morph SDK it injects", () => {
     const a = withSdk(SDK_A, () => materialize());
     const b = withSdk(SDK_B, () => materialize());
 
-    // `.hide-1`: a Start build also names the hide guard it compiles in.
+    // `.hide-1`: a Start build also names the hide guard it compiles in,
+    // and a managed one the Web Worker guard its config installs.
     expect(a.compilerVersion).toBe(
-      `${TAILWIND_VERSION}+morph-sdk.${"a".repeat(16)}.${THEME_HIDE_GUARD_VERSION}`,
+      `${TAILWIND_VERSION}+morph-sdk.${"a".repeat(16)}.${THEME_HIDE_GUARD_VERSION}.${THEME_WORKER_GUARD_VERSION}`,
     );
     expect(b.compilerVersion).toBe(
-      `${TAILWIND_VERSION}+morph-sdk.${"b".repeat(16)}.${THEME_HIDE_GUARD_VERSION}`,
+      `${TAILWIND_VERSION}+morph-sdk.${"b".repeat(16)}.${THEME_HIDE_GUARD_VERSION}.${THEME_WORKER_GUARD_VERSION}`,
     );
     // The three fields findSucceededBuildByIdentity matches on besides the
     // revision: a build under another SDK can never be handed back as this one.
@@ -116,7 +118,7 @@ describe("a Theme build's identity names the Morph SDK it injects", () => {
   it("is the real generated hash by default, within the recorded column's input limit", () => {
     const input = materialize();
     expect(input.compilerVersion).toMatch(
-      /^\d+\.\d+\.\d+\+morph-sdk\.[0-9a-f]{16}\.hide-\d+$/,
+      /^\d+\.\d+\.\d+\+morph-sdk\.[0-9a-f]{16}\.hide-\d+\.wg-\d+$/,
     );
     expect(input.compilerVersion.length).toBeLessThanOrEqual(50);
   });

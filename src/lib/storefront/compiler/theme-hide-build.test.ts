@@ -227,8 +227,8 @@ describe("a hidden section in a real platform Start build, prerendered", () => {
       for (const absent of ["PROMO-STORED", "HERO-STORED", "FOOTER-STORED"]) {
         expect(server, absent).not.toContain(absent);
       }
-      // Built under the hardened guard.
-      expect(input(true).compilerVersion).toMatch(/\.hide-7$/);
+      // Built under the hardened guard (and the Web Worker guard after it).
+      expect(input(true).compilerVersion).toMatch(/\.hide-7\.wg-\d+$/);
       expect(result.artifacts.some((file) => file.path.includes(".morph/"))).toBe(
         false,
       );
