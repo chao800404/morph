@@ -8,9 +8,7 @@
  * Worker or Astro's, is answered from the snapshot its request entered
  * with — never refused, never another request's.
  */
-import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -18,6 +16,10 @@ import {
   THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
 } from "./theme-preview-content";
 import { previewContentAsCoreWrites } from "./theme-preview-content.test-support";
+import {
+  serveWorkerd,
+  type ServedWorkerd,
+} from "@/lib/test-utils/workerd-serve";
 import {
   PREVIEW_PIN_HEADER,
   THEME_PREVIEW_START_CONTENT_ORIGIN,
@@ -100,7 +102,7 @@ describe.each([
   ["Start", { pinRequestSnapshot: true, stampServedContent: false }],
   ["Astro", { pinRequestSnapshot: true }],
 ] as const)("the pinned %s Worker in workerd", (_name, options) => {
-  let child: ChildProcess | null = null;
+  let workerd: ServedWorkerd | null = null;
   let dir = "";
   let origin = "";
   beforeAll(async () => {
@@ -131,15 +133,14 @@ export default {
     fs.writeFileSync(path.join(dir, "main.mjs"), wrapper);
     fs.writeFileSync(path.join(dir, "worker.mjs"), worker);
     fs.writeFileSync(path.join(dir, "theme-entry.mjs"), THEME_ENTRY);
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
-    origin = `http://127.0.0.1:${port}`;
     fs.writeFileSync(
       path.join(dir, "config.capnp"),
       [
         'using Workerd = import "/workerd/workerd.capnp";',
         "const config :Workerd.Config = (",
         '  services = [ (name = "main", worker = .preview) ],',
-        `  sockets = [ (name = "http", address = "127.0.0.1:${port}", http = (), service = "main") ],`,
+        // serveWorkerd binds this socket to an OS-assigned port.
+        '  sockets = [ (name = "http", address = "127.0.0.1:0", http = (), service = "main") ],',
         ");",
         "const preview :Workerd.Worker = (",
         "  modules = [",
@@ -152,28 +153,13 @@ export default {
         ");",
       ].join("\n"),
     );
-    const binary = createRequire(import.meta.url).resolve("workerd/bin/workerd");
-    const output: string[] = [];
-    child = spawn(binary, ["serve", path.join(dir, "config.capnp")], {
-      stdio: ["ignore", "pipe", "pipe"],
+    workerd = await serveWorkerd(path.join(dir, "config.capnp"), {
+      socket: "http",
     });
-    child.stdout?.on("data", (chunk) => output.push(String(chunk)));
-    child.stderr?.on("data", (chunk) => output.push(String(chunk)));
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      try {
-        await fetch(origin + "/__morph_ready_probe");
-        break;
-      } catch {
-        if (Date.now() > deadline || child.exitCode !== null) {
-          throw new Error("workerd did not start: " + output.join(""));
-        }
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
-    }
+    origin = workerd.origin;
   }, 60_000);
-  afterAll(() => {
-    child?.kill("SIGKILL");
+  afterAll(async () => {
+    await workerd?.stop();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
