@@ -1024,7 +1024,70 @@ test.describe("Start render modes keep hidden sections out", () => {
       }
       for (const visit of VISITS.filter((each) => each.mode === mode)) {
         const where = `Build Preview ${visit.label}`;
-        expectStreamed(await streamedIn(isolated()!, visit.path), visit, `${where} (streamed)`);
+        if (visit.mode === "defer") {
+          // Run rm-evidence-8: read chunk by chunk, /rm-defer on the bp- host
+          // answered 200 with an empty body, the fallback never streamed.
+          // Recorded here with the value released after 3 s from a parallel
+          // request, whatever has streamed by then: timings, size, and the
+          // hidden sentinels, which must be absent from whatever arrives.
+          const probe = await isolated()!.evaluate(
+            async ({ path, releasePath }) => {
+              const started = performance.now();
+              const releasing = new Promise<number>((resolve) =>
+                setTimeout(async () => {
+                  const answer = await fetch(releasePath, { cache: "no-store" })
+                    .then((response) => response.json() as Promise<{ released: number }>)
+                    .catch(() => ({ released: -1 }));
+                  resolve(answer.released);
+                }, 3_000),
+              );
+              const response = await fetch(path, { cache: "no-store" });
+              const headersMs = Math.round(performance.now() - started);
+              const reader = response.body!.getReader();
+              const decoder = new TextDecoder();
+              const chunks: Array<{ ms: number; bytes: number; text: string }> = [];
+              for (;;) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                const text = decoder.decode(value, { stream: true });
+                chunks.push({
+                  ms: Math.round(performance.now() - started),
+                  bytes: value.byteLength,
+                  text,
+                });
+              }
+              return {
+                status: response.status,
+                headersMs,
+                doneMs: Math.round(performance.now() - started),
+                released: await releasing,
+                contentType: response.headers.get("content-type"),
+                chunks,
+              };
+            },
+            { path: visit.path, releasePath: RENDER_MODE_RELEASE_PATH },
+          );
+          const html = probe.chunks.map((chunk) => chunk.text).join("");
+          test.info().annotations.push({
+            type: "build-preview-deferred-stream",
+            description: JSON.stringify({
+              status: probe.status,
+              contentType: probe.contentType,
+              headersMs: probe.headersMs,
+              doneMs: probe.doneMs,
+              released: probe.released,
+              chunks: probe.chunks.map((chunk) => ({ ms: chunk.ms, bytes: chunk.bytes })),
+              bytes: html.length,
+              hasShell: html.includes("rm-defer-shell"),
+              hasFallback: html.includes("rm-defer-pending"),
+              hasDeferredSection: html.includes(renderModeRendered("defer", "loadshown")),
+              hasRouterState: html.includes("$_TSR"),
+            }),
+          });
+          expectNoHiddenSentinel(html, `${where} (probe)`);
+        } else {
+          expectStreamed(await streamedIn(isolated()!, visit.path), visit, `${where} (streamed)`);
+        }
         const frame = isolated()!;
         const navigated = frame.goto(`${address.origin}${visit.path}`, { waitUntil: "commit" });
         if (visit.mode === "defer") {
@@ -1045,8 +1108,23 @@ test.describe("Start render modes keep hidden sections out", () => {
         }
         await navigated;
         const current = page.frame({ url: (url) => url.hostname === address.hostname })!;
-        await waitForRouter(current);
-        await expectRouteDom(current, visit);
+        if (visit.mode === "defer") {
+          // Recorded (see the probe above); the hidden rule is still asserted.
+          const dom = await waitForRouter(current)
+            .then(() => expectRouteDom(current, visit))
+            .then(
+              () => "rendered as on the Live Preview",
+              (error: unknown) => String(error).slice(0, 400),
+            );
+          test.info().annotations.push({ type: "build-preview-deferred-dom", description: dom });
+          expectNoHiddenSentinel(
+            (await current.locator("body").innerText().catch(() => "")) ?? "",
+            `${where} DOM text`,
+          );
+        } else {
+          await waitForRouter(current);
+          await expectRouteDom(current, visit);
+        }
       }
       await page.keyboard.press("Escape");
       await expect(frameElement).toBeHidden({ timeout: 30_000 }).catch(() => {});
