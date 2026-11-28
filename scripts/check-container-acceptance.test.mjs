@@ -4,6 +4,7 @@ import test from "node:test";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -13,6 +14,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  findUncoveredContainerSpecs,
+  isContainerOnlySpec,
   verifyContainerReport,
   verifyContainerTitles,
 } from "./check-container-acceptance.mjs";
@@ -526,4 +529,142 @@ test("the command line dispatches on its second argument", async (t) => {
     assert.equal(run([fixture, target]).code, 0);
     assert.match(run([fixture, shorter]).out, /CONTAINER_ACCEPTANCE_UNLISTED/);
   });
+});
+
+// The skip call, spelled so this file carries no skip marker of its own.
+const SKIP_CALL = ["test", "skip("].join(".");
+const CONTAINER_SKIP = `const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
+${SKIP_CALL}
+  TRANSPORT !== "cloudflare-sandbox",
+  "Runs in the Sandbox container.",
+);
+`;
+
+test("a container-only spec is one whose file-level skip holds off the container transport", () => {
+  assert.equal(isContainerOnlySpec(CONTAINER_SKIP), true);
+  assert.equal(
+    isContainerOnlySpec(
+      `${SKIP_CALL}\n  process.env.E2E_EXPECT_PREVIEW_TRANSPORT !== "cloudflare-sandbox",\n  "x",\n);\n`,
+    ),
+    true,
+  );
+  // Every CI shard sets a transport, so this one skips there too.
+  assert.equal(
+    isContainerOnlySpec(
+      `${SKIP_CALL}\n  Boolean(TRANSPORT) && TRANSPORT !== "cloudflare-sandbox",\n  \`x\`,\n);\n`,
+    ),
+    true,
+  );
+  // A skip inside a test or describe gates only that block.
+  assert.equal(
+    isContainerOnlySpec(
+      `test("t", () => {\n  ${SKIP_CALL}\n    TRANSPORT !== "cloudflare-sandbox",\n    "x",\n  );\n});\n`,
+    ),
+    false,
+  );
+  // Another gate, or a check of the container transport that runs elsewhere.
+  assert.equal(
+    isContainerOnlySpec(`${SKIP_CALL}\n  !EDITOR_PATH,\n  "x",\n);\n`),
+    false,
+  );
+  assert.equal(
+    isContainerOnlySpec(
+      `${SKIP_CALL}\n  TRANSPORT === "cloudflare-sandbox",\n  "x",\n);\n`,
+    ),
+    false,
+  );
+});
+
+test("a container-only spec needs a target module, or a listed reason that still applies", () => {
+  const specs = [
+    { file: "wired.spec.ts", source: CONTAINER_SKIP },
+    { file: "forgotten.spec.ts", source: CONTAINER_SKIP },
+    { file: "exempt.spec.ts", source: CONTAINER_SKIP },
+    { file: "gap.spec.ts", source: CONTAINER_SKIP },
+    { file: "plain.spec.ts", source: `test("t", () => {});\n` },
+  ];
+  assert.deepEqual(
+    findUncoveredContainerSpecs({
+      specs,
+      targetFiles: ["wired.spec.ts"],
+      exemptions: { "exempt.spec.ts": "cannot run in CI" },
+      unwired: { "gap.spec.ts": "not wired yet" },
+    }),
+    { uncovered: ["forgotten.spec.ts"], stale: [] },
+  );
+  assert.deepEqual(
+    findUncoveredContainerSpecs({
+      specs,
+      targetFiles: ["wired.spec.ts", "forgotten.spec.ts", "gap.spec.ts"],
+      exemptions: {
+        "exempt.spec.ts": "  ",
+        "plain.spec.ts": "no longer container-only",
+        "gone.spec.ts": "deleted",
+      },
+      unwired: { "gap.spec.ts": "wired now" },
+    }),
+    {
+      uncovered: [],
+      stale: [
+        "gap.spec.ts: a target module names it now",
+        "gone.spec.ts: no longer a container-only spec (or gone)",
+        "plain.spec.ts: no longer a container-only spec (or gone)",
+        "exempt.spec.ts: listed without a reason",
+      ],
+    },
+  );
+  assert.deepEqual(
+    findUncoveredContainerSpecs({
+      specs,
+      targetFiles: ["wired.spec.ts", "forgotten.spec.ts"],
+      exemptions: { "exempt.spec.ts": "a", "gap.spec.ts": "b" },
+      unwired: { "gap.spec.ts": "c" },
+    }).stale,
+    ["gap.spec.ts: listed both as an exemption and as unwired"],
+  );
+});
+
+test("--coverage fails naming each uncovered spec, and passes once a target module names it", () => {
+  const script = fileURLToPath(
+    new URL("./check-container-acceptance.mjs", import.meta.url),
+  );
+  const root = mkdtempSync(path.join(tmpdir(), "container-coverage-"));
+  mkdirSync(path.join(root, "e2e"));
+  mkdirSync(path.join(root, "scripts", "container-acceptance-targets"), {
+    recursive: true,
+  });
+  // The repository's own lists apply, so the fixture carries their specs.
+  for (const file of [
+    "m1-container-lifecycle-acceptance.spec.ts",
+    "astro-island-hmr.spec.ts",
+    "astro-preview-container.spec.ts",
+    "astro-publish-acceptance.spec.ts",
+    "build-preview-isolated.spec.ts",
+    "publish-layout-edit.spec.ts",
+    "publish.spec.ts",
+    "source-asset-publish.spec.ts",
+  ]) {
+    writeFileSync(path.join(root, "e2e", file), CONTAINER_SKIP);
+  }
+  writeFileSync(path.join(root, "e2e", "fixture-native.spec.ts"), CONTAINER_SKIP);
+  const run = () => {
+    try {
+      execFileSync(process.execPath, [script, "--coverage", root], {
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+      return { code: 0, out: "" };
+    } catch (/** @type {any} */ error) {
+      return { code: error.status, out: String(error.stderr) };
+    }
+  };
+  const red = run();
+  assert.equal(red.code, 1);
+  assert.match(red.out, /CONTAINER_SPEC_UNCOVERED: e2e\/fixture-native\.spec\.ts /);
+  assert.equal(red.out.match(/CONTAINER_SPEC_UNCOVERED/g)?.length, 1);
+  writeFileSync(
+    path.join(root, "scripts", "container-acceptance-targets", "fixture-native.mjs"),
+    `export const TARGET = ${JSON.stringify({ file: "fixture-native.spec.ts", titles: ["t"] })};`,
+  );
+  assert.deepEqual(run(), { code: 0, out: "" });
 });

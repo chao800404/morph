@@ -1,6 +1,6 @@
 // @ts-check
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -214,7 +214,158 @@ export function verifyContainerTitles(report, target) {
   return { passedCount: target.titles.length };
 }
 
+/**
+ * A top-level skip call (`test.skip` at column 0) whose condition holds whenever
+ * the container transport is not in use. Every CI editor shard sets a
+ * transport (the runner defaults to local-sidecar), so a spec carrying one
+ * skips on every shard, and only a container step ever runs it. The
+ * condition is the call's first argument, up to its first comma; a skip
+ * inside a test or a describe is indented and not matched.
+ */
+const CONTAINER_ONLY_SKIP =
+  /^test\.skip\(\s*([^,]*!==\s*"cloudflare-sandbox")\s*,/m;
+
+/**
+ * Whether a spec's source skips the whole file off the container transport.
+ * @param {string} source
+ */
+export function isContainerOnlySpec(source) {
+  return CONTAINER_ONLY_SKIP.test(source);
+}
+
+/**
+ * Container-only specs no target module names, each with the reason it
+ * runs outside a target module or not in CI at all. Nothing else may be
+ * container-only without a target module (findUncoveredContainerSpecs).
+ * A spec that gains a target module, or loses its container-only skip,
+ * must leave this list in the same change.
+ *
+ * Exemptions: the spec is run by CI another way, or genuinely cannot run in
+ * CI today.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const CONTAINER_SPEC_EXEMPTIONS = Object.freeze({
+  "m1-container-lifecycle-acceptance.spec.ts":
+    "Run by editor-e2e-container in file mode: its check is this script's default target, every test of the file passed once with zero skip and zero retry.",
+  "astro-island-hmr.spec.ts":
+    "Astro container E2E is local only for M2 (owner decision D4, 2026-11-26), and no CI job sets MORPH_ASTRO_THEMES=1; the CI job that wires Astro adds its target.",
+  "astro-preview-container.spec.ts":
+    "Astro container E2E is local only for M2 (owner decision D4, 2026-11-26), and no CI job sets MORPH_ASTRO_THEMES=1; the CI job that wires Astro adds its target.",
+  "astro-publish-acceptance.spec.ts":
+    "Astro container E2E is local only for M2 (owner decision D4, 2026-11-26), and no CI job sets MORPH_ASTRO_THEMES=1; the CI job that wires Astro adds its target.",
+});
+
+/**
+ * Container-only specs found without a target module when this check was
+ * added (2026-11-28). Nothing is known to stop them running in CI; they are
+ * listed so the check can start enforcing, not because they may stay. Each
+ * leaves this list in the change that gives it a target module and a CI
+ * step. Never add to it: a new container-only spec needs a target module.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const UNWIRED_CONTAINER_SPECS = Object.freeze({
+  "build-preview-isolated.spec.ts":
+    "The isolated Build Preview in a real container; no target module or CI step yet.",
+  "publish-layout-edit.spec.ts":
+    "A shared layout edit published; no target module or CI step yet.",
+  "publish.spec.ts":
+    "The publish loop; its skip spares an unset transport, but every CI shard sets one. No target module or CI step yet.",
+  "source-asset-publish.spec.ts":
+    "src/ binaries through build, publish and rollback; no target module or CI step yet.",
+});
+
+/**
+ * The container-only specs that no target module names and no list above
+ * accounts for, and the list entries that no longer apply.
+ *
+ * @param {{
+ *   specs: readonly {file: string, source: string}[],
+ *   targetFiles: readonly string[],
+ *   exemptions?: Readonly<Record<string, string>>,
+ *   unwired?: Readonly<Record<string, string>>,
+ * }} input `file` is the spec's base name, as target modules name it.
+ */
+export function findUncoveredContainerSpecs({
+  specs,
+  targetFiles,
+  exemptions = CONTAINER_SPEC_EXEMPTIONS,
+  unwired = UNWIRED_CONTAINER_SPECS,
+}) {
+  const named = new Set(targetFiles);
+  const listed = { ...exemptions, ...unwired };
+  const containerOnly = specs
+    .filter(({ source }) => isContainerOnlySpec(source))
+    .map(({ file }) => file);
+  const uncovered = containerOnly
+    .filter((file) => !named.has(file) && !(file in listed))
+    .sort();
+  /** @type {string[]} */
+  const stale = [];
+  for (const file of Object.keys(listed).sort()) {
+    if (file in exemptions && file in unwired) {
+      stale.push(`${file}: listed both as an exemption and as unwired`);
+    } else if (named.has(file)) {
+      stale.push(`${file}: a target module names it now`);
+    } else if (!containerOnly.includes(file)) {
+      stale.push(`${file}: no longer a container-only spec (or gone)`);
+    }
+  }
+  for (const [file, reason] of Object.entries(listed)) {
+    if (typeof reason !== "string" || reason.trim().length === 0) {
+      stale.push(`${file}: listed without a reason`);
+    }
+  }
+  return { uncovered, stale };
+}
+
+/**
+ * Every spec under `<root>/e2e` and every target module's `file` under
+ * `<root>/scripts/container-acceptance-targets`, read from disk.
+ * @param {string} root
+ */
+export async function readContainerCoverage(root) {
+  const e2e = path.join(root, "e2e");
+  const specs = readdirSync(e2e, { recursive: true, encoding: "utf8" })
+    .filter((name) => name.endsWith(".spec.ts"))
+    .map((name) => ({
+      file: path.basename(name),
+      source: readFileSync(path.join(e2e, name), "utf8"),
+    }));
+  const targetsDir = path.join(root, "scripts", "container-acceptance-targets");
+  /** @type {string[]} */
+  const targetFiles = [];
+  for (const name of readdirSync(targetsDir).filter((n) => n.endsWith(".mjs"))) {
+    const { TARGET } = await import(
+      pathToFileURL(path.join(targetsDir, name)).href
+    );
+    targetFiles.push(TARGET.file);
+  }
+  return { specs, targetFiles };
+}
+
 if (
+  process.argv[1] &&
+  process.argv[1].endsWith("check-container-acceptance.mjs") &&
+  process.argv[2] === "--coverage"
+) {
+  // node scripts/check-container-acceptance.mjs --coverage [<repo root>]
+  const root = path.resolve(process.argv[3] ?? ".");
+  const { uncovered, stale } = findUncoveredContainerSpecs(
+    await readContainerCoverage(root),
+  );
+  for (const file of uncovered) {
+    console.error(
+      `CONTAINER_SPEC_UNCOVERED: e2e/${file} skips off the container transport at file level, so every CI editor shard skips it, and no container target module (scripts/container-acceptance-targets/) names it. Add a target module and a container CI step for it.`,
+    );
+  }
+  for (const entry of stale) {
+    console.error(`CONTAINER_SPEC_LIST_STALE: ${entry}`);
+  }
+  if (uncovered.length > 0 || stale.length > 0) process.exit(1);
+  console.log(
+    "Every container-only spec is named by a container target module or listed with its reason.",
+  );
+} else if (
   process.argv[1] &&
   process.argv[1].endsWith("check-container-acceptance.mjs")
 ) {

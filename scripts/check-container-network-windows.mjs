@@ -43,12 +43,15 @@ export const KNOWN_WINDOWS = Object.freeze([
   "navigation-matrix-public",
   "section-visibility-layout",
   "native-ssr-publish",
+  "native-publish",
   "starter-upgrade-publish",
   "starter-v32-full-start",
+  "native-compat-published",
   "preview-socket",
   "start-container-content-sync",
   "starter-upgrade-case-e",
   "preview-start-two-tab-race",
+  "native-content-dependency",
 ]);
 const KNOWN_MARKERS = Object.freeze(
   KNOWN_WINDOWS.flatMap((name) => [`${name}-start`, `${name}-end`]),
