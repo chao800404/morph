@@ -19,26 +19,24 @@ export type ThemeServiceBinding = Readonly<{
 }>;
 
 /**
- * A resolver's typed answer when no binding can be used. Carries a fixed
- * code only, never the configured map or binding name.
+ * A resolver's answer: the binding to use, or a fixed code saying why there is
+ * none (never the configured map or binding name).
+ *
+ * The outcome is carried by `ok` on this wrapper, which Core builds itself,
+ * and never read off the binding. A real Cloudflare service binding is a
+ * `Fetcher` RPC stub: in workerd (compatibility date 2026-03-24) it answers
+ * `true` to `"<any name>" in binding` and returns a callable for every
+ * property, so any `in`, property or shape probe on it — such as the former
+ * `"unmapped" in value` — reads the live Theme Worker binding as a miss.
  */
-export type ThemeServiceBindingMiss = Readonly<{
-  unmapped: ThemeServiceBindingUnmappedSubcode;
-}>;
+export type ThemeServiceBindingResolution =
+  | Readonly<{ ok: true; binding: ThemeServiceBinding }>
+  | Readonly<{ ok: false; unmapped: ThemeServiceBindingUnmappedSubcode }>;
 
-/**
- * Returns the binding to use, or a miss saying why there is none. `null` and
- * `undefined` are read as `BINDING_ABSENT`.
- */
+/** Returns which binding serves a resolved storefront, or why none does. */
 export type ThemeServiceBindingResolver = (
   resolved: ResolvedStorefrontHost,
-) => ThemeServiceBinding | ThemeServiceBindingMiss | null | undefined;
-
-function isServiceBindingMiss(
-  value: ThemeServiceBinding | ThemeServiceBindingMiss,
-): value is ThemeServiceBindingMiss {
-  return "unmapped" in value;
-}
+) => ThemeServiceBindingResolution;
 
 /**
  * Copies the resolved storefront identity onto the forwarded request.
@@ -118,12 +116,8 @@ export class ServiceBindingThemeRuntime implements ThemeRuntime {
   ) {}
 
   async handle(invocation: ThemeRuntimeInvocation): Promise<ThemeRuntimeResult> {
-    const binding = this.resolveBinding(invocation.resolved);
-    if (
-      !binding ||
-      isServiceBindingMiss(binding) ||
-      typeof binding.fetch !== "function"
-    ) {
+    const resolution = this.resolveBinding(invocation.resolved);
+    if (!resolution.ok) {
       return {
         success: false,
         reason: "RUNTIME_NOT_CONFIGURED",
@@ -131,13 +125,11 @@ export class ServiceBindingThemeRuntime implements ThemeRuntime {
         message: `No Theme Worker service binding is configured for storefront "${invocation.resolved.storefrontId}".`,
         notConfigured: {
           code: "BINDING_UNMAPPED",
-          subcode:
-            binding && isServiceBindingMiss(binding)
-              ? binding.unmapped
-              : "BINDING_ABSENT",
+          subcode: resolution.unmapped,
         },
       };
     }
+    const { binding } = resolution;
 
     try {
       const forwarded = applyStorefrontContext(

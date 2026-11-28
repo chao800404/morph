@@ -67,7 +67,7 @@ export async function startCorePublicEntry(
   let position = 0;
   const contentReads: string[] = [];
   const service = new StorefrontProductionService({
-    runtime: new ServiceBindingThemeRuntime(() => binding),
+    runtime: new ServiceBindingThemeRuntime(() => ({ ok: true, binding })),
     renderContextSecret: "core-public-entry-render-context-secret",
     resolverDeps: {
       domainDal: {

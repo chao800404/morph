@@ -230,7 +230,7 @@ export function resolveThemeServiceBindingName(
   storefrontId: string,
 ): string | null {
   const target = resolveThemeServiceBindingTarget(env, storefrontId);
-  return "name" in target ? target.name : null;
+  return target.ok ? target.name : null;
 }
 
 /**
@@ -240,10 +240,12 @@ export function resolveThemeServiceBindingName(
 export function resolveThemeServiceBindingTarget(
   env: Record<string, unknown> | undefined,
   storefrontId: string,
-): { name: string } | { unmapped: "MAP_MALFORMED" | "ENTRY_MISSING" } {
+):
+  | { ok: true; name: string }
+  | { ok: false; unmapped: "MAP_MALFORMED" | "ENTRY_MISSING" } {
   const raw = env?.MORPH_THEME_SERVICE_BINDINGS;
   if (typeof raw !== "string" || raw.trim() === "") {
-    return { name: DEFAULT_THEME_SERVICE_BINDING };
+    return { ok: true, name: DEFAULT_THEME_SERVICE_BINDING };
   }
 
   let parsed: unknown;
@@ -251,16 +253,16 @@ export function resolveThemeServiceBindingTarget(
     parsed = JSON.parse(raw);
   } catch {
     // A malformed map must not silently widen into the default binding.
-    return { unmapped: "MAP_MALFORMED" };
+    return { ok: false, unmapped: "MAP_MALFORMED" };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { unmapped: "MAP_MALFORMED" };
+    return { ok: false, unmapped: "MAP_MALFORMED" };
   }
 
   const mapped = (parsed as Record<string, unknown>)[storefrontId];
   return typeof mapped === "string" && mapped.trim() !== ""
-    ? { name: mapped }
-    : { unmapped: "ENTRY_MISSING" };
+    ? { ok: true, name: mapped }
+    : { ok: false, unmapped: "ENTRY_MISSING" };
 }
 
 /**
@@ -277,6 +279,10 @@ export function createThemeRuntime(
 ): ThemeRuntime {
   const environment = env;
 
+  // A presence check only: an env entry that is unset (or a plain value) is
+  // not a binding. It cannot tell one binding kind from another — a workerd
+  // RPC stub claims every property — so outcomes travel on the resolver's
+  // `ok` wrapper, never on a probe of the stub.
   const readServiceBinding = (name: string): ThemeServiceBinding | null => {
     const candidate = environment?.[name];
     return candidate &&
@@ -301,10 +307,11 @@ export function createThemeRuntime(
           environment,
           resolved.storefrontId,
         );
-        if (!("name" in target)) return target;
-        return (
-          readServiceBinding(target.name) ?? { unmapped: "BINDING_ABSENT" }
-        );
+        if (!target.ok) return target;
+        const binding = readServiceBinding(target.name);
+        return binding
+          ? { ok: true, binding }
+          : { ok: false, unmapped: "BINDING_ABSENT" };
       },
       // The same switch the deployer reads (theme-worker-deployer.factory.ts).
       { releaseWorkerMatch: releaseWorkerMatchEnabled(environment) },
