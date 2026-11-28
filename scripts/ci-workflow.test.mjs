@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   CHECK_DEPENDENCIES,
   CONTAINER_STAGE3_CHECKS,
@@ -73,6 +74,13 @@ const STAGE3_JOBS = {
       spec: "native-ssr-publish-acceptance.spec.ts",
       target: "native-ssr-publish-acceptance.mjs",
     },
+    {
+      label: "native publish",
+      id: "native_publish",
+      window: "native-publish",
+      spec: "native-publish-acceptance.spec.ts",
+      target: "native-publish-acceptance.mjs",
+    },
   ],
   "editor-e2e-container-starter-publish": [
     {
@@ -88,6 +96,13 @@ const STAGE3_JOBS = {
       window: "starter-v32-full-start",
       spec: "starter-v32-full-start-acceptance.spec.ts",
       target: "starter-v32-full-start.mjs",
+    },
+    {
+      label: "native compat published",
+      id: "native_compat_published",
+      window: "native-compat-published",
+      spec: "native-compat-published.spec.ts",
+      target: "native-compat-published.mjs",
     },
   ],
   "editor-e2e-container-preview": [
@@ -119,6 +134,13 @@ const STAGE3_JOBS = {
       window: "preview-start-two-tab-race",
       spec: "preview-start-two-tab-race.spec.ts",
       target: "preview-start-two-tab-race.mjs",
+    },
+    {
+      label: "native content dependency",
+      id: "native_content_dependency",
+      window: "native-content-dependency",
+      spec: "native-content-dependency.spec.ts",
+      target: "native-content-dependency.mjs",
     },
   ],
 };
@@ -475,6 +497,30 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   }
 });
 
+test("every spec that skips off the container transport at file level is named by a container target module", async () => {
+  // Every CI editor shard sets a transport, so such a spec skips on all of
+  // them; only a container step runs it, and only a target module (wired
+  // above, or deferred with its reason) says which. The lists of specs
+  // without one, each with its reason, are in check-container-acceptance.mjs.
+  const { findUncoveredContainerSpecs, readContainerCoverage } = await import(
+    "./check-container-acceptance.mjs"
+  );
+  const coverage = await readContainerCoverage(
+    fileURLToPath(new URL("..", import.meta.url)),
+  );
+  assert.ok(
+    coverage.specs.some((s) => s.file === "native-ssr-publish-acceptance.spec.ts"),
+    "the e2e specs were read",
+  );
+  const { uncovered, stale } = findUncoveredContainerSpecs(coverage);
+  assert.deepEqual(
+    uncovered,
+    [],
+    `container-only specs that no CI container step runs: ${uncovered.map((f) => `e2e/${f}`).join(", ")}`,
+  );
+  assert.deepEqual(stale, [], "container spec exemption lists are current");
+});
+
 /**
  * One step of a job block: from its `- name:` line to the next step's.
  * @param {string} job
@@ -772,9 +818,9 @@ const E2E_JOBS = {
   "editor-e2e-full-start": 47,
   "editor-e2e-container": 33,
   "editor-e2e-container-presentation-ack": 33,
-  "editor-e2e-container-publish": 54,
-  "editor-e2e-container-starter-publish": 45,
-  "editor-e2e-container-preview": 45,
+  "editor-e2e-container-publish": 64,
+  "editor-e2e-container-starter-publish": 55,
+  "editor-e2e-container-preview": 55,
 };
 test("each E2E job's limit is its setup, Chromium install limit, E2E step limits and reserve, and the upload runs always", () => {
   const runsSuite = /(?:run-editor-e2e\.mjs|run-start-preview-shard\.mjs|pnpm test:e2e:local-preview)/;
@@ -806,8 +852,8 @@ test("each E2E job's limit is its setup, Chromium install limit, E2E step limits
     const upload = steps.find((step) => /uses: actions\/upload-artifact@v4/.test(step));
     assert.ok(upload && /^ {8}if: always\(\)$/m.test(upload), key + ": the upload runs always");
   }
-  // 2 shard/full Start steps + the Stage 3 jobs' 13 container runs.
-  assert.equal(limits.length, 2 + 13);
+  // 2 shard/full Start steps + the Stage 3 jobs' 16 container runs.
+  assert.equal(limits.length, 2 + 16);
 });
 
 test("every E2E run writes a progress line per test, beside the line and JSON reports", () => {
