@@ -59,6 +59,13 @@ const STAGE3_JOBS = {
       spec: "navigation-matrix-public.spec.ts",
       target: "navigation-matrix-public.mjs",
     },
+    {
+      label: "section visibility layout",
+      id: "section_visibility_layout",
+      window: "section-visibility-layout",
+      spec: "section-visibility-layout.spec.ts",
+      target: "section-visibility-layout.mjs",
+    },
   ],
   "editor-e2e-container-starter-publish": [
     {
@@ -775,7 +782,7 @@ test("every step that runs the E2E suite ends before its job's limit and the upl
     assert.ok(sum > 0);
   }
   // 2 shard/full Start steps + the Stage 3 jobs' 11 container runs.
-  assert.equal(seen, 2 + 11);
+  assert.equal(seen, 2 + 11 + 1);
 });
 
 test("every E2E run writes a progress line per test, beside the line and JSON reports", () => {

@@ -1884,18 +1884,70 @@ jobs:
           MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
         run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" e2e/navigation-matrix-public.spec.ts
 
+      - name: Mark section visibility layout container window start
+        run: |
+          printf '{"name":"section-visibility-layout-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe section-visibility-layout-start "$RUNNER_TEMP/container-network"
+
+      # Both of the spec's tests, on the full Start runtime and the container
+      # transport: the publish test builds in the Sandbox container, which no
+      # other lane has. Its hide-and-reload test also runs on editor shard 6;
+      # the publish test skips there. The throwaway Theme it inserts records
+      # the run's preview runtime (see e2e/helpers/throwaway-theme.ts).
+      - name: Run section visibility layout container acceptance
+        timeout-minutes: 14
+        id: section_visibility_layout_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/section-visibility-layout.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/section-visibility-layout-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/section-visibility-layout.spec.ts
+
+      - name: Mark section visibility layout container window end
+        if: always()
+        run: |
+          printf '{"name":"section-visibility-layout-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe section-visibility-layout-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve section visibility layout acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/section-visibility-layout"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/section-visibility-layout/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/section-visibility-layout/section-visibility-layout.json" ]; then
+            echo "::warning::Section visibility layout acceptance report was not produced."
+          fi
+
+      - name: Require exact section visibility layout target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/section-visibility-layout/section-visibility-layout.json" scripts/container-acceptance-targets/section-visibility-layout.mjs
+
+      - name: Require section visibility layout runner handover
+        id: section_visibility_layout_handover
+        if: always() && steps.section_visibility_layout_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/section-visibility-layout-handover.json" e2e/section-visibility-layout.spec.ts
+
       - name: Record Stage 3 runner identities and handover results
         if: always()
         env:
           B1_PUBLISH_ROLLBACK_HANDOVER_OUTCOME: ${{ steps.b1_publish_rollback_handover.outcome }}
           NAVIGATION_MATRIX_PUBLIC_HANDOVER_OUTCOME: ${{ steps.navigation_matrix_public_handover.outcome }}
+          SECTION_VISIBILITY_LAYOUT_HANDOVER_OUTCOME: ${{ steps.section_visibility_layout_handover.outcome }}
         run: |
-          node --input-type=module - "$RUNNER_TEMP/stage3/b1-publish-rollback-handover.json" "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/stage3/b1-publish-rollback-handover.json" "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" "$RUNNER_TEMP/stage3/section-visibility-layout-handover.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const paths = process.argv.slice(2);
           const entries = [
             ["b1-publish-rollback", paths[0], process.env.B1_PUBLISH_ROLLBACK_HANDOVER_OUTCOME],
             ["navigation-matrix-public", paths[1], process.env.NAVIGATION_MATRIX_PUBLIC_HANDOVER_OUTCOME],
+            ["section-visibility-layout", paths[2], process.env.SECTION_VISIBILITY_LAYOUT_HANDOVER_OUTCOME],
           ];
           for (const [name, filename, outcome] of entries) {
             try {
@@ -1964,7 +2016,7 @@ jobs:
 
       - name: Require each container window's veths to have come and gone inside it
         if: always()
-        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" b1-publish-rollback navigation-matrix-public
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" b1-publish-rollback navigation-matrix-public section-visibility-layout
 
       - name: Keep Stage 3 records with the results
         if: always()
