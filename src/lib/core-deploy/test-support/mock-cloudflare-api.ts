@@ -26,6 +26,8 @@ export type MockDomain = {
   environment: string;
   zone_id: string;
   zone_name: string;
+  enabled?: boolean;
+  previews_enabled?: boolean;
 };
 
 export type MockRoute = { id: string; pattern: string; script?: string };

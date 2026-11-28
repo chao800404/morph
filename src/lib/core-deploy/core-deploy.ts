@@ -280,6 +280,9 @@ async function ensureLocked(deps: CoreDeployDeps, prepared: Prepared): Promise<R
   deps.writeReport("ensure", result);
   if (result.status === "refused") return { exitCode: EXIT.refused, problems: [] };
   if (result.status === "failed") return { exitCode: EXIT.deployFailed, problems: [] };
+  if (result.status === "drift") {
+    return { exitCode: EXIT.drift, problems: ["platform:ensure: the created Route shadows a Custom Domain that appeared during the run; nothing was deleted"] };
+  }
   const verdict = await inventory(deps, prepared, "strict");
   report(deps, "ensure-verify", verdict, target.workerName);
   if (prepared.manifest.routes.length > 0) {

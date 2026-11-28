@@ -416,7 +416,8 @@ the deprecated aliases the pinned Wrangler still reads (`CF_API_KEY`,
 `WRANGLER_CF_AUTHORIZATION_TOKEN`, and any API address but the official one.
 
 Wrangler is pinned to exactly 4.146.0 and the Vite plugin, whose output the
-guard reads, to exactly 1.62.4, both in `package.json` and installed. Upgrading either means re-reading the route handling
+guard reads, to exactly 1.62.4, both in `package.json` (where each must be
+declared) and installed. Upgrading either means re-reading the route handling
 in its source and re-running `src/lib/core-deploy/wrangler-trigger-writes.test.ts`
 first; the deploy refuses another installed version.
 
@@ -444,7 +445,7 @@ Pass it as `--target <file>` or `MORPH_DEPLOY_TARGET=<file>`.
 | Variable | Used by | Needs |
 | -------- | ------- | ----- |
 | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` | the build and `wrangler deploy` | Workers Scripts edit, Containers edit, Queues edit, account read. **No** Workers Routes or DNS edit, and no zone access: an ordinary deploy never writes a binding. |
-| `MORPH_INVENTORY_API_TOKEN` | the migration check, the inventory before and after a deploy, `deploy:verify` | Workers Scripts read (Custom Domains list), Zone read and Workers Routes read for the platform zone, D1 read (two `SELECT`s, sent as POSTs to the query endpoint; check the grant separately from the SQL). Never passed to Wrangler. |
+| `MORPH_INVENTORY_API_TOKEN` | the migration check, the inventory before and after a deploy, `deploy:verify` | Account → Workers Scripts → Read (Custom Domains list); Zone → Zone → Read and Zone → Workers Routes → Read for the platform zone (some token templates offer Workers Routes only as Edit: grant the narrowest the dashboard allows); Account → D1 → **Edit**, because the D1 `/query` endpoint requires Edit even for the two `SELECT`s it sends. The token can therefore write D1; the runner only ever sends those two `SELECT`s. Never passed to Wrangler. |
 | `MORPH_BOOTSTRAP_API_TOKEN` | `platform:ensure` writes | Workers Scripts edit (Custom Domain attach), Workers Routes edit and DNS edit for the platform zone. Used only for that command; never passed to Wrangler. |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` **Worker secrets** | the runtime storefront domain provider (Settings) and the Theme Worker deployer | Workers Scripts edit, Workers Routes/DNS edit for the storefront zone. Set with `wrangler secret put`; not the deploy shell's token. |
 
@@ -477,14 +478,18 @@ served by anything but this Core Worker, or if another Route overlaps it (a
 Route under it, a broader wildcard over it, or an exclusion Route): Cloudflare
 gives a matching Route precedence over a Custom Domain. For the same reason a
 platform Custom Domain is refused when a Route for another Worker (or an
-exclusion Route) matches its hostname. Route patterns are compared without
+exclusion Route) matches its hostname. The required Route counts as present
+only under its exact canonical pattern (`*.<preview>/*`); an `https://` or
+mixed-case equivalent on this Worker does not satisfy it, and the canonical
+one is created. Route patterns are compared without
 their `http://`/`https://` prefix and case. An attach the API refuses
-outright is a failure, even if the hostname looks bound afterwards, and a
+outright (any 4xx, whatever its body) is a failure, even if the hostname looks
+bound afterwards, and a
 storefront domain row seen on the re-read is a refusal. The target's
 `environment` must be `production`: Core deploys and the storefront provider
 both use the production environment. A Route existing proves nothing about wildcard DNS, TLS or HTTP for the
 preview namespace: check a preview host resolves, presents a valid certificate
-and reaches the Worker, separately.
+and reaches the Worker, separately. The same limitation applies to the preview wildcard Route: a Custom Domain someone else binds under it between the last read and the Route create is shadowed by the new Route. `platform:ensure` re-reads the Custom Domains under the wildcard after creating it and, if a foreign one appeared, exits with drift (exit 3) and deletes nothing. A person then decides which of the two goes.
 
 ### The inventory
 
@@ -503,8 +508,9 @@ paired reads are drift, findings that moved are a connect or disconnect in
 progress and reported apart. A storefront domain inside the preview namespace
 is drift (routing would serve it as a preview), and so is a platform hostname
 inside it. After the deploy, a storefront row that stayed active must keep the
-same Cloudflare id and binding it had before, and every binding this Worker
-had before must still be this Worker's, with the same service, environment
+same Cloudflare id and binding it had before, a Custom Domain of this Worker
+must be enabled (`enabled: false` stops it routing, and is drift), and every
+binding this Worker had before must still be this Worker's, with the same service, environment
 and zone (and script, for a Route): one that vanished with its D1 row, or was
 reassigned to another Worker while its row was deleted, pending or failed, is
 drift; bindings that appeared are reported. Only one deploy or

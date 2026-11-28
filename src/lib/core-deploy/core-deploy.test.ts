@@ -106,7 +106,7 @@ async function harness(
   );
   apis.push(api);
   const files = new Map<string, string>([
-    [at("package.json"), JSON.stringify({ devDependencies: { wrangler: PINNED_WRANGLER_VERSION } })],
+    [at("package.json"), JSON.stringify({ dependencies: { "@cloudflare/vite-plugin": PINNED_VITE_PLUGIN_VERSION }, devDependencies: { wrangler: PINNED_WRANGLER_VERSION } })],
     [at("node_modules/wrangler/package.json"), JSON.stringify({ version: PINNED_WRANGLER_VERSION })],
     [at("node_modules/@cloudflare/vite-plugin/package.json"), JSON.stringify({ version: PINNED_VITE_PLUGIN_VERSION })],
     [at("target.json"), JSON.stringify(TARGET)],

@@ -516,7 +516,7 @@ describe("round 6: the Workers lists are unpaginated; paging rules elsewhere; ow
       ],
     });
     apis.push(api);
-    await expect(pagedList(api)).rejects.toThrow(/empty before the last stated page/);
+    await expect(pagedList(api)).rejects.toThrow(/empty before/);
   });
 
   it("is unavailable when a later page repeats some entries of an earlier one", async () => {
@@ -567,5 +567,87 @@ describe("round 6: the Workers lists are unpaginated; paging rules elsewhere; ow
     const after = await readInventory(client, TARGET, MANIFEST);
     const { discrepancies } = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
     expect(discrepancies.map((d) => d.kind)).toContain("binding-reassigned");
+  });
+});
+
+describe("round 7: enabled state, and strict paging edges", () => {
+  it("reports a Custom Domain of this Worker that is disabled as drift", async () => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    state.domains = state.domains.map((d) => (d.hostname === "shop-a.example.com" ? { ...d, enabled: false, previews_enabled: true } : d));
+    const { verdict } = await verdictFor(state);
+    expect(verdict.status).toBe("drift");
+    expect(kinds(verdict)).toEqual(["custom-domain-disabled"]);
+  });
+
+  it("reports a Custom Domain that went disabled during the deploy, compared by identity", async () => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    const api = await startMockCloudflareApi(state);
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    state.domains = state.domains.map((d) => ({ ...d, enabled: true }));
+    const before = await readInventory(client, TARGET, MANIFEST);
+    state.domains = state.domains.map((d) => (d.hostname === "admin.example.com" ? { ...d, enabled: false } : d));
+    const after = await readInventory(client, TARGET, MANIFEST);
+    const { discrepancies } = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
+    expect(discrepancies.map((d) => d.kind)).toContain("custom-domain-disabled");
+  });
+
+  const pagedHandler = (pages: (state: MockState) => Array<{ result: unknown[]; info: Record<string, unknown> }>, state: MockState) =>
+    (request: import("./test-support/mock-cloudflare-api").RecordedRequest) => {
+      if (request.path !== `/accounts/${ACCOUNT}/workers/domains`) return undefined;
+      const page = Number(request.query.get("page") ?? "1");
+      const answer = pages(state)[page - 1] ?? { result: [], info: { page } };
+      return { status: 200, body: { success: true, errors: [], result: answer.result, result_info: answer.info } };
+    };
+
+  it("paged: an empty final page before the stated totals are reached is unavailable", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        pagedHandler((s) => [
+          { result: s.domains.slice(0, 2), info: { page: 1, per_page: 2, total_pages: 3 } },
+          { result: s.domains.slice(2, 4), info: { page: 2, per_page: 2, total_pages: 3 } },
+          { result: [], info: { page: 3, per_page: 2, total_pages: 3 } },
+        ], state),
+      ],
+    });
+    apis.push(api);
+    await expect(pagedList(api)).rejects.toThrow(/empty/);
+  });
+
+  it("paged: a short page before the last stated page is unavailable", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        pagedHandler((s) => [
+          { result: s.domains.slice(0, 1), info: { page: 1, per_page: 2, total_pages: 2 } },
+          { result: s.domains.slice(1, 3), info: { page: 2, per_page: 2, total_pages: 2 } },
+        ], state),
+      ],
+    });
+    apis.push(api);
+    await expect(pagedList(api)).rejects.toThrow(/short/);
+  });
+
+  it.each([
+    ["a cursor", { cursor: "abc" }],
+    ["cursors", { cursors: { after: "abc" } }],
+    ["a later page", { page: 2 }],
+    ["a full page with no total", { page: 1, per_page: 4, count: 4 }],
+  ])("unpaged: a result_info with %s suggests more data and is unavailable", async (_label, info) => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) =>
+          request.path === `/accounts/${ACCOUNT}/workers/domains`
+            ? { status: 200, body: { success: true, errors: [], result: state.domains, result_info: info } }
+            : undefined,
+      ],
+    });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    await expect(client.listWorkerDomains()).rejects.toThrow(/only part of the list|more data/);
   });
 });

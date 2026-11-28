@@ -145,6 +145,15 @@ describe("the pinned tools", () => {
     ).toEqual([]);
   });
 
+  it("refuses a package.json that does not declare the Vite plugin", () => {
+    const problems = checkPinnedTools({
+      packageJson: { devDependencies: { wrangler: PINNED_WRANGLER_VERSION } },
+      installedWranglerVersion: PINNED_WRANGLER_VERSION,
+      installedVitePluginVersion: PINNED_VITE_PLUGIN_VERSION,
+    });
+    expect(problems).toEqual([expect.stringContaining("@cloudflare/vite-plugin")]);
+  });
+
   it("refuses a range on the Vite plugin in package.json", () => {
     const problems = checkPinnedTools({
       packageJson: { devDependencies: { wrangler: PINNED_WRANGLER_VERSION }, dependencies: { "@cloudflare/vite-plugin": `^${PINNED_VITE_PLUGIN_VERSION}` } },
@@ -160,6 +169,7 @@ describe("the pinned tools", () => {
       installedWranglerVersion: "4.147.0",
       installedVitePluginVersion: `${PINNED_VITE_PLUGIN_VERSION}-next`,
     });
-    expect(problems).toHaveLength(3);
+    // The wrangler range, both installed versions, and the Vite plugin missing from package.json.
+    expect(problems).toHaveLength(4);
   });
 });

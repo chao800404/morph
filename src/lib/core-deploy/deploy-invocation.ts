@@ -187,7 +187,7 @@ export function checkPinnedTools(input: {
     problems.push(`package.json declares wrangler ${JSON.stringify(declared)}; Core deploy requires exactly ${PINNED_WRANGLER_VERSION}.`);
   }
   const declaredPlugin = pkg?.dependencies?.["@cloudflare/vite-plugin"] ?? pkg?.devDependencies?.["@cloudflare/vite-plugin"];
-  if (declaredPlugin !== undefined && declaredPlugin !== PINNED_VITE_PLUGIN_VERSION) {
+  if (declaredPlugin !== PINNED_VITE_PLUGIN_VERSION) {
     problems.push(
       `package.json declares @cloudflare/vite-plugin ${JSON.stringify(declaredPlugin)}; Core deploy requires exactly ${PINNED_VITE_PLUGIN_VERSION}.`,
     );

@@ -47,12 +47,12 @@ import {
 export type EnsureStep = Readonly<{
   kind: "custom-domain" | "route";
   subject: string;
-  outcome: "present" | "created" | "refused" | "failed" | "not-attempted";
+  outcome: "present" | "created" | "refused" | "failed" | "drift" | "not-attempted";
   detail: string;
 }>;
 
 export type EnsureResult = Readonly<{
-  status: "complete" | "refused" | "failed";
+  status: "complete" | "refused" | "failed" | "drift";
   steps: EnsureStep[];
 }>;
 
@@ -108,7 +108,10 @@ function plan(snapshot: InventorySnapshot, target: DeployTarget, manifest: Platf
     }
   }
   for (const { pattern } of manifest.routes) {
-    const matches = snapshot.zoneRoutes.filter((route) => normalizeRoutePattern(route.pattern) === normalizeRoutePattern(pattern));
+    // Present only on an exact match of the canonical pattern, which is what
+    // strict verification looks for; a scheme-only or mixed-case equivalent is
+    // a different Route (normalization is for overlap and override checks).
+    const matches = snapshot.zoneRoutes.filter((route) => route.pattern === pattern);
     const overlaps = wildcardOverlaps(pattern, snapshot, target, manifest);
     if (!isInZone(routePatternHostname(pattern), snapshot.zone.name)) {
       steps.push({ kind: "route", pattern, action: "refuse", detail: `not in zone ${snapshot.zone.name}` });
@@ -159,7 +162,7 @@ function wildcardOverlaps(
     }
   }
   for (const route of snapshot.zoneRoutes) {
-    if (normalizeRoutePattern(route.pattern) === normalizeRoutePattern(pattern) || route.script === target.workerName) continue;
+    if (route.pattern === pattern || route.script === target.workerName) continue;
     // Compared without scheme and case (https://APP.example.com/* is app.example.com).
     const host = routePatternHostname(route.pattern);
     const broader = isWildcardRoute(route.pattern) && routeMatchesHostname(route.pattern, `a.${base}`);
@@ -205,6 +208,7 @@ export async function ensurePlatformBindings(input: {
   const steps: EnsureStep[] = [];
   let stopped: EnsureStep | null = null;
   let refusedMidRun = false;
+  let driftMidRun = false;
   for (const step of planned) {
     const subject = subjectOf(step);
     if (stopped) {
@@ -271,8 +275,9 @@ export async function ensurePlatformBindings(input: {
     steps.push(outcome);
     if (outcome.outcome !== "created" && outcome.outcome !== "present") stopped = outcome;
     if (outcome.outcome === "refused") refusedMidRun = true;
+    if (outcome.outcome === "drift") driftMidRun = true;
   }
-  return { status: refusedMidRun ? "refused" : stopped ? "failed" : "complete", steps };
+  return { status: refusedMidRun ? "refused" : driftMidRun ? "drift" : stopped ? "failed" : "complete", steps };
 }
 
 async function createCustomDomain(
@@ -368,6 +373,18 @@ async function createRoute(
   }
   const matches: ZoneRoute[] = after.zoneRoutes.filter((route) => route.pattern === pattern);
   if (matches.length === 1 && matches[0]!.script === target.workerName) {
+    // A Custom Domain someone else bound under the wildcard between the last
+    // read and this create is now shadowed by it (a Route takes precedence).
+    // Nothing is deleted; the run reports drift for a person to reconcile.
+    const shadowed = wildcardOverlaps(pattern, after, target, manifest).filter((entry) => entry.startsWith("Custom Domain"));
+    if (shadowed.length > 0) {
+      return {
+        kind: "route",
+        subject: pattern,
+        outcome: "drift",
+        detail: `route ${matches[0]!.id} was created, and it now shadows ${shadowed.join("; ")}, which appeared during the run. Nothing was deleted: decide by hand whether the Route or that binding goes.`,
+      };
+    }
     return {
       kind: "route",
       subject: pattern,

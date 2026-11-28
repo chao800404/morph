@@ -286,3 +286,44 @@ describe("round 6: Route normalization, attach errors, storefront rows on re-rea
     expect(api.writes()).toEqual([]);
   });
 });
+
+describe("round 7: canonical Route presence, shadowing after the POST, definite 4xx", () => {
+  it.each([
+    ["an https:// equivalent", "https://*.preview.example.com/*"],
+    ["a mixed-case equivalent", "*.Preview.Example.com/*"],
+  ])("does not count %s on this Worker as the required Route, and creates the canonical one", async (_label, pattern) => {
+    const { api, run } = await setup(baseState({ routes: { [ZONE]: [{ id: "r-near", pattern, script: WORKER }] } }));
+    const result = await run();
+    expect(result.status).toBe("complete");
+    expect(result.steps.find((s) => s.kind === "route")).toMatchObject({ outcome: "created" });
+    const post = api.writes().find((w) => w.method === "POST")!;
+    expect(JSON.parse(post.body).pattern).toBe("*.preview.example.com/*");
+  });
+
+  it("refuses when a scheme-only or mixed-case equivalent of the Route belongs to another Worker", async () => {
+    const { api, run } = await setup(baseState({ routes: { [ZONE]: [{ id: "r-x", pattern: "https://*.preview.example.com/*", script: "other" }] } }));
+    expect((await run()).status).toBe("refused");
+    expect(api.writes()).toEqual([]);
+  });
+
+  it("reports drift, and deletes nothing, when a foreign Custom Domain appears under the wildcard as it is created", async () => {
+    const { api, run } = await setup(baseState());
+    api.beforeAnswer.push((request, state) => {
+      if (request.method === "POST" && request.path.endsWith("/workers/routes")) {
+        state.domains.push(domain("app.preview.example.com", { service: "other-worker" }));
+      }
+    });
+    const result = await run();
+    expect(result.status).toBe("drift");
+    expect(result.steps.find((s) => s.kind === "route")!.detail).toMatch(/app\.preview\.example\.com/);
+    expect(api.requests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+
+  it("fails on a 4xx attach whose body is not JSON, never reporting present", async () => {
+    const { api, run } = await setup(baseState());
+    api.faults.push({ method: "PUT", path: `/accounts/${ACCOUNT}/workers/domains`, times: 1, status: 403, applyFirst: true, body: "<html>forbidden</html>" });
+    const result = await run();
+    expect(result.status).toBe("failed");
+    expect(result.steps[0]).toMatchObject({ subject: "admin.example.com", outcome: "failed" });
+  });
+});

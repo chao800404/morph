@@ -24,6 +24,10 @@ export type WorkerDomain = Readonly<{
   environment: string;
   zoneId: string;
   zoneName: string | null;
+  /** `enabled` as the API reports it; null when the answer does not say. A disabled domain stops routing to the Worker. */
+  enabled: boolean | null;
+  /** `previews_enabled`, the same way. */
+  previewsEnabled: boolean | null;
 }>;
 
 export type ZoneRoute = Readonly<{
@@ -141,6 +145,20 @@ export async function readCloudflareList(
       const pages = typeof info.total_pages === "number" ? info.total_pages : null;
       const total = typeof info.total_count === "number" ? info.total_count : null;
       const count = typeof info.count === "number" ? info.count : null;
+      const page = typeof info.page === "number" ? info.page : null;
+      const perPage = typeof info.per_page === "number" ? info.per_page : null;
+      const record = info as Record<string, unknown>;
+      // Signs that the endpoint has started paging: a cursor, a later page,
+      // or a full page with no total to say it is the last.
+      const hasCursor = ["cursor", "cursors", "next_cursor"].some(
+        (key) => record[key] !== undefined && record[key] !== null && record[key] !== "" && !(typeof record[key] === "object" && Object.keys(record[key] as object).length === 0),
+      );
+      const fullPageWithoutTotal = perPage !== null && total === null && result.length >= perPage;
+      if (hasCursor || (page !== null && page > 1) || fullPageWithoutTotal) {
+        throw new CloudflareReadError(
+          `${label}: an unpaginated endpoint's result_info suggests more data (${JSON.stringify(info)}); the list cannot be shown complete`,
+        );
+      }
       if ((pages !== null && pages > 1) || (total !== null && total !== result.length) || (count !== null && count !== result.length)) {
         throw new CloudflareReadError(
           `${label}: an unpaginated endpoint answered with only part of the list (${result.length} entries, result_info ${JSON.stringify(info)})`,
@@ -194,8 +212,17 @@ export async function readCloudflareList(
     items.push(...result);
 
     if (totalPages !== null) {
+      // An empty page anywhere — the last stated one included — means the
+      // list is not what page 1 described; only an empty list (one empty
+      // page, nothing stated) is complete when empty.
+      const emptyList = page === 1 && totalPages <= 1 && (totalCount ?? 0) === 0;
+      if (result.length === 0 && !emptyList) {
+        throw new CloudflareReadError(`${label}: page ${page} is empty before the stated ${totalPages} page(s) were read`);
+      }
+      if (page < totalPages && perPage !== null && result.length < perPage) {
+        throw new CloudflareReadError(`${label}: page ${page} is short (${result.length} of per_page ${perPage}) before the last stated page`);
+      }
       if (page >= totalPages) break;
-      if (result.length === 0) throw new CloudflareReadError(`${label}: page ${page} is empty before the last stated page ${totalPages}`);
     } else if (totalCount !== null) {
       if (items.length >= totalCount) break;
       if (result.length === 0) throw new CloudflareReadError(`${label}: page ${page} is empty before total_count ${totalCount} was reached`);
@@ -225,6 +252,8 @@ function toWorkerDomain(entry: unknown): WorkerDomain {
     environment: raw.environment,
     zoneId: raw.zone_id,
     zoneName: str(raw.zone_name) ? raw.zone_name : null,
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : null,
+    previewsEnabled: typeof raw.previews_enabled === "boolean" ? raw.previews_enabled : null,
   };
 }
 
@@ -315,7 +344,11 @@ async function write(
   }
   const { status, envelope } = answer;
   if (status >= 200 && status < 300 && envelope?.success === true) return envelope.result;
-  const ambiguous = status >= 500 || envelope === null || (status >= 200 && status < 300);
+  // Any 4xx is a definite refusal, whatever the body (or its absence) says:
+  // the request was not applied. A 5xx, a 2xx without success, or a status
+  // with an unreadable body otherwise may have been.
+  const definite = status >= 400 && status < 500;
+  const ambiguous = !definite && (status >= 500 || envelope === null || (status >= 200 && status < 300));
   throw new CloudflareWriteError(describe(envelope, status), ambiguous, status);
 }
 

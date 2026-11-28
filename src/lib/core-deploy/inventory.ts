@@ -115,7 +115,8 @@ export type DiscrepancyKind =
   | "storefront-domain-changed"
   | "storefront-domain-pending"
   | "binding-removed"
-  | "binding-reassigned";
+  | "binding-reassigned"
+  | "custom-domain-disabled";
 
 export type Discrepancy = Readonly<{
   kind: DiscrepancyKind;
@@ -133,7 +134,7 @@ const BOOTSTRAP_TOLERATED: ReadonlySet<DiscrepancyKind> = new Set([
 ]);
 
 function identity(domain: WorkerDomain): string {
-  return `${domain.hostname} id=${domain.id} service=${domain.service} environment=${domain.environment} zone=${domain.zoneId}`;
+  return `${domain.hostname} id=${domain.id} service=${domain.service} environment=${domain.environment} zone=${domain.zoneId} enabled=${domain.enabled ?? "?"} previews=${domain.previewsEnabled ?? "?"}`;
 }
 
 export function compareInventory(input: {
@@ -246,6 +247,14 @@ export function compareInventory(input: {
       diagnostics.push(
         `${row.status} storefront domain ${row.hostname} (row ${row.id}, updated ${row.updatedAt ?? "?"}): ${bound.length > 0 ? `bound as ${bound.map(identity).join("; ")}` : "not bound"}`,
       );
+    }
+  }
+
+  // A Custom Domain of this Worker that is disabled no longer routes to it,
+  // whoever it belongs to in D1 or the platform config.
+  for (const domain of snapshot.customDomains) {
+    if (ours(domain) && domain.enabled === false) {
+      add("custom-domain-disabled", identity(domain), `${identity(domain)} is disabled: it no longer routes to this Worker`);
     }
   }
 
