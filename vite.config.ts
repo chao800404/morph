@@ -13,6 +13,7 @@ import {
 } from "./src/server/dev-preview-passthrough";
 import { e2eWorkerConfig } from "./src/server/e2e-container-isolation";
 import { browserOnlyServerGuard } from "./src/lib/build/browser-only-server-guard";
+import { e2eKeepIdleConnections } from "./src/lib/build/e2e-keep-idle-connections";
 
 /**
  * Workaround for upstream TanStack Start bug (TanStack/router#6609):
@@ -265,6 +266,7 @@ const config = defineConfig({
   plugins: [
     morphDevPreviewPassthrough(),
     morphAuthSocketDiagnostics(),
+    e2eKeepIdleConnections(Boolean(process.env.MORPH_E2E_STATE_DIR)),
     tanstackServerFnValidateFix(),
     // Skipped for an end-to-end run: its event bus binds a fixed port (42069),
     // so a run started beside a developer's own `pnpm dev` dies before serving
