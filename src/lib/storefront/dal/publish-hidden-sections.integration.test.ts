@@ -137,8 +137,8 @@ async function seedTheme(options: { templateNewsletterShown: boolean }): Promise
     NOW,
   );
   await run(
-    `INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_version, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5, '{}', ?6, ?7, ?7)`,
+    `INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_id, compiler_version, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5, '{}', 'tanstack-start-native', ?6, ?7, ?7)`,
     buildId,
     storefrontId,
     themeId,

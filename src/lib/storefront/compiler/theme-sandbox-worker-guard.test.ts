@@ -418,6 +418,90 @@ self.onmessage = () => self.postMessage(secret.href);
     TEST_TIMEOUT_MS,
   );
 
+  it.each([
+    ["a comment between new and URL", 'new /* */ URL("../../../${OUTSIDE}", import.meta.url)'],
+    ["a comment inside import.meta.url", 'new URL("../../../${OUTSIDE}", import /* */ .meta.url)'],
+    ["import.meta.url outside new URL()", "import.meta.url"],
+  ])(
+    "refuses a worker that spells an asset URL Vite would still read: %s",
+    async (_name, expression) => {
+      const built = await buildManaged(
+        themeWith(
+          [
+            { path: "src/workers/data.txt", content: "data\n" },
+            {
+              path: "src/workers/probe.ts",
+              content: `const data = ${expression.replace("${OUTSIDE}", "outside.txt")};
+self.onmessage = () => self.postMessage(String(data));
+`,
+            },
+          ],
+          WORKER_IMPORT,
+        ),
+        "preview",
+      );
+      expect(refusedOutput(built)).toContain("WORKER_ASSET_URL_UNSUPPORTED:");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses a stylesheet Vite recognizes by a query on another file's id",
+    async () => {
+      const built = await buildManaged(
+        themeWith(
+          [
+            {
+              path: "src/workers/sheet.js",
+              content: `@import "sonner/dist/styles.css";\n`,
+            },
+            {
+              path: "src/workers/probe.ts",
+              content: `import styles from "./sheet.js?inline&lang.css";
+self.onmessage = () => self.postMessage(String(styles));
+`,
+            },
+          ],
+          WORKER_IMPORT,
+        ),
+        "preview",
+      );
+      expect(refusedOutput(built)).toContain("WORKER_CSS_UNSUPPORTED:");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "still builds a worker that imports WebAssembly through ?init",
+    async () => {
+      // The smallest valid module: the magic number and version 1.
+      const wasm = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+      const built = await buildManaged(
+        themeWith(
+          [
+            {
+              path: "src/workers/probe.ts",
+              content: `import init from "./empty.wasm?init";
+self.onmessage = async () => self.postMessage(String(await init()));
+`,
+            },
+          ],
+          WORKER_IMPORT,
+        ),
+        "preview",
+        {
+          // Written beside the plan's files: the plan carries a binary as a
+          // reference its writer loads, which this test has no store for.
+          beforeBuild: (workspace) =>
+            fs.writeFile(path.join(workspace, "src/workers/empty.wasm"), wasm),
+        },
+      );
+      if (!built.ok) throw new Error(built.output);
+      await built.cleanup();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   it(
     "refuses a worker asset URL that is not a plain string literal",
     async () => {

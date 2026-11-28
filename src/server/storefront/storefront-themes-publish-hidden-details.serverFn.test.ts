@@ -193,4 +193,20 @@ describe("publishStorefrontThemeTemplate answers a hidden-section refusal with i
     expect(result).toMatchObject({ success: false, error: code });
     expect(result).not.toHaveProperty("details");
   });
+
+  it("says a build made before the current build guard needs a new Build Preview, not that none succeeded", async () => {
+    dal.publishTemplate.mockRejectedValue(
+      new Error(
+        'PUBLISH_BUILD_GUARD_STALE: Theme build "build-1" cannot be published because it was built under no worker guard, not the current wg-1. Build Preview is required before publishing.',
+      ),
+    );
+    const result = await call(input);
+    expect(result).toMatchObject({
+      success: false,
+      error: "PUBLISH_BUILD_GUARD_STALE",
+      message:
+        "Build Preview again: this build predates the current build guard. The existing release is unchanged.",
+    });
+    expect(result).not.toHaveProperty("details");
+  });
 });

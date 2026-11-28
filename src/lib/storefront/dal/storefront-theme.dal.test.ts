@@ -303,8 +303,8 @@ beforeEach(() => {
     VALUES ('storefront-a', 'channel-a', 'Store A', 'active', 'now', 'now');
     INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, release_generation, created_at, updated_at)
     VALUES ('theme-a', 'storefront-a', 'Default Theme', 'draft', 1, 1, 'now', 'now');
-    INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, created_at, updated_at)
-    VALUES ('33333333-3333-4333-8333-333333333333', 'storefront-a', 'theme-a', '22222222-2222-4222-8222-222222222222', 'succeeded', 'themes/theme-a/builds/build-a', '{}', 'now', 'now');
+    INSERT INTO storefront_theme_builds (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_id, created_at, updated_at)
+    VALUES ('33333333-3333-4333-8333-333333333333', 'storefront-a', 'theme-a', '22222222-2222-4222-8222-222222222222', 'succeeded', 'themes/theme-a/builds/build-a', '{}', 'tanstack-start-native', 'now', 'now');
   `);
 });
 
@@ -7421,6 +7421,7 @@ function Home() {
     ["a managed Start build before the worker guard", "tailwind-v4-build", withThemeStartBuildIdentity("4.1.17"), false],
     ["a managed Start build with the current worker guard", "tailwind-v4-build", withThemeManagedStartBuildIdentity("4.1.17"), true],
     ["a native Astro build before the worker guard", "astro-native", withThemeMorphSdkIdentity("7.3.5"), false],
+    ["a build that records no compiler", null, withThemeManagedStartBuildIdentity("4.1.17"), false],
   ] as const) {
     it(`${published ? "publishes" : "refuses"} ${label}`, async () => {
       seed({
@@ -7439,7 +7440,7 @@ function Home() {
         });
       } else {
         await expect(publish(wrappedRevision)).rejects.toThrow(
-          /^PUBLISH_BUILD_NOT_READY: .*no worker guard, not the current wg-1\. Build Preview is required/,
+          /^PUBLISH_BUILD_GUARD_STALE: .*(no worker guard, not the current wg-1|records no compiler identity)\. Build Preview is required/,
         );
         expect(releases()).toEqual([]);
         // The build's record is left as it was frozen.

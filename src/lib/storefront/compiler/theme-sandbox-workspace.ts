@@ -1185,6 +1185,9 @@ export default defineConfig({
   // PostCSS config (a Theme's postcss.config.* or .postcssrc, or one above
   // the workspace) and never runs one: that would be Theme code in the build
   // process, outside the import guard. Tailwind is the Vite plugin above.
+  // An explicit Tailwind @config or @plugin in a Theme stylesheet is
+  // different: it is the author's own source, and runs Theme code inside the
+  // Sandbox container, the build's security boundary, by design (decision A).
   css: { postcss: { plugins: [] } },
   resolve: {
     alias: [...morphSdkAliases, ...themeAliases],

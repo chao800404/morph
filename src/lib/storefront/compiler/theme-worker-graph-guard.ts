@@ -61,14 +61,34 @@ export function createThemeWorkerBundleGuard(options: {
   const packageRoots = present(dependencyRoots.map((value) => real(value)));
   const under = (file: string, within: readonly string[]) =>
     within.some((root) => file === root || file.startsWith(root + "/"));
-  // The bundlers' own helper modules a worker bundle may hold.
+  // The bundlers' own helper modules a worker bundle may hold, by exact id.
   const KNOWN_VIRTUAL = new Set([
-    "commonjsHelpers.js",
-    "vite/preload-helper.js",
-    "vite/modulepreload-polyfill.js",
-    "rolldown/runtime.js",
+    "\0commonjsHelpers.js",
+    "\0vite/preload-helper.js",
+    "\0vite/modulepreload-polyfill.js",
+    "\0vite/dynamic-import-helper.js",
+    "\0vite/wasm-helper.js",
+    "\0rolldown/runtime.js",
   ]);
-  const CSS = /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)$/;
+  // Vite's empty stub for a module a browser bundle leaves out (a Node
+  // built-in, a package's `browser: false`); it imports nothing.
+  const BROWSER_EXTERNAL = /^\0?__vite-browser-external(?::[^?]*)?$/;
+  // The CommonJS plugin's wrappers around a file: the only virtual ids that
+  // wrap a path a worker bundle may hold, placed by that path.
+  const COMMONJS_WRAPPER = /\?commonjs-[a-z-]+$/;
+  // Vite's own patterns, on the full id; where Vite 7.3.5 and 8.3.3 differ,
+  // the one that leaves less unchecked.
+  const CSS = /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/;
+  const WORKER_WRAPPER = /(?:\?|&)(?:worker|sharedworker)(?:&|$)/;
+  const WORKER_FILE = /(?:\?|&)worker_file&type=\w+(?:&|$)/;
+  const RAW_OR_URL = /(?:\?|&)(?:raw|url)(?:&|$)/;
+  // `import.meta.url`, with whitespace or comments between its tokens (Vite
+  // blanks comments before it looks for `new URL(…, import.meta.url)`).
+  const gap = "(?:\\s|\\/\\*[\\s\\S]*?\\*\\/|\\/\\/[^\\n]*(?:\\n|$))*";
+  const IMPORT_META_URL = new RegExp(
+    "\\bimport" + gap + "\\." + gap + "meta" + gap + "\\." + gap + "url\\b",
+    "g",
+  );
 
   type Place =
     | { kind: "package"; name: string }
@@ -83,13 +103,17 @@ export function createThemeWorkerBundleGuard(options: {
   });
 
   const place = (id: string): Place => {
+    if (KNOWN_VIRTUAL.has(id) || BROWSER_EXTERNAL.test(id)) {
+      return { kind: "helper" };
+    }
     let file = id;
     if (id.startsWith("\0")) {
-      const rest = id.slice(1).split("?")[0]!;
-      if (KNOWN_VIRTUAL.has(rest)) return { kind: "helper" };
-      if (!path.isAbsolute(rest))
+      const rest = id.slice(1);
+      const wrapped = rest.split("?")[0]!;
+      if (!path.isAbsolute(wrapped) || !COMMONJS_WRAPPER.test(rest)) {
         return unverified("is a virtual module Morph does not know");
-      file = rest;
+      }
+      file = wrapped;
     }
     file = file.split("?")[0]!;
     if (!path.isAbsolute(file)) return unverified("names no file");
@@ -116,8 +140,6 @@ export function createThemeWorkerBundleGuard(options: {
       detail: "resolves outside the workspace",
     };
   };
-
-  const query = (id: string) => new URLSearchParams(id.split("?")[1] ?? "");
 
   /** Each `new URL(...)` whose arguments name import.meta.url: its literal, or null. */
   const importMetaUrlReferences = (code: string): Array<string | null> => {
@@ -158,8 +180,7 @@ export function createThemeWorkerBundleGuard(options: {
     load: {
       order: "pre" as const,
       handler(this: { error(message: string): never }, id: string) {
-        const file = id.replace(/^\0/, "").split("?")[0]!;
-        if (CSS.test(file)) {
+        if (CSS.test(id.replace(/^\0/, ""))) {
           this.error(
             'WORKER_CSS_UNSUPPORTED: Worker module "' +
               id +
@@ -174,17 +195,11 @@ export function createThemeWorkerBundleGuard(options: {
       code: string,
       id: string,
     ) {
-      const params = query(id);
       // Vite's own wrapper for a `?worker` import: the worker's code is
       // bundled, and guarded, as a worker bundle of its own.
-      if (
-        (params.has("worker") || params.has("sharedworker")) &&
-        !params.has("worker_file")
-      ) {
-        return null;
-      }
+      if (WORKER_WRAPPER.test(id) && !WORKER_FILE.test(id)) return null;
       // A file's text or address, not code that runs.
-      if (params.has("raw") || params.has("url")) return null;
+      if (RAW_OR_URL.test(id)) return null;
       if (place(id).kind !== "theme") return null;
       const refuse = (why: string): never =>
         this.error(
@@ -194,7 +209,17 @@ export function createThemeWorkerBundleGuard(options: {
             why +
             ".",
         );
-      for (const literal of importMetaUrlReferences(code)) {
+      const references = importMetaUrlReferences(code);
+      // Every import.meta.url, however spaced or commented, is one of the
+      // plain-literal calls checked below; any other use is refused, so no
+      // spelling Vite would act on goes unchecked.
+      const uses = code.match(IMPORT_META_URL)?.length ?? 0;
+      if (uses > references.filter((literal) => literal !== null).length) {
+        refuse(
+          'uses import.meta.url other than as new URL("…", import.meta.url) with a plain string literal',
+        );
+      }
+      for (const literal of references) {
         if (literal === null) {
           refuse(
             "passes import.meta.url to new URL() with something other than a plain string literal",
@@ -204,11 +229,16 @@ export function createThemeWorkerBundleGuard(options: {
         if (/^[a-z][a-z0-9+.-]*:/i.test(literal) || literal.startsWith("//"))
           continue;
         const target = literal.split(/[?#]/)[0]!;
-        let file: string;
+        // The files Vite may read for it: relative to the module, or for a
+        // root-relative path the public directory's copy and the root's.
+        let candidates: string[];
         if (target.startsWith("./") || target.startsWith("../")) {
-          file = path.resolve(path.dirname(id.split("?")[0]!), target);
+          candidates = [path.resolve(path.dirname(id.split("?")[0]!), target)];
         } else if (target.startsWith("/")) {
-          file = path.resolve(workspaceRoot, "." + target);
+          candidates = [
+            path.resolve(workspaceRoot, "public", "." + target),
+            path.resolve(workspaceRoot, "." + target),
+          ];
         } else {
           refuse(
             'names "' +
@@ -217,30 +247,32 @@ export function createThemeWorkerBundleGuard(options: {
           );
           continue;
         }
-        if (!fs.existsSync(file)) {
-          if (!under(slash(path.resolve(file)), workspaceRoots)) {
-            refuse(
-              'names "' + literal + '", which resolves outside the workspace',
-            );
+        for (const file of candidates) {
+          if (!fs.existsSync(file)) {
+            if (!under(slash(path.resolve(file)), workspaceRoots)) {
+              refuse(
+                'names "' + literal + '", which resolves outside the workspace',
+              );
+            }
+            continue;
           }
-          continue;
+          const asset = place(file);
+          if (asset.kind === "theme") continue;
+          if (asset.kind === "package" && allowedPackages.has(asset.name))
+            continue;
+          refuse(
+            'names "' +
+              literal +
+              '", which ' +
+              (asset.kind === "package"
+                ? 'is in package "' +
+                  asset.name +
+                  '", which is not an approved dependency'
+                : asset.kind === "refused"
+                  ? asset.detail
+                  : "is not a Theme file"),
+          );
         }
-        const asset = place(file);
-        if (asset.kind === "theme") continue;
-        if (asset.kind === "package" && allowedPackages.has(asset.name))
-          continue;
-        refuse(
-          'names "' +
-            literal +
-            '", which ' +
-            (asset.kind === "package"
-              ? 'is in package "' +
-                asset.name +
-                '", which is not an approved dependency'
-              : asset.kind === "refused"
-                ? asset.detail
-                : "is not a Theme file"),
-        );
       }
       return null;
     },

@@ -49,20 +49,17 @@ export function buildWorkerGuardVersion(
 
 /**
  * Why a build may not be published under the current worker policy, or
- * null when it may: a build of a guarded compiler that records an older
- * worker guard, or none. Its record stays as it was frozen; only a new build
+ * null when it may: a build that records no compiler, or a build of a
+ * guarded compiler that records an older worker guard, or none. Its record stays as it was frozen; only a new build
  * carries the current guard.
  */
 export function workerGuardPublishProblem(build: {
   compilerId: string | null | undefined;
   compilerVersion: string | null | undefined;
 }): string | null {
-  if (
-    !build.compilerId ||
-    !THEME_WORKER_GUARDED_COMPILER_IDS.has(build.compilerId)
-  ) {
-    return null;
-  }
+  // A build that names no compiler cannot show which guard it carries.
+  if (!build.compilerId) return "it records no compiler identity";
+  if (!THEME_WORKER_GUARDED_COMPILER_IDS.has(build.compilerId)) return null;
   const recorded = buildWorkerGuardVersion(build.compilerVersion);
   if (recorded === THEME_WORKER_GUARD_VERSION) return null;
   return `it was built under ${recorded ? `worker guard ${recorded}` : "no worker guard"}, not the current ${THEME_WORKER_GUARD_VERSION}`;
