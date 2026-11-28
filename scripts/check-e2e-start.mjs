@@ -166,7 +166,7 @@ export function verifyStartWorkflow(workflow) {
   );
   assert.ok(
     lines.includes(
-      "run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}",
+      "run: exec node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}",
     ),
     "The job must run the exact file plan for its shard",
   );

@@ -556,13 +556,14 @@ jobs:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_REQUIRE_CLIENT_LANE: "1"
           MORPH_E2E_REPORT_PATH: test-results/shard-${{ matrix.shard }}.json
-        run: pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/6
+        run: exec node scripts/run-editor-e2e.mjs --shard=${{ matrix.shard }}/6
         # A time limit on this step, not only on the job (slowest seen: 19 min):
-        # the step fails at the limit,
-        # and the `if: always()` upload after it still runs. The job's own limit
-        # The job's own limit cancels the whole job, which leaves a cut-off log
-        # and no artifact; it is the sum of this job's setup, Chromium install
-        # limit, E2E step limits and a reserve (scripts/ci-workflow.test.mjs).
+        # the step fails at the limit and the `if: always()` upload after it
+        # still runs. The job's own limit would cancel the whole job, leaving a
+        # cut-off log and no artifact; it is the sum of this job's setup, the
+        # Chromium install limit, its E2E step limits and a reserve
+        # (scripts/ci-workflow.test.mjs). The command is `exec`ed so the
+        # platform's cancel signals reach node, not a shell in between.
         timeout-minutes: 24
 
       # One name per attempt: re-running a failed shard keeps the run's earlier
@@ -816,13 +817,14 @@ jobs:
           MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/full-start-${{ matrix.shard }}.json
-        run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}
+        run: exec node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}
         # A time limit on this step, not only on the job (slowest seen: 20 min):
-        # the step fails at the limit,
-        # and the `if: always()` upload after it still runs. The job's own limit
-        # The job's own limit cancels the whole job, which leaves a cut-off log
-        # and no artifact; it is the sum of this job's setup, Chromium install
-        # limit, E2E step limits and a reserve (scripts/ci-workflow.test.mjs).
+        # the step fails at the limit and the `if: always()` upload after it
+        # still runs. The job's own limit would cancel the whole job, leaving a
+        # cut-off log and no artifact; it is the sum of this job's setup, the
+        # Chromium install limit, its E2E step limits and a reserve
+        # (scripts/ci-workflow.test.mjs). The command is `exec`ed so the
+        # platform's cancel signals reach node, not a shell in between.
         timeout-minutes: 24
 
       # Playwright passes a run whose tests skipped themselves, and every
@@ -1525,7 +1527,7 @@ jobs:
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_THEME_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/container-presentation-ack.json
-        run: node scripts/run-editor-e2e.mjs e2e/presentation-ack-refresh.spec.ts --output=test-results/container-presentation-ack
+        run: exec node scripts/run-editor-e2e.mjs e2e/presentation-ack-refresh.spec.ts --output=test-results/container-presentation-ack
 
       - name: Stop container diagnostics
         if: always()

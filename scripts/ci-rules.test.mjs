@@ -136,13 +136,20 @@ test("a local Playwright reporter named on a --reporter argument is a rule", () 
   // line, so the guards above do not see them.
   const sources = [
     ".github/workflows/ci.yml",
+    "playwright.config.ts",
     ...CI_RULE_PATHS.filter((file) => file.endsWith(".mjs") && !file.endsWith(".test.mjs")),
   ];
   const named = new Set();
   for (const file of sources) {
     const text = readFileSync(new URL(file, REPO_ROOT), "utf8");
-    for (const [, list] of text.matchAll(/--reporter=([^\s"'`]+)/g)) {
+    // `--reporter=a,b`, `--reporter a,b`, `--reporter="a,b"` and `--reporter 'a'`.
+    for (const [, list] of text.matchAll(/--reporter(?:=|\s+)["']?([^\s"'`]+)/g)) {
       for (const entry of list.split(",")) if (/^\.{1,2}\//.test(entry)) named.add(path.posix.normalize(entry));
+    }
+    // A `reporter` declared in the Playwright config: string paths on its lines.
+    for (const line of text.split("\n")) {
+      if (!/\breporter\b/.test(line) || !file.endsWith(".ts")) continue;
+      for (const [, entry] of line.matchAll(/["'](\.{1,2}\/[^"']+)["']/g)) named.add(path.posix.normalize(entry));
     }
     for (const [, list] of text.matchAll(/DEFAULT_REPORTERS = "([^"]+)"/g)) {
       for (const entry of list.split(",")) if (/^\.{1,2}\//.test(entry)) named.add(path.posix.normalize(entry));

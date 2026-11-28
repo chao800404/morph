@@ -156,7 +156,7 @@ test("a job running other files, or not checking its report, fails", () => {
     () =>
       verifyStartWorkflow(
         workflow.replace(
-          "run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}",
+          "run: exec node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}",
           "run: pnpm test:e2e:local-preview -- e2e/loader-data-binding.spec.ts",
         ),
       ),
