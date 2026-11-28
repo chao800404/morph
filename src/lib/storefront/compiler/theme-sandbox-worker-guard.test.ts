@@ -98,7 +98,11 @@ type Hostile = (
 async function buildManaged(
   files: ReturnType<typeof themeWith>,
   target: Target,
-  options: { hostile?: Hostile } = {},
+  options: {
+    hostile?: Hostile;
+    /** Called with the laid-out workspace, before the build runs. */
+    beforeBuild?: (workspace: string) => Promise<void>;
+  } = {},
 ): Promise<
   | { ok: true; outDir: string; cleanup: () => Promise<void> }
   | { ok: false; output: string }
@@ -142,6 +146,7 @@ async function buildManaged(
       path.join(workspace, "node_modules"),
       "dir",
     );
+    await options.beforeBuild?.(workspace);
     let configPath = path.join(workspace, "vite.config.ts");
     if (options.hostile) {
       const hostile = await options.hostile(workspace);
@@ -591,6 +596,104 @@ self.onmessage = (event: MessageEvent) =>
         ]) {
           expect(scripts.some((script) => script.includes(label))).toBe(true);
         }
+      } finally {
+        await built.cleanup();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
+describe("a Theme's PostCSS config in the managed Theme build", () => {
+  // Loading this file runs it; running it leaves a marker beside it.
+  const POSTCSS_CONFIG = `import fs from "node:fs";
+fs.writeFileSync(new URL("./postcss-config-ran.txt", import.meta.url), "ran");
+export default { plugins: [] };
+`;
+
+  it.each([
+    "postcss.config.mjs",
+    "postcss.config.cjs",
+    "postcss.config.ts",
+    ".postcssrc",
+    ".postcssrc.json",
+  ])("is refused at plan time (%s), with what to do instead", (file) => {
+    const plan = planThemeSandboxWorkspace({
+      files: [...STARTER_THEME_FILES, { path: file, content: POSTCSS_CONFIG }],
+      entry: "src/routes/index.tsx",
+      buildId: "postcss-refused",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "build",
+    });
+    expect(plan).toMatchObject({ ok: false, stage: "build-config" });
+    expect((plan as { errorMessage: string }).errorMessage).toBe(
+      `THEME_POSTCSS_CONFIG_UNSUPPORTED: Managed builds use Morph's CSS pipeline (Tailwind via @tailwindcss/vite) and do not run a Theme's PostCSS configuration; remove ${file} or move the Theme to a native build.`,
+    );
+  });
+
+  it("is refused in the Live Preview too, and through package.json's postcss field", () => {
+    const plan = planThemeSandboxWorkspace({
+      files: [
+        ...STARTER_THEME_FILES.map((file) =>
+          file.path === "package.json"
+            ? {
+                ...file,
+                content: JSON.stringify({
+                  ...JSON.parse(file.content),
+                  postcss: { plugins: {} },
+                }),
+              }
+            : file,
+        ),
+      ],
+      entry: "src/routes/index.tsx",
+      buildId: "postcss-refused-preview",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "preview-server",
+      previewContent: { templates: {}, pages: {} },
+    });
+    expect(plan).toMatchObject({ ok: false, stage: "build-config" });
+    expect((plan as { errorMessage: string }).errorMessage).toContain(
+      "remove the postcss field of package.json",
+    );
+  });
+
+  // Defence in depth: a PostCSS config that reached the workspace anyway
+  // (written there directly, past the plan) is still never loaded, because
+  // the generated config's PostCSS options are inline. The reverse run, with
+  // those options taken out, shows the marker is how a load would show.
+  it.each([
+    { inline: true, ran: false },
+    { inline: false, ran: true },
+  ])(
+    "is loaded by the build only without the inline options (inline: $inline)",
+    async ({ inline, ran }) => {
+      let workspaceSeen = "";
+      const built = await buildManaged(themeWith([], ""), "preview", {
+        beforeBuild: async (workspace) => {
+          workspaceSeen = workspace;
+          await fs.writeFile(
+            path.join(workspace, "postcss.config.mjs"),
+            POSTCSS_CONFIG,
+          );
+          const configPath = path.join(workspace, "vite.config.ts");
+          const generated = await fs.readFile(configPath, "utf8");
+          expect(generated).toContain("css: { postcss: { plugins: [] } },");
+          if (!inline) {
+            await fs.writeFile(
+              configPath,
+              generated.replace("css: { postcss: { plugins: [] } },", ""),
+            );
+          }
+        },
+      });
+      if (!built.ok) throw new Error(built.output);
+      try {
+        const marker = fs.stat(
+          path.join(workspaceSeen, "postcss-config-ran.txt"),
+        );
+        if (ran) await expect(marker).resolves.toBeDefined();
+        else await expect(marker).rejects.toThrow();
       } finally {
         await built.cleanup();
       }

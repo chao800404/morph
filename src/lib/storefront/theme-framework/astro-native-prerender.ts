@@ -181,6 +181,12 @@ const workerBundleGuard = ${themeWorkerBundleGuardPluginSource({
         workspaceRoot: "workspaceRoot",
         dependencyRoots: '[path.join(workspaceRoot, "node_modules")]',
       })};
+// Defence in depth, not the boundary: a native Astro build runs the Theme's
+// own config, integrations and Vite plugins, and one of their hooks that runs
+// after this one can replace worker.plugins. The Sandbox container the build
+// runs in is the security boundary; this guard holds a Theme's workers to the
+// approved packages and the workspace when its own code does not undo it.
+//
 // Set on the Vite config the build resolves, after Astro and the Theme's
 // integrations have merged theirs: the Theme's own worker plugins (a
 // function, or the older array) are kept, after Morph's guard. Set in place,

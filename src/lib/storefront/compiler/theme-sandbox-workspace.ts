@@ -369,6 +369,36 @@ export function themeWorkspaceFingerprint(
   );
 }
 
+/**
+ * The Theme file that would configure PostCSS for a build rooted at the
+ * workspace, if any: the files PostCSS's config loader looks for at the root,
+ * and a `postcss` field in the root package.json.
+ */
+function themePostcssConfigFile(
+  files: readonly ThemeWorkspaceFile[],
+): string | null {
+  for (const file of files) {
+    const path = file.path.replace(/\\/g, "/").replace(/^\.\//, "");
+    if (
+      /^postcss\.config\.(?:[cm]?[jt]s|json)$/.test(path) ||
+      /^\.postcssrc(?:\.(?:json|ya?ml|[cm]?[jt]s))?$/.test(path)
+    ) {
+      return path;
+    }
+    if (path === "package.json" && !isBinaryWorkspaceFile(file)) {
+      try {
+        const parsed: unknown = JSON.parse(file.content);
+        if (parsed && typeof parsed === "object" && "postcss" in parsed) {
+          return "the postcss field of package.json";
+        }
+      } catch {
+        // Not JSON: not a PostCSS config either.
+      }
+    }
+  }
+  return null;
+}
+
 export function planThemeSandboxWorkspace({
   files: authoredFiles,
   entry,
@@ -390,6 +420,20 @@ export function planThemeSandboxWorkspace({
     return {
       ok: false,
       stage: "entry",
+      errorMessage,
+      errors: [{ severity: "error", message: errorMessage }],
+    };
+  }
+  // A PostCSS config is refused, not left out: the platform's CSS pipeline
+  // (Tailwind through @tailwindcss/vite, PostCSS options inline in the
+  // generated config) never runs it, so leaving it out would build and show
+  // a Theme styled differently from what its author wrote.
+  const postcssConfig = themePostcssConfigFile(authoredFiles);
+  if (postcssConfig) {
+    const errorMessage = `THEME_POSTCSS_CONFIG_UNSUPPORTED: Managed builds use Morph's CSS pipeline (Tailwind via @tailwindcss/vite) and do not run a Theme's PostCSS configuration; remove ${postcssConfig} or move the Theme to a native build.`;
+    return {
+      ok: false,
+      stage: "build-config",
       errorMessage,
       errors: [{ severity: "error", message: errorMessage }],
     };
@@ -1137,6 +1181,11 @@ export default defineConfig({
       workerBundleGuardPlugin,
     ],
   },
+  // The platform's PostCSS options, inline, so Vite never looks for a
+  // PostCSS config (a Theme's postcss.config.* or .postcssrc, or one above
+  // the workspace) and never runs one: that would be Theme code in the build
+  // process, outside the import guard. Tailwind is the Vite plugin above.
+  css: { postcss: { plugins: [] } },
   resolve: {
     alias: [...morphSdkAliases, ...themeAliases],
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],

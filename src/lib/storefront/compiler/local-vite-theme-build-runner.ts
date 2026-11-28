@@ -919,6 +919,8 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
               securityPlugin,
             ],
             worker: { plugins: workerPlugins },
+            // As the generated config: no PostCSS config is looked for or run.
+            css: { postcss: { plugins: [] } },
             resolve: {
               alias: [...morphSdkAliases, ...themeAliases],
             },
@@ -977,6 +979,8 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             : []),
         ],
         worker: { plugins: workerPlugins },
+        // As the generated config: no PostCSS config is looked for or run.
+        css: { postcss: { plugins: [] } },
         resolve: {
           alias: [...morphSdkAliases, ...themeAliases],
         },
