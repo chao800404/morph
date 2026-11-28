@@ -714,57 +714,92 @@ GraphQL 保留為未來可選的讀取入口，不是統一 SDK 的前置條件�
 
 目標與做法的記錄在 [`docs/final-goal-and-approach.md`](docs/final-goal-and-approach.md)（英文）。摘要：程式碼是主體，Code 模式不限制作者使用框架原生寫法，Design 只協助不寫程式的人修改程式與內容；Astro 與 TanStack Start 的所有渲染模式都要在預覽、發布與編輯器中支援；每個框架使用自己官方的 Cloudflare 設定，Morph 不發明自己的寫法。
 
+**證據規則。** 有證據的格子標出 PR 編號、SHA 或 handoff 檔名；沒有證據的格子寫「未驗證」。「本機」指本機或容器測試，不是真實 Cloudflare。
+
 **2026-11-28 的做法決定**（細節見上述文件）：
 
 - 安全邊界：Sandbox 容器是邊界（決定 A），建置內的套件檢查只是縱深防禦。託管 Start 拒絕 Theme 的 PostCSS 設定（`THEME_POSTCSS_CONFIG_UNSUPPORTED`）；原生 Astro 照作者的設定執行。計畫中、尚未實作：建置容器完全離線、每次重試用新容器、日後安裝相依套件以 `--ignore-scripts` 為關卡。
-- Astro 預設 slot：以執行期渲染記錄取代靜態證明（方向 B），一開始只做預設 slot；PR1 在真實容器證明記錄可行。靜態 slot 分支已退役，未合併。
-- 證據列：先用 D1 evidence row（Q3）；HMAC 收據延後，PR1 之後再評估。
-- Q4（非字串的 Astro 欄位經 spread 傳入）：延後（Codex 審查，lead 決定 11-28）。
-- 統一 SDK：單一 `@morph/sdk` 入口（U1 到 U6）；順序為原生建置、SDK、版本範圍。
-- Design 備援三層：原始碼字面值寫入 Source；已宣告的 CMS 欄位寫入 Document；畫布上無法判定的元素提供表單編輯加跳到程式碼。
+- Astro 預設 slot：以執行期渲染記錄取代「預設 slot 確實有渲染」的靜態證明（方向 B），一開始只做預設 slot；PR1 在真實容器證明記錄可行。靜態 slot 分支已退役，未合併。這只取代那一項靜態證明，Core 既有的寫入檢查照舊。靜態分析降為 lint 的說法僅限於此。
+- 統一 SDK：`@morph/sdk` 是讀取 Morph CMS／商務資料的統一入口（U1 到 U6）；順序為原生建置、SDK、版本範圍。不讀 Morph 資料的純原始碼元件可以維持框架原生寫法。
+- Design 備援三層：原始碼字面值寫入 Source；已宣告的 CMS 欄位寫入 Document；畫布上無法判定的元素提供表單編輯加跳到程式碼。Design 在能安全定位時，可以修改原始碼字面值與樣式。
+
+**渲染設定的單一來源（2026-11-28，使用者核准）。**
+
+- Theme 原始碼是渲染設定的唯一來源。
+- Design 切換渲染模式時，只修改能安全辨識的官方設定，且只經既有的原始碼寫入路徑（OCC）。
+- 發布時，依實際建置結果凍結一份唯讀的 `Render Plan`。
+- 新流程不再寫入第二份可編輯的 CMS 渲染設定；歷史 release 快照保留，供回滾使用。
+
+**範圍。**
+
+- `vite.config` 的模板雜湊檢查（警告或拒絕）只適用於過渡期的託管 Start。原生建置在部署契約之下執行作者自己的設定。
+
+**證據列與寫入（Astro 執行期記錄）。**
+
+- 維持 D1 evidence row（Q3）；HMAC 收據延後，PR1 之後再評估。
+- 寫入 D1 的是容器外的 Host Worker。容器內不持有 Core 寫入憑證，也不能直接提交會被信任的證據。
+- Host 驗證該紀錄對應正確的路由、預覽實例與完整渲染。
+- 儲存時，Core 仍檢查元件身分與欄位資格，並在同一個 OCC／CAS 批次中檢查該次渲染所依賴的各項版本。
+
+**Q4：Astro 預設 slot 透過 spread 傳入的欄位（Codex 建議延後，待使用者確認）。**
+
+- 使用者先前核准 Q4 = Yes：number／boolean／enum 在 v1 經 spread 傳入（設計 B3，`astro-runtime-provenance-design.md` 第 467 行）。Codex 之後建議延後（`codex-astro-B-design.txt` Q4 列）。
+- 理由：`const props = { ...hero, count: 3 }; <Hero {...props} />` 在 `hero.count` 本來就是 3 時，會通過單一 spread 的否決檢查；缺少的 key 也需要正向的綁定證據。
+- 待確認延後的範圍只有 number、boolean、enum，且只限「Astro 預設 slot 透過 spread 傳入」。
+
+| 欄位型別 | 是否在 v1 | 驗證程度 |
+|---|---|---|
+| 字串 | 在 v1（sentinel 渲染） | 設計階段；唯讀 Node probe 1 到 4；容器與瀏覽器未驗證 |
+| number／boolean／enum（經 spread） | 待使用者確認（Codex 建議延後） | 設計階段；容器與瀏覽器未驗證 |
+| `image`（media 物件） | 在 v1（WeakMap 加 enumerable symbol tag 的精確綁定，設計 1.4） | 只有唯讀 Node probe 2、3；容器與瀏覽器未驗證 |
+| `link` | 在 v1（同上） | 只有唯讀 Node probe 2、3；容器與瀏覽器未驗證 |
+| `array` | 在 v1（同上） | 只有唯讀 Node probe 2、3；容器與瀏覽器未驗證 |
+
+來源標記在 spread 後仍存在，只是來源追蹤的證據。驗收還要求：Design 改到正確的欄位、修改存進 Document、重新載入後讀到正確的值。這三項在真實容器與瀏覽器都未驗證。
 
 **優先順序（使用者 2026-11-28 核准）。** 1.5 的 R 線仍保留自己的步驟編號，這份清單是整體排序。
 
-1. 雲端發布閉環：Cloudflare staging（進行中；handoff 紀錄顯示已部署一次並開始第一次發布，尚無驗收紀錄）。
+1. 雲端發布閉環：Cloudflare staging。現況（lead 回報 2026-11-28，repo 內尚無對應 PR）：Release A 雲端建置成功、發佈失敗（容器 ID 超過 63 字元；修正 1af1aa97 待合併）。雲端發布驗收要等同一個固定 SHA 實際完成「發佈 A → 發佈 B → 回滾 A」，且每一步用店面網址讀到對應版本才算通過；在那之前一律是未通過。
 2. 原生專案匯入與相依套件快照：一個官方 Astro 範例與一個官方 Start 範例，各含一項 integration。
 3. Design 表單模式備援。
 4. 兩份渲染模式驗收表（Start、Astro），維護在本節。
 5. 下方三欄現況表，持續更新。
-6. 以隨附模板雜湊建立 `vite.config` 允許清單，自訂設定給警告或拒絕。
+6. 以隨附模板雜湊建立 `vite.config` 允許清單，自訂設定給警告或拒絕（僅限過渡期的託管 Start）。
 7. 停止新增只適用託管模式的功能。
 
 **已合併到 `main`（依 git log，origin/main `0e444ed`）。** #490 原生 Wrangler 設定契約；#496 release／Worker 版本比對（休眠，正式環境關閉）；#497 binding taint 修正；#499 共用 layout 與頁面專屬 section 的 SDK 讀取；#500、#502 測試不穩修正；#498、#503 E2E／CI 強化。原生 PR2（SSR 准入與 SDK 解析證明）：CI 中（PR 待合併）。尚未合併：Astro 執行期記錄、統一 SDK 各步。
 
-**支援現況：能執行／能發布／Design 能編輯。** 依 repo 文件與 handoff 證據整理；沒有證據的格子寫「unverified」。「本機」指本機或容器測試，不是真實 Cloudflare。
+**支援現況：能執行／能發布／Design 能編輯。**
 
 | 目標 | 能執行（預覽） | 能發布 | Design 能編輯 |
 |---|---|---|---|
-| Start 託管（Starter v32） | 是，完整 Start 預覽（M1 本機驗收） | 是，SSR（本機）；真實 Cloudflare unverified | 是，經 `content.ts` 或 SDK 讀取（M1 本機驗收） |
-| Start 原生（自備 `vite.config`） | 部分：預覽用平台設定，不是作者的（見 1.6） | 否：正式環境拒絕（`NATIVE_START_BUILD_UNAVAILABLE`），到原生 PR6 為止 | 否：Hide 拒絕 `custom-build`；信任需原生 PR4 |
-| Astro 原生 | 是，預覽（Astro PR1 到 PR3 已合併） | 否：Astro 在正式環境關閉（見 1.6） | 部分：選取加 Inspector（D2 已合併）；M2 案例未驗收；預設 slot 等執行期記錄 |
+| Start 託管（Starter v32） | 是，完整 Start 預覽；M1 第 4 輪驗收 PASS（本機，`166c058`，本檔 M1 紀錄；Starter v32 為 #461） | 是，SSR（本機，同 M1 驗收）；真實 Cloudflare 未驗證 | 是，經 `content.ts` 或 SDK 讀取（M1 驗收，`166c058`）；SDK 讀取為 #499 |
+| Start 原生（自備 `vite.config`） | 部分：預覽用平台設定，不是作者的（本檔 1.6 的 2026-11-27 審查）；Wrangler 設定契約 #490 | 否：正式環境拒絕（`NATIVE_START_BUILD_UNAVAILABLE`，本檔 2026-11-27 發現），到原生 PR6 為止 | 否：Hide 拒絕 `custom-build`（`theme-hide-capability.ts:1417`，審查檔 `start-render-modes-audit.md`）；信任需原生 PR4；原生 PR2 為 CI 中 |
+| Astro 原生 | 是，預覽（#478、#481、#482 已合併）；真實 Cloudflare 未驗證 | 否：Astro 在正式環境關閉（本檔 1.6 的 2026-11-27 審查） | 點選定位：選取已合併（#482）；M2 案例未驗收。<br>Inspector 修改 Document 欄位：Inspector 已合併（#482）；四項驗收（選到正確欄位、畫布更新、原始值、重載一致）未通過；預設 slot 欄位等執行期記錄，未驗證。<br>修改 `.astro` 樣式／結構原始碼：未驗證（找不到證據） |
 
-**Start 渲染模式**（來自 2026-11-28 在 `12969ee` 上的審查；S 支援、P 部分、R 拒絕、U unverified；之後的 #500 到 #503 不涉及渲染）。
-
-| 模式 | 能執行（預覽） | 能發布 | Design 能編輯 |
-|---|---|---|---|
-| 完整 SSR | S | S（本機） | S，Hide 已涵蓋 |
-| Streaming（延遲資料） | Live Preview S；Build Preview U | 渲染 S；串流中讀 Morph 內容 U | P：bridge 最多等串流 30 秒 |
-| 選擇性 SSR（`ssr: false`、`'data-only'`） | Live Preview S；Build Preview U | S | U |
-| `ssr` 函式、`defaultSsr` | U | U | U；`defaultSsr` 或根路由 `ssr: false` 會停用 Hide |
-| SPA | R | R | R |
-| SSG／預先渲染 | U | R（`assertRenderingModeReady`）；Core 送出已就緒 | U |
-| ISR | U | 未接線；Core 送出 `private, no-store`（#487） | U |
-
-**Astro 渲染模式。** 尚無審查；在建立 Astro 驗收表（優先順序 4）之前，所有格子都是 unverified。
+**Start 渲染模式**（來自 2026-11-28 在 `12969ee` 上的審查，檔案 `start-render-modes-audit.md`；S 支援、P 部分、R 拒絕、U 未驗證；之後的 #500 到 #503 不涉及渲染）。引用的程式位置見審查檔。
 
 | 模式 | 能執行（預覽） | 能發布 | Design 能編輯 |
 |---|---|---|---|
-| SSR（隨需） | unverified | unverified（Astro 在正式環境關閉） | unverified |
-| Streaming | unverified | unverified | unverified |
-| 靜態（`prerender`） | unverified | unverified | unverified |
-| 混合（逐路由 `prerender`） | unverified | unverified | unverified |
-| Server islands | unverified | unverified | unverified |
-| ISR 等效 | unverified | unverified | unverified |
+| 完整 SSR | S（Starter v32，#461） | S（本機，M1） | S，Hide 已涵蓋（`starter-v32-full-start-acceptance`、`build-preview-isolated`） |
+| Streaming（延遲資料） | Live Preview S（`native-compat-preview.spec.ts:197`）；Build Preview 未驗證 | 渲染 S（`native-compat-published.spec.ts:484`）；串流中讀 Morph 內容未驗證 | P：bridge 最多等串流 30 秒（`theme-preview-start-runtime.ts:714-738`） |
+| 選擇性 SSR（`ssr: false`、`'data-only'`） | Live Preview S（`theme-preview-start-runtime.ts:278`）；Build Preview 未驗證 | S（`native-compat-published.spec.ts:539`） | 未驗證 |
+| `ssr` 函式、`defaultSsr` | 未驗證 | 未驗證 | 未驗證；`defaultSsr` 或根路由 `ssr: false` 會停用 Hide（`theme-hide-capability.ts:1417`） |
+| SPA | R（`theme-sandbox-workspace.ts:1073`） | R | R |
+| SSG／預先渲染 | 未驗證 | R（`assertRenderingModeReady`，`storefront-theme.dal.ts:1367`）；Core 送出已就緒（本檔 SSG PR1、PR2） | 未驗證 |
+| ISR | 未驗證 | 未接線；Core 送出 `private, no-store`（#487） | 未驗證 |
+
+**Astro 渲染模式。** 尚無審查，所有格子都是「未驗證」，直到建立 Astro 驗收表（優先順序 4）。
+
+| 模式 | 能執行（預覽） | 能發布 | Design 能編輯 |
+|---|---|---|---|
+| 全站 `output: "static"` | 未驗證 | 未驗證（Astro 在正式環境關閉） | 未驗證 |
+| 逐路由 prerender | 未驗證 | 未驗證 | 未驗證 |
+| 動態路由 | 未驗證 | 未驗證 | 未驗證 |
+| Client Islands | 未驗證 | 未驗證 | 未驗證 |
+| Server Islands | 未驗證 | 未驗證 | 未驗證 |
+
+**驗收案例：部分降級。** 頁面含 Server Island 時，來源能獨立確認的區塊仍然可以編輯；來源不明的區塊退回已宣告欄位的表單，或跳到 Code。此案例尚未驗證。
 
 **Start 渲染模式的決定（2026-11-28，使用者核准）。** SPA 排在原生 PR6 之後，使用不含內容的 shell；bridge 從 shell hydration 開始，不等串流結束；Hide 仍以已證明的根路由為前提（含 `defaultSsr`）；初次 `ssr: false` hydration 釘在文件所屬 release；編輯器不強制 `ssr: true`。第一個 PR 是證據測試（Starter 32 fixture、所有模式、隱藏與可見的標記值）。
 
