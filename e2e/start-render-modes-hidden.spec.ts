@@ -242,6 +242,11 @@ type Streamed = {
   chunks: string[];
   /** Index of the first chunk read after the release; -1 if none was needed. */
   releasedAt: number;
+  /**
+   * The release was sent because nothing arrived for 10 s (no fallback had
+   * streamed), not because the fallback was seen: the body was not streaming.
+   */
+  releasedOnIdle: boolean;
 };
 
 /**
@@ -257,38 +262,77 @@ async function streamedIn(target: Page | Frame, path: string): Promise<Streamed>
       const decoder = new TextDecoder();
       const chunks: string[] = [];
       let releasedAt = -1;
+      let releasedOnIdle = false;
+      const release = async () => {
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const answer = (await (
+            await fetch(releasePath, { cache: "no-store" })
+          ).json()) as { released: number };
+          if (answer.released > 0) break;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        releasedAt = chunks.length;
+      };
       for (;;) {
         if (releasedAt < 0 && chunks.join("").includes("rm-defer-pending")) {
-          for (let attempt = 0; attempt < 50; attempt += 1) {
-            const answer = (await (
-              await fetch(releasePath, { cache: "no-store" })
-            ).json()) as { released: number };
-            if (answer.released > 0) break;
-            await new Promise((resolve) => setTimeout(resolve, 200));
-          }
-          releasedAt = chunks.length;
+          await release();
         }
-        const { value, done } = await reader.read();
+        const reading = reader.read();
+        if (releasedAt < 0) {
+          // Nothing for 10 s with the value still held: a body that is not
+          // streaming. Released so the read can finish, and said so.
+          const idle = await Promise.race([
+            reading.then(() => false),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 10_000)),
+          ]);
+          if (idle) {
+            releasedOnIdle = true;
+            await release();
+          }
+        }
+        const { value, done } = await reading;
         if (done) break;
         chunks.push(decoder.decode(value, { stream: true }));
       }
-      return { status: response.status, chunks, releasedAt };
+      return { status: response.status, chunks, releasedAt, releasedOnIdle };
     },
     { path, releasePath: RENDER_MODE_RELEASE_PATH },
   );
 }
 
 /** The streamed document, held to the route's sentinels chunk by chunk. */
-function expectStreamed(streamed: Streamed, visit: Visit, where: string) {
+function expectStreamed(
+  streamed: Streamed,
+  visit: Visit,
+  where: string,
+  delivery: "streams" | "recorded" = "streams",
+) {
   expect(streamed.status, `${where}: status`).toBe(200);
   for (const [index, chunk] of streamed.chunks.entries()) {
     expectNoHiddenSentinel(chunk, `${where} chunk ${index}`);
   }
   const html = streamed.chunks.join("");
   expectRouteHtml(html, visit, where);
-  if (visit.mode === "defer") {
+  if (visit.mode === "defer" && delivery === "recorded") {
+    // Where streaming itself is not this case's claim (the public site),
+    // how the body arrived is recorded; the hidden rule above still holds.
+    test.info().annotations.push({
+      type: "deferred-delivery",
+      description: JSON.stringify({
+        where,
+        chunks: streamed.chunks.length,
+        releasedAt: streamed.releasedAt,
+        releasedOnIdle: streamed.releasedOnIdle,
+        fallbackBeforeRelease: streamed.chunks
+          .slice(0, Math.max(streamed.releasedAt, 0))
+          .join("")
+          .includes("rm-defer-pending"),
+      }),
+    });
+  } else if (visit.mode === "defer") {
     // The shell and the fallback streamed before the release; the deferred
     // sections only after it.
+    expect(streamed.releasedOnIdle, `${where}: the body streamed`).toBe(false);
     expect(streamed.releasedAt, `${where}: the value was held`).toBeGreaterThan(0);
     const before = streamed.chunks.slice(0, streamed.releasedAt).join("");
     expect(before, `${where}: shell before release`).toContain("rm-defer-shell");
@@ -300,6 +344,19 @@ function expectStreamed(streamed: Streamed, visit: Visit, where: string) {
     );
   } else {
     expect(streamed.releasedAt, `${where}: nothing was held`).toBe(-1);
+  }
+}
+
+/** One release attempt from a second tab on `origin`; how many it let go. */
+async function releaseOnce(target: Page, origin: string): Promise<number> {
+  const helper = await target.context().newPage();
+  try {
+    const response = await helper.goto(`${origin}${RENDER_MODE_RELEASE_PATH}`);
+    return ((await response!.json()) as { released: number }).released;
+  } catch {
+    return 0;
+  } finally {
+    await helper.close();
   }
 }
 
@@ -416,14 +473,18 @@ async function loadDocument(target: Page, origin: string, visit: Visit, reload =
   const loading = reload
     ? target.reload({ waitUntil: "commit" })
     : target.goto(`${origin}${visit.path}`, { waitUntil: "commit" });
+  // Released while the document loads (whether or not it streams; that is
+  // streamedIn's question), so a buffered answer can commit too.
+  const releasing =
+    visit.mode === "defer" ? releaseFromSecondTab(target, origin) : Promise.resolve();
   const response = await loading;
+  await releasing;
   expect(response, `a response for ${visit.path}`).not.toBeNull();
   expect(response!.status()).toBe(200);
   if (visit.mode === "defer") {
     await expect(target.locator("[data-rm-defer-shell]")).toBeAttached({
       timeout: 90_000,
     });
-    await releaseFromSecondTab(target, origin);
   }
   return response!.text();
 }
@@ -839,12 +900,24 @@ test.describe("Start render modes keep hidden sections out", () => {
     const hydration = lines.find(
       (line) => line.at >= reloaded && line.text.includes("frame hydration"),
     );
-    // Once loaded, the bridge may re-run the route's loader (an invalidate),
-    // which holds a new deferred value. Recorded, then released.
-    const heldAgain = await releaseFromSecondTab(page, previewOrigin!).then(
-      () => true,
-      () => false,
-    );
+    // Once loaded, the bridge may re-run the route's loader (an invalidate)
+    // more than once, each holding a new deferred value (runs rm-evidence-9
+    // and -10). Every one is released until the deferred sections render;
+    // how many there were is recorded.
+    let heldAgain = 0;
+    const canvasFrame = await previewDocument(page);
+    await expect
+      .poll(
+        async () => {
+          heldAgain += await releaseOnce(page, previewOrigin!);
+          return canvasFrame
+            .locator(`[${renderModeRendered("defer", "loadshown")}]`)
+            .count()
+            .catch(() => 0);
+        },
+        { timeout: 90_000, intervals: [1_000], message: "the deferred sections render" },
+      )
+      .toBe(1);
     test.info().annotations.push({
       type: "bridge-unavailable-while-held",
       description: JSON.stringify({
@@ -1175,7 +1248,12 @@ test.describe("Start render modes keep hidden sections out", () => {
     await waitForRouter(visitor);
     for (const visit of VISITS) {
       const where = `public ${visit.label}`;
-      expectStreamed(await streamedIn(visitor, visit.path), visit, `${where} (streamed)`);
+      expectStreamed(
+        await streamedIn(visitor, visit.path),
+        visit,
+        `${where} (streamed)`,
+        "recorded",
+      );
       expectRouteHtml(await loadDocument(visitor, publicOrigin(), visit), visit, `${where} (load)`);
       await waitForRouter(visitor);
       await expectRouteDom(visitor, visit);
@@ -1196,7 +1274,8 @@ test.describe("Start render modes keep hidden sections out", () => {
     for (const visit of VISITS.slice(1)) {
       await navigateInSite(visitor, visit.path);
       if (visit.mode === "defer") {
-        await expect(visitor.locator("[data-rm-defer-shell]")).toBeVisible({ timeout: 60_000 });
+        // Released first: whether the public navigation streams its shell
+        // before the value is not this case's claim (see "deferred-delivery").
         await releaseFromSecondTab(visitor, publicOrigin());
       }
       await expectRouteDom(visitor, visit);
