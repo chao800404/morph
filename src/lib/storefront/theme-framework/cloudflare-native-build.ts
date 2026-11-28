@@ -1092,6 +1092,17 @@ export type NativeThemeArtifact = Readonly<{
   files: ReadonlyMap<string, Uint8Array | string>;
   workerEntry: string;
   clientAssetsDirectory: string;
+  /**
+   * Where the build wrote the Worker and its assets, workspace-relative,
+   * before they were moved into the artifact layout.
+   */
+  sourceDirectories: Readonly<{ server: string; client: string }>;
+  /**
+   * What the framework's collector adds to the manifest's metadata (a native
+   * Start build's `nativeProof`); absent for every other build, so their
+   * manifests are unchanged.
+   */
+  metadata?: Readonly<Record<string, unknown>>;
 }>;
 
 const SERVER_PREFIX = "runtime/server";
@@ -1207,5 +1218,6 @@ export function collectNativeCloudflareArtifact(
     files,
     workerEntry: `${SERVER_PREFIX}/${main.slice(serverDir.length + 1)}`,
     clientAssetsDirectory: CLIENT_PREFIX,
+    sourceDirectories: { server: serverDir, client: clientDir },
   };
 }

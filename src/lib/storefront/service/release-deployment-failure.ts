@@ -28,6 +28,10 @@ const EXPLANATIONS: Record<ReleaseDeploymentFailureCode, string> = {
   INVALID_SCRIPT_NAME: "this storefront's id cannot name a Theme Worker",
   INVALID_STATIC_PAGES:
     "the build's static pages do not match the files it holds",
+  NATIVE_PROOF_MISSING:
+    "the native build carries no proof that it reads content through Morph's SDK; rebuild the Theme",
+  NATIVE_HTML_ASSET_UNAVAILABLE:
+    "the native build serves static HTML, which is not published yet; remove the prerender setting or the HTML file",
   RELEASE_NOT_FOUND: "the release was not found",
   BUILD_NOT_DEPLOYABLE: "the release has no succeeded build to deploy",
   WORKER_CONFIG_UNREADABLE: "the build's Worker config could not be read",
@@ -47,6 +51,8 @@ const BUILD_SHAPE_CODES = new Set<ReleaseDeploymentFailureCode>([
   "INVALID_WORKER_CONFIG",
   "FORBIDDEN_BINDING",
   "INVALID_STATIC_PAGES",
+  "NATIVE_PROOF_MISSING",
+  "NATIVE_HTML_ASSET_UNAVAILABLE",
 ]);
 
 function isCode(value: unknown): value is ReleaseDeploymentFailureCode {

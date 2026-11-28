@@ -8,11 +8,21 @@ import {
   planNativeStartBuild,
 } from "./tanstack-start-native-build";
 import {
+  NATIVE_ADAPTER_REFUSAL_PATH,
   NATIVE_BUILD_HOOKS_PATH,
   NATIVE_BUILD_LOADER_PATH,
   NATIVE_BUILD_NODE_OPTIONS,
   NATIVE_WRAPPER_CONFIG_PATH,
+  nativeImportGuardPluginSource,
+  nativeWrapperConfigSource,
 } from "./tanstack-start-native-wrapper";
+import {
+  NATIVE_PROOF_VERSION,
+  NATIVE_RESOLUTION_PLUGIN_PATH,
+  nativeResolutionPluginSource,
+  nativeSdkSentinel,
+} from "./native-start-proof";
+import { nativeStartProofRecordsForTest } from "./native-start-proof.test-support";
 
 describe("parseJsonc", () => {
   it("reads comments and trailing commas the way Wrangler accepts them", () => {
@@ -194,16 +204,6 @@ describe("planNativeStartBuild", () => {
       "NATIVE_VITE_CONFIG",
     ],
     [
-      "a configPath the env variable cannot override",
-      {
-        "vite.config.ts": VITE_CONFIG.replace(
-          'name: "ssr" }',
-          'name: "ssr" }, configPath: "./other.jsonc"',
-        ),
-      },
-      "NATIVE_CUSTOM_CONFIG_PATH",
-    ],
-    [
       "no Wrangler config",
       { "wrangler.jsonc": undefined },
       "NATIVE_WRANGLER_CONFIG",
@@ -227,16 +227,6 @@ describe("planNativeStartBuild", () => {
         ),
       },
       "NATIVE_BINDINGS_UNMAPPED",
-    ],
-    [
-      "the Cloudflare plugin's remoteBindings option",
-      {
-        "vite.config.ts": VITE_CONFIG.replace(
-          'name: "ssr" }',
-          'name: "ssr" }, remoteBindings: true',
-        ),
-      },
-      "NATIVE_REMOTE_BINDING",
     ],
     [
       "a Wrangler setting the contract refuses",
@@ -265,6 +255,85 @@ describe("planNativeStartBuild", () => {
   ])("refuses %s", (_label, overrides, code) => {
     const plan = planNativeStartBuild(project(overrides));
     expect(plan).toMatchObject({ ok: false, code });
+  });
+
+  it("leaves the Cloudflare plugin's options to the check at the call, not the config's text", () => {
+    // PR 1 refused `configPath` and `remoteBindings` by reading the text;
+    // the loader shim now checks the options the plugin is actually given
+    // (native-build-hooks.test.ts, native-start-build.test.ts).
+    for (const option of ['configPath: "./other.jsonc"', "remoteBindings: true"]) {
+      const plan = planNativeStartBuild(
+        project({
+          "vite.config.ts": VITE_CONFIG.replace(
+            'name: "ssr" }',
+            `name: "ssr" }, ${option}`,
+          ),
+        }),
+        { nonce: NONCE },
+      );
+      if (!plan.ok) throw new Error(plan.message);
+      const loader = plan.workspaceFiles.find(
+        (file) => file.path === NATIVE_BUILD_LOADER_PATH,
+      )!.content;
+      expect(loader).toContain("morphCheckCloudflareOptions(options);");
+      expect(loader).toContain('\\"vite.config.ts\\"');
+    }
+  });
+
+  it("carries the resolution plugin and this pass's nonce, and sentinels in the SDK copy", () => {
+    const plan = planNativeStartBuild(project(), { nonce: NONCE });
+    if (!plan.ok) throw new Error(plan.message);
+    const byPath = new Map(plan.workspaceFiles.map((f) => [f.path, f.content]));
+    expect(byPath.get(NATIVE_RESOLUTION_PLUGIN_PATH)).toBe(
+      nativeResolutionPluginSource(),
+    );
+    const wrapper = byPath.get(NATIVE_WRAPPER_CONFIG_PATH)!;
+    expect(wrapper).toContain('import morphNativeResolution from "./native-resolution.mjs";');
+    expect(wrapper).toContain(`const morphBuildNonce = ${JSON.stringify(NONCE)};`);
+    expect(wrapper).toContain(
+      "morphNativeResolution({ workspaceRoot, nonce: morphBuildNonce })",
+    );
+    expect(byPath.get(".morph/sdk/start/index.ts")).toContain(
+      nativeSdkSentinel(NONCE, "@morph/sdk/start"),
+    );
+    expect(byPath.get(".morph/sdk/src/index.ts")).toContain(
+      nativeSdkSentinel(NONCE, "@morph/sdk"),
+    );
+  });
+
+  it("holds Web Worker bundles to the import guard, first at both ordering levels, and records them", () => {
+    const plan = planNativeStartBuild(project(), { nonce: NONCE });
+    if (!plan.ok) throw new Error(plan.message);
+    const wrapper = plan.workspaceFiles.find(
+      (f) => f.path === NATIVE_WRAPPER_CONFIG_PATH,
+    )!.content;
+    const workerBlock = wrapper.slice(wrapper.indexOf("merged.worker = {"));
+    // The main graphs' guard, with its hook at Rollup's order "pre" too.
+    const guard = nativeImportGuardPluginSource({ hookOrderPre: true });
+    expect(guard).toContain('order: "pre"');
+    expect(guard).toContain('enforce: "pre"');
+    expect(workerBlock).toContain(guard);
+    // First in the list, before the project's own worker plugins.
+    expect(workerBlock.indexOf('name: "morph:native-import-guard"')).toBeLessThan(
+      workerBlock.indexOf("ownWorkerPlugins()"),
+    );
+    // The resolution plugin after them, with the approved packages so it
+    // checks the finished worker graph too.
+    expect(workerBlock.indexOf("ownWorkerPlugins()")).toBeLessThan(
+      workerBlock.indexOf("morphNativeResolution({"),
+    );
+    expect(workerBlock).toContain('scope: "worker"');
+    expect(workerBlock).toContain("allowedPackages: [...allowedPackages]");
+    // The main graphs' guard is unchanged.
+    expect(nativeImportGuardPluginSource()).not.toContain('order: "pre"');
+    expect(workerBlock).not.toContain("morph:frozen-prerender-content");
+    expect(wrapper).toContain("morph:frozen-prerender-content");
+    // Without the proof (no nonce), the wrapper is the one before it.
+    const legacy = nativeWrapperConfigSource({
+      themeConfigPath: "vite.config.ts",
+      allowedPackages: [],
+    });
+    expect(legacy).not.toContain("merged.worker");
   });
 
   it("gives the build a copy without dev or the author's other ignored keys", () => {
@@ -301,9 +370,28 @@ describe("planNativeStartBuild", () => {
 // fixtures/tanstack/start-basic-cloudflare and on the starter built natively).
 const officialOutputs = (
   overrides: Record<string, string | undefined> = {},
-): Map<string, string> =>
-  new Map(
-    Object.entries({
+): Map<string, string> => {
+  const built = Object.fromEntries(
+    Object.entries(officialBuild(overrides)).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+  // Morph's plugins' records, for a build importing no SDK, over the files
+  // as written; an override can still remove or replace one.
+  const records = nativeStartProofRecordsForTest(
+    `const morphBuildNonce = ${JSON.stringify(NONCE)};`,
+    built,
+  );
+  return new Map(
+    Object.entries({ ...records, ...officialBuild(overrides) }).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+};
+
+const officialBuild = (
+  overrides: Record<string, string | undefined>,
+): Record<string, string | undefined> => ({
       [NATIVE_DEPLOY_CONFIG_PATH]: JSON.stringify({
         configPath: "../../dist/server/wrangler.json",
         auxiliaryWorkers: [],
@@ -324,12 +412,76 @@ const officialOutputs = (
       "dist/client/favicon.ico": "ico",
       "src/routes/index.tsx": "source, not output",
       ...overrides,
-    }).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
+});
+
+/** The pass's nonce the records above were written under. */
+const NONCE = "5f".repeat(16);
+const collect = (outputs: ReadonlyMap<string, string>) =>
+  collectNativeStartArtifact(outputs, NONCE);
+
+describe("collectNativeStartArtifact: the proof", () => {
+  it("attaches the verified SDK proof and the artifact's static HTML as manifest metadata", () => {
+    const artifact = collect(
+      officialOutputs({
+        "dist/client/about/index.html": "<html>",
+        "public/robots.html": "<html>",
+        "dist/client/robots.html": "<html>",
+      }),
+    );
+    expect(artifact.metadata).toEqual({
+      nativeProof: {
+        version: NATIVE_PROOF_VERSION,
+        sdk: {
+          environments: [
+            { name: "client", output: "client", specifiers: [], edges: 0, sentinelFiles: [] },
+            { name: "ssr", output: "server", specifiers: [], edges: 0, sentinelFiles: [] },
+          ],
+        },
+        toolchain: { vite: "7.3.5" },
+        html: [
+          { path: "runtime/client/about/index.html", source: "prerender" },
+          { path: "runtime/client/robots.html", source: "public" },
+        ],
+      },
+    });
+    expect(artifact.sourceDirectories).toEqual({
+      server: "dist/server",
+      client: "dist/client",
+    });
+  });
+
+  it("refuses the artifact without the pass's nonce, or without the records", () => {
+    expect(() => collectNativeStartArtifact(officialOutputs())).toThrow(
+      "NATIVE_PROOF_SDK_RESOLUTION: this build pass has no nonce",
+    );
+    expect(() =>
+      collect(
+        officialOutputs({ ".morph/records/resolution.client.json": undefined }),
+      ),
+    ).toThrow(
+      "NATIVE_PROOF_SDK_RESOLUTION: the build wrote no SDK resolution record for its browser output",
+    );
+  });
+
+  it("refuses an artifact built after the adapter check refused an option, even if the config caught it", () => {
+    const message =
+      'NATIVE_ADAPTER_OPTION: vite.config.ts passes configPath to cloudflare(). Morph supplies the Wrangler config the plugin reads, from wrangler.jsonc at the project root; a config path would replace it. Remove "configPath"; keep wrangler.jsonc at the project root.';
+    expect(() =>
+      collect(
+        officialOutputs({
+          [NATIVE_ADAPTER_REFUSAL_PATH]: JSON.stringify({
+            code: "NATIVE_ADAPTER_OPTION",
+            message,
+          }),
+        }),
+      ),
+    ).toThrow(message);
+  });
+});
 
 describe("collectNativeStartArtifact", () => {
   it("moves the Worker and its assets into Morph's artifact layout", () => {
-    const artifact = collectNativeStartArtifact(officialOutputs());
+    const artifact = collect(officialOutputs());
     expect([...artifact.files.keys()].sort()).toEqual([
       "runtime/client/assets/index.js",
       "runtime/client/favicon.ico",
@@ -379,7 +531,7 @@ describe("collectNativeStartArtifact", () => {
     ],
   ])("refuses %s", (_label, overrides) => {
     expect(() =>
-      collectNativeStartArtifact(officialOutputs(overrides)),
+      collect(officialOutputs(overrides)),
     ).toThrow("NATIVE_ARTIFACT_INCOMPLETE");
   });
 
@@ -400,14 +552,14 @@ describe("collectNativeStartArtifact", () => {
         ...extra,
       }),
     });
-    expect(() => collectNativeStartArtifact(outputs)).toThrow(
+    expect(() => collect(outputs)).toThrow(
       new RegExp(`^${code}: runtime/server/wrangler\\.json`),
     );
   });
 
   it("refuses a local variables file the build wrote beside the Worker", () => {
     expect(() =>
-      collectNativeStartArtifact(
+      collect(
         officialOutputs({ "dist/server/.dev.vars": "SECRET=1" }),
       ),
     ).toThrow("NATIVE_SECRET_UNMAPPED");

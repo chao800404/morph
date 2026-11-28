@@ -166,7 +166,11 @@ export function nativeBuildResult(options: {
 
   let collected: ReturnType<typeof native.collect>;
   try {
-    collected = native.collect(options.outputs);
+    collected = native.collect(
+      options.outputs,
+      nonce,
+      input.files.map((file) => ({ path: file.path, content: file.content })),
+    );
   } catch (error) {
     return fail(
       "output-collection",
@@ -238,7 +242,12 @@ export function nativeBuildResult(options: {
     jsChunks: artifacts
       .filter((artifact) => artifact.mimeType === "application/javascript")
       .map((artifact) => artifact.path),
-    metadata: native.manifestMetadata(routeRegistry),
+    // What the collector proved (a native Start build's `nativeProof`) joins
+    // the framework's description; a collector that adds nothing leaves the
+    // manifest as it was.
+    metadata: collected.metadata
+      ? { ...native.manifestMetadata(routeRegistry), ...collected.metadata }
+      : native.manifestMetadata(routeRegistry),
   };
   addLog(
     "info",

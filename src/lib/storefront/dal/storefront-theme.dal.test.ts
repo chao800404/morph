@@ -4800,6 +4800,117 @@ describe("publish build resolution", () => {
 
     expect(result!.themeBuildId).toBe("33333333-3333-4333-8333-333333333333");
   });
+
+  describe("a native Start build's production admission (render plan v2 step 1)", () => {
+    const NATIVE_BUILD = "66666666-6666-4666-8666-666666666666";
+    const proof = {
+      version: "np-1",
+      sdk: {
+        environments: [
+          { name: "client", output: "client", specifiers: [], edges: 0, sentinelFiles: [] },
+          {
+            name: "ssr",
+            output: "server",
+            specifiers: ["@morph/sdk/start"],
+            edges: 1,
+            sentinelFiles: ["runtime/server/index.js"],
+          },
+        ],
+      },
+      toolchain: { vite: "7.3.5" },
+      html: [],
+    };
+    const manifest = (options: { nativeProof?: unknown; extraFiles?: string[] }) => ({
+      compilerId: "tanstack-start-native",
+      runtime: {
+        kind: "cloudflare-worker",
+        workerEntry: "runtime/server/index.js",
+        clientAssetsDirectory: "runtime/client",
+        ...(options.nativeProof === undefined ? {} : { nativeProof: options.nativeProof }),
+      },
+      files: [
+        "runtime/server/index.js",
+        "runtime/client/assets/app.js",
+        ...(options.extraFiles ?? []),
+      ].map((path) => ({
+        path,
+        contentType: "application/javascript",
+        sizeBytes: 1,
+        sha256: "0".repeat(64),
+      })),
+    });
+    /** Seeds the native build, and a log of every write to the active pointer. */
+    const seedNative = (manifestJson: unknown) => {
+      seedTemplateAndRevision(`
+        INSERT INTO storefront_theme_builds
+          (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, compiler_id, created_at, updated_at)
+        VALUES
+          ('${NATIVE_BUILD}', 'storefront-a', 'theme-a',
+           '22222222-2222-4222-8222-222222222222', 'succeeded',
+           'themes/theme-a/builds/native', '${JSON.stringify(manifestJson).replaceAll("'", "''")}',
+           'tanstack-start-native', 'now', 'now');
+        CREATE TABLE IF NOT EXISTS active_pointer_writes (release_id TEXT);
+        DELETE FROM active_pointer_writes;
+        CREATE TRIGGER IF NOT EXISTS log_active_pointer_writes
+          AFTER UPDATE OF active_release_id ON storefronts
+          BEGIN INSERT INTO active_pointer_writes VALUES (NEW.active_release_id); END;
+      `);
+    };
+    const publishNative = () =>
+      storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
+        verifySourceRevision: acceptRevision,
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: NATIVE_BUILD,
+        expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+        expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 1,
+      });
+    const nothingWritten = () => {
+      // Never moved, not moved and restored: no write reached the pointer.
+      expect(
+        sqlite.prepare("SELECT COUNT(*) AS count FROM active_pointer_writes").get(),
+      ).toEqual({ count: 0 });
+      expect(
+        sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_releases").get(),
+      ).toEqual({ count: 0 });
+      expect(
+        sqlite
+          .prepare(
+            "SELECT active_release_id AS active FROM storefronts WHERE id = 'storefront-a'",
+          )
+          .get(),
+      ).toEqual({ active: null });
+    };
+
+    it("refuses a native build without a proof before anything is written", async () => {
+      seedNative(manifest({}));
+      await expect(publishNative()).rejects.toThrow(/^NATIVE_PROOF_MISSING: /);
+      nothingWritten();
+    });
+
+    it("refuses a native build serving static HTML before anything is written, naming the file and path", async () => {
+      seedNative(
+        manifest({ nativeProof: proof, extraFiles: ["runtime/client/about/index.html"] }),
+      );
+      await expect(publishNative()).rejects.toThrow(
+        "NATIVE_HTML_ASSET_UNAVAILABLE: The build would serve runtime/client/about/index.html as /about/index.html.",
+      );
+      nothingWritten();
+    });
+
+    it("publishes an admitted native build, moving the pointer once", async () => {
+      seedNative(manifest({ nativeProof: proof }));
+      const result = await publishNative();
+      expect(result!.themeBuildId).toBe(NATIVE_BUILD);
+      expect(
+        sqlite.prepare("SELECT COUNT(*) AS count FROM active_pointer_writes").get(),
+      ).toEqual({ count: 1 });
+    });
+  });
 });
 
 describe("co-located content field declarations", () => {

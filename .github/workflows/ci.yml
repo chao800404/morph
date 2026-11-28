@@ -1603,11 +1603,12 @@ jobs:
   # against its exact target list (each title once, passed, zero skip, zero
   # retry) and its own runner handover before the next one starts, with a
   # network window per invocation. Local exclusive runs, one sample each:
-  # B1 5.4 min (1be332c), navigation 3.0 min (aef0e82).
+  # B1 5.4 min (1be332c), navigation 3.0 min (aef0e82). Last, the SSR-only
+  # native Start publish acceptance, the only run with the native build on.
   editor-e2e-container-publish:
     name: Editor E2E container publish acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 44
+    timeout-minutes: 54
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1942,20 +1943,85 @@ jobs:
           MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
         run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/section-visibility-layout-handover.json" e2e/section-visibility-layout.spec.ts
 
+      # The native Start build is a Core binding, read from .dev.vars when the
+      # runner starts Core; the shell does not reach the Worker. It is switched
+      # on here, after every other target of this job has run, so only the
+      # native SSR publish run sees it. The environment step above stays the
+      # presentation-ack job's, word for word.
+      - name: Switch on the native Start build for the native SSR publish run
+        run: |
+          if grep -q '^MORPH_NATIVE_START_BUILD=' .dev.vars; then
+            echo "::error::.dev.vars already sets MORPH_NATIVE_START_BUILD."
+            exit 1
+          fi
+          printf '%s\n' 'MORPH_NATIVE_START_BUILD=1' >> .dev.vars
+
+      - name: Mark native SSR publish container window start
+        run: |
+          printf '{"name":"native-ssr-publish-start","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe native-ssr-publish-start "$RUNNER_TEMP/container-network"
+
+      # An SSR-only native Start build published, published again, refused for
+      # a changed draft and rolled back on the public storefront. It builds in
+      # the Sandbox container with the native build on, which no other lane
+      # has; on its editor shard it skips itself. Local container runs (Mac,
+      # emulated amd64, three samples): 4.3-4.9 min for the spec.
+      - name: Run native SSR publish container acceptance
+        timeout-minutes: 10
+        id: native_ssr_publish_run
+        env:
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/native-ssr-publish.json
+          MORPH_E2E_HANDOVER_RECORD: ${{ runner.temp }}/stage3/native-ssr-publish-handover.json
+          MORPH_E2E_LOCK: "1"
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: exec node scripts/run-container-e2e-isolated.mjs scripts/run-editor-e2e.mjs e2e/native-ssr-publish-acceptance.spec.ts
+
+      - name: Mark native SSR publish container window end
+        if: always()
+        run: |
+          printf '{"name":"native-ssr-publish-end","utc":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" >> "$RUNNER_TEMP/container-network/windows.ndjson"
+          node scripts/check-container-network-windows.mjs probe native-ssr-publish-end "$RUNNER_TEMP/container-network"
+
+      - name: Preserve native SSR publish acceptance report
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage3/native-ssr-publish"
+          if [ -d test-results ]; then
+            cp -R test-results/. "$RUNNER_TEMP/stage3/native-ssr-publish/"
+          fi
+          if [ ! -f "$RUNNER_TEMP/stage3/native-ssr-publish/native-ssr-publish.json" ]; then
+            echo "::warning::Native SSR publish acceptance report was not produced."
+          fi
+
+      - name: Require exact native SSR publish target
+        run: node scripts/check-container-acceptance.mjs "$RUNNER_TEMP/stage3/native-ssr-publish/native-ssr-publish.json" scripts/container-acceptance-targets/native-ssr-publish-acceptance.mjs
+
+      - name: Require native SSR publish runner handover
+        id: native_ssr_publish_handover
+        if: always() && steps.native_ssr_publish_run.outcome != 'skipped'
+        env:
+          MORPH_E2E_LOCK_FILE: /tmp/morph-editor-e2e.lock
+        run: node scripts/check-container-run-handover.mjs "$RUNNER_TEMP/stage3/native-ssr-publish-handover.json" e2e/native-ssr-publish-acceptance.spec.ts
+
       - name: Record Stage 3 runner identities and handover results
         if: always()
         env:
           B1_PUBLISH_ROLLBACK_HANDOVER_OUTCOME: ${{ steps.b1_publish_rollback_handover.outcome }}
           NAVIGATION_MATRIX_PUBLIC_HANDOVER_OUTCOME: ${{ steps.navigation_matrix_public_handover.outcome }}
           SECTION_VISIBILITY_LAYOUT_HANDOVER_OUTCOME: ${{ steps.section_visibility_layout_handover.outcome }}
+          NATIVE_SSR_PUBLISH_HANDOVER_OUTCOME: ${{ steps.native_ssr_publish_handover.outcome }}
         run: |
-          node --input-type=module - "$RUNNER_TEMP/stage3/b1-publish-rollback-handover.json" "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" "$RUNNER_TEMP/stage3/section-visibility-layout-handover.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/stage3/b1-publish-rollback-handover.json" "$RUNNER_TEMP/stage3/navigation-matrix-public-handover.json" "$RUNNER_TEMP/stage3/section-visibility-layout-handover.json" "$RUNNER_TEMP/stage3/native-ssr-publish-handover.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const paths = process.argv.slice(2);
           const entries = [
             ["b1-publish-rollback", paths[0], process.env.B1_PUBLISH_ROLLBACK_HANDOVER_OUTCOME],
             ["navigation-matrix-public", paths[1], process.env.NAVIGATION_MATRIX_PUBLIC_HANDOVER_OUTCOME],
             ["section-visibility-layout", paths[2], process.env.SECTION_VISIBILITY_LAYOUT_HANDOVER_OUTCOME],
+            ["native-ssr-publish", paths[3], process.env.NATIVE_SSR_PUBLISH_HANDOVER_OUTCOME],
           ];
           for (const [name, filename, outcome] of entries) {
             try {
@@ -2024,7 +2090,7 @@ jobs:
 
       - name: Require each container window's veths to have come and gone inside it
         if: always()
-        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" b1-publish-rollback navigation-matrix-public section-visibility-layout
+        run: node scripts/check-container-network-windows.mjs check "$RUNNER_TEMP/container-network" b1-publish-rollback navigation-matrix-public section-visibility-layout native-ssr-publish
 
       - name: Keep Stage 3 records with the results
         if: always()

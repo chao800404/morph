@@ -6,7 +6,15 @@ import {
 } from "../compiler/theme-prerender-content";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "../compiler/theme-sandbox-dependencies.generated";
 import { prepareSourcesForBuild } from "../source-language/tsx-source-language";
-import { themeMorphSdkFiles } from "../compiler/theme-morph-sdk";
+import {
+  NATIVE_PROOF_VERSION,
+  NATIVE_RESOLUTION_PLUGIN_PATH,
+  nativeHtmlAssets,
+  nativeResolutionPluginSource,
+  nativeStartSdkFiles,
+  verifyNativeStartSdkProof,
+  type NativeBuildProof,
+} from "./native-start-proof";
 import {
   NATIVE_EMITTED_WORKER_CONFIG_LABEL,
   NATIVE_WRANGLER_CONFIG_PATH,
@@ -20,6 +28,8 @@ import {
   type NativeThemeBuildPlan,
 } from "./cloudflare-native-build";
 import {
+  NATIVE_ADAPTER_CALLS_PATH,
+  NATIVE_ADAPTER_REFUSAL_PATH,
   NATIVE_BUILD_HOOKS_PATH,
   NATIVE_BUILD_LOADER_PATH,
   NATIVE_BUILD_NODE_OPTIONS,
@@ -103,6 +113,8 @@ export function planNativeStartBuild(
      * content read is refused, as for a build with no sealed content.
      */
     prerenderContent?: NativePrerenderContent;
+    /** The build pass's nonce (native-start-proof.ts). */
+    nonce?: string;
   }> = {},
 ): NativeStartBuildPlan {
   const byPath = new Map(files.map((file) => [file.path, file.content]));
@@ -116,25 +128,10 @@ export function planNativeStartBuild(
         : `The project has more than one Vite config (${viteConfigs.join(", ")}).`,
     );
   }
-  // A config path written into the plugin call takes precedence over the
-  // environment variable Morph uses to supply its own copy, so the build would
-  // silently ignore it. Refused until Morph maps that case too.
-  if (/\bconfigPath\s*:/.test(byPath.get(viteConfigs[0]!)!)) {
-    return refuseNativeBuild(
-      "NATIVE_CUSTOM_CONFIG_PATH",
-      `${viteConfigs[0]} passes configPath to the Cloudflare plugin; Morph cannot supply its deployment config to that build yet.`,
-    );
-  }
-  // The plugin's switch for bindings that reach a real Cloudflare account.
-  // No binding is mapped, so no build connects to one. The same lexical check
-  // as configPath's, until the adapter-option check at the plugin call
-  // (design PR 2) replaces both.
-  if (/\bremoteBindings\s*:/.test(byPath.get(viteConfigs[0]!)!)) {
-    return refuseNativeBuild(
-      "NATIVE_REMOTE_BINDING",
-      `${viteConfigs[0]} sets remoteBindings on the Cloudflare plugin. Builds never connect to a Cloudflare account. Remove "remoteBindings".`,
-    );
-  }
+  // The Cloudflare plugin's options (`configPath`, `config`, auxiliary
+  // Workers, `remoteBindings`, ...) are checked where the project calls the
+  // plugin, by the loader shim (`nativeBuildLoaderSource`), not here: only
+  // the call sees the options as the plugin would.
 
   const reserved = refuseNativeReservedPaths(files);
   if (reserved) return reserved;
@@ -151,19 +148,29 @@ export function planNativeStartBuild(
     NATIVE_WRAPPER_CONFIG_PATH,
     NATIVE_BUILD_HOOKS_PATH,
     NATIVE_BUILD_LOADER_PATH,
+    NATIVE_RESOLUTION_PLUGIN_PATH,
     THEME_PRERENDER_CONTENT_FILE,
     NATIVE_PRERENDER_REFUSED_READS_PATH,
   ]);
   const workspaceFiles: SourceFile[] = stripped.files.filter(
     (file) => !morphOwned.has(file.path),
   );
+  // The pass's own nonce, carried by the SDK sentinels and the resolution
+  // records (native-start-proof.ts). A plan made only to see whether the
+  // project can be built (the materializer's) has none and is not built.
+  const nonce = options.nonce ?? "";
   workspaceFiles.push(wrangler.file);
   workspaceFiles.push({
     path: NATIVE_WRAPPER_CONFIG_PATH,
     content: nativeWrapperConfigSource({
       themeConfigPath: viteConfigs[0]!,
       allowedPackages: options.allowedPackages ?? nativeAllowedPackages(),
+      resolutionNonce: nonce,
     }),
+  });
+  workspaceFiles.push({
+    path: NATIVE_RESOLUTION_PLUGIN_PATH,
+    content: nativeResolutionPluginSource(),
   });
   workspaceFiles.push({
     path: NATIVE_BUILD_HOOKS_PATH,
@@ -171,11 +178,14 @@ export function planNativeStartBuild(
   });
   workspaceFiles.push({
     path: NATIVE_BUILD_LOADER_PATH,
-    content: nativeBuildLoaderSource(),
+    content: nativeBuildLoaderSource({
+      adapterOptions: { configFile: viteConfigs[0]!, nonce },
+    }),
   });
-  // The Morph SDK the wrapper resolves `@morph/sdk` and `@morph/sdk/start` to.
-  // Under .morph/, which a project cannot carry (refuseNativeReservedPaths).
-  workspaceFiles.push(...themeMorphSdkFiles());
+  // The Morph SDK the wrapper resolves `@morph/sdk` and `@morph/sdk/start` to,
+  // each entry carrying this pass's sentinel. Under .morph/, which a project
+  // cannot carry (refuseNativeReservedPaths).
+  workspaceFiles.push(...nativeStartSdkFiles(nonce));
   workspaceFiles.push({
     path: THEME_PRERENDER_CONTENT_FILE,
     content: JSON.stringify(
@@ -194,6 +204,93 @@ export function planNativeStartBuild(
   };
 }
 
+const UNCHECKED_CALL =
+  'builds the Cloudflare plugin without calling cloudflare() from an import of @cloudflare/vite-plugin, so Morph cannot check its options. Import cloudflare from "@cloudflare/vite-plugin" and call it in the config.';
+
+/** The options a checked call may have passed (the shim's own table). */
+const CHECKED_OPTION_KEYS = new Set([
+  "viteEnvironment",
+  "inspectorPort",
+  "persistState",
+  "remoteBindings",
+  "tunnel",
+]);
+
+/**
+ * Why the shim's record of checked `cloudflare()` calls does not vouch for
+ * this build, or null: written by this pass, at least one call, each with
+ * only options the check accepts, and one of them naming the environment
+ * that built the Worker (or naming none, the plugin's default).
+ */
+export function nativeAdapterCallsRefusal(
+  content: Uint8Array | string | undefined,
+  nonce: string,
+  workerEnvironment: string | null,
+): string | null {
+  if (content === undefined) return UNCHECKED_CALL;
+  let record: unknown;
+  try {
+    record = JSON.parse(
+      typeof content === "string" ? content : new TextDecoder().decode(content),
+    );
+  } catch {
+    return UNCHECKED_CALL;
+  }
+  const calls = (record as { calls?: unknown } | null)?.calls;
+  if (
+    !record ||
+    typeof record !== "object" ||
+    (record as { nonce?: unknown }).nonce !== nonce ||
+    !Array.isArray(calls) ||
+    calls.length === 0
+  ) {
+    return UNCHECKED_CALL;
+  }
+  for (const call of calls as unknown[]) {
+    const keys = (call as { keys?: unknown } | null)?.keys;
+    if (
+      !Array.isArray(keys) ||
+      keys.some((key) => typeof key !== "string" || !CHECKED_OPTION_KEYS.has(key))
+    ) {
+      return UNCHECKED_CALL;
+    }
+  }
+  const names = (calls as Array<{ environment?: unknown }>).map(
+    (call) => call.environment,
+  );
+  if (
+    workerEnvironment !== null &&
+    !names.includes(workerEnvironment) &&
+    !names.includes(null)
+  ) {
+    return `builds its Worker in the "${workerEnvironment}" environment, which no checked cloudflare() call names, so Morph cannot check the options it was built with. Call cloudflare() once, from an import of @cloudflare/vite-plugin.`;
+  }
+  return null;
+}
+
+/**
+ * The adapter-option refusal the loader shim recorded
+ * (`NATIVE_ADAPTER_REFUSAL_PATH`), as the build's message.
+ */
+export function nativeAdapterRefusalMessage(
+  content: Uint8Array | string,
+): string {
+  try {
+    const value = JSON.parse(
+      typeof content === "string" ? content : new TextDecoder().decode(content),
+    ) as { message?: unknown };
+    if (
+      typeof value.message === "string" &&
+      /^NATIVE_(ADAPTER_OPTION|REMOTE_BINDING): /.test(value.message)
+    ) {
+      return value.message;
+    }
+  } catch {
+    // Reported below.
+  }
+  return "NATIVE_ADAPTER_OPTION: vite.config passes an option to cloudflare() that Morph refuses. Remove it; keep wrangler.jsonc at the project root.";
+}
+
 /** A native Start build's artifact, collected by the shared Cloudflare rule. */
 export type NativeStartArtifact = NativeThemeArtifact;
 
@@ -203,9 +300,21 @@ export type NativeStartArtifact = NativeThemeArtifact;
  * the Worker config the plugin wrote declares nothing the contract does not
  * keep, and no local variables file was written beside the Worker. The same
  * check runs again at deploy (theme-worker-deployment-plan.ts).
+ *
+ * Then the SDK resolution proof (native-start-proof.ts), checked here, in
+ * Morph's process, against the bytes the build wrote; the verified result,
+ * with the artifact's static HTML, is the manifest's `nativeProof`.
+ * `nonce` is the pass's own, the one its plan was made with.
  */
 export function collectNativeStartArtifact(
   outputs: ReadonlyMap<string, Uint8Array | string>,
+  nonce = "",
+  /**
+   * The build's input files, as the plan was given them: the Worker-graph
+   * source check reads them after the same preparation the plan applied,
+   * never the workspace the build could change.
+   */
+  files: ReadonlyArray<Readonly<{ path: string; content: string }>> = [],
 ): NativeStartArtifact {
   const artifact = collectNativeCloudflareArtifact(outputs);
   const config = artifact.files.get("runtime/server/wrangler.json");
@@ -230,5 +339,46 @@ export function collectNativeStartArtifact(
       `${leaked.message} (The build wrote it into the artifact.)`,
     );
   }
-  return artifact;
+  // A config that catches the adapter-option refusal and calls the plugin
+  // again still built with an option Morph refused.
+  const adapterRefusal = outputs.get(NATIVE_ADAPTER_REFUSAL_PATH);
+  if (adapterRefusal !== undefined) {
+    throw new Error(nativeAdapterRefusalMessage(adapterRefusal));
+  }
+  const configFile = VITE_CONFIG_FILES.find((path) => outputs.has(path));
+  const sdk = verifyNativeStartSdkProof({
+    outputs,
+    directories: artifact.sourceDirectories,
+    nonce,
+    configFile,
+    workerEntry: `${artifact.sourceDirectories.server}/${artifact.workerEntry.slice("runtime/server/".length)}`,
+    sources: new Map(
+      prepareSourcesForBuild(files).files.map((file) => [file.path, file.content]),
+    ),
+  });
+  // The Worker was built by a checked cloudflare() call of this pass, whose
+  // options Morph holds to the table again here, and whose environment is
+  // the one that built the Worker.
+  const unchecked = nativeAdapterCallsRefusal(
+    outputs.get(NATIVE_ADAPTER_CALLS_PATH),
+    nonce,
+    sdk.environments.find((environment) => environment.output === "server")
+      ?.name ?? null,
+  );
+  if (unchecked) {
+    throw new Error(
+      `NATIVE_ADAPTER_OPTION: ${configFile ?? "vite.config.ts"} ${unchecked}`,
+    );
+  }
+  const nativeProof: NativeBuildProof = {
+    version: NATIVE_PROOF_VERSION,
+    sdk: { environments: sdk.environments },
+    toolchain: { vite: sdk.vite },
+    html: nativeHtmlAssets({
+      artifactFiles: artifact.files,
+      outputs,
+      publicDir: sdk.publicDir,
+    }),
+  };
+  return { ...artifact, metadata: { nativeProof } };
 }

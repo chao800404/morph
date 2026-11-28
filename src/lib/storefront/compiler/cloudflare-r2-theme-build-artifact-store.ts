@@ -11,6 +11,55 @@ import type {
 } from "./theme-build-artifact-store.types";
 import type { ThemeBuildArtifactFile } from "./theme-build-runner.types";
 import { registerThemeStaticPages } from "./theme-static-pages";
+import { readNativeBuildProof } from "../theme-framework/native-start-proof";
+import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
+
+/**
+ * The runtime with the runner's `nativeProof`. A native Start build must
+ * carry one, consistent (`readNativeBuildProof`) and naming files the
+ * artifact holds; no other build may. Anything else is refused rather than
+ * stored. Every other build's runtime is unchanged.
+ */
+function withNativeProof<T extends object>(
+  runtime: T,
+  reported: unknown,
+  compilerId: string,
+  artifactPaths: ReadonlySet<string>,
+): T | (T & { nativeProof: NonNullable<ReturnType<typeof readNativeBuildProof>> }) {
+  if (reported === undefined) {
+    // Every native Start build since the proof carries one; a runner that
+    // reports none is not one this Morph runs, and its artifact would only
+    // be refused later, when it is published.
+    if (compilerId === NATIVE_START_COMPILER_ID) {
+      throw new Error(
+        "INVALID_NATIVE_PROOF: The native Start build reported no SDK resolution proof.",
+      );
+    }
+    return runtime;
+  }
+  if (compilerId !== NATIVE_START_COMPILER_ID) {
+    throw new Error(
+      `INVALID_NATIVE_PROOF: A ${compilerId} build reported a native Start proof.`,
+    );
+  }
+  const proof = readNativeBuildProof(reported);
+  if (!proof) {
+    throw new Error(
+      "INVALID_NATIVE_PROOF: The runner's native proof is not a consistent one this Morph writes.",
+    );
+  }
+  const named = [
+    ...proof.sdk.environments.flatMap((environment) => environment.sentinelFiles),
+    ...proof.html.map((entry) => entry.path),
+  ];
+  const missing = named.find((path) => !artifactPaths.has(path));
+  if (missing) {
+    throw new Error(
+      `INVALID_NATIVE_PROOF: The native proof names "${missing}", which is not in the immutable artifact set.`,
+    );
+  }
+  return { ...runtime, nativeProof: proof };
+}
 
 /**
  * Minimal interface representing Cloudflare R2 bucket binding operations.
@@ -371,8 +420,14 @@ export class CloudflareR2ThemeBuildArtifactStore implements ThemeBuildArtifactSt
         sha256: file.sha256,
       })),
     });
-    const canonicalRuntime =
+    const withStaticPages =
       staticPages.length > 0 ? { ...runtime, staticPages } : runtime;
+    const canonicalRuntime = withNativeProof(
+      withStaticPages,
+      runtimeMetadata?.nativeProof,
+      buildInput.compilerId,
+      new Set(validatedFiles.map((file) => file.relPath)),
+    );
 
     // Stage 2: Upload all artifact files via atomic conditional creates
     const uploadedManifestFiles: CanonicalThemeBuildManifestFile[] = [];

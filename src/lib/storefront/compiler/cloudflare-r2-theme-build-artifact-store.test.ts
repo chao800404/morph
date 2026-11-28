@@ -237,6 +237,119 @@ describe("CloudflareR2ThemeBuildArtifactStore (Phase 4B-6)", () => {
     });
   });
 
+  describe("a native Start build's proof", () => {
+    const NATIVE = "tanstack-start-native";
+    const proof = {
+      version: "np-1",
+      sdk: {
+        environments: [
+          { name: "client", output: "client", specifiers: [], edges: 0, sentinelFiles: [] },
+          {
+            name: "ssr",
+            output: "server",
+            specifiers: ["@morph/sdk/start"],
+            edges: 1,
+            sentinelFiles: ["runtime/server/index.js"],
+          },
+        ],
+      },
+      toolchain: { vite: "7.3.5" },
+      html: [],
+    };
+    const persist = (compilerId: string, nativeProof: unknown) => {
+      const { r2Bucket } = createMockR2();
+      const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });
+      return store.persistBuildArtifacts({
+        build: createDummyBuild({ compilerId }),
+        buildInput: { ...createDummyBuildInput(), compilerId },
+        artifacts: [
+          {
+            path: "runtime/server/index.js",
+            content: "export default { fetch() {} }",
+            mimeType: "application/javascript",
+          },
+          {
+            path: "runtime/client/assets/app.js",
+            content: "export {};",
+            mimeType: "application/javascript",
+          },
+        ],
+        runnerManifest: {
+          artifactEntry: "runtime/server/index.js",
+          metadata: {
+            runtime: "cloudflare-worker",
+            build: "native",
+            workerEntry: "runtime/server/index.js",
+            clientAssetsDirectory: "runtime/client",
+            ...(nativeProof === undefined ? {} : { nativeProof }),
+          },
+        },
+      });
+    };
+
+    it("is kept in the canonical runtime, as the collector wrote it", async () => {
+      const result = await persist(NATIVE, proof);
+      expect(result.manifest.runtime).toEqual({
+        kind: "cloudflare-worker",
+        workerEntry: "runtime/server/index.js",
+        clientAssetsDirectory: "runtime/client",
+        previewEntry: undefined,
+        nativeProof: proof,
+      });
+    });
+
+    it("is required of a native Start build, and absent from every other build's runtime", async () => {
+      await expect(persist(NATIVE, undefined)).rejects.toThrow(
+        "INVALID_NATIVE_PROOF: The native Start build reported no SDK resolution proof.",
+      );
+      const platform = await persist("tailwind-v4-build", undefined);
+      expect(platform.manifest.runtime).not.toHaveProperty("nativeProof");
+    });
+
+    it("is refused from another compiler, in another shape, inconsistent, or naming a file the artifact lacks", async () => {
+      await expect(persist("tailwind-v4-build", proof)).rejects.toThrow(
+        "INVALID_NATIVE_PROOF: A tailwind-v4-build build reported a native Start proof.",
+      );
+      for (const inconsistent of [
+        { ...proof, version: "np-0" },
+        { ...proof, toolchain: { vite: "8.0.0" } },
+        {
+          ...proof,
+          sdk: {
+            environments: [
+              proof.sdk.environments[0],
+              { ...proof.sdk.environments[1], sentinelFiles: [] },
+            ],
+          },
+        },
+        {
+          ...proof,
+          sdk: {
+            environments: [
+              proof.sdk.environments[0],
+              {
+                ...proof.sdk.environments[1],
+                sentinelFiles: ["runtime/client/assets/app.js"],
+              },
+            ],
+          },
+        },
+      ]) {
+        await expect(persist(NATIVE, inconsistent)).rejects.toThrow(
+          "INVALID_NATIVE_PROOF: The runner's native proof is not a consistent one this Morph writes.",
+        );
+      }
+      await expect(
+        persist(NATIVE, {
+          ...proof,
+          html: [{ path: "runtime/client/x.html", source: "public" }],
+        }),
+      ).rejects.toThrow(
+        'INVALID_NATIVE_PROOF: The native proof names "runtime/client/x.html", which is not in the immutable artifact set.',
+      );
+    });
+  });
+
   it("rejects a runner-selected entry that is absent from the immutable artifact set", async () => {
     const { r2Bucket } = createMockR2();
     const store = new CloudflareR2ThemeBuildArtifactStore({ r2Bucket });

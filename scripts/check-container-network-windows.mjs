@@ -42,6 +42,7 @@ export const KNOWN_WINDOWS = Object.freeze([
   "b1-publish-rollback",
   "navigation-matrix-public",
   "section-visibility-layout",
+  "native-ssr-publish",
   "starter-upgrade-publish",
   "starter-v32-full-start",
   "preview-socket",

@@ -150,8 +150,23 @@ export type ThemeFrameworkAdapter = Readonly<{
         outputs: ReadonlyMap<string, Uint8Array | string>,
         nonce: string,
       ): Readonly<{ stage: string; message: string }> | null;
+      /**
+       * The workspace files `failedBuildCause` reads, for a runner that
+       * reads only those after a failed build (the Sandbox's); the
+       * prerender's refused reads when absent.
+       */
+      failedBuildRecordPaths?: readonly string[];
+      /**
+       * The artifact, from the workspace after the build. `nonce` is the
+       * pass's own, for a framework whose records carry one (a native Start
+       * build's SDK resolution proof). The artifact's `metadata`, when it
+       * has one, joins `manifestMetadata`.
+       */
       collect(
         outputs: ReadonlyMap<string, Uint8Array | string>,
+        nonce?: string,
+        /** The build's input files, for a framework that checks its sources. */
+        files?: ReadonlyArray<Readonly<{ path: string; content: string }>>,
       ): NativeThemeArtifact;
       artifactEntry: string;
       verifyArtifact(input: {

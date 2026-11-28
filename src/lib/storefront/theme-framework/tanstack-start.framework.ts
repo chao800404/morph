@@ -13,9 +13,12 @@ import type { ThemeFrameworkAdapter } from "./theme-framework.types";
 import {
   NATIVE_START_COMPILER_ID,
   collectNativeStartArtifact,
+  nativeAdapterRefusalMessage,
   nativeAllowedPackages,
   planNativeStartBuild,
 } from "./tanstack-start-native-build";
+import { NATIVE_PROOF_VERSION } from "./native-start-proof";
+import { NATIVE_ADAPTER_REFUSAL_PATH } from "./tanstack-start-native-wrapper";
 
 const WORKER_ENTRY = "runtime/server/index.js";
 const CLIENT_ASSETS_DIRECTORY = "runtime/client";
@@ -86,12 +89,14 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
           }
         : undefined,
     native: {
-      // The pinned Start version, the Morph SDK the build injects and the
-      // hide guard it compiles in (theme-morph-sdk.ts): any changing must
-      // change the identity.
+      // The pinned Start version, the Morph SDK the build injects, the
+      // hide guard it compiles in (theme-morph-sdk.ts) and the SDK
+      // resolution proof it carries (native-start-proof.ts): any changing
+      // must change the identity. A native build made before the proof is
+      // therefore never reused as one that carries it.
       compilerIdentity: () => ({
         id: NATIVE_START_COMPILER_ID,
-        version: withThemeStartBuildIdentity(THEME_START_TOOLCHAIN.reactStart),
+        version: `${withThemeStartBuildIdentity(THEME_START_TOOLCHAIN.reactStart)}.${NATIVE_PROOF_VERSION}`,
       }),
       routeRegistry: (files) => {
         const registry = THEME_FRAMEWORK_ROUTES["tanstack-start"](files);
@@ -103,7 +108,20 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
       // on the first, content-less pass's refused read: the build exits
       // non-zero, and the record is what sends it to the sealed pass. A
       // refusal in the sealed pass still fails the build.
+      failedBuildRecordPaths: [
+        NATIVE_ADAPTER_REFUSAL_PATH,
+        NATIVE_PRERENDER_REFUSED_READS_PATH,
+      ],
       failedBuildCause(outputs) {
+        // A Cloudflare plugin option the loader shim refused stops the build
+        // when the config is loaded; the shim's record says which.
+        const adapter = outputs.get(NATIVE_ADAPTER_REFUSAL_PATH);
+        if (adapter !== undefined) {
+          return {
+            stage: "native-plan",
+            message: nativeAdapterRefusalMessage(adapter),
+          };
+        }
         const refused = outputs.get(NATIVE_PRERENDER_REFUSED_READS_PATH);
         return refused === undefined
           ? null

@@ -7,6 +7,10 @@ import {
 import { wranglerDeployConfig } from "./sandbox-wrangler-theme-worker-deployer";
 import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
 import type { CanonicalThemeBuildManifest } from "../compiler/theme-build-artifact-store.types";
+import {
+  NATIVE_PROOF_VERSION,
+  type NativeBuildProof,
+} from "../theme-framework/native-start-proof";
 import emittedConfigs from "./__fixtures__/theme-worker-emitted-configs.json";
 import {
   THEME_BUILD_ID_VAR,
@@ -713,7 +717,39 @@ describe("the Wrangler key contract's admission boundary", () => {
   };
   const fixtures = emittedConfigs as unknown as Record<string, Fixture>;
 
-  const fixtureManifest = (fixture: Fixture): CanonicalThemeBuildManifest =>
+  /**
+   * The proof a native Start build's collector writes (PR 2), naming the
+   * fixture's own Worker entry as where the sentinel was found. Only native
+   * Start manifests carry one; the legacy manifests stay as they were.
+   */
+  const nativeProof = (fixture: Fixture): NativeBuildProof => ({
+    version: NATIVE_PROOF_VERSION,
+    sdk: {
+      environments: [
+        {
+          name: "client",
+          output: "client",
+          specifiers: [],
+          edges: 0,
+          sentinelFiles: [],
+        },
+        {
+          name: "ssr",
+          output: "server",
+          specifiers: ["@morph/sdk/start"],
+          edges: 1,
+          sentinelFiles: [fixture.workerEntry],
+        },
+      ],
+    },
+    toolchain: { vite: "7.3.5" },
+    html: [],
+  });
+
+  const fixtureManifest = (
+    fixture: Fixture,
+    options: { proof?: unknown; extraFiles?: string[] } = {},
+  ): CanonicalThemeBuildManifest =>
     manifest({
       buildId: "bld_fixture",
       storefrontId: "sf_fixture",
@@ -726,9 +762,21 @@ describe("the Wrangler key contract's admission boundary", () => {
         kind: "cloudflare-worker",
         workerEntry: fixture.workerEntry,
         clientAssetsDirectory: "runtime/client",
+        ...(fixture.compilerId === NATIVE_START_COMPILER_ID &&
+        options.proof !== null
+          ? {
+              nativeProof: (options.proof ??
+                nativeProof(fixture)) as NativeBuildProof,
+            }
+          : {}),
       },
       filesCount: fixture.files.length,
-      files: fixture.files.map(([path, contentType, sizeBytes]) => ({
+      files: [
+        ...fixture.files,
+        ...(options.extraFiles ?? []).map(
+          (path) => [path, "text/html", 10] as [string, string, number],
+        ),
+      ].map(([path, contentType, sizeBytes]) => ({
         path,
         contentType,
         sizeBytes,
@@ -740,11 +788,12 @@ describe("the Wrangler key contract's admission boundary", () => {
     fixture: Fixture,
     target: ThemeWorkerDeploymentTarget,
     workerConfig: unknown = JSON.parse(fixture.config),
+    options: { proof?: unknown; extraFiles?: string[] } = {},
   ) =>
     planThemeWorkerDeployment({
       target,
       storefrontId: "sf_fixture",
-      manifest: fixtureManifest(fixture),
+      manifest: fixtureManifest(fixture, options),
       workerConfig,
     });
 
@@ -844,6 +893,106 @@ describe("the Wrangler key contract's admission boundary", () => {
     expect(JSON.stringify(wranglerDeployConfig(result.plan), null, 2)).toBe(
       native.mainAt76efa42.production.deployConfig,
     );
+  });
+
+  describe("a native Start artifact's production admission (SSR only, step 1)", () => {
+    const fixture = fixtures["start-native-guide"]!;
+
+    it("refuses a production deployment of a native artifact with no proof, or one this Morph does not read", () => {
+      for (const proof of [null, { version: "np-0" }, { ...nativeProof(fixture), sdk: { environments: [] } }]) {
+        expect(
+          planFor(fixture, "production", undefined, { proof }),
+          JSON.stringify(proof),
+        ).toMatchObject({
+          success: false,
+          reason: "NATIVE_PROOF_MISSING",
+          message: expect.stringMatching(
+            /^NATIVE_PROOF_MISSING: This native build carries no SDK resolution proof, so Morph cannot tell its Theme reads content through Morph's SDK\. Rebuild the Theme\.$/,
+          ),
+        });
+      }
+    });
+
+    it("refuses a proof that names a sentinel file the artifact does not hold", () => {
+      const proof = nativeProof(fixture);
+      const broken = {
+        ...proof,
+        sdk: {
+          environments: proof.sdk.environments.map((environment) =>
+            environment.output === "server"
+              ? { ...environment, sentinelFiles: ["runtime/server/gone.js"] }
+              : environment,
+          ),
+        },
+      };
+      expect(
+        planFor(fixture, "production", undefined, { proof: broken }),
+      ).toMatchObject({
+        success: false,
+        reason: "NATIVE_PROOF_MISSING",
+        message: expect.stringContaining(
+          "carries no complete SDK resolution proof (it names runtime/server/gone.js, which the artifact does not hold)",
+        ),
+      });
+    });
+
+    it("refuses static HTML among the served assets, naming the file, its source and its path", () => {
+      const proof = {
+        ...nativeProof(fixture),
+        html: [
+          { path: "runtime/client/about/index.html", source: "prerender" },
+          { path: "runtime/client/legal.html", source: "public" },
+        ],
+      };
+      expect(
+        planFor(fixture, "production", undefined, {
+          proof,
+          extraFiles: [
+            "runtime/client/about/index.html",
+            "runtime/client/legal.html",
+          ],
+        }),
+      ).toEqual({
+        success: false,
+        reason: "NATIVE_HTML_ASSET_UNAVAILABLE",
+        message:
+          "NATIVE_HTML_ASSET_UNAVAILABLE: The build would serve runtime/client/about/index.html (prerendered) as /about/index.html, and 1 more HTML file(s). Static HTML is not published yet: the asset layer would answer it before the Theme Worker and Core. Remove the prerender setting, the SPA shell or the file.",
+      });
+      // From the files, even when the proof's list says nothing.
+      expect(
+        planFor(fixture, "production", undefined, {
+          extraFiles: ["runtime/client/_shell.html"],
+        }),
+      ).toMatchObject({
+        success: false,
+        reason: "NATIVE_HTML_ASSET_UNAVAILABLE",
+        message: expect.stringContaining(
+          "would serve runtime/client/_shell.html as /_shell.html.",
+        ),
+      });
+    });
+
+    it("leaves Build Preview as it was: no proof needed, static HTML served", () => {
+      const result = planFor(fixture, "build-preview", undefined, {
+        proof: null,
+        extraFiles: ["runtime/client/about/index.html"],
+      });
+      if (!result.success) throw new Error(result.message);
+      expect(result.plan.assets.map((asset) => asset.servedPath)).toContain(
+        "/about/index.html",
+      );
+    });
+
+    it("never reaches an artifact outside the boundary: a platform build with HTML and no proof deploys as before", () => {
+      const legacy = fixtures["starter-v32"]!;
+      const result = planFor(legacy, "production", undefined, {
+        extraFiles: ["runtime/client/landing.html"],
+      });
+      if (!result.success) throw new Error(result.message);
+      expect(result.plan.assets.map((asset) => asset.servedPath)).toContain(
+        "/landing.html",
+      );
+    });
   });
 
   describe("a native Start artifact", () => {

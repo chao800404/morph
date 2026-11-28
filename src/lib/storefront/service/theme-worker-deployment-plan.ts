@@ -5,6 +5,7 @@ import {
   checkNativeWranglerConfig,
 } from "../theme-framework/cloudflare-native-build";
 import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
+import { nativeProductionAdmission } from "../theme-framework/native-start-proof";
 import { themeWorkerScriptNameForStorefront } from "./theme-runtime.types";
 
 /**
@@ -102,7 +103,10 @@ export type ThemeWorkerDeploymentPlanFailureReason =
   | "INVALID_WORKER_CONFIG"
   | "FORBIDDEN_BINDING"
   | "INVALID_SCRIPT_NAME"
-  | "INVALID_STATIC_PAGES";
+  | "INVALID_STATIC_PAGES"
+  | "NATIVE_PROOF_MISSING"
+  | "NATIVE_HTML_ASSET_UNAVAILABLE";
+
 
 /**
  * Who the Worker is deployed for.
@@ -248,6 +252,16 @@ export function planThemeWorkerDeployment(args: {
       file: NATIVE_EMITTED_WORKER_CONFIG_LABEL,
     });
     if (refused) return fail("INVALID_WORKER_CONFIG", refused.message);
+    // Step 1's production admission: the same check a publish runs before
+    // writing anything (storefront-theme.dal.ts); here it also covers
+    // rollback and reconciliation. Build Preview is not production.
+    if (args.target === "production") {
+      const admission = nativeProductionAdmission({
+        runtime: { ...args.manifest.runtime, clientAssetsDirectory: clientDirectory },
+        files: args.manifest.files,
+      });
+      if (admission) return fail(admission.code, admission.message);
+    }
   }
 
   for (const key of FORBIDDEN_BINDING_KEYS) {
