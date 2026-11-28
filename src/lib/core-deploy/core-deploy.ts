@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 import type { BootstrapApi, InventoryApi } from "./cloudflare-api";
 import {
@@ -28,15 +29,17 @@ import {
   type Verdict,
 } from "./inventory";
 import { platformManifest, type PlatformManifest } from "./platform-manifest";
+import { checkRemoteMigrations } from "./remote-migrations";
 
 /**
  * The Core deploy flow (design 2, option B), with every effect injected so
  * the order of steps and every refusal can be tested without a network,
  * a build or a Wrangler run.
  *
- *   deploy:  pins → env → target → source guard → clean → migration check →
- *            pre-inventory → build → redirect + artifact guard → wrangler →
- *            post-inventory (always, once Wrangler has been started)
+ *   deploy:  pins → env → target → source guard → lock → clean → migration
+ *            check → pre-inventory → build → redirect + artifact guard →
+ *            fingerprint → wrangler → fingerprint again → post-inventory
+ *            (always, once Wrangler has been started) → unlock
  *   verify:  pins → target → source guard → inventory
  *   ensure-platform-bindings: pins → target → source guard → create-only
  *            bootstrap → strict inventory
@@ -60,9 +63,13 @@ export type CoreDeployDeps = Readonly<{
   exists(file: string): boolean;
   mtimeMs(file: string): number;
   removeDir(dir: string): void;
+  listDir(dir: string): string[];
+  /** Creates `dir` exclusively; false when it already exists (another run holds the checkout). */
+  lock(dir: string): boolean;
+  unlock(dir: string): void;
   parseJsonc(text: string): { ok: true; value: unknown } | { ok: false; error: string };
   /** Runs a child process with inherited output; resolves with its exit code. */
-  run(step: "migrations" | "build" | "wrangler", argv: readonly string[], env: Record<string, string>): Promise<number>;
+  run(step: "build" | "wrangler", argv: readonly string[], env: Record<string, string>): Promise<number>;
   inventoryApi: (accountId: string) => InventoryApi;
   bootstrapApi: (accountId: string) => BootstrapApi;
   writeReport(name: string, data: unknown): void;
@@ -229,6 +236,23 @@ export async function runCoreDeploy(
   }
 
   // deploy
+  // One run per checkout: a second run (or its build) would replace the
+  // redirect and artifact this one checked before Wrangler reads them.
+  const lockDir = path.join(deps.rootDir, ".wrangler", "core-deploy.lock");
+  if (!deps.lock(lockDir)) {
+    return refuse(deps, [
+      `${path.relative(deps.rootDir, lockDir)} exists: another Core deploy is running in this checkout. If none is (a killed run), remove it and run again.`,
+    ]);
+  }
+  try {
+    return await deployLocked(options, deps, prepared);
+  } finally {
+    deps.unlock(lockDir);
+  }
+}
+
+async function deployLocked(options: RunnerOptions, deps: CoreDeployDeps, prepared: Prepared): Promise<RunResult> {
+  const { target } = prepared;
   const mode: CompareMode = options.bootstrap ? "bootstrap" : "strict";
   const root = deps.rootDir;
   const childEnv = deployChildEnv(deps.env);
@@ -239,12 +263,23 @@ export async function runCoreDeploy(
   deps.removeDir(path.join(root, "dist"));
   deps.removeDir(path.join(root, path.dirname(DEPLOY_REDIRECT_PATH)));
 
-  const migrations = await deps.run(
-    "migrations",
-    ["node", path.join(root, "scripts", "check-pending-migrations.mjs"), "--remote"],
-    childEnv,
-  );
-  if (migrations !== 0) return refuse(deps, ["The remote D1 migration check did not pass."]);
+  // The migration check reads the validated target's database by id, with the
+  // inventory credential, before anything is built.
+  const database = ((prepared.source as { d1_databases?: Array<{ binding?: string; migrations_dir?: string }> })
+    .d1_databases ?? []).find((entry) => entry.binding === "DATABASE");
+  let entries: string[];
+  try {
+    entries = deps.listDir(path.join(root, database?.migrations_dir ?? "migrations"));
+  } catch (error) {
+    return refuse(deps, [`Could not list the migrations directory: ${error instanceof Error ? error.message : String(error)}`]);
+  }
+  const migrations = await checkRemoteMigrations({
+    api: deps.inventoryApi(target.accountId),
+    databaseId: target.d1Databases.DATABASE!,
+    entries,
+  });
+  for (const line of migrations.lines) deps.log(`[core-deploy] migrations: ${line}`);
+  if (!migrations.ok) return refuse(deps, ["The remote D1 migration check did not pass."]);
 
   const before = await inventory(deps, prepared, mode);
   report(deps, "pre", before, target.workerName);
@@ -281,9 +316,22 @@ export async function runCoreDeploy(
   }
   if (artifactProblems.length > 0) return refuse(deps, artifactProblems);
 
+  // What Wrangler reads — the redirect, the artifact it points at, and the
+  // source it falls back to — must be what was checked, immediately before
+  // it starts and still after it exits.
+  const fingerprint = () => {
+    const hash = createHash("sha256");
+    for (const file of [redirectPath, path.join(root, ARTIFACT_CONFIG_PATH), prepared.sourcePath]) {
+      hash.update(file).update("\0").update(deps.exists(file) ? deps.readText(file) : "<missing>").update("\0");
+    }
+    return hash.digest("hex");
+  };
+  const checked = fingerprint();
+
   const wranglerBin = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
   let deployExit: number;
   let deployError: string | null = null;
+  if (fingerprint() !== checked) return refuse(deps, ["The checked config changed before Wrangler started."]);
   try {
     deployExit = await deps.run("wrangler", ["node", ...wranglerDeployArgv(wranglerBin)], childEnv);
   } catch (error) {
@@ -294,19 +342,22 @@ export async function runCoreDeploy(
     deps.log(`[core-deploy] wrangler deploy exited ${deployExit}${deployError ? ` (${deployError})` : ""}; the upload may have committed, so the post-check still runs.`);
   }
 
+  const changedDuringDeploy = fingerprint() !== checked;
+  if (changedDuringDeploy) {
+    deps.log("[core-deploy] the checked config changed while Wrangler ran; what it deployed is not known to be what was checked.");
+  }
+
   // Runs whatever Wrangler did: an upload can commit before a later step fails.
   const after = await inventory(deps, prepared, mode, before.snapshot);
   report(deps, "post", after, target.workerName);
+  const deployProblems = [
+    ...(deployExit !== 0 ? [`wrangler deploy exited ${deployExit}`] : []),
+    ...(changedDuringDeploy ? ["the checked config changed while Wrangler ran"] : []),
+  ];
   if (after.status !== "ok") {
-    return {
-      exitCode: verdictExit(after),
-      problems: [
-        `post-deploy check: ${after.status}`,
-        ...(deployExit !== 0 ? [`wrangler deploy exited ${deployExit}`] : []),
-      ],
-    };
+    return { exitCode: verdictExit(after), problems: [`post-deploy check: ${after.status}`, ...deployProblems] };
   }
-  if (deployExit !== 0) return { exitCode: EXIT.deployFailed, problems: [`wrangler deploy exited ${deployExit}`] };
+  if (deployProblems.length > 0) return { exitCode: EXIT.deployFailed, problems: deployProblems };
   if (mode === "bootstrap" && after.tolerated.length > 0) {
     deps.log("[core-deploy] bootstrap deploy done; run `pnpm run platform:ensure`, then `pnpm run deploy:verify`.");
   }

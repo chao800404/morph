@@ -136,6 +136,7 @@ export async function ensurePlatformBindings(input: {
 
   const steps: EnsureStep[] = [];
   let stopped: EnsureStep | null = null;
+  let refusedMidRun = false;
   for (const step of planned) {
     const subject = subjectOf(step);
     if (stopped) {
@@ -146,13 +147,44 @@ export async function ensurePlatformBindings(input: {
       steps.push({ kind: step.kind, subject, outcome: "present", detail: step.detail });
       continue;
     }
+    // Plan this one write again from a fresh read, immediately before it: an
+    // earlier write in this run, or another writer, may have changed what the
+    // first read saw. Only a step that is still "create" is written.
+    let fresh: InventorySnapshot;
+    try {
+      fresh = await input.read();
+    } catch (error) {
+      stopped = {
+        kind: step.kind,
+        subject,
+        outcome: "failed",
+        detail: `the read before the write failed (${error instanceof Error ? error.message : String(error)}); run again to resume`,
+      };
+      steps.push(stopped);
+      continue;
+    }
+    const again = plan(fresh, target, manifest).find((candidate) => subjectOf(candidate) === subject)!;
+    if (again.action !== "create") {
+      const outcome: EnsureStep = {
+        kind: step.kind,
+        subject,
+        outcome: again.action === "present" ? "present" : "refused",
+        detail: `changed since the first read: ${again.detail}`,
+      };
+      steps.push(outcome);
+      if (outcome.outcome === "refused") {
+        stopped = outcome;
+        refusedMidRun = true;
+      }
+      continue;
+    }
     const outcome = step.kind === "custom-domain"
       ? await createCustomDomain(step.hostname, input)
       : await createRoute(step.pattern, input);
     steps.push(outcome);
     if (outcome.outcome !== "created" && outcome.outcome !== "present") stopped = outcome;
   }
-  return { status: stopped ? "failed" : "complete", steps };
+  return { status: refusedMidRun ? "refused" : stopped ? "failed" : "complete", steps };
 }
 
 async function createCustomDomain(

@@ -5,6 +5,7 @@ import {
   type Zone,
   type ZoneRoute,
 } from "./cloudflare-api";
+import { isPreviewHostname } from "../storefront/service/platform-hostnames";
 import type { DeployTarget } from "./deploy-target";
 import { isInZone, routePatternHostname, type PlatformManifest } from "./platform-manifest";
 
@@ -109,7 +110,9 @@ export type DiscrepancyKind =
   | "platform-route-missing"
   | "platform-route-wrong-owner"
   | "platform-route-changed"
-  | "unknown-route";
+  | "unknown-route"
+  | "storefront-domain-in-preview-namespace"
+  | "storefront-domain-changed";
 
 export type Discrepancy = Readonly<{
   kind: DiscrepancyKind;
@@ -137,7 +140,13 @@ export function compareInventory(input: {
   mode: CompareMode;
   /** The pre-deploy snapshot, for the post-deploy check. */
   baseline?: InventorySnapshot;
-}): { discrepancies: Discrepancy[]; tolerated: Discrepancy[]; diagnostics: string[] } {
+}): {
+  discrepancies: Discrepancy[];
+  tolerated: Discrepancy[];
+  diagnostics: string[];
+  /** Pending rows: a connect in progress, which a single read must not settle. */
+  pending: string[];
+} {
   const { snapshot, target, manifest } = input;
   const found: Discrepancy[] = [];
   const diagnostics: string[] = [];
@@ -193,9 +202,31 @@ export function compareInventory(input: {
   }
 
   // Storefront Custom Domains, against every undeleted row.
+  const pending: string[] = [];
+  const previewEnv = manifest.previewNamespace ? { THEME_PREVIEW_HOSTNAME: manifest.previewNamespace } : {};
   for (const row of snapshot.storefrontDomains) {
     if (platform.has(row.hostname)) continue;
     const bound = byHostname.get(row.hostname) ?? [];
+    // Routing classifies preview hosts first (the runtime's own predicate), so
+    // a storefront domain inside the preview namespace is not served as the
+    // storefront, whatever its binding says.
+    if (row.status !== "failed" && isPreviewHostname(row.hostname, previewEnv)) {
+      add("storefront-domain-in-preview-namespace", `${row.hostname}|${row.id}`, `${row.hostname} (row ${row.id}, ${row.status}) is inside the preview namespace ${manifest.previewNamespace ?? "preview.localhost"}; routing treats it as a preview host`);
+    }
+    if (row.status === "pending") pending.push(`${row.id}|${row.hostname}`);
+    if (row.status === "active" && input.baseline) {
+      const before = input.baseline.storefrontDomains.find((r) => r.id === row.id && r.status === "active");
+      // A binding gone after the deploy is reported once, as missing, below.
+      if (before && bound.length > 0) {
+        const ids = (s: InventorySnapshot) =>
+          s.customDomains.filter((d) => d.hostname === row.hostname).map(identity).sort().join(";");
+        const beforeIds = `${before.cloudflareDomainId}|${ids(input.baseline)}`;
+        const afterIds = `${row.cloudflareDomainId}|${ids(snapshot)}`;
+        if (beforeIds !== afterIds) {
+          add("storefront-domain-changed", `${row.id}|${beforeIds}|${afterIds}`, `${row.hostname} (row ${row.id}) changed during the deploy: before ${beforeIds}, after ${afterIds}`);
+        }
+      }
+    }
     if (row.status === "active") {
       if (bound.length === 0) {
         add("storefront-domain-missing", `${row.hostname}|${row.id}|${row.cloudflareDomainId}`, `${row.hostname} is active in D1 (row ${row.id}, Cloudflare id ${row.cloudflareDomainId ?? "none"}) and has no Custom Domain`);
@@ -257,7 +288,7 @@ export function compareInventory(input: {
 
   const tolerated = input.mode === "bootstrap" ? found.filter((d) => BOOTSTRAP_TOLERATED.has(d.kind)) : [];
   const discrepancies = found.filter((d) => !tolerated.includes(d));
-  return { discrepancies, tolerated, diagnostics };
+  return { discrepancies, tolerated, diagnostics, pending };
 }
 
 export type Verdict =
@@ -306,6 +337,7 @@ export async function reconcile(input: {
   const delayMs = input.delayMs ?? 3000;
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let previous: Discrepancy[] | null = null;
+  let previousPending: string[] | null = null;
   for (let reads = 1; reads <= maxReads; reads += 1) {
     let snapshot: InventorySnapshot;
     try {
@@ -317,8 +349,32 @@ export async function reconcile(input: {
         reads,
       };
     }
-    const { discrepancies, tolerated, diagnostics } = input.compare(snapshot);
-    if (discrepancies.length === 0) return { status: "ok", snapshot, tolerated, diagnostics, reads };
+    const { discrepancies, tolerated, diagnostics, pending } = input.compare(snapshot);
+    if (discrepancies.length === 0) {
+      // A pending row is a connect in progress: its row may activate, or its
+      // binding appear, between two reads. One read does not settle it, so a
+      // clean first read with pending rows is read once more; rows still
+      // pending after that are reported, not compared (an abandoned connect
+      // must not block every later deploy).
+      if (pending.length > 0 && previousPending === null && reads < maxReads) {
+        previousPending = pending;
+        previous = [];
+        await sleep(delayMs);
+        continue;
+      }
+      const stillPending = previousPending ? pending.filter((key) => previousPending!.includes(key)) : pending;
+      return {
+        status: "ok",
+        snapshot,
+        tolerated,
+        diagnostics: [
+          ...diagnostics,
+          ...(stillPending.length > 0 ? [`${stillPending.length} pending row(s) unchanged across ${reads} paired read(s): ${stillPending.join(", ")}`] : []),
+        ],
+        reads,
+      };
+    }
+    previousPending ??= pending;
     if (previous) {
       const before = new Set(previous.map((d) => d.key));
       const now = new Set(discrepancies.map((d) => d.key));

@@ -324,7 +324,7 @@ order, the command:
    identities);
 2. removes `dist/` and `.wrangler/deploy/`, so nothing from an earlier build is
    checked or deployed;
-3. runs the migration check below;
+3. runs the migration check below, against the target's database id;
 4. reads the binding inventory and stops unless it is clean;
 5. builds, then checks `.wrangler/deploy/config.json` and the artifact it
    points at (`dist/server/wrangler.json`);
@@ -333,7 +333,10 @@ order, the command:
    failed, because an upload can commit before a later step fails.
 
 The migration check reads the remote database against `drizzle/`, reading
-`d1_migrations` and changing nothing, and stops when:
+`d1_migrations` and changing nothing, and stops when (the same rules as
+`node scripts/check-pending-migrations.mjs --remote`, but read through the D1
+API by the target's database id with the inventory credential, so no `.env`
+or other Wrangler config can point it at another database):
 
 - a migration file has not been applied — apply it (step 3), then deploy;
 - the database has applied a migration this checkout does not have — the code
@@ -418,8 +421,8 @@ Pass it as `--target <file>` or `MORPH_DEPLOY_TARGET=<file>`.
 
 | Variable | Used by | Needs |
 | -------- | ------- | ----- |
-| `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` | the migration check, the build and `wrangler deploy` | Workers Scripts edit, Containers edit, Queues edit, D1 read (migration check), account read. **No** Workers Routes or DNS edit, and no zone access: an ordinary deploy never writes a binding. |
-| `MORPH_INVENTORY_API_TOKEN` | the inventory before and after a deploy, `deploy:verify` | Workers Scripts read (Custom Domains list), Zone read and Workers Routes read for the platform zone, D1 read (one `SELECT`, sent as a POST; check the grant separately from the SQL). Never passed to Wrangler. |
+| `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` | the build and `wrangler deploy` | Workers Scripts edit, Containers edit, Queues edit, account read. **No** Workers Routes or DNS edit, and no zone access: an ordinary deploy never writes a binding. |
+| `MORPH_INVENTORY_API_TOKEN` | the migration check, the inventory before and after a deploy, `deploy:verify` | Workers Scripts read (Custom Domains list), Zone read and Workers Routes read for the platform zone, D1 read (two `SELECT`s, sent as POSTs to the query endpoint; check the grant separately from the SQL). Never passed to Wrangler. |
 | `MORPH_BOOTSTRAP_API_TOKEN` | `platform:ensure` writes | Workers Scripts edit (Custom Domain attach), Workers Routes edit and DNS edit for the platform zone. Used only for that command; never passed to Wrangler. |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` **Worker secrets** | the runtime storefront domain provider (Settings) and the Theme Worker deployer | Workers Scripts edit, Workers Routes/DNS edit for the storefront zone. Set with `wrangler secret put`; not the deploy shell's token. |
 
@@ -456,9 +459,15 @@ Before and after a deploy, the inventory reads, through the API:
 - every Workers Route in the platform zone, unfiltered, compared by pattern, id
   and Worker.
 
-There is no count rule. A finding on one read is re-read; findings in both of
-the last two paired reads are drift, findings that moved are a connect or
-disconnect in progress and reported apart. An inventory that cannot be read
+There is no count rule. A finding on one read is re-read, and so is a read
+with a pending row (a connect in progress); findings in both of the last two
+paired reads are drift, findings that moved are a connect or disconnect in
+progress and reported apart. A storefront domain inside the preview namespace
+is drift (routing would serve it as a preview), and so is a platform hostname
+inside it. After the deploy, a storefront row that stayed active must keep the
+same Cloudflare id and binding it had before. Only one deploy runs per
+checkout (`.wrangler/core-deploy.lock`), and the checked redirect, artifact and
+source must be unchanged right before Wrangler starts and after it exits. An inventory that cannot be read
 refuses the deploy before it starts. After the deploy the exit code says what
 the post-check found, with the Wrangler result reported separately:
 

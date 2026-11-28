@@ -18,7 +18,7 @@
     },
     "PUBLIC_URL": {
       "type": "plain_text",
-      "description": "Public URL (leave blank for auto-detection or example: https://your-worker.workers.dev)"
+      "description": "REQUIRED: the CMS origin on its Custom Domain, e.g. https://admin.example.com (workers.dev is off for Morph Core). Bind it with 'pnpm run platform:ensure'; see DEPLOY.md."
     }
   },
   "resources": {

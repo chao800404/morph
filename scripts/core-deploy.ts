@@ -11,7 +11,7 @@
  * src/lib/core-deploy/ for the rules.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,6 +51,18 @@ const result = await runCoreDeploy(command, args.options, {
   exists: (file) => existsSync(file),
   mtimeMs: (file) => statSync(file).mtimeMs,
   removeDir: (dir) => rmSync(dir, { recursive: true, force: true }),
+  listDir: (dir) => readdirSync(dir),
+  lock: (dir) => {
+    mkdirSync(path.dirname(dir), { recursive: true });
+    try {
+      mkdirSync(dir);
+    } catch {
+      return false;
+    }
+    writeFileSync(path.join(dir, "pid"), `${process.pid}\n`);
+    return true;
+  },
+  unlock: (dir) => rmSync(dir, { recursive: true, force: true }),
   parseJsonc: (text) => parseJsonc(text),
   run: (step, argv, env) =>
     new Promise((resolve, reject) => {

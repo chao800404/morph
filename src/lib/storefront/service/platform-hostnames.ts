@@ -272,15 +272,19 @@ export function readPlatformBindingHostnames(
         problems.push(`THEME_PREVIEW_HOSTNAME is not a hostname: ${rawPreview}`);
       }
     } else if (isPublicDnsName(normalized)) {
-      if (hostnames.includes(normalized)) {
-        problems.push(
-          `THEME_PREVIEW_HOSTNAME (${normalized}) is also a platform hostname; the preview must be a host of its own.`,
-        );
-      } else {
-        previewHostname = normalized;
-      }
+      previewHostname = normalized;
     }
   }
 
+  // Routing classifies preview hosts before platform hosts, so a CMS hostname
+  // inside the preview namespace (equal to it, or under it) would stop being
+  // served as the CMS.
+  for (const hostname of hostnames) {
+    if (isPreviewHostname(hostname, env)) {
+      problems.push(
+        `${hostname} is a platform hostname inside the preview namespace (THEME_PREVIEW_HOSTNAME); routing would treat it as a preview host.`,
+      );
+    }
+  }
   return { customDomainHostnames: hostnames, previewHostname, problems };
 }

@@ -29,6 +29,7 @@ const MANIFEST: PlatformManifest = {
   zoneId: ZONE,
   customDomains: ["admin.example.com"],
   routes: [{ pattern: "*.preview.example.com/*" }],
+  previewNamespace: "preview.example.com",
 };
 
 const apis: MockApi[] = [];
@@ -82,8 +83,10 @@ const kinds = (verdict: Verdict) =>
   verdict.status === "drift" ? verdict.drift.map((d) => d.kind) : [];
 
 describe("the binding inventory", () => {
-  it("matches exact identities in one read, and only reads", async () => {
-    const { verdict, api } = await verdictFor(healthyState());
+  it("matches exact identities, and only reads", async () => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    const { verdict, api } = await verdictFor(state);
     expect(verdict.status).toBe("ok");
     expect(verdict.reads).toBe(1);
     expect(api.writes()).toEqual([]);
@@ -93,9 +96,45 @@ describe("the binding inventory", () => {
     expect(JSON.parse(d1.body).sql).toMatch(/JOIN storefronts s .* s\.deleted_at IS NULL/);
     // Custom Domains and Routes are read unfiltered.
     expect(api.requests.find((r) => r.path.endsWith("/workers/domains"))!.query.toString()).toBe("");
+  });
+
+  it("re-reads a pending row (a connect in progress) once, and reports it without failing", async () => {
+    const { verdict } = await verdictFor(healthyState());
+    expect(verdict.status).toBe("ok");
+    expect(verdict.reads).toBe(2);
     if (verdict.status === "ok") {
-      expect(verdict.diagnostics).toEqual([expect.stringMatching(/^pending storefront domain pending\.example\.com/)]);
+      expect(verdict.diagnostics).toEqual([
+        expect.stringMatching(/^pending storefront domain pending\.example\.com/),
+        expect.stringMatching(/^1 pending row\(s\) unchanged across 2 paired read\(s\)/),
+      ]);
     }
+  });
+
+  it("compares a pending row that activates between the paired reads", async () => {
+    const state = healthyState();
+    const { verdict } = await verdictFor(state, {
+      mutate: (api) => {
+        let reads = 0;
+        api.beforeAnswer.push((request, s) => {
+          if (request.path.endsWith("/query") && ++reads === 2) {
+            // Activated in D1 with an id, but the attach left no binding: drift.
+            s.d1[D1_ID] = s.d1[D1_ID]!.map((r) => (r.status === "pending" ? { ...r, status: "active", cloudflare_domain_id: "lost" } : r));
+          }
+        });
+      },
+    });
+    expect(verdict.status).toBe("drift");
+    expect(kinds(verdict)).toEqual(["storefront-domain-missing"]);
+  });
+
+  it("reports a storefront domain inside the preview namespace", async () => {
+    const state = healthyState();
+    state.d1[D1_ID] = state.d1[D1_ID]!.filter((r) => r.status !== "pending");
+    const hidden = domain("t1.preview.example.com");
+    state.domains.push(hidden);
+    state.d1[D1_ID]!.push(row("t1.preview.example.com", hidden.id));
+    const { verdict } = await verdictFor(state);
+    expect(kinds(verdict)).toEqual(["storefront-domain-in-preview-namespace"]);
   });
 
   it("reports a storefront domain that is active in D1 and not bound as drift, after a paired re-read", async () => {
@@ -236,5 +275,45 @@ describe("the binding inventory", () => {
     const after = await readInventory(client, TARGET, MANIFEST);
     const { discrepancies } = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
     expect(discrepancies.map((d) => d.kind)).toEqual(["platform-domain-changed"]);
+  });
+
+  it("reports a storefront row whose id and binding both changed during the deploy", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state);
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    const before = await readInventory(client, TARGET, MANIFEST);
+    // Each read alone is consistent (D1 and the API agree); only the pair shows the change.
+    state.domains = state.domains.map((d) => (d.hostname === "shop-a.example.com" ? { ...d, id: "rebound" } : d));
+    state.d1[D1_ID] = state.d1[D1_ID]!.map((r) => (r.hostname === "shop-a.example.com" ? { ...r, cloudflare_domain_id: "rebound" } : r));
+    const after = await readInventory(client, TARGET, MANIFEST);
+    expect(compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict" }).discrepancies).toEqual([]);
+    const { discrepancies } = compareInventory({ snapshot: after, target: TARGET, manifest: MANIFEST, mode: "strict", baseline: before });
+    expect(discrepancies.map((d) => d.kind)).toEqual(["storefront-domain-changed"]);
+  });
+
+  it("is unavailable when the pages of a list contradict each other", async () => {
+    const state = healthyState();
+    const api = await startMockCloudflareApi(state, {
+      handlers: [
+        (request) => {
+          if (request.path !== `/accounts/${ACCOUNT}/workers/domains`) return undefined;
+          const page = Number(request.query.get("page") ?? "1");
+          // Page 1 says 3 entries over 2 pages; page 2 says 2 entries. Two arrive.
+          return {
+            status: 200,
+            body: {
+              success: true,
+              errors: [],
+              result: state.domains.slice(page - 1, page),
+              result_info: { page, per_page: 1, total_pages: 2, total_count: page === 1 ? 3 : 2 },
+            },
+          };
+        },
+      ],
+    });
+    apis.push(api);
+    const client = createInventoryApi({ baseUrl: api.baseUrl, token: "t", accountId: ACCOUNT });
+    await expect(client.listWorkerDomains()).rejects.toThrow(/describes another list/);
   });
 });

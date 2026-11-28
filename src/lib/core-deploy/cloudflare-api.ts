@@ -125,10 +125,21 @@ async function readList(
     }
     items.push(...envelope.result);
     const info = envelope.result_info;
-    if (info && typeof info.total_count === "number") totalCount = info.total_count;
-    if (page === 1 && info) {
-      if (typeof info.total_pages === "number" && info.total_pages > 1) totalPages = info.total_pages;
-      if (typeof info.per_page === "number") perPage = info.per_page;
+    if (page === 1) {
+      if (info && typeof info.total_count === "number") totalCount = info.total_count;
+      if (info && typeof info.total_pages === "number" && info.total_pages > 1) totalPages = info.total_pages;
+      if (info && typeof info.per_page === "number") perPage = info.per_page;
+    } else {
+      // Every page must describe the same list the first page described: a
+      // total that moves between pages means the list changed (or the answer
+      // is wrong) while it was being read, so what arrived proves nothing.
+      const pageTotal = typeof info?.total_count === "number" ? info.total_count : null;
+      const pagePages = typeof info?.total_pages === "number" ? info.total_pages : null;
+      if (pageTotal !== totalCount || pagePages !== totalPages) {
+        throw new CloudflareReadError(
+          `${label}: page ${page} describes another list (total ${pageTotal}/${pagePages} pages, page 1 said ${totalCount}/${totalPages})`,
+        );
+      }
     }
     if (info && typeof info.page === "number" && info.page !== page) {
       throw new CloudflareReadError(`${label}: asked for page ${page}, the API answered page ${info.page}`);

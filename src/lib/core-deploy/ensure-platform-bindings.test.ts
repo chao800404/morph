@@ -30,6 +30,7 @@ const MANIFEST: PlatformManifest = {
   zoneId: ZONE,
   customDomains: ["admin.example.com", "ops.example.com"],
   routes: [{ pattern: "*.preview.example.com/*" }],
+  previewNamespace: "preview.example.com",
 };
 
 const apis: MockApi[] = [];
@@ -76,8 +77,8 @@ describe("platform:ensure", () => {
     expect(JSON.parse(put.body)).toEqual({ hostname: "admin.example.com", service: WORKER, environment: "production", zone_id: ZONE });
     expect(put.authorization).toBe("Bearer bootstrap-token");
     for (const read of api.requests.filter((r) => r.method === "GET")) expect(read.authorization).toBe("Bearer inventory-token");
-    // A full read before the plan and one after each of the three writes.
-    expect(api.requests.filter((r) => r.method === "GET" && r.path.endsWith("/workers/domains"))).toHaveLength(4);
+    // A full read for the plan, then one before and one after each of the three writes.
+    expect(api.requests.filter((r) => r.method === "GET" && r.path.endsWith("/workers/domains"))).toHaveLength(7);
     // The storefront's binding is untouched.
     expect(api.state.domains.find((d) => d.hostname === "shop.example.com")).toEqual(storefront);
   });
@@ -120,6 +121,20 @@ describe("platform:ensure", () => {
     expect(result.status).toBe("complete");
     expect(result.steps[0]).toMatchObject({ subject: "admin.example.com", outcome: "present" });
     expect(writes(api).filter((w) => w.startsWith("PUT"))).toHaveLength(2);
+  });
+
+  it("re-plans each write from a fresh read, and does not write over a claim that appeared since the first read", async () => {
+    const { api, run } = await setup(baseState());
+    let reads = 0;
+    api.beforeAnswer.push((request, state) => {
+      if (request.method === "GET" && request.path.endsWith("/workers/domains") && ++reads === 2) {
+        state.domains.push(domain("admin.example.com", { service: "morph" }));
+      }
+    });
+    const result = await run();
+    expect(result.status).toBe("refused");
+    expect(result.steps[0]).toMatchObject({ subject: "admin.example.com", outcome: "refused" });
+    expect(api.writes()).toEqual([]);
   });
 
   it("refuses, and writes nothing, when a platform hostname is bound to another Worker", async () => {

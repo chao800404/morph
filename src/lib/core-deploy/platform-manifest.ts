@@ -3,6 +3,7 @@ import {
   isReservedPlatformHostname,
   readPlatformBindingHostnames,
 } from "../storefront/service/platform-hostnames";
+import { normalizeStorefrontHostname } from "../storefront/service/storefront-hostname";
 import type { Parsed } from "./deploy-target";
 
 /**
@@ -19,6 +20,11 @@ export type PlatformManifest = Readonly<{
   zoneId: string;
   customDomains: readonly string[];
   routes: readonly Readonly<{ pattern: string }>[];
+  /**
+   * The configured preview namespace as the runtime reads it, public or not:
+   * a storefront domain inside it is not served as a storefront.
+   */
+  previewNamespace: string | null;
 }>;
 
 export function previewRoutePattern(previewHostname: string): string {
@@ -61,6 +67,10 @@ export function platformManifest(
       routes: read.previewHostname
         ? [{ pattern: previewRoutePattern(read.previewHostname) }]
         : [],
+      previewNamespace:
+        typeof vars?.THEME_PREVIEW_HOSTNAME === "string"
+          ? normalizeStorefrontHostname(vars.THEME_PREVIEW_HOSTNAME)
+          : null,
     },
   };
 }

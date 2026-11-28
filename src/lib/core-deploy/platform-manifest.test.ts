@@ -24,6 +24,7 @@ describe("the platform manifest, from the vars the runtime reads", () => {
         zoneId: ZONE,
         customDomains: ["admin.example.com", "admin-stg.example.com", "ops.example.com"],
         routes: [{ pattern: "*.preview.example.com/*" }],
+        previewNamespace: "preview.example.com",
       },
     });
     // What it binds is what the runtime reserves from the same vars.
@@ -50,7 +51,8 @@ describe("the platform manifest, from the vars the runtime reads", () => {
     ["a localhost PUBLIC_URL", { PUBLIC_URL: "https://localhost:3000" }, /public hostname/],
     ["a malformed MORPH_PLATFORM_HOSTNAMES entry", { MORPH_PLATFORM_HOSTNAMES: "ok.example.com,bad_host" }, /bad_host/],
     ["no zone", { CLOUDFLARE_ZONE_ID: undefined }, /CLOUDFLARE_ZONE_ID/],
-    ["a preview hostname that is also a platform hostname", { THEME_PREVIEW_HOSTNAME: "admin.example.com" }, /host of its own/],
+    ["a preview hostname that is also a platform hostname", { THEME_PREVIEW_HOSTNAME: "admin.example.com" }, /inside the preview namespace/],
+    ["a platform hostname under the preview namespace", { THEME_PREVIEW_HOSTNAME: "example.com" }, /admin.example.com is a platform hostname inside the preview namespace/],
   ])("refuses %s, which the runtime would silently ignore", (_label, overrides, message) => {
     const manifest = platformManifest({
       PUBLIC_URL: "https://admin.example.com",

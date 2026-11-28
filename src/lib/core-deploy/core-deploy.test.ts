@@ -77,13 +77,25 @@ async function harness(
     env?: Record<string, string | undefined>;
     onWrangler?: (api: MockApi) => number;
     artifact?: (source: Record<string, unknown>) => Record<string, unknown>;
-    migrations?: number;
+    /** The migrations directory's entries; the mock D1 has applied 0001_init.sql. */
+    migrationFiles?: string[];
   } = {},
 ): Promise<Harness> {
   const admin = domain("admin.example.com");
   const shop = domain("shop.example.com");
   const api = await startMockCloudflareApi(
     baseState({ domains: [admin, shop], d1: { [D1_ID]: [row("shop.example.com", shop.id)] } }),
+    {
+      handlers: [
+        (request) =>
+          request.path.endsWith(`/d1/database/${D1_ID}/query`) && JSON.parse(request.body).sql.includes("d1_migrations")
+            ? {
+                status: 200,
+                body: { success: true, errors: [], result: [{ success: true, results: [{ name: "0001_init.sql" }], meta: {} }] },
+              }
+            : undefined,
+      ],
+    },
   );
   apis.push(api);
   const files = new Map<string, string>([
@@ -112,6 +124,20 @@ async function harness(
     },
     exists: (file) => files.has(file),
     mtimeMs: (file) => mtimes.get(file) ?? 0,
+    listDir: (dir) => {
+      steps.push(`ls ${path.relative(ROOT, dir)}`);
+      return options.migrationFiles ?? ["0001_init.sql"];
+    },
+    lock: (dir) => {
+      if (files.has(`${dir}/pid`)) return false;
+      files.set(`${dir}/pid`, "1");
+      steps.push("lock");
+      return true;
+    },
+    unlock: (dir) => {
+      files.delete(`${dir}/pid`);
+      steps.push("unlock");
+    },
     removeDir: (dir) => {
       steps.push(`rm ${path.relative(ROOT, dir)}`);
       for (const key of [...files.keys()]) if (key.startsWith(`${dir}/`)) files.delete(key);
@@ -120,7 +146,6 @@ async function harness(
     run: async (step, argv, env) => {
       steps.push(`${step}: ${argv.slice(1).map((a) => (a.startsWith(ROOT) ? path.relative(ROOT, a) : a)).join(" ")}`);
       childEnvs[step] = env;
-      if (step === "migrations") return options.migrations ?? 0;
       if (step === "build") {
         clock += 10_000;
         const source = JSON.parse(files.get(at("wrangler.jsonc"))!.replace(/^\/\/.*\n/, ""));
@@ -161,12 +186,17 @@ describe("pnpm run deploy", () => {
     const result = await deploy(h);
     expect(result).toEqual({ exitCode: EXIT.ok, problems: [] });
     expect(h.steps).toEqual([
+      "lock",
       "rm dist",
       "rm .wrangler/deploy",
-      "migrations: scripts/check-pending-migrations.mjs --remote",
+      "ls drizzle",
       "build: run build",
       "wrangler: node_modules/wrangler/bin/wrangler.js deploy --no-autoconfig --env-file /dev/null",
+      "unlock",
     ]);
+    // The migration check read the target's database by id, before the build.
+    const queries = h.api.requests.filter((r) => r.path.endsWith(`/d1/database/${D1_ID}/query`)).map((r) => JSON.parse(r.body).sql);
+    expect(queries[0]).toBe("SELECT name FROM d1_migrations ORDER BY id");
     expect(Object.keys(h.reports)).toEqual(["pre", "post"]);
     // Wrangler never sees the inventory or bootstrap credentials.
     expect(h.childEnvs.wrangler!.MORPH_INVENTORY_API_TOKEN).toBeUndefined();
@@ -220,10 +250,41 @@ describe("pnpm run deploy", () => {
     expect(h.steps.some((s) => s.startsWith("wrangler"))).toBe(false);
   });
 
-  it("refuses when the migration check fails", async () => {
-    const h = await harness({ migrations: 1 });
+  it.each([
+    ["a migration file the database has not applied", ["0001_init.sql", "0002_next.sql"]],
+    ["a database migration this checkout lacks", []],
+  ])("refuses %s, before building", async (_label, migrationFiles) => {
+    const h = await harness({ migrationFiles });
     expect((await deploy(h)).exitCode).toBe(EXIT.refused);
-    expect(h.steps.at(-1)).toMatch(/^migrations/);
+    expect(h.steps.some((s) => s.startsWith("build"))).toBe(false);
+    expect(h.logs.some((l) => l.includes("migrations:"))).toBe(true);
+  });
+
+  it("refuses when the migration list cannot be read", async () => {
+    const h = await harness();
+    h.api.faults.push({ method: "POST", path: `/accounts/${ACCOUNT}/d1/database/`, times: 1, status: 403 });
+    expect((await deploy(h)).exitCode).toBe(EXIT.refused);
+    expect(h.steps.some((s) => s.startsWith("build"))).toBe(false);
+  });
+
+  it("refuses a second run in the same checkout", async () => {
+    const h = await harness();
+    h.files.set(at(".wrangler/core-deploy.lock/pid"), "999");
+    const result = await deploy(h);
+    expect(result.exitCode).toBe(EXIT.refused);
+    expect(h.steps).toEqual([]);
+  });
+
+  it("reports an artifact replaced while Wrangler ran", async () => {
+    const h = await harness({
+      onWrangler: () => {
+        h.files.set(at("dist/server/wrangler.json"), JSON.stringify({ name: "swapped" }));
+        return 0;
+      },
+    });
+    const result = await deploy(h);
+    expect(result).toEqual({ exitCode: EXIT.deployFailed, problems: ["the checked config changed while Wrangler ran"] });
+    expect(h.steps.at(-1)).toBe("unlock");
   });
 
   it("refuses an artifact that differs from the checked source", async () => {
