@@ -747,7 +747,15 @@ test.describe("Start render modes keep hidden sections out", () => {
       }
       // Selection: a canvas click selects the section in the tree.
       await enableSelection(page);
-      const picked = await clickExposedElement(page, section);
+      // The click has to land on an element itself (clickExposedElement):
+      // the section's heading or the section, scrolled into the canvas.
+      await section.scrollIntoViewIfNeeded();
+      const picked = await clickExposedElement(
+        page,
+        canvas.locator(
+          `[data-storefront-section-id="${shownSlot}"] h2, [data-storefront-section-id="${shownSlot}"]`,
+        ),
+      );
       expect(picked, `${mode}: the shown section could be clicked`).not.toBeNull();
       await expect(
         page.locator(
