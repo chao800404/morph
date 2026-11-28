@@ -367,12 +367,14 @@ test("container acceptance targets are exactly wired or explicitly deferred", as
   // astro-basis-ack.mjs: Astro container E2E is local only for M2 (owner
   // decision D4, 2026-11-26); a later CI job wires it. The same holds for
   // astro-inspector-write.mjs (M2 PR 3, extended for M2 D3) and
-  // astro-design-release.mjs (M2 D3, Design edits published and rolled back).
+  // astro-design-release.mjs (M2 D3, Design edits published and rolled back)
+  // and astro-layout-inline.mjs (M2 D3 batch 2, layout and canvas editing).
   /** @type {string[]} */
   const deferred = [
     "astro-basis-ack.mjs",
     "astro-design-release.mjs",
     "astro-inspector-write.mjs",
+    "astro-layout-inline.mjs",
     "b1-route-publish-rollback.mjs",
     "preview-revocation-timeline.mjs",
     // M3 stage 1, the newsletter acceptance (#477): run locally on the

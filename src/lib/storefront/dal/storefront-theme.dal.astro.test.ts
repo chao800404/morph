@@ -38,12 +38,15 @@ import {
   D3_HERO_FIELDS_PATH,
   D3_HERO_PATH,
   D3_REFUSED_PATH,
+  D3_SHELL_PATH,
   d3AboutPage,
   d3HeroFields,
   d3HomePage,
   d3RefusedPage,
   d3ReleaseAboutPage,
   d3ReleaseHomePage,
+  d3Shell,
+  d3ShellPage,
   d3SidecarPage,
 } from "@/lib/test-utils/astro-d3-cases";
 import { astroSourceDigest } from "../source-language/astro-instance-identity";
@@ -1041,6 +1044,24 @@ describe("an Astro section write checks instance identity (design v2 section 8)"
     expect(stored("tpl-product").template.draft_generation).toBe(1);
   });
 
+  it("refuses a write of the shared layout's Document on an Astro Theme (D3 row 18), and writes nothing", async () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates (id, theme_id, type, name, document, created_at, updated_at)
+      VALUES ('tpl-layout', 'theme-a', 'layout', 'Layout', '{"version":1,"sections":[]}', 'now', 'now');
+    `);
+    const before = stored("tpl-layout");
+    await expect(
+      write({
+        ...(await identityOf("/about", "intro")),
+        templateId: "tpl-layout",
+        routePath: undefined,
+      }),
+    ).rejects.toThrow(
+      /^SECTION_SOURCE_UNCONFIRMED: template-kind-unsupported: .*the layout template of an Astro Theme/,
+    );
+    expect(stored("tpl-layout")).toEqual(before);
+  });
+
   it("still refuses a reorder and a rename on an Astro Theme, and writes nothing", async () => {
     const before = stored("tpl-about");
     await expect(
@@ -1500,5 +1521,41 @@ describe("the D3 container fixtures, as Core's binding view reads them", () => {
     expect(await claimsOf("/about")).toEqual([
       ["team", ["title", "desc"], [{ field: "desc" }, { field: "title" }]],
     ]);
+  });
+  it("batch 2: inside a layout, the page's section claims no field and the layout's section is no instance of the page", async () => {
+    // The layout reads the request's page (`Astro.url.pathname`) and spreads
+    // its `banner`, which Core answers from the layout Document. Design
+    // claims call sites in the page's own template only, so the banner is
+    // not offered on either page (D3 row 18, safely refused). The wrapping
+    // <Shell> is an instance that renders no section. The page's own section
+    // in the layout's slot is named but claims no field: slot content renders
+    // where, and as often as, the layout's code decides, which Core does not
+    // follow into the layout (refused on the canvas as no proven field).
+    writeFiles([
+      { path: D3_SHELL_PATH, content: d3Shell() },
+      { path: INDEX, content: d3ShellPage("/", "hero") },
+      { path: ABOUT, content: d3ShellPage("/about", "team") },
+    ]);
+    for (const [routePath, section] of [
+      ["/", "hero"],
+      ["/about", "team"],
+    ] as const) {
+      const result = await read({ routePath });
+      expect(result).toMatchObject({
+        status: "view",
+        view: { status: { kind: "confirmed" } },
+      });
+      if (result.status !== "view") continue;
+      expect(
+        result.view.instances.map((instance) => [
+          instance.componentPath,
+          instance.section,
+          instance.claims.map(({ field }) => field),
+        ]),
+      ).toEqual([
+        [D3_SHELL_PATH, null, []],
+        [D3_HERO_PATH, section, []],
+      ]);
+    }
   });
 });

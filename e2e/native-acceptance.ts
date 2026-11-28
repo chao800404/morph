@@ -213,8 +213,13 @@ export async function editHero(page: Page, marker: string) {
   ).toBeVisible({ timeout: 30_000 });
 }
 
-export async function openPublish(page: Page) {
+export async function openPublish(
+  page: Page,
+  /** Checks the open confirmation before it is confirmed. */
+  beforeConfirm?: (page: Page) => Promise<void>,
+) {
   await page.getByRole("button", { name: /^Publish$/ }).click();
+  await beforeConfirm?.(page);
   await page.locator("[data-publish-confirm]").click();
 }
 
@@ -234,6 +239,7 @@ export type ReleasePreview = {
  */
 export async function publishShowingRelease(
   page: Page,
+  beforeConfirm?: (page: Page) => Promise<void>,
 ): Promise<ReleasePreview> {
   // Recorded in the page, so a Build Preview shown and closed again between
   // two polls is still seen.
@@ -246,7 +252,7 @@ export async function publishShowingRelease(
       if (seen()) flags.__buildPreviewShown = true;
     }).observe(document.body, { childList: true, subtree: true });
   });
-  await openPublish(page);
+  await openPublish(page, beforeConfirm);
   await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
     "aria-label",
     "Published",

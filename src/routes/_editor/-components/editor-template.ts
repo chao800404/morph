@@ -133,9 +133,17 @@ export function normalizeEditorTemplateSearch(
   search: StorefrontThemeEditorSearch,
 ): StorefrontThemeEditorSearch {
   const template = resolveEditorTemplate(context, search);
+  // An address naming a route's own document by id, with no route, is that
+  // route's page: the document answers for that path and no other. Left
+  // without its route, the preview framed the home page while the editor
+  // held the route's document, which applies to no page on the canvas.
+  const routePath =
+    search.routePath ?? (template?.routePath ? template.routePath : undefined);
   if (
     !template ||
-    (search.templateId === template.id && search.template === template.type)
+    (search.templateId === template.id &&
+      search.template === template.type &&
+      search.routePath === routePath)
   ) {
     return search;
   }
@@ -144,6 +152,7 @@ export function normalizeEditorTemplateSearch(
     ...search,
     template: template.type,
     templateId: template.id,
+    ...(routePath !== undefined ? { routePath } : {}),
   };
 }
 

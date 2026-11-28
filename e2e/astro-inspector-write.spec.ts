@@ -580,8 +580,9 @@ test.describe("Astro D3 shapes Design must not write: literals, an override afte
     page,
   }) => {
     const record = recordEditor(page);
-    // An editor address naming the route template still framed the home
-    // page (seen on 07e9158); the page list is how an author opens it.
+    // Opened from the page list, as an author does. (An editor address
+    // naming the route template framed the home page on 07e9158; that is
+    // fixed, and astro-layout-inline-acceptance.spec.ts opens one.)
     await openEditorAt(page, theme!.editorPath("/"));
     await expect(
       (await liveFrame(page)).locator('[data-d3-case="p1"] h1'),

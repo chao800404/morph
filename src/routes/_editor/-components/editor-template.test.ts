@@ -140,6 +140,52 @@ describe("routes with a document of their own", () => {
     expect(routeOwnsDocument("/journal/$slug")).toBe(false);
   });
 
+  it("opens an address naming a route's own document on that route's page", () => {
+    // Before: the search kept no route, so the preview framed the home page
+    // while the editor held the /aboutus document (D3 batch 1, seen on
+    // `07e9158`).
+    expect(
+      normalizeEditorTemplateSearch(withRoutes, {
+        template: "page",
+        templateId: "aboutus-doc",
+        viewport: "desktop",
+      }),
+    ).toEqual({
+      template: "page",
+      templateId: "aboutus-doc",
+      viewport: "desktop",
+      routePath: "/aboutus",
+    });
+    // Without the type, too: the id alone names the page.
+    expect(
+      normalizeEditorTemplateSearch(withRoutes, {
+        templateId: "aboutus-doc",
+        viewport: "desktop",
+      } as StorefrontThemeEditorSearch).routePath,
+    ).toBe("/aboutus");
+  });
+
+  it("keeps the route an address names, and adds none for a shared template", () => {
+    // A named route decides: its own document, never the id's.
+    expect(
+      normalizeEditorTemplateSearch(withRoutes, search("/contact", "aboutus-doc")),
+    ).toMatchObject({ routePath: "/contact", templateId: "index-template" });
+    // The home and type templates answer for no one route.
+    const home = normalizeEditorTemplateSearch(withRoutes, {
+      template: "index",
+      templateId: "index-template",
+      viewport: "desktop",
+    });
+    expect(home.routePath).toBeUndefined();
+    const canonical = {
+      template: "page",
+      templateId: "aboutus-doc",
+      viewport: "desktop",
+      routePath: "/aboutus",
+    } satisfies StorefrontThemeEditorSearch;
+    expect(normalizeEditorTemplateSearch(withRoutes, canonical)).toBe(canonical);
+  });
+
   it("round-trips the placeholder a first write resolves", () => {
     const id = routeTemplatePlaceholderId("/contact");
     expect(routePathFromTemplatePlaceholder(id)).toBe("/contact");
